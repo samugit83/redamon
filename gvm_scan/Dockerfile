@@ -17,7 +17,7 @@ WORKDIR /app
 COPY gvm_scan/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# Copy project files (context is parent directory, so paths are relative to project root)
 COPY params.py .
 COPY gvm_scan/ ./gvm_scan/
 

@@ -7,10 +7,12 @@ Orchestrates all OSINT reconnaissance modules:
 2. Subdomain discovery & DNS resolution
 3. Port scanning (fast, lightweight)
 4. HTTP probing & technology detection
-5. Vulnerability scanning (web application vulns)
+5. Vulnerability scanning + MITRE CWE/CAPEC enrichment
 6. GitHub secret hunting (separate JSON output)
 
 Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
+
+Note: vuln_scan automatically includes MITRE CWE/CAPEC enrichment for all CVEs.
 
 Run this file to execute the full recon pipeline.
 """
@@ -27,11 +29,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from params import (
     TARGET_DOMAIN,
+    SUBDOMAIN_LIST,
     USE_TOR_FOR_RECON,
     USE_BRUTEFORCE_FOR_SUBDOMAINS,
     SCAN_MODULES,
     GITHUB_ACCESS_TOKEN,
     GITHUB_TARGET_ORG,
+    UPDATE_GRAPH_DB,
+    USER_ID,
+    PROJECT_ID,
 )
 
 # Import recon modules
@@ -47,30 +53,45 @@ from recon.add_mitre import run_mitre_enrichment
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 
-def parse_target(target: str) -> dict:
+def parse_target(target: str, subdomain_list: list = None) -> dict:
     """
-    Parse target and determine if it's a root domain or subdomain.
+    Parse target domain and determine scan mode based on SUBDOMAIN_LIST.
 
     Args:
-        target: Target string (e.g., "example.com" or "www.example.com")
+        target: Root domain (e.g., "example.com", "vulnweb.com")
+        subdomain_list: List of subdomain prefixes to filter (e.g., ["testphp.", "www."])
+                       Empty list = full discovery mode (scan all subdomains)
 
     Returns:
         Dictionary with:
-        - target: original target
+        - target: original target (root domain)
         - root_domain: the root domain (e.g., "example.com")
-        - is_subdomain: True if target is a subdomain
-        - subdomain_part: the subdomain prefix (e.g., "www") or empty string
+        - filtered_mode: True if SUBDOMAIN_LIST has entries (filtered scan)
+        - subdomain_list: list of subdomain prefixes to scan
+        - full_subdomains: list of full subdomain names (prefix + root domain)
     """
     extracted = tldextract.extract(target)
     root_domain = f"{extracted.domain}.{extracted.suffix}"
 
-    is_subdomain = bool(extracted.subdomain)
+    # Determine if we're in filtered mode (SUBDOMAIN_LIST has entries)
+    subdomain_list = subdomain_list or []
+    filtered_mode = len(subdomain_list) > 0
+
+    # Build full subdomain names from prefixes
+    full_subdomains = []
+    if filtered_mode:
+        for prefix in subdomain_list:
+            # Handle both "testphp." and "testphp" formats
+            clean_prefix = prefix.rstrip('.')
+            full_subdomain = f"{clean_prefix}.{root_domain}"
+            full_subdomains.append(full_subdomain)
 
     return {
         "target": target,
         "root_domain": root_domain,
-        "is_subdomain": is_subdomain,
-        "subdomain_part": extracted.subdomain
+        "filtered_mode": filtered_mode,
+        "subdomain_list": subdomain_list,
+        "full_subdomains": full_subdomains
     }
 
 
@@ -85,8 +106,6 @@ def build_scan_type() -> str:
         modules.append("http_probe")
     if "vuln_scan" in SCAN_MODULES:
         modules.append("vuln_scan")
-    if "add_mitre" in SCAN_MODULES:
-        modules.append("add_mitre")
     if "github" in SCAN_MODULES:
         modules.append("github")
     return "_".join(modules) if modules else "custom"
@@ -104,15 +123,14 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
     Run combined WHOIS + subdomain discovery + DNS resolution.
     Produces a single unified JSON file with incremental saves.
 
-    Smart mode:
-    - If target is a root domain (e.g., "example.com"): full subdomain discovery
-    - If target is a subdomain (e.g., "www.example.com"): scan only that subdomain,
-      but perform WHOIS on the root domain
+    Scan modes based on SUBDOMAIN_LIST:
+    - Empty list []: Full subdomain discovery (discover and scan all subdomains)
+    - With entries ["testphp.", "www."]: Filtered mode (only scan specified subdomains)
 
     Args:
-        target: Target domain or subdomain (e.g., "example.com" or "www.example.com")
+        target: Root domain (e.g., "vulnweb.com", "example.com")
         anonymous: Use Tor to hide real IP
-        bruteforce: Enable Knockpy bruteforce mode (only for root domain mode)
+        bruteforce: Enable Knockpy bruteforce mode (only for full discovery mode)
         target_info: Parsed target info from parse_target()
 
     Returns:
@@ -120,41 +138,44 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
     """
     # Parse target if not provided
     if target_info is None:
-        target_info = parse_target(target)
+        target_info = parse_target(target, SUBDOMAIN_LIST)
 
-    is_subdomain_mode = target_info["is_subdomain"]
+    filtered_mode = target_info["filtered_mode"]
     root_domain = target_info["root_domain"]
+    full_subdomains = target_info["full_subdomains"]
 
     print("\n" + "=" * 70)
     print("               RedAmon - Domain Reconnaissance")
     print("=" * 70)
-    print(f"  Target: {target}")
-    if is_subdomain_mode:
-        print(f"  Mode: SUBDOMAIN ONLY (root domain: {root_domain})")
+    print(f"  Target: {root_domain}")
+    if filtered_mode:
+        print(f"  Mode: FILTERED SUBDOMAIN SCAN")
+        print(f"  Subdomains: {', '.join(full_subdomains)}")
     else:
-        print(f"  Mode: FULL DOMAIN SCAN")
+        print(f"  Mode: FULL DISCOVERY (all subdomains)")
     print(f"  Anonymous Mode: {anonymous}")
-    if not is_subdomain_mode:
+    if not filtered_mode:
         print(f"  Bruteforce Mode: {bruteforce}")
     print("=" * 70 + "\n")
 
     # Setup output file
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_file = OUTPUT_DIR / f"recon_{target}.json"
+    output_file = OUTPUT_DIR / f"recon_{root_domain}.json"
 
     # Initialize result structure with dynamic scan_type and empty modules_executed
     combined_result = {
         "metadata": {
             "scan_type": build_scan_type(),
             "scan_timestamp": datetime.now().isoformat(),
-            "target": target,
+            "target": root_domain,
             "root_domain": root_domain,
-            "is_subdomain_mode": is_subdomain_mode,
+            "filtered_mode": filtered_mode,
+            "subdomain_filter": full_subdomains if filtered_mode else [],
             "anonymous_mode": anonymous,
-            "bruteforce_mode": bruteforce if not is_subdomain_mode else False,
+            "bruteforce_mode": bruteforce if not filtered_mode else False,
             "modules_executed": []
         },
-        "domain": target,
+        "domain": root_domain,
         "whois": {},
         "subdomains": [],
         "subdomain_count": 0,
@@ -179,40 +200,42 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
     print(f"[+] Saved: {output_file}")
 
     # Step 2: Subdomain discovery & DNS resolution
-    if is_subdomain_mode:
-        # SUBDOMAIN MODE: Only scan the specific subdomain
-        print(f"\n[PHASE 2] Single Subdomain DNS Resolution")
+    if filtered_mode:
+        # FILTERED MODE: Only scan the specified subdomains from SUBDOMAIN_LIST
+        print(f"\n[PHASE 2] Filtered Subdomain DNS Resolution")
         print("-" * 40)
-        print(f"[*] Resolving DNS for: {target}")
+        print(f"[*] Resolving DNS for {len(full_subdomains)} specified subdomain(s)")
 
         # Import dns_lookup from domain_recon
         from recon.domain_recon import dns_lookup
 
-        # Resolve only the specific subdomain
-        subdomain_dns = dns_lookup(target)
+        # Resolve each specified subdomain
+        subdomains_dns = {}
+        for subdomain in full_subdomains:
+            print(f"[*] Resolving: {subdomain}")
+            subdomain_dns = dns_lookup(subdomain)
+            subdomains_dns[subdomain] = subdomain_dns
 
-        combined_result["subdomains"] = [target]
-        combined_result["subdomain_count"] = 1
+            if subdomain_dns["ips"]["ipv4"] or subdomain_dns["ips"]["ipv6"]:
+                all_ips = subdomain_dns["ips"]["ipv4"] + subdomain_dns["ips"]["ipv6"]
+                print(f"[+] {subdomain} -> {', '.join(all_ips)}")
+            else:
+                print(f"[-] {subdomain}: No DNS records found")
+
+        combined_result["subdomains"] = full_subdomains
+        combined_result["subdomain_count"] = len(full_subdomains)
         combined_result["dns"] = {
-            "domain": {},  # No root domain DNS in subdomain mode
-            "subdomains": {
-                target: subdomain_dns
-            }
+            "domain": {},  # No root domain DNS in filtered mode
+            "subdomains": subdomains_dns
         }
-
-        if subdomain_dns["ips"]["ipv4"] or subdomain_dns["ips"]["ipv6"]:
-            all_ips = subdomain_dns["ips"]["ipv4"] + subdomain_dns["ips"]["ipv6"]
-            print(f"[+] {target} -> {', '.join(all_ips)}")
-        else:
-            print(f"[-] {target}: No DNS records found")
 
         combined_result["metadata"]["modules_executed"].append("dns_resolution")
     else:
-        # FULL DOMAIN MODE: Discover all subdomains
+        # FULL DISCOVERY MODE: Discover all subdomains
         print(f"\n[PHASE 2] Subdomain Discovery & DNS Resolution")
         print("-" * 40)
         recon_result = discover_subdomains(
-            target,
+            root_domain,
             anonymous=anonymous,
             bruteforce=bruteforce,
             resolve=True,
@@ -232,11 +255,61 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
     save_recon_file(combined_result, output_file)
     print(f"[+] Saved: {output_file}")
 
+    # Update Graph DB after domain_discovery completes
+    if UPDATE_GRAPH_DB:
+        print(f"\n[PHASE 3] Graph Database Update")
+        print("-" * 40)
+        try:
+            from graph_db import Neo4jClient
+            with Neo4jClient() as graph_client:
+                if graph_client.verify_connection():
+                    stats = graph_client.update_graph_from_domain_discovery(combined_result, USER_ID, PROJECT_ID)
+                    combined_result["metadata"]["graph_db_updated"] = True
+                    combined_result["metadata"]["graph_db_stats"] = stats
+                    print(f"[+] Graph database updated successfully")
+                else:
+                    print(f"[!] Could not connect to Neo4j - skipping graph update")
+                    combined_result["metadata"]["graph_db_updated"] = False
+        except ImportError:
+            print(f"[!] Neo4j client not available - skipping graph update")
+            combined_result["metadata"]["graph_db_updated"] = False
+        except Exception as e:
+            print(f"[!] Graph DB update failed: {e}")
+            combined_result["metadata"]["graph_db_updated"] = False
+            combined_result["metadata"]["graph_db_error"] = str(e)
+
+        save_recon_file(combined_result, output_file)
+
     # Step 3: Port scanning (fast port discovery)
     if "port_scan" in SCAN_MODULES:
         combined_result = run_port_scan(combined_result, output_file=output_file)
         combined_result["metadata"]["modules_executed"].append("port_scan")
         save_recon_file(combined_result, output_file)
+
+        # Update Graph DB with port scan data
+        if UPDATE_GRAPH_DB:
+            print(f"\n[GRAPH UPDATE] Port Scan Data")
+            print("-" * 40)
+            try:
+                from graph_db import Neo4jClient
+                with Neo4jClient() as graph_client:
+                    if graph_client.verify_connection():
+                        port_stats = graph_client.update_graph_from_port_scan(combined_result, USER_ID, PROJECT_ID)
+                        combined_result["metadata"]["graph_db_port_scan_updated"] = True
+                        combined_result["metadata"]["graph_db_port_scan_stats"] = port_stats
+                        print(f"[+] Graph database updated with port scan data")
+                    else:
+                        print(f"[!] Could not connect to Neo4j - skipping port scan graph update")
+                        combined_result["metadata"]["graph_db_port_scan_updated"] = False
+            except ImportError:
+                print(f"[!] Neo4j client not available - skipping port scan graph update")
+                combined_result["metadata"]["graph_db_port_scan_updated"] = False
+            except Exception as e:
+                print(f"[!] Port scan graph update failed: {e}")
+                combined_result["metadata"]["graph_db_port_scan_updated"] = False
+                combined_result["metadata"]["graph_db_port_scan_error"] = str(e)
+
+            save_recon_file(combined_result, output_file)
 
     # Step 4: HTTP probing (technology detection, live URL discovery)
     if "http_probe" in SCAN_MODULES:
@@ -244,23 +317,71 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
         combined_result["metadata"]["modules_executed"].append("http_probe")
         save_recon_file(combined_result, output_file)
 
-    # Step 5: Vulnerability scanning (web application vulns)
+        # Update Graph DB with http probe data
+        if UPDATE_GRAPH_DB:
+            print(f"\n[GRAPH UPDATE] HTTP Probe Data")
+            print("-" * 40)
+            try:
+                from graph_db import Neo4jClient
+                with Neo4jClient() as graph_client:
+                    if graph_client.verify_connection():
+                        http_stats = graph_client.update_graph_from_http_probe(combined_result, USER_ID, PROJECT_ID)
+                        combined_result["metadata"]["graph_db_http_probe_updated"] = True
+                        combined_result["metadata"]["graph_db_http_probe_stats"] = http_stats
+                        print(f"[+] Graph database updated with http probe data")
+                    else:
+                        print(f"[!] Could not connect to Neo4j - skipping http probe graph update")
+                        combined_result["metadata"]["graph_db_http_probe_updated"] = False
+            except ImportError:
+                print(f"[!] Neo4j client not available - skipping http probe graph update")
+                combined_result["metadata"]["graph_db_http_probe_updated"] = False
+            except Exception as e:
+                print(f"[!] HTTP probe graph update failed: {e}")
+                combined_result["metadata"]["graph_db_http_probe_updated"] = False
+                combined_result["metadata"]["graph_db_http_probe_error"] = str(e)
+
+            save_recon_file(combined_result, output_file)
+
+    # Step 5: Vulnerability scanning (web application vulns) + MITRE enrichment
     if "vuln_scan" in SCAN_MODULES:
         combined_result = run_vuln_scan(combined_result, output_file=output_file)
         combined_result["metadata"]["modules_executed"].append("vuln_scan")
         save_recon_file(combined_result, output_file)
 
-    # Step 6: MITRE ATT&CK enrichment (adds ATT&CK techniques and D3FEND defenses to CVEs)
-    if "add_mitre" in SCAN_MODULES:
+        # Automatically run MITRE CWE/CAPEC enrichment after vuln_scan
         combined_result = run_mitre_enrichment(combined_result, output_file=output_file)
-        combined_result["metadata"]["modules_executed"].append("add_mitre")
         save_recon_file(combined_result, output_file)
+
+        # Update Graph DB with vuln scan data
+        if UPDATE_GRAPH_DB:
+            print(f"\n[GRAPH UPDATE] Vuln Scan Data")
+            print("-" * 40)
+            try:
+                from graph_db import Neo4jClient
+                with Neo4jClient() as graph_client:
+                    if graph_client.verify_connection():
+                        vuln_stats = graph_client.update_graph_from_vuln_scan(combined_result, USER_ID, PROJECT_ID)
+                        combined_result["metadata"]["graph_db_vuln_scan_updated"] = True
+                        combined_result["metadata"]["graph_db_vuln_scan_stats"] = vuln_stats
+                        print(f"[+] Graph database updated with vuln scan data")
+                    else:
+                        print(f"[!] Could not connect to Neo4j - skipping vuln scan graph update")
+                        combined_result["metadata"]["graph_db_vuln_scan_updated"] = False
+            except ImportError:
+                print(f"[!] Neo4j client not available - skipping vuln scan graph update")
+                combined_result["metadata"]["graph_db_vuln_scan_updated"] = False
+            except Exception as e:
+                print(f"[!] Vuln scan graph update failed: {e}")
+                combined_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                combined_result["metadata"]["graph_db_vuln_scan_error"] = str(e)
+
+            save_recon_file(combined_result, output_file)
 
     # Print summary
     print(f"\n{'=' * 70}")
     print(f"[+] DOMAIN RECON COMPLETE")
-    if is_subdomain_mode:
-        print(f"[+] Mode: Subdomain only ({target})")
+    if filtered_mode:
+        print(f"[+] Mode: Filtered ({len(full_subdomains)} subdomain(s))")
     else:
         print(f"[+] Subdomains found: {combined_result['subdomain_count']}")
     
@@ -275,14 +396,13 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
         print(f"[+] Live URLs: {http_summary.get('live_urls', 0)}")
         print(f"[+] Technologies: {http_summary.get('technology_count', 0)}")
     
-    # Vuln scan stats
+    # Vuln scan stats (includes MITRE enrichment)
     if "vuln_scan" in SCAN_MODULES and "vuln_scan" in combined_result:
         vuln_summary = combined_result["vuln_scan"].get("summary", {})
         vuln_total = combined_result["vuln_scan"].get("vulnerabilities", {}).get("total", 0)
         print(f"[+] Vuln findings: {vuln_summary.get('total_findings', 0)} ({vuln_total} vulnerabilities)")
 
-    # MITRE enrichment stats
-    if "add_mitre" in SCAN_MODULES:
+        # MITRE enrichment stats (part of vuln_scan)
         mitre_meta = combined_result.get("metadata", {}).get("mitre_enrichment", {})
         if mitre_meta:
             print(f"[+] MITRE enriched: {mitre_meta.get('total_cves_enriched', 0)}/{mitre_meta.get('total_cves_processed', 0)} CVEs")
@@ -327,9 +447,9 @@ def main():
 
     Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
 
-    Smart target detection:
-    - If TARGET_DOMAIN is a root domain (e.g., "example.com"): full subdomain discovery
-    - If TARGET_DOMAIN is a subdomain (e.g., "www.example.com"): scan only that subdomain
+    Scan modes based on SUBDOMAIN_LIST:
+    - Empty list []: Full subdomain discovery (discover and scan all subdomains)
+    - With entries ["testphp.", "www."]: Filtered mode (only scan specified subdomains)
     """
     print("\n")
     print("╔" + "═" * 68 + "╗")
@@ -340,17 +460,18 @@ def main():
 
     start_time = datetime.now()
 
-    # Parse target to determine if it's a subdomain or root domain
-    target_info = parse_target(TARGET_DOMAIN)
-    is_subdomain_mode = target_info["is_subdomain"]
+    # Parse target with SUBDOMAIN_LIST filter
+    target_info = parse_target(TARGET_DOMAIN, SUBDOMAIN_LIST)
+    filtered_mode = target_info["filtered_mode"]
+    root_domain = target_info["root_domain"]
+    full_subdomains = target_info["full_subdomains"]
 
-    print(f"[*] Target: {TARGET_DOMAIN}")
-    if is_subdomain_mode:
-        print(f"[*] Detected: SUBDOMAIN (root domain: {target_info['root_domain']})")
-        print(f"[*] Mode: Scanning only this specific subdomain")
+    print(f"[*] Target: {root_domain}")
+    if filtered_mode:
+        print(f"[*] Mode: FILTERED SUBDOMAIN SCAN")
+        print(f"[*] Subdomains: {', '.join(full_subdomains)}")
     else:
-        print(f"[*] Detected: ROOT DOMAIN")
-        print(f"[*] Mode: Full subdomain discovery")
+        print(f"[*] Mode: FULL DISCOVERY (all subdomains)")
     print()
 
     # Check anonymity status if Tor is enabled
@@ -362,8 +483,8 @@ def main():
             print("[!] Anonymity module not found, proceeding without Tor status check")
 
     # Phase 1 & 2: Domain recon (WHOIS + Subdomains + DNS) - Combined JSON
-    output_file = Path(__file__).parent / "output" / f"recon_{TARGET_DOMAIN}.json"
-    
+    output_file = Path(__file__).parent / "output" / f"recon_{root_domain}.json"
+
     if "domain_discovery" in SCAN_MODULES:
         domain_result = run_domain_recon(
             TARGET_DOMAIN,
@@ -390,6 +511,32 @@ def main():
                     domain_result["metadata"]["modules_executed"].append("port_scan")
             with open(output_file, 'w') as f:
                 json.dump(domain_result, f, indent=2)
+
+            # Update Graph DB with port scan data
+            if UPDATE_GRAPH_DB:
+                print(f"\n[GRAPH UPDATE] Port Scan Data")
+                print("-" * 40)
+                try:
+                    from graph_db import Neo4jClient
+                    with Neo4jClient() as graph_client:
+                        if graph_client.verify_connection():
+                            port_stats = graph_client.update_graph_from_port_scan(domain_result, USER_ID, PROJECT_ID)
+                            domain_result["metadata"]["graph_db_port_scan_updated"] = True
+                            domain_result["metadata"]["graph_db_port_scan_stats"] = port_stats
+                            print(f"[+] Graph database updated with port scan data")
+                        else:
+                            print(f"[!] Could not connect to Neo4j - skipping port scan graph update")
+                            domain_result["metadata"]["graph_db_port_scan_updated"] = False
+                except ImportError:
+                    print(f"[!] Neo4j client not available - skipping port scan graph update")
+                    domain_result["metadata"]["graph_db_port_scan_updated"] = False
+                except Exception as e:
+                    print(f"[!] Port scan graph update failed: {e}")
+                    domain_result["metadata"]["graph_db_port_scan_updated"] = False
+                    domain_result["metadata"]["graph_db_port_scan_error"] = str(e)
+
+                with open(output_file, 'w') as f:
+                    json.dump(domain_result, f, indent=2)
         
         # Run http_probe if in SCAN_MODULES (when domain_discovery is skipped)
         if "http_probe" in SCAN_MODULES:
@@ -399,8 +546,35 @@ def main():
                     domain_result["metadata"]["modules_executed"].append("http_probe")
             with open(output_file, 'w') as f:
                 json.dump(domain_result, f, indent=2)
+
+            # Update Graph DB with http probe data
+            if UPDATE_GRAPH_DB:
+                print(f"\n[GRAPH UPDATE] HTTP Probe Data")
+                print("-" * 40)
+                try:
+                    from graph_db import Neo4jClient
+                    with Neo4jClient() as graph_client:
+                        if graph_client.verify_connection():
+                            http_stats = graph_client.update_graph_from_http_probe(domain_result, USER_ID, PROJECT_ID)
+                            domain_result["metadata"]["graph_db_http_probe_updated"] = True
+                            domain_result["metadata"]["graph_db_http_probe_stats"] = http_stats
+                            print(f"[+] Graph database updated with http probe data")
+                        else:
+                            print(f"[!] Could not connect to Neo4j - skipping http probe graph update")
+                            domain_result["metadata"]["graph_db_http_probe_updated"] = False
+                except ImportError:
+                    print(f"[!] Neo4j client not available - skipping http probe graph update")
+                    domain_result["metadata"]["graph_db_http_probe_updated"] = False
+                except Exception as e:
+                    print(f"[!] HTTP probe graph update failed: {e}")
+                    domain_result["metadata"]["graph_db_http_probe_updated"] = False
+                    domain_result["metadata"]["graph_db_http_probe_error"] = str(e)
+
+                with open(output_file, 'w') as f:
+                    json.dump(domain_result, f, indent=2)
         
         # Run vuln_scan if in SCAN_MODULES (when domain_discovery is skipped)
+        # vuln_scan automatically includes MITRE CWE/CAPEC enrichment
         if "vuln_scan" in SCAN_MODULES:
             domain_result = run_vuln_scan(domain_result, output_file=output_file)
             if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
@@ -409,14 +583,36 @@ def main():
             with open(output_file, 'w') as f:
                 json.dump(domain_result, f, indent=2)
 
-        # Run add_mitre if in SCAN_MODULES (when domain_discovery is skipped)
-        if "add_mitre" in SCAN_MODULES:
+            # Automatically run MITRE CWE/CAPEC enrichment after vuln_scan
             domain_result = run_mitre_enrichment(domain_result, output_file=output_file)
-            if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
-                if "add_mitre" not in domain_result["metadata"]["modules_executed"]:
-                    domain_result["metadata"]["modules_executed"].append("add_mitre")
             with open(output_file, 'w') as f:
                 json.dump(domain_result, f, indent=2)
+
+            # Update Graph DB with vuln scan data
+            if UPDATE_GRAPH_DB:
+                print(f"\n[GRAPH UPDATE] Vuln Scan Data")
+                print("-" * 40)
+                try:
+                    from graph_db import Neo4jClient
+                    with Neo4jClient() as graph_client:
+                        if graph_client.verify_connection():
+                            vuln_stats = graph_client.update_graph_from_vuln_scan(domain_result, USER_ID, PROJECT_ID)
+                            domain_result["metadata"]["graph_db_vuln_scan_updated"] = True
+                            domain_result["metadata"]["graph_db_vuln_scan_stats"] = vuln_stats
+                            print(f"[+] Graph database updated with vuln scan data")
+                        else:
+                            print(f"[!] Could not connect to Neo4j - skipping vuln scan graph update")
+                            domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                except ImportError:
+                    print(f"[!] Neo4j client not available - skipping vuln scan graph update")
+                    domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                except Exception as e:
+                    print(f"[!] Vuln scan graph update failed: {e}")
+                    domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                    domain_result["metadata"]["graph_db_vuln_scan_error"] = str(e)
+
+                with open(output_file, 'w') as f:
+                    json.dump(domain_result, f, indent=2)
 
     # Phase 3: GitHub secret hunt - Separate JSON (if enabled)
     github_findings = []
@@ -434,12 +630,12 @@ def main():
     print("║" + " " * 22 + "RECON PIPELINE COMPLETE" + " " * 23 + "║")
     print("╠" + "═" * 68 + "╣")
     print(f"║  Duration: {duration:.2f} seconds" + " " * (55 - len(f"{duration:.2f}")) + "║")
-    print(f"║  Target: {TARGET_DOMAIN}" + " " * (58 - len(TARGET_DOMAIN)) + "║")
-    if is_subdomain_mode:
-        print(f"║  Mode: Subdomain only" + " " * 46 + "║")
-        print(f"║  Root domain: {target_info['root_domain']}" + " " * (53 - len(target_info['root_domain'])) + "║")
+    print(f"║  Target: {root_domain}" + " " * (58 - len(root_domain)) + "║")
+    if filtered_mode:
+        filter_info = f"Filtered ({len(full_subdomains)} subdomain(s))"
+        print(f"║  Mode: {filter_info}" + " " * (60 - len(filter_info)) + "║")
     else:
-        print(f"║  Mode: Full domain scan" + " " * 44 + "║")
+        print(f"║  Mode: Full discovery" + " " * 46 + "║")
         print(f"║  Subdomains found: {domain_result.get('subdomain_count', 0)}" + " " * (48 - len(str(domain_result.get('subdomain_count', 0)))) + "║")
 
     # Port scan stats
@@ -462,7 +658,7 @@ def main():
     elif "http_probe" not in SCAN_MODULES:
         print(f"║  HTTP probe: SKIPPED" + " " * 47 + "║")
 
-    # Vuln scan stats
+    # Vuln scan stats (includes MITRE enrichment)
     if "vuln_scan" in SCAN_MODULES and "vuln_scan" in domain_result:
         vuln_summary = domain_result["vuln_scan"].get("summary", {})
         total_findings = vuln_summary.get("total_findings", 0)
@@ -472,21 +668,16 @@ def main():
         if crit > 0 or high > 0:
             vuln_info += f" ({crit} critical, {high} high)"
         print(f"║  Vuln Scan: {vuln_info}" + " " * (55 - len(vuln_info)) + "║")
-    elif "vuln_scan" not in SCAN_MODULES:
-        print(f"║  Vuln scan: SKIPPED" + " " * 48 + "║")
 
-    # MITRE enrichment stats
-    if "add_mitre" in SCAN_MODULES:
+        # MITRE enrichment stats (part of vuln_scan)
         mitre_meta = domain_result.get("metadata", {}).get("mitre_enrichment", {})
         if mitre_meta:
             enriched = mitre_meta.get('total_cves_enriched', 0)
             total = mitre_meta.get('total_cves_processed', 0)
             mitre_info = f"{enriched}/{total} CVEs enriched"
-            print(f"║  MITRE ATT&CK: {mitre_info}" + " " * (52 - len(mitre_info)) + "║")
-        else:
-            print(f"║  MITRE ATT&CK: No CVEs to enrich" + " " * 34 + "║")
-    elif "add_mitre" not in SCAN_MODULES:
-        print(f"║  MITRE ATT&CK: SKIPPED" + " " * 45 + "║")
+            print(f"║  MITRE CWE/CAPEC: {mitre_info}" + " " * (49 - len(mitre_info)) + "║")
+    elif "vuln_scan" not in SCAN_MODULES:
+        print(f"║  Vuln scan: SKIPPED" + " " * 48 + "║")
 
     github_status = str(len(github_findings)) if "github" in SCAN_MODULES else "SKIPPED"
     print(f"║  GitHub findings: {github_status}" + " " * (49 - len(github_status)) + "║")
@@ -500,15 +691,13 @@ def main():
     if "http_probe" in SCAN_MODULES:
         suffixes.append("HTTPProbe")
     if "vuln_scan" in SCAN_MODULES:
-        suffixes.append("VulnScan")
-    if "add_mitre" in SCAN_MODULES:
-        suffixes.append("MITRE")
+        suffixes.append("VulnScan+MITRE")
     all_suffixes = " + " + " + ".join(suffixes) if suffixes else ""
     
-    if is_subdomain_mode:
-        print(f"║    • recon_{TARGET_DOMAIN}.json (WHOIS + DNS{all_suffixes})" + " " * max(0, 18 - len(TARGET_DOMAIN) - len(all_suffixes)) + "║")
+    if filtered_mode:
+        print(f"║    • recon_{root_domain}.json (WHOIS + DNS{all_suffixes})" + " " * max(0, 18 - len(root_domain) - len(all_suffixes)) + "║")
     else:
-        print(f"║    • recon_{TARGET_DOMAIN}.json (WHOIS + DNS + Subs{all_suffixes})" + " " * max(0, 10 - len(TARGET_DOMAIN) - len(all_suffixes)) + "║")
+        print(f"║    • recon_{root_domain}.json (WHOIS + DNS + Subs{all_suffixes})" + " " * max(0, 10 - len(root_domain) - len(all_suffixes)) + "║")
     if "github" in SCAN_MODULES:
         print(f"║    • github_secrets_{GITHUB_TARGET_ORG}.json" + " " * max(0, 24 - len(GITHUB_TARGET_ORG)) + "║")
     print("╚" + "═" * 68 + "╝")

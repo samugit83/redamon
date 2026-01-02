@@ -267,11 +267,14 @@ def run_katana_crawler(target_urls: List[str], use_proxy: bool = False) -> List[
         cmd = [
             "docker", "run", "--rm",
         ]
-        
+
         # Add network host mode for Tor proxy access
         if use_proxy:
             cmd.extend(["--network", "host"])
-        
+
+        # Mount tmp directory for Chrome/headless browser (needed for JS crawling)
+        cmd.extend(["-v", "/tmp:/tmp"])
+
         cmd.extend([
             KATANA_DOCKER_IMAGE,
             "-u", base_url,
@@ -1096,14 +1099,21 @@ def run_cve_lookup(recon_data: dict) -> Dict:
         if CVE_LOOKUP_SOURCE == "nvd" and i < len(tech_to_lookup):
             time.sleep(6)
     
-    # Deduplicate CVEs
-    unique_cves = {}
-    for cve in all_cves:
-        cve_id = cve["id"]
-        if cve_id not in unique_cves or (cve.get("cvss") or 0) > (unique_cves[cve_id].get("cvss") or 0):
-            unique_cves[cve_id] = cve
-    
-    # Build result
+    # Count unique CVEs across all technologies (for summary stats only)
+    unique_cve_ids = set()
+    for tech_data in cve_results.values():
+        for cve in tech_data.get("cves", []):
+            unique_cve_ids.add(cve["id"])
+
+    # Count severity distribution
+    severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for tech_data in cve_results.values():
+        for cve in tech_data.get("cves", []):
+            sev = cve.get("severity", "").upper()
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+
+    # Build result (no all_cves - CVEs are stored inside by_technology)
     result = {
         "technology_cves": {
             "lookup_timestamp": datetime.now().isoformat(),
@@ -1111,13 +1121,12 @@ def run_cve_lookup(recon_data: dict) -> Dict:
             "technologies_checked": len(tech_to_lookup),
             "technologies_with_cves": len(cve_results),
             "by_technology": cve_results,
-            "all_cves": sorted(unique_cves.values(), key=lambda x: x.get("cvss") or 0, reverse=True),
             "summary": {
-                "total_cves": len(unique_cves),
-                "critical": len([c for c in unique_cves.values() if c.get("severity") == "CRITICAL"]),
-                "high": len([c for c in unique_cves.values() if c.get("severity") == "HIGH"]),
-                "medium": len([c for c in unique_cves.values() if c.get("severity") == "MEDIUM"]),
-                "low": len([c for c in unique_cves.values() if c.get("severity") == "LOW"]),
+                "total_unique_cves": len(unique_cve_ids),
+                "critical": severity_counts["CRITICAL"],
+                "high": severity_counts["HIGH"],
+                "medium": severity_counts["MEDIUM"],
+                "low": severity_counts["LOW"],
             }
         }
     }
@@ -1125,7 +1134,7 @@ def run_cve_lookup(recon_data: dict) -> Dict:
     # Print summary
     summary = result["technology_cves"]["summary"]
     print(f"\n[+] CVE LOOKUP SUMMARY:")
-    print(f"    Total unique CVEs: {summary['total_cves']}")
+    print(f"    Total unique CVEs: {summary['total_unique_cves']}")
     if summary['critical'] > 0:
         print(f"    🔴 CRITICAL: {summary['critical']}")
     if summary['high'] > 0:

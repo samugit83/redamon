@@ -159,13 +159,13 @@ services:
 
   python-scanner:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: gvm_scan/Dockerfile
     container_name: redamon-vuln-scanner
     volumes:
       - gvmd_socket:/run/gvmd:ro
-      - ./recon/output:/app/recon/output:ro
-      - ./gvm_scan/output:/app/gvm_scan/output
+      - ../recon/output:/app/recon/output:ro
+      - ./output:/app/gvm_scan/output
     depends_on:
       - gvmd
       - ospd-openvas

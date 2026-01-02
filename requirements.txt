@@ -7,3 +7,4 @@ python-dotenv>=1.0.0
 tldextract>=5.1.0
 python-Wappalyzer>=0.3.0
 setuptools>=65.0.0  # Required for python-Wappalyzer (pkg_resources)
+neo4j>=5.0.0  # Neo4j graph database driver

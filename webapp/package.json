@@ -1,0 +1,36 @@
+{
+  "name": "redamon-webapp",
+  "version": "1.0.0",
+  "description": "RedAmon Web Application - Security Reconnaissance Dashboard",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.0",
+    "d3-force": "^3.0.0",
+    "neo4j-driver": "^6.0.0",
+    "next": "^16.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-force-graph-2d": "^1.26.0",
+    "react-force-graph-3d": "^1.25.0",
+    "three": "^0.170.0",
+    "three-spritetext": "^1.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "^16.1.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

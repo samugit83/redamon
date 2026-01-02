@@ -97,7 +97,8 @@ The entry point for all queries. Contains project/user ownership.
     scan_timestamp: datetime,               // When scan was performed
     scan_type: "domain_discovery_port_scan_http_probe_vuln_scan",
     target: "testphp.vulnweb.com",          // Original target (may differ from root)
-    is_subdomain_mode: true,                // Was target a subdomain?
+    filtered_mode: true,                    // Was SUBDOMAIN_LIST filter used?
+    subdomain_filter: ["testphp."],         // Subdomain prefixes from SUBDOMAIN_LIST
     modules_executed: ["whois", "dns_resolution", "port_scan", "http_probe", "vuln_scan"],
     
     // Scan modes (from metadata)
@@ -233,14 +234,15 @@ Services running on ports.
 
 ---
 
-### 6. URL
-Web endpoints discovered through HTTP probing.
+### 6. BaseURL
+Root/base web endpoints discovered through HTTP probing. These represent the entry points discovered by httpx.
+Specific paths and endpoints discovered during vulnerability scanning are stored in separate Endpoint nodes.
 
 ```cypher
-(:URL {
-    url: "http://testphp.vulnweb.com",     // Full URL (UNIQUE)
+(:BaseURL {
+    url: "http://testphp.vulnweb.com",     // Full base URL (UNIQUE)
     scheme: "http",                         // http or https
-    path: "/",                              // URL path
+    host: "testphp.vulnweb.com",            // Hostname
     status_code: 200,
     content_type: "text/html",
     content_length: 2295,
@@ -248,70 +250,75 @@ Web endpoints discovered through HTTP probing.
     server: "nginx/1.19.0",
     is_live: true,
     response_time_ms: null,                 // Response time in milliseconds
-    
+
     // Discovery source
-    source: "http_probe",                   // http_probe, katana_crawl, dast_scan, gvm_crawl
-    has_parameters: false,                  // Does URL have query params?
-    
+    source: "http_probe",                   // http_probe
+
     // Network info
     resolved_ip: "44.228.249.3",
     cname: null,                            // CNAME if any
     cdn: "aws",
     is_cdn: true,
     asn: null,
-    
+
     // Fingerprints
     favicon_hash: "-1187092235",
     body_sha256: "a42521a54c7bcc2dbc2f7010dd22c17c566f3bda167e662c6086c94bf9ebfb62",
     header_sha256: "fbbea705962aa40edced75d2fb430f4a8295b7ab79345a272d1376dd150460cd",
-    
+
     // Response metadata
     word_count: 11,
-    line_count: 6,
-    
-    // HTTP Methods (from GVM Allowed Methods Enumeration)
-    allowed_methods: ["GET", "HEAD", "POST"],  // Allowed HTTP methods
-    
-    // Script capabilities (from GVM)
-    supports_php: true,
-    supports_asp: false
+    line_count: 6
 })
 ```
 
 **Constraints:**
 ```cypher
-CREATE CONSTRAINT url_unique IF NOT EXISTS
-FOR (u:URL) REQUIRE u.url IS UNIQUE;
+CREATE CONSTRAINT baseurl_unique IF NOT EXISTS
+FOR (u:BaseURL) REQUIRE u.url IS UNIQUE;
 
-CREATE INDEX url_status IF NOT EXISTS
-FOR (u:URL) ON (u.status_code);
+CREATE INDEX baseurl_status IF NOT EXISTS
+FOR (u:BaseURL) ON (u.status_code);
 ```
 
 ---
 
 ### 7. Endpoint
-Specific web application endpoints (paths with parameters).
+Specific web application endpoints (paths) discovered through Katana crawling or vulnerability scanning.
+These are linked to their parent BaseURL and contain discovered parameters.
 
 ```cypher
 (:Endpoint {
     path: "/artists.php",                   // Path without query string
     method: "GET",                          // HTTP method
-    has_parameters: true
+    baseurl: "http://testphp.vulnweb.com",  // Parent base URL
+    has_parameters: true,                   // Does this endpoint have parameters?
+    full_url: "http://testphp.vulnweb.com/artists.php",  // Full URL without query params
+    source: "katana_crawl"                  // katana_crawl, vuln_scan
 })
 ```
 
 ---
 
 ### 8. Parameter
-URL parameters that represent potential attack vectors.
+URL parameters that represent potential attack vectors. These are discovered through Katana crawling
+and marked as injectable when vulnerabilities are found through DAST scanning.
 
 ```cypher
 (:Parameter {
     name: "artist",                         // Parameter name
     position: "query",                      // query, body, header, path
+    endpoint_path: "/artists.php",          // Parent endpoint path
+    baseurl: "http://testphp.vulnweb.com",  // Parent base URL
     sample_value: "1",                      // Example value seen
-    is_injectable: true                     // Marked if vuln found
+    is_injectable: true                     // Marked true if vuln found affecting this param
 })
+```
+
+**Indexes:**
+```cypher
+CREATE INDEX param_injectable IF NOT EXISTS
+FOR (p:Parameter) ON (p.is_injectable);
 ```
 
 ---
@@ -457,7 +464,69 @@ FOR (c:CVE) ON (c.cvss);
 
 ---
 
-### 12. DNSRecord
+### 12. MitreData
+CWE (Common Weakness Enumeration) data from MITRE enrichment. Each CVE can have a hierarchical chain
+of CWE nodes representing the weakness hierarchy from root to leaf CWE.
+
+```cypher
+(:MitreData {
+    id: "CVE-2021-3618-CWE-295",           // Unique ID (CVE + CWE combination)
+    cve_id: "CVE-2021-3618",               // Parent CVE ID
+    cwe_id: "CWE-295",                      // CWE identifier
+    cwe_name: "Improper Certificate Validation",
+    cwe_description: "The software does not validate, or incorrectly validates...",
+    cwe_url: "https://cwe.mitre.org/data/definitions/295.html",
+    abstraction: "Base",                    // Pillar, Class, Base, Variant
+    is_leaf: true,                          // Is this the most specific CWE?
+    platforms: ["Not Language-Specific"]    // Applicable platforms
+})
+```
+
+**Constraints:**
+```cypher
+CREATE CONSTRAINT mitredata_unique IF NOT EXISTS
+FOR (m:MitreData) REQUIRE m.id IS UNIQUE;
+
+CREATE INDEX idx_mitredata_tenant IF NOT EXISTS
+FOR (m:MitreData) ON (m.user_id, m.project_id);
+```
+
+---
+
+### 13. Capec
+CAPEC (Common Attack Pattern Enumeration and Classification) nodes linked to CWE weaknesses.
+Only created when a CWE has non-empty `related_capec` data.
+
+```cypher
+(:Capec {
+    capec_id: "CAPEC-94",                  // CAPEC identifier (UNIQUE)
+    numeric_id: 94,                         // Numeric ID
+    name: "Man in the Middle Attack",
+    description: "This type of attack targets the communication between two parties...",
+    url: "https://capec.mitre.org/data/definitions/94.html",
+    likelihood: "Medium",                   // High, Medium, Low
+    severity: "Very High",                  // Very High, High, Medium, Low, Very Low
+    prerequisites: "There are two components communicating with each other...",
+    execution_flow: "[JSON stringified attack phases]",  // Attack execution steps
+    related_cwes: ["CWE-295", "CWE-300"]   // Related CWE IDs
+})
+```
+
+**Constraints:**
+```cypher
+CREATE CONSTRAINT capec_unique IF NOT EXISTS
+FOR (cap:Capec) REQUIRE cap.capec_id IS UNIQUE;
+
+CREATE INDEX capec_id IF NOT EXISTS
+FOR (c:Capec) ON (c.capec_id);
+
+CREATE INDEX idx_capec_tenant IF NOT EXISTS
+FOR (c:Capec) ON (c.user_id, c.project_id);
+```
+
+---
+
+### 14. DNSRecord
 DNS records for subdomains.
 
 ```cypher
@@ -470,7 +539,7 @@ DNS records for subdomains.
 
 ---
 
-### 13. Header
+### 15. Header
 HTTP response headers (all captured headers).
 
 ```cypher
@@ -516,9 +585,6 @@ HTTP response headers (all captured headers).
 
 // Subdomain has DNS records
 (Subdomain)-[:HAS_DNS_RECORD]->(DNSRecord)
-
-// Subdomain has URLs (web presence)
-(Subdomain)-[:HAS_URL]->(URL)
 ```
 
 ---
@@ -531,28 +597,30 @@ HTTP response headers (all captured headers).
 
 // Port runs a service
 (Port)-[:RUNS_SERVICE]->(Service)
+
+// Service serves URLs (web endpoints)
+(Service)-[:SERVES_URL]->(URL)
 ```
 
 ---
 
-### URL Relationships
+### BaseURL Relationships
 
 ```cypher
-// URL has endpoints (paths)
-(URL)-[:HAS_ENDPOINT]->(Endpoint)
+// BaseURL has endpoints (discovered paths from vuln_scan)
+(BaseURL)-[:HAS_ENDPOINT]->(Endpoint)
 
 // Endpoint has parameters
 (Endpoint)-[:HAS_PARAMETER]->(Parameter)
 
-// URL uses technologies
-(URL)-[:USES_TECHNOLOGY {confidence: 100}]->(Technology)
+// BaseURL uses technologies (detected by httpx/wappalyzer)
+(BaseURL)-[:USES_TECHNOLOGY {confidence: 100, detected_by: "httpx"}]->(Technology)
 
-// URL has HTTP headers
-(URL)-[:HAS_HEADER]->(Header)
+// BaseURL has HTTP headers
+(BaseURL)-[:HAS_HEADER]->(Header)
 
-// URL has vulnerability
-(URL)-[:HAS_VULNERABILITY]->(Vulnerability)
-
+// BaseURL has vulnerability (DAST findings)
+(BaseURL)-[:HAS_VULNERABILITY]->(Vulnerability)
 ```
 
 ---
@@ -560,16 +628,14 @@ HTTP response headers (all captured headers).
 ### Vulnerability Relationships
 
 ```cypher
-// Vulnerability affects parameter
+// Vulnerability affects parameter (the injectable parameter that was fuzzed)
 (Vulnerability)-[:AFFECTS_PARAMETER]->(Parameter)
 
-// Vulnerability found at endpoint
+// Vulnerability found at endpoint (the path where the vulnerability was discovered)
 (Vulnerability)-[:FOUND_AT]->(Endpoint)
 
 // Vulnerability associated with CVE (if matched)
 (Vulnerability)-[:ASSOCIATED_CVE]->(CVE)
-
-// Vulnerability uses template
 ```
 
 ---
@@ -582,6 +648,23 @@ HTTP response headers (all captured headers).
 
 // Technology runs on service
 (Service)-[:POWERED_BY]->(Technology)
+```
+
+---
+
+### CVE/MITRE Relationships
+
+```cypher
+// CVE has MITRE CWE data (root of CWE hierarchy)
+(CVE)-[:HAS_MITRE_DATA]->(MitreData)
+
+// MitreData (CWE) has child CWE in hierarchy
+// Example: CWE-707 (Improper Neutralization) -> CWE-89 (SQL Injection)
+(MitreData)-[:HAS_CHILD_CWE]->(MitreData)
+
+// MitreData (CWE) links to related CAPEC attack patterns
+// Only created when CWE has non-empty related_capec
+(MitreData)-[:RELATED_CAPEC]->(Capec)
 ```
 
 ---
@@ -599,45 +682,56 @@ HTTP response headers (all captured headers).
                                            │
                     ┌──────────────────────▼──────────────────────┐
                     │                 Subdomain                    │
-                    └──────┬─────────────┬─────────────┬──────────┘
-                           │             │             │
-                    HAS_DNS_RECORD  RESOLVES_TO   HAS_URL
-                           │             │             │
-                    ┌──────▼──────┐ ┌────▼────┐  ┌─────▼─────┐
-                    │ DNSRecord   │ │   IP    │  │    URL    │──────┐
-                    └─────────────┘ └────┬────┘  └─────┬─────┘      │
-                                         │             │        HAS_HEADER
-                                    HAS_PORT      ┌────┴────┐       │
-                                         │        │         │   ┌───▼───┐
-                                    ┌────▼────┐   │    HAS_ENDPOINT │Header │
-                                    │  Port   │   │         │   └───────┘
-                                    └────┬────┘   │    ┌────▼────┐
-                                         │        │    │ Endpoint│
-                                   RUNS_SERVICE   │    └────┬────┘
-                                         │        │         │
-                                    ┌────▼────┐   │    HAS_PARAMETER
-                                    │ Service │   │         │
-                                    └────┬────┘   │    ┌────▼─────┐
-                                         │        │    │Parameter │
-                                    POWERED_BY    │    └────┬─────┘
-                                         │        │         │
-                                         │   USES_TECHNOLOGY │
-                                         │        │    AFFECTS_PARAMETER
-                                         │        │         │
-                                    ┌────▼────────▼────┐    │
-                                    │   Technology     │    │
-                                    └────────┬────────┘    │
-                                             │             │
-                                      HAS_KNOWN_CVE       │
-                                             │             │
-                                    ┌────────▼────────┐   │
-                                    │      CVE        │   │
-                                    └────────▲────────┘   │
-                                             │            │
-                                      ASSOCIATED_CVE     │
-                                             │            │
-                                    ┌────────┴────────────▼───────┐
+                    └──────┬─────────────────────────┬────────────┘
+                           │                         │
+                    HAS_DNS_RECORD              RESOLVES_TO
+                           │                         │
+                    ┌──────▼──────┐            ┌─────▼─────┐
+                    │ DNSRecord   │            │    IP     │
+                    └─────────────┘            └─────┬─────┘
+                                                     │
+                                                HAS_PORT
+                                                     │
+                                               ┌─────▼─────┐
+                                               │   Port    │
+                                               └─────┬─────┘
+                                                     │
+                                               RUNS_SERVICE
+                                                     │
+                                               ┌─────▼─────┐
+                                               │  Service  │
+                                               └──┬─────┬──┘
+                                                  │     │
+                                            SERVES_URL  POWERED_BY
+                                                  │     │
+                                            ┌─────▼───┐ │
+                                            │ BaseURL │─┼─────────────┐
+                                            └─┬───┬───┘ │             │
+                                              │   │     │         HAS_HEADER
+                                     HAS_ENDPOINT │     │             │
+                                              │   │ USES_TECHNOLOGY   │
+                                        ┌─────▼──┐│     │         ┌───▼───┐
+                                        │Endpoint││     │         │Header │
+                                        └──┬─────┘│     │         └───────┘
+                                           │      │     │
+                                    HAS_PARAMETER │     │
+                                           │      │     │
+                                     ┌─────▼────┐ │ ┌───▼──────────┐
+                                     │Parameter │ │ │  Technology  │
+                                     └─────┬────┘ │ └───────┬──────┘
+                                           │      │         │
+                                 AFFECTS_PARAMETER│   HAS_KNOWN_CVE
+                                           │      │         │
+                                           │      │  ┌──────▼──────┐
+                                           │      │  │     CVE     │
+                                           │      │  └──────▲──────┘
+                                           │      │         │
+                                           │      │   ASSOCIATED_CVE
+                                           │      │         │
+                                    ┌──────▼──────▼─────────┴──────┐
                                     │       Vulnerability          │
+                                    │    (DAST findings from       │
+                                    │     vuln_scan/Nuclei)        │
                                     └──────────────────────────────┘
 ```
 
@@ -656,30 +750,39 @@ RETURN d, path
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s:Subdomain)
-      -[:HAS_URL]->(u:URL)
+      -[:RESOLVES_TO]->(ip:IP)
+      -[:HAS_PORT]->(p:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_ENDPOINT]->(e:Endpoint)
-      -[:HAS_PARAMETER]->(p:Parameter)
-RETURN s.name AS host, e.path AS endpoint, p.name AS parameter
+      -[:HAS_PARAMETER]->(param:Parameter)
+RETURN s.name AS host, svc.name AS service, p.number AS port, e.path AS endpoint, param.name AS parameter
 ```
 
 ### 3. Find All Critical Vulnerabilities
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_VULNERABILITY]->(v:Vulnerability {severity: "critical"})
-RETURN s.name AS host, u.url AS url, v.name AS vulnerability, v.matched_at AS proof
+RETURN s.name AS host, svc.name AS service, u.url AS url, v.name AS vulnerability, v.matched_at AS proof
 ```
 
 ### 4. Technology to CVE Mapping (Risk Assessment)
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(port:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:USES_TECHNOLOGY]->(t:Technology)
       -[:HAS_KNOWN_CVE]->(c:CVE)
 WHERE c.cvss >= 7.0
-RETURN t.name AS technology, t.version AS version, 
+RETURN t.name AS technology, t.version AS version, svc.name AS service, port.number AS port,
        collect({cve: c.id, cvss: c.cvss, severity: c.severity}) AS cves
 ORDER BY max(c.cvss) DESC
 ```
@@ -688,12 +791,15 @@ ORDER BY max(c.cvss) DESC
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(port:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_VULNERABILITY]->(v:Vulnerability)
 WHERE v.category = "sqli"
 MATCH (u)-[:USES_TECHNOLOGY]->(t:Technology)
 WHERE t.name IN ["MySQL", "PostgreSQL", "MSSQL", "Oracle"]
-RETURN s.name AS host, v.matched_at AS injection_point, 
+RETURN s.name AS host, svc.name AS service, port.number AS port, v.matched_at AS injection_point,
        v.extracted_results AS evidence, t.name AS database
 ```
 
@@ -703,9 +809,9 @@ MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s:Subdomain {name: $hostname})
 OPTIONAL MATCH (s)-[:RESOLVES_TO]->(ip:IP)
 OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)-[:RUNS_SERVICE]->(svc:Service)
-OPTIONAL MATCH (s)-[:HAS_URL]->(u:URL)-[:USES_TECHNOLOGY]->(tech:Technology)
+OPTIONAL MATCH (svc)-[:SERVES_URL]->(u:BaseURL)-[:USES_TECHNOLOGY]->(tech:Technology)
 OPTIONAL MATCH (u)-[:HAS_VULNERABILITY]->(vuln:Vulnerability)
-RETURN s, collect(DISTINCT ip) AS ips, 
+RETURN s, collect(DISTINCT ip) AS ips,
        collect(DISTINCT {port: port.number, service: svc.name}) AS services,
        collect(DISTINCT tech.name) AS technologies,
        collect(DISTINCT {name: vuln.name, severity: vuln.severity}) AS vulnerabilities
@@ -714,8 +820,13 @@ RETURN s, collect(DISTINCT ip) AS ips,
 ### 7. Vulnerability Summary by Category
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
-      -[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_VULNERABILITY]->(v:Vulnerability)
-RETURN v.category AS category, 
+      -[:HAS_SUBDOMAIN]->()
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(:Port)
+      -[:RUNS_SERVICE]->(:Service)
+      -[:SERVES_URL]->(:URL)
+      -[:HAS_VULNERABILITY]->(v:Vulnerability)
+RETURN v.category AS category,
        count(v) AS count,
        collect(DISTINCT v.severity) AS severities
 ORDER BY count DESC
@@ -724,7 +835,12 @@ ORDER BY count DESC
 ### 8. Most Common Vulnerability Types
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
-      -[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_VULNERABILITY]->(v:Vulnerability)
+      -[:HAS_SUBDOMAIN]->()
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(:Port)
+      -[:RUNS_SERVICE]->(:Service)
+      -[:SERVES_URL]->(:URL)
+      -[:HAS_VULNERABILITY]->(v:Vulnerability)
 RETURN v.template_id, v.name, v.severity, count(v) AS findings_count
 ORDER BY findings_count DESC
 LIMIT 10
@@ -734,11 +850,14 @@ LIMIT 10
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(port:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_ENDPOINT]->(e)
       -[:HAS_PARAMETER]->(p:Parameter {is_injectable: true})
 OPTIONAL MATCH (v:Vulnerability)-[:AFFECTS_PARAMETER]->(p)
-RETURN s.name AS host, e.path AS endpoint, p.name AS parameter,
+RETURN s.name AS host, svc.name AS service, port.number AS port, e.path AS endpoint, p.name AS parameter,
        p.position AS position, collect(v.category) AS vuln_types
 ```
 
@@ -746,10 +865,13 @@ RETURN s.name AS host, e.path AS endpoint, p.name AS parameter,
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_HEADER]->(h:Header)
 WHERE h.is_security_header = true OR h.reveals_technology = true
-RETURN s.name AS host, u.url AS url,
+RETURN s.name AS host, svc.name AS service, u.url AS url,
        collect({header: h.name, value: h.value, security: h.is_security_header}) AS headers
 ```
 
@@ -764,14 +886,16 @@ RETURN s.name AS host, u.url AS url,
 | IP | address, version, is_cdn, cdn_name, asn | ✅ Unique |
 | Port | number, protocol, state | |
 | Service | name, product, version, banner | |
-| URL | url, status_code, is_live, source, has_parameters, body_sha256 | ✅ Unique |
-| Endpoint | path, method, has_parameters | |
-| Parameter | name, position, is_injectable, sample_value | |
+| BaseURL | url, scheme, host, status_code, is_live, body_sha256 | ✅ Unique |
+| Endpoint | path, method, baseurl, has_parameters, source | |
+| Parameter | name, position, endpoint_path, baseurl, is_injectable, sample_value | ✅ is_injectable |
 | Technology | name, version, categories, confidence, product, known_cve_count | ✅ name, ✅ name+version, ✅ product |
-| Vulnerability | id, template_id, severity, category, matched_at, fuzzing_*, raw_request, raw_response, matched_ip | ✅ severity, ✅ category |
+| Vulnerability | id, template_id, severity, category, matched_at, fuzzing_*, raw_request, raw_response, matched_ip | ✅ Unique, ✅ severity, ✅ category, ✅ template_id |
 | CVE | id, cvss, severity, description, published | ✅ Unique, ✅ severity, ✅ cvss |
+| MitreData | id, cve_id, cwe_id, cwe_name, cwe_description, abstraction, is_leaf | ✅ Unique |
+| Capec | capec_id, name, description, likelihood, severity, prerequisites | ✅ Unique |
 | DNSRecord | type, value, ttl | |
-| Header | name, value, is_security_header | |
+| Header | name, value, baseurl, is_security_header | |
 | **GVM Nodes** | | |
 | GVMScan | scan_id, task_id, scan_type, target_ip, target_hostname, status | ✅ Unique, ✅ scan_type |
 | GVMVulnerability | result_id, nvt_oid, name, severity_class, host_ip, port, references | ✅ oid, ✅ severity, ✅ family |
@@ -799,11 +923,20 @@ FOR (s:Subdomain) REQUIRE s.name IS UNIQUE;
 CREATE CONSTRAINT ip_unique IF NOT EXISTS
 FOR (i:IP) REQUIRE i.address IS UNIQUE;
 
-CREATE CONSTRAINT url_unique IF NOT EXISTS
-FOR (u:URL) REQUIRE u.url IS UNIQUE;
+CREATE CONSTRAINT baseurl_unique IF NOT EXISTS
+FOR (u:BaseURL) REQUIRE u.url IS UNIQUE;
+
+CREATE CONSTRAINT vulnerability_unique IF NOT EXISTS
+FOR (v:Vulnerability) REQUIRE v.id IS UNIQUE;
 
 CREATE CONSTRAINT cve_unique IF NOT EXISTS
 FOR (c:CVE) REQUIRE c.id IS UNIQUE;
+
+CREATE CONSTRAINT mitredata_unique IF NOT EXISTS
+FOR (m:MitreData) REQUIRE m.id IS UNIQUE;
+
+CREATE CONSTRAINT capec_unique IF NOT EXISTS
+FOR (cap:Capec) REQUIRE cap.capec_id IS UNIQUE;
 
 // =============================================================================
 // INDEXES (query performance)
@@ -829,8 +962,8 @@ FOR (p:Port) ON (p.user_id, p.project_id);
 CREATE INDEX idx_service_tenant IF NOT EXISTS
 FOR (svc:Service) ON (svc.user_id, svc.project_id);
 
-CREATE INDEX idx_url_tenant IF NOT EXISTS
-FOR (u:URL) ON (u.user_id, u.project_id);
+CREATE INDEX idx_baseurl_tenant IF NOT EXISTS
+FOR (u:BaseURL) ON (u.user_id, u.project_id);
 
 CREATE INDEX idx_endpoint_tenant IF NOT EXISTS
 FOR (e:Endpoint) ON (e.user_id, e.project_id);
@@ -846,6 +979,12 @@ FOR (v:Vulnerability) ON (v.user_id, v.project_id);
 
 CREATE INDEX idx_cve_tenant IF NOT EXISTS
 FOR (c:CVE) ON (c.user_id, c.project_id);
+
+CREATE INDEX idx_mitredata_tenant IF NOT EXISTS
+FOR (m:MitreData) ON (m.user_id, m.project_id);
+
+CREATE INDEX idx_capec_tenant IF NOT EXISTS
+FOR (c:Capec) ON (c.user_id, c.project_id);
 
 CREATE INDEX idx_dnsrecord_tenant IF NOT EXISTS
 FOR (dns:DNSRecord) ON (dns.user_id, dns.project_id);
@@ -887,15 +1026,12 @@ FOR (i:IP) ON (i.address);
 CREATE INDEX ip_cdn IF NOT EXISTS
 FOR (i:IP) ON (i.is_cdn);
 
-// URL queries
-CREATE INDEX url_status IF NOT EXISTS
-FOR (u:URL) ON (u.status_code);
+// BaseURL queries
+CREATE INDEX baseurl_status IF NOT EXISTS
+FOR (u:BaseURL) ON (u.status_code);
 
-CREATE INDEX url_source IF NOT EXISTS
-FOR (u:URL) ON (u.source);
-
-CREATE INDEX url_live IF NOT EXISTS
-FOR (u:URL) ON (u.is_live);
+CREATE INDEX baseurl_live IF NOT EXISTS
+FOR (u:BaseURL) ON (u.is_live);
 
 // Technology lookups
 CREATE INDEX tech_name IF NOT EXISTS
@@ -1007,14 +1143,19 @@ FOR (os:OSFingerprint) ON (os.os_name);
 | `port_scan.by_host.<host>.port_details[]` | Port | number, protocol |
 | `port_scan.by_host.<host>.port_details[].service` | Service | name |
 | `port_scan.ip_to_hostnames.*` | (relationship data) | IP ↔ Subdomain mapping |
-| `http_probe.by_url.<url>.*` | URL | url, status_code, content_*, server, cdn, *_hash, word_count, line_count, cname, asn |
+| `http_probe.by_url.<url>.*` | BaseURL | url, status_code, content_*, server, cdn, *_hash, word_count, line_count, cname, asn |
 | `http_probe.by_url.<url>.headers.*` | Header | name, value |
 | `http_probe.by_url.<url>.technologies[]` | Technology | name, version |
 | `http_probe.wappalyzer.all_technologies.*` | Technology | categories, confidence, versions_found |
+| `vuln_scan.discovered_urls.dast_urls_with_params[]` | Endpoint | path, method, baseurl, has_parameters, source |
+| `vuln_scan.discovered_urls.dast_urls_with_params[]` | Parameter | name, position, endpoint_path, baseurl, sample_value, is_injectable |
 | `vuln_scan.by_target.<host>.findings[]` | Vulnerability | template_id, severity, matched_at, fuzzing_*, raw_request, raw_response, matched_ip, matcher_status, max_requests |
 | `vuln_scan.by_target.<host>.findings[].raw.*` | Vulnerability | curl_command, extracted_results, extractor_name, authors (from raw.info.author) |
 | `technology_cves.by_technology.<tech>.*` | Technology | product, version, cve_count, critical_cve_count, high_cve_count |
 | `technology_cves.by_technology.<tech>.cves[]` | CVE | id, cvss, severity, description, published, source, url, references |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy` | MitreData | cwe_id, cwe_name, cwe_description, abstraction, is_leaf |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy.child` | MitreData | (nested CWE hierarchy) |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy.*.related_capec[]` | Capec | id, name, description, likelihood, severity, prerequisites, execution_flow |
 
 ### Relationship Mapping
 
@@ -1022,10 +1163,19 @@ FOR (os:OSFingerprint) ON (os.os_name);
 |--------------|--------------|-----------|
 | `dns.subdomains.<host>.ips.ipv4[]` | RESOLVES_TO | Subdomain → IP |
 | `port_scan.by_host.<host>.port_details[]` | HAS_PORT | IP → Port |
+| `port_scan.by_host.<host>.port_details[].service` | RUNS_SERVICE | Port → Service |
 | `port_scan.ip_to_hostnames.<ip>[]` | RESOLVES_TO | Subdomain → IP |
-| `http_probe.by_url.<url>.technologies[]` | USES_TECHNOLOGY | URL → Technology |
-| `vuln_scan.by_target.<host>.findings[]` | HAS_VULNERABILITY | URL → Vulnerability |
+| `http_probe.by_url.<url>` | SERVES_URL | Service → BaseURL |
+| `http_probe.by_url.<url>.technologies[]` | USES_TECHNOLOGY | BaseURL → Technology |
+| `vuln_scan.discovered_urls.dast_urls_with_params[]` | HAS_ENDPOINT | BaseURL → Endpoint |
+| `vuln_scan.discovered_urls.dast_urls_with_params[]` | HAS_PARAMETER | Endpoint → Parameter |
+| `vuln_scan.by_target.<host>.findings[]` | HAS_VULNERABILITY | BaseURL → Vulnerability |
+| `vuln_scan.by_target.<host>.findings[]` | FOUND_AT | Vulnerability → Endpoint |
+| `vuln_scan.by_target.<host>.findings[].raw.fuzzing_parameter` | AFFECTS_PARAMETER | Vulnerability → Parameter |
 | `technology_cves.by_technology.<tech>.cves[]` | HAS_KNOWN_CVE | Technology → CVE |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy` | HAS_MITRE_DATA | CVE → MitreData |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy.child` | HAS_CHILD_CWE | MitreData → MitreData |
+| `technology_cves.by_technology.<tech>.cves[].mitre_attack.cwe_hierarchy.*.related_capec[]` | RELATED_CAPEC | MitreData → Capec |
 
 ---
 
@@ -1035,10 +1185,10 @@ The JSON contains several aggregation structures that don't need dedicated nodes
 
 | JSON Path | Description | Query Alternative |
 |-----------|-------------|-------------------|
-| `http_probe.by_host.<host>.*` | Per-host summary (urls, technologies, servers, status_codes) | `MATCH (s:Subdomain)-[:HAS_URL]->(u)...` |
-| `http_probe.servers_found.*` | Server → URLs mapping | `MATCH (u:URL) RETURN u.server, collect(u.url)` |
+| `http_probe.by_host.<host>.*` | Per-host summary (urls, technologies, servers, status_codes) | `MATCH (s:Subdomain)-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(svc)-[:SERVES_URL]->(u)...` |
+| `http_probe.servers_found.*` | Server → URLs mapping | `MATCH (u:BaseURL) RETURN u.server, collect(u.url)` |
 | `http_probe.technologies_found.*` | Technology → URLs mapping | `MATCH (u)-[:USES_TECHNOLOGY]->(t) RETURN t.name_version, collect(u.url)` |
-| `http_probe.summary.by_status_code.*` | Count by status code | `MATCH (u:URL) RETURN u.status_code, count(*)` |
+| `http_probe.summary.by_status_code.*` | Count by status code | `MATCH (u:BaseURL) RETURN u.status_code, count(*)` |
 | `vuln_scan.by_category.*` | Vulnerabilities grouped by category | `MATCH (v:Vulnerability) RETURN v.category, collect(v)` |
 | `vuln_scan.by_target.<host>.severity_counts` | Severity counts per target | `MATCH (v:Vulnerability {target: $host}) RETURN v.severity, count(*)` |
 | `vuln_scan.vulnerabilities.critical[]` | Critical vulns list | `MATCH (v:Vulnerability {severity: "critical"}) RETURN v` |
@@ -1477,7 +1627,7 @@ MERGE (gv)-[:RELATES_TO_PARAMETER]->(p)
 // Link GVM findings to recon-discovered URLs
 MATCH (gv:GVMVulnerability)
 WHERE "/admin" IN gv.discovered_directories
-MATCH (u:URL) WHERE u.path STARTS WITH "/admin"
+MATCH (u:BaseURL) WHERE u.path STARTS WITH "/admin"
 MERGE (gv)-[:AFFECTS_URL]->(u)
 ```
 
@@ -1514,9 +1664,9 @@ ORDER BY v.severity DESC
 ### 2. Compare Nuclei vs GVM Findings
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
-OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
+OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->()-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
 OPTIONAL MATCH (d)-[:HAS_GVM_SCAN]->()-[:FOUND_VULNERABILITY]->(gvm:GVMVulnerability)
-RETURN 
+RETURN
   count(DISTINCT nuclei) AS nuclei_findings,
   count(DISTINCT gvm) AS gvm_findings,
   collect(DISTINCT nuclei.category) AS nuclei_categories,
@@ -1548,15 +1698,15 @@ ORDER BY count DESC
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
 
 // Nuclei DAST findings
-OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s)-[:HAS_URL]->(u)-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
+OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s)-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(svc:Service)-[:SERVES_URL]->(u)-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
 
-// GVM Network findings  
+// GVM Network findings
 OPTIONAL MATCH (d)-[:HAS_GVM_SCAN]->(scan)-[:FOUND_VULNERABILITY]->(gvm:GVMVulnerability)
 
 WITH d,
      collect(DISTINCT {type: "DAST", name: nuclei.name, severity: nuclei.severity, target: nuclei.matched_at}) AS dast_vulns,
      collect(DISTINCT {type: "Network", name: gvm.name, severity: gvm.severity_class, target: gvm.host_ip + ":" + gvm.port}) AS network_vulns
-     
+
 RETURN dast_vulns + network_vulns AS all_vulnerabilities
 ```
 
@@ -1574,19 +1724,20 @@ RETURN {
   subdomains: size((d)-[:HAS_SUBDOMAIN]->()),
   ips: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()),
   ports: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()),
-  urls: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()),
-  endpoints: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_ENDPOINT]->()),
-  parameters: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_ENDPOINT]->()-[:HAS_PARAMETER]->()),
-  
+  services: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()),
+  urls: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()),
+  endpoints: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()-[:HAS_ENDPOINT]->()),
+  parameters: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()-[:HAS_ENDPOINT]->()-[:HAS_PARAMETER]->()),
+
   // DAST findings
-  nuclei_vulns: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_VULNERABILITY]->()),
-  
-  // Network findings  
+  nuclei_vulns: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()-[:HAS_VULNERABILITY]->()),
+
+  // Network findings
   gvm_vulns: size((d)-[:HAS_GVM_SCAN]->()-[:FOUND_VULNERABILITY]->()),
-  
+
   // Technologies
-  technologies: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:USES_TECHNOLOGY]->()),
-  known_cves: size((d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:USES_TECHNOLOGY]->()-[:HAS_KNOWN_CVE]->())
+  technologies: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()-[:USES_TECHNOLOGY]->()),
+  known_cves: size((d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->()-[:HAS_PORT]->()-[:RUNS_SERVICE]->()-[:SERVES_URL]->()-[:USES_TECHNOLOGY]->()-[:HAS_KNOWN_CVE]->())
 } AS attack_surface
 ```
 
@@ -1594,11 +1745,16 @@ RETURN {
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(:IP)
+      -[:HAS_PORT]->(port:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_VULNERABILITY]->(v:Vulnerability {category: "sqli"})
 MATCH (u)-[:USES_TECHNOLOGY]->(db:Technology)
 WHERE db.name IN ["MySQL", "PostgreSQL", "MSSQL", "MariaDB", "Oracle"]
 RETURN s.name AS host,
+       svc.name AS service,
+       port.number AS port,
        v.matched_at AS injection_point,
        v.fuzzing_parameter AS vuln_param,
        v.extractor_name AS detected_db,
@@ -1614,7 +1770,7 @@ MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
 OPTIONAL MATCH (d)-[:HAS_GVM_SCAN]->()-[:FOUND_VULNERABILITY]->(gv:GVMVulnerability)
 WHERE gv.name CONTAINS "Cleartext" AND size(gv.sensitive_inputs) > 0
 // Find corresponding Nuclei findings on same parameters
-OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->(u)
+OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(u)
       -[:HAS_ENDPOINT]->(e)
       -[:HAS_PARAMETER]->(p)
 WHERE p.name IN gv.sensitive_inputs
@@ -1629,7 +1785,10 @@ RETURN gv.sensitive_urls AS login_urls,
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s)
-      -[:HAS_URL]->(u)
+      -[:RESOLVES_TO]->(ip:IP)
+      -[:HAS_PORT]->(port:Port)
+      -[:RUNS_SERVICE]->(svc:Service)
+      -[:SERVES_URL]->(u:BaseURL)
       -[:USES_TECHNOLOGY]->(t:Technology)
       -[:HAS_KNOWN_CVE]->(cve:CVE)
 WHERE cve.cvss >= 7.0
@@ -1637,9 +1796,11 @@ WHERE cve.cvss >= 7.0
 OPTIONAL MATCH (d)-[:HAS_GVM_SCAN]->()-[:DETECTED_PRODUCT]->(dp:DetectedProduct)
       -[:MATCHES_TECHNOLOGY]->(t)
 // Get OS context
-OPTIONAL MATCH (s)-[:RESOLVES_TO]->(ip:IP)-[:HAS_OS_FINGERPRINT]->(os:OSFingerprint)
+OPTIONAL MATCH (ip)-[:HAS_OS_FINGERPRINT]->(os:OSFingerprint)
 RETURN t.name AS technology,
        t.version AS version,
+       svc.name AS service,
+       port.number AS port,
        dp.cpe AS confirmed_cpe,
        os.os_name AS running_on,
        collect(DISTINCT {cve: cve.id, cvss: cve.cvss, severity: cve.severity}) AS vulnerabilities
@@ -1685,9 +1846,9 @@ RETURN gv.host_ip AS host,
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
 // Get all vulnerability sources
-OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
+OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->()-[:HAS_VULNERABILITY]->(nuclei:Vulnerability)
 OPTIONAL MATCH (d)-[:HAS_GVM_SCAN]->()-[:FOUND_VULNERABILITY]->(gvm:GVMVulnerability)
-OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:HAS_URL]->()-[:USES_TECHNOLOGY]->()-[:HAS_KNOWN_CVE]->(tech_cve:CVE)
+OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->()-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->()-[:USES_TECHNOLOGY]->()-[:HAS_KNOWN_CVE]->(tech_cve:CVE)
 RETURN {
   dast_critical: size([x IN collect(DISTINCT nuclei) WHERE x.severity = "critical"]),
   dast_high: size([x IN collect(DISTINCT nuclei) WHERE x.severity = "high"]),

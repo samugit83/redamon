@@ -1023,17 +1023,10 @@ def enhance_with_wappalyzer(httpx_results: Dict) -> Dict:
             "min_confidence": WAPPALYZER_MIN_CONFIDENCE,
             "urls_analyzed": 0,
             "new_technologies_found": 0,
-            "plugins_detected": 0,
-            "analytics_detected": 0,
-            "security_tools_detected": 0,
         },
         "by_url": {},
         "new_technologies": {},  # Techs found by Wappalyzer but NOT httpx
         "all_technologies": {},  # Full Wappalyzer data with versions/categories
-        "plugins": [],
-        "analytics": [],
-        "security_tools": [],
-        "frameworks": [],
         "summary": {}
     }
     
@@ -1142,30 +1135,6 @@ def enhance_with_wappalyzer(httpx_results: Dict) -> Dict:
                     if tech_str not in url_data["technologies"] and tech_name not in url_data["technologies"]:
                         url_data["technologies"].append(tech_str)
                 
-                # Categorize based on categories list
-                categories_set = set(categories)
-                if "CMS" in categories_set and tech_name not in ["WordPress", "Drupal", "Joomla", "Magento"]:
-                    wappalyzer_data["plugins"].append({
-                        "name": tech_name, 
-                        "version": version,
-                        "url": url
-                    })
-                if "Analytics" in categories_set or "Marketing automation" in categories_set:
-                    wappalyzer_data["analytics"].append({
-                        "name": tech_name,
-                        "url": url
-                    })
-                if "Security" in categories_set:
-                    wappalyzer_data["security_tools"].append({
-                        "name": tech_name,
-                        "url": url
-                    })
-                if "JavaScript frameworks" in categories_set or "Web frameworks" in categories_set:
-                    wappalyzer_data["frameworks"].append({
-                        "name": tech_name,
-                        "version": version,
-                        "url": url
-                    })
             
             wappalyzer_data["by_url"][url] = url_techs
             
@@ -1191,19 +1160,12 @@ def enhance_with_wappalyzer(httpx_results: Dict) -> Dict:
     # Build summary
     wappalyzer_data["scan_metadata"]["urls_analyzed"] = urls_analyzed
     wappalyzer_data["scan_metadata"]["new_technologies_found"] = len(wappalyzer_data["new_technologies"])
-    wappalyzer_data["scan_metadata"]["plugins_detected"] = len(wappalyzer_data["plugins"])
-    wappalyzer_data["scan_metadata"]["analytics_detected"] = len(wappalyzer_data["analytics"])
-    wappalyzer_data["scan_metadata"]["security_tools_detected"] = len(wappalyzer_data["security_tools"])
-    
+
     wappalyzer_data["summary"] = {
         "urls_analyzed": urls_analyzed,
         "total_technologies": len(wappalyzer_data["all_technologies"]),
         "new_technologies": len(wappalyzer_data["new_technologies"]),
         "httpx_missed": list(wappalyzer_data["new_technologies"].keys()),
-        "plugins_count": len(wappalyzer_data["plugins"]),
-        "analytics_count": len(wappalyzer_data["analytics"]),
-        "security_tools_count": len(wappalyzer_data["security_tools"]),
-        "frameworks_count": len(wappalyzer_data["frameworks"]),
     }
     
     # Add wappalyzer section to httpx_results
@@ -1225,12 +1187,8 @@ def enhance_with_wappalyzer(httpx_results: Dict) -> Dict:
         print(f"        New technologies found: {len(wappalyzer_data['new_technologies'])}")
         if wappalyzer_data["new_technologies"]:
             new_techs_list = list(wappalyzer_data["new_technologies"].keys())[:10]
-            print(f"        New techs: {', '.join(new_techs_list)}" + 
+            print(f"        New techs: {', '.join(new_techs_list)}" +
                   ("..." if len(wappalyzer_data["new_technologies"]) > 10 else ""))
-        if wappalyzer_data["plugins"]:
-            print(f"        Plugins detected: {len(wappalyzer_data['plugins'])}")
-        if wappalyzer_data["analytics"]:
-            print(f"        Analytics tools: {len(wappalyzer_data['analytics'])}")
     
     return httpx_results
 

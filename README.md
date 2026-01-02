@@ -14,7 +14,10 @@ pip install -r requirements.txt
 sudo apt install tor proxychains4  # Optional: for anonymous scanning
 
 # 2. Configure target in params.py
-TARGET_DOMAIN = "example.com"
+TARGET_DOMAIN = "example.com"    # Root domain to scan
+SUBDOMAIN_LIST = []              # Empty = discover all subdomains
+# OR filter specific subdomains:
+SUBDOMAIN_LIST = ["www.", "api."]  # Only scan www.example.com and api.example.com
 
 # 3. Run the scan
 python recon/main.py
@@ -31,15 +34,15 @@ RedAmon executes scans in a modular pipeline. Each module adds data to a single 
 │                              RedAmon Scanning Pipeline                                │
 ├───────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                       │
-│  ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌───────────┐   ┌──────────────┐  │
-│  │  domain_   │──►│ port_scan  │──►│ http_probe │──►│ vuln_scan │──►│  add_mitre   │  │
-│  │  discovery │   │            │   │            │   │           │   │              │  │
-│  │  • WHOIS   │   │ • Port scan│   │ • HTTP     │   │ • Web     │   │ • CWE        │  │
-│  │  • DNS     │   │ • CDN      │   │ • Tech     │   │   vulns   │   │   weakness   │  │
-│  │  • Subs    │   │ • Services │   │ • TLS/SSL  │   │ • CVEs    │   │ • CAPEC      │  │
-│  └────────────┘   └────────────┘   └────────────┘   └───────────┘   └──────────────┘  │
-│        │                │                │                │                │          │
-│        └────────────────┴────────────────┴────────────────┴────────────────┘          │
+│  ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌────────────────────────────┐   │
+│  │  domain_   │──►│ port_scan  │──►│ http_probe │──►│        vuln_scan           │   │
+│  │  discovery │   │            │   │            │   │  ┌──────────┬───────────┐  │   │
+│  │  • WHOIS   │   │ • Port scan│   │ • HTTP     │   │  │ • Web    │ • CWE     │  │   │
+│  │  • DNS     │   │ • CDN      │   │ • Tech     │   │  │   vulns  │   weakness│  │   │
+│  │  • Subs    │   │ • Services │   │ • TLS/SSL  │   │  │ • CVEs   │ • CAPEC   │  │   │
+│  └────────────┘   └────────────┘   └────────────┘   │  └──────────┴───────────┘  │   │
+│        │                │                │          └────────────────────────────┘   │
+│        └────────────────┴────────────────┴───────────────────────│                   │
 │                                          │                                            │
 │                                          ▼                                            │
 │                       📄 recon/output/recon_<domain>.json                             │
@@ -52,6 +55,8 @@ RedAmon executes scans in a modular pipeline. Each module adds data to a single 
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+> **Note:** `vuln_scan` automatically includes MITRE CWE/CAPEC enrichment for all discovered CVEs.
+
 ---
 
 ## 📋 Scan Modules Explained
@@ -62,7 +67,7 @@ Edit `params.py`:
 
 ```python
 # Run all modules (recommended for full assessment)
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre", "github"]
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "github"]
 
 # Quick recon only (no vulnerability scanning)
 SCAN_MODULES = ["domain_discovery"]
@@ -70,12 +75,12 @@ SCAN_MODULES = ["domain_discovery"]
 # Port scan + HTTP probing (skip vulnerability scanning)
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe"]
 
-# Full scan with MITRE enrichment (no GitHub)
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre"]
-
-# Enrich existing CVE data with CWE/CAPEC
-SCAN_MODULES = ["add_mitre"]
+# Full scan (default) - vuln_scan includes MITRE CWE/CAPEC enrichment
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 ```
+
+> **Note:** `vuln_scan` automatically includes MITRE CWE/CAPEC enrichment for all CVEs found.
+> Configure MITRE settings (CWE, CAPEC) in the "MITRE CWE/CAPEC Enrichment" section of `params.py`.
 
 ---
 
@@ -86,16 +91,30 @@ SCAN_MODULES = ["add_mitre"]
 | What It Does | Output |
 |--------------|--------|
 | **WHOIS lookup** | Registrar, creation date, owner info |
-| **Subdomain discovery** | Finds subdomains via passive sources |
+| **Subdomain discovery** | Finds subdomains via passive sources (or uses filtered list) |
 | **DNS enumeration** | A, AAAA, MX, NS, TXT, CNAME records |
 | **IP resolution** | Maps all discovered hostnames to IPs |
 
 **Key Parameters:**
 ```python
-TARGET_DOMAIN = "example.com"           # Your target
+# Target Configuration
+TARGET_DOMAIN = "example.com"           # Root domain (always specify the root)
+SUBDOMAIN_LIST = []                     # Empty = discover ALL subdomains
+
+# OR filter specific subdomains (skip discovery, scan only these):
+SUBDOMAIN_LIST = ["www.", "api.", "dev."]  # Only scan www/api/dev.example.com
+
+# Scan Options
 USE_TOR_FOR_RECON = False               # Use Tor for anonymity
 USE_BRUTEFORCE_FOR_SUBDOMAINS = False   # Brute force subdomain discovery
 ```
+
+**Scan Modes:**
+
+| SUBDOMAIN_LIST | Mode | Description |
+|----------------|------|-------------|
+| `[]` (empty) | Full Discovery | Discovers all subdomains using passive sources |
+| `["www.", "api."]` | Filtered Scan | Skips discovery, only scans specified subdomains |
 
 ---
 
@@ -163,9 +182,9 @@ WAPPALYZER_MIN_CONFIDENCE = 50         # Minimum confidence level
 
 ---
 
-### Module 4: `vuln_scan` - Web Application Vulnerability Scanning
+### Module 4: `vuln_scan` - Web Application Vulnerability Scanning + MITRE Enrichment
 
-**Purpose:** Deep web application security testing with thousands of vulnerability templates.
+**Purpose:** Deep web application security testing with thousands of vulnerability templates. Automatically enriches discovered CVEs with MITRE CWE weaknesses and CAPEC attack patterns.
 
 | What It Finds | Examples |
 |---------------|----------|
@@ -174,18 +193,26 @@ WAPPALYZER_MIN_CONFIDENCE = 50         # Minimum confidence level
 | **Misconfigurations** | Exposed admin panels, debug endpoints |
 | **Information leaks** | .git exposure, backup files, API keys |
 | **Default credentials** | Admin:admin, test accounts |
+| **CWE Weaknesses** | Nested hierarchy from broad to specific weakness type |
+| **CAPEC Attack Patterns** | Detailed attack patterns with severity, execution flow |
 
-**Execution:** Runs via Docker (`projectdiscovery/nuclei:latest`) with Katana crawler for DAST.
+**Execution:** Runs via Docker (`projectdiscovery/nuclei:latest`) with Katana crawler for DAST. MITRE enrichment runs automatically after vulnerability scanning.
 
 **Key Parameters:**
 ```python
+# Vulnerability Scanning
 NUCLEI_SEVERITY = ["critical", "high", "medium", "low"]  # What to report
 NUCLEI_DAST_MODE = True                  # Active fuzzing (XSS, SQLi testing)
 NUCLEI_RATE_LIMIT = 100                  # Requests per second
 NUCLEI_AUTO_UPDATE_TEMPLATES = True      # Update 9000+ templates
+
+# MITRE CWE/CAPEC Enrichment (automatically included)
+MITRE_AUTO_UPDATE_DB = True              # Auto-download CVE2CAPEC database
+MITRE_INCLUDE_CWE = True                 # Include CWE weakness mappings
+MITRE_INCLUDE_CAPEC = True               # Include CAPEC attack patterns
 ```
 
-📖 **Detailed documentation:** [readmes/README.VULN_SCAN.md](readmes/README.VULN_SCAN.md)
+📖 **Detailed documentation:** [readmes/README.VULN_SCAN.md](readmes/README.VULN_SCAN.md) | [readmes/README.MITRE.md](readmes/README.MITRE.md)
 
 ---
 
@@ -207,77 +234,6 @@ GITHUB_TARGET_ORG = "company-name"       # Organization or username
 GITHUB_SCAN_COMMITS = True               # Search git history
 GITHUB_MAX_COMMITS = 100                 # Commits per repo
 ```
-
----
-
-### Module 6: `add_mitre` - CWE/CAPEC Enrichment
-
-**Purpose:** Enrich discovered CVEs with MITRE CWE weaknesses and CAPEC attack patterns.
-
-| What It Adds | Description |
-|--------------|-------------|
-| **CWE Hierarchy** | Nested parent-child structure from broad to specific weakness |
-| **CWE Metadata** | Name, abstraction level (Pillar/Class/Base/Variant), mapping status |
-| **Rich Details** | For ALLOWED CWEs: description, consequences, mitigations, detection methods, examples |
-| **CAPEC Patterns** | Detailed attack patterns with severity, execution flow, examples |
-
-**Enrichment Chain:**
-```
-CVE → CWE Hierarchy (root→leaf) → CAPEC (on ALLOWED CWEs only)
-```
-
-> **Note:** ATT&CK techniques and D3FEND defenses are intentionally NOT included. The CVE2CAPEC database derives these from generic parent CWEs, resulting in inaccurate mappings. Only direct CWE→CAPEC mappings from ALLOWED CWEs are used for accuracy.
-
-**Example Output:**
-```json
-{
-  "id": "CVE-2021-3618",
-  "mitre_attack": {
-    "enriched": true,
-    "cwe_hierarchy": {
-      "id": "CWE-284",
-      "name": "Improper Access Control",
-      "abstraction": "Pillar",
-      "mapping": "DISCOURAGED",
-      "child": {
-        "id": "CWE-287",
-        "name": "Improper Authentication",
-        "abstraction": "Class",
-        "mapping": "DISCOURAGED",
-        "child": {
-          "id": "CWE-295",
-          "name": "Improper Certificate Validation",
-          "abstraction": "Base",
-          "mapping": "ALLOWED",
-          "description": "The product does not validate, or incorrectly validates, a certificate.",
-          "consequences": [{"scope": ["Integrity"], "impact": ["Bypass Protection Mechanism"]}],
-          "mitigations": [{"description": "Certificates should be carefully managed...", "phase": ["Implementation"]}],
-          "related_capec": [
-            {
-              "id": "CAPEC-459",
-              "name": "Creating a Rogue Certification Authority Certificate",
-              "description": "An adversary exploits a weakness in hashing algorithms...",
-              "likelihood": "Medium",
-              "severity": "Very High",
-              "execution_flow": [{"step": "1", "phase": "Experiment", "description": "..."}]
-            }
-          ]
-        }
-      }
-    }
-  }
-}
-```
-
-**Key Parameters:**
-```python
-MITRE_AUTO_UPDATE_DB = True          # Auto-download latest CVE2CAPEC + CWE metadata
-MITRE_INCLUDE_CWE = True             # Include CWE hierarchy with metadata
-MITRE_INCLUDE_CAPEC = True           # Include CAPEC attack patterns
-MITRE_CACHE_TTL_HOURS = 24           # Database cache duration
-```
-
-📖 **Detailed documentation:** [readmes/README.MITRE.md](readmes/README.MITRE.md)
 
 ---
 
@@ -551,7 +507,8 @@ CVEs found: 23 (2 CRITICAL, 10 HIGH)
 # ═══════════════════════════════════════════════════════════════════
 # TARGET & MODULES
 # ═══════════════════════════════════════════════════════════════════
-TARGET_DOMAIN = "example.com"
+TARGET_DOMAIN = "example.com"         # Always the root domain
+SUBDOMAIN_LIST = []                   # Empty = discover all, ["www.", "api."] = filtered
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 
 # ═══════════════════════════════════════════════════════════════════
@@ -636,17 +593,13 @@ RedAmon/
 │   ├── port_scan.py       # Port scanning
 │   ├── http_probe.py      # HTTP probing
 │   ├── vuln_scan.py       # Vulnerability scanning
-│   ├── add_mitre.py       # MITRE CWE/CAPEC enrichment
+│   ├── add_mitre.py       # MITRE CWE/CAPEC enrichment (called by vuln_scan)
 │   ├── github_secret_hunt.py  # GitHub secret hunting
 │   ├── output/            # 📄 Scan results (JSON)
 │   └── data/
 │       └── mitre_db/      # 📦 Cached CVE2CAPEC database
 │           ├── resources/ # CWE, CAPEC mappings
 │           └── database/  # CVE-year.jsonl files
-│
-├── gvm_scan/              # GVM/OpenVAS integration
-│   ├── main.py            # GVM scan entry point
-│   └── output/            # GVM results
 │
 ├── readmes/               # 📖 Detailed documentation
 │   ├── README.PORT_SCAN.md    # Port scan configuration guide
@@ -655,7 +608,11 @@ RedAmon/
 │   ├── README.MITRE.md        # MITRE CWE/CAPEC enrichment guide
 │   └── README.GVM.md          # GVM/OpenVAS setup guide
 │
-└── docker-compose.yml     # GVM container orchestration
+├── gvm_scan/              # GVM/OpenVAS integration
+│   ├── docker-compose.yml # GVM container orchestration
+│   ├── Dockerfile         # Python scanner image
+│   ├── main.py            # GVM scan entry point
+│   └── output/            # GVM results
 ```
 
 ---
@@ -669,7 +626,7 @@ All modules write to a single JSON file: `recon/output/recon_<domain>.json`
   "metadata": {
     "target": "example.com",
     "scan_timestamp": "2024-01-15T10:30:00",
-    "modules_executed": ["whois", "subdomain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre"],
+    "modules_executed": ["whois", "subdomain_discovery", "port_scan", "http_probe", "vuln_scan"],
     "mitre_enrichment": {
       "total_cves_processed": 23,
       "total_cves_enriched": 23
@@ -721,33 +678,47 @@ All modules write to a single JSON file: `recon/output/recon_<domain>.json`
     }
   },
   "technology_cves": {
-    "all_cves": [
-      {
-        "id": "CVE-2021-44228",
-        "cvss": 10.0,
-        "mitre_attack": {
-          "enriched": true,
-          "cwe_hierarchy": {
-            "id": "CWE-502",
-            "name": "Deserialization of Untrusted Data",
-            "abstraction": "Base",
-            "mapping": "ALLOWED",
-            "description": "The product deserializes untrusted data without sufficiently verifying...",
-            "consequences": [{"scope": ["Integrity"], "impact": ["Execute Unauthorized Code"]}],
-            "mitigations": [{"description": "If available, use signing/sealing features...", "phase": ["Architecture and Design"]}],
-            "related_capec": [
-              {
-                "id": "CAPEC-586",
-                "name": "Object Injection",
-                "description": "An adversary injects malicious object references...",
-                "severity": "High",
-                "likelihood": "Medium"
+    "by_technology": {
+      "Log4j:2.14.1": {
+        "technology": "Log4j:2.14.1",
+        "product": "log4j",
+        "version": "2.14.1",
+        "cve_count": 1,
+        "critical": 1,
+        "high": 0,
+        "cves": [
+          {
+            "id": "CVE-2021-44228",
+            "cvss": 10.0,
+            "severity": "CRITICAL",
+            "mitre_attack": {
+              "enriched": true,
+              "cwe_hierarchy": {
+                "id": "CWE-502",
+                "name": "Deserialization of Untrusted Data",
+                "abstraction": "Base",
+                "mapping": "ALLOWED",
+                "description": "The product deserializes untrusted data...",
+                "consequences": [{"scope": ["Integrity"], "impact": ["Execute Unauthorized Code"]}],
+                "mitigations": [{"description": "If available, use signing/sealing features...", "phase": ["Architecture and Design"]}],
+                "related_capec": [
+                  {
+                    "id": "CAPEC-586",
+                    "name": "Object Injection",
+                    "severity": "High"
+                  }
+                ]
               }
-            ]
+            }
           }
-        }
+        ]
       }
-    ]
+    },
+    "summary": {
+      "total_unique_cves": 1,
+      "critical": 1,
+      "high": 0
+    }
   }
 }
 ```

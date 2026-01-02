@@ -2,9 +2,12 @@
 
 ## Complete Technical Documentation
 
-> **Module:** `recon/add_mitre.py`  
-> **Purpose:** Enrich CVE data with CWE weaknesses and CAPEC attack patterns  
+> **Module:** `recon/add_mitre.py` (automatically called by `vuln_scan`)
+> **Purpose:** Enrich CVE data with CWE weaknesses and CAPEC attack patterns
 > **Author:** RedAmon Security Suite
+
+**Note:** MITRE CWE/CAPEC enrichment is automatically integrated into the `vuln_scan` module.
+When you run `vuln_scan`, all discovered CVEs are automatically enriched with CWE weaknesses and CAPEC attack patterns.
 
 ---
 
@@ -393,18 +396,14 @@ This is **correct behavior** - we don't show inherited CAPECs from parent CWEs t
 
 ## Usage Examples
 
-### Enable in Scan Pipeline
+### Automatic Integration with vuln_scan
+
+MITRE enrichment is automatically included when running `vuln_scan`:
 
 ```python
 # params.py
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre"]
-```
-
-### Enrich Existing Recon Data Only
-
-```python
-# params.py
-SCAN_MODULES = ["add_mitre"]  # Only run MITRE enrichment on existing data
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
+# ↑ vuln_scan automatically includes MITRE CWE/CAPEC enrichment
 ```
 
 ### CWE Only (No CAPEC)
@@ -518,18 +517,26 @@ Key points:
 
 ## Integration with Pipeline
 
-### Where MITRE Enrichment Fits
+### Automatic Integration with vuln_scan
+
+MITRE CWE/CAPEC enrichment is **automatically included** in the `vuln_scan` module. No separate configuration is needed.
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────────────────────────────┐
-│  vuln_scan  │────▶│  CVE List   │────▶│  add_mitre                   │
-│             │     │             │     │                              │
-│ Finds CVEs: │     │ CVE-2021-44228  │ Adds:                        │
-│ • Nuclei    │     │ CVE-2022-22965  │ • cwe_hierarchy              │
-│ • NVD lookup│     │ CVE-2023-12345  │ • CWE metadata (name, etc.)  │
-└─────────────┘     └─────────────┘     │ • Mitigations, consequences │
-                                        │ • related_capec (ALLOWED)   │
-                                        └──────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           vuln_scan MODULE                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ┌─────────────┐     ┌─────────────┐     ┌──────────────────────────────┐ │
+│  │  Nuclei +   │────▶│  CVE List   │────▶│  MITRE Enrichment            │ │
+│  │  NVD lookup │     │             │     │  (automatic)                 │ │
+│  │             │     │ CVE-2021-44228  │                              │ │
+│  │ Finds CVEs  │     │ CVE-2022-22965  │ Adds:                        │ │
+│  │             │     │ CVE-2023-12345  │ • cwe_hierarchy              │ │
+│  └─────────────┘     └─────────────┘     │ • CWE metadata              │ │
+│                                          │ • Mitigations, consequences │ │
+│                                          │ • related_capec (ALLOWED)   │ │
+│                                          └──────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### What Gets Enriched
@@ -537,21 +544,20 @@ Key points:
 | Source | Field | What's Added |
 |--------|-------|--------------|
 | `vuln_scan` | `all_cves` | `mitre_attack.cwe_hierarchy` with full metadata |
-| `technology_cves` | `all_cves` | `mitre_attack.cwe_hierarchy` with full metadata |
+| `technology_cves` | `by_technology.<tech>.cves[]` | `mitre_attack.cwe_hierarchy` with full metadata |
 | `gvm_scan` | `unique_cves_enriched` | `mitre_attack.cwe_hierarchy` with full metadata |
 
 ### Pipeline Order
 
-The `add_mitre` module should run **after** vulnerability scanning:
+MITRE enrichment runs automatically after vulnerability scanning as part of `vuln_scan`:
 
 ```python
 SCAN_MODULES = [
     "domain_discovery",  # 1. Find subdomains, IPs
     "port_scan",         # 2. Find open ports
     "http_probe",        # 3. Probe HTTP, detect tech
-    "vuln_scan",         # 4. Find vulnerabilities (CVEs)
-    "add_mitre",         # 5. Enrich CVEs with CWE/CAPEC ← HERE
-    "github"             # 6. Hunt for secrets
+    "vuln_scan",         # 4. Find vulnerabilities (CVEs) + MITRE enrichment ← INCLUDED
+    "github"             # 5. Hunt for secrets
 ]
 ```
 

@@ -10,12 +10,20 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # Target for RECON
-# Smart mode auto-detects target type:
-# - Root domain (e.g., "example.com"): full subdomain discovery + WHOIS + DNS + scanning
-# - Subdomain (e.g., "www.example.com"): WHOIS on root, DNS + scanning only on that subdomain
-TARGET_DOMAIN = "testphp.vulnweb.com"
+# TARGET_DOMAIN: Always specify the root domain (e.g., "vulnweb.com", "example.com")
+# SUBDOMAIN_LIST: Filter which subdomains to scan
+#   - Empty list []: Discover and scan ALL subdomains (full discovery mode)
+#   - Specific prefixes ["testphp.", "www."]: Only scan these specific subdomains (filtered mode)
+#
+# Examples:
+#   TARGET_DOMAIN = "vulnweb.com", SUBDOMAIN_LIST = []           → Scan all subdomains of vulnweb.com
+#   TARGET_DOMAIN = "vulnweb.com", SUBDOMAIN_LIST = ["testphp."] → Only scan testphp.vulnweb.com
+#   TARGET_DOMAIN = "example.com", SUBDOMAIN_LIST = ["dev.", "staging."] → Only scan dev.example.com and staging.example.com
+#
+TARGET_DOMAIN = "devergolabs.com"
+SUBDOMAIN_LIST = []  # Empty = discover all, or specify prefixes like ["www.", "api."]
 USER_ID = "samgiam"
-PROJECT_ID = "first_test"
+PROJECT_ID = "project_testphp.vulnweb.com"
 
 # =============================================================================
 # SCAN MODULES - Control which modules to run
@@ -24,21 +32,22 @@ PROJECT_ID = "first_test"
 #   - "domain_discovery" : WHOIS + Subdomain discovery + DNS (creates initial JSON)
 #   - "port_scan"        : Fast port scanning (updates JSON)
 #   - "http_probe"       : HTTP probing and technology detection (updates JSON)
-#   - "vuln_scan"        : Web application vulnerability scanning (updates JSON)
-#   - "add_mitre"        : MITRE ATT&CK enrichment for CVEs (updates JSON)
+#   - "vuln_scan"        : Web vulnerability scanning + MITRE CWE/CAPEC enrichment (updates JSON)
 #   - "github"           : GitHub secret hunting (creates separate JSON)
 #
-# Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> add_mitre -> github
+# Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
+#
+# Note: vuln_scan automatically includes MITRE CWE/CAPEC enrichment for all CVEs found.
+#       Configure MITRE enrichment settings in the "MITRE CWE/CAPEC Enrichment" section below.
 #
 # Examples:
-#   ["domain_discovery"]                                                    - Only domain recon
-#   ["domain_discovery", "port_scan", "http_probe"]                         - Recon + port/HTTP probing
-#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]            - Full web scan
-#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre"] - Full scan + MITRE (default)
-#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "add_mitre", "github"] - Complete scan
-#   ["add_mitre"]                                                           - Only enrich existing recon file
+#   ["domain_discovery"]                                         - Only domain recon
+#   ["domain_discovery", "port_scan", "http_probe"]              - Recon + port/HTTP probing
+#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan"] - Full web scan (default)
+#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "github"] - Complete scan
 
-SCAN_MODULES = ["add_mitre"]
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
+UPDATE_GRAPH_DB = True
 
 # Hide your real IP during subdomain enumeration (uses Tor + proxychains)
 # Requires: Tor running (sudo systemctl start tor) + proxychains4 installed
@@ -471,7 +480,7 @@ MITRE_INCLUDE_CWE = True
 MITRE_INCLUDE_CAPEC = True
 
 # Which scan outputs to enrich with MITRE data
-# Set to True to enrich recon output (vuln_scan.all_cves + technology_cves.all_cves)
+# Set to True to enrich recon output (vuln_scan.all_cves + technology_cves.by_technology.<tech>.cves)
 MITRE_ENRICH_RECON = True
 
 # Set to True to enrich GVM/OpenVAS output (scans[].unique_cves)

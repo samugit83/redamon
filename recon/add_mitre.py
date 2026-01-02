@@ -14,7 +14,7 @@ Only direct CWE→CAPEC mappings provide relevant attack patterns.
 The database is updated daily via GitHub Actions.
 
 Enriches:
-- recon output: vuln_scan.all_cves and technology_cves.all_cves
+- recon output: vuln_scan.all_cves and technology_cves.by_technology.<tech>.cves
 - gvm_scan output: scans[].unique_cves
 """
 
@@ -943,21 +943,30 @@ def enrich_recon_data(recon_data: Dict, mitre_db: MITREDatabase) -> Dict:
         total_enriched += count
         print(f"    -> Enriched {count}/{len(all_cves)} CVEs with CWE/CAPEC data")
 
-    # Enrich technology_cves.all_cves (NVD lookup)
+    # Enrich technology_cves.by_technology.<tech>.cves (NVD lookup)
+    # CVEs are stored directly inside each technology entry
     tech_cves = recon_data.get("technology_cves", {})
-    if tech_cves and tech_cves.get("all_cves"):
-        all_cves = tech_cves["all_cves"]
-        total_cves += len(all_cves)
-        print(f"    Enriching technology_cves.all_cves ({len(all_cves)} CVEs)...")
+    by_technology = tech_cves.get("by_technology", {})
+    if by_technology:
+        tech_cve_count = 0
+        tech_enriched_count = 0
+        for tech_name, tech_data in by_technology.items():
+            cves = tech_data.get("cves", [])
+            if cves:
+                tech_cve_count += len(cves)
+                enriched_cves, count = enrich_cve_list(
+                    cves, mitre_db,
+                    include_cwe=MITRE_INCLUDE_CWE,
+                    include_capec=MITRE_INCLUDE_CAPEC,
+                )
+                recon_data["technology_cves"]["by_technology"][tech_name]["cves"] = enriched_cves
+                tech_enriched_count += count
 
-        enriched_cves, count = enrich_cve_list(
-            all_cves, mitre_db,
-            include_cwe=MITRE_INCLUDE_CWE,
-            include_capec=MITRE_INCLUDE_CAPEC,
-        )
-        recon_data["technology_cves"]["all_cves"] = enriched_cves
-        total_enriched += count
-        print(f"    -> Enriched {count}/{len(all_cves)} CVEs with CWE/CAPEC data")
+        if tech_cve_count > 0:
+            total_cves += tech_cve_count
+            total_enriched += tech_enriched_count
+            print(f"    Enriching technology_cves.by_technology ({tech_cve_count} CVEs across {len(by_technology)} technologies)...")
+            print(f"    -> Enriched {tech_enriched_count}/{tech_cve_count} CVEs with CWE/CAPEC data")
 
     # Add enrichment metadata
     if "metadata" not in recon_data:
@@ -1064,9 +1073,12 @@ def run_mitre_enrichment(recon_data: Dict = None, output_file: Path = None) -> D
         vuln_cves = recon_data.get("vuln_scan", {}).get("all_cves", [])
         all_cve_ids.extend([c.get("id", "") for c in vuln_cves if isinstance(c, dict)])
 
-        # From technology_cves
-        tech_cves = recon_data.get("technology_cves", {}).get("all_cves", [])
-        all_cve_ids.extend([c.get("id", "") for c in tech_cves if isinstance(c, dict)])
+        # From technology_cves.by_technology.<tech>.cves
+        by_technology = recon_data.get("technology_cves", {}).get("by_technology", {})
+        for tech_data in by_technology.values():
+            for cve in tech_data.get("cves", []):
+                if isinstance(cve, dict) and cve.get("id"):
+                    all_cve_ids.append(cve["id"])
 
     print(f"    Total CVEs to enrich: {len(all_cve_ids)}")
     print("=" * 60)

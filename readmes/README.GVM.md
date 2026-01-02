@@ -35,6 +35,8 @@ RedAmon uses GVM in **headless API mode** (no web GUI) to:
 - Execute vulnerability scans via Python API
 - Output structured JSON results for further analysis
 
+> **Note:** All Docker files (`docker-compose.yml`, `Dockerfile`) are located in the `gvm_scan/` directory. Run all `docker compose` commands from within that directory.
+
 ---
 
 ## System Architecture
@@ -1004,12 +1006,12 @@ Unauthorized vulnerability scanning may violate:
 
 ```
 RedAmon/
-├── docker-compose.yml          # Container orchestration
-├── Dockerfile                  # Python scanner image
 ├── params.py                   # Configuration parameters
 ├── .env                        # Secrets (GVM_PASSWORD)
 │
 ├── gvm_scan/
+│   ├── docker-compose.yml      # Container orchestration
+│   ├── Dockerfile              # Python scanner image
 │   ├── __init__.py             # Package marker
 │   ├── main.py                 # Entry point
 │   ├── gvm_scanner.py          # GVM API wrapper
@@ -1028,12 +1030,14 @@ RedAmon/
 
 ### Start System
 ```bash
+cd gvm_scan
 docker compose up -d
 docker compose logs -f gvmd  # Wait for VT sync
 ```
 
 ### Run Scan
 ```bash
+cd gvm_scan
 docker compose --profile scanner up python-scanner
 ```
 
@@ -1044,5 +1048,6 @@ cat gvm_scan/output/vuln_*.json | jq '.summary'
 
 ### Stop System
 ```bash
+cd gvm_scan
 docker compose down
 ```
