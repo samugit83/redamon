@@ -6,7 +6,6 @@ Uses dynamic CLI wrapper approach for maximum flexibility.
 
 Tools:
     - execute_curl: Execute curl with any CLI arguments
-    - curl_help: Get curl usage information
 """
 
 from fastmcp import FastMCP
@@ -96,30 +95,6 @@ def execute_curl(args: str) -> str:
     except Exception as e:
         return f"[ERROR] {str(e)}"
 
-
-@mcp.tool()
-def curl_help() -> str:
-    """
-    Get curl help and usage information.
-
-    Use this tool to discover available flags and options. Curl has extensive
-    options for HTTP methods, headers, authentication, SSL/TLS, and more.
-
-    Returns:
-        Curl help output with common options
-    """
-    try:
-        result = subprocess.run(
-            ["curl", "--help", "all"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return result.stdout + result.stderr
-    except FileNotFoundError:
-        return "[ERROR] curl not found. Ensure it is installed and in PATH."
-    except Exception as e:
-        return f"[ERROR] {str(e)}"
 
 
 if __name__ == "__main__":

@@ -68,6 +68,7 @@ env/
 # IDE / Editor settings
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
@@ -114,6 +115,10 @@ logs/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Next.js build output
+.next/
+out/
 
 # Docker
 *.pid

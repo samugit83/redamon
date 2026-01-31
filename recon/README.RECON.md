@@ -6,6 +6,21 @@ An automated OSINT reconnaissance and vulnerability scanning framework combining
 
 ---
 
+## Table of Contents
+
+- [Quick Start](#-docker-quick-start-recommended)
+- [Architecture](#-docker-in-docker-architecture)
+- [Pipeline Overview](#-scanning-pipeline-overview)
+- [Scan Modules](#-scan-modules-explained)
+- [Tool Comparison](#-complete-tool-comparison)
+- [Configuration](#-key-configuration-parameters)
+- [Prerequisites](#-prerequisites)
+- [Project Structure](#-project-structure)
+- [Output Format](#-output-format)
+- [Test Targets](#-test-targets)
+
+---
+
 ## 🐳 Docker Quick Start (Recommended)
 
 The recon module is fully containerized. All tools run inside Docker containers.
@@ -17,19 +32,9 @@ SUBDOMAIN_LIST = []                       # Empty = discover all subdomains
 
 # 2. Build the container (first time only)
 cd recon/
-docker-compose build --network=host
+docker-compose build
 
 # 3. Run a scan (starts, executes, and removes container automatically)
-docker-compose run --rm recon python /app/recon/main.py
-```
-
-### Running Scans
-
-```bash
-# First time: build the container
-docker-compose build --network=host
-
-# Run a scan (starts, executes, and removes container automatically)
 docker-compose run --rm recon python /app/recon/main.py
 ```
 
@@ -48,36 +53,7 @@ USE_TOR_FOR_RECON=true docker-compose run --rm recon python /app/recon/main.py
 SCAN_MODULES="domain_discovery,port_scan,http_probe" docker-compose run --rm recon python /app/recon/main.py
 ```
 
-### Shared Output Volume
-
-Scan results are stored in a shared Docker volume (`redamon-recon-output`) that can be accessed by other containers (e.g., GVM scanner):
-
-```bash
-# View results from host
-ls recon/output/
-
-# Mount in another container (e.g., gvm_scan)
-# In gvm_scan/docker-compose.yml:
-volumes:
-  - redamon-recon-output:/data/recon-output:ro
-```
-
-### Rebuilding After Code Changes
-
-When you modify Python code, you need to rebuild the container:
-
-```bash
-# Rebuild (recommended after code changes)
-docker-compose build
-
-# Force rebuild without cache (use after major changes)
-docker-compose build --no-cache
-
-# Then run a scan
-docker-compose run --rm recon python /app/recon/main.py
-```
-
-**When to rebuild:**
+### When to Rebuild
 
 | Change Type | Action Required |
 |-------------|-----------------|
@@ -87,22 +63,6 @@ docker-compose run --rm recon python /app/recon/main.py
 | `Dockerfile` changes | `docker-compose build --no-cache` |
 | `.env` file changes | No rebuild needed (mounted as volume) |
 
-**Development workflow:**
-
-```bash
-# 1. Make code changes
-vim recon/vuln_scan.py
-
-# 2. Rebuild
-docker-compose build
-
-# 3. Run scan
-docker-compose run --rm recon python /app/recon/main.py
-
-# 4. Stop when done
-docker-compose down
-```
-
 ---
 
 ## 🏗️ Docker-in-Docker Architecture
@@ -111,113 +71,106 @@ The recon module uses a **Docker-in-Docker (DinD)** pattern where the main recon
 
 ### How It Works
 
-The recon container doesn't run Docker *inside* itself. Instead, it shares the **host's Docker daemon** via a socket mount:
+The recon container shares the **host's Docker daemon** via a socket mount, meaning all containers are **siblings** managed by the same host Docker daemon.
 
-```yaml
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock:ro
+```mermaid
+flowchart TB
+    subgraph Host["🖥️ HOST MACHINE"]
+        subgraph DockerDaemon["Docker Daemon (dockerd)"]
+            Socket["/var/run/docker.sock"]
+        end
+
+        subgraph Containers["Sibling Containers"]
+            Recon["redamon-recon<br/>Python Orchestrator<br/>📋 Coordinates all scans"]
+            NaabuC["naabu<br/>projectdiscovery/naabu<br/>🔌 Port Scanner"]
+            HttpxC["httpx<br/>projectdiscovery/httpx<br/>🌐 HTTP Prober"]
+            NucleiC["nuclei<br/>projectdiscovery/nuclei<br/>🎯 Vuln Scanner"]
+            KatanaC["katana<br/>projectdiscovery/katana<br/>🕸️ Web Crawler"]
+            GAUC["gau<br/>sxcurity/gau<br/>📚 URL Archives"]
+        end
+
+        Volume["📁 Shared Volume<br/>recon/output/"]
+    end
+
+    Socket -.->|socket mount| Recon
+    Recon -->|docker run| NaabuC
+    Recon -->|docker run| HttpxC
+    Recon -->|docker run| NucleiC
+    Recon -->|docker run| KatanaC
+    Recon -->|docker run| GAUC
+
+    NaabuC --> Volume
+    HttpxC --> Volume
+    NucleiC --> Volume
+    KatanaC --> Volume
+    GAUC --> Volume
+    Recon --> Volume
 ```
 
-This means all containers (recon, httpx, naabu, nuclei, etc.) are **siblings** managed by the same host Docker daemon.
+### Container Execution Flow
 
-### Architecture Diagram
+```mermaid
+sequenceDiagram
+    participant User
+    participant Recon as redamon-recon
+    participant Docker as Docker Daemon
+    participant Naabu as naabu container
+    participant Httpx as httpx container
+    participant Katana as katana container
+    participant GAU as gau container
+    participant Nuclei as nuclei container
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              HOST MACHINE                                    │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │                     Docker Daemon (dockerd)                            │  │
-│  │                    /var/run/docker.sock                                │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│         ▲              ▲              ▲              ▲              ▲        │
-│         │              │              │              │              │        │
-│    (socket)       (socket)       (socket)       (socket)       (socket)      │
-│         │              │              │              │              │        │
-│  ┌──────┴─────┐ ┌──────┴─────┐ ┌──────┴─────┐ ┌──────┴─────┐ ┌──────┴─────┐  │
-│  │  redamon-  │ │   naabu    │ │   httpx    │ │   nuclei   │ │   katana   │  │
-│  │   recon    │ │ container  │ │ container  │ │ container  │ │ container  │  │
-│  │            │ │            │ │            │ │            │ │            │  │
-│  │ Python     │ │ Port       │ │ HTTP       │ │ Vuln       │ │ Web        │  │
-│  │ Orchestr.  │ │ Scanner    │ │ Prober     │ │ Scanner    │ │ Crawler    │  │
-│  └────────────┘ └────────────┘ └────────────┘ └────────────┘ └────────────┘  │
-│        │                                                                     │
-│        │ runs via subprocess:                                                │
-│        │   docker run projectdiscovery/naabu ...                             │
-│        │   docker run projectdiscovery/httpx ...                             │
-│        │   docker run projectdiscovery/nuclei ...                            │
-│        │                                                                     │
-│  ┌─────┴──────────────────────────────────────────────────────────────────┐  │
-│  │                    Shared Volume: recon/output/                        │  │
-│  │                         recon_<domain>.json                            │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+    User->>Recon: docker-compose run recon python main.py
+    activate Recon
 
-### Scan Workflow
+    Note over Recon: Phase 1: Domain Discovery (Python native)
+    Recon->>Recon: WHOIS lookup
+    Recon->>Recon: crt.sh + HackerTarget API
+    Recon->>Recon: DNS resolution
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SCAN WORKFLOW                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. START                                                                    │
-│     │                                                                        │
-│     ▼                                                                        │
-│  ┌──────────────────┐                                                        │
-│  │ redamon-recon    │  Main orchestrator container starts                    │
-│  │ container starts │  Reads params.py, checks Docker socket                 │
-│  └────────┬─────────┘                                                        │
-│           │                                                                  │
-│           ▼                                                                  │
-│  2. DOMAIN DISCOVERY (Python native)                                         │
-│     │ • WHOIS lookup                                                         │
-│     │ • Knockpy subdomain enumeration                                        │
-│     │ • DNS resolution                                                       │
-│     │                                                                        │
-│     ▼                                                                        │
-│  3. PORT SCAN                                                                │
-│     │                                                                        │
-│     │  ┌─────────────────────────────────────────────────────────┐           │
-│     │  │ docker run --rm projectdiscovery/naabu:latest          │           │
-│     │  │   -host <targets> -top-ports 1000 -json                │           │
-│     │  └─────────────────────────────────────────────────────────┘           │
-│     │                                                                        │
-│     ▼                                                                        │
-│  4. HTTP PROBE                                                               │
-│     │                                                                        │
-│     │  ┌─────────────────────────────────────────────────────────┐           │
-│     │  │ docker run --rm projectdiscovery/httpx:latest          │           │
-│     │  │   -l <targets> -json -tech-detect -tls-grab            │           │
-│     │  └─────────────────────────────────────────────────────────┘           │
-│     │                                                                        │
-│     ▼                                                                        │
-│  5. RESOURCE ENUMERATION (parallel)                                          │
-│     │                                                                        │
-│     │  ┌─────────────────────┐  ┌─────────────────────┐                      │
-│     │  │ docker run katana  │  │ docker run gau      │                      │
-│     │  │ (active crawling)  │  │ (passive URLs)      │                      │
-│     │  └─────────────────────┘  └─────────────────────┘                      │
-│     │           │                        │                                   │
-│     │           └────────┬───────────────┘                                   │
-│     │                    ▼                                                   │
-│     │            Merge & deduplicate URLs                                    │
-│     │                                                                        │
-│     ▼                                                                        │
-│  6. VULNERABILITY SCAN                                                       │
-│     │                                                                        │
-│     │  ┌─────────────────────────────────────────────────────────┐           │
-│     │  │ docker run --rm projectdiscovery/nuclei:latest         │           │
-│     │  │   -l <urls> -severity critical,high,medium,low -json   │           │
-│     │  └─────────────────────────────────────────────────────────┘           │
-│     │                                                                        │
-│     ▼                                                                        │
-│  7. OUTPUT                                                                   │
-│     │                                                                        │
-│     └──► recon/output/recon_<domain>.json                                    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+    Note over Recon,Naabu: Phase 2: Port Scan
+    Recon->>Docker: docker run projectdiscovery/naabu
+    Docker->>Naabu: Start container
+    activate Naabu
+    Naabu->>Naabu: SYN scan targets
+    Naabu-->>Recon: JSON output (open ports)
+    deactivate Naabu
+
+    Note over Recon,Httpx: Phase 3: HTTP Probe
+    Recon->>Docker: docker run projectdiscovery/httpx
+    Docker->>Httpx: Start container
+    activate Httpx
+    Httpx->>Httpx: Probe HTTP/HTTPS
+    Httpx->>Httpx: Detect technologies
+    Httpx-->>Recon: JSON output (live URLs)
+    deactivate Httpx
+
+    Note over Recon,GAU: Phase 4: Resource Enumeration
+    Recon->>Docker: docker run projectdiscovery/katana
+    Docker->>Katana: Start container
+    activate Katana
+    Katana->>Katana: Crawl live URLs
+    Katana-->>Recon: JSON output (endpoints)
+    deactivate Katana
+    Recon->>Docker: docker run sxcurity/gau
+    Docker->>GAU: Start container
+    activate GAU
+    GAU->>GAU: Fetch archived URLs
+    GAU-->>Recon: JSON output (historical URLs)
+    deactivate GAU
+    Recon->>Recon: Merge & classify endpoints
+
+    Note over Recon,Nuclei: Phase 5: Vuln Scan
+    Recon->>Docker: docker run projectdiscovery/nuclei
+    Docker->>Nuclei: Start container
+    activate Nuclei
+    Nuclei->>Nuclei: Run 9000+ templates
+    Nuclei-->>Recon: JSON output (vulns)
+    deactivate Nuclei
+
+    Recon->>Recon: Save recon_domain.json
+    Recon-->>User: Scan complete
+    deactivate Recon
 ```
 
 ### Why Docker-in-Docker?
@@ -230,49 +183,216 @@ This means all containers (recon, httpx, naabu, nuclei, etc.) are **siblings** m
 | **Easy updates** | Just pull new Docker images to update tools |
 | **Portability** | Works on any system with Docker installed |
 
-### Tool Containers Used
-
-| Tool | Docker Image | Purpose |
-|------|--------------|---------|
-| Naabu | `projectdiscovery/naabu:latest` | Fast port scanning |
-| httpx | `projectdiscovery/httpx:latest` | HTTP probing & tech detection |
-| Nuclei | `projectdiscovery/nuclei:latest` | Vulnerability scanning |
-| Katana | `projectdiscovery/katana:latest` | Web crawling for DAST |
-| GAU | `sxcurity/gau:latest` | Passive URL discovery |
-
 ---
 
 ## 🔄 Scanning Pipeline Overview
 
 RedAmon executes scans in a modular pipeline. Each module adds data to a single JSON output file.
 
-```
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                              RedAmon Scanning Pipeline                                │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│  ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌─────────────┐  │
-│  │  domain_   │──►│ port_scan  │──►│ http_probe │──►│ resource_  │──►│  vuln_scan  │  │
-│  │  discovery │   │            │   │            │   │   enum     │   │  • Web vulns│  │
-│  │  • WHOIS   │   │ • Port scan│   │ • HTTP     │   │ • Katana   │   │  • CVEs     │  │
-│  │  • DNS     │   │ • CDN      │   │ • Tech     │   │ • GAU      │   │  • CWE      │  │
-│  │  • Subs    │   │ • Services │   │ • TLS/SSL  │   │ • Forms    │   │  • CAPEC    │  │
-│  └────────────┘   └────────────┘   └────────────┘   └────────────┘   └─────────────┘  │
-│        │                │                │                │                │          │
-│        └────────────────┴────────────────┴────────────────┴────────────────┘          │
-│                                          │                                            │
-│                                          ▼                                            │
-│                       📄 recon/output/recon_<domain>.json                             │
-│                                                                                       │
-│  Optional: ┌───────────┐                                                              │
-│            │  github   │ ──► github_secrets_<org>.json                                │
-│            │  • Secrets│                                                              │
-│            │  • Leaks  │                                                              │
-│            └───────────┘                                                              │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+### High-Level Pipeline
+
+```mermaid
+flowchart LR
+    subgraph Input["📥 Input"]
+        Domain[🌐 Target Domain]
+    end
+
+    subgraph Pipeline["🔄 Recon Pipeline"]
+        DD[1️⃣ domain_discovery<br/>WHOIS + Subdomains + DNS]
+        PS[2️⃣ port_scan<br/>Naabu]
+        HP[3️⃣ http_probe<br/>Httpx + Wappalyzer]
+        RE[4️⃣ resource_enum<br/>Katana + GAU]
+        VS[5️⃣ vuln_scan<br/>Nuclei + MITRE]
+        GH[6️⃣ github<br/>Secret Hunting]
+    end
+
+    subgraph Output["📤 Output"]
+        JSON[(recon_domain.json)]
+        Graph[(Neo4j Graph)]
+    end
+
+    Domain --> DD
+    DD --> PS
+    PS --> HP
+    HP --> RE
+    RE --> VS
+    VS --> GH
+    GH --> JSON
+    JSON --> Graph
 ```
 
-> **Note:** `vuln_scan` automatically includes MITRE CWE/CAPEC enrichment for all discovered CVEs.
+### Detailed Module Flow
+
+```mermaid
+flowchart TB
+    subgraph Phase1["Phase 1: Domain Discovery"]
+        direction TB
+        Start([🌐 TARGET_DOMAIN]) --> WHOIS[WHOIS Lookup<br/>Registrar, dates, contacts]
+        WHOIS --> SubD[Subdomain Discovery]
+
+        subgraph SubSources["Subdomain Sources"]
+            CRT[crt.sh<br/>Certificate Transparency]
+            HT[HackerTarget API<br/>DNS records]
+            Knock[Knockpy<br/>Bruteforce]
+        end
+
+        SubD --> CRT
+        SubD --> HT
+        SubD --> Knock
+
+        CRT --> Merge[Merge & Dedupe]
+        HT --> Merge
+        Knock --> Merge
+
+        Merge --> DNS[DNS Resolution<br/>A, AAAA, MX, NS, TXT, CNAME]
+        DNS --> Out1[(Subdomains + IPs)]
+    end
+
+    subgraph Phase2["Phase 2: Port Scanning"]
+        direction TB
+        Out1 --> Naabu[Naabu Port Scanner]
+
+        subgraph NaabuOpts["Scan Options"]
+            SYN[SYN Scan<br/>Fast, requires root]
+            Connect[CONNECT Scan<br/>Slower, no root needed]
+            Passive[Shodan InternetDB<br/>No packets sent]
+        end
+
+        Naabu --> SYN
+        Naabu --> Connect
+        Naabu -.-> Passive
+
+        SYN --> CDN{CDN Detected?}
+        Connect --> CDN
+        Passive --> CDN
+
+        CDN -->|Yes| Skip[Skip CDN IPs]
+        CDN -->|No| Out2[(Open Ports + Services)]
+        Skip --> Out2
+    end
+
+    subgraph Phase3["Phase 3: HTTP Probing"]
+        direction TB
+        Out2 --> Httpx[Httpx HTTP Prober]
+
+        subgraph HttpxFeatures["Detection Features"]
+            Live[Live URL Check<br/>Status codes]
+            Tech[Technology Detection<br/>Wappalyzer enhanced]
+            TLS[TLS/SSL Analysis<br/>Certs, ciphers]
+            Headers[Header Analysis<br/>Security headers]
+        end
+
+        Httpx --> Live
+        Httpx --> Tech
+        Httpx --> TLS
+        Httpx --> Headers
+
+        Live --> Out3[(Live URLs + Tech Stack)]
+        Tech --> Out3
+        TLS --> Out3
+        Headers --> Out3
+    end
+
+    subgraph Phase4["Phase 4: Resource Enumeration"]
+        direction TB
+        Out3 --> ResEnum[Resource Enumeration]
+
+        subgraph EnumTools["Discovery Methods (Parallel)"]
+            Katana[Katana<br/>Active Crawling<br/>Current site structure]
+            GAU[GAU<br/>Passive Archives<br/>Historical URLs]
+            KR[Kiterunner<br/>API Bruteforce<br/>Hidden endpoints]
+        end
+
+        ResEnum --> Katana
+        ResEnum --> GAU
+        ResEnum --> KR
+
+        Katana --> MergeURL[Merge & Classify]
+        GAU --> MergeURL
+        KR --> MergeURL
+
+        MergeURL --> Out4[(Endpoints + Parameters)]
+    end
+
+    subgraph Phase5["Phase 5: Vulnerability Scanning"]
+        direction TB
+        Out4 --> Nuclei[Nuclei Scanner]
+
+        subgraph NucleiFeatures["Scan Types"]
+            CVE[CVE Detection<br/>Known vulnerabilities]
+            DAST[DAST Fuzzing<br/>XSS, SQLi, SSTI]
+            Misconfig[Misconfiguration<br/>Exposed panels, defaults]
+            Info[Info Disclosure<br/>Backup files, .git]
+        end
+
+        Nuclei --> CVE
+        Nuclei --> DAST
+        Nuclei --> Misconfig
+        Nuclei --> Info
+
+        CVE --> MITRE[MITRE Enrichment<br/>CWE + CAPEC]
+        DAST --> MITRE
+        Misconfig --> MITRE
+        Info --> MITRE
+
+        MITRE --> Out5[(Vulnerabilities + Attack Patterns)]
+    end
+
+    subgraph Phase6["Phase 6: GitHub Hunting"]
+        direction TB
+        Out5 --> GitHub[GitHub Secret Hunter]
+
+        subgraph Secrets["Secret Types"]
+            API[API Keys<br/>AWS, GCP, Stripe]
+            Creds[Credentials<br/>Passwords, tokens]
+            Keys[Private Keys<br/>SSH, SSL]
+            DB[Database Strings<br/>Connection strings]
+        end
+
+        GitHub --> API
+        GitHub --> Creds
+        GitHub --> Keys
+        GitHub --> DB
+
+        API --> Out6[(Exposed Secrets)]
+        Creds --> Out6
+        Keys --> Out6
+        DB --> Out6
+    end
+
+    subgraph FinalOutput["📤 Final Output"]
+        Out6 --> FinalJSON[(recon_domain.json)]
+        FinalJSON --> Neo4j[(Neo4j Graph DB)]
+    end
+```
+
+### Data Enrichment Flow
+
+```mermaid
+flowchart LR
+    subgraph Discovery["Discovery Phase"]
+        Sub[Subdomains] --> IP[IP Addresses]
+        IP --> Port[Open Ports]
+        Port --> Service[Services]
+    end
+
+    subgraph Analysis["Analysis Phase"]
+        Service --> URL[Live URLs]
+        URL --> Tech[Technologies]
+        Tech --> Endpoint[Endpoints]
+    end
+
+    subgraph Assessment["Assessment Phase"]
+        Endpoint --> Vuln[Vulnerabilities]
+        Vuln --> CVE[CVE IDs]
+        CVE --> CWE[CWE Weaknesses]
+        CWE --> CAPEC[CAPEC Attacks]
+    end
+
+    subgraph Graph["Graph Storage"]
+        CAPEC --> Neo4j[(Neo4j)]
+    end
+```
 
 ---
 
@@ -284,60 +404,95 @@ Edit `params.py`:
 
 ```python
 # Run all modules (recommended for full assessment)
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "github"]
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan", "github"]
 
 # Quick recon only (no vulnerability scanning)
 SCAN_MODULES = ["domain_discovery"]
 
 # Port scan + HTTP probing (skip vulnerability scanning)
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe"]
-
-# Full scan (default) - vuln_scan includes MITRE CWE/CAPEC enrichment
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 ```
 
-> **Note:** `vuln_scan` automatically includes MITRE CWE/CAPEC enrichment for all CVEs found.
-> Configure MITRE settings (CWE, CAPEC) in the "MITRE CWE/CAPEC Enrichment" section of `params.py`.
+### Module 1: `domain_discovery`
 
----
+```mermaid
+flowchart LR
+    subgraph Input
+        Domain[example.com]
+    end
 
-### Module 1: `domain_discovery` - Domain Intelligence
+    subgraph Discovery["Domain Discovery"]
+        WHOIS[WHOIS<br/>Registrar info]
+        CRT[crt.sh<br/>CT logs]
+        HT[HackerTarget<br/>DNS search]
+        Knock[Knockpy<br/>Bruteforce]
+        DNS[DNS Resolver<br/>All record types]
+    end
 
-**Purpose:** Gather information about the target domain and discover attack surface.
+    subgraph Output
+        Subs[Subdomains]
+        IPs[IP Addresses]
+        Records[DNS Records]
+    end
+
+    Domain --> WHOIS
+    Domain --> CRT
+    Domain --> HT
+    Domain --> Knock
+
+    WHOIS --> DNS
+    CRT --> DNS
+    HT --> DNS
+    Knock --> DNS
+
+    DNS --> Subs
+    DNS --> IPs
+    DNS --> Records
+```
 
 | What It Does | Output |
 |--------------|--------|
 | **WHOIS lookup** | Registrar, creation date, owner info |
-| **Subdomain discovery** | Finds subdomains via passive sources (or uses filtered list) |
+| **Subdomain discovery** | Finds subdomains via passive sources |
 | **DNS enumeration** | A, AAAA, MX, NS, TXT, CNAME records |
 | **IP resolution** | Maps all discovered hostnames to IPs |
 
-**Key Parameters:**
+📖 **Key Parameters:**
 ```python
-# Target Configuration
-TARGET_DOMAIN = "example.com"           # Root domain (always specify the root)
-SUBDOMAIN_LIST = []                     # Empty = discover ALL subdomains
-
-# OR filter specific subdomains (skip discovery, scan only these):
-SUBDOMAIN_LIST = ["www.", "api.", "dev."]  # Only scan www/api/dev.example.com
-
-# Scan Options
-USE_TOR_FOR_RECON = False               # Use Tor for anonymity
-USE_BRUTEFORCE_FOR_SUBDOMAINS = False   # Brute force subdomain discovery
+TARGET_DOMAIN = "example.com"           # Root domain
+SUBDOMAIN_LIST = []                     # Empty = discover ALL
+USE_BRUTEFORCE_FOR_SUBDOMAINS = False   # Brute force mode
 ```
-
-**Scan Modes:**
-
-| SUBDOMAIN_LIST | Mode | Description |
-|----------------|------|-------------|
-| `[]` (empty) | Full Discovery | Discovers all subdomains using passive sources |
-| `["www.", "api."]` | Filtered Scan | Skips discovery, only scans specified subdomains |
 
 ---
 
-### Module 2: `port_scan` - Fast Port Scanning
+### Module 2: `port_scan`
 
-**Purpose:** Discover open ports on discovered hosts using ProjectDiscovery's Naabu.
+```mermaid
+flowchart LR
+    subgraph Input
+        IPs[IP Addresses]
+    end
+
+    subgraph Scanner["Naabu Scanner"]
+        SYN[SYN Scan]
+        Service[Service Detection]
+        CDN[CDN Detection]
+    end
+
+    subgraph Output
+        Ports[Open Ports]
+        Services[Service Names]
+        CDNInfo[CDN/WAF Info]
+    end
+
+    IPs --> SYN
+    SYN --> Service
+    Service --> CDN
+    CDN --> Ports
+    CDN --> Services
+    CDN --> CDNInfo
+```
 
 | What It Finds | Examples |
 |---------------|----------|
@@ -345,571 +500,357 @@ USE_BRUTEFORCE_FOR_SUBDOMAINS = False   # Brute force subdomain discovery
 | **CDN detection** | Cloudflare, Akamai, Fastly |
 | **Service hints** | Common service identification |
 
-**Execution:** Runs via Docker (`projectdiscovery/naabu:latest`) - no local installation needed.
-
-**Key Parameters:**
+📖 **Key Parameters:**
 ```python
-NAABU_TOP_PORTS = "1000"               # Number of top ports to scan
-NAABU_RATE_LIMIT = 1000                # Packets per second
-NAABU_SCAN_TYPE = "s"                  # SYN scan (requires root)
-NAABU_EXCLUDE_CDN = True               # Skip CDN-protected ports
+NAABU_TOP_PORTS = "1000"        # Number of top ports
+NAABU_RATE_LIMIT = 1000         # Packets per second
+NAABU_SCAN_TYPE = "s"           # SYN scan
 ```
 
 📖 **Detailed documentation:** [readmes/README.PORT_SCAN.md](readmes/README.PORT_SCAN.md)
 
 ---
 
-### Module 3: `http_probe` - HTTP Probing & Technology Detection + Wappalyzer Enhancement
+### Module 3: `http_probe`
 
-**Purpose:** Probe HTTP/HTTPS services and detect technologies, server info, and TLS details. Enhanced with Wappalyzer for comprehensive technology detection.
+```mermaid
+flowchart LR
+    subgraph Input
+        URLs[Target URLs<br/>from port scan]
+    end
+
+    subgraph Httpx["Httpx Prober"]
+        Probe[HTTP/S Requests]
+        Tech[Technology Detection]
+        TLS[TLS Analysis]
+        Headers[Header Extraction]
+    end
+
+    subgraph Wappalyzer["Wappalyzer Enhancement"]
+        CMS[CMS Detection]
+        Plugins[Plugin Detection]
+        Analytics[Analytics Tools]
+    end
+
+    subgraph Output
+        Live[Live URLs]
+        Stack[Tech Stack]
+        Certs[Certificates]
+        SecHeaders[Security Headers]
+    end
+
+    URLs --> Probe
+    Probe --> Tech
+    Probe --> TLS
+    Probe --> Headers
+
+    Tech --> Wappalyzer
+    Wappalyzer --> CMS
+    Wappalyzer --> Plugins
+    Wappalyzer --> Analytics
+
+    CMS --> Live
+    Plugins --> Stack
+    Analytics --> Stack
+    TLS --> Certs
+    Headers --> SecHeaders
+```
 
 | What It Finds | Examples |
 |---------------|----------|
 | **Live URLs** | Which endpoints are responding |
 | **Technologies** | WordPress, nginx, PHP, React |
-| **CMS Plugins** | Yoast SEO, WooCommerce, Contact Form 7 (via Wappalyzer) |
-| **Analytics Tools** | Google Analytics, Facebook Pixel, Hotjar (via Wappalyzer) |
-| **Security Tools** | Cloudflare, Sucuri, reCAPTCHA (via Wappalyzer) |
-| **Server info** | Apache 2.4.41, nginx 1.18 |
+| **CMS Plugins** | Yoast SEO, WooCommerce (via Wappalyzer) |
 | **TLS certificates** | Issuer, expiry, SANs |
-| **CDN/ASN** | Cloudflare, AWS, network info |
-| **Response data** | Status codes, headers, body hash |
-
-**Execution:** Runs via Docker (`projectdiscovery/httpx:latest`). Wappalyzer enhancement uses existing HTML (no extra HTTP requests).
-
-**Key Parameters:**
-```python
-HTTPX_THREADS = 50                     # Concurrent threads
-HTTPX_PROBE_TECH_DETECT = True         # Technology detection (httpx built-in)
-HTTPX_PROBE_TLS_INFO = True            # TLS certificate info
-HTTPX_INCLUDE_RESPONSE = True          # Include response body (required for Wappalyzer)
-WAPPALYZER_ENABLED = True              # Enable Wappalyzer enhancement
-WAPPALYZER_MIN_CONFIDENCE = 50         # Minimum confidence level
-```
-
-**Wappalyzer Enhancement:**
-- Uses existing HTML from httpx (no additional HTTP requests)
-- Detects 1000+ technologies vs httpx's ~50-100 patterns
-- Finds CMS plugins, analytics tools, security tools, frameworks
-- Provides version detection and category classification
-- Automatically merges new technologies into httpx results
 
 📖 **Detailed documentation:** [readmes/README.HTTP_PROBE.md](readmes/README.HTTP_PROBE.md)
 
 ---
 
-### Module 4: `resource_enum` - Endpoint Discovery (Katana + GAU + Kiterunner)
+### Module 4: `resource_enum`
 
-**Purpose:** Comprehensive endpoint discovery combining active crawling (Katana), passive historical URL discovery (GAU), and API bruteforcing (Kiterunner) for maximum coverage.
+```mermaid
+flowchart TB
+    subgraph Input
+        URLs[Live URLs]
+    end
 
-| What It Finds | Examples |
-|---------------|----------|
-| **Active endpoints** | Current site structure via Katana crawling |
-| **Historical URLs** | Old/deleted pages from Wayback Machine, CommonCrawl |
-| **Hidden API routes** | Undocumented APIs via Kiterunner (40k+ Swagger specs) |
-| **Admin panels** | `/admin`, `/wp-admin`, `/debug` endpoints |
-| **API routes** | `/api/v1/users`, `/graphql`, REST endpoints |
-| **Forms** | Login forms, file uploads, search forms |
-| **Parameters** | Query params, body params, path params |
+    subgraph Parallel["Parallel Execution"]
+        subgraph Active["Active Discovery"]
+            Katana[🕸️ Katana<br/>Web Crawler<br/>Current endpoints]
+        end
 
-**Execution:** Runs Katana, GAU, and Kiterunner in **parallel** via Docker, then merges results with deduplication.
+        subgraph Passive["Passive Discovery"]
+            GAU[📚 GAU<br/>Archive Search<br/>Historical URLs]
+        end
 
-**Key Parameters:**
-```python
-# Katana (Active Crawling)
-KATANA_DEPTH = 3                       # Crawl depth
-KATANA_MAX_URLS = 1000                 # Max URLs per target
-KATANA_JS_CRAWL = True                 # Parse JavaScript files
+        subgraph Bruteforce["API Discovery"]
+            KR[🔑 Kiterunner<br/>Swagger Specs<br/>Hidden APIs]
+        end
+    end
 
-# GAU (Passive URL Discovery)
-GAU_ENABLED = True                     # Enable GAU
-GAU_PROVIDERS = ["wayback", "commoncrawl", "otx", "urlscan"]
-GAU_MAX_URLS = 1000                    # Max URLs per domain
-GAU_VERIFY_URLS = True                 # Verify URLs are live
+    subgraph Merge["Merge & Classify"]
+        Dedup[Deduplicate]
+        Classify[Classify Endpoints<br/>API, Admin, Form, Static]
+        Parse[Parse Parameters]
+    end
 
-# Kiterunner (API Bruteforcing)
-KITERUNNER_ENABLED = True              # Enable Kiterunner
-KITERUNNER_WORDLIST = "apiroutes-251227"  # 354k+ API routes
-KITERUNNER_RATE_LIMIT = 100            # Requests per second
+    subgraph Output
+        Endpoints[All Endpoints]
+        Forms[Forms + Inputs]
+        APIs[API Routes]
+    end
+
+    URLs --> Katana
+    URLs --> GAU
+    URLs --> KR
+
+    Katana --> Dedup
+    GAU --> Dedup
+    KR --> Dedup
+
+    Dedup --> Classify
+    Classify --> Parse
+
+    Parse --> Endpoints
+    Parse --> Forms
+    Parse --> APIs
 ```
-
-**Three Discovery Methods:**
 
 | Tool | Method | What It Finds |
 |------|--------|---------------|
-| **Katana** | Active crawling | Current live endpoints (follows links) |
-| **GAU** | Passive archives | Historical/deleted endpoints (Wayback, CommonCrawl) |
-| **Kiterunner** | API bruteforcing | Hidden APIs not linked anywhere (Swagger specs) |
-
-**Why All Three?**
-- Katana finds current live endpoints (what's linked)
-- GAU finds historical endpoints (what was indexed)
-- Kiterunner finds hidden APIs (what's not linked or indexed)
-- Combined coverage discovers 3-5x more endpoints than any single tool
-- Each endpoint tracked with `sources: ["katana", "gau", "kiterunner"]`
+| **Katana** | Active crawling | Current live endpoints |
+| **GAU** | Passive archives | Historical/deleted pages |
+| **Kiterunner** | API bruteforce | Hidden API routes |
 
 📖 **Detailed documentation:** [readmes/README.RESOURCE_ENUM.md](readmes/README.RESOURCE_ENUM.md)
 
 ---
 
-### Module 5: `vuln_scan` - Web Application Vulnerability Scanning + MITRE Enrichment
+### Module 5: `vuln_scan`
 
-**Purpose:** Deep web application security testing with thousands of vulnerability templates. Automatically enriches discovered CVEs with MITRE CWE weaknesses and CAPEC attack patterns.
+```mermaid
+flowchart TB
+    subgraph Input
+        Endpoints[All Endpoints]
+        Tech[Technology Stack]
+    end
+
+    subgraph Nuclei["Nuclei Scanner"]
+        Templates[9000+ Templates]
+
+        subgraph ScanTypes["Scan Types"]
+            CVEScan[CVE Detection<br/>Known vulns]
+            DAST[DAST Fuzzing<br/>XSS, SQLi, SSTI]
+            Misconfig[Misconfiguration<br/>Exposed panels]
+            InfoLeak[Info Disclosure<br/>.git, backups]
+        end
+    end
+
+    subgraph CVELookup["CVE Lookup"]
+        NVD[Query NVD<br/>by technology version]
+        Match[Match CVEs<br/>nginx:1.19 → CVE-2021-23017]
+    end
+
+    subgraph MITRE["MITRE Enrichment"]
+        CWE[CWE Weaknesses<br/>Weakness hierarchy]
+        CAPEC[CAPEC Patterns<br/>Attack techniques]
+    end
+
+    subgraph Output
+        Vulns[Vulnerabilities]
+        CVEs[CVE Details]
+        Attacks[Attack Patterns]
+    end
+
+    Endpoints --> Templates
+    Tech --> CVELookup
+
+    Templates --> CVEScan
+    Templates --> DAST
+    Templates --> Misconfig
+    Templates --> InfoLeak
+
+    CVEScan --> MITRE
+    DAST --> MITRE
+    CVELookup --> NVD
+    NVD --> Match
+    Match --> MITRE
+
+    MITRE --> CWE
+    CWE --> CAPEC
+
+    Misconfig --> Vulns
+    InfoLeak --> Vulns
+    CAPEC --> CVEs
+    CAPEC --> Attacks
+```
 
 | What It Finds | Examples |
 |---------------|----------|
-| **Web CVEs** | Log4Shell, Spring4Shell, Drupalgeddon |
-| **Injection flaws** | SQL injection, XSS, Command injection |
-| **Misconfigurations** | Exposed admin panels, debug endpoints |
-| **Information leaks** | .git exposure, backup files, API keys |
-| **Default credentials** | Admin:admin, test accounts |
-| **CWE Weaknesses** | Nested hierarchy from broad to specific weakness type |
-| **CAPEC Attack Patterns** | Detailed attack patterns with severity, execution flow |
-| **Custom Security Checks** | DNS security, auth issues, service exposure, rate limiting |
-
-**Execution:** Runs via Docker (`projectdiscovery/nuclei:latest`) with Katana crawler for DAST. MITRE enrichment runs automatically after vulnerability scanning. Custom security checks run in parallel for issues not covered by Nuclei (SPF/DMARC/DNSSEC, Redis auth, K8s exposure, rate limiting, etc.).
-
-**Key Parameters:**
-```python
-# Vulnerability Scanning
-NUCLEI_SEVERITY = ["critical", "high", "medium", "low"]  # What to report
-NUCLEI_DAST_MODE = True                  # Active fuzzing (XSS, SQLi testing)
-NUCLEI_RATE_LIMIT = 100                  # Requests per second
-NUCLEI_AUTO_UPDATE_TEMPLATES = True      # Update 9000+ templates
-
-# MITRE CWE/CAPEC Enrichment (automatically included)
-MITRE_AUTO_UPDATE_DB = True              # Auto-download CVE2CAPEC database
-MITRE_INCLUDE_CWE = True                 # Include CWE weakness mappings
-MITRE_INCLUDE_CAPEC = True               # Include CAPEC attack patterns
-
-# Custom Security Checks (non-Nuclei)
-SECURITY_CHECK_ENABLED = True            # Enable custom security checks
-SECURITY_CHECK_SPF_MISSING = True        # DNS: SPF record check
-SECURITY_CHECK_REDIS_NO_AUTH = True      # Service: Redis auth check
-SECURITY_CHECK_NO_RATE_LIMITING = True   # App: Rate limiting check
-```
+| **Web CVEs** | Log4Shell, Spring4Shell |
+| **Injection flaws** | SQL injection, XSS |
+| **Misconfigurations** | Exposed admin panels |
+| **CWE Weaknesses** | Weakness hierarchy |
+| **CAPEC Attacks** | Attack techniques |
 
 📖 **Detailed documentation:** [readmes/README.VULN_SCAN.md](readmes/README.VULN_SCAN.md) | [readmes/README.MITRE.md](readmes/README.MITRE.md)
 
 ---
 
-### Module 6: `github` - Secret Hunting
+### Module 6: `github`
 
-**Purpose:** Find leaked credentials, API keys, and secrets in GitHub repositories.
+```mermaid
+flowchart LR
+    subgraph Input
+        Org[GitHub Org/User]
+    end
 
-| What It Finds | Examples |
-|---------------|----------|
-| **API keys** | AWS, Google Cloud, Stripe, Twilio |
-| **Credentials** | Passwords, tokens, private keys |
-| **Database strings** | Connection strings with passwords |
-| **Private keys** | SSH keys, SSL certificates |
+    subgraph Hunter["GitHub Secret Hunter"]
+        Repos[List Repositories]
+        Commits[Search Commits]
+        Code[Search Code]
+    end
 
-**Key Parameters:**
-```python
-GITHUB_ACCESS_TOKEN = "ghp_xxxxx"        # Required - set in .env file
-GITHUB_TARGET_ORG = "company-name"       # Organization or username
-GITHUB_SCAN_COMMITS = True               # Search git history
-GITHUB_MAX_COMMITS = 100                 # Commits per repo
+    subgraph Patterns["Detection Patterns"]
+        AWS[AWS Keys]
+        GCP[GCP Credentials]
+        Stripe[Stripe Keys]
+        DB[Database Strings]
+        SSH[SSH Keys]
+    end
+
+    subgraph Output
+        Secrets[Exposed Secrets]
+    end
+
+    Org --> Repos
+    Repos --> Commits
+    Repos --> Code
+
+    Commits --> Patterns
+    Code --> Patterns
+
+    AWS --> Secrets
+    GCP --> Secrets
+    Stripe --> Secrets
+    DB --> Secrets
+    SSH --> Secrets
 ```
 
 ---
 
 ## 🆚 Complete Tool Comparison
 
-Understanding what each tool does is crucial for effective reconnaissance. RedAmon uses 6 different tools in its pipeline.
+### Overview Matrix
 
-### 📊 Overview: All Tools at a Glance
+```mermaid
+flowchart TB
+    subgraph Layer1["Layer 1: DNS/Registry"]
+        WHOIS[WHOIS<br/>Domain info]
+        DNS[DNS<br/>Resolution]
+    end
 
-| Tool | Primary Purpose | Layer | Speed | Output |
-|------|-----------------|-------|-------|--------|
-| **WHOIS** | Domain ownership & registration | DNS/Registry | ⚡ Instant | Registrar, dates, contacts |
-| **DNS** | Domain resolution & records | Layer 3 (Network) | ⚡ Instant | IPs, MX, TXT, CNAME records |
-| **Naabu** | Port discovery | Layer 4 (Transport) | ⚡ Very Fast | Open ports, protocols |
-| **httpx** | HTTP probing & tech detection | Layer 7 (Application) | ⚡ Fast | Live URLs, technologies, TLS |
-| **Katana** | Active endpoint crawling | Layer 7 (Application) | ⚡ Fast | Current endpoints, forms |
-| **GAU** | Passive URL discovery | OSINT/Archives | ⚡ Fast | Historical/deleted endpoints |
-| **Kiterunner** | API route bruteforcing | Layer 7 (Application) | 🔄 Medium | Hidden API endpoints |
-| **Nuclei** | Vulnerability scanning | Layer 7 (Application) | 🔄 Medium | CVEs, misconfigs, vulns |
-| **MITRE CWE/CAPEC** | Weakness & attack pattern enrichment | Data Enrichment | ⚡ Fast | CWE weaknesses, CAPEC patterns |
-| **GVM/OpenVAS** | Deep vulnerability assessment | All Layers | 🐢 Slow | Full security audit |
+    subgraph Layer2["Layer 4: Transport"]
+        Naabu[Naabu<br/>Port scan]
+    end
 
----
+    subgraph Layer3["Layer 7: Application"]
+        Httpx[Httpx<br/>HTTP probe]
+        Katana[Katana<br/>Crawl]
+        GAU[GAU<br/>Archives]
+        KR[Kiterunner<br/>API brute]
+        Nuclei[Nuclei<br/>Vuln scan]
+    end
 
-### 🔍 WHOIS - Domain Intelligence
+    subgraph Layer4["Data Enrichment"]
+        MITRE[MITRE<br/>CWE/CAPEC]
+        GVM[GVM<br/>Deep scan]
+    end
 
-| What It Does | What It Finds |
-|--------------|---------------|
-| Queries domain registries | **Registrar**: Who registered the domain |
-| Retrieves registration data | **Dates**: Created, expires, last updated |
-| Identifies ownership | **Name Servers**: DNS infrastructure |
-| Discovers related domains | **Contacts**: Admin, tech contacts (often redacted) |
-
-**Example Output:**
-```
-Domain: vulnweb.com
-Registrar: Gandi SAS
-Created: 2010-06-14
-Expires: 2027-06-14
-Organization: Invicti Security Limited
-```
-
-**Speed:** ⚡ <1 second | **Requires:** Nothing (Python library)
-
----
-
-### 🌐 DNS - Domain Resolution
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Resolves hostnames to IPs | **A/AAAA Records**: IPv4/IPv6 addresses |
-| Discovers subdomains | **MX Records**: Mail servers |
-| Maps infrastructure | **TXT Records**: SPF, DKIM, verification |
-| Finds related services | **CNAME Records**: Aliases, CDN endpoints |
-
-**Example Output:**
-```
-testphp.vulnweb.com → 44.228.249.3 (A record)
-                    → "google-site-verification:xxx" (TXT record)
+    WHOIS --> DNS
+    DNS --> Naabu
+    Naabu --> Httpx
+    Httpx --> Katana
+    Httpx --> GAU
+    Httpx --> KR
+    Katana --> Nuclei
+    GAU --> Nuclei
+    KR --> Nuclei
+    Nuclei --> MITRE
+    Nuclei --> GVM
 ```
 
-**Speed:** ⚡ <1 second per domain | **Requires:** Nothing (Python library)
-
----
-
-### 🚀 Naabu - Port Scanner
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Scans TCP/UDP ports | **Open Ports**: Which ports accept connections |
-| Identifies services | **Protocols**: TCP/UDP |
-| Detects CDN/Cloud | **CDN Detection**: Cloudflare, AWS, etc. |
-| Fast SYN scanning | **Service Hints**: Port-based service guessing |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| Open Ports | ✅ Primary | SYN/CONNECT scan, top-N or custom ports |
-| CDN Detection | ✅ Yes | Identifies CDN-protected IPs |
-| Service Names | ⚠️ Basic | Port-based mapping only (80→http) |
-| Service Versions | ❌ No | Cannot detect actual versions |
-| Banner Grabbing | ❌ No | Does not connect to services |
-
-**Speed:** ⚡ ~5-10 seconds for 1000 ports | **Requires:** Docker, root (for SYN scan)
-
----
-
-### 🔬 httpx - HTTP Prober & Tech Detector + Wappalyzer Enhancement
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Probes HTTP/HTTPS endpoints | **Live URLs**: Which URLs respond |
-| Detects web technologies | **Technologies**: PHP, WordPress, nginx, React |
-| **Wappalyzer Enhancement** | **CMS Plugins**: Yoast SEO, WooCommerce, Contact Form 7 |
-| **Wappalyzer Enhancement** | **Analytics**: Google Analytics, Facebook Pixel, Hotjar |
-| **Wappalyzer Enhancement** | **Security Tools**: Cloudflare, Sucuri, reCAPTCHA |
-| Extracts SSL/TLS info | **Certificates**: Issuer, expiry, SANs |
-| Fingerprints servers | **Server Headers**: nginx, Apache, IIS |
-| Captures response data | **Hashes**: Favicon, body, JARM fingerprint |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| Live URL Discovery | ✅ Primary | HTTP status codes, response validation |
-| Technology Detection (httpx) | ✅ Excellent | Wappalyzer-like fingerprinting (~50-100 patterns) |
-| **Technology Detection (Wappalyzer)** | ✅ **Enhanced** | **1000+ technology patterns, CMS plugins, analytics** |
-| **CMS Plugin Detection** | ✅ **NEW** | **WordPress/Drupal/Joomla plugins via Wappalyzer** |
-| **Version Detection** | ✅ **Enhanced** | **Software versions with confidence scores** |
-| TLS/SSL Analysis | ✅ Excellent | Cert chain, cipher suites, versions |
-| CDN Detection | ✅ Yes | Via headers and IP analysis |
-| Server Fingerprint | ✅ Yes | Server header, JARM, favicon hash |
-| Response Capture | ✅ Yes | Headers, body, word/line count |
-| Vulnerability Scanning | ❌ No | Detection only, no exploitation |
-
-**Speed:** ⚡ ~10-30 seconds per URL (with all options) + ~1-2 seconds per URL for Wappalyzer | **Requires:** Docker, `python-Wappalyzer` library
-
----
-
-### 🕸️ GAU - Passive URL Discovery (GetAllUrls)
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Queries historical archives | **Wayback Machine URLs**: Pages from web.archive.org |
-| Aggregates OSINT sources | **CommonCrawl URLs**: Large-scale web crawl data |
-| Zero target interaction | **OTX URLs**: AlienVault threat intelligence |
-| Discovers hidden endpoints | **URLScan URLs**: Security scan results |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| Historical URLs | ✅ Primary | Discovers old/deleted pages |
-| Admin Panels | ✅ Yes | `/admin`, `/wp-admin`, `/debug` |
-| Backup Files | ✅ Yes | `.bak`, `.sql`, `backup.zip` |
-| Debug Endpoints | ✅ Yes | `/phpinfo.php`, `/debug/` |
-| API Endpoints | ✅ Yes | Older API versions, hidden routes |
-| Target Interaction | ❌ None | 100% passive, queries archives only |
-
-**Why It Matters:**
-```
-Historical discovery finds:
-  - Old admin panels still accessible
-  - Backup files left behind
-  - Debug endpoints forgotten
-  - API versions with vulnerabilities
-  - Config files exposed temporarily
-```
-
-**Speed:** ⚡ ~10-30 seconds per domain | **Requires:** Docker
-
----
-
-### 🚀 Kiterunner - API Route Bruteforcer
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Bruteforces API routes | **Hidden endpoints**: APIs not linked or indexed |
-| Uses Swagger/OpenAPI specs | **REST routes**: `/api/v1/users`, `/api/admin` |
-| Smart parameter handling | **GraphQL endpoints**: `/graphql`, `/gql` |
-| Detects valid responses | **Undocumented APIs**: Internal/debug endpoints |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| Hidden API Discovery | ✅ Primary | Uses 40,000+ routes from Swagger specs |
-| REST Endpoints | ✅ Excellent | GET, POST, PUT, DELETE, PATCH |
-| Response Validation | ✅ Yes | Filters 404s, validates live responses |
-| Rate Limiting | ✅ Yes | Configurable delay between requests |
-| Custom Headers | ✅ Yes | Auth tokens, API keys |
-| Target Interaction | ⚠️ Active | Sends requests to discover routes |
-
-**Why Kiterunner?**
-```
-Traditional wordlists miss API routes because:
-  - They're not designed for APIs
-  - APIs use different naming conventions
-  - Many routes need specific HTTP methods
-
-Kiterunner uses 40,000+ real Swagger/OpenAPI specs:
-  - Knows correct HTTP methods for each route
-  - Sends appropriate headers/parameters
-  - Finds routes that wordlists miss
-```
-
-**Speed:** 🔄 ~2-5 minutes per target | **Requires:** Docker
-
----
-
-### 🎯 Nuclei - Vulnerability Scanner + CVE Lookup
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Template-based scanning | **CVEs**: Known vulnerabilities |
-| Active vulnerability testing | **Misconfigurations**: Exposed panels, default creds |
-| DAST fuzzing | **Injection Flaws**: XSS, SQLi, SSTI |
-| Exposure detection | **Information Disclosure**: Backup files, debug info |
-| Technology-specific checks | **CMS Vulns**: WordPress, Joomla, Drupal |
-| **CVE Lookup** | **Version-based CVEs**: Like Nmap's vulners script |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| CVE Detection | ✅ Excellent | 8000+ templates, constantly updated |
-| **CVE Lookup** | ✅ **NEW** | Queries NVD for technology CVEs (nginx, PHP, etc.) |
-| Misconfiguration | ✅ Excellent | Default passwords, exposed endpoints |
-| XSS Testing | ✅ DAST Mode | Active payload injection |
-| SQL Injection | ✅ DAST Mode | Active fuzzing with payloads |
-| SSRF/SSTI | ✅ DAST Mode | Server-side vulnerability testing |
-| Information Disclosure | ✅ Yes | Sensitive files, backup exposure |
-| Authentication Issues | ✅ Yes | Default creds, auth bypass |
-| Port Scanning | ❌ No | Uses pre-discovered URLs |
-
-**CVE Lookup Example (like Nmap's vulners):**
-```
-Technologies detected: Nginx:1.19.0, PHP:5.6.40
-CVEs found: 23 (2 CRITICAL, 10 HIGH)
-  - CVE-2017-8923 (CVSS 9.8) - PHP buffer overflow
-  - CVE-2021-23017 (CVSS 7.7) - nginx resolver
-  - CVE-2022-41741 (CVSS 7.0) - nginx mp4 module
-```
-
-**Speed:** 🔄 ~1-30 minutes depending on templates | **Requires:** Docker
-
----
-
-### 🛡️ GVM/OpenVAS - Deep Vulnerability Assessment
-
-| What It Does | What It Finds |
-|--------------|---------------|
-| Full network vulnerability scan | **Network Vulns**: Service-level vulnerabilities |
-| CVE-based detection | **Missing Patches**: Outdated software |
-| Compliance checking | **Security Issues**: Weak configs, protocols |
-| Comprehensive audit | **All Services**: Not just web (SSH, FTP, DB) |
-
-**Detection Capabilities:**
-
-| Capability | Status | Details |
-|------------|--------|---------|
-| CVE Detection | ✅ Excellent | 100,000+ NVTs (vulnerability tests) |
-| Service Vulnerabilities | ✅ Primary | SSH, FTP, SMTP, databases, etc. |
-| SSL/TLS Issues | ✅ Excellent | Weak ciphers, expired certs |
-| Network Misconfig | ✅ Yes | Open services, weak protocols |
-| Web Vulnerabilities | ✅ Good | Basic web testing included |
-| Compliance Checks | ✅ Yes | PCI-DSS, CIS benchmarks |
-| False Positive Rate | ⚠️ Higher | Requires manual verification |
-
-**Speed:** 🐢 30 minutes - 2+ hours | **Requires:** GVM installation (complex setup)
-
----
-
-### 📈 Detailed Feature Matrix
+### Feature Comparison
 
 | Feature | WHOIS | DNS | Naabu | httpx | Katana | GAU | Kiterunner | Nuclei | GVM |
 |---------|-------|-----|-------|-------|--------|-----|------------|--------|-----|
 | **Domain Info** | ✅ | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **IP Resolution** | ❌ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Subdomain Discovery** | ❌ | ✅ | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
 | **Port Scanning** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Service Detection** | ❌ | ❌ | ⚠️ | ✅ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
 | **Live URL Check** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Tech Detection** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ⚠️ | ⚠️ |
 | **Endpoint Discovery** | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Historical URLs** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **Primary** | ❌ | ❌ | ❌ |
-| **Hidden API Discovery** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **Primary** | ❌ | ❌ |
-| **Form Parsing** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Technology Detection** | ❌ | ❌ | ❌ | ✅ **+ Wappalyzer** | ❌ | ❌ | ❌ | ⚠️ | ⚠️ |
-| **CMS Plugin Detection** | ❌ | ❌ | ❌ | ✅ **Wappalyzer** | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **TLS/SSL Analysis** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **CDN Detection** | ❌ | ⚠️ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Historical URLs** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| **API Discovery** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | **CVE Detection** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **CVE Lookup (version)** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| **Web Vuln Scanning** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ⚠️ |
 | **XSS/SQLi Testing** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ⚠️ |
-| **Network Vuln Scan** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
-| **Compliance Check** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
-**Legend:** ✅ Primary/Excellent | ⚠️ Limited/Basic | ❌ Not supported
+**Legend:** ✅ Primary | ⚠️ Limited | ❌ Not supported
 
-> **CVE Lookup (version)**: Queries NVD for CVEs based on detected technology versions (like Nmap's vulners script). Example: Nginx 1.19.0 → finds CVE-2021-23017, CVE-2022-41741, etc.
-
----
-
-### 🔄 Pipeline Flow & Why This Order
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         REDAMON RECONNAISSANCE PIPELINE                          │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  📋 WHOIS        → Domain ownership, registrar, expiration dates                │
-│       │                                                                         │
-│       ▼                                                                         │
-│  🌐 DNS          → Resolve hostnames to IPs, find subdomains                    │
-│       │                                                                         │
-│       ▼                                                                         │
-│  🚀 Naabu        → Fast port scan to find open services                         │
-│       │              (Feeds port info to httpx)                                 │
-│       ▼                                                                         │
-│  🔬 httpx        → Probe HTTP services, detect technologies                     │
-│       │              (Feeds live URLs to resource_enum)                         │
-│       ▼                                                                         │
-│  🕸️ resource_enum → Endpoint discovery (Katana + GAU + Kiterunner in parallel)  │
-│       │              ├── Katana: Active crawling (current site)                 │
-│       │              ├── GAU: Passive discovery (historical URLs)               │
-│       │              └── Kiterunner: API bruteforce (hidden APIs)               │
-│       │              (Merged endpoints feed to Nuclei)                          │
-│       ▼                                                                         │
-│  🎯 Nuclei       → Scan for vulnerabilities on discovered endpoints             │
-│       │              + CVE Lookup for detected technologies                     │
-│       ▼                                                                         │
-│  🔗 MITRE CWE/CAPEC → Enrich CVEs with weakness & attack patterns               │
-│       │              (CVE → CWE hierarchy → CAPEC direct mappings)               │
-│       ▼                                                                         │
-│  🛡️ GVM (opt)    → Deep vulnerability assessment (if needed)                    │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 🎯 When to Use Each Tool
-
-| Scenario | Use These Tools |
-|----------|-----------------|
-| **Quick recon** | WHOIS + DNS + Naabu + httpx |
-| **Full web assessment** | All above + Nuclei |
-| **Compliance audit** | All above + GVM |
-| **Bug bounty** | DNS + Naabu + httpx + Nuclei (DAST) |
-| **Penetration test** | Full pipeline + manual testing |
-| **Asset discovery** | WHOIS + DNS + Naabu |
-
-### ⏱️ Time Comparison (Single Target)
+### Timing Comparison
 
 | Tool | Typical Duration | Notes |
 |------|------------------|-------|
 | WHOIS | <1 second | Instant |
 | DNS | <1 second | Instant |
 | Naabu | 5-10 seconds | 1000 ports |
-| httpx | 10-30 seconds | All options enabled |
+| httpx | 10-30 seconds | All options |
+| Katana | 1-5 minutes | Crawl depth 3 |
+| GAU | 10-30 seconds | Passive |
 | Nuclei | 1-30 minutes | Depends on templates |
 | GVM | 30 min - 2+ hours | Full scan |
-
-**Total Quick Scan (WHOIS→Nuclei):** ~2-5 minutes
-**Total Full Scan (with GVM):** 30 min - 2+ hours
 
 ---
 
 ## ⚙️ Key Configuration Parameters
 
-### `params.py` - Essential Settings
+### Essential Settings (`params.py`)
 
 ```python
 # ═══════════════════════════════════════════════════════════════════
 # TARGET & MODULES
 # ═══════════════════════════════════════════════════════════════════
-TARGET_DOMAIN = "example.com"         # Always the root domain
-SUBDOMAIN_LIST = []                   # Empty = discover all, ["www.", "api."] = filtered
+TARGET_DOMAIN = "example.com"
+SUBDOMAIN_LIST = []                   # Empty = discover all
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 
 # ═══════════════════════════════════════════════════════════════════
-# ANONYMITY (Optional)
+# PORT SCAN
 # ═══════════════════════════════════════════════════════════════════
-USE_TOR_FOR_RECON = False       # Route traffic through Tor
+NAABU_TOP_PORTS = "1000"
+NAABU_RATE_LIMIT = 1000
+NAABU_SCAN_TYPE = "s"                 # SYN scan
 
 # ═══════════════════════════════════════════════════════════════════
-# PORT SCAN - Port Scanning
+# HTTP PROBE
 # ═══════════════════════════════════════════════════════════════════
-NAABU_TOP_PORTS = "1000"        # Top ports to scan
-NAABU_RATE_LIMIT = 1000         # Packets per second
-NAABU_SCAN_TYPE = "s"           # SYN scan (requires root)
+HTTPX_THREADS = 50
+HTTPX_PROBE_TECH_DETECT = True
+WAPPALYZER_ENABLED = True
 
 # ═══════════════════════════════════════════════════════════════════
-# HTTP PROBE - HTTP Probing
+# VULNERABILITY SCAN
 # ═══════════════════════════════════════════════════════════════════
-HTTPX_THREADS = 50              # Concurrent threads
-HTTPX_PROBE_TECH_DETECT = True  # Technology detection
-HTTPX_PROBE_TLS_INFO = True     # TLS certificate info
-
-# ═══════════════════════════════════════════════════════════════════
-# VULN SCAN - Vulnerability Scanning
-# ═══════════════════════════════════════════════════════════════════
-NUCLEI_DAST_MODE = True         # Active fuzzing for XSS, SQLi
+NUCLEI_DAST_MODE = True
 NUCLEI_SEVERITY = ["critical", "high", "medium", "low"]
-NUCLEI_RATE_LIMIT = 100         # Requests per second
-NUCLEI_AUTO_UPDATE_TEMPLATES = True  # Get latest templates
+NUCLEI_AUTO_UPDATE_TEMPLATES = True
 
 # ═══════════════════════════════════════════════════════════════════
-# MITRE CWE/CAPEC - Weakness & Attack Pattern Enrichment
+# MITRE ENRICHMENT
 # ═══════════════════════════════════════════════════════════════════
-MITRE_AUTO_UPDATE_DB = True     # Auto-download CVE2CAPEC database
-MITRE_INCLUDE_CWE = True        # Include CWE weakness mappings
-MITRE_INCLUDE_CAPEC = True      # Include CAPEC attack patterns
-
-# ═══════════════════════════════════════════════════════════════════
-# GITHUB - Secret Hunting
-# ═══════════════════════════════════════════════════════════════════
-GITHUB_ACCESS_TOKEN = ""        # Set in .env file!
-GITHUB_TARGET_ORG = "company"   # Organization/username to scan
+MITRE_INCLUDE_CWE = True
+MITRE_INCLUDE_CAPEC = True
 ```
 
 ---
@@ -917,252 +858,105 @@ GITHUB_TARGET_ORG = "company"   # Organization/username to scan
 ## 🔧 Prerequisites
 
 ### Docker Mode (Recommended)
+
 - **Docker** with Docker Compose
-- **Docker socket access** (for nested container execution)
+- **Docker socket access** for nested container execution
 
 ```bash
 # Verify Docker is running
 docker info
 
-# Build the container (all dependencies included)
+# Build and run
 cd recon/
 docker-compose build --network=host
-
-# Run a scan
 docker-compose run --rm recon python /app/recon/main.py
 ```
 
-### Local Mode (Alternative)
-- **Python 3.8+**
-- **Docker** (still required for ProjectDiscovery tools)
+### Tool Containers (auto-pulled)
 
-```bash
-# Install Python dependencies
-pip install -r recon/requirements.txt
-
-# For anonymous scanning (optional)
-sudo apt install tor proxychains4
-sudo systemctl start tor
-```
-
-### Docker Images (auto-pulled on first run)
-```bash
-# ProjectDiscovery tools (auto-pulled by recon container)
-docker pull projectdiscovery/naabu:latest
-docker pull projectdiscovery/httpx:latest
-docker pull projectdiscovery/nuclei:latest
-docker pull projectdiscovery/katana:latest  # For active crawling
-docker pull sxcurity/gau:latest             # For passive URL discovery
-
-# Kiterunner (auto-downloaded binary, no Docker needed)
-# Binary is downloaded from GitHub releases to ~/.redamon/tools/kiterunner/
-```
-
-### Tor Anonymity Support
-
-The Docker container includes Tor and proxychains. Enable with:
-
-```bash
-USE_TOR_FOR_RECON=true docker-compose run --rm recon python /app/recon/main.py
-
-# Or use the Tor profile for a separate Tor container:
-docker-compose --profile tor up -d
-docker-compose run --rm recon python /app/recon/main.py
-```
+| Tool | Docker Image | Purpose |
+|------|--------------|---------|
+| Naabu | `projectdiscovery/naabu:latest` | Port scanning |
+| httpx | `projectdiscovery/httpx:latest` | HTTP probing |
+| Nuclei | `projectdiscovery/nuclei:latest` | Vuln scanning |
+| Katana | `projectdiscovery/katana:latest` | Web crawling |
+| GAU | `sxcurity/gau:latest` | URL discovery |
 
 ---
 
 ## 📁 Project Structure
 
 ```
-RedAmon/
-├── .env                   # Secrets (GITHUB_TOKEN, GVM_PASSWORD, API keys)
-│
-├── recon/                 # 🐳 Reconnaissance Module (Containerized)
-│   ├── Dockerfile         # Container build instructions
-│   ├── docker-compose.yml # Container orchestration
-│   ├── entrypoint.sh      # Container startup script
-│   ├── requirements.txt   # Python dependencies
-│   ├── params.py          # 🎛️ Recon configuration (edit this!)
-│   ├── main.py            # 🚀 Entry point - run this!
-│   ├── domain_recon.py    # Subdomain discovery
-│   ├── whois_recon.py     # WHOIS lookup
-│   ├── port_scan.py       # Port scanning
-│   ├── http_probe.py      # HTTP probing
-│   ├── resource_enum.py   # Endpoint discovery (Katana + GAU + Kiterunner)
-│   ├── vuln_scan.py       # Vulnerability scanning
-│   ├── add_mitre.py       # MITRE CWE/CAPEC enrichment
-│   ├── github_secret_hunt.py  # GitHub secret hunting
-│   ├── output/            # 📄 Scan results (JSON) - shared volume
-│   ├── data/              # 📦 Cached databases
-│   │   ├── mitre_db/      # CVE2CAPEC database
-│   │   └── wappalyzer/    # Wappalyzer technologies
-│   ├── helpers/           # Tool-specific helpers
-│   └── readmes/           # 📖 Module documentation
-│
-├── gvm_scan/              # 🐳 GVM/OpenVAS Module (Containerized)
-│   ├── docker-compose.yml # GVM container orchestration
-│   ├── Dockerfile         # Python scanner image
-│   ├── params.py          # 🎛️ GVM configuration
-│   ├── main.py            # GVM scan entry point
-│   └── output/            # GVM results
-│
-├── graph_db/              # Neo4j graph database integration
-├── utils/                 # Shared utilities (anonymity.py, etc.)
-└── mcp/                   # MCP server integration
+recon/
+├── Dockerfile              # Container build
+├── docker-compose.yml      # Orchestration
+├── params.py               # 🎛️ Configuration (edit this!)
+├── main.py                 # 🚀 Entry point
+├── domain_recon.py         # Subdomain discovery
+├── whois_recon.py          # WHOIS lookup
+├── port_scan.py            # Port scanning
+├── http_probe.py           # HTTP probing
+├── resource_enum.py        # Endpoint discovery
+├── vuln_scan.py            # Vulnerability scanning
+├── add_mitre.py            # MITRE enrichment
+├── github_secret_hunt.py   # GitHub secrets
+├── output/                 # 📄 Scan results (JSON)
+├── data/                   # 📦 Cached databases
+│   ├── mitre_db/           # CVE2CAPEC database
+│   └── wappalyzer/         # Technology rules
+├── helpers/                # Tool helpers
+└── readmes/                # 📖 Module docs
 ```
-
-### Docker Volumes
-
-| Volume | Purpose | Access |
-|--------|---------|--------|
-| `redamon-recon-output` | Scan results (JSON) | Shared between containers |
-| `/var/run/docker.sock` | Docker socket | Required for nested containers |
 
 ---
 
 ## 📊 Output Format
 
-All modules write to a single JSON file: `recon/output/recon_<domain>.json`
+All modules write to: `recon/output/recon_<domain>.json`
 
-```json
-{
-  "metadata": {
-    "target": "example.com",
-    "scan_timestamp": "2024-01-15T10:30:00",
-    "modules_executed": ["whois", "subdomain_discovery", "port_scan", "http_probe", "vuln_scan"],
-    "mitre_enrichment": {
-      "total_cves_processed": 23,
-      "total_cves_enriched": 23
-    }
-  },
-  "whois": {
-    "registrar": "GoDaddy",
-    "creation_date": "2010-01-01"
-  },
-  "subdomains": ["www.example.com", "api.example.com", "admin.example.com"],
-  "dns": {
-    "A": ["93.184.216.34"],
-    "MX": ["mail.example.com"]
-  },
-  "port_scan": {
-    "by_host": {
-      "example.com": {
-        "ports": [80, 443, 8080],
-        "is_cdn": false
-      }
-    },
-    "summary": {
-      "total_open_ports": 15,
-      "hosts_with_open_ports": 3
-    }
-  },
-  "http_probe": {
-    "by_url": {
-      "https://example.com": {
-        "status_code": 200,
-        "technologies": ["nginx", "PHP", "WordPress"],
-        "server": "nginx/1.18.0"
-      }
-    },
-    "summary": {
-      "live_urls": 12,
-      "technology_count": 8
-    }
-  },
-  "vuln_scan": {
-    "vulnerabilities": {
-      "critical": [],
-      "high": [{"template": "cve-2021-44228", "name": "Log4Shell"}]
-    },
-    "summary": {
-      "total_findings": 25,
-      "critical": 0,
-      "high": 1
-    }
-  },
-  "technology_cves": {
-    "by_technology": {
-      "Log4j:2.14.1": {
-        "technology": "Log4j:2.14.1",
-        "product": "log4j",
-        "version": "2.14.1",
-        "cve_count": 1,
-        "critical": 1,
-        "high": 0,
-        "cves": [
-          {
-            "id": "CVE-2021-44228",
-            "cvss": 10.0,
-            "severity": "CRITICAL",
-            "mitre_attack": {
-              "enriched": true,
-              "cwe_hierarchy": {
-                "id": "CWE-502",
-                "name": "Deserialization of Untrusted Data",
-                "abstraction": "Base",
-                "mapping": "ALLOWED",
-                "description": "The product deserializes untrusted data...",
-                "consequences": [{"scope": ["Integrity"], "impact": ["Execute Unauthorized Code"]}],
-                "mitigations": [{"description": "If available, use signing/sealing features...", "phase": ["Architecture and Design"]}],
-                "related_capec": [
-                  {
-                    "id": "CAPEC-586",
-                    "name": "Object Injection",
-                    "severity": "High"
-                  }
-                ]
-              }
-            }
-          }
-        ]
-      }
-    },
-    "summary": {
-      "total_unique_cves": 1,
-      "critical": 1,
-      "high": 0
-    }
-  }
-}
+```mermaid
+flowchart TB
+    subgraph JSON["recon_domain.json"]
+        Meta[metadata<br/>scan info, timestamps]
+        WHOIS[whois<br/>registrar, dates]
+        Subs[subdomains<br/>discovered hosts]
+        DNSData[dns<br/>A, MX, TXT records]
+        Ports[port_scan<br/>open ports, services]
+        HTTP[http_probe<br/>live URLs, tech stack]
+        Resources[resource_enum<br/>endpoints, forms]
+        Vulns[vuln_scan<br/>CVEs, misconfigs]
+        TechCVE[technology_cves<br/>version-based CVEs]
+    end
+
+    Meta --> WHOIS
+    WHOIS --> Subs
+    Subs --> DNSData
+    DNSData --> Ports
+    Ports --> HTTP
+    HTTP --> Resources
+    Resources --> Vulns
+    Vulns --> TechCVE
 ```
-
----
-
-## 🛡️ GVM/OpenVAS - Enterprise Vulnerability Scanning
-
-**GVM (Greenbone Vulnerability Management)** is an open-source vulnerability scanner for comprehensive enterprise security assessment.
-
-📖 **Detailed documentation:** [readmes/README.GVM.md](readmes/README.GVM.md)
 
 ---
 
 ## 🧪 Test Targets
 
-Safe, **legal** targets specifically designed for security testing. No authorization needed.
-
-### Acunetix Vulnweb (Recommended)
+Safe, **legal** targets for security testing:
 
 | Target | Technology | Vulnerabilities |
 |--------|------------|-----------------|
-| `testphp.vulnweb.com` | PHP + MySQL | SQL Injection, XSS, File Upload, LFI, CSRF |
-| `testhtml5.vulnweb.com` | HTML5 + JavaScript | DOM XSS, Client-side attacks |
-| `testasp.vulnweb.com` | ASP.NET + SQL Server | SQL Injection, XSS |
+| `testphp.vulnweb.com` | PHP + MySQL | SQLi, XSS, LFI |
+| `testhtml5.vulnweb.com` | HTML5 | DOM XSS |
+| `testasp.vulnweb.com` | ASP.NET | SQLi, XSS |
+| `scanme.nmap.org` | N/A | Port scanning only |
 
 ```python
-# Example: Test with vulnweb
-TARGET_DOMAIN = "testphp.vulnweb.com"
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
-NUCLEI_DAST_MODE = True  # Will find XSS, SQLi
+# Example configuration
+TARGET_DOMAIN = "vulnweb.com"
+SUBDOMAIN_LIST = ["testphp."]
+NUCLEI_DAST_MODE = True
 ```
-
-### Other Legal Test Targets
-
-| Target | Description |
-|--------|-------------|
-| `scanme.nmap.org` | Test target (port scanning only) |
-| `demo.testfire.net` | IBM AppScan demo banking app |
-| `juice-shop.herokuapp.com` | OWASP Juice Shop |
 
 ---
 
@@ -1170,11 +964,11 @@ NUCLEI_DAST_MODE = True  # Will find XSS, SQLi
 
 **Only scan systems you own or have explicit written permission to test.**
 
-Unauthorized scanning is illegal in most jurisdictions. RedAmon is intended for:
+Unauthorized scanning is illegal. RedAmon is intended for:
 - Penetration testers with proper authorization
 - Security researchers on approved targets
 - Bug bounty hunters within program scope
-- System administrators testing their own infrastructure
+- System administrators testing their infrastructure
 
 ---
 
@@ -1186,4 +980,4 @@ Unauthorized scanning is illegal in most jurisdictions. RedAmon is intended for:
 | HTTP Probe | [readmes/README.HTTP_PROBE.md](readmes/README.HTTP_PROBE.md) |
 | Vuln Scan | [readmes/README.VULN_SCAN.md](readmes/README.VULN_SCAN.md) |
 | MITRE CWE/CAPEC | [readmes/README.MITRE.md](readmes/README.MITRE.md) |
-| GVM/OpenVAS | [readmes/README.GVM.md](readmes/README.GVM.md) |
+| GVM/OpenVAS | [../gvm_scan/README.GVM.md](../gvm_scan/README.GVM.md) |

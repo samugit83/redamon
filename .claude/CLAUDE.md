@@ -19,8 +19,8 @@ RedAmon/
 ├── recon/                # Reconnaissance Module (Phase 1)
 │   ├── main.py           # Main entry point
 │   ├── params.py         # Configuration parameters
-│   ├── domain_recon.py   # Subdomain discovery (subfinder, amass)
-│   ├── port_scan.py      # Port scanning (naabu, masscan)
+│   ├── domain_recon.py   # Subdomain discovery (crt.sh, HackerTarget, Knockpy)
+│   ├── port_scan.py      # Port scanning (naabu)
 │   ├── http_probe.py     # HTTP probing (httpx, headers, tech detection)
 │   ├── vuln_scan.py      # Vulnerability scanning (nuclei)
 │   ├── whois_recon.py    # WHOIS lookups

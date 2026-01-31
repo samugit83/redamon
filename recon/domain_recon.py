@@ -211,6 +211,67 @@ def dns_lookup(hostname: str, max_retries: int = None) -> dict:
     }
 
 
+def verify_domain_ownership(domain: str, token: str, txt_prefix: str = "_redamon-verify") -> dict:
+    """
+    Verify domain ownership via DNS TXT record.
+
+    Checks for a TXT record at {txt_prefix}.{domain} containing "redamon-verify={token}".
+
+    Args:
+        domain: Root domain to verify (e.g., "example.com")
+        token: Expected ownership token
+        txt_prefix: DNS record prefix (default: "_redamon-verify")
+
+    Returns:
+        Dictionary with:
+        - verified: True if ownership verified, False otherwise
+        - record_name: Full DNS record name checked
+        - expected_value: The value we're looking for
+        - found_values: List of TXT values found (if any)
+        - error: Error message if verification failed
+    """
+    record_name = f"{txt_prefix}.{domain}"
+    expected_value = f"redamon-verify={token}"
+
+    result = {
+        "verified": False,
+        "record_name": record_name,
+        "expected_value": expected_value,
+        "found_values": [],
+        "error": None
+    }
+
+    print(f"[*] Verifying domain ownership: {record_name}")
+
+    try:
+        # Query TXT records
+        txt_records = dns_lookup_single(record_name, "TXT")
+
+        if txt_records is None:
+            result["error"] = f"No TXT record found at {record_name}"
+            return result
+
+        # Clean up TXT records (remove quotes)
+        cleaned_records = []
+        for record in txt_records:
+            cleaned = record.strip('"').strip("'")
+            cleaned_records.append(cleaned)
+
+        result["found_values"] = cleaned_records
+
+        # Check if expected value is in the records
+        if expected_value in cleaned_records:
+            result["verified"] = True
+            print(f"[+] Domain ownership verified")
+        else:
+            result["error"] = f"TXT record found but value doesn't match"
+
+    except Exception as e:
+        result["error"] = f"DNS lookup failed: {str(e)}"
+
+    return result
+
+
 def resolve_all_dns(domain: str, subdomains: list) -> dict:
     """
     Resolve DNS for domain and all subdomains.

@@ -6,7 +6,6 @@ Uses dynamic CLI wrapper approach for maximum flexibility.
 
 Tools:
     - execute_nuclei: Execute nuclei with any CLI arguments
-    - nuclei_help: Get nuclei usage information
 """
 
 from fastmcp import FastMCP
@@ -90,30 +89,6 @@ def execute_nuclei(args: str) -> str:
     except Exception as e:
         return f"[ERROR] {str(e)}"
 
-
-@mcp.tool()
-def nuclei_help() -> str:
-    """
-    Get nuclei help and usage information.
-
-    Use this tool to discover available flags, template options, severity levels,
-    and output formats before running a vulnerability scan.
-
-    Returns:
-        Nuclei help output with all available options
-    """
-    try:
-        result = subprocess.run(
-            ["nuclei", "-help"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return result.stdout + result.stderr
-    except FileNotFoundError:
-        return "[ERROR] nuclei not found. Ensure it is installed and in PATH."
-    except Exception as e:
-        return f"[ERROR] {str(e)}"
 
 
 if __name__ == "__main__":

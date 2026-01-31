@@ -8,7 +8,31 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent / ".env")
 
+# =============================================================================
+# Domain Ownership Verification
+# =============================================================================
+# Verify domain ownership via DNS TXT record before scanning.
+# This ensures you only scan domains you control.
+#
+# How it works:
+#   1. Set VERIFY_DOMAIN_OWNERSHIP = True
+#   2. Add a TXT record to your DNS: _redamon-verify.yourdomain.com
+#   3. TXT record value must be: redamon-verify=<OWNERSHIP_TOKEN>
+#   4. Recon will check this TXT record before starting - fails if not found
+#
+# Example DNS record for domain "example.com" with token "my-secret-token":
+#   _redamon-verify.example.com.  IN  TXT  "redamon-verify=my-secret-token"
+#
+# To disable verification (e.g., for testing on your own infrastructure):
+#   Set VERIFY_DOMAIN_OWNERSHIP = False
+
+VERIFY_DOMAIN_OWNERSHIP = False
+OWNERSHIP_TOKEN = "your-secret-token-here"  # Change this to a unique secret token
+OWNERSHIP_TXT_PREFIX = "_redamon-verify"    # DNS record prefix (don't change unless needed)
+
+# =============================================================================
 # Target for RECON
+# =============================================================================
 # TARGET_DOMAIN: Always specify the root domain (e.g., "vulnweb.com", "example.com")
 # SUBDOMAIN_LIST: Filter which subdomains to scan
 #   - Empty list []: Discover and scan ALL subdomains + root domain (full discovery mode)
@@ -90,7 +114,7 @@ DNS_MAX_RETRIES = 3
 GITHUB_ACCESS_TOKEN = os.getenv("GITHUB_ACCESS_TOKEN", "")
 
 # Target organization or username to scan
-GITHUB_TARGET_ORG = "samugit83"
+GITHUB_TARGET_ORG = "xxxxxxx"
 
 # Also scan repos of organization members (slower but more thorough)
 GITHUB_SCAN_MEMBERS = False
@@ -135,7 +159,7 @@ NAABU_THREADS = 25
 NAABU_TIMEOUT = 10000
 
 # Number of retries for failed probes
-NAABU_RETRIES = 3
+NAABU_RETRIES = 1
 
 # Scan type: "s" (SYN - requires root, faster) or "c" (CONNECT - no root needed)
 # SYN scan is more reliable and faster but requires root/sudo
@@ -144,7 +168,7 @@ NAABU_SCAN_TYPE = "s"
 # Exclude CDN/WAF IPs (only scan ports 80,443 on CDN hosts)
 # Helps avoid false positives from CDN-protected sites
 # Note: Set to False for testing sites hosted on AWS/cloud providers
-NAABU_EXCLUDE_CDN = True
+NAABU_EXCLUDE_CDN = False
 
 # Display CDN information in output
 NAABU_DISPLAY_CDN = True

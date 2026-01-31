@@ -8,7 +8,7 @@ Configuration constants for the agent orchestrator.
 # LLM CONFIGURATION
 # =============================================================================
 
-OPENAI_MODEL = "gpt-5.2"
+OPENAI_MODEL = "gpt-4.1"
 
 INFORMATIONAL_SYSTEM_PROMPT = ""
 EXPL_SYSTEM_PROMPT = ""

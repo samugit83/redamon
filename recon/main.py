@@ -39,11 +39,15 @@ from recon.params import (
     UPDATE_GRAPH_DB,
     USER_ID,
     PROJECT_ID,
+    # Domain ownership verification
+    VERIFY_DOMAIN_OWNERSHIP,
+    OWNERSHIP_TOKEN,
+    OWNERSHIP_TXT_PREFIX,
 )
 
 # Import recon modules
 from recon.whois_recon import whois_lookup
-from recon.domain_recon import discover_subdomains
+from recon.domain_recon import discover_subdomains, verify_domain_ownership
 from recon.github_secret_hunt import GitHubSecretHunter
 from recon.port_scan import run_port_scan
 from recon.http_probe import run_http_probe
@@ -586,6 +590,22 @@ def main():
     print()
 
     start_time = datetime.now()
+
+    # Domain Ownership Verification (if enabled)
+    # This MUST be the first check before any scanning to ensure we only
+    # scan domains the user controls.
+    if VERIFY_DOMAIN_OWNERSHIP:
+        ownership_result = verify_domain_ownership(
+            TARGET_DOMAIN,
+            OWNERSHIP_TOKEN,
+            OWNERSHIP_TXT_PREFIX
+        )
+
+        if not ownership_result["verified"]:
+            print(f"\n[!] SCAN ABORTED: Domain ownership verification failed!")
+            print(f"[!] Add TXT record: {ownership_result['record_name']} → \"{ownership_result['expected_value']}\"")
+            print(f"[!] Set VERIFY_DOMAIN_OWNERSHIP = False in params.py to disable\n")
+            return 1
 
     # Parse target with SUBDOMAIN_LIST filter
     target_info = parse_target(TARGET_DOMAIN, SUBDOMAIN_LIST)

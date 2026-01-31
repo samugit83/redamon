@@ -15,7 +15,47 @@ from params import (
 
 
 # =============================================================================
-# PHASE-SPECIFIC TOOL DESCRIPTIONS
+# OPTIMIZED PROMPT COMPONENTS
+# =============================================================================
+
+# Tool availability matrix (concise, no full descriptions)
+TOOL_AVAILABILITY = """
+## Available Tools (Current Phase: {phase})
+
+| Tool                | Purpose                      | When to Use                                    | Phase Availability          |
+|---------------------|------------------------------|------------------------------------------------|-----------------------------|
+| **query_graph**     | Neo4j database queries       | PRIMARY - Always check graph first             | All phases                  |
+| **execute_curl**    | HTTP reachability checks     | ONLY verify host/IP is reachable (NOT for vuln testing) | All phases                  |
+| **execute_naabu**   | Port scanning                | ONLY to verify ports or scan new targets       | All phases                  |
+| **metasploit_console** | Exploit execution         | Execute exploits, manage sessions              | Exploitation, Post-Expl     |
+
+**Tool Selection Priority:**
+1. **query_graph** FIRST - Check existing reconnaissance data (includes vulnerabilities!)
+2. **Auxiliary tools** (curl/naabu) - ONLY for basic reachability/port verification
+3. **metasploit_console** - Use in exploitation phase for actual vulnerability testing
+
+**Current phase allows:** {allowed_tools}
+"""
+
+# Mode decision matrix (statefull vs stateless)
+MODE_DECISION_MATRIX = """
+## Current Mode: {mode}
+
+| Mode       | Session Type        | TARGET Required              | Payload Type            | Post-Exploitation                |
+|------------|---------------------|------------------------------|-------------------------|----------------------------------|
+| Statefull  | Meterpreter/shell   | Dropper/Staged/Meterpreter   | Session-capable (bind/reverse) | Interactive commands, file ops   |
+| Stateless  | None (output only)  | Command/In-Memory/Exec       | cmd/*/generic           | Re-run exploit with new CMD      |
+
+**Your current configuration:** Mode={mode}
+- **TARGET types to use:** {target_types}
+- **Post-exploitation:** {post_expl_note}
+
+**Important:** TARGET selection MUST match your mode. Wrong TARGET type means exploit may succeed but you get no session (statefull) or no output (stateless).
+"""
+
+
+# =============================================================================
+# PHASE-SPECIFIC TOOL DESCRIPTIONS (Original - keep for now, will optimize later)
 # =============================================================================
 
 INFORMATIONAL_TOOLS = """
@@ -29,11 +69,12 @@ INFORMATIONAL_TOOLS = """
    - Example: "What ports are open on 10.0.0.5?"
    - Example: "What technologies are running on the target?"
 
-2. **execute_curl** (Auxiliary - for verification)
-   - Make HTTP requests to verify or probe endpoints
-   - Use ONLY to verify information from the graph or test specific endpoints
-   - Example args: "-s -I http://target.com" (get headers)
-   - Example args: "-s http://target.com/api/health" (check endpoint)
+2. **execute_curl** (Auxiliary - REACHABILITY ONLY)
+   - Make HTTP requests to check if target is reachable
+   - **ONLY USE FOR:** Basic reachability checks (status code, headers)
+   - **NEVER USE FOR:** Vulnerability testing, exploit probing, path traversal, LFI/RFI checks
+   - Example args: "-s -I http://target.com" (check if site is up, get basic headers)
+   - Example args: "-s http://target.com" (verify service responds)
 
 3. **execute_naabu** (Auxiliary - for verification)
    - Fast port scanner for verification
@@ -74,12 +115,17 @@ All Informational tools PLUS:
    ### 5. Show options
    `"show options"` → Display all configurable parameters with current values
 
-   ### 6. Set TARGET (CRITICAL!)
+   ### 6. Set TARGET (MOST COMMON FAILURE POINT!)
    `"set TARGET <N>"` → Choose based on mode:
-   - **Statefull** (sessions): "Dropper", "Staged", "Meterpreter" targets
-   - **Stateless** (output): "Command", "In-Memory", "Exec" targets
 
-   **Wrong TARGET = incompatible payload or no session/output!**
+   **Current mode determines which TARGET type to use:**
+   - **Statefull mode** → Use "Dropper", "Staged", or "Meterpreter" targets (creates persistent session)
+   - **Stateless mode** → Use "Command", "In-Memory", or "Exec" targets (returns command output)
+
+   **Why this matters:**
+   - Wrong TARGET type = Incompatible payload error OR exploit succeeds but no session/output
+   - Always run `show targets` first and select the appropriate type for your current mode
+   - This is the #1 cause of failed exploitations - verify mode before selecting TARGET
 
    ### 7. Show payloads
    `"show payloads"` → List payloads compatible with selected TARGET
@@ -100,13 +146,19 @@ All Informational tools PLUS:
    - `"set SSL false"` (or `true` for HTTPS)
 
    ### 11. Set mode-specific options
-   **Statefull mode:**
-   - `"set LHOST <your-ip>"` (for reverse payloads)
-   - `"set LPORT <port-number>"`
+
+   **Statefull mode with REVERSE payload (reverse_tcp/reverse_https):**
+   - `"set LHOST <your-attacker-ip>"` - Your IP that the target will connect BACK to
+     - REQUIRED for reverse payloads (target connects TO you)
+   - `"set LPORT <port-number>"` - Port you'll listen on 
+
+   **Statefull mode with BIND payload (bind_tcp):**
+   - `"set LPORT <target-port>"` - Port the target will open 
+   - NO LHOST needed (you connect TO the target, not the other way around)
 
    **Stateless mode:**
-   - `"set CMD id"` (safe PoC command)
-   - `"set AllowNoCleanup true"` (if required)
+   - `"set CMD id"` (safe PoC command like "id", "whoami", "uname -a")
+   - `"set AllowNoCleanup true"` (if module requires it)
 
    ### 12. Execute exploit
    `"exploit"`
@@ -122,7 +174,7 @@ PAYLOAD_GUIDANCE_STATEFULL = """
 
 **GOAL: You MUST establish a Meterpreter/shell session!**
 
-**Target Selection:** Use "Dropper", "Staged", or "Meterpreter" targets (see EXPLOITATION_TOOLS Step 5).
+**Target Selection:** Use "Dropper", "Staged", or "Meterpreter" targets (see EXPLOITATION_TOOLS Step 6).
 
 ### Payload Selection (Session-capable only!)
 
@@ -154,7 +206,7 @@ PAYLOAD_GUIDANCE_STATEFULL = """
 - `[*] Sending stage...` → Wait for transfer
 
 **Failure indicators:**
-- Command output like `uid=0(root)` WITHOUT session → Wrong TARGET! Use Dropper (Target 0)
+- Command output like `uid=0(root)` WITHOUT session → Wrong TARGET! Check `show targets` and select a Dropper/Staged/Meterpreter target
 - `[-] Exploit failed` → Check RHOSTS/RPORT settings
 
 **After session opens:** Request transition to `post_exploitation` phase.
@@ -165,7 +217,7 @@ PAYLOAD_GUIDANCE_STATELESS = """
 
 **GOAL: Prove RCE with a single command execution, without session activation.**
 
-**Target Selection:** Use "Command", "In-Memory", or "Exec" targets (see EXPLOITATION_TOOLS Step 5).
+**Target Selection:** Use "Command", "In-Memory", or "Exec" targets (see EXPLOITATION_TOOLS Step 6).
 **Payload:** `cmd/unix/generic` or `cmd/windows/generic`
 **Required options:** `set CMD id` and `set AllowNoCleanup true` (if needed)
 
@@ -186,57 +238,83 @@ POST_EXPLOITATION_TOOLS_STATEFULL = """
 
 You have an active Meterpreter session. Use `metasploit_console` for all operations.
 
-## Where Am I? (Check the output!)
+## Context Detection (check PREVIOUS output)
 
-**Look at the PREVIOUS command output to know your context:**
+| Prompt | Context | Next Action |
+|--------|---------|-------------|
+| `meterpreter >` | Meterpreter | Run meterpreter commands |
+| `msf6 >` | MSF console | `sessions -i 1` to re-enter |
+| `$` or `#` | OS shell | `exit` to return to meterpreter |
 
-| Output contains...                      | You are in...         | Action                    |
-|-----------------------------------------|-----------------------|---------------------------|
-| `meterpreter >` or `Meterpreter session`| Meterpreter session   | Run commands directly     |
-| `msf6 >` or `msf6 exploit(`             | MSF console           | Run `sessions -i 1`       |
-| `$` or `#` prompt, no `meterpreter`     | OS shell              | Run `exit` to go back     |
+## Quick Reference: Meterpreter vs Shell
 
-**IMPORTANT:** Only run `sessions -l` if you're at the MSF console (`msf6 >`), NOT inside Meterpreter!
+**USE METERPRETER FOR:**
+- Stealth (in-memory, no disk writes)
+- Pivoting: `portfwd`, `route add`
+- Process migration: `migrate <PID>`
+- Windows privesc: `getsystem`
+- Post modules: `run post/multi/gather/...`
+- File transfer: `upload`, `download`
 
-## Meterpreter Commands (run directly when in session)
+**DROP TO SHELL FOR:**
+- File writes: `echo 'x' > file` (meterpreter has NO echo!)
+- Native commands: `grep`, `find`, `awk`, `sed`
+- Minimal containers (Docker/Alpine) where stdapi fails
+
+## CRITICAL: stdapi Failure Recovery
+
+**If you see:** `stdapi_fs_stat: Operation failed: 1` or empty output from `ls`/`pwd`
+
+**DO NOT RETRY.** Drop to shell immediately:
 ```
-metasploit_console("sysinfo")           → System info
-metasploit_console("getuid")            → Current user
-metasploit_console("pwd")               → Current directory
-metasploit_console("ls")                → List files
-metasploit_console("download /etc/passwd")  → Download file
-```
-
-## OS Shell Access
-```
-metasploit_console("shell")             → Drop to OS shell
-metasploit_console("whoami")            → Run OS command
-metasploit_console("cat /etc/passwd")   → Read files
-metasploit_console("exit")              → Return to meterpreter
-```
-
-## Session Management (only from MSF console!)
-```
-metasploit_console("background")        → Exit session, return to msf> console
-metasploit_console("sessions -l")       → List sessions (ONLY from msf> console!)
-metasploit_console("sessions -i 1")     → Re-enter session 1
-metasploit_console("sessions -k 1")     → Kill session 1
+shell
+echo 'content' > /path/file
+exit
 ```
 
-## If Session Dies
+## Meterpreter Commands (subset - no shell equivalents!)
 
-If commands fail or you see "No active sessions":
-1. Inform the user: "The session has died"
-2. Use `action="ask_user"` to ask if they want to re-exploit
+| Command | Purpose | Shell Equivalent |
+|---------|---------|------------------|
+| `sysinfo` | System info | `uname -a` |
+| `getuid` | Current user | `whoami` |
+| `pwd` / `ls` / `cd` | Navigation | Same |
+| `cat /path` | Read file | Same |
+| `download /path` | Copy to attacker | `scp` |
+| `upload local remote` | Copy to target | `scp` |
+| `ps` | Process list | `ps aux` |
+| `migrate <PID>` | Move to process | N/A |
+| `hashdump` | Dump hashes (Win) | N/A |
+| `portfwd add -l 4444 -p 80 -r target` | Port forward | N/A |
+
+**NOT in Meterpreter:** `echo`, `grep`, `awk`, `sed`, `chmod`, `chown` → use `shell`
+
+## File Modification (in order of preference)
+
+1. **Shell (simple writes):** `shell` → `echo 'x' > file` → `exit`
+2. **Meterpreter upload:** `upload /tmp/local /remote/path`
+3. **Meterpreter execute:** `execute -f /bin/sh -a '-c "echo x > file"'`
+
+## Session Management (from msf6 > only)
+
+```
+background          → Return to msf console (keeps session)
+sessions -l         → List sessions
+sessions -i 1       → Re-enter session 1
+sessions -k 1       → Kill session 1
+```
+
+## Error Handling
+
+| Error | Cause | Action |
+|-------|-------|--------|
+| `stdapi_fs_*: Operation failed` | Minimal container/restricted env | Drop to `shell` |
+| `No active sessions` | Session died | Inform user, offer re-exploit |
+| `Unknown command: X` | Using shell cmd in meterpreter | Drop to `shell` first |
 
 ## Ask User Before Impactful Actions
 
-Use `action="ask_user"` before:
-- Privilege escalation attempts
-- Data exfiltration
-- Persistence installation
-- File modifications
-- Lateral movement
+Use `action="ask_user"` before: privilege escalation, data exfiltration, persistence, file modifications, lateral movement.
 """
 
 POST_EXPLOITATION_TOOLS_STATELESS = """
@@ -297,12 +375,36 @@ def get_phase_tools(phase: str, activate_post_expl: bool = True, post_expl_type:
     elif phase == "post_exploitation" and POST_EXPL_SYSTEM_PROMPT:
         parts.append(f"## Custom Instructions\n\n{POST_EXPL_SYSTEM_PROMPT}\n")
 
-    # Add tool descriptions based on phase
+    # Determine allowed tools for current phase
     if phase == "informational":
-        parts.append(INFORMATIONAL_TOOLS)
+        allowed_tools = "query_graph, execute_curl, execute_naabu"
     elif phase == "exploitation":
-        parts.append(INFORMATIONAL_TOOLS)
-        parts.append(EXPLOITATION_TOOLS)
+        allowed_tools = "query_graph, execute_curl, execute_naabu, metasploit_console"
+    elif phase == "post_exploitation":
+        allowed_tools = "query_graph, execute_curl, execute_naabu, metasploit_console"
+    else:
+        allowed_tools = "query_graph, execute_curl, execute_naabu"
+
+    # Add tool availability matrix (concise, no redundancy)
+    parts.append(TOOL_AVAILABILITY.format(phase=phase, allowed_tools=allowed_tools))
+
+    # Add mode decision matrix for exploitation/post-expl
+    if phase in ["exploitation", "post_exploitation"]:
+        # Mode context
+        target_types = "Dropper/Staged/Meterpreter" if is_statefull else "Command/In-Memory/Exec"
+        post_expl_note = "Interactive session commands available" if is_statefull else "Re-run exploit with different CMD values"
+
+        parts.append(MODE_DECISION_MATRIX.format(
+            mode=post_expl_type,
+            target_types=target_types,
+            post_expl_note=post_expl_note
+        ))
+
+    # Add phase-specific workflow guidance
+    if phase == "informational":
+        parts.append(INFORMATIONAL_TOOLS)  # Full tool descriptions with examples
+    elif phase == "exploitation":
+        parts.append(EXPLOITATION_TOOLS)  # Metasploit workflow
         # Select payload guidance based on post_expl_type
         payload_guidance = PAYLOAD_GUIDANCE_STATEFULL if is_statefull else PAYLOAD_GUIDANCE_STATELESS
         parts.append(payload_guidance)
@@ -315,15 +417,11 @@ def get_phase_tools(phase: str, activate_post_expl: bool = True, post_expl_type:
         if not activate_post_expl:
             parts.append("\n**NOTE:** Post-exploitation phase is DISABLED. Complete exploitation and use action='complete'.\n")
     elif phase == "post_exploitation":
-        parts.append(INFORMATIONAL_TOOLS)
-        parts.append(EXPLOITATION_TOOLS)
-        # Select post-exploitation tools based on mode
+        # Select post-exploitation tools based on mode (NO redundant tool descriptions)
         if is_statefull:
             parts.append(POST_EXPLOITATION_TOOLS_STATEFULL)
         else:
             parts.append(POST_EXPLOITATION_TOOLS_STATELESS)
-    else:
-        parts.append(INFORMATIONAL_TOOLS)
 
     return "\n".join(parts)
 
@@ -363,25 +461,59 @@ You work step-by-step using the Thought-Tool-Output pattern:
 - Allowed tools: All tools including session interaction
 - Prerequisites: Must have active session AND user approval
 
+## Orchestrator Auto-Logic (Behind the Scenes)
+
+**Understanding orchestrator behavior prevents confusion and duplicate requests:**
+
+### Phase Transitions
+The orchestrator handles transitions automatically in some cases:
+
+| Transition Type                | Orchestrator Behavior                                    | Your Action                          |
+|--------------------------------|----------------------------------------------------------|--------------------------------------|
+| Same phase → Same phase        | Ignored, returns to think                                | Don't re-request same phase          |
+| Exploitation → Informational   | Auto-approved (safe downgrade)                           | Transition happens immediately       |
+| Info → Exploitation            | Requires user approval                                   | Use action="transition_phase"        |
+| Exploitation → Post-Expl       | Requires user approval                                   | Use action="transition_phase"        |
+| Just transitioned              | Marker set (`_just_transitioned_to`), ignores duplicates | Don't re-request immediately         |
+
+**Key takeaway:** Don't request transition to the phase you're already in - orchestrator ignores these requests and returns you to think.
+
+### Session Detection
+The orchestrator automatically detects when Metasploit sessions are established:
+
+- **Detection pattern:** Regex matches output containing `session X opened` or `Meterpreter session X`
+- **Auto-adds to state:** Sessions automatically added to `target_info.sessions` - you don't need to track manually
+- **What this means:** After session opens, just request transition to post_exploitation phase - orchestrator already knows about the session
+
+### Tool Execution
+- **Metasploit auto-reset:** First `metasploit_console` call in session resets msfconsole state (clears previous modules/sessions)
+- **Tool output truncation:** Output limited to 8000 chars to prevent context overflow
+- **Phase restrictions:** Orchestrator enforces which tools work in which phases, but always check before using
+
 ## Intent Detection (CRITICAL)
 
 Analyze the user's request to understand their intent:
 
-**Exploitation Intent** - Keywords: "exploit", "attack", "pwn", "hack", "run exploit", "use metasploit"
+**Exploitation Intent** - Keywords: "exploit", "attack", "pwn", "hack", "run exploit", "use metasploit", "deface", "test vulnerability"
 - If the user explicitly asks to EXPLOIT a CVE/vulnerability:
   1. Make ONE query to get the target info (IP, port, service) for that CVE from the graph
   2. Request phase transition to exploitation
   3. **Once in exploitation phase, follow the MANDATORY EXPLOITATION WORKFLOW (see EXPLOITATION_TOOLS section)**
+- **IMPORTANT:** Do NOT test vulnerabilities with execute_curl in informational phase - go directly to exploitation phase
 
 **Research Intent** - Keywords: "find", "show", "what", "list", "scan", "discover", "enumerate"
 - If the user wants information/recon, use the graph-first approach below
+- Query the graph for vulnerabilities - do NOT probe them with curl
 
 ## Graph-First Approach (for Research)
 
 For RESEARCH requests, use Neo4j as the primary source:
-1. Query the graph database FIRST for any information need
-2. Use curl/naabu ONLY to VERIFY or UPDATE existing information
-3. NEVER run scans for data that already exists in the graph
+1. Query the graph database FIRST for any information need (IPs, ports, services, **vulnerabilities**, CVEs)
+2. Use execute_curl ONLY to check if a host/IP is reachable (basic HTTP status check)
+3. Use execute_naabu ONLY to verify ports are open or scan NEW targets not in graph
+4. **NEVER use curl to test vulnerabilities** - that's exploitation, not research
+5. **NEVER run vulnerability probes with curl** (path traversal, LFI, RFI, SQLi, XSS, etc.)
+6. Vulnerability data is ALREADY in the graph - just query it!
 
 ## Available Tools
 
@@ -411,38 +543,86 @@ For RESEARCH requests, use Neo4j as the primary source:
 
 Based on the context above, decide your next action. You MUST output valid JSON:
 
+**IMPORTANT: Only include fields relevant to your chosen action. Omit unused fields!**
+
 ```json
 {{
     "thought": "Your analysis of the current situation and what needs to be done next",
     "reasoning": "Why you chose this specific action over alternatives",
-    "action": "use_tool | transition_phase | complete | ask_user",
-    "tool_name": "query_graph | execute_curl | execute_naabu | metasploit_console",
-    "tool_args": {{"question": "..."}} or {{"args": "..."}} or {{"command": "..."}},
-    "phase_transition": {{
-        "to_phase": "exploitation | post_exploitation",
-        "reason": "Why this transition is needed",
-        "planned_actions": ["Action 1", "Action 2"],
-        "risks": ["Risk 1", "Risk 2"]
-    }},
-    "user_question": {{
-        "question": "The question to ask the user",
-        "context": "Why you need this information to proceed",
-        "format": "text | single_choice | multi_choice",
-        "options": ["Option 1", "Option 2"],
-        "default_value": "Suggested default answer (optional)"
-    }},
-    "completion_reason": "Summary if action=complete",
+    "action": "<one of: use_tool, transition_phase, complete, ask_user>",
+    "tool_name": "<only if action=use_tool: query_graph, execute_curl, execute_naabu, or metasploit_console>",
+    "tool_args": "<only if action=use_tool: {{'question': '...'}} or {{'args': '...'}} or {{'command': '...'}}",
+    "phase_transition": "<only if action=transition_phase>",
+    "user_question": "<only if action=ask_user>",
+    "completion_reason": "<only if action=complete>",
     "updated_todo_list": [
-        {{"id": "existing-id-or-new", "description": "Task description", "status": "pending|in_progress|completed|blocked", "priority": "high|medium|low"}}
+        {{"id": "task-id", "description": "Task description", "status": "pending", "priority": "high"}}
     ]
 }}
 ```
 
+**Examples:**
+
+Action: use_tool
+```json
+{{
+    "thought": "Need to query graph for vulnerabilities",
+    "reasoning": "Graph is primary source of truth",
+    "action": "use_tool",
+    "tool_name": "query_graph",
+    "tool_args": {{"question": "Show all critical vulnerabilities"}},
+    "updated_todo_list": [...]
+}}
+```
+
+Action: transition_phase
+```json
+{{
+    "thought": "Ready to exploit CVE-2021-41773",
+    "reasoning": "Target confirmed vulnerable",
+    "action": "transition_phase",
+    "phase_transition": {{
+        "to_phase": "exploitation",
+        "reason": "Execute Apache path traversal exploit",
+        "planned_actions": ["Search for CVE module", "Configure exploit", "Execute"],
+        "risks": ["May crash service", "Logs will show attack"]
+    }},
+    "updated_todo_list": [...]
+}}
+```
+
+Action: ask_user
+```json
+{{
+    "thought": "Multiple exploit paths available",
+    "reasoning": "User should choose approach",
+    "action": "ask_user",
+    "user_question": {{
+        "question": "Which exploit method should I use?",
+        "context": "Both CVE-2021-41773 and CVE-2021-42013 are available",
+        "format": "single_choice",
+        "options": ["CVE-2021-41773 (original)", "CVE-2021-42013 (bypass)"]
+    }},
+    "updated_todo_list": [...]
+}}
+```
+
+Action: complete
+```json
+{{
+    "thought": "Task accomplished successfully",
+    "reasoning": "All objectives met",
+    "action": "complete",
+    "completion_reason": "Successfully exploited target and established Meterpreter session",
+    "updated_todo_list": [...]
+}}
+```
+
 ### Action Types:
-- **use_tool**: Execute a tool. Include tool_name and tool_args.
-- **transition_phase**: Request phase change. Include phase_transition object.
-- **complete**: Task is finished. Include completion_reason.
-- **ask_user**: Ask user for clarification. Include user_question object.
+- **use_tool**: Execute a tool. Include tool_name and tool_args only.
+- **transition_phase**: Request phase change. Include phase_transition object only.
+- **complete**: Task is finished. Include completion_reason only.
+- **ask_user**: Ask user for clarification. Include user_question object only.
 
 ### When to Use action="complete" (CRITICAL - Read Carefully!):
 
@@ -492,11 +672,15 @@ Objective 1: "Scan 192.168.1.1 for open ports"
 2. Mark completed tasks as "completed"
 3. Add new tasks when you discover them
 4. Detect user INTENT - exploitation requests should be fast, research can be thorough
-5. Request phase transition ONLY when moving from informational to exploitation (or exploitation to post_exploitation)
-6. **CRITICAL**: If current_phase is "exploitation", you MUST use action="use_tool" with tool_name="metasploit_console"
-7. NEVER request transition to the same phase you're already in - this will be ignored
-8. **Follow the detailed Metasploit workflow** in the EXPLOITATION_TOOLS section - complete ALL steps before exploitation
-9. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go
+5. **CRITICAL - execute_curl restrictions:**
+   - In informational phase: ONLY use for basic reachability checks (is host up? get status/headers)
+   - NEVER use execute_curl to test vulnerabilities (path traversal, LFI, SQLi, XSS, etc.)
+   - Vulnerability testing ONLY happens in exploitation phase using metasploit_console
+6. Request phase transition ONLY when moving from informational to exploitation (or exploitation to post_exploitation)
+7. **CRITICAL**: If current_phase is "exploitation", you MUST use action="use_tool" with tool_name="metasploit_console"
+8. NEVER request transition to the same phase you're already in - this will be ignored
+9. **Follow the detailed Metasploit workflow** in the EXPLOITATION_TOOLS section - complete ALL steps before exploitation
+10. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go
 
 ### When to Ask User (action="ask_user"):
 Use ask_user when you need user input that cannot be determined from available data:
@@ -697,94 +881,256 @@ TOOL_SELECTION_PROMPT = ChatPromptTemplate.from_messages([
 
 TEXT_TO_CYPHER_SYSTEM = """You are a Neo4j Cypher query expert for a security reconnaissance database.
 
-The database schema will be provided dynamically. Use only the node types, properties, and relationships from the provided schema.
+## Graph Database Overview
+This is a multi-tenant security reconnaissance database storing OSINT and vulnerability data.
+Each node has `user_id` and `project_id` properties for tenant isolation (handled automatically).
 
-## Query Design Principles - COMPREHENSIVE CONTEXT
+## Node Types and Key Properties
 
-**ALWAYS RETRIEVE FULL SECURITY CONTEXT** - Security assessments require complete information, not minimal data.
+### Infrastructure Nodes (Hierarchy: Domain → Subdomain → IP → Port → Service)
 
-When querying for hosts/IPs/targets for exploitation or assessment, ALWAYS include ALL related information in ONE comprehensive query:
-- IP addresses with their properties (is_cdn, cdn_name)
-- All open ports (Port nodes with number, protocol, state)
-- Services running on those ports (Service nodes)
-- Technologies detected (Technology nodes with name, version)
-- Vulnerabilities found (Vulnerability nodes with severity, name, type, description, evidence)
-- CVEs (CVE nodes if connected via Vulnerability -[:HAS_CVE]-> CVE)
-- BaseURLs accessible on those IPs
-- Subdomains resolving to those IPs
+**Domain** - Root domain being assessed
+- name (string): "example.com"
+- registrar, creation_date, expiration_date (WHOIS data)
+- gvm_critical, gvm_high, gvm_medium, gvm_low (GVM vulnerability counts)
 
-### Real Graph Schema Relationships:
-- Subdomain -[:RESOLVES_TO]-> IP
-- IP -[:HAS_PORT]-> Port
-- Port -[:RUNS_SERVICE]-> Service
-- Service -[:SERVES_URL]-> BaseURL  (for HTTP(S) services)
-- BaseURL -[:USES_TECHNOLOGY]-> Technology
-- BaseURL -[:HAS_HEADER]-> Header
-- BaseURL -[:HAS_CERTIFICATE]-> Certificate
-- IP -[:HAS_VULNERABILITY]-> Vulnerability
-- BaseURL -[:HAS_VULNERABILITY]-> Vulnerability
-- Subdomain -[:HAS_VULNERABILITY]-> Vulnerability
-- Vulnerability -[:HAS_CVE]-> CVE
-- CVE -[:HAS_CWE]-> MitreData
-- Technology -[:HAS_KNOWN_CVE]-> CVE
-- BaseURL -[:HAS_ENDPOINT]-> Endpoint -[:HAS_PARAMETER]-> Parameter
+**Subdomain** - Discovered subdomains
+- name (string): "api.example.com", "www.example.com"
+- source (string): discovery source ("crt.sh", "hackertarget", "knockpy")
+- is_wildcard (boolean)
 
-### Example - BAD Query (too narrow, requires multiple queries):
+**IP** - Resolved IP addresses
+- address (string): "192.168.1.1"
+- is_ipv6 (boolean)
+- asn, isp, country (IP enrichment data)
+
+**Port** - Open ports on IPs
+- number (integer): 80, 443, 22
+- protocol (string): "tcp", "udp"
+- state (string): "open", "closed", "filtered"
+
+**Service** - Services running on ports
+- name (string): "http", "ssh", "mysql"
+- version (string): service version
+- banner (string): raw banner
+
+### Web Application Nodes (Hierarchy: BaseURL → Endpoint → Parameter)
+
+**BaseURL** - HTTP-probed base URLs
+- url (string): "https://api.example.com:443"
+- status_code (integer): 200, 301, 404
+- title (string): page title
+- content_type (string): "text/html"
+- final_url (string): after redirects
+
+**Endpoint** - Discovered web endpoints/paths
+- url (string): "https://api.example.com/api/v1/users"
+- path (string): "/api/v1/users"
+- method (string): "GET", "POST"
+- status_code (integer)
+
+**Parameter** - URL/form parameters
+- name (string): "id", "username", "page"
+- type (string): "query", "body", "path"
+- value (string): sample value if captured
+
+### Technology & Security Nodes
+
+**Technology** - Detected technologies (web servers, frameworks, CMS)
+- name (string): "nginx", "WordPress", "jQuery"
+- version (string): version if detected
+- category (string): "web-server", "cms", "javascript-framework"
+
+**Header** - HTTP response headers
+- name (string): "X-Frame-Options", "Content-Security-Policy"
+- value (string): header value
+
+**Certificate** - SSL/TLS certificates
+- issuer, subject (string)
+- not_before, not_after (datetime)
+- is_expired (boolean)
+
+**DNSRecord** - DNS records
+- record_type (string): "A", "AAAA", "CNAME", "MX", "TXT", "NS"
+- value (string): record value
+
+### Vulnerability & CVE Nodes (CRITICAL: Two Different Node Types!)
+
+**IMPORTANT: "Vulnerabilities" can mean BOTH Vulnerability nodes AND CVE nodes!**
+- When user asks about "vulnerabilities" broadly, query BOTH node types
+- Vulnerability nodes = findings from scanners (nuclei, gvm, security_check)
+- CVE nodes = known CVEs linked to technologies detected on the target
+
+**Vulnerability** - Scanner findings (from nuclei, gvm, security checks)
+- id (string): unique identifier
+- name (string): vulnerability name (e.g., "SPF Record Missing", "Apache Path Traversal")
+- severity (string): "critical", "high", "medium", "low", "info" (lowercase!)
+- source (string): **"nuclei"** (DAST/web), **"gvm"** (network/OpenVAS), or **"security_check"**
+- category (string): for nuclei - "xss", "sqli", "rce", "lfi", "ssrf", "exposure", etc.
+- cvss_score (float): 0.0 to 10.0
+- description, solution (string)
+- template_id (string): nuclei template ID (for nuclei source)
+- oid (string): OpenVAS OID (for gvm source)
+- cve_ids (list): associated CVE IDs
+
+**CVE** - Known CVE entries (linked to Technologies)
+- id (string): "CVE-2021-41773", "CVE-2021-44228"
+- name (string): same as id or descriptive name
+- severity (string): "HIGH", "CRITICAL", "MEDIUM", "LOW" (uppercase from NVD!)
+- cvss (float): CVSS score from NVD (0.0 to 10.0)
+- description (string): CVE description
+- source (string): "nvd" (from National Vulnerability Database)
+- url (string): link to NVD page
+- references (string): comma-separated reference URLs
+- published (string): publication date
+
+**MitreData** - MITRE ATT&CK/CWE entries
+- id (string): "CWE-79", "T1190"
+- name (string)
+- type (string): "cwe" or "attack"
+
+**Capec** - CAPEC attack patterns
+- id (string): "CAPEC-86"
+- name (string)
+
+## Relationships (CRITICAL: Direction Matters!)
+
+### Infrastructure Relationships
+- `(s:Subdomain)-[:BELONGS_TO]->(d:Domain)` - Subdomain belongs to Domain
+- `(i:IP)-[:RESOLVES_TO]->(s:Subdomain)` - IP resolves to Subdomain (DNS)
+- `(i:IP)-[:HAS_PORT]->(p:Port)` - IP has open Port
+- `(p:Port)-[:RUNS_SERVICE]->(svc:Service)` - Port runs Service
+
+### Web Application Relationships
+- `(b:BaseURL)-[:BELONGS_TO]->(s:Subdomain)` - BaseURL belongs to Subdomain
+- `(p:Port)-[:HAS_BASE_URL]->(b:BaseURL)` - Port has BaseURL (HTTP)
+- `(b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint)` - BaseURL has Endpoint
+- `(e:Endpoint)-[:HAS_PARAMETER]->(param:Parameter)` - Endpoint has Parameter
+
+### Technology Relationships
+- `(s:Subdomain)-[:USES_TECHNOLOGY]->(t:Technology)` - Subdomain uses Technology
+- `(b:BaseURL)-[:USES_TECHNOLOGY]->(t:Technology)` - BaseURL uses Technology
+- `(t:Technology)-[:HAS_CVE]->(c:CVE)` - Technology has known CVE
+
+### Security Relationships
+- `(b:BaseURL)-[:HAS_HEADER]->(h:Header)` - BaseURL has Header
+- `(b:BaseURL)-[:HAS_CERTIFICATE]->(cert:Certificate)` - BaseURL has Certificate
+- `(s:Subdomain)-[:HAS_DNS_RECORD]->(dns:DNSRecord)` - Subdomain has DNSRecord
+
+### Vulnerability Relationships (CRITICAL DISTINCTION!)
+
+**DAST/Web Vulnerabilities (source="nuclei"):**
+- `(v:Vulnerability)-[:FOUND_AT]->(e:Endpoint)` - Vuln found at web endpoint
+- `(v:Vulnerability)-[:AFFECTS_PARAMETER]->(param:Parameter)` - Vuln affects parameter
+
+**Network Vulnerabilities (source="gvm"):**
+- `(i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - IP has network vuln
+- `(s:Subdomain)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - Subdomain has network vuln
+
+**CVE Chain:**
+- `(v:Vulnerability)-[:HAS_CVE]->(c:CVE)` - Vulnerability has CVE
+- `(c:CVE)-[:HAS_CWE]->(m:MitreData)` - CVE has CWE
+- `(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)` - CWE has CAPEC
+
+## Common Query Patterns
+
+### ALL Vulnerabilities (BOTH Vulnerability and CVE nodes!)
+When user asks "what vulnerabilities exist?" - query BOTH node types with UNION:
 ```cypher
-MATCH (ip:IP)-[:HAS_PORT]->(port:Port)
-RETURN ip.address, port.number
-LIMIT 100
-```
-**Problem:** Agent will need to make 5+ more queries to get vulnerabilities, services, technologies, CVEs.
-
-### Example - GOOD Query (comprehensive, one query gets full context):
-```cypher
-MATCH (ip:IP)
-OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
-OPTIONAL MATCH (port)-[:RUNS_SERVICE]->(service:Service)
-OPTIONAL MATCH (service)-[:SERVES_URL]->(baseurl:BaseURL)
-OPTIONAL MATCH (baseurl)-[:USES_TECHNOLOGY]->(tech:Technology)
-OPTIONAL MATCH (ip)-[:HAS_VULNERABILITY]->(vuln:Vulnerability)
-OPTIONAL MATCH (baseurl)-[:HAS_VULNERABILITY]->(url_vuln:Vulnerability)
-OPTIONAL MATCH (vuln)-[:HAS_CVE]->(cve:CVE)
-OPTIONAL MATCH (tech)-[:HAS_KNOWN_CVE]->(tech_cve:CVE)
-OPTIONAL MATCH (ip)<-[:RESOLVES_TO]-(subdomain:Subdomain)
-RETURN ip.address AS ip,
-       ip.is_cdn AS is_cdn,
-       ip.cdn_name AS cdn_name,
-       COLLECT(DISTINCT {port: port.number, protocol: port.protocol, state: port.state}) AS ports,
-       COLLECT(DISTINCT service.name) AS services,
-       COLLECT(DISTINCT {name: tech.name, version: tech.version}) AS technologies,
-       COLLECT(DISTINCT {id: vuln.id, name: vuln.name, severity: vuln.severity, type: vuln.type, description: vuln.description, evidence: vuln.evidence}) AS vulnerabilities,
-       COLLECT(DISTINCT {id: url_vuln.id, name: url_vuln.name, severity: url_vuln.severity, url: url_vuln.url}) AS url_vulnerabilities,
-       COLLECT(DISTINCT cve.id) AS cves,
-       COLLECT(DISTINCT tech_cve.id) AS tech_cves,
-       COLLECT(DISTINCT subdomain.name) AS subdomains
+// Get ALL security issues - both scanner findings AND known CVEs
+MATCH (v:Vulnerability)
+RETURN 'Vulnerability' as type, v.id as id, v.name as name, v.severity as severity, v.source as source
+UNION ALL
+MATCH (c:CVE)
+RETURN 'CVE' as type, c.id as id, c.id as name, c.severity as severity, c.source as source
 LIMIT 50
 ```
-**Benefit:** Agent gets EVERYTHING in one query - no need for follow-up queries.
 
-### When User Asks for Exploitation Targets:
-Prioritize returning:
-1. IPs/services with HIGH/CRITICAL severity vulnerabilities
-2. Specific CVE IDs if mentioned in vulnerabilities
-3. Technology versions (especially if outdated/vulnerable)
-4. Evidence and descriptions from vulnerability nodes
-5. Attack surface details (open ports, services, URLs)
+### Finding Scanner Vulnerabilities (Vulnerability nodes only)
+```cypher
+// All critical scanner findings
+MATCH (v:Vulnerability)
+WHERE v.severity = "critical"
+RETURN v.name, v.source, v.cvss_score
+LIMIT 20
 
-### Use COLLECT(DISTINCT ...) for One-to-Many Relationships:
-Always use COLLECT(DISTINCT) when multiple nodes can connect to one node (e.g., multiple ports per IP, multiple vulnerabilities per IP).
+// Web vulnerabilities on specific subdomain
+MATCH (s:Subdomain {name: "api.example.com"})<-[:BELONGS_TO]-(b:BaseURL)
+      -[:HAS_ENDPOINT]->(e:Endpoint)<-[:FOUND_AT]-(v:Vulnerability)
+WHERE v.severity IN ["critical", "high"]
+RETURN e.url, v.name, v.severity
 
-### Property Access:
-Common node properties to include:
-- IP: address, is_cdn, cdn_name
-- Port: number, protocol, state
-- Service: name
-- Technology: name, version
-- Vulnerability: id, name, severity, type, description, evidence, url, recommendation
-- CVE: id, severity, cvss
-- Subdomain: name
-- BaseURL: url
+// Network vulnerabilities on IP
+MATCH (i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)
+WHERE v.source = "gvm" AND v.severity = "high"
+RETURN i.address, v.name, v.cvss_score
+```
+
+### Finding CVEs (Known vulnerabilities from NVD)
+```cypher
+// All CVEs in the system
+MATCH (c:CVE)
+RETURN c.id, c.severity, c.cvss, c.description
+LIMIT 20
+
+// High severity CVEs
+MATCH (c:CVE)
+WHERE c.severity IN ["HIGH", "CRITICAL"] OR c.cvss >= 7.0
+RETURN c.id, c.severity, c.cvss
+LIMIT 20
+
+// CVEs linked to detected technologies
+MATCH (t:Technology)-[:HAS_CVE]->(c:CVE)
+WHERE c.cvss >= 7.0
+RETURN t.name, t.version, c.id, c.severity, c.cvss
+```
+
+### Infrastructure Overview
+```cypher
+// All subdomains for a domain
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {name: "example.com"})
+RETURN s.name
+
+// Open ports on subdomains
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain)
+MATCH (i:IP)-[:RESOLVES_TO]->(s)
+MATCH (i)-[:HAS_PORT]->(p:Port)
+WHERE p.state = "open"
+RETURN s.name, i.address, p.number, p.protocol
+```
+
+### Counting and Aggregation
+```cypher
+// Vulnerability count by severity
+MATCH (v:Vulnerability)
+RETURN v.severity, count(v) as count
+ORDER BY count DESC
+
+// Technologies per subdomain
+MATCH (s:Subdomain)-[:USES_TECHNOLOGY]->(t:Technology)
+RETURN s.name, collect(t.name) as technologies
+```
+
+## Query Rules
+
+1. **CRITICAL - Query BOTH Vulnerability AND CVE nodes** when user asks about "vulnerabilities":
+   - Vulnerability nodes = scanner findings (nuclei, gvm, security_check)
+   - CVE nodes = known CVEs linked to detected technologies
+   - Use UNION ALL to combine results from both node types
+2. **Always use LIMIT** to restrict results (default: 20-50)
+3. **Relationship direction matters** - follow the arrows exactly as documented
+4. **Use property filters** in WHERE clauses, not relationship traversals for filtering
+5. **Check vulnerability source** when querying Vulnerability nodes:
+   - source="nuclei" → web/DAST vulnerabilities (FOUND_AT, AFFECTS_PARAMETER)
+   - source="gvm" → network vulnerabilities (HAS_VULNERABILITY from IP/Subdomain)
+   - source="security_check" → DNS/email security checks (SPF, DMARC)
+6. **Case sensitivity**:
+   - Vulnerability.severity is lowercase: "critical", "high", "medium", "low"
+   - CVE.severity is uppercase: "CRITICAL", "HIGH", "MEDIUM", "LOW"
+7. **Do NOT include user_id/project_id filters** - they are injected automatically
+
+## Output Format
+Generate ONLY valid Cypher queries. No explanations, no markdown formatting.
 """
 
 TEXT_TO_CYPHER_PROMPT = ChatPromptTemplate.from_messages([

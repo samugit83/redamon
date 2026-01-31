@@ -1,0 +1,23 @@
+# RedAmon Recon Module - Environment Variables
+# =============================================
+# Copy this file to .env and fill in your values
+
+# GitHub Secret Hunting
+# Generate at: https://github.com/settings/tokens
+# Required scopes: repo (for private repos) or public_repo (for public only)
+GITHUB_ACCESS_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# NVD API Key (optional but STRONGLY RECOMMENDED)
+# Without an API key, NVD enforces aggressive rate limiting (6 requests/minute)
+# With an API key, you get 50 requests/10 seconds
+# Get free API key at: https://nvd.nist.gov/developers/request-an-api-key
+NVD_API_KEY=
+
+# Vulners API Key (optional - for better CVE results)
+# Get free API key at: https://vulners.com/
+VULNERS_API_KEY=
+
+# Neo4j Graph Database (for UPDATE_GRAPH_DB=True)
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=kslfj674*!!?dkfh

@@ -6,7 +6,6 @@ Uses dynamic CLI wrapper approach for maximum flexibility.
 
 Tools:
     - execute_naabu: Execute naabu with any CLI arguments
-    - naabu_help: Get naabu usage information
 """
 
 from fastmcp import FastMCP
@@ -76,31 +75,6 @@ def execute_naabu(args: str) -> str:
         return output if output.strip() else "[INFO] No open ports found"
     except subprocess.TimeoutExpired:
         return "[ERROR] Command timed out after 300 seconds. Consider using a smaller port range or higher rate."
-    except FileNotFoundError:
-        return "[ERROR] naabu not found. Ensure it is installed and in PATH."
-    except Exception as e:
-        return f"[ERROR] {str(e)}"
-
-
-@mcp.tool()
-def naabu_help() -> str:
-    """
-    Get naabu help and usage information.
-
-    Use this tool to discover available flags and options before running a scan.
-    Naabu supports various scanning modes, rate limiting, and output formats.
-
-    Returns:
-        Naabu help output with all available options
-    """
-    try:
-        result = subprocess.run(
-            ["naabu", "-help"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return result.stdout + result.stderr
     except FileNotFoundError:
         return "[ERROR] naabu not found. Ensure it is installed and in PATH."
     except Exception as e:
