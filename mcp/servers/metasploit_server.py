@@ -21,8 +21,10 @@ import queue
 import time
 import os
 import re
+import json
 import atexit
-from typing import Optional, Set
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from typing import Optional, Set, List
 
 # Server configuration
 SERVER_NAME = "metasploit"
@@ -60,6 +62,13 @@ class PersistentMsfConsole:
         self.lock = threading.Lock()
         self.session_ids: Set[int] = set()
         self._initialized = False
+
+        # Progress tracking for live updates
+        self._current_output: List[str] = []
+        self._execution_active: bool = False
+        self._current_command: str = ""
+        self._execution_start_time: float = 0
+        self._progress_lock = threading.Lock()
 
     def start(self) -> bool:
         """Start the persistent msfconsole process."""
@@ -142,11 +151,43 @@ class PersistentMsfConsole:
             except (ValueError, IndexError):
                 pass
 
+    def _is_meaningful_output(self, line: str) -> bool:
+        """
+        Check if a line is meaningful output (not just prompt/cursor noise).
+
+        Prompt redraws and cursor movements shouldn't reset the quiet period timer.
+        """
+        # Strip ANSI escape codes for checking
+        clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line).strip()
+
+        # Empty after stripping = noise
+        if not clean:
+            return False
+
+        # Just the msf prompt = noise (variations: "msf >", "msf6 >", "msf exploit(...) >")
+        if re.match(r'^msf\d?\s*([\w\(\)/]+\s*)?>?\s*$', clean, re.IGNORECASE):
+            return False
+
+        # Just cursor positioning or escape sequences = noise
+        if clean in ['>', '']:
+            return False
+
+        return True
+
     def _wait_for_output(self, timeout: float, quiet_period: float) -> str:
         """
         Wait for msfconsole output using timing-based detection.
         Waits until no new output arrives for 'quiet_period' seconds.
+        Also tracks progress for live updates via HTTP endpoint.
+
+        Note: Prompt redraws and cursor movements are ignored for quiet period calculation.
         """
+        # Initialize progress tracking
+        with self._progress_lock:
+            self._current_output = []
+            self._execution_active = True
+            self._execution_start_time = time.time()
+
         output_lines = []
         end_time = time.time() + timeout
         start_time = time.time()
@@ -157,8 +198,17 @@ class PersistentMsfConsole:
         while time.time() < end_time:
             try:
                 line = self.output_queue.get(timeout=0.1)
-                output_lines.append(line.rstrip())
-                last_output_time = time.time()
+                stripped = line.rstrip()
+                output_lines.append(stripped)
+
+                # Only reset quiet period timer for meaningful output
+                # (not prompt redraws or cursor movements)
+                if self._is_meaningful_output(stripped):
+                    last_output_time = time.time()
+
+                # Track progress for HTTP endpoint (include all lines for display)
+                with self._progress_lock:
+                    self._current_output.append(stripped)
 
             except queue.Empty:
                 elapsed = time.time() - start_time
@@ -172,6 +222,10 @@ class PersistentMsfConsole:
                 if not output_lines and elapsed < min_wait:
                     continue
 
+        # Mark execution complete
+        with self._progress_lock:
+            self._execution_active = False
+
         return '\n'.join(output_lines)
 
     def execute(self, command: str, timeout: float = 120, quiet_period: float = 2.0) -> str:
@@ -180,6 +234,10 @@ class PersistentMsfConsole:
             if not self.process or self.process.poll() is not None:
                 if not self.start():
                     return "[ERROR] Failed to start msfconsole"
+
+            # Track current command for progress endpoint
+            with self._progress_lock:
+                self._current_command = command
 
             # Clear any pending output
             while not self.output_queue.empty():
@@ -228,6 +286,38 @@ class PersistentMsfConsole:
         self.process = None
         self._initialized = False
         self.session_ids.clear()
+
+    def restart(self):
+        """Restart msfconsole for a completely clean state."""
+        print("[MSF] Restarting msfconsole...")
+        self.stop(force=True)
+        # Clear progress tracking state
+        with self._progress_lock:
+            self._current_output = []
+            self._execution_active = False
+            self._current_command = ""
+            self._execution_start_time = 0
+        # Clear output queue
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+            except queue.Empty:
+                break
+        print("[MSF] Old process terminated, ready for fresh start")
+
+    def get_progress(self) -> dict:
+        """Get current execution progress (thread-safe) for HTTP endpoint."""
+        with self._progress_lock:
+            # Join last 100 lines and clean ANSI codes for display
+            raw_output = '\n'.join(self._current_output[-100:])
+            clean_output = _clean_ansi_for_progress(raw_output)
+            return {
+                "active": self._execution_active,
+                "command": self._current_command[:100] if self._current_command else "",
+                "elapsed_seconds": round(time.time() - self._execution_start_time, 1) if self._execution_active else 0,
+                "line_count": len(self._current_output),
+                "output": clean_output
+            }
 
 
 # Global singleton instance
@@ -327,6 +417,22 @@ def _clean_ansi_output(text: str) -> str:
     return '\n'.join(final_lines)
 
 
+def _clean_ansi_for_progress(text: str) -> str:
+    """
+    Light ANSI cleaning for progress output.
+
+    Less aggressive than _clean_ansi_output - keeps more content
+    but removes escape codes for clean display.
+    """
+    # Remove ANSI escape sequences (colors, formatting)
+    text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+    text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+    text = re.sub(r'\x1b[()][AB012]', '', text)
+    # Remove other control characters except newlines
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return text
+
+
 # =============================================================================
 # MCP TOOL - Single tool for all Metasploit operations
 # =============================================================================
@@ -420,10 +526,93 @@ def metasploit_console(command: str) -> str:
     return result
 
 
+@mcp.tool()
+def msf_restart() -> str:
+    """
+    Restart msfconsole completely for a clean state.
+
+    This tool:
+    - Kills all active sessions
+    - Terminates the msfconsole process
+    - Starts a fresh msfconsole instance
+    - Resets all module configurations
+
+    Use this when:
+    - Starting a new penetration test session
+    - Clearing stuck/hung sessions
+    - Resetting after errors
+    - Ensuring a clean slate for new attacks
+
+    Returns:
+        Confirmation message with restart status
+    """
+    print("[MSF] Restarting msfconsole (full reset)...")
+
+    msf = get_msf_console()
+    msf.restart()
+
+    # Start fresh process
+    if msf.start():
+        return "Metasploit console restarted successfully. All sessions cleared, all module settings reset. Ready for new commands."
+    else:
+        return "[ERROR] Failed to restart msfconsole. Check container logs."
+
+
+# =============================================================================
+# HTTP PROGRESS SERVER - For live progress updates during execution
+# =============================================================================
+
+PROGRESS_PORT = int(os.getenv("MSF_PROGRESS_PORT", "8013"))
+
+
+class ProgressHandler(BaseHTTPRequestHandler):
+    """HTTP handler for progress endpoint."""
+
+    def do_GET(self):
+        if self.path == '/progress':
+            try:
+                msf = get_msf_console()
+                progress = msf.get_progress()
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(progress).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        """Suppress request logging."""
+        pass
+
+
+def start_progress_server(port: int = PROGRESS_PORT):
+    """Start HTTP server for progress endpoint in a background thread."""
+    server = HTTPServer(('0.0.0.0', port), ProgressHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"[MSF] Progress server started on port {port}")
+    return server
+
+
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
 
     if transport == "sse":
+        # Start progress HTTP server alongside MCP
+        start_progress_server(PROGRESS_PORT)
         mcp.run(transport="sse", host=SERVER_HOST, port=SERVER_PORT)
     else:
         mcp.run(transport="stdio")

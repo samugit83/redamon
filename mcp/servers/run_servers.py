@@ -11,7 +11,6 @@ Usage:
     python run_servers.py --server naabu --stdio  # Run specific server
 """
 
-import asyncio
 import os
 import sys
 import signal
@@ -33,15 +32,15 @@ from typing import List
 # Brute force attacks (run command) - SSH login attempts
 # With VERBOSE=true, output comes for each attempt, so shorter quiet period is fine
 MSF_RUN_TIMEOUT = 1800      # 30 minutes total timeout
-MSF_RUN_QUIET_PERIOD = 120  # 2 minutes quiet period (with VERBOSE=true)
+MSF_RUN_QUIET_PERIOD = 60  # 2min period (with VERBOSE=true)
 
 # CVE exploits (exploit command) - staged payloads may have delays
 MSF_EXPLOIT_TIMEOUT = 600   # 10 minutes total timeout
-MSF_EXPLOIT_QUIET_PERIOD = 120  # 3 minutes quiet period
+MSF_EXPLOIT_QUIET_PERIOD = 60  # 2min quiet period
 
 # Other commands (search, sessions, show, info, etc.)
-MSF_DEFAULT_TIMEOUT = 120   # 2 minutes total timeout
-MSF_DEFAULT_QUIET_PERIOD = 3  # 3 seconds quiet period
+MSF_DEFAULT_TIMEOUT = 180   # 3 minutes total timeout
+MSF_DEFAULT_QUIET_PERIOD = 5  # 5 seconds quiet period
 
 # =============================================================================
 
@@ -101,6 +100,12 @@ def run_server(name: str, config: dict, transport: str = "sse"):
         module = importlib.import_module(config["module"])
 
         if transport == "sse":
+            # Start progress server for metasploit (for live progress updates)
+            if name == "metasploit" and hasattr(module, 'start_progress_server'):
+                progress_port = int(os.getenv("MSF_PROGRESS_PORT", "8013"))
+                module.start_progress_server(progress_port)
+                logger.info(f"Started metasploit progress server on port {progress_port}")
+
             module.mcp.run(
                 transport="sse",
                 host="0.0.0.0",

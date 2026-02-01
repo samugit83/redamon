@@ -6,10 +6,13 @@ Includes phase-aware tool management.
 """
 
 import re
+import json
+import asyncio
 import logging
-from typing import List, Optional, Dict, TYPE_CHECKING
+from typing import List, Optional, Dict, Callable, Awaitable, TYPE_CHECKING
 from contextvars import ContextVar
 
+import httpx
 from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_neo4j import Neo4jGraph
@@ -18,6 +21,7 @@ from params import (
     MCP_CURL_URL,
     MCP_NAABU_URL,
     MCP_METASPLOIT_URL,
+    MCP_METASPLOIT_PROGRESS_URL,
     CYPHER_MAX_RETRIES,
     is_tool_allowed_in_phase,
 )
@@ -514,6 +518,88 @@ class PhaseAwareToolExecutor:
                 "output": None,
                 "error": str(e)
             }
+
+    async def execute_with_progress(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        phase: str,
+        progress_callback: Callable[[str, str, bool], Awaitable[None]],
+        poll_interval: float = 5.0
+    ) -> dict:
+        """
+        Execute metasploit_console with integrated progress streaming.
+
+        Polls the HTTP progress endpoint during execution and sends updates
+        via the progress_callback.
+
+        Args:
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            phase: Current agent phase
+            progress_callback: Async callback(tool_name, chunk, is_final)
+            poll_interval: How often to poll for progress (seconds)
+
+        Returns:
+            dict with 'success', 'output', and optionally 'error'
+        """
+        # Start the main tool execution as a background task
+        execution_task = asyncio.create_task(
+            self.execute(tool_name, tool_args, phase)
+        )
+
+        last_line_count = 0
+        last_output = ""
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            while not execution_task.done():
+                await asyncio.sleep(poll_interval)
+
+                if execution_task.done():
+                    break
+
+                try:
+                    resp = await client.get(MCP_METASPLOIT_PROGRESS_URL)
+                    if resp.status_code == 200:
+                        progress = resp.json()
+
+                        if progress.get("active"):
+                            current_output = progress.get("output", "")
+                            line_count = progress.get("line_count", 0)
+                            elapsed = progress.get("elapsed_seconds", 0)
+
+                            # Only send if new content
+                            if line_count > last_line_count and current_output != last_output:
+                                # Calculate the new portion
+                                if last_output and current_output.startswith(last_output):
+                                    new_content = current_output[len(last_output):]
+                                else:
+                                    new_content = current_output
+
+                                if new_content.strip():
+                                    # Format progress update with context
+                                    progress_msg = f"[Progress: {line_count} lines, {elapsed}s]\n{new_content[-1000:]}"
+                                    await progress_callback(
+                                        tool_name,
+                                        progress_msg,
+                                        False  # not final
+                                    )
+
+                                last_output = current_output
+                                last_line_count = line_count
+
+                except httpx.TimeoutException:
+                    # Progress polling timeout is fine, continue
+                    pass
+                except httpx.HTTPError as e:
+                    # Connection errors during polling are best-effort, log and continue
+                    logger.debug(f"Progress polling error (non-fatal): {e}")
+                except Exception as e:
+                    # Unexpected errors, log but don't fail the execution
+                    logger.warning(f"Progress polling unexpected error: {e}")
+
+        # Wait for the execution to complete and return result
+        return await execution_task
 
     def get_all_tools(self) -> List:
         """Get all registered tools."""

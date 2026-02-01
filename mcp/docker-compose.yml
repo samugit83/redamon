@@ -27,6 +27,7 @@ services:
       - "8001:8001"  # curl MCP server
       - "8002:8002"  # nuclei MCP server
       - "8003:8003"  # metasploit MCP server
+      - "8013:8013"  # metasploit progress HTTP endpoint
       - "4444:4444"  # Metasploit reverse shell listener
     volumes:
       # Mount servers directory for development (hot reload)
@@ -45,6 +46,7 @@ services:
       - CURL_PORT=8001
       - NUCLEI_PORT=8002
       - METASPLOIT_PORT=8003
+      - MSF_PROGRESS_PORT=8013
     restart: unless-stopped
     # Health check
     healthcheck:

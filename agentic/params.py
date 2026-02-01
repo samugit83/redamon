@@ -129,6 +129,7 @@ PAYLOAD_USE_HTTPS = False
 MCP_CURL_URL = "http://host.docker.internal:8001/sse"
 MCP_NAABU_URL = "http://host.docker.internal:8000/sse"
 MCP_METASPLOIT_URL = "http://host.docker.internal:8003/sse"
+MCP_METASPLOIT_PROGRESS_URL = "http://host.docker.internal:8013/progress"
 
 # =============================================================================
 # REACT AGENT SETTINGS
@@ -179,6 +180,8 @@ TOOL_PHASE_MAP = {
     "execute_naabu": ["informational", "exploitation", "post_exploitation"],
     # Metasploit - single tool for all operations (stateful, persistent msfconsole)
     "metasploit_console": ["exploitation", "post_exploitation"],
+    # MSF restart - internal tool for resetting state (used by orchestrator on new sessions)
+    "msf_restart": ["exploitation", "post_exploitation"],
 }
 
 

@@ -109,6 +109,7 @@ class AgentOrchestrator:
         self.graph = None
 
         self._initialized = False
+        self._streaming_callback = None  # Set during invoke_with_streaming
 
     async def initialize(self) -> None:
         """Initialize all components asynchronously."""
@@ -785,8 +786,23 @@ class AgentOrchestrator:
             extra_updates["msf_session_reset_done"] = True
             logger.info(f"[{user_id}/{project_id}/{session_id}] Metasploit reset complete")
 
-        # Execute the tool
-        result = await self.tool_executor.execute(tool_name, tool_args, phase)
+        # Check if this is a long-running metasploit command
+        is_long_running_msf = (
+            tool_name == "metasploit_console" and
+            any(cmd in (tool_args.get("command", "") or "").lower() for cmd in ["run", "exploit"])
+        )
+
+        # Execute the tool (with progress streaming for long-running commands)
+        if is_long_running_msf and self._streaming_callback:
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Using execute_with_progress for long-running MSF command")
+            result = await self.tool_executor.execute_with_progress(
+                tool_name,
+                tool_args,
+                phase,
+                progress_callback=self._streaming_callback.on_tool_output_chunk
+            )
+        else:
+            result = await self.tool_executor.execute(tool_name, tool_args, phase)
 
         # Update step with output (handle None result)
         if result:
@@ -1408,6 +1424,9 @@ class AgentOrchestrator:
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with streaming: {question[:10000]}")
 
+        # Store streaming callback for use in _execute_tool_node
+        self._streaming_callback = streaming_callback
+
         try:
             config = create_config(user_id, project_id, session_id)
             input_data = {
@@ -1437,6 +1456,8 @@ class AgentOrchestrator:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Streaming error: {e}")
             await streaming_callback.on_error(str(e), recoverable=False)
             return InvokeResponse(error=str(e))
+        finally:
+            self._streaming_callback = None  # Clear callback after execution
 
     async def resume_after_approval_with_streaming(
         self,
@@ -1452,6 +1473,9 @@ class AgentOrchestrator:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming approval: {decision}")
+
+        # Store streaming callback for use in _execute_tool_node
+        self._streaming_callback = streaming_callback
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1490,6 +1514,8 @@ class AgentOrchestrator:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Resume streaming error: {e}")
             await streaming_callback.on_error(str(e), recoverable=False)
             return InvokeResponse(error=str(e))
+        finally:
+            self._streaming_callback = None  # Clear callback after execution
 
     async def resume_after_answer_with_streaming(
         self,
@@ -1504,6 +1530,9 @@ class AgentOrchestrator:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming answer: {answer[:10000]}")
+
+        # Store streaming callback for use in _execute_tool_node
+        self._streaming_callback = streaming_callback
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1541,6 +1570,8 @@ class AgentOrchestrator:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Resume streaming error: {e}")
             await streaming_callback.on_error(str(e), recoverable=False)
             return InvokeResponse(error=str(e))
+        finally:
+            self._streaming_callback = None  # Clear callback after execution
 
     async def _emit_streaming_events(self, state: dict, callback):
         """Emit appropriate streaming events based on state changes."""
