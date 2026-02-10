@@ -5,6 +5,7 @@ import { ChevronDown, Database } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -38,6 +39,7 @@ export function CveLookupSection({ data, updateField }: CveLookupSectionProps) {
             <div>
               <span className={styles.toggleLabel}>Enable CVE Lookup</span>
               <p className={styles.toggleDescription}>Enrich findings with CVE data</p>
+              <TimeEstimate estimate="~1-5 min depending on technologies found" />
             </div>
             <Toggle
               checked={data.cveLookupEnabled}
@@ -99,6 +101,7 @@ export function CveLookupSection({ data, updateField }: CveLookupSectionProps) {
                   <span className={styles.fieldHint}>
                     Get a free key at https://nvd.nist.gov/developers/request-an-api-key
                   </span>
+                  <TimeEstimate estimate="Without key: rate-limited (10 req/min) | With key: ~80x faster" />
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Vulners API Key</label>

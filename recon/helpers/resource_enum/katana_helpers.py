@@ -6,6 +6,7 @@ Active URL discovery using Katana web crawler.
 
 import subprocess
 import ssl
+import time
 import urllib.request
 from typing import Dict, List, Tuple
 from urllib.parse import urlparse
@@ -22,7 +23,7 @@ def run_katana_crawler(
     timeout: int,
     js_crawl: bool,
     params_only: bool,
-    scope: str,
+    allowed_hosts: set,
     custom_headers: List[str],
     exclude_patterns: List[str],
     use_proxy: bool = False
@@ -30,16 +31,23 @@ def run_katana_crawler(
     """
     Run Katana crawler to discover all endpoints.
 
+    Scope is automatically enforced: Katana uses FQDN scope to stay on the
+    target hostname during crawl, and output is post-filtered against the
+    allowed_hosts set (derived from the recon pipeline's target domains).
+
+    Max URLs is enforced during the crawl by streaming output and killing
+    the Katana process once the limit is reached.
+
     Args:
         target_urls: Base URLs to crawl
         docker_image: Katana Docker image name
         depth: Crawl depth
-        max_urls: Maximum URLs to discover
+        max_urls: Maximum URLs to discover (enforced during crawl)
         rate_limit: Requests per second limit
         timeout: Request timeout in seconds
         js_crawl: Whether to enable JavaScript crawling
         params_only: Only return URLs with parameters
-        scope: Scope setting for crawling
+        allowed_hosts: Set of hostnames from the recon pipeline (for scope filtering)
         custom_headers: Custom headers to send
         exclude_patterns: URL patterns to exclude
         use_proxy: Whether to use Tor proxy
@@ -52,8 +60,10 @@ def run_katana_crawler(
     print(f"    Max URLs: {max_urls}")
     print(f"    Rate limit: {rate_limit} req/s")
     print(f"    Params only: {params_only}")
+    print(f"    Allowed hosts: {len(allowed_hosts)} ({', '.join(sorted(allowed_hosts)[:5])}{'...' if len(allowed_hosts) > 5 else ''})")
 
     discovered_urls = set()
+    filtered_out_of_scope = 0
 
     for base_url in target_urls:
         if not base_url.startswith(('http://', 'https://')):
@@ -75,7 +85,10 @@ def run_katana_crawler(
             "-nc",
             "-rl", str(rate_limit),
             "-timeout", str(timeout),
-            "-fs", scope,
+            # Use FQDN scope: restricts crawl to exact hostname of seed URL
+            # This prevents crawling parent domains (e.g. sub.example.com won't
+            # crawl example.com). Post-hoc filtering provides additional safety.
+            "-fs", "fqdn",
         ])
 
         # JavaScript crawling
@@ -92,34 +105,65 @@ def run_katana_crawler(
             cmd.extend(["-proxy", "socks5://127.0.0.1:9050"])
 
         try:
-            result = subprocess.run(
+            # Stream output line-by-line so we can enforce max_urls and kill early
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout + 60
             )
 
-            if result.stdout:
-                for line in result.stdout.strip().split('\n'):
+            try:
+                start_time = time.time()
+                deadline = start_time + timeout + 60
+
+                for line in process.stdout:
+                    # Check timeout
+                    if time.time() > deadline:
+                        print(f"    [!] Katana timeout for {base_url}")
+                        process.kill()
+                        break
+
                     url = line.strip()
-                    if url:
-                        # Skip URLs matching exclude patterns
-                        url_lower = url.lower()
-                        if any(pattern.lower() in url_lower for pattern in exclude_patterns):
+                    if not url:
+                        continue
+
+                    # Post-hoc scope filter: only keep URLs whose host is in allowed_hosts
+                    try:
+                        parsed = urlparse(url)
+                        host = parsed.hostname or ''
+                        if host and allowed_hosts and host not in allowed_hosts:
+                            filtered_out_of_scope += 1
                             continue
+                    except Exception:
+                        continue
 
-                        # Apply params_only filter
-                        if params_only:
-                            if '?' in url and '=' in url:
-                                discovered_urls.add(url)
-                        else:
+                    # Skip URLs matching exclude patterns
+                    url_lower = url.lower()
+                    if any(pattern.lower() in url_lower for pattern in exclude_patterns):
+                        continue
+
+                    # Apply params_only filter
+                    if params_only:
+                        if '?' in url and '=' in url:
                             discovered_urls.add(url)
+                        else:
+                            continue
+                    else:
+                        discovered_urls.add(url)
 
-                        if len(discovered_urls) >= max_urls:
-                            break
+                    # Enforce max_urls: kill process early
+                    if len(discovered_urls) >= max_urls:
+                        print(f"    [+] Reached max URL limit ({max_urls}), stopping Katana")
+                        process.kill()
+                        break
 
-        except subprocess.TimeoutExpired:
-            print(f"    [!] Katana timeout for {base_url}")
+            finally:
+                # Ensure process is cleaned up
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+
         except Exception as e:
             print(f"    [!] Katana error for {base_url}: {e}")
 
@@ -128,6 +172,8 @@ def run_katana_crawler(
 
     urls_list = sorted(list(discovered_urls))
     print(f"    [+] Katana discovered {len(urls_list)} URLs")
+    if filtered_out_of_scope > 0:
+        print(f"    [+] Filtered {filtered_out_of_scope} out-of-scope URLs")
 
     return urls_list, {}
 

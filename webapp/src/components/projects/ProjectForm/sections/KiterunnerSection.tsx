@@ -5,6 +5,7 @@ import { ChevronDown, Zap } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -38,6 +39,7 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
             <div>
               <span className={styles.toggleLabel}>Enable Kiterunner</span>
               <p className={styles.toggleDescription}>Bruteforce API routes using Swagger/OpenAPI specifications to find hidden endpoints</p>
+              <TimeEstimate estimate="5-30 min per endpoint" />
             </div>
             <Toggle
               checked={data.kiterunnerEnabled}
@@ -58,6 +60,7 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
                   <option value="routes-small">routes-small (~20k API routes)</option>
                 </select>
                 <span className={styles.fieldHint}>API route wordlist from Assetnote CDN. Custom .kite files can be used via CLI</span>
+                <TimeEstimate estimate="routes-large: ~10-30 min/endpoint | routes-small: ~5-10 min" />
               </div>
 
               <div className={styles.fieldRow}>
@@ -183,6 +186,7 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
                   <div>
                     <span className={styles.toggleLabel}>Detect Methods</span>
                     <p className={styles.toggleDescription}>Find additional HTTP methods beyond GET</p>
+                    <TimeEstimate estimate="+30-50% scan time" />
                   </div>
                   <Toggle
                     checked={data.kiterunnerDetectMethods}

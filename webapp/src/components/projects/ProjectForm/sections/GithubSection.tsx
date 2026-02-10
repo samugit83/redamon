@@ -5,6 +5,7 @@ import { ChevronDown, Github } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -90,6 +91,7 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
                   <div>
                     <span className={styles.toggleLabel}>Scan Commits</span>
                     <p className={styles.toggleDescription}>Search commit history for secrets</p>
+                    <TimeEstimate estimate="Most expensive operation — disabling saves 50%+ time" />
                   </div>
                   <Toggle
                     checked={data.githubScanCommits}
@@ -109,6 +111,8 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
                     min={1}
                     max={1000}
                   />
+                  <span className={styles.fieldHint}>Number of commits to scan per repository</span>
+                  <TimeEstimate estimate="Scales linearly: 100 = default, 1000 = ~10x slower" />
                 </div>
               )}
 

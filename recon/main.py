@@ -617,12 +617,22 @@ def main():
     root_domain = target_info["root_domain"]
     full_subdomains = target_info["full_subdomains"]
 
-    print(f"[*] Target: {root_domain}")
+    # Display full configuration (values loaded from DB/API)
+    print("═" * 63)
+    print("Configuration:")
+    print(f"  TARGET_DOMAIN:     {TARGET_DOMAIN}")
+    print(f"  SUBDOMAIN_LIST:    {SUBDOMAIN_LIST if SUBDOMAIN_LIST else '[] (full discovery)'}")
+    print(f"  SCAN_MODULES:      {','.join(SCAN_MODULES) if isinstance(SCAN_MODULES, list) else SCAN_MODULES}")
+    print(f"  USE_TOR_FOR_RECON: {USE_TOR_FOR_RECON}")
+    print(f"  UPDATE_GRAPH_DB:   {UPDATE_GRAPH_DB}")
+    print(f"  USER_ID:           {USER_ID}")
+    print(f"  PROJECT_ID:        {PROJECT_ID}")
     if filtered_mode:
-        print(f"[*] Mode: FILTERED SUBDOMAIN SCAN")
-        print(f"[*] Subdomains: {', '.join(full_subdomains)}")
+        print(f"  MODE:              FILTERED SUBDOMAIN SCAN")
+        print(f"  SUBDOMAINS:        {', '.join(full_subdomains)}")
     else:
-        print(f"[*] Mode: FULL DISCOVERY (all subdomains)")
+        print(f"  MODE:              FULL DISCOVERY (all subdomains)")
+    print("═" * 63)
     print()
 
     # Clear previous graph data for this project before starting new scan

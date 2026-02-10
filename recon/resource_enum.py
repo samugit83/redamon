@@ -100,7 +100,6 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     KATANA_TIMEOUT = settings.get('KATANA_TIMEOUT', 3600)
     KATANA_JS_CRAWL = settings.get('KATANA_JS_CRAWL', True)
     KATANA_PARAMS_ONLY = settings.get('KATANA_PARAMS_ONLY', False)
-    KATANA_SCOPE = settings.get('KATANA_SCOPE', 'dn')
     KATANA_CUSTOM_HEADERS = settings.get('KATANA_CUSTOM_HEADERS', [])
     KATANA_EXCLUDE_PATTERNS = settings.get('KATANA_EXCLUDE_PATTERNS', [])
 
@@ -273,7 +272,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 KATANA_TIMEOUT,
                 KATANA_JS_CRAWL,
                 KATANA_PARAMS_ONLY,
-                KATANA_SCOPE,
+                target_domains,
                 KATANA_CUSTOM_HEADERS,
                 KATANA_EXCLUDE_PATTERNS,
                 use_proxy

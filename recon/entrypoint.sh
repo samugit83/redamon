@@ -120,22 +120,6 @@ for IMAGE in "${IMAGES[@]}"; do
 done
 
 # =============================================================================
-# Display configuration
-# =============================================================================
-echo ""
-echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Configuration:${NC}"
-echo -e "  TARGET_DOMAIN:     ${TARGET_DOMAIN:-<from params.py>}"
-echo -e "  SUBDOMAIN_LIST:    ${SUBDOMAIN_LIST:-<from params.py>}"
-echo -e "  SCAN_MODULES:      ${SCAN_MODULES:-<from params.py>}"
-echo -e "  USE_TOR_FOR_RECON: ${USE_TOR_FOR_RECON:-false}"
-echo -e "  UPDATE_GRAPH_DB:   ${UPDATE_GRAPH_DB:-false}"
-echo -e "  USER_ID:           ${USER_ID:-default_user}"
-echo -e "  PROJECT_ID:        ${PROJECT_ID:-default_project}"
-echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
-
-# =============================================================================
 # Execute the command
 # =============================================================================
 echo -e "${GREEN}[*] Starting reconnaissance pipeline...${NC}"

@@ -195,7 +195,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         'browserconfig.xml', 'robots.txt', 'sitemap.xml', '.well-known/',
         'favicon', 'apple-touch-icon', 'android-chrome', '/icons/', '/icon/',
     ],
-    'KATANA_SCOPE': 'dn',
     'KATANA_CUSTOM_HEADERS': [
         'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -449,7 +448,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['KATANA_JS_CRAWL'] = project.get('katanaJsCrawl', DEFAULT_SETTINGS['KATANA_JS_CRAWL'])
     settings['KATANA_PARAMS_ONLY'] = project.get('katanaParamsOnly', DEFAULT_SETTINGS['KATANA_PARAMS_ONLY'])
     settings['KATANA_EXCLUDE_PATTERNS'] = project.get('katanaExcludePatterns', DEFAULT_SETTINGS['KATANA_EXCLUDE_PATTERNS'])
-    settings['KATANA_SCOPE'] = project.get('katanaScope', DEFAULT_SETTINGS['KATANA_SCOPE'])
     settings['KATANA_CUSTOM_HEADERS'] = project.get('katanaCustomHeaders', DEFAULT_SETTINGS['KATANA_CUSTOM_HEADERS'])
 
     # GAU Passive URL Discovery

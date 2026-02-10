@@ -5,6 +5,7 @@ import { ChevronDown, Globe } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -201,6 +202,7 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>Technology Detection</span>
                 <p className={styles.toggleDescription}>Detect frameworks, CMS, and libraries (Wappalyzer-based)</p>
+                <TimeEstimate estimate="+10-30% probing time" />
               </div>
               <Toggle
                 checked={data.httpxProbeTechDetect}
@@ -294,6 +296,7 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>JARM Fingerprint</span>
                 <p className={styles.toggleDescription}>TLS server fingerprint for C2/malware detection</p>
+                <TimeEstimate estimate="+10-50 ms per URL (adds up with many hosts)" />
               </div>
               <Toggle
                 checked={data.httpxProbeJarm}
@@ -398,6 +401,7 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>Enable Wappalyzer</span>
                 <p className={styles.toggleDescription}>Detect CMS plugins, analytics, security tools, and frameworks from HTML</p>
+                <TimeEstimate estimate="+30-50% probing time" />
               </div>
               <Toggle
                 checked={data.wappalyzerEnabled}

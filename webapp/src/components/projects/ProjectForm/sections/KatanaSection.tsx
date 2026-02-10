@@ -5,6 +5,7 @@ import { ChevronDown, Bug } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -59,6 +60,7 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
                 max={10}
               />
               <span className={styles.fieldHint}>How many links deep to follow. Higher = more URLs but slower</span>
+              <TimeEstimate estimate="Each level adds ~50% time (depth 3 = ~2x depth 2)" />
             </div>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Max URLs</label>
@@ -70,6 +72,7 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
                 min={1}
               />
               <span className={styles.fieldHint}>Maximum number of URLs to collect per domain</span>
+              <TimeEstimate estimate="300 URLs: ~1-2 min/domain | 1000+: scales linearly" />
             </div>
           </div>
 
@@ -98,26 +101,13 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
             </div>
           </div>
 
-          <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>Scope</label>
-            <select
-              className="select"
-              value={data.katanaScope}
-              onChange={(e) => updateField('katanaScope', e.target.value)}
-            >
-              <option value="dn">Domain Name (dn) - Stay within same domain</option>
-              <option value="rdn">Root Domain Name (rdn) - Include all subdomains</option>
-              <option value="fqdn">Fully Qualified Domain Name (fqdn) - Exact hostname only</option>
-            </select>
-            <span className={styles.fieldHint}>Controls which URLs are considered in-scope during crawl</span>
-          </div>
-
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Options</h3>
             <div className={styles.toggleRow}>
               <div>
                 <span className={styles.toggleLabel}>JavaScript Crawling</span>
                 <p className={styles.toggleDescription}>Parse JS files to find hidden endpoints and API calls. Slower but finds more URLs</p>
+                <TimeEstimate estimate="+50-100% (uses headless browser)" />
               </div>
               <Toggle
                 checked={data.katanaJsCrawl}

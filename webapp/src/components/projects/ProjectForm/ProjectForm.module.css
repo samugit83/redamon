@@ -309,3 +309,14 @@
   accent-color: var(--accent-secondary);
   cursor: pointer;
 }
+
+/* Time estimate indicator */
+.timeEstimate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--status-warning-text);
+  margin-top: var(--space-0-5);
+  line-height: 1;
+}

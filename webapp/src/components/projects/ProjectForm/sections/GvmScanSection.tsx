@@ -5,6 +5,7 @@ import { ChevronDown, Shield } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -54,6 +55,7 @@ export function GvmScanSection({ data, updateField }: GvmScanSectionProps) {
                   <option value="System Discovery">System Discovery — System enumeration</option>
                 </select>
                 <span className={styles.fieldHint}>GVM scan configuration preset. &ldquo;Full and fast&rdquo; is recommended for most targets.</span>
+                <TimeEstimate estimate="Discovery: ~5-10 min | Full and fast: ~30-60 min | Deep: hours" />
               </div>
 
               <div className={styles.fieldGroup}>
@@ -68,6 +70,7 @@ export function GvmScanSection({ data, updateField }: GvmScanSectionProps) {
                   <option value="hostnames_only">Hostnames Only — Only scan hostnames/subdomains</option>
                 </select>
                 <span className={styles.fieldHint}>Which targets from recon data to scan. &ldquo;Both&rdquo; provides the most thorough coverage.</span>
+                <TimeEstimate estimate="&ldquo;Both&rdquo; doubles the number of targets vs single strategy" />
               </div>
             </div>
           </div>

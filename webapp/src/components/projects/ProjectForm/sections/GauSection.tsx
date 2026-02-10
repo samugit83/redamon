@@ -5,6 +5,7 @@ import { ChevronDown, Link } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -49,6 +50,7 @@ export function GauSection({ data, updateField }: GauSectionProps) {
             <div>
               <span className={styles.toggleLabel}>Enable GAU</span>
               <p className={styles.toggleDescription}>Fetch historical URLs from Wayback Machine, Common Crawl, OTX, and URLScan</p>
+              <TimeEstimate estimate="~20-60 sec per domain" />
             </div>
             <Toggle
               checked={data.gauEnabled}
@@ -159,6 +161,7 @@ export function GauSection({ data, updateField }: GauSectionProps) {
                   <div>
                     <span className={styles.toggleLabel}>Verify URLs</span>
                     <p className={styles.toggleDescription}>HTTP check to confirm archived URLs still exist. Filters out dead links</p>
+                    <TimeEstimate estimate="Doubles or triples GAU time" />
                   </div>
                   <Toggle
                     checked={data.gauVerifyUrls}
@@ -233,6 +236,7 @@ export function GauSection({ data, updateField }: GauSectionProps) {
                       <div>
                         <span className={styles.toggleLabel}>Detect HTTP Methods</span>
                         <p className={styles.toggleDescription}>Send OPTIONS request to discover allowed methods (GET, POST, PUT, DELETE)</p>
+                        <TimeEstimate estimate="+30-50% on top of verification time" />
                       </div>
                       <Toggle
                         checked={data.gauDetectMethods}

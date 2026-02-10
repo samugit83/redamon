@@ -5,6 +5,7 @@ import { ChevronDown, Shield } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -47,7 +48,8 @@ export function NucleiSection({ data, updateField }: NucleiSectionProps) {
           </p>
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Severity Levels</h3>
-            <p className={styles.fieldHint} style={{ marginBottom: '0.5rem' }}>Filter vulnerabilities by severity. Exclude "info" for production scans</p>
+            <p className={styles.fieldHint} style={{ marginBottom: '0.5rem' }}>Filter vulnerabilities by severity. Exclude &ldquo;info&rdquo; for production scans</p>
+            <TimeEstimate estimate="Critical only: ~70% faster than all severities" />
             <div className={styles.checkboxGroup}>
               {SEVERITY_OPTIONS.map(severity => (
                 <label key={severity} className="checkboxLabel">
@@ -232,6 +234,7 @@ export function NucleiSection({ data, updateField }: NucleiSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>DAST Mode</span>
                 <p className={styles.toggleDescription}>Active fuzzing for XSS, SQLi, RCE. More aggressive, may trigger alerts. Requires URLs with parameters</p>
+                <TimeEstimate estimate="+50-100% scan time (active fuzzing)" />
               </div>
               <Toggle
                 checked={data.nucleiDastMode}
@@ -246,6 +249,7 @@ export function NucleiSection({ data, updateField }: NucleiSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>Headless Mode</span>
                 <p className={styles.toggleDescription}>Use headless browser for JavaScript-rendered pages. Requires Chrome installed</p>
+                <TimeEstimate estimate="+100-200% scan time (browser rendering)" />
               </div>
               <Toggle
                 checked={data.nucleiHeadless}

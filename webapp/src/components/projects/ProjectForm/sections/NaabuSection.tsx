@@ -5,6 +5,7 @@ import { ChevronDown, Radio } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -44,7 +45,8 @@ export function NaabuSection({ data, updateField }: NaabuSectionProps) {
                 onChange={(e) => updateField('naabuTopPorts', e.target.value)}
                 placeholder="1000"
               />
-              <span className={styles.fieldHint}>Use "100", "1000", or "full" for all 65535 ports</span>
+              <span className={styles.fieldHint}>Use &ldquo;100&rdquo;, &ldquo;1000&rdquo;, or &ldquo;full&rdquo; for all 65535 ports</span>
+              <TimeEstimate estimate="100: seconds | 1000: ~15 sec/host | full: minutes to hours" />
             </div>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Custom Ports</label>
@@ -160,6 +162,7 @@ export function NaabuSection({ data, updateField }: NaabuSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>Verify Ports</span>
                 <p className={styles.toggleDescription}>Extra TCP handshake to confirm ports are truly open</p>
+                <TimeEstimate estimate="+10-20% scan time" />
               </div>
               <Toggle
                 checked={data.naabuVerifyPorts}
@@ -170,6 +173,7 @@ export function NaabuSection({ data, updateField }: NaabuSectionProps) {
               <div>
                 <span className={styles.toggleLabel}>Passive Mode</span>
                 <p className={styles.toggleDescription}>Query Shodan InternetDB instead of active scanning. Stealthier but may be outdated</p>
+                <TimeEstimate estimate="Passive (Shodan): near-instant | Active: minutes per host" />
               </div>
               <Toggle
                 checked={data.naabuPassiveMode}

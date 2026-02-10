@@ -5,6 +5,7 @@ import { ChevronDown, Layers } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -162,6 +163,7 @@ export function ScanModulesSection({ data, updateField }: ScanModulesSectionProp
                 <p className={styles.toggleDescription}>
                   Use wordlist-based subdomain bruteforcing
                 </p>
+                <TimeEstimate estimate="+5-30 min depending on wordlist size" />
               </div>
               <Toggle
                 checked={data.useBruteforceForSubdomains}
