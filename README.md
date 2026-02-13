@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/v1.1.0-release-brightgreen?style=for-the-badge" alt="Version 1.1.0"/>
+  <img src="https://img.shields.io/badge/v1.2.0-release-brightgreen?style=for-the-badge" alt="Version 1.2.0"/>
   <img src="https://img.shields.io/badge/WARNING-SECURITY%20TOOL-red?style=for-the-badge" alt="Security Tool Warning"/>
   <img src="https://img.shields.io/badge/LICENSE-MIT-blue?style=for-the-badge" alt="MIT License"/>
   <br/>
