@@ -109,6 +109,9 @@ class AgentOrchestrator:
         self._streaming_callback = None  # Set during invoke_with_streaming
         self._guidance_queue = None  # Set during invoke_with_streaming
 
+        # Metasploit prewarm: background restart tasks keyed by session_key
+        self._prewarm_tasks: dict[str, asyncio.Task] = {}
+
     async def initialize(self) -> None:
         """Initialize tools and graph (LLM setup deferred until project_id is known)."""
         if self._initialized:
@@ -122,6 +125,50 @@ class AgentOrchestrator:
         self._initialized = True
 
         logger.info("AgentOrchestrator initialized (LLM deferred until project settings loaded)")
+
+    # =========================================================================
+    # METASPLOIT PREWARM
+    # =========================================================================
+
+    def start_msf_prewarm(self, session_key: str) -> None:
+        """
+        Start a background Metasploit restart so msfconsole is ready
+        by the time the agent needs it.
+
+        Called on WebSocket init (drawer open). Fire-and-forget.
+        If a prewarm is already running for this session, skip.
+        """
+        if not self._initialized or not self.tool_executor:
+            logger.debug("Orchestrator not initialized yet, skipping prewarm")
+            return
+
+        # Skip if already running for this session
+        existing = self._prewarm_tasks.get(session_key)
+        if existing and not existing.done():
+            logger.debug(f"Prewarm already running for {session_key}, skipping")
+            return
+
+        logger.info(f"[{session_key}] Starting Metasploit prewarm (background)")
+        task = asyncio.create_task(self._do_msf_prewarm(session_key))
+        self._prewarm_tasks[session_key] = task
+
+    async def _do_msf_prewarm(self, session_key: str) -> None:
+        """Background task: restart msfconsole for a clean state."""
+        try:
+            result = await self.tool_executor.execute(
+                "msf_restart", {}, "exploitation", skip_phase_check=True
+            )
+            if result and result.get("success"):
+                logger.info(f"[{session_key}] Metasploit prewarm complete")
+            else:
+                logger.warning(f"[{session_key}] Metasploit prewarm failed: {result}")
+        except asyncio.CancelledError:
+            logger.info(f"[{session_key}] Metasploit prewarm cancelled")
+        except Exception as e:
+            logger.warning(f"[{session_key}] Metasploit prewarm error: {e}")
+        finally:
+            # Clean up the task reference
+            self._prewarm_tasks.pop(session_key, None)
 
     def _apply_project_settings(self, project_id: str) -> None:
         """Load project settings from webapp API and reconfigure LLM if model changed."""
@@ -950,16 +997,31 @@ class AgentOrchestrator:
         set_tenant_context(user_id, project_id)
         set_phase_context(phase)
 
-        # Auto-reset Metasploit on first use in this session
+        # Soft-reset Metasploit on first use in this session
+        # Full restart (msf_restart) is handled by prewarm at WebSocket init time.
+        # Here we just do a lightweight reset to clear any leftover module/sessions.
         msf_reset_done = state.get("msf_session_reset_done", False)
         extra_updates = {}
         if tool_name == "metasploit_console" and not msf_reset_done:
-            logger.info(f"[{user_id}/{project_id}/{session_id}] Auto-resetting Metasploit state (first use in session)")
-            # Restart msfconsole completely for a clean state
-            # This kills any stuck sessions and starts fresh
-            await self.tool_executor.execute("msf_restart", {}, phase)
+            session_key = f"{user_id}:{project_id}:{session_id}"
+
+            # Wait for prewarm (full restart) if it's still running
+            prewarm_task = self._prewarm_tasks.get(session_key)
+            if prewarm_task and not prewarm_task.done():
+                logger.info(f"[{session_key}] Waiting for Metasploit prewarm to complete...")
+                try:
+                    await prewarm_task
+                except Exception:
+                    pass  # Prewarm errors are non-fatal, soft reset handles cleanup
+                logger.info(f"[{session_key}] Metasploit prewarm finished")
+
+            # Lightweight soft reset: clear module context and kill leftover sessions
+            logger.info(f"[{session_key}] Soft-resetting Metasploit state (first use in session)")
+            await self.tool_executor.execute(
+                "metasploit_console", {"command": "back; sessions -K"}, phase
+            )
             extra_updates["msf_session_reset_done"] = True
-            logger.info(f"[{user_id}/{project_id}/{session_id}] Metasploit reset complete")
+            logger.info(f"[{session_key}] Metasploit soft reset complete")
 
         # Check if this is a long-running metasploit command
         is_long_running_msf = (

@@ -549,7 +549,8 @@ class PhaseAwareToolExecutor:
         self,
         tool_name: str,
         tool_args: dict,
-        phase: str
+        phase: str,
+        skip_phase_check: bool = False
     ) -> dict:
         """
         Execute a tool if allowed in the current phase.
@@ -558,12 +559,13 @@ class PhaseAwareToolExecutor:
             tool_name: Name of the tool to execute
             tool_args: Arguments for the tool
             phase: Current agent phase
+            skip_phase_check: If True, bypass phase restriction (for internal use like prewarm)
 
         Returns:
             dict with 'success', 'output', and optionally 'error'
         """
         # Check phase restriction
-        if not is_tool_allowed_in_phase(tool_name, phase):
+        if not skip_phase_check and not is_tool_allowed_in_phase(tool_name, phase):
             return {
                 "success": False,
                 "output": None,

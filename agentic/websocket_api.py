@@ -366,6 +366,11 @@ class WebSocketHandler:
                 "timestamp": datetime.utcnow().isoformat()
             })
 
+            # Pre-warm Metasploit: restart msfconsole in background so it's
+            # ready by the time the agent needs it (hides 60-120s startup)
+            session_key = f"{init_msg.user_id}:{init_msg.project_id}:{init_msg.session_id}"
+            self.orchestrator.start_msf_prewarm(session_key)
+
             logger.info(f"Session initialized: {init_msg.session_id}")
 
         except ValidationError as e:
