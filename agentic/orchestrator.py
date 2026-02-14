@@ -1259,6 +1259,18 @@ class AgentOrchestrator:
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Generating final response...")
 
+        # Emit a thinking event so the frontend shows a loading indicator
+        if self._streaming_callback:
+            try:
+                await self._streaming_callback.on_thinking(
+                    state.get("current_iteration", 0),
+                    state.get("current_phase", "informational"),
+                    "Generating final summary report...",
+                    "Compiling all findings, tool outputs, and recommendations into a comprehensive report."
+                )
+            except Exception as e:
+                logger.error(f"Error emitting report thinking event: {e}")
+
         # Build final report prompt
         report_prompt = FINAL_REPORT_PROMPT.format(
             objective=state.get("original_objective", ""),
@@ -1281,6 +1293,7 @@ class AgentOrchestrator:
             "messages": [AIMessage(content=response.content)],
             "task_complete": True,
             "completion_reason": state.get("completion_reason") or "Task completed successfully",
+            "_report_generated": True,
         }
 
     # =========================================================================
@@ -1870,10 +1883,10 @@ class AgentOrchestrator:
                 # NOTE: tool_complete for current step will be emitted via _completed_step
                 # in the NEXT think iteration
 
-            # Task complete - only emit if this is a genuine completion, not stale state
-            # We check for completion_reason to ensure this is from _generate_response_node
-            # and not just residual state from a previous completed task
-            if state.get("task_complete") and state.get("completion_reason"):
+            # Task complete - only emit AFTER generate_response_node has finished
+            # (indicated by _report_generated flag). The think node sets task_complete
+            # + completion_reason early, but the LLM report call hasn't run yet.
+            if state.get("task_complete") and state.get("_report_generated"):
                 await callback.on_task_complete(
                     state.get("completion_reason", "Task completed successfully"),
                     state.get("current_phase", "informational"),

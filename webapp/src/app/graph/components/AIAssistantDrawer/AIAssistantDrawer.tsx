@@ -9,7 +9,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
-import { Send, Bot, User, Loader2, AlertCircle, Sparkles, RotateCcw, Shield, Target, Zap, HelpCircle, WifiOff, Wifi, Square, Play, FileDown } from 'lucide-react'
+import { Send, Bot, User, Loader2, AlertCircle, Sparkles, RotateCcw, Shield, Target, Zap, HelpCircle, WifiOff, Wifi, Square, Play, Download } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -533,71 +533,6 @@ export function AIAssistantDrawer({
     setIsLoading(true)
   }, [sendResume])
 
-  const handleDownloadPDF = useCallback(async (content: string) => {
-    // Dynamic import — html2pdf.js is client-side only
-    const html2pdf = (await import('html2pdf.js')).default
-
-    // Create a temporary container with the rendered markdown
-    const container = document.createElement('div')
-    container.style.cssText = 'position:absolute;left:-9999px;top:0;width:700px;padding:32px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.6;color:#1a1a1a;background:#fff;'
-
-    // Style overrides for print
-    const styleTag = document.createElement('style')
-    styleTag.textContent = `
-      h1 { font-size:20px; margin:24px 0 12px; border-bottom:2px solid #d32f2f; padding-bottom:6px; color:#1a1a1a; }
-      h2 { font-size:16px; margin:20px 0 10px; color:#333; }
-      h3 { font-size:14px; margin:16px 0 8px; color:#444; }
-      table { border-collapse:collapse; width:100%; margin:10px 0; font-size:11px; }
-      th, td { border:1px solid #ccc; padding:6px 10px; text-align:left; }
-      th { background:#f0f0f0; font-weight:600; }
-      tr:nth-child(even) { background:#fafafa; }
-      code { background:#f4f4f4; padding:2px 5px; border-radius:3px; font-size:0.9em; }
-      pre { background:#1e1e1e; color:#d4d4d4; padding:12px; border-radius:6px; overflow-x:auto; font-size:11px; }
-      ul, ol { padding-left:20px; }
-      li { margin:4px 0; }
-      hr { border:none; border-top:1px solid #ddd; margin:16px 0; }
-      p { margin:8px 0; }
-    `
-    container.appendChild(styleTag)
-
-    // Render markdown to HTML (simple conversion for PDF)
-    const htmlContent = document.createElement('div')
-    // Use a temporary ReactMarkdown render by creating the HTML from the existing DOM
-    const tempDiv = document.querySelector(`[data-report-content]`)
-    if (tempDiv) {
-      htmlContent.innerHTML = tempDiv.innerHTML
-    } else {
-      // Fallback: basic markdown-to-html conversion
-      htmlContent.innerHTML = content
-        .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-        .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-        .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code>$1</code>')
-        .replace(/\n/g, '<br>')
-    }
-    container.appendChild(htmlContent)
-    document.body.appendChild(container)
-
-    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
-    const filename = `RedAmon-PenTest-Report-${timestamp}.pdf`
-
-    await html2pdf()
-      .set({
-        margin: [10, 12, 10, 12],
-        filename,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, logging: false },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
-      })
-      .from(container)
-      .save()
-
-    document.body.removeChild(container)
-  }, [])
-
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -610,6 +545,162 @@ export function AIAssistantDrawer({
     e.target.style.height = 'auto'
     e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
   }
+
+  const handleDownloadMarkdown = useCallback(() => {
+    if (chatItems.length === 0) return
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const lines: string[] = []
+
+    // Header
+    lines.push('# AI Agent Session Report')
+    lines.push('')
+    lines.push(`**Date:** ${new Date().toLocaleString()}  `)
+    lines.push(`**Phase:** ${PHASE_CONFIG[currentPhase].label}  `)
+    if (iterationCount > 0) lines.push(`**Step:** ${iterationCount}  `)
+    if (modelName) lines.push(`**Model:** ${modelName}  `)
+    lines.push('')
+    lines.push('---')
+    lines.push('')
+
+    // Todo list snapshot
+    if (todoList.length > 0) {
+      lines.push('## Task List')
+      lines.push('')
+      todoList.forEach((item: TodoItem) => {
+        const icon = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[-]' : '[ ]'
+        const desc = item.description || item.content || item.activeForm || 'No description'
+        lines.push(`- ${icon} ${desc}`)
+      })
+      lines.push('')
+      lines.push('---')
+      lines.push('')
+    }
+
+    // Chat timeline
+    lines.push('## Session Timeline')
+    lines.push('')
+
+    chatItems.forEach(item => {
+      if ('role' in item) {
+        // Message
+        const time = item.timestamp.toLocaleTimeString()
+        if (item.role === 'user') {
+          lines.push(`### User  \`${time}\``)
+          if (item.isGuidance) lines.push('> *[Guidance]*')
+        } else {
+          lines.push(`### Assistant  \`${time}\``)
+          if (item.isReport) lines.push('> **[Report]**')
+        }
+        lines.push('')
+        lines.push(item.content)
+        lines.push('')
+        if (item.error) {
+          lines.push(`> **Error:** ${item.error}`)
+          lines.push('')
+        }
+        lines.push('---')
+        lines.push('')
+      } else if (item.type === 'thinking') {
+        const time = item.timestamp.toLocaleTimeString()
+        lines.push(`### Thinking  \`${time}\``)
+        lines.push('')
+        if (item.thought) {
+          lines.push(`> ${item.thought}`)
+          lines.push('')
+        }
+        if (item.reasoning) {
+          lines.push('<details>')
+          lines.push('<summary>Reasoning</summary>')
+          lines.push('')
+          lines.push(item.reasoning)
+          lines.push('')
+          lines.push('</details>')
+          lines.push('')
+        }
+        if (item.updated_todo_list && item.updated_todo_list.length > 0) {
+          lines.push('<details>')
+          lines.push('<summary>Todo List Update</summary>')
+          lines.push('')
+          item.updated_todo_list.forEach(todo => {
+            const icon = todo.status === 'completed' ? '[x]' : todo.status === 'in_progress' ? '[-]' : '[ ]'
+            const desc = todo.description || todo.content || todo.activeForm || ''
+            lines.push(`- ${icon} ${desc}`)
+          })
+          lines.push('')
+          lines.push('</details>')
+          lines.push('')
+        }
+        lines.push('---')
+        lines.push('')
+      } else if (item.type === 'tool_execution') {
+        const time = item.timestamp.toLocaleTimeString()
+        const statusIcon = item.status === 'success' ? 'OK' : item.status === 'error' ? 'FAIL' : 'RUNNING'
+        lines.push(`### Tool: \`${item.tool_name}\`  \`${time}\`  [${statusIcon}]`)
+        lines.push('')
+
+        // Arguments
+        if (item.tool_args && Object.keys(item.tool_args).length > 0) {
+          lines.push('**Arguments**')
+          lines.push('')
+          Object.entries(item.tool_args).forEach(([key, value]) => {
+            lines.push(`- **${key}:** \`${typeof value === 'string' ? value : JSON.stringify(value)}\``)
+          })
+          lines.push('')
+        }
+
+        // Raw Output
+        const rawOutput = item.output_chunks.join('')
+        if (rawOutput) {
+          lines.push('<details>')
+          lines.push('<summary>Raw Output</summary>')
+          lines.push('')
+          lines.push('```')
+          lines.push(rawOutput)
+          lines.push('```')
+          lines.push('')
+          lines.push('</details>')
+          lines.push('')
+        }
+
+        // Analysis
+        if (item.final_output) {
+          lines.push('**Analysis**')
+          lines.push('')
+          lines.push(item.final_output)
+          lines.push('')
+        }
+
+        // Actionable Findings
+        if (item.actionable_findings && item.actionable_findings.length > 0) {
+          lines.push('**Actionable Findings**')
+          lines.push('')
+          item.actionable_findings.forEach(f => lines.push(`- ${f}`))
+          lines.push('')
+        }
+
+        // Recommended Next Steps
+        if (item.recommended_next_steps && item.recommended_next_steps.length > 0) {
+          lines.push('**Recommended Next Steps**')
+          lines.push('')
+          item.recommended_next_steps.forEach(s => lines.push(`- ${s}`))
+          lines.push('')
+        }
+
+        lines.push('---')
+        lines.push('')
+      }
+    })
+
+    // Download
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `redamon-session-${timestamp}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [chatItems, currentPhase, iterationCount, modelName, todoList])
 
   const handleNewChat = () => {
     // Cancel any running backend task before resetting
@@ -713,15 +804,6 @@ export function AIAssistantDrawer({
           {item.isReport && (
             <div className={styles.reportHeader}>
               <span className={styles.reportBadge}>Report</span>
-              <button
-                className={styles.reportDownloadButton}
-                onClick={() => handleDownloadPDF(item.content)}
-                title="Download report as PDF"
-                aria-label="Download report as PDF"
-              >
-                <FileDown size={13} />
-                <span>PDF</span>
-              </button>
             </div>
           )}
           <div
@@ -789,6 +871,15 @@ export function AIAssistantDrawer({
           </div>
         </div>
         <div className={styles.headerActions}>
+          <button
+            className={styles.iconButton}
+            onClick={handleDownloadMarkdown}
+            title="Download chat as Markdown"
+            aria-label="Download chat as Markdown"
+            disabled={chatItems.length === 0}
+          >
+            <Download size={14} />
+          </button>
           <button
             className={styles.iconButton}
             onClick={handleNewChat}

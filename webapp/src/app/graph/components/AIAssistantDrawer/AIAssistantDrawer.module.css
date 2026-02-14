@@ -131,9 +131,14 @@
   transition: var(--transition-all);
 }
 
-.iconButton:hover {
+.iconButton:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .closeButton {
