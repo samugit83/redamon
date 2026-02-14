@@ -323,8 +323,7 @@
 .messageText ul,
 .messageText ol {
   margin: var(--space-2) 0;
-  padding-left: var(--space-4);
-  list-style-position: inside;
+  padding-left: var(--space-5, 1.25rem);
 }
 
 .messageText li {
@@ -824,19 +823,79 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  max-height: 50vh;
+  overflow-y: auto;
 }
 
 .questionText {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--text-primary);
+  line-height: var(--leading-relaxed);
+}
+
+.questionText p {
   margin: 0;
+}
+
+.questionText p + p {
+  margin-top: var(--space-2);
+}
+
+.questionText ul,
+.questionText ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5, 1.25rem);
+}
+
+.questionText li {
+  margin: var(--space-1) 0;
+}
+
+.questionText code {
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: var(--radius-sm);
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.questionText h1,
+.questionText h2,
+.questionText h3,
+.questionText h4,
+.questionText h5,
+.questionText h6 {
+  margin: var(--space-3) 0 var(--space-2) 0;
+  font-weight: 600;
+}
+
+.questionText h1:first-child,
+.questionText h2:first-child,
+.questionText h3:first-child,
+.questionText h4:first-child,
+.questionText h5:first-child,
+.questionText h6:first-child {
+  margin-top: 0;
+}
+
+.questionText :global(div[class*="language-"]) {
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
+  font-size: var(--text-xs);
 }
 
 .questionContext {
   font-size: var(--text-sm);
   color: var(--text-secondary);
+}
+
+.questionContext p {
   margin: 0;
+}
+
+.questionContext p + p {
+  margin-top: var(--space-1);
 }
 
 .answerInput {

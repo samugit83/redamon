@@ -244,8 +244,13 @@ export function useAgentWebSocket({
 
   // Connect to WebSocket
   const connect = useCallback(() => {
-    // Close existing connection
+    // Close existing connection — detach handlers first to prevent
+    // the old close event from clobbering the new connection
     if (wsRef.current) {
+      wsRef.current.onopen = null
+      wsRef.current.onmessage = null
+      wsRef.current.onerror = null
+      wsRef.current.onclose = null
       wsRef.current.close()
       wsRef.current = null
     }
@@ -255,6 +260,9 @@ export function useAgentWebSocket({
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
+
+    // Reset authentication state for new connection
+    isAuthenticatedRef.current = false
 
     try {
       const wsUrl = getWebSocketUrl()
@@ -292,10 +300,15 @@ export function useAgentWebSocket({
     }
 
     if (wsRef.current) {
+      wsRef.current.onopen = null
+      wsRef.current.onmessage = null
+      wsRef.current.onerror = null
+      wsRef.current.onclose = null
       wsRef.current.close()
       wsRef.current = null
     }
 
+    isAuthenticatedRef.current = false
     setStatus(ConnectionStatus.DISCONNECTED)
     setReconnectAttempt(0)
   }, [stopPingInterval])
@@ -326,6 +339,10 @@ export function useAgentWebSocket({
       }
 
       if (wsRef.current) {
+        wsRef.current.onopen = null
+        wsRef.current.onmessage = null
+        wsRef.current.onerror = null
+        wsRef.current.onclose = null
         wsRef.current.close()
       }
     }

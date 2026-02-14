@@ -19,6 +19,8 @@ import { MitreSection } from './sections/MitreSection'
 import { SecurityChecksSection } from './sections/SecurityChecksSection'
 import { GithubSection } from './sections/GithubSection'
 import { AgentBehaviourSection } from './sections/AgentBehaviourSection'
+import { CveExploitSection } from './sections/CveExploitSection'
+import { BruteForceSection } from './sections/BruteForceSection'
 import { GvmScanSection } from './sections/GvmScanSection'
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -55,6 +57,7 @@ const TABS = [
   { id: 'gvm', label: 'GVM Scan' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'agent', label: 'Agent Behaviour' },
+  { id: 'attack', label: 'Attack Paths' },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -317,6 +320,13 @@ export function ProjectForm({
 
         {activeTab === 'agent' && (
           <AgentBehaviourSection data={formData} updateField={updateField} />
+        )}
+
+        {activeTab === 'attack' && (
+          <>
+            <CveExploitSection data={formData} updateField={updateField} />
+            <BruteForceSection data={formData} updateField={updateField} />
+          </>
         )}
           </div>
         </>

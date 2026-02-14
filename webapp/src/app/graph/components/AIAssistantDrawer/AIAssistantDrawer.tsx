@@ -176,6 +176,7 @@ export function AIAssistantDrawer({
     setSelectedOptions([])
     setTodoList([])
     setIsStopped(false)
+    setIsLoading(false)
     awaitingApprovalRef.current = false
     isProcessingApproval.current = false
     awaitingQuestionRef.current = false
@@ -544,6 +545,10 @@ export function AIAssistantDrawer({
   }
 
   const handleNewChat = () => {
+    // Cancel any running backend task before resetting
+    if (isLoading) {
+      sendStop()
+    }
     setChatItems([])
     setCurrentPhase('informational')
     setAttackPathType('cve_exploit')
@@ -556,6 +561,7 @@ export function AIAssistantDrawer({
     setSelectedOptions([])
     setTodoList([])
     setIsStopped(false)
+    setIsLoading(false)
     awaitingApprovalRef.current = false
     isProcessingApproval.current = false
     awaitingQuestionRef.current = false
@@ -989,8 +995,41 @@ export function AIAssistantDrawer({
             <span>Agent Question</span>
           </div>
           <div className={styles.questionContent}>
-            <p className={styles.questionText}>{questionRequest.question}</p>
-            <p className={styles.questionContext}>{questionRequest.context}</p>
+            <div className={styles.questionText}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  code({ className, children, ...props }: any) {
+                    const match = /language-(\w+)/.exec(className || '')
+                    const language = match ? match[1] : ''
+                    const isInline = !className
+
+                    return !isInline && language ? (
+                      <SyntaxHighlighter
+                        style={vscDarkPlus as any}
+                        language={language}
+                        PreTag="div"
+                      >
+                        {String(children).replace(/\n$/, '')}
+                      </SyntaxHighlighter>
+                    ) : (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    )
+                  }
+                }}
+              >
+                {questionRequest.question}
+              </ReactMarkdown>
+            </div>
+            {questionRequest.context && (
+              <div className={styles.questionContext}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {questionRequest.context}
+                </ReactMarkdown>
+              </div>
+            )}
 
             {questionRequest.format === 'text' && (
               <textarea

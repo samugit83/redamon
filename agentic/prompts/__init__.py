@@ -125,7 +125,8 @@ def get_phase_tools(
         if attack_path_type == "brute_force_credential_guess":
             # Format with max attempts from params
             parts.append(BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS.format(
-                brute_force_max_attempts=get_setting('BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS', 3)
+                brute_force_max_attempts=get_setting('BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS', 3),
+                bruteforce_speed=get_setting('BRUTEFORCE_SPEED', 5)
             ))
             # Add wordlist reference guide
             parts.append(BRUTE_FORCE_CREDENTIAL_GUESS_WORDLIST_GUIDANCE)

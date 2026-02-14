@@ -68,6 +68,7 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
 
     # Brute Force
     'BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS': 3,
+    'BRUTEFORCE_SPEED': 5,
 }
 
 
@@ -117,6 +118,7 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['LOG_BACKUP_COUNT'] = project.get('agentLogBackupCount', DEFAULT_AGENT_SETTINGS['LOG_BACKUP_COUNT'])
     settings['TOOL_PHASE_MAP'] = project.get('agentToolPhaseMap', DEFAULT_AGENT_SETTINGS['TOOL_PHASE_MAP'])
     settings['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'] = project.get('agentBruteForceMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'])
+    settings['BRUTEFORCE_SPEED'] = project.get('agentBruteforceSpeed', DEFAULT_AGENT_SETTINGS['BRUTEFORCE_SPEED'])
 
     logger.info(f"Loaded {len(settings)} agent settings for project {project_id}")
     return settings

@@ -68,18 +68,6 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 </select>
                 <span className={styles.fieldHint}>Model used by the agent. Anthropic models require ANTHROPIC_API_KEY in the agent .env file.</span>
               </div>
-              <div className={styles.fieldGroup}>
-                <label className={styles.fieldLabel}>Post-Exploitation Type</label>
-                <select
-                  className="select"
-                  value={data.agentPostExplPhaseType}
-                  onChange={(e) => updateField('agentPostExplPhaseType', e.target.value)}
-                >
-                  <option value="statefull">Stateful</option>
-                  <option value="stateless">Stateless</option>
-                </select>
-                <span className={styles.fieldHint}>Stateful keeps Meterpreter sessions between turns</span>
-              </div>
             </div>
             <div className={styles.toggleRow}>
               <div>
@@ -90,6 +78,20 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 checked={data.agentActivatePostExplPhase}
                 onChange={(checked) => updateField('agentActivatePostExplPhase', checked)}
               />
+            </div>
+            <div className={styles.fieldRow}>
+              <div className={styles.fieldGroup}>
+                <label className={styles.fieldLabel}>Post-Exploitation Type</label>
+                <select
+                  className="select"
+                  value={data.agentPostExplPhaseType}
+                  onChange={(e) => updateField('agentPostExplPhaseType', e.target.value)}
+                >
+                  <option value="statefull">Stateful</option>
+                  <option value="stateless">Stateless</option>
+                </select>
+                <span className={styles.fieldHint}>Stateful keeps Meterpreter/shell sessions between turns</span>
+              </div>
             </div>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Informational Phase System Prompt</label>
@@ -263,18 +265,6 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                   max={10}
                 />
                 <span className={styles.fieldHint}>Neo4j query retries</span>
-              </div>
-              <div className={styles.fieldGroup}>
-                <label className={styles.fieldLabel}>Brute Force Max Attempts</label>
-                <input
-                  type="number"
-                  className="textInput"
-                  value={data.agentBruteForceMaxWordlistAttempts}
-                  onChange={(e) => updateField('agentBruteForceMaxWordlistAttempts', parseInt(e.target.value) || 3)}
-                  min={1}
-                  max={10}
-                />
-                <span className={styles.fieldHint}>Wordlist combinations to try</span>
               </div>
               <div className={styles.fieldGroup}>
                 <label className={styles.fieldLabel}>Log Max MB</label>
