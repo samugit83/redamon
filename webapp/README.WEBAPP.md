@@ -1,4 +1,4 @@
-# RedAmon Web Application
+l# RedAmon Web Application
 
 Production-ready Next.js 16 web application with Neo4j integration, PostgreSQL project storage, and integrated recon control.
 
@@ -464,7 +464,6 @@ The recon orchestrator automatically detects scan phases from log output:
 |-------|-------------|
 | 1 | Domain Discovery |
 | 2 | Port Scanning |
-| 3 | HTTP Probing |
 | 4 | Resource Enumeration |
 | 5 | Vulnerability Scanning |
 | 6 | MITRE Enrichment |
