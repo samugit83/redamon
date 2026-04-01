@@ -167,6 +167,41 @@ TOOL_REGISTRY = {
             'For complex scripts: write to file via `echo`, then run with `python3`'
         ),
     },
+    "execute_masscan": {
+        "purpose": "High-speed port scanning for IP ranges/CIDRs",
+        "when_to_use": "Scan large networks, subnets, or IP ranges for open ports at high speed",
+        "args_format": '"args": "complete masscan CLI arguments"',
+        "description": (
+            '**execute_masscan** (Fastest port scanner for large networks)\n'
+            '   - Asynchronous SYN scanning — scans millions of IPs quickly\n'
+            '   - ONLY accepts IP addresses and CIDR ranges (NOT hostnames)\n'
+            '   - Resolve hostnames to IPs first using dig/nslookup\n'
+            '   - Requires root or CAP_NET_RAW capability\n'
+            '   - Key flags:\n'
+            '     - `-p PORTS` — port list or range (e.g., `-p 80,443` or `-p 0-65535`)\n'
+            '     - `--top-ports N` — scan top N most common ports\n'
+            '     - `--rate N` — packets per second (default 100, can go to 10M+)\n'
+            '     - `--banners` — grab service banners after port discovery\n'
+            '     - `-iL FILE` — read targets from file\n'
+            '     - `--excludefile FILE` — exclude targets from file\n'
+            '   - Example: "10.0.0.0/24 -p 80,443,8080 --rate 1000"\n'
+            '   - Example: "192.168.1.0/24 --top-ports 100 --rate 5000"\n'
+            '   - Example: "10.0.0.1-10.0.0.254 -p 0-65535 --rate 10000 --banners"'
+        ),
+    },
+    "execute_wpscan": {
+        "purpose": "WordPress vulnerability scanning",
+        "when_to_use": "Scan WordPress sites for vulnerable plugins, themes, users, and misconfigurations",
+        "args_format": '"args": "wpscan arguments without \'wpscan\' prefix"',
+        "description": (
+            '**execute_wpscan** (WordPress security scanner)\n'
+            '   - Detects vulnerable plugins, themes, and WordPress core versions\n'
+            '   - Enumerates users, config backups, database exports\n'
+            '   - Requires WPScan API token for vulnerability data (free: 25 requests/day)\n'
+            '   - Key flags: --url TARGET, --enumerate p,t,u,cb, --format json, --api-token TOKEN\n'
+            '   - Example: "--url http://example.com --enumerate p,t --format json --no-banner"'
+        ),
+    },
     "msf_restart": {
         "purpose": "Restart msfconsole",
         "when_to_use": "Reset Metasploit to a clean state (kills ALL sessions)",

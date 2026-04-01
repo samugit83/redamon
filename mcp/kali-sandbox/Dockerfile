@@ -61,6 +61,8 @@ RUN apt-get install -y --fix-missing \
     libpcap-dev \
     # Masscan port scanner (for AI agent network reconnaissance)
     masscan \
+    # WPScan WordPress vulnerability scanner
+    wpscan \
     # Clean up
     && rm -rf /var/lib/apt/lists/*
 

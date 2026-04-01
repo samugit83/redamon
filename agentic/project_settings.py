@@ -13,18 +13,15 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# =============================================================================
 # DANGEROUS TOOLS — require manual confirmation before execution
-# =============================================================================
 DANGEROUS_TOOLS = frozenset({
     'execute_nmap', 'execute_naabu', 'execute_nuclei', 'execute_curl',
     'msf_restart', 'kali_shell', 'metasploit_console', 'execute_code',
-    'execute_hydra', 'execute_playwright',
+
+    'execute_hydra', 'execute_playwright', 'execute_wpscan',
 })
 
-# =============================================================================
 # DEFAULT SETTINGS - Used as fallback for standalone usage and missing API fields
-# =============================================================================
 
 DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     # LLM Configuration
@@ -82,6 +79,9 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
         'query_graph': ['informational', 'exploitation', 'post_exploitation'],
         'execute_curl': ['informational', 'exploitation', 'post_exploitation'],
         'execute_naabu': ['informational', 'exploitation'],
+
+        'execute_masscan': ['informational', 'exploitation'],
+        'execute_wpscan': ['informational', 'exploitation'],
         'execute_nmap': ['informational', 'exploitation', 'post_exploitation'],
         'execute_nuclei': ['informational', 'exploitation'],
         'kali_shell': ['informational', 'exploitation', 'post_exploitation'],
@@ -446,9 +446,7 @@ def reload_settings(project_id: Optional[str] = None) -> dict[str, Any]:
     return get_settings()
 
 
-# =============================================================================
 # ATTACK SKILL HELPERS
-# =============================================================================
 
 def get_enabled_builtin_skills() -> set[str]:
     """Return the set of enabled built-in attack skill IDs."""
@@ -464,9 +462,7 @@ def get_enabled_user_skills() -> list[dict]:
             if user_toggles.get(s['id'], True)]
 
 
-# =============================================================================
 # TOOL PHASE RESTRICTION HELPERS (moved from params.py)
-# =============================================================================
 
 def is_tool_allowed_in_phase(tool_name: str, phase: str) -> bool:
     """Check if a tool is allowed in the given phase."""

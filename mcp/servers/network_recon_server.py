@@ -523,6 +523,68 @@ def execute_masscan(args: str) -> str:
         return f"[ERROR] {str(e)}"
 
 
+@mcp.tool()
+def execute_wpscan(args: str) -> str:
+    """
+    Execute WPScan WordPress vulnerability scanner with any valid CLI arguments.
+
+    WPScan is a black-box WordPress security scanner that detects security issues
+    in WordPress installations including vulnerable plugins, themes, weak passwords,
+    and configuration issues. Requires WPScan API token for vulnerability data.
+
+    Args:
+        args: Command-line arguments for wpscan (without the 'wpscan' command itself)
+
+    Returns:
+        Scan results in JSON format (when --format json is used) or text output
+
+    Examples:
+        Basic scan with JSON output:
+        - "--url http://example.com --format json --no-banner"
+
+        Enumerate plugins and themes:
+        - "--url http://example.com --enumerate p,t --format json --no-banner"
+
+        With API token for vulnerability data:
+        - "--url http://example.com --api-token YOUR_TOKEN --format json --no-banner"
+
+        Aggressive plugin detection:
+        - "--url http://example.com --enumerate p --plugins-detection aggressive --format json --no-banner"
+    """
+    try:
+        cmd_args = shlex.split(args)
+        result = subprocess.run(
+            ["wpscan"] + cmd_args,
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+
+        output = ""
+        if result.stdout:
+            output += ANSI_ESCAPE.sub('', result.stdout)
+        if result.stderr:
+            clean_stderr = ANSI_ESCAPE.sub('', result.stderr)
+            stderr_lines = [
+                line for line in clean_stderr.split('\n')
+                if line and not line.startswith('[i]') and 'warning:' not in line.lower()
+            ]
+            if stderr_lines:
+                output += f"\n[STDERR]: {chr(10).join(stderr_lines)}"
+
+        if not output.strip():
+            return "[INFO] WPScan completed with no output. Target may not be a WordPress site."
+
+        return output
+
+    except subprocess.TimeoutExpired:
+        return "[ERROR] WPScan timed out after 600 seconds."
+    except FileNotFoundError:
+        return "[ERROR] wpscan not found. Ensure it is installed in the Kali sandbox."
+    except Exception as e:
+        return f"[ERROR] {str(e)}"
+
+
 class HydraProgressHandler(BaseHTTPRequestHandler):
     """HTTP handler for Hydra progress endpoint."""
 
