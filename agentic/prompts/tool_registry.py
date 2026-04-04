@@ -66,7 +66,8 @@ TOOL_REGISTRY = {
             '   - 8000+ YAML templates — verify and exploit CVEs in one step\n'
             '   - Custom templates at `/opt/nuclei-templates/` are listed in the tool description (check it for available paths)\n'
             '   - Examples: `-u URL -id CVE-2021-41773 -jsonl` | `-u URL -tags cve,rce -severity critical,high -jsonl`\n'
-            '   - Custom: `-u URL -t /opt/nuclei-templates/http/misconfiguration/springboot/ -jsonl`'
+            '   - Custom: `-u URL -t /opt/nuclei-templates/springboot-heapdump-bypass.yaml -jsonl`\n'
+            '   - All custom: `-u URL -t /opt/nuclei-templates/ -jsonl`'
         ),
     },
     "execute_curl": {

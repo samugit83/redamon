@@ -206,7 +206,9 @@ execute_nuclei("-u http://10.0.0.5 -id CVE-2021-41773 -jsonl")
 execute_nuclei("-u http://10.0.0.5 -tags xss,sqli -jsonl")
 
 # Custom templates (paths listed in tool description)
-execute_nuclei("-u http://10.0.0.5 -t /opt/nuclei-templates/http/misconfiguration/springboot/ -jsonl")
+execute_nuclei("-u http://10.0.0.5 -t /opt/nuclei-templates/springboot-heapdump-bypass.yaml -jsonl")
+# All custom templates
+execute_nuclei("-u http://10.0.0.5 -t /opt/nuclei-templates/ -jsonl")
 ```
 
 **Custom Templates:**
