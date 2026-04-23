@@ -15,11 +15,16 @@ boto3>=1.35.0
 langchain-mcp-adapters>=0.1.0
 
 # Neo4j integration
+langchain-community>=0.3.0
 langchain-neo4j>=0.1.0
 neo4j>=5.0.0
 
 # Tavily web search
 langchain-tavily>=0.1.0
+
+# Vector knowledge base (heavy deps in requirements-kb.txt)
+pyyaml>=6.0
+openai>=1.0.0
 
 # FastAPI
 fastapi>=0.115.0
@@ -33,6 +38,9 @@ httpx>=0.27.0
 # Async support
 anyio>=4.0.0
 
+# WebSocket client for kali terminal proxy
+websockets>=12.0
+
 # CypherFix CodeFix agent
 PyGithub>=2.1.0
 gitpython>=3.1.0
@@ -41,3 +49,7 @@ gitpython>=3.1.0
 tree-sitter==0.21.3
 tree-sitter-languages==1.8.0
 networkx>=3.0
+
+# Persistent LangGraph checkpointer (Fireteam gate: PERSISTENT_CHECKPOINTER=true)
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.2.0

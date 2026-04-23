@@ -53,6 +53,39 @@ from .katana_helpers import (
     pull_katana_docker_image,
 )
 
+# Hakrawler helpers
+from .hakrawler_helpers import (
+    run_hakrawler_crawler,
+    pull_hakrawler_docker_image,
+    merge_hakrawler_into_by_base_url,
+)
+
+# jsluice helpers
+from .jsluice_helpers import (
+    run_jsluice_analysis,
+    merge_jsluice_into_by_base_url,
+)
+
+# FFuf helpers
+from .ffuf_helpers import (
+    run_ffuf_discovery,
+    pull_ffuf_binary_check,
+    merge_ffuf_into_by_base_url,
+)
+
+# Arjun helpers
+from .arjun_helpers import (
+    arjun_binary_check,
+    run_arjun_discovery,
+    merge_arjun_into_by_base_url,
+)
+
+# ParamSpider helpers
+from .paramspider_helpers import (
+    run_paramspider_discovery,
+    merge_paramspider_into_by_base_url,
+)
+
 # Endpoint organization
 from .endpoint_helpers import (
     organize_endpoints,
@@ -85,6 +118,24 @@ __all__ = [
     "run_katana_crawler",
     "fetch_forms_from_urls",
     "pull_katana_docker_image",
+    # Hakrawler
+    "run_hakrawler_crawler",
+    "pull_hakrawler_docker_image",
+    "merge_hakrawler_into_by_base_url",
+    # jsluice
+    "run_jsluice_analysis",
+    "merge_jsluice_into_by_base_url",
+    # FFuf
+    "run_ffuf_discovery",
+    "pull_ffuf_binary_check",
+    "merge_ffuf_into_by_base_url",
+    # Arjun
+    "arjun_binary_check",
+    "run_arjun_discovery",
+    "merge_arjun_into_by_base_url",
+    # ParamSpider
+    "run_paramspider_discovery",
+    "merge_paramspider_into_by_base_url",
     # Endpoint organization
     "organize_endpoints",
 ]

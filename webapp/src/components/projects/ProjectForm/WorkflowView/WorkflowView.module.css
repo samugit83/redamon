@@ -1,0 +1,469 @@
+/* ---- Canvas ---- */
+
+.canvas {
+  flex: 1;
+  min-height: 500px;
+  width: 100%;
+  background: #0a0a0a;
+  border-radius: var(--radius-md);
+}
+
+:global([data-theme="light"]) .canvas {
+  background: var(--bg-tertiary);
+}
+
+/*
+ * React Flow base CSS is injected via <style> tag in WorkflowView.tsx
+ * because Turbopack doesn't load @xyflow/react/dist/style.css from
+ * the Docker node_modules volume. CSS module :global() selectors
+ * don't reliably reach the deeply nested SVG elements.
+ */
+
+/* ---- Controls ---- */
+
+.controls {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.controls :global(button) {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  border-bottom: 1px solid var(--border-default) !important;
+}
+
+.controls :global(button:hover) {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+.controls :global(button svg) {
+  fill: var(--text-secondary) !important;
+}
+
+.controls :global(button:hover svg) {
+  fill: var(--text-primary) !important;
+}
+
+/* ---- MiniMap ---- */
+
+.minimap {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: var(--radius-md) !important;
+}
+
+:global([data-theme="light"]) .minimap {
+  border: 1px solid var(--border-strong) !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* ---- Tool Node ---- */
+
+.toolNode {
+  position: relative;
+  background: #323640;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid #6b7280;
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 170px;
+  pointer-events: all;
+}
+
+.toolNode:hover {
+  border-color: var(--border-active);
+  background: #3a3f4a;
+}
+
+.toolNodeDisabled {
+  opacity: 0.4;
+  border-style: dashed;
+}
+
+.toolNodeDisabled:hover {
+  opacity: 0.6;
+}
+
+.toolNodeBroken {
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3);
+}
+
+:global([data-theme="light"]) .toolNode {
+  background: #d9dce1;
+  border-left-color: #9ca3af;
+}
+
+:global([data-theme="light"]) .toolNode:hover {
+  background: #cfd3d9;
+}
+
+.toolNodeHighlighted {
+  border-color: #fff !important;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+}
+
+:global([data-theme="light"]) .toolNodeHighlighted {
+  border-color: #111827 !important;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.15);
+}
+
+.toolNodeDimmed {
+  /* nodes always fully opaque -- only edges dim */
+}
+
+.toolNodeContent {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toolNodeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.toolNodeLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.toolNodeActions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.settingsIcon {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.toolNode:hover .settingsIcon {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+.warningIcon {
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.toolNodeBadges {
+  display: flex;
+  gap: 4px;
+}
+
+.partialReconPlay {
+  position: absolute;
+  bottom: 9px;
+  right: 11px;
+  color: #4ade80;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s, transform 0.15s;
+}
+
+.partialReconPlay:hover {
+  opacity: 1;
+  color: #86efac;
+  transform: scale(1.2);
+}
+
+:global([data-theme="light"]) .partialReconPlay {
+  color: #16a34a;
+}
+
+:global([data-theme="light"]) .partialReconPlay:hover {
+  color: #15803d;
+}
+
+.partialReconRunning {
+  cursor: default;
+  opacity: 0.9;
+  color: #facc15;
+}
+
+.partialReconRunning:hover {
+  transform: none;
+  color: #facc15;
+}
+
+:global([data-theme="light"]) .partialReconRunning {
+  color: #ca8a04;
+}
+
+:global([data-theme="light"]) .partialReconRunning:hover {
+  color: #ca8a04;
+}
+
+@keyframes partialReconSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.partialReconSpinner {
+  animation: partialReconSpin 1s linear infinite;
+}
+
+.badgeActive {
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+:global([data-theme="light"]) .badgeActive {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.badgePassive {
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+:global([data-theme="light"]) .badgePassive {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+/* Node count badge (on data nodes) */
+
+.nodeCountBadge {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: background 0.15s;
+  user-select: none;
+  margin-left: 4px;
+  line-height: 1.4;
+}
+
+.nodeCountBadge:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+:global([data-theme="light"]) .nodeCountBadge {
+  background: rgba(0, 0, 0, 0.08);
+  color: rgba(0, 0, 0, 0.6);
+}
+
+:global([data-theme="light"]) .nodeCountBadge:hover {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* Mini toggle */
+
+.toolToggle {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  border-radius: 7px;
+  border: none;
+  background: #4b5563;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  pointer-events: all;
+  z-index: 1;
+}
+
+:global([data-theme="light"]) .toolToggle {
+  background: #9ca3af;
+}
+
+.toolToggleOn {
+  background: #22c55e;
+}
+
+:global([data-theme="light"]) .toolToggleOn {
+  background: #16a34a;
+}
+
+.toolToggleThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.15s;
+}
+
+.toolToggleOn .toolToggleThumb {
+  transform: translateX(10px);
+}
+
+/* ---- Data Node ---- */
+
+.dataNode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 60px;
+  position: relative;
+  z-index: 5;
+  pointer-events: all;
+}
+
+.dataNode:hover {
+  border-color: #fff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.15);
+}
+
+:global([data-theme="light"]) .dataNode:hover {
+  border-color: #111827;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.12);
+}
+
+.dataNodeUniversal {
+  /* no opacity reduction -- all nodes fully opaque */
+}
+
+.dataNodeHighlighted {
+  border-color: #fff !important;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.25);
+  opacity: 1 !important;
+}
+
+:global([data-theme="light"]) .dataNodeHighlighted {
+  border-color: #111827 !important;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+}
+
+.dataNodeDimmed {
+  /* nodes always fully opaque -- only edges dim */
+}
+
+.dataNodeStarved {
+  animation: pulseStarved 2s ease-in-out infinite;
+}
+
+@keyframes pulseStarved {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+
+.dataNodeLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Input Node ---- */
+
+.inputNode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  min-width: 100px;
+  position: relative;
+  z-index: 5;
+  cursor: pointer;
+  pointer-events: all;
+}
+
+.inputNode:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-tertiary);
+}
+
+.inputNodeIcon {
+  color: var(--text-secondary);
+}
+
+.inputNodeRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inputNodeLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.inputNodeSettingsIcon {
+  color: var(--text-muted);
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.inputNode:hover .inputNodeSettingsIcon {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+.inputNodeHighlighted {
+  border-color: #fff !important;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+}
+
+:global([data-theme="light"]) .inputNodeHighlighted {
+  border-color: #111827 !important;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.15);
+}
+
+.inputNodeDimmed {
+  /* nodes always fully opaque -- only edges dim */
+}
+
+/* ---- Handles ---- */
+
+.handle {
+  width: 6px !important;
+  height: 6px !important;
+  background: var(--border-default) !important;
+  border: none !important;
+}
+
+.handleSmall {
+  width: 4px !important;
+  height: 4px !important;
+  background: var(--border-default) !important;
+  border: none !important;
+}

@@ -85,6 +85,14 @@
   color: var(--accent-primary);
 }
 
+.tokenMeta {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
 .compactPreview {
   display: flex;
   flex-direction: column;

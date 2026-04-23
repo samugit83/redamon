@@ -79,8 +79,8 @@ const ENGAGEMENT_TYPE_LABELS: Record<string, string> = {
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  brute_force: 'Brute Force',
-  dos: 'Denial of Service',
+  brute_force: 'Credential Testing',
+  dos: 'Availability Testing',
   social_engineering: 'Social Engineering',
   physical: 'Physical Access',
 }
@@ -237,7 +237,7 @@ export function RoeViewer({ projectId, project }: RoeViewerProps) {
         {/* Testing Permissions */}
         <Section title="Testing Permissions" icon={<Shield size={15} />}>
           <div className={styles.permGrid}>
-            <PermBadge allowed={!!project.roeAllowDos} label="DoS" />
+            <PermBadge allowed={!!project.roeAllowDos} label="Avail." />
             <PermBadge allowed={!!project.roeAllowSocialEngineering} label="Social Eng." />
             <PermBadge allowed={!!project.roeAllowPhysicalAccess} label="Physical" />
             <PermBadge allowed={!!project.roeAllowDataExfiltration} label="Data Exfil." />

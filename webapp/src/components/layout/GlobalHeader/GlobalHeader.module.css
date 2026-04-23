@@ -13,6 +13,13 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.logo:hover {
+  color: inherit;
 }
 
 .logoImg {
@@ -118,5 +125,23 @@
 
 .helpLink:hover {
   color: var(--text-primary);
+}
+
+/* Force dark appearance in light mode */
+:global([data-theme="light"]) .header {
+  --bg-primary: var(--color-gray-950);
+  --bg-secondary: var(--color-gray-900);
+  --bg-tertiary: var(--color-gray-850);
+  --bg-quaternary: var(--color-gray-700);
+  --bg-hover: var(--color-gray-800);
+  --bg-active: var(--color-gray-700);
+  --text-primary: var(--color-gray-50);
+  --text-secondary: var(--color-gray-400);
+  --text-tertiary: var(--color-gray-500);
+  --border-default: var(--color-gray-800);
+  --border-subtle: var(--color-gray-850);
+  --border-strong: var(--color-gray-700);
+  --toggle-bg: var(--color-gray-700);
+  --toggle-knob: var(--color-gray-500);
 }
 

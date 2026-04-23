@@ -62,7 +62,8 @@ def fetch_gvm_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}"
     logger.info(f"Fetching GVM settings from {url}")
 
-    response = requests.get(url, timeout=30)
+    _internal_headers = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
+    response = requests.get(url, timeout=30, headers=_internal_headers)
     response.raise_for_status()
     project = response.json()
 

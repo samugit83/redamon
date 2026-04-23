@@ -1,0 +1,126 @@
+.card {
+  background: var(--surface-secondary, #14181f);
+  border: 1px solid var(--border-default, #2a303b);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  font-size: 0.85rem;
+}
+
+.status_success { border-left-color: #4caf50; }
+.status_partial { border-left-color: #ff9800; }
+.status_error, .status_timeout { border-left-color: #ef4444; }
+.status_cancelled { border-left-color: #6b7280; }
+.status_needs_confirmation { border-left-color: #f59e0b; }
+.status_running { border-left-color: #3b82f6; }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.name {
+  font-weight: 600;
+  color: var(--text-primary, #e5e7eb);
+}
+
+.status {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #9ca3af);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.meta {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.taskLine {
+  font-size: 0.82rem;
+  color: var(--text-secondary, #9ca3af);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.thought {
+  font-size: 0.78rem;
+  color: var(--text-tertiary, #64748b);
+  line-height: 1.4;
+  padding: 4px 8px;
+  background: rgba(59, 130, 246, 0.06);
+  border-left: 2px solid rgba(59, 130, 246, 0.5);
+  border-radius: 3px;
+}
+
+.skills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.skillChip {
+  font-size: 0.7rem;
+  background: var(--surface-tertiary, #1f2430);
+  border: 1px solid var(--border-default, #2a303b);
+  border-radius: 10px;
+  padding: 1px 8px;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.error {
+  font-size: 0.8rem;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 2px solid #ef4444;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.completionReason {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.waves, .tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.empty {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #9ca3af);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.statusIcon { flex-shrink: 0; }
+.iconSuccess { color: #4caf50; }
+.iconWarn { color: #ff9800; }
+.iconError { color: #ef4444; }
+.iconMuted { color: #6b7280; }
+.spinner { animation: spin 1s linear infinite; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

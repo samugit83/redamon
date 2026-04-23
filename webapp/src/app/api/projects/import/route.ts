@@ -147,46 +147,6 @@ export async function POST(request: NextRequest) {
       projectFields.roeDocumentData = Buffer.from(roeDocumentDataBase64, 'base64')
     }
 
-    // Check for domain/subdomain conflicts with existing projects (same logic as check-conflict route)
-    const targetDomain = (projectFields.targetDomain || '').toLowerCase().trim()
-    const importSubdomainList: string[] = (projectFields.subdomainList || []).map((s: string) => s.toLowerCase().trim()).filter(Boolean)
-    const isImportFullScan = importSubdomainList.length === 0
-
-    // Domain mode conflict check (IP mode allows overlap — tenant-scoped Neo4j constraints)
-    if (targetDomain) {
-      const existingProjects = await prisma.project.findMany({
-        where: {
-          targetDomain: { equals: targetDomain, mode: 'insensitive' },
-          ipMode: false,
-        },
-        select: { id: true, name: true, targetDomain: true, subdomainList: true },
-      })
-
-      for (const existing of existingProjects) {
-        const existingSubdomains = (existing.subdomainList || []).map((s: string) => s.toLowerCase().trim()).filter(Boolean)
-        const isExistingFullScan = existingSubdomains.length === 0
-
-        if (isExistingFullScan) {
-          return NextResponse.json({
-            error: `Cannot import: project "${existing.name}" already scans all subdomains of ${existing.targetDomain}. Delete the existing project first.`,
-          }, { status: 409 })
-        }
-
-        if (isImportFullScan) {
-          return NextResponse.json({
-            error: `Cannot import: this backup scans all subdomains of ${targetDomain}, but project "${existing.name}" already scans specific subdomains: ${existingSubdomains.join(', ')}. Delete the existing project first.`,
-          }, { status: 409 })
-        }
-
-        const overlapping = importSubdomainList.filter((sub: string) => existingSubdomains.includes(sub))
-        if (overlapping.length > 0) {
-          return NextResponse.json({
-            error: `Cannot import: subdomain conflict with project "${existing.name}". Overlapping subdomains: ${overlapping.join(', ')}. Delete the existing project first.`,
-          }, { status: 409 })
-        }
-      }
-    }
-
     // Create new project under the specified user
     const newProject = await prisma.project.create({
       data: {
@@ -311,6 +271,20 @@ export async function POST(request: NextRequest) {
           stats.reports++
         }
       }
+    }
+
+    // Import user project presets (if present)
+    const presetsFile = zip.file('presets/user_project_presets.json')
+    if (presetsFile) {
+      const presets = JSON.parse(await presetsFile.async('text'))
+      for (const preset of presets) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { id: _id, userId: _uid, createdAt: _ca, updatedAt: _ua, ...fields } = preset
+        await prisma.userProjectPreset.create({
+          data: { ...fields, userId },
+        })
+      }
+      (stats as Record<string, number>).userPresets = presets.length
     }
 
     // Import Neo4j data

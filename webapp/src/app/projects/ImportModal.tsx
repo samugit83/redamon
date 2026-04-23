@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react'
 import { Upload, Loader2, CheckCircle, AlertCircle, FileArchive } from 'lucide-react'
+import { useToast } from '@/components/ui'
 import styles from './page.module.css'
 
 interface ImportStats {
@@ -29,6 +30,7 @@ interface ImportModalProps {
 }
 
 export function ImportModal({ isOpen, userId, onClose, onSuccess }: ImportModalProps) {
+  const toast = useToast()
   const [file, setFile] = useState<File | null>(null)
   const [status, setStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle')
   const [result, setResult] = useState<ImportResult | null>(null)
@@ -65,15 +67,18 @@ export function ImportModal({ isOpen, userId, onClose, onSuccess }: ImportModalP
         const data: ImportResult = await res.json()
         setResult(data)
         setStatus('success')
+        toast.success('Project imported')
         onSuccess()
       } else {
         const err = await res.json()
         setErrorMessage(err.error || 'Import failed')
         setStatus('error')
+        toast.error('Import failed')
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Import failed')
       setStatus('error')
+      toast.error('Import failed')
     }
   }
 

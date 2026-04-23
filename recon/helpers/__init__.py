@@ -64,6 +64,24 @@ from .security_checks import (
     run_security_checks,
 )
 
+# Subdomain takeover helpers
+from .takeover_helpers import (
+    build_subjack_command,
+    build_baddns_command,
+    normalize_subjack_result,
+    normalize_nuclei_takeover,
+    normalize_baddns_finding,
+    dedupe_findings,
+    score_finding,
+    finding_id,
+    provider_from_cname,
+    provider_from_signal,
+    AUTO_EXPLOITABLE_PROVIDERS,
+    PROVIDER_FROM_SIGNAL,
+    BADDNS_MODULES,
+    BADDNS_DEFAULT_MODULES,
+)
+
 # Anonymity/Tor utilities
 from .anonymity import (
     is_tor_running as is_tor_running_anonymity,
@@ -115,6 +133,21 @@ __all__ = [
     "VULNERS_API_URL",
     # Security checks
     "run_security_checks",
+    # Takeover
+    "build_subjack_command",
+    "build_baddns_command",
+    "normalize_subjack_result",
+    "normalize_nuclei_takeover",
+    "normalize_baddns_finding",
+    "dedupe_findings",
+    "score_finding",
+    "finding_id",
+    "provider_from_cname",
+    "provider_from_signal",
+    "AUTO_EXPLOITABLE_PROVIDERS",
+    "PROVIDER_FROM_SIGNAL",
+    "BADDNS_MODULES",
+    "BADDNS_DEFAULT_MODULES",
     # Anonymity/Tor
     "is_tor_running_anonymity",
     "is_proxychains_available",

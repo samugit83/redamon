@@ -1,10 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, Bug } from 'lucide-react'
+import { Bug, ChevronDown, Play } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -12,9 +13,10 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 interface KatanaSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  onRun?: () => void
 }
 
-export function KatanaSection({ data, updateField }: KatanaSectionProps) {
+export function KatanaSection({ data, updateField, onRun }: KatanaSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   return (
@@ -23,11 +25,37 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Bug size={16} />
           Katana Web Crawler (DAST)
+          <NodeInfoTooltip section="Katana" />
+          <span className={styles.badgeActive}>Active</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.katanaEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '4px',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                color: '#22c55e', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
+              }}
+              title="Run Katana Web Crawler"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.katanaEnabled}
+              onChange={(checked) => updateField('katanaEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
       </div>
 
       {isOpen && (
@@ -35,16 +63,6 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
           <p className={styles.sectionDescription}>
             Active web crawling using Katana from ProjectDiscovery. Discovers URLs, endpoints, and parameters by following links and parsing JavaScript. Found URLs with parameters feed into Nuclei DAST mode for vulnerability fuzzing.
           </p>
-          <div className={styles.toggleRow}>
-            <div>
-              <span className={styles.toggleLabel}>Enable Katana</span>
-              <p className={styles.toggleDescription}>Active web crawling to discover endpoints and parameters for DAST vulnerability fuzzing</p>
-            </div>
-            <Toggle
-              checked={data.katanaEnabled}
-              onChange={(checked) => updateField('katanaEnabled', checked)}
-            />
-          </div>
 
           {data.katanaEnabled && (
             <>
@@ -98,6 +116,33 @@ export function KatanaSection({ data, updateField }: KatanaSectionProps) {
                 min={60}
               />
               <span className={styles.fieldHint}>Overall crawl timeout (default: 60 minutes)</span>
+            </div>
+          </div>
+
+          <div className={styles.fieldRow}>
+            <div className={styles.fieldGroup}>
+              <label className={styles.fieldLabel}>Parallelism</label>
+              <input
+                type="number"
+                className="textInput"
+                value={data.katanaParallelism ?? 5}
+                onChange={(e) => updateField('katanaParallelism', parseInt(e.target.value) || 5)}
+                min={1}
+                max={50}
+              />
+              <span className={styles.fieldHint}>Number of target URLs to crawl simultaneously</span>
+            </div>
+            <div className={styles.fieldGroup}>
+              <label className={styles.fieldLabel}>Concurrency</label>
+              <input
+                type="number"
+                className="textInput"
+                value={data.katanaConcurrency ?? 10}
+                onChange={(e) => updateField('katanaConcurrency', parseInt(e.target.value) || 10)}
+                min={1}
+                max={50}
+              />
+              <span className={styles.fieldHint}>Concurrent fetchers per target URL</span>
             </div>
           </div>
 

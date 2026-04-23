@@ -8,22 +8,45 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Wrench, ChevronDown, ChevronRight, Copy, Check, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { Wrench, ChevronDown, ChevronRight, Copy, Check, Loader2, CheckCircle2, XCircle, AlertTriangle, Square } from 'lucide-react'
+import { ExternalLink } from '@/components/ui'
+import { isHttpUrl } from '@/lib/url-utils'
 import styles from './ToolExecutionCard.module.css'
 import type { ToolExecutionItem } from './AgentTimeline'
+
+const TOOL_KEY_LABEL: Record<string, string> = {
+  web_search: 'Tavily',
+  shodan: 'Shodan',
+  google_dork: 'SerpAPI',
+  execute_wpscan: 'WPScan',
+  execute_gau: 'URLScan',
+}
 
 interface ToolExecutionCardProps {
   item: ToolExecutionItem
   isExpanded: boolean
   onToggleExpand: () => void
+  missingApiKey?: boolean
+  onAddApiKey?: () => void
+  onApprove?: () => void
+  onReject?: () => void
+  confirmationDisabled?: boolean
+  /** Cancel just this running tool (same semantics as the global Stop
+   *  button, scoped to one card). Shown in the card header only while
+   *  status === 'running'. */
+  onStop?: () => void
 }
 
-export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExecutionCardProps) {
+export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApiKey, onAddApiKey, onApprove, onReject, confirmationDisabled, onStop }: ToolExecutionCardProps) {
   const [copied, setCopied] = useState(false)
   const [duration, setDuration] = useState(0)
 
   // Calculate duration for running tools
   useEffect(() => {
+    if (item.status === 'pending_approval') {
+      setDuration(0)
+      return
+    }
     if (item.status === 'running') {
       const interval = setInterval(() => {
         const elapsed = Date.now() - item.timestamp.getTime()
@@ -53,6 +76,8 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
 
   const getStatusIcon = () => {
     switch (item.status) {
+      case 'pending_approval':
+        return <Loader2 size={14} className={`${styles.statusIcon} ${styles.spinner}`} />
       case 'running':
         return <Loader2 size={14} className={`${styles.statusIcon} ${styles.spinner}`} />
       case 'success':
@@ -64,6 +89,8 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
 
   const getStatusText = () => {
     switch (item.status) {
+      case 'pending_approval':
+        return 'Awaiting approval'
       case 'running':
         return `Running... (${duration}s)`
       case 'success':
@@ -75,6 +102,8 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
 
   const getStatusClass = () => {
     switch (item.status) {
+      case 'pending_approval':
+        return styles.statusPendingApproval
       case 'running':
         return styles.statusRunning
       case 'success':
@@ -95,7 +124,9 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
       return (
         <div key={key} className={styles.argItem}>
           <span className={styles.argKey}>{key}:</span>
-          <span className={styles.argValue}>{valueStr}</span>
+          <span className={styles.argValue}>
+            {isHttpUrl(valueStr) ? <ExternalLink href={valueStr}>{valueStr}</ExternalLink> : valueStr}
+          </span>
         </div>
       )
     })
@@ -108,12 +139,41 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
           <div className={styles.cardIcon}>
             <Wrench size={14} className={styles.toolIcon} />
           </div>
-          <span className={styles.titleText}>{item.tool_name}</span>
+          <span className={styles.titleText}>
+            {item.tool_name}
+            {missingApiKey && (
+              <span
+                className={styles.apiKeyMissing}
+                title={`Set ${TOOL_KEY_LABEL[item.tool_name] || ''} API key`}
+                onClick={onAddApiKey ? (e) => { e.stopPropagation(); onAddApiKey() } : undefined}
+                role={onAddApiKey ? 'button' : undefined}
+                tabIndex={onAddApiKey ? 0 : undefined}
+              >
+                <AlertTriangle size={10} /> No {TOOL_KEY_LABEL[item.tool_name] || 'API'} key — Add
+              </span>
+            )}
+          </span>
           <div className={styles.cardActions}>
             <div className={styles.statusBadge}>
               {getStatusIcon()}
               <span>{getStatusText()}</span>
             </div>
+            {item.status === 'pending_approval' && onApprove && (
+              <div className={styles.confirmActions}>
+                <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }} disabled={confirmationDisabled}>Allow</button>
+                <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }} disabled={confirmationDisabled}>Deny</button>
+              </div>
+            )}
+            {item.status === 'running' && onStop && (
+              <button
+                className={styles.stopButton}
+                onClick={(e) => { e.stopPropagation(); onStop() }}
+                title="Stop this tool"
+                aria-label="Stop this tool"
+              >
+                <Square size={12} fill="currentColor" />
+              </button>
+            )}
             <button
               className={styles.copyButton}
               onClick={(e) => {
@@ -149,7 +209,9 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
                     return (
                       <div key={key} className={styles.argItemExpanded}>
                         <span className={styles.argKeyExpanded}>{key}:</span>
-                        <pre className={styles.argValueExpanded}>{valueStr}</pre>
+                        <pre className={styles.argValueExpanded}>
+                          {isHttpUrl(valueStr) ? <ExternalLink href={valueStr}>{valueStr}</ExternalLink> : valueStr}
+                        </pre>
                       </div>
                     )
                   })}

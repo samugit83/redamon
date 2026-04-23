@@ -71,6 +71,112 @@ def build_tool_args_section(allowed_tools):
     return "\n".join(lines)
 
 
+_FIRETEAM_PROMPT_BLOCK = """deploy_fireteam (2 to {max_members} specialists, fork-join on INDEPENDENT subtasks).
+
+Fireteam = parallel REASONING (each specialist runs its own ReAct loop), not just parallel tool calls (that's plan_tools). Works in all phases.
+
+Use when ALL hold:
+1. Task splits into ≥2 subtasks; each needs ≥3 tool calls to do well.
+2. Independent: no shared session/credential/meterpreter context/tmp file/singleton tool.
+3. Sequential execution would take noticeable wall-clock.
+4. No prior wave covered the same scope (check `(from <specialist>)` tags on findings in chain context).
+
+Don't use when:
+- One target/endpoint/session, subtasks share state, ≤2 tool calls total, or a subtask would itself need to fan out (members can't sub-fork).
+- A previous wave already ran this plan → emit action=complete instead.
+
+Escalation (cheapest first): use_tool → plan_tools → deploy_fireteam.
+- plan_tools: you already know which N tools to call; ONE LLM call analyzes all outputs together. Cheap, shared context. Use when work = "fire these N commands and I'll interpret the combined result."
+  EXAMPLES: `execute_nmap -sV 10.0.0.5` + `execute_httpx https://target` + `execute_subfinder -d target.com` in parallel (you read all three outputs yourself). Or `execute_curl /api/users` + `execute_curl /api/orders` + `execute_curl /api/admin` to check status codes on known endpoints.
+- deploy_fireteam: N sub-agents reason independently, each picking their own tools across multiple iterations based on what they find. Expensive, deeper. Use when each subtask needs its OWN think-act-observe cycle.
+  EXAMPLES: "map auth surface" (specialist renders page → inspects cookies → probes /api/auth endpoints → reports) + "map API surface" (specialist fuzzes /api → enumerates params on discoveries → probes nested paths) — each needs 3+ iterations and chooses its next tool from the last output.
+
+Phase patterns:
+- Informational: different surfaces of one target (auth / API / JS), or same technique across N targets. Skip if each surface fits in ≤2 tools.
+- Exploitation: independent vuln classes on a mapped surface (SQLi / SSRF / auth-bypass). NOT a single multi-step exploit chain (sequential), NOT two members with `metasploit` skill (msfconsole singleton race — validator rejects).
+- Post-exploitation: parallel research/planning tracks only. Multi-session msfconsole interaction is serialized through the singleton — do it yourself.
+
+Hard limits: max {max_members} members per wave, dangerous tools escalate to operator, do NOT specify iteration counts.
+
+After a wave returns: findings show `(from <specialist>)` and matching TODOs auto-complete. DO NOT redeploy the same plan. Either emit action=complete with a consolidated report, OR deploy a DIFFERENT plan if findings reveal a genuinely new surface. If user asked "deploy a fireteam to do X" and it did, the task is done.
+
+Example (exploitation fan-out against a mapped surface):
+```json
+{{"action": "deploy_fireteam", "fireteam_plan": {{"members": [
+  {{"name": "SQLi Operator", "task": "Exploit SQLi on /api/users?id= via UNION/blind; extract users table.", "skills": ["sqlmap", "curl"]}},
+  {{"name": "SSRF Operator", "task": "Exploit SSRF on /api/fetch?url= to cloud metadata and internal services.", "skills": ["curl", "nuclei"]}},
+  {{"name": "Auth Bypass", "task": "Test /admin for JWT alg-confusion, missing sig checks, and IDOR.", "skills": ["curl"]}}
+], "plan_rationale": "Three independent vuln classes, no cross-dependency, no shared session"}}, ...}}
+```
+
+"""
+
+
+_PROPENSITY_GUIDANCE = {
+    1: (
+        "## FIRETEAM PROPENSITY: 1/5 - VERY RELUCTANT\n"
+        "Your operator has set you to the MOST CONSERVATIVE fireteam posture. "
+        "You MUST NOT deploy a fireteam unless the task is EXTREMELY complex and has AT LEAST 3 clearly "
+        "independent attack surfaces, EACH requiring 5 or more tool iterations on its own. "
+        "In ALL other cases, prefer use_tool or plan_tools even if it means sequential work. "
+        "When in doubt: DO NOT deploy.\n\n"
+    ),
+    2: (
+        "## FIRETEAM PROPENSITY: 2/5 - RELUCTANT\n"
+        "Your operator prefers single-agent or plan_tools execution. "
+        "Deploy a fireteam ONLY when the task has AT LEAST 2 genuinely independent subtasks, each requiring "
+        "4 or more tool iterations, AND sequential execution would waste significant wall-clock. "
+        "For most tasks: use plan_tools instead.\n\n"
+    ),
+    4: (
+        "## FIRETEAM PROPENSITY: 4/5 - EAGER\n"
+        "Your operator favors parallel execution. When a task has ANY independent parallel angles "
+        "(different attack surfaces, separate targets, distinct vuln classes), PREFER deploying a fireteam "
+        "over sequential plan_tools. Even 2 subtasks with 2-3 tool iterations each is worth fanning out. "
+        "Default to fireteam whenever the work is not strictly linear.\n\n"
+    ),
+    5: (
+        "## FIRETEAM PROPENSITY: 5/5 - AGGRESSIVE\n"
+        "Your operator has set you to MAXIMUM fan-out. You MUST deploy a fireteam for ANY task that "
+        "can be split into 2 or more independent subtasks, regardless of how many tool iterations each needs. "
+        "Parallel execution is the DEFAULT strategy. Only fall back to plan_tools or use_tool when the "
+        "work is strictly sequential (shared session, single endpoint, dependent outputs). "
+        "Err strongly on the side of deploying.\n\n"
+    ),
+}
+
+
+def build_fireteam_prompt_fragments(enabled: bool, phase: str, allowed_phases, max_members: int = 5, propensity: int = 3):
+    """Return (action_enum_fragment, plan_field_fragment, example_section).
+
+    When enabled AND current phase is in allowed_phases, the fragments inject
+    the deploy_fireteam action into the prompt. Otherwise they are empty
+    strings, saving ~500 tokens per LLM call on sessions where Fireteam
+    cannot run anyway. The think_node gate is still defensive — the LLM
+    won't even see the action listed when gates are closed.
+
+    ``max_members`` is threaded from project setting ``FIRETEAM_MAX_MEMBERS``
+    (default 5) into the prompt text so the LLM sees the actual per-project cap
+    rather than a hardcoded number. The Pydantic ``FireteamPlan`` model still
+    enforces an absolute upper bound (8) at parse time as a safety net.
+
+    ``propensity`` (1-5, default 3) tunes how eagerly the LLM is pushed
+    toward deploy_fireteam vs cheaper alternatives. 3 emits no extra text
+    (baseline). 1/2 prepend reluctant guidance; 4/5 prepend aggressive
+    guidance. The text is strongly imperative so the LLM treats it as
+    operator policy rather than advice.
+    """
+    gate_open = bool(enabled) and phase in (allowed_phases or [])
+    if not gate_open:
+        return ("", "", "")
+    action_enum = "deploy_fireteam, "
+    plan_field = '\n    "fireteam_plan": "<only if action=deploy_fireteam: see deploy_fireteam example below>",'
+    # Use safe .format — no other curly-brace placeholders besides JSON literals
+    # which are pre-escaped as {{ / }} in the template source.
+    example = _PROPENSITY_GUIDANCE.get(int(propensity), "") + _FIRETEAM_PROMPT_BLOCK.format(max_members=int(max_members))
+    return (action_enum, plan_field, example)
+
+
 def build_tool_name_enum(allowed_tools):
     """Build the tool_name enum string for JSON examples."""
     visible = _get_visible_tools(allowed_tools)
@@ -115,14 +221,73 @@ def build_attack_path_behavior(attack_path_type):
             "In informational phase: Gather target info (IP, port, service version, CVE details), "
             "then request transition to exploitation phase."
         )
+    elif attack_path_type == "denial_of_service":
+        return (
+            "In informational phase: Gather target service info (version, OS), research known DoS "
+            "vulnerabilities for the service, then request transition to exploitation.\n"
+            "In exploitation: Follow the DoS workflow — execute attack, verify impact, "
+            "then action='complete'. NEVER request post_exploitation — DoS does not provide access."
+        )
+    elif attack_path_type == "xss":
+        return (
+            "In informational phase: Use query_graph to surface existing Endpoints/Parameters/Forms, "
+            "then render the target with execute_playwright to enumerate input vectors. "
+            "Once vectors are mapped, request transition to exploitation.\n"
+            "In exploitation: Follow the XSS workflow — canary sweep, kxss per-char filter probe, "
+            "context-aware payloads, Playwright dialog-handler proof, dalfox WAF evasion if filtered, "
+            "then action='complete' after PoC capture."
+        )
+    elif attack_path_type.startswith("user_skill:"):
+        return (
+            "Follow the attack skill workflow guidance provided in the Available Tools section.\n"
+            "The skill defines phase-specific steps — follow them for the current phase."
+        )
     elif attack_path_type.endswith("-unclassified"):
         return (
             "No mandatory workflow — use available tools based on the attack technique.\n"
             "In informational phase: Gather relevant target info, then request transition to exploitation.\n"
             "In exploitation: Use the generic exploitation workflow provided."
         )
+    elif not attack_path_type:
+        return ""  # Not yet classified
     else:
         return f"Follow the workflow guidance in the Available Tools section for attack path: {attack_path_type}"
+
+
+def build_kali_install_prompt():
+    """Build kali_shell library installation rules from project settings."""
+    from project_settings import get_setting
+
+    enabled = get_setting('KALI_INSTALL_ENABLED', False)
+    if not enabled:
+        return (
+            "\n## Kali Shell — Library Installation: DISABLED\n\n"
+            "**DO NOT install any packages** (pip install, apt install, apt-get install) via kali_shell.\n"
+            "Only use pre-installed tools and libraries.\n"
+        )
+
+    parts = [
+        "\n## Kali Shell — Library Installation: ALLOWED\n\n"
+        "You MAY install packages via `pip install` or `apt install` in kali_shell "
+        "when needed for a specific attack or activity. "
+        "Installed packages are **ephemeral** — they are lost on container restart.\n"
+    ]
+
+    allowed = get_setting('KALI_INSTALL_ALLOWED_PACKAGES', '')
+    forbidden = get_setting('KALI_INSTALL_FORBIDDEN_PACKAGES', '')
+
+    if allowed.strip():
+        parts.append(
+            f"**Authorized packages (whitelist):** Only these may be installed: `{allowed.strip()}`\n"
+            "Do NOT install any package not in this list.\n"
+        )
+
+    if forbidden.strip():
+        parts.append(
+            f"**Forbidden packages (blacklist):** NEVER install these: `{forbidden.strip()}`\n"
+        )
+
+    return "\n".join(parts)
 
 
 def build_roe_prompt_section():
@@ -290,37 +455,13 @@ def build_informational_guidance(phase):
     if phase != "informational":
         return ""
 
-    return """## Intent Detection (CRITICAL)
+    return """## Intent Detection + Graph-First (informational phase)
 
-Analyze the user's request to understand their intent:
+Classify the user request by intent, then act:
 
-**Exploitation Intent** - Keywords: "exploit", "attack", "pwn", "hack", "run exploit", "use metasploit", "deface", "test vulnerability"
-- If the user explicitly asks to EXPLOIT a CVE/vulnerability:
-  1. Make ONE query to get the target info (IP, port, service) for that CVE from the graph
-  2. Request phase transition to exploitation
-  3. **Once in exploitation phase, follow the MANDATORY EXPLOITATION WORKFLOW (see EXPLOITATION_TOOLS section)**
-- **IMPORTANT:** For full exploitation, go directly to exploitation phase — but lightweight curl probing is allowed if graph lacks vuln data
-
-**Payload / Handler Intent** - Keywords: "generate", "payload", "reverse shell", "msfvenom", "handler", "listener", "one-liner", "backdoor", "malicious document"
-- If the user asks to GENERATE a payload, set up a handler/listener, or create a reverse shell:
-  1. Request phase transition to exploitation IMMEDIATELY
-  2. Do NOT attempt to generate payloads or set up listeners in informational phase
-  3. **NEVER use `nc`, `ncat`, `netcat`, or `socat` as a listener — even for plain shell payloads**
-  4. Only Metasploit `exploit/multi/handler` (via `metasploit_console`) creates tracked sessions visible in the RedAmon UI
-  5. Using `kali_shell` with msfvenom to generate a payload is acceptable, but the HANDLER must always use `metasploit_console`
-
-**Research Intent** - Keywords: "find", "show", "what", "list", "scan", "discover", "enumerate"
-- If the user wants information/recon, use the graph-first approach below
-- Query the graph for vulnerabilities first — if graph has no data, use execute_nuclei to scan for vulns
-
-## Graph-First Approach (for Research)
-
-For RESEARCH requests, use Neo4j as the primary source:
-1. Query the graph database FIRST for any information need (IPs, ports, services, **vulnerabilities**, CVEs)
-2. Use execute_curl for reachability checks ONLY (basic HTTP status, headers)
-3. Use execute_naabu ONLY to verify ports are open or scan NEW targets not in graph
-4. If the graph has NO vulnerability data, use execute_nuclei to scan for CVEs and vulnerabilities
-5. If the graph ALREADY HAS vulnerability data, do NOT duplicate testing
+- **Exploitation intent** ("exploit", "pwn", "run exploit", "use metasploit", "test vulnerability"): query the graph ONCE for target info (IP/port/service/CVE), then request `transition_phase` to exploitation. Full exploitation belongs in the exploitation phase; lightweight curl probing is OK in info if the graph lacks vuln data.
+- **Payload/handler intent** ("generate", "payload", "reverse shell", "msfvenom", "handler", "listener", "one-liner", "backdoor"): request `transition_phase` to exploitation immediately. Do NOT generate payloads or start listeners from informational. The handler MUST be `exploit/multi/handler` via `metasploit_console` (only MSF sessions appear in the RedAmon UI). msfvenom generation via `kali_shell` is fine.
+- **Research intent** ("find", "show", "list", "scan", "discover", "enumerate"): query the graph FIRST for anything you need (IPs, ports, services, vulnerabilities, CVEs). Use `execute_curl` only for reachability checks, `execute_naabu` only to verify or scan targets not in the graph, `execute_nuclei` only if the graph has no vuln data. Never re-test what the graph already shows.
 """
 
 
@@ -377,11 +518,11 @@ You work step-by-step using the Thought-Tool-Output pattern:
 
 {available_tools}
 
-## Attack Path: {attack_path_type}
+## Attack Skill: {attack_path_type}
 
 {attack_path_behavior}
 
-Create minimal TODOs — follow the attack path workflow for step-by-step guidance.
+Create minimal TODOs — follow the attack skill workflow for step-by-step guidance.
 
 ## Current State
 
@@ -416,10 +557,10 @@ Based on the context above, decide your next action. You MUST output valid JSON:
 {{
     "thought": "Your analysis of the current situation and what needs to be done next",
     "reasoning": "Why you chose this specific action over alternatives",
-    "action": "<one of: use_tool, plan_tools, transition_phase, complete, ask_user>",
+    "action": "<one of: use_tool, plan_tools, {fireteam_action_enum}transition_phase, complete, ask_user>",
     "tool_name": "<only if action=use_tool: {tool_name_enum}>",
     "tool_args": "<only if action=use_tool: {{'question': '...'}} or {{'args': '...'}} or {{'command': '...'}}",
-    "tool_plan": "<only if action=plan_tools: see plan_tools example below>",
+    "tool_plan": "<only if action=plan_tools: see plan_tools example below>",{fireteam_plan_field}
     "phase_transition": "<only if action=transition_phase>",
     "user_question": "<only if action=ask_user>",
     "completion_reason": "<only if action=complete>",
@@ -449,7 +590,7 @@ plan_tools (run multiple INDEPENDENT tools as a wave — use when 2+ tools have 
 ```
 Do NOT include tools that depend on another tool's output — plan those in the NEXT iteration after seeing results.
 
-complete: `{{"action": "complete", "completion_reason": "Successfully exploited target", ...}}`
+{fireteam_example_section}complete: `{{"action": "complete", "completion_reason": "Successfully exploited target", ...}}`
 
 ### When to Use action="complete" (CRITICAL):
 
@@ -539,13 +680,14 @@ When `exploit_succeeded` is true, include `exploit_details`:
 
 ### Chain Findings
 
-Include `chain_findings` when the output reveals notable intelligence: confirmed vulns, found credentials, discovered services, exploit modules, or defense detection.
+Include `chain_findings` when the output reveals notable intelligence: confirmed vulns, found credentials, discovered services, exploit modules, defense detection, or successful attack outcomes.
 Always emit `service_identified` findings when new ports/services are discovered, and `configuration_found` when new technologies are identified.
+Use goal/outcome types when an attack objective is achieved: exploit_success, access_gained, privilege_escalation, data_exfiltration, lateral_movement, persistence_established, denial_of_service_success, social_engineering_success, remote_code_execution, session_hijacked.
 
 ```json
 "chain_findings": [
   {{
-    "finding_type": "<vulnerability_confirmed|credential_found|exploit_success|access_gained|privilege_escalation|service_identified|exploit_module_found|defense_detected|configuration_found|custom>",
+    "finding_type": "<vulnerability_confirmed|credential_found|exploit_success|access_gained|privilege_escalation|service_identified|exploit_module_found|defense_detected|configuration_found|information_disclosure|data_exfiltration|lateral_movement|persistence_established|denial_of_service_success|social_engineering_success|remote_code_execution|session_hijacked|custom>",
     "severity": "<critical|high|medium|low|info>",
     "title": "Short finding description",
     "evidence": "Raw evidence excerpt from output",
@@ -591,7 +733,7 @@ Your `output_analysis` should cover ALL tool outputs holistically. Use this EXAC
     "exploit_details": null,
     "chain_findings": [
       {{
-        "finding_type": "<vulnerability_confirmed|credential_found|service_identified|configuration_found|custom>",
+        "finding_type": "<vulnerability_confirmed|credential_found|exploit_success|access_gained|privilege_escalation|service_identified|exploit_module_found|defense_detected|configuration_found|information_disclosure|data_exfiltration|lateral_movement|persistence_established|denial_of_service_success|social_engineering_success|remote_code_execution|session_hijacked|custom>",
         "severity": "<critical|high|medium|low|info>",
         "title": "Short finding description",
         "evidence": "Raw evidence excerpt from output",
@@ -740,7 +882,7 @@ SUMMARY_RESPONSE_PROMPT = """Generate a brief summary of the completed task.
 ## Completion Reason
 {completion_reason}
 
-## Attack Path Type
+## Attack Skill Type
 {attack_path_type}
 
 ## Execution Summary
@@ -815,7 +957,7 @@ def determine_response_tier(
     has_sessions = bool(target_info.get("sessions"))
 
     # --- Phishing/SE always gets summary (report sections don't apply) ---
-    if attack_path_type == "phishing_social_engineering":
+    if attack_path_type in ("phishing_social_engineering", "denial_of_service"):
         return "summary"
 
     # --- Tier 1: Conversational ---
@@ -849,26 +991,114 @@ Each node has `user_id` and `project_id` properties for tenant isolation (handle
 - name (string): "example.com"
 - registrar, creation_date, expiration_date (WHOIS data)
 - gvm_critical, gvm_high, gvm_medium, gvm_low (GVM vulnerability counts)
+- vt_enriched (boolean), vt_reputation (int), vt_malicious_count (int), vt_categories (string): VirusTotal domain reputation
+- vt_suspicious_count, vt_harmless_count, vt_undetected_count (int): VirusTotal engine detection breakdown
+- vt_registrar (string): Registrar from VirusTotal
+- vt_tags (list): VirusTotal threat/category tags (e.g. ["malware", "phishing"])
+- vt_community_malicious, vt_community_harmless (int): VirusTotal community votes (distinct from engine count)
+- vt_last_analysis_date (int): Unix timestamp of last VirusTotal scan
+- vt_jarm (string): JARM TLS fingerprint from VirusTotal
+- vt_popularity_alexa (int): Alexa popularity rank from VirusTotal
+- vt_popularity_umbrella (int): Cisco Umbrella rank from VirusTotal
+- otx_pulse_count (int): AlienVault OTX threat pulse count
+- otx_url_count (int): number of URLs associated with domain from OTX url_list
+- otx_adversaries (list[string]): named threat actors from OTX pulses (e.g. ["APT28", "Lazarus Group"])
+- otx_malware_families (list[string]): malware family names from OTX pulses
+- otx_tlp (string): most restrictive Traffic Light Protocol across OTX pulses ("white","green","amber","red")
+- otx_attack_ids (list[string]): MITRE ATT&CK IDs from OTX pulses (e.g. ["T1566", "T1059"])
+- criminalip_enriched (boolean): whether Criminal IP domain report was fetched
+- criminalip_risk_score (string): domain risk score from Criminal IP
+- criminalip_risk_grade (string): domain risk grade from Criminal IP
+- criminalip_abuse_count (int): number of abuse reports for this domain from Criminal IP
+- criminalip_current_service (string): current service classification from Criminal IP
 
 **Subdomain** - Discovered subdomains
 - name (string): "api.example.com", "www.example.com"
-- source (string): discovery source ("crt.sh", "hackertarget", "knockpy")
-- is_wildcard (boolean)
+- has_dns_records (boolean): whether DNS records were resolved
+- status (string): "resolved" (DNS only, not yet probed), "no_http" (no HTTP response), or HTTP status code as string ("200", "301", "403", "404", "500", etc.)
+- status_codes (list[int]): all unique HTTP status codes seen e.g. [200, 301, 404]
+- http_live_url_count (int): count of URLs with status < 500
+- http_probed_at (datetime): when last HTTP-probed
+- source (string): discovery source ("crt.sh", "hackertarget", "knockpy", "shodan_rdns", "shodan_dns", "urlscan", "fofa", "otx_passive_dns", "censys_rdns", "uncover")
 
 **IP** - Resolved IP addresses
 - address (string): "192.168.1.1"
 - is_ipv6 (boolean)
 - asn, isp, country (IP enrichment data)
+- shodan_enriched, censys_enriched, fofa_enriched, netlas_enriched, zoomeye_enriched (boolean): which OSINT tools enriched this IP
+- zoomeye_last_seen (string): ISO timestamp of the ZoomEye host record update_time (e.g. "2026-03-01T12:00:00")
+- otx_enriched (boolean): whether OTX enrichment ran for this IP
+- otx_pulse_count (int): AlienVault OTX threat pulse count
+- otx_reputation (int): OTX reputation score (negative = more malicious)
+- otx_url_count (int): number of URLs associated with this IP from OTX url_list
+- otx_adversaries (list[string]): named threat actors from OTX pulses (e.g. ["APT28"])
+- otx_malware_families (list[string]): malware family names from OTX pulses
+- otx_tlp (string): most restrictive TLP across OTX pulses ("white","green","amber","red")
+- otx_attack_ids (list[string]): MITRE ATT&CK IDs from OTX pulses (e.g. ["T1059"])
+- country_name (string): country name from OTX geo (only set if not already populated by other enrichers)
+- vt_enriched (boolean), vt_reputation (int), vt_malicious_count (int): VirusTotal multi-engine reputation
+- vt_suspicious_count, vt_harmless_count, vt_undetected_count (int): VirusTotal engine detection breakdown
+- vt_tags (list): VirusTotal threat tags (e.g. ["scanner", "vpn"])
+- vt_community_malicious, vt_community_harmless (int): VirusTotal community votes
+- vt_last_analysis_date (int): Unix timestamp of last VirusTotal scan
+- vt_network (string): CIDR network range from VirusTotal (e.g. "44.224.0.0/11")
+- vt_rir (string): Regional Internet Registry (ARIN, RIPE NCC, APNIC, LACNIC, AFRINIC)
+- vt_continent (string): Continent code from VirusTotal
+- vt_jarm (string): JARM TLS fingerprint from VirusTotal
+- criminalip_enriched (boolean), criminalip_score_inbound, criminalip_score_outbound: Criminal IP risk scores (integer 0-5 or label string)
+- criminalip_is_vpn, criminalip_is_proxy, criminalip_is_tor (boolean): Criminal IP anonymisation flags
+- criminalip_is_hosting, criminalip_is_cloud (boolean): hosting/cloud infrastructure flags from Criminal IP
+- criminalip_is_mobile, criminalip_is_darkweb, criminalip_is_scanner, criminalip_is_snort (boolean): Criminal IP threat classification flags
+- criminalip_org_name (string): organization name from Criminal IP WHOIS
+- criminalip_country (string): country code from Criminal IP WHOIS
+- criminalip_city (string): city from Criminal IP WHOIS
+- criminalip_latitude, criminalip_longitude (float): geolocation from Criminal IP WHOIS
+- criminalip_asn_name (string): AS name from Criminal IP WHOIS
+- criminalip_asn_no (int): AS number from Criminal IP WHOIS
+- criminalip_ids_count (int): count of IDS/Snort alert records for this IP
+- criminalip_scanning_count (int): count of inbound scanning events recorded by Criminal IP
+- criminalip_categories (string): JSON list of IP threat category labels (e.g. '["malware", "scanner"]')
+- autonomous_system_name, autonomous_system_number, asn_bgp_prefix, asn_description, asn_country_code, asn_rir: ASN details from Censys
+- country_code, city, timezone, registered_country, latitude, longitude: geolocation from Censys or Netlas
+- censys_last_seen (datetime): last scan time from Censys
+- asn_org (string): ASN organization name from Netlas (whois.asn.name) or FOFA (as_organization)
+- asn (string): ASN identifier e.g. "AS14618" from Netlas (geo.asn.number) or FOFA (as_number, normalised to "AS<n>")
+- fofa_last_seen (string): last time FOFA indexed this asset (ISO datetime string)
+- os (string): OS fingerprint from FOFA (os field)
+- region (string): region/province from FOFA (region field)
+- uncover_discovered (boolean): IP was first found via ProjectDiscovery uncover multi-engine search
+- uncover_enriched (boolean): uncover has processed this IP
+- uncover_sources (list[string]): search engines that returned results (e.g. shodan, censys, fofa)
+- uncover_source_counts (string): JSON-encoded dict of engine->result count
+- uncover_total_raw (integer): total raw results before deduplication
+- uncover_total_deduped (integer): total results after deduplication
 
 **Port** - Open ports on IPs
 - number (integer): 80, 443, 22
 - protocol (string): "tcp", "udp"
 - state (string): "open", "closed", "filtered"
+- source (string): which tool discovered it ("naabu", "masscan", "shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip", "uncover")
+- product (string): software product from Nmap -sV (e.g. "vsftpd", "Apache Tomcat", "MySQL")
+- version (string): software version from Nmap -sV (e.g. "2.3.4", "8.5.19")
+- cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")
+- nmap_scanned (boolean): true if Nmap has probed this port
 
 **Service** - Services running on ports
 - name (string): "http", "ssh", "mysql"
+- product (string): software product from Nmap -sV or OSINT (e.g. "vsftpd", "OpenSSH", "nginx")
 - version (string): service version
+- cpe (string): CPE string from Nmap
 - banner (string): raw banner
+- source (string): which tool detected it
+- extended_service_name (string): more specific label from Censys (e.g. "HTTPS")
+- labels (list[string]): service classification tags from Censys
+- http_title (string): HTML page title from HTTP response (Censys, Netlas, or FOFA title field)
+- http_status_code (integer): HTTP status code (Censys or Netlas)
+- software_products (list[string]): detected software and versions from Censys e.g. ["nginx 1.23"]
+- banner (string): raw service banner (Censys, ZoomEye, Nmap, or Netlas protocol banner)
+- app_protocol (string): application-layer protocol from FOFA (e.g. "http", "https", "ssh", "ftp")
+- jarm (string): JARM TLS fingerprint from FOFA — useful for identifying C2 infrastructure
+- tls_version (string): TLS version from FOFA (e.g. "TLSv1.3")
 
 ### Web Application Nodes (Hierarchy: BaseURL -> Endpoint -> Parameter)
 
@@ -884,6 +1114,24 @@ Each node has `user_id` and `project_id` properties for tenant isolation (handle
 - path (string): "/api/v1/users"
 - method (string): "GET", "POST"
 - status_code (integer)
+- GraphQL enrichment (set by graphql_scan when endpoint is a GraphQL endpoint):
+  - is_graphql (boolean): True if the endpoint is a GraphQL endpoint
+  - graphql_introspection_enabled (boolean): True if __schema introspection query succeeded
+  - graphql_schema_extracted (boolean): True if full schema was retrieved
+  - graphql_schema_hash (string): SHA-256 of normalized schema JSON (change detection)
+  - graphql_schema_extracted_at (datetime): ISO timestamp of schema extraction
+  - graphql_queries (string[]): Up to 50 query operation names
+  - graphql_mutations (string[]): Up to 50 mutation operation names
+  - graphql_subscriptions (string[]): Up to 50 subscription operation names
+  - graphql_queries_count, graphql_mutations_count, graphql_subscriptions_count (integer): Full counts
+- graphql-cop capability flags (set by the external scanner, Phase 2):
+  - graphql_cop_ran (boolean): True if graphql-cop executed against this endpoint
+  - graphql_cop_scanned_at (datetime): ISO timestamp of last graphql-cop run
+  - graphql_graphiql_exposed (boolean): GraphiQL / Playground UI detected
+  - graphql_tracing_enabled (boolean): Apollo tracing extension is on
+  - graphql_get_allowed (boolean): GET-method queries accepted (CSRF vector)
+  - graphql_field_suggestions_enabled (boolean): "Did you mean X?" errors leak schema
+  - graphql_batching_enabled (boolean): Array-based batched queries accepted
 
 **Parameter** - URL/form parameters
 - name (string): "id", "username", "page"
@@ -892,10 +1140,12 @@ Each node has `user_id` and `project_id` properties for tenant isolation (handle
 
 ### Technology & Security Nodes
 
-**Technology** - Detected technologies (web servers, frameworks, CMS)
-- name (string): "nginx", "WordPress", "jQuery"
+**Technology** - Detected technologies (web servers, frameworks, CMS, services)
+- name (string): "nginx", "WordPress", "jQuery", "vsftpd/2.3.4", "Apache Tomcat/8.5.19"
 - version (string): version if detected
 - category (string): "web-server", "cms", "javascript-framework"
+- source (string): "nmap" for Nmap-detected, null for httpx-detected
+- cpe (string): CPE string from Nmap (e.g. "cpe:/a:apache:tomcat:8.5.19")
 
 **Header** - HTTP response headers
 - name (string): "X-Frame-Options", "Content-Security-Policy"
@@ -905,10 +1155,29 @@ Each node has `user_id` and `project_id` properties for tenant isolation (handle
 - issuer, subject (string)
 - not_before, not_after (datetime)
 - is_expired (boolean)
+- source (string): "gvm", "censys", or "fofa"
+- subject_cn (string): certificate common name (Censys or FOFA certs_subject_cn)
+- subject_org (string): certificate subject organization (FOFA certs_subject_org)
+- tls_version (string): TLS version (FOFA tls_version)
+- is_valid (boolean): certificate validity flag (FOFA certs_valid)
+- issuer_cn (string): issuer common name (Censys)
+- issuer_org (string): issuer organization (Censys)
+- san (list[string]): Subject Alternative Names (Censys)
+- fingerprint (string): certificate fingerprint (Censys)
+- tls_version (string): TLS protocol version e.g. "TLSv1.3" (Censys)
+- cipher (string): cipher suite (Censys)
 
 **DNSRecord** - DNS records
 - record_type (string): "A", "AAAA", "CNAME", "MX", "TXT", "NS"
 - value (string): record value
+
+**Secret** - Secrets discovered in live web resources (JS files, configs)
+- secret_type (string): type of secret (AWSAccessKey, APIKey, GCPCredential, GitHubToken, etc.)
+- severity (string): high, medium, low, info
+- source (string): discovery tool (jsluice, etc.)
+- source_url (string): URL of file containing the secret
+- base_url (string): parent BaseURL
+- sample (string): redacted sample of matched data
 
 **Traceroute** - Network route from scanner to target (from GVM)
 - target_ip (string): target IP address
@@ -921,18 +1190,23 @@ Each node has `user_id` and `project_id` properties for tenant isolation (handle
 
 **IMPORTANT: "Vulnerabilities" can mean BOTH Vulnerability nodes AND CVE nodes!**
 - When user asks about "vulnerabilities" broadly, query BOTH node types
-- Vulnerability nodes = findings from scanners (nuclei, gvm, security_check)
+- Vulnerability nodes = findings from scanners (nuclei, gvm, security_check, netlas)
 - CVE nodes = known CVEs linked to technologies detected on the target
 
-**Vulnerability** - Scanner findings (from nuclei, gvm, security checks)
+**Vulnerability** - Scanner findings (from nuclei, gvm, security checks, netlas, graphql_scan)
 
 Common properties (all sources):
 - id (string): unique identifier
 - name (string): vulnerability name
 - severity (string): "critical", "high", "medium", "low", "info" (lowercase!)
-- source (string): **"nuclei"** (DAST/web), **"gvm"** (network/OpenVAS), or **"security_check"**
+- source (string): **"nuclei"** (DAST/web), **"gvm"** (network/OpenVAS), **"security_check"**, **"netlas"** (passive NVD-based), **"graphql_scan"** (GraphQL security testing), or **"takeover_scan"** (subdomain takeover via Subjack + Nuclei takeover templates)
 - description (string): vulnerability description
 - cvss_score (float): 0.0 to 10.0
+
+Netlas-specific properties (source="netlas"):
+- id (string): CVE identifier e.g. "CVE-2021-44228"
+- has_exploit (boolean): whether a known public exploit exists (from NVD data)
+- Relationship: `(svc:Service)-[:HAS_VULNERABILITY]->(v:Vulnerability)` — linked to the Service where the vulnerable software was detected
 
 Nuclei-specific properties (source="nuclei"):
 - template_id (string): nuclei template ID
@@ -960,6 +1234,41 @@ GVM-specific properties (source="gvm"):
 - remediated (boolean): true if marked as closed/patched by GVM re-scan
 - scanner (string): always "OpenVAS"
 - scan_timestamp (string): GVM scan timestamp
+
+GraphQL-specific properties (source="graphql_scan"):
+- vulnerability_type (string): one of "graphql_introspection_enabled", "graphql_sensitive_data_exposure"
+- endpoint (string): the GraphQL endpoint URL (e.g. "https://api.target.com/graphql")
+- title (string): human-readable finding title
+- evidence (string): JSON blob with counts/fields (queries_count, mutations_count, subscriptions_count, sensitive_fields, schema_hash)
+- timestamp (datetime): ISO timestamp of discovery
+- id pattern: `graphql_{vulnerability_type}_{baseurl}_{path}` (deterministic, MERGE-safe across re-scans)
+- Typical query: "find endpoints exposing GraphQL introspection" → `MATCH (e:Endpoint {is_graphql: true, graphql_introspection_enabled: true})-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE v.source IN ['graphql_scan', 'graphql_cop'] RETURN e.url, v.vulnerability_type, v.severity`
+
+graphql-cop properties (source="graphql_cop" -- external Docker scanner, Phase 2):
+- 12 distinct vulnerability_type values:
+  - Info-leak: graphql_field_suggestions_enabled (LOW), graphql_ide_exposed (LOW), graphql_tracing_enabled (INFO), graphql_unhandled_error (INFO)
+  - CSRF: graphql_get_method_allowed (MEDIUM), graphql_get_based_mutation (MEDIUM), graphql_post_csrf (MEDIUM)
+  - DoS: graphql_alias_overloading (HIGH), graphql_batch_query_allowed (HIGH), graphql_directive_overloading (HIGH), graphql_circular_introspection (HIGH)
+  - Overlap with native: graphql_introspection_enabled (when cop's introspection test is explicitly enabled)
+- evidence (string): JSON blob with curl_verify (reproducer cURL), raw_severity (HIGH/MEDIUM/LOW/INFO), color, graphql_cop_key
+- Same deterministic ID pattern — dedupes with graphql_scan when the same vulnerability_type fires on the same endpoint
+- Typical query: "list all graphql-cop DoS findings" → `MATCH (v:Vulnerability {source: 'graphql_cop'}) WHERE v.vulnerability_type IN ['graphql_alias_overloading', 'graphql_batch_query_allowed', 'graphql_directive_overloading', 'graphql_circular_introspection'] RETURN v.vulnerability_type, v.severity, v.endpoint`
+
+Subdomain-takeover properties (source="takeover_scan"):
+- type (string): always "subdomain_takeover"
+- hostname (string): the subdomain flagged (e.g. "promo.acme.com")
+- cname_target (string, nullable): CNAME destination for cname-method findings (e.g. "acme-spring.herokuapp.com")
+- takeover_provider (string): canonical provider slug — "github-pages", "heroku", "aws-s3", "fastly", "azure-app-service", "shopify", "ghost", "zendesk", "readthedocs", "netlify", "vercel", etc., or "unknown"
+- takeover_method (string): "cname" | "dns" | "ns" | "mx" | "stale_a"
+- confidence (integer): 0..100 score from the layered scanner
+- sources (string[]): tools that confirmed the finding — subset of ["subjack", "nuclei_takeover"]
+- confirmation_count (integer): length of sources
+- verdict (string): "confirmed" (>=threshold+10), "likely" (>=threshold), or "manual_review" (below threshold). Manual-review findings are emitted with severity="info" unless the project opts into auto-publish.
+- evidence (string): short human-readable excerpt of the match (subjack service name or nuclei template/matcher)
+- tool_raw (string): JSON-encoded raw per-tool output (truncated to 50KB)
+- first_seen / last_seen (strings): ISO timestamps
+- id pattern: `takeover_<sha1-hex16>` where the hash is over `hostname+takeover_provider+takeover_method` — deterministic, MERGE-safe across re-scans
+- Typical query: "list confirmed Heroku takeovers" → `MATCH (s:Subdomain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'takeover_scan'}) WHERE v.takeover_provider = 'heroku' AND v.verdict = 'confirmed' RETURN s.name AS subdomain, v.cname_target, v.confidence, v.sources`
 
 **CVE** - Known CVE entries (linked to Technologies)
 - id (string): "CVE-2021-41773", "CVE-2021-44228"
@@ -1027,7 +1336,7 @@ GVM-specific properties (source="gvm"):
 **ChainFinding** - Discovery during attack (replaces agent Exploit for exploit_success)
 - finding_id (string): Unique (UUID)
 - chain_id (string): parent AttackChain
-- finding_type (string): vulnerability_confirmed, credential_found, exploit_success, access_gained, privilege_escalation, service_identified, exploit_module_found, defense_detected, configuration_found, custom
+- finding_type (string): vulnerability_confirmed, credential_found, exploit_success, access_gained, privilege_escalation, service_identified, exploit_module_found, defense_detected, configuration_found, information_disclosure, data_exfiltration, lateral_movement, persistence_established, denial_of_service_success, social_engineering_success, remote_code_execution, session_hijacked, custom
 - severity (string): critical, high, medium, low, info
 - title (string): short description
 - description (string): detailed description
@@ -1058,31 +1367,151 @@ GVM-specific properties (source="gvm"):
 - retry_possible (boolean), phase (string)
 - created_at (datetime)
 
-## Relationships 
+### TruffleHog Secret Scanner Nodes (Hierarchy: Domain -> TrufflehogScan -> TrufflehogRepository -> TrufflehogFinding)
+
+**TrufflehogScan** - Scan metadata for a TruffleHog secret scan run
+- target (string): scan target (e.g. GitHub org name)
+- scan_start_time (string), scan_end_time (string): timestamps
+- duration_seconds (float): scan duration
+- status (string): "completed", "failed", "unknown"
+- total_findings (integer), verified_findings (integer), unverified_findings (integer)
+- repositories_scanned (integer)
+
+**TrufflehogRepository** - A repository scanned by TruffleHog
+- name (string): repository name (e.g. "org/repo-name")
+
+**TrufflehogFinding** - A secret found by TruffleHog in a repository
+- detector_name (string): detector type (e.g. "AWS", "GitHub", "PrivateKey", "Slack")
+- detector_description (string): human-readable detector description
+- verified (boolean): whether the secret was verified as active
+- redacted (string): redacted secret value
+- repository (string): repository name where found
+- file (string): file path within the repository
+- commit (string): git commit hash
+- line (integer): line number in file
+- link (string): URL to the finding location
+- timestamp (string): commit timestamp
+- extra_data (string): JSON string with additional detector-specific data
+
+### JS Recon Scanner Nodes
+
+**JsReconFinding** - JavaScript reconnaissance findings. Two sub-types:
+
+1. **JS File nodes** (finding_type='js_file') - Represent each analyzed JavaScript file. All findings from that file are linked to this node.
+   - finding_type: 'js_file'
+   - title (string): filename (e.g. "app.js", "test_app.js")
+   - detail (string): full URL or upload:// path
+   - is_uploaded (boolean): true if manually uploaded, false if from pipeline crawl
+   - source_url (string): full URL or upload://filename
+
+2. **Finding nodes** (finding_type != 'js_file') - Individual findings linked to their parent JS file node.
+   - finding_type (string): dependency_confusion, source_map_exposure, dom_sink, framework, dev_comment, source_map_reference
+   - severity (string): critical, high, medium, low, info
+   - confidence (string): high, medium, low
+   - title (string): human-readable finding title
+   - detail (string): full finding detail
+   - evidence (string): matched pattern or code snippet
+   - source_url (string): JS file where finding was discovered
+   - source (string): always "js_recon"
+
+Graph hierarchy: Domain/BaseURL -> JS file node -> findings/secrets/endpoints
+- `(Domain)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for uploaded files
+- `(BaseURL)-[:HAS_JS_FILE]->(JsReconFinding {finding_type: 'js_file'})` for pipeline-crawled files
+- `(JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(JsReconFinding)` findings from that file
+- `(JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(Secret)` secrets found in that file
+- `(JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(Endpoint)` endpoints extracted from that file
+
+Note: JS Recon also creates Secret nodes with source='js_recon' and extra fields:
+- validation_status (string): validated, invalid, unvalidated, skipped, incomplete
+- validation_info (string): JSON with validation details (scope, account info)
+- confidence (string): high, medium, low
+- detection_method (string): regex
+- key_type (string): category of secret (cloud, payment, auth, etc.)
+
+When user asks about "JS findings", "JavaScript attack surface", "JS secrets", or "what did JS Recon find":
+- First query JS file nodes: MATCH (jf:JsReconFinding {finding_type: 'js_file'})
+- Then traverse to findings: (jf)-[:HAS_JS_FINDING]->(finding), (jf)-[:HAS_SECRET]->(s), (jf)-[:HAS_ENDPOINT]->(e)
+- Query Secret nodes WHERE source = 'js_recon' for secrets
+- Query Endpoint nodes WHERE source = 'js_recon' for JS-extracted endpoints
+
+**ThreatPulse** - OTX threat intelligence pulses (named threat reports linking IPs/domains to adversaries)
+- pulse_id (string): OTX pulse ID (UNIQUE per tenant)
+- name (string): pulse title (e.g. "Lazarus Group C2 Infrastructure")
+- adversary (string): named threat actor (e.g. "APT28", "Lazarus Group", "Sandworm")
+- malware_families (list[string]): associated malware names (e.g. ["WannaCry", "BLINDINGCAN"])
+- attack_ids (list[string]): MITRE ATT&CK technique IDs (e.g. ["T1566", "T1059"])
+- tags (list[string]): free-form community tags (e.g. ["apt", "ransomware", "banking"])
+- tlp (string): Traffic Light Protocol ("white","green","amber","red")
+- author_name (string): pulse author
+- targeted_countries (list[string]): countries targeted by this threat
+- modified (string): last modified timestamp from OTX
+
+**Malware** - Malware file samples (hashes) associated with IPs or domains (from OTX malware endpoint)
+- hash (string): file hash — MD5 (32 chars) or SHA256 (64 chars); UNIQUE per tenant
+- hash_type (string): "md5", "sha256", "sha1", "unknown"
+- file_type (string): file class/type (e.g. "pe32", "pdf", "elf", "jar")
+- file_name (string): original file name if available
+- source (string): discovery tool ("otx", "virustotal")
+- first_seen (datetime): when first associated with this indicator
+
+**ExternalDomain** - Foreign domains encountered during recon (out-of-scope, informational only)
+- domain (string): foreign domain name
+- sources (string[]): discovery sources (http_probe_redirect, urlscan, gau, katana, hakrawler, jsluice, cert_discovery, otx_passive_dns)
+- redirect_from_urls (string[]): in-scope URLs that redirected to this domain
+- redirect_to_urls (string[]): foreign URLs encountered
+- status_codes_seen (string[]), titles_seen (string[]), servers_seen (string[])
+- ips_seen (string[]), countries_seen (string[])
+- times_seen (integer): total encounters
+- first_seen_at (datetime), updated_at (datetime)
+
+**UserInput** - User-provided values for partial recon runs (custom subdomains, IPs, etc.)
+- id (string, UUID): unique identifier
+- input_type (string): "subdomains", "ips", "urls", "domains"
+- values (string[]): user-provided values
+- tool_id (string): which tool was run (e.g. "SubdomainDiscovery")
+- status (string): "running", "completed", "error"
+- stats (string): JSON with run statistics
+- created_at (datetime), completed_at (datetime)
+
+## Relationships
 
 ### Infrastructure Relationships
+- `(d:Domain)-[:HAS_USER_INPUT]->(ui:UserInput)` - Domain has user-provided partial recon input
+- `(ui:UserInput)-[:PRODUCED]->(s:Subdomain)` - Partial recon run produced this subdomain
+- `(ui:UserInput)-[:PRODUCED]->(i:IP)` - Partial recon run produced this IP
+- `(d:Domain)-[:HAS_EXTERNAL_DOMAIN]->(ed:ExternalDomain)` - Domain encountered foreign domain during recon
 - `(s:Subdomain)-[:BELONGS_TO]->(d:Domain)` - Subdomain belongs to Domain
-- `(s:Subdomain)-[:RESOLVES_TO]->(i:IP)` - Subdomain resolves to IP (DNS)
+- `(s:Subdomain)-[:RESOLVES_TO {record_type, first_seen, last_seen}]->(i:IP)` - Subdomain resolves to IP (DNS); OTX passive_dns adds first_seen/last_seen to this relationship
 - `(i:IP)-[:HAS_PORT]->(p:Port)` - IP has open Port
 - `(p:Port)-[:RUNS_SERVICE]->(svc:Service)` - Port runs Service
 - `(i:IP)-[:HAS_TRACEROUTE]->(tr:Traceroute)` - IP has network route data
-- `(i:IP)-[:HAS_CERTIFICATE]->(c:Certificate)` - IP has TLS certificate (GVM-discovered)
+- `(i:IP)-[:HAS_CERTIFICATE]->(c:Certificate)` - IP has TLS certificate (GVM, Censys, or FOFA)
+
+### OTX Threat Intelligence Relationships
+- `(d:Domain)-[:HISTORICALLY_RESOLVED_TO {first_seen, last_seen, record_type}]->(i:IP)` - Domain has historically resolved to this IP (from OTX domain/passive_dns)
+- `(i:IP)-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)` - IP appears in OTX threat pulse
+- `(d:Domain)-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)` - Domain appears in OTX threat pulse
+- `(i:IP)-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)` - IP is associated with malware sample
+- `(d:Domain)-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)` - Domain is associated with malware sample
 
 ### Web Application Relationships
-- `(b:BaseURL)-[:BELONGS_TO]->(s:Subdomain)` - BaseURL belongs to Subdomain
-- `(svc:Service)-[:SERVES_URL]->(b:BaseURL)` - Service serves BaseURL (HTTP)
+- `(svc:Service)-[:SERVES_URL]->(b:BaseURL)` - Service serves BaseURL (from httpx probe)
+- `(s:Subdomain)-[:HAS_BASE_URL]->(b:BaseURL)` - Subdomain has BaseURL (fallback when no Service link, e.g. port 80 redirected)
 - `(b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint)` - BaseURL has Endpoint
 - `(e:Endpoint)-[:HAS_PARAMETER]->(param:Parameter)` - Endpoint has Parameter
 
 ### Technology Relationships
 - `(b:BaseURL)-[:USES_TECHNOLOGY]->(t:Technology)` - BaseURL uses Technology (from httpx/wappalyzer)
+- `(svc:Service)-[:USES_TECHNOLOGY]->(t:Technology)` - Service uses Technology (from Nmap -sV, e.g. ftp service -> vsftpd/2.3.4)
+- `(p:Port)-[:HAS_TECHNOLOGY]->(t:Technology)` - Port has Technology (from Nmap -sV)
 - `(p:Port)-[:USES_TECHNOLOGY]->(t:Technology)` - Port uses Technology (from GVM detection)
 - `(i:IP)-[:USES_TECHNOLOGY]->(t:Technology)` - IP uses Technology (OS-level tech from GVM, no port)
-- `(t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)` - Technology has known CVE
+- `(t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)` - Technology has known CVE (from NVD lookup or Nmap NSE)
 
 ### Security Relationships
 - `(b:BaseURL)-[:HAS_HEADER]->(h:Header)` - BaseURL has Header
 - `(b:BaseURL)-[:HAS_CERTIFICATE]->(cert:Certificate)` - BaseURL has Certificate
+- `(b:BaseURL)-[:HAS_SECRET]->(s:Secret)` - BaseURL has discovered Secret
 - `(s:Subdomain)-[:HAS_DNS_RECORD]->(dns:DNSRecord)` - Subdomain has DNSRecord
 
 ### Vulnerability Relationships (CRITICAL DISTINCTION!)
@@ -1090,6 +1519,11 @@ GVM-specific properties (source="gvm"):
 **DAST/Web Vulnerabilities (source="nuclei"):**
 - `(v:Vulnerability)-[:FOUND_AT]->(e:Endpoint)` - Vuln found at web endpoint
 - `(v:Vulnerability)-[:AFFECTS_PARAMETER]->(param:Parameter)` - Vuln affects parameter
+
+**Nmap NSE Vulnerabilities (source="nmap_nse"):**
+- `(v:Vulnerability)-[:AFFECTS]->(p:Port)` - NSE vuln affects port (e.g. ftp-vsftpd-backdoor -> Port:21)
+- `(v:Vulnerability)-[:FOUND_ON]->(t:Technology)` - NSE vuln found on technology (e.g. ftp-vsftpd-backdoor -> vsftpd/2.3.4)
+- `(v:Vulnerability)-[:HAS_CVE]->(c:CVE)` - NSE vuln has specific CVE (e.g. -> CVE-2011-2523)
 
 **Network/GVM Vulnerabilities (source="gvm" or "security_check"):**
 - `(i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - IP has network vuln
@@ -1107,6 +1541,18 @@ GVM-specific properties (source="gvm"):
 **CVE → MITRE Chain (from Technology CVE lookup, NOT from Vulnerability nodes):**
 - `(c:CVE)-[:HAS_CWE]->(m:MitreData)` - CVE has CWE weakness
 - `(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)` - CWE has CAPEC attack pattern
+
+### TruffleHog Secret Scanner Relationships
+- `(d:Domain)-[:HAS_TRUFFLEHOG_SCAN]->(ts:TrufflehogScan)` - Domain has TruffleHog scan
+- `(ts:TrufflehogScan)-[:HAS_REPOSITORY]->(tr:TrufflehogRepository)` - Scan scanned repository
+- `(tr:TrufflehogRepository)-[:HAS_FINDING]->(tf:TrufflehogFinding)` - Repository has secret finding
+
+### JS Recon Relationships (hierarchical: parent -> file -> findings)
+- `(b:BaseURL)-[:HAS_JS_FILE]->(jf:JsReconFinding {finding_type: 'js_file'})` - BaseURL has analyzed JS file (pipeline crawl)
+- `(d:Domain)-[:HAS_JS_FILE]->(jf:JsReconFinding {finding_type: 'js_file'})` - Domain has analyzed JS file (uploaded files)
+- `(jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(f:JsReconFinding)` - File has finding (dep confusion, DOM sink, etc.)
+- `(jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s:Secret)` - File has secret (source='js_recon')
+- `(jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(e:Endpoint)` - File has endpoint (source='js_recon')
 
 ### Gvm Exploitation Relationships
 - `(e:ExploitGvm)-[:EXPLOITED_CVE]->(c:CVE)` - GVM confirmed exploitation of CVE (only connection)
@@ -1158,9 +1604,9 @@ WHERE v.severity = "critical"
 RETURN v.name, v.source, v.cvss_score
 LIMIT 20
 
-// Web vulnerabilities on specific subdomain
-MATCH (s:Subdomain {{name: "api.example.com"}})<-[:BELONGS_TO]-(b:BaseURL)
-      -[:HAS_ENDPOINT]->(e:Endpoint)<-[:FOUND_AT]-(v:Vulnerability)
+// Web vulnerabilities on specific subdomain (via Service chain or direct HAS_BASE_URL)
+MATCH (s:Subdomain {{name: "api.example.com"}})-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(b:BaseURL)
+MATCH (b)-[:HAS_ENDPOINT]->(e:Endpoint)<-[:FOUND_AT]-(v:Vulnerability)
 WHERE v.severity IN ["critical", "high"]
 RETURN e.url, v.name, v.severity
 
@@ -1191,9 +1637,32 @@ RETURN t.name, t.version, c.id, c.severity, c.cvss
 
 ### Infrastructure Overview
 ```cypher
-// All subdomains for a domain
+// All subdomains for a domain with HTTP status
 MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
-RETURN s.name
+RETURN s.name, s.status, s.status_codes
+ORDER BY s.status
+
+// Live subdomains (status code 2xx)
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
+WHERE s.status STARTS WITH '2'
+RETURN s.name, s.status, s.http_live_url_count
+
+// 404 subdomains (potential subdomain takeover candidates)
+MATCH (s:Subdomain {{status: "404"}})-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
+RETURN s.name, s.status_codes
+
+// Forbidden subdomains (403 — may be bypassable)
+MATCH (s:Subdomain {{status: "403"}})-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
+RETURN s.name, s.status_codes
+
+// Server error subdomains (5xx — misconfigured backends)
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
+WHERE s.status STARTS WITH '5'
+RETURN s.name, s.status, s.status_codes
+
+// Subdomain status distribution
+MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {{name: "example.com"}})
+RETURN s.status, count(s) AS count ORDER BY count DESC
 
 // Open ports on subdomains
 MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain)
@@ -1203,11 +1672,112 @@ WHERE p.state = "open"
 RETURN s.name, i.address, p.number, p.protocol
 ```
 
+### Nmap Service Detection & NSE Vulnerabilities
+```cypher
+// All services detected by Nmap with versions
+MATCH (p:Port)
+WHERE p.nmap_scanned = true AND p.product IS NOT NULL
+RETURN p.number, p.product, p.version, p.cpe
+
+// Nmap NSE vulnerabilities with CVEs
+MATCH (v:Vulnerability {{source: "nmap_nse"}})-[:HAS_CVE]->(c:CVE)
+RETURN v.name, v.port_number, c.id, v.state
+
+// Full Nmap attack chain: Service -> Technology -> CVE
+MATCH (svc:Service)-[:USES_TECHNOLOGY]->(t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)
+RETURN svc.name, svc.port_number, t.name, c.id
+
+// NSE vulns with the technology they affect
+MATCH (v:Vulnerability {{source: "nmap_nse"}})-[:FOUND_ON]->(t:Technology)
+OPTIONAL MATCH (v)-[:HAS_CVE]->(c:CVE)
+RETURN v.name, t.name, c.id, v.severity
+```
+
 ### Network Topology
 ```cypher
 // Traceroute to target IP
 MATCH (i:IP)-[:HAS_TRACEROUTE]->(tr:Traceroute)
 RETURN i.address, tr.scanner_ip, tr.distance, tr.hops
+```
+
+### Secrets Discovered in Web Resources
+```cypher
+// High-severity secrets found in JS files
+MATCH (b:BaseURL)-[:HAS_SECRET]->(s:Secret)
+WHERE s.severity IN ["high", "critical"]
+RETURN b.url, s.secret_type, s.source_url, s.sample
+
+// All secrets grouped by BaseURL
+MATCH (b:BaseURL)-[:HAS_SECRET]->(s:Secret)
+RETURN b.url, count(s) AS secret_count, collect(s.secret_type) AS types
+ORDER BY secret_count DESC
+```
+
+### TruffleHog Secrets (Secrets Found in Git Repositories)
+```cypher
+// All TruffleHog findings (verified secrets)
+MATCH (d:Domain)-[:HAS_TRUFFLEHOG_SCAN]->(ts:TrufflehogScan)-[:HAS_REPOSITORY]->(tr:TrufflehogRepository)-[:HAS_FINDING]->(tf:TrufflehogFinding)
+WHERE tf.verified = true
+RETURN tr.name AS repository, tf.detector_name, tf.file, tf.line, tf.redacted
+LIMIT 50
+
+// TruffleHog scan summary
+MATCH (ts:TrufflehogScan)
+RETURN ts.target, ts.status, ts.total_findings, ts.verified_findings, ts.repositories_scanned
+
+// TruffleHog findings grouped by detector type
+MATCH (tf:TrufflehogFinding)
+RETURN tf.detector_name, count(tf) AS finding_count, sum(CASE WHEN tf.verified THEN 1 ELSE 0 END) AS verified_count
+ORDER BY finding_count DESC
+
+// TruffleHog findings in a specific repository
+MATCH (tr:TrufflehogRepository)-[:HAS_FINDING]->(tf:TrufflehogFinding)
+WHERE tr.name CONTAINS "repo-name"
+RETURN tf.detector_name, tf.file, tf.line, tf.verified, tf.redacted
+```
+
+### JS Recon Findings
+```cypher
+// All analyzed JS files
+MATCH (file:JsReconFinding {finding_type: 'js_file'})
+RETURN file.title as filename, file.source_url as url, file.is_uploaded as uploaded
+
+// All findings from a specific JS file
+MATCH (file:JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(jf:JsReconFinding)
+WHERE file.title CONTAINS 'app.js'
+RETURN jf.finding_type, jf.severity, jf.title, jf.detail
+ORDER BY CASE jf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
+
+// Dependency confusion findings (critical)
+MATCH (file:JsReconFinding {finding_type: 'js_file'})-[:HAS_JS_FINDING]->(jf:JsReconFinding {finding_type: 'dependency_confusion'})
+RETURN file.title as js_file, jf.title, jf.detail, jf.evidence
+
+// Secrets found in JS files (traverses file hierarchy)
+MATCH (file:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s:Secret)
+RETURN file.title as js_file, s.secret_type, s.sample, s.severity, s.validation_status
+
+// JS-extracted endpoints per file
+MATCH (file:JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(e:Endpoint)
+RETURN file.title as js_file, e.method, e.path, e.category, e.endpoint_type
+```
+
+### ALL Secrets (Web + Git Repository + JS Recon + Uploads)
+When user asks about "secrets" broadly, query Secret nodes (from JS file nodes and BaseURL), TrufflehogFinding nodes, AND JsReconFinding nodes:
+```cypher
+// Combined view of all secrets from all sources
+MATCH (b:BaseURL)-[:HAS_SECRET]->(s:Secret)
+RETURN 'Web Resource' as source, s.secret_type as type, s.source as tool, s.source_url as location, s.severity as severity
+UNION ALL
+MATCH (file:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s:Secret)
+RETURN 'JS File: ' + file.title as source, s.secret_type as type, s.source as tool, s.source_url as location, s.severity as severity
+UNION ALL
+MATCH (tf:TrufflehogFinding)
+RETURN 'Git Repository' as source, tf.detector_name as type, 'trufflehog' as tool, tf.repository + '/' + tf.file as location, CASE WHEN tf.verified THEN 'high' ELSE 'medium' END as severity
+UNION ALL
+MATCH (jf:JsReconFinding)
+WHERE jf.finding_type IN ['dependency_confusion', 'source_map_exposure', 'dom_sink']
+RETURN 'JS Analysis' as source, jf.finding_type as type, 'js_recon' as tool, jf.source_url as location, jf.severity as severity
+LIMIT 50
 ```
 
 ### CISA KEV (Known Weaponized Vulnerabilities)
@@ -1312,19 +1882,107 @@ RETURN s.name, collect(t.name) as technologies
    - Vulnerability nodes = scanner findings (nuclei, gvm, security_check)
    - CVE nodes = known CVEs linked to detected technologies
    - Use UNION ALL to combine results from both node types
-2. **Always use LIMIT** to restrict results (default: 20-50)
-3. **Relationship direction matters** - follow the arrows exactly as documented
-4. **Use property filters** in WHERE clauses, not relationship traversals for filtering
-5. **Check vulnerability source** when querying Vulnerability nodes:
+2. **CRITICAL - Query Secret, TrufflehogFinding, AND JsReconFinding nodes** when user asks about "secrets":
+   - Secret nodes = secrets found in live web resources (JS files, configs) via jsluice or js_recon
+   - TrufflehogFinding nodes = secrets found in git repositories via TruffleHog
+   - JsReconFinding nodes = non-secret JS findings (dependency confusion, source maps, DOM sinks, frameworks)
+   - Use UNION ALL to combine results from all node types
+3. **Always use LIMIT** to restrict results (default: 20-50)
+4. **Relationship direction matters** - follow the arrows exactly as documented
+5. **Use property filters** in WHERE clauses, not relationship traversals for filtering
+6. **Check vulnerability source** when querying Vulnerability nodes:
    - source="nuclei" -> web/DAST vulnerabilities (FOUND_AT, AFFECTS_PARAMETER)
+   - source="nmap_nse" -> Nmap NSE script findings (AFFECTS Port, FOUND_ON Technology, HAS_CVE CVE)
    - source="gvm" -> network vulnerabilities (HAS_VULNERABILITY from IP/Subdomain)
    - source="security_check" -> DNS/email security checks (SPF, DMARC)
-6. **Case sensitivity**:
+   - source="netlas" -> passive CVE detection via NVD (HAS_VULNERABILITY from Service)
+7. **Case sensitivity**:
    - Vulnerability.severity is lowercase: "critical", "high", "medium", "low"
    - CVE.severity is uppercase: "CRITICAL", "HIGH", "MEDIUM", "LOW"
-7. **Do NOT include user_id/project_id filters** - they are injected automatically
+8. **Do NOT include user_id/project_id filters** - they are injected automatically
 
 ## Output Format
 Generate ONLY valid Cypher queries. No explanations, no markdown formatting.
+"""
+
+
+# =============================================================================
+# DEEP THINK PROMPTS
+# =============================================================================
+
+DEEP_THINK_PROMPT = """You are a senior penetration testing strategist performing deep analysis before acting.
+
+## Context
+- **Phase**: {current_phase}
+- **Objective**: {objective}
+- **Attack Path**: {attack_path_type}
+- **Iteration**: {iteration}/{max_iterations}
+- **Trigger**: {trigger_reason}
+
+## Phase Framework
+{phase_definitions}
+
+## Attack Path Strategy
+{attack_path_behavior}
+
+## Known Target Information
+{target_info}
+
+## Attack Chain Progress
+{chain_context}
+
+## Objective History
+{objective_history}
+
+## Current Task List
+{todo_list}
+{session_config}
+{roe_section}
+## Your Task
+
+Perform a deep, structured analysis of the current situation. Consider ALL possible attack vectors, evaluate trade-offs, and produce a clear action plan. Factor in the payload/tunnel configuration, Rules of Engagement constraints, and completed objectives when planning. Be concise but thorough.
+
+Output valid JSON matching this exact schema:
+{{
+    "situation_assessment": "Brief summary of what we know and where we stand",
+    "attack_vectors_identified": ["vector1", "vector2", "..."],
+    "recommended_approach": "The chosen strategy and WHY it's the best path forward",
+    "priority_order": ["step1", "step2", "step3", "..."],
+    "risks_and_mitigations": "What could go wrong and how to handle it"
+}}
+"""
+
+
+DEEP_THINK_SECTION = """
+## Deep Think
+
+The following deep analysis was performed at a key decision point. Use it to guide your strategy:
+
+{deep_think_result}
+
+Follow this analysis unless new information invalidates it. If the situation has fundamentally changed, note it in your thought.
+"""
+
+DEEP_THINK_SELF_REQUEST_INSTRUCTION = """
+### Deep Think Self-Request
+
+You have Deep Think (strategic reasoning) enabled. If at any point you feel you are:
+- **Stuck or going in circles** — repeating similar tools without new results
+- **Not making meaningful progress** — tools succeed but yield no actionable findings
+- **Unsure which vector to pursue** — multiple options and no clear winner
+- **Hitting a wall** — tried several approaches and none worked
+
+...then set `"need_deep_think": true` in your JSON output. This will trigger a strategic re-evaluation on the next iteration to help you pivot or refocus.
+
+Example:
+```json
+{{
+    "thought": "...",
+    "reasoning": "...",
+    "action": "use_tool",
+    "need_deep_think": true,
+    ...
+}}
+```
 """
 

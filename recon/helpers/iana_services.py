@@ -27,7 +27,7 @@ def _load_iana_cache() -> None:
         return
 
     if not IANA_CSV_PATH.exists():
-        print(f"[!] IANA services CSV not found at {IANA_CSV_PATH}")
+        print(f"[!][IANA] IANA services CSV not found at {IANA_CSV_PATH}")
         _CACHE_LOADED = True
         return
 
@@ -61,7 +61,7 @@ def _load_iana_cache() -> None:
         _CACHE_LOADED = True
 
     except Exception as e:
-        print(f"[!] Error loading IANA services: {e}")
+        print(f"[!][IANA] Error loading IANA services: {e}")
         _CACHE_LOADED = True
 
 

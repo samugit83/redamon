@@ -5,6 +5,7 @@ import { FileText, Download, ExternalLink, Trash2, Loader2, AlertCircle, Sparkle
 import { useAllReports, type ReportMeta } from '@/hooks/useReports'
 import { useProjects } from '@/hooks/useProjects'
 import { useProject } from '@/providers/ProjectProvider'
+import { useToast } from '@/components/ui'
 import styles from './page.module.css'
 
 function formatBytes(bytes: number): string {
@@ -34,6 +35,7 @@ function riskClass(label?: string): string {
 
 export default function ReportsPage() {
   const { userId } = useProject()
+  const toast = useToast()
   const {
     reports, isLoading, generate, isGenerating, generateError,
     deleteReport, isDeleting,
@@ -47,26 +49,39 @@ export default function ReportsPage() {
     if (!selectedProjectId) return
     try {
       await generate(selectedProjectId)
+      toast.info('Report generation started')
     } catch {
+      toast.error('Failed to generate report')
       // error available via generateError
     }
   }, [generate, selectedProjectId])
 
-  const handleDelete = useCallback((projectId: string, reportId: string) => {
-    deleteReport({ projectId, reportId })
+  const handleDelete = useCallback(async (projectId: string, reportId: string) => {
+    try {
+      await deleteReport({ projectId, reportId })
+      toast.success('Report deleted')
+    } catch {
+      toast.error('Failed to delete report')
+    }
     setDeleteConfirm(null)
-  }, [deleteReport])
+  }, [deleteReport, toast])
 
   const handleDownload = useCallback(async (report: ReportMeta) => {
-    const url = `/api/projects/${report.projectId}/reports/${report.id}`
-    const res = await fetch(url)
-    const blob = await res.blob()
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${report.title || 'report'}.html`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }, [])
+    try {
+      const url = `/api/projects/${report.projectId}/reports/${report.id}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${report.title || 'report'}.html`
+      a.click()
+      URL.revokeObjectURL(a.href)
+      toast.success('Report downloaded')
+    } catch {
+      toast.error('Failed to download report')
+    }
+  }, [toast])
 
   const handleOpen = useCallback((report: ReportMeta) => {
     window.open(`/api/projects/${report.projectId}/reports/${report.id}`, '_blank')

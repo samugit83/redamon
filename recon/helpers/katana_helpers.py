@@ -47,10 +47,10 @@ def run_katana_crawler(
     Returns:
         List of discovered URLs with parameters
     """
-    print(f"\n[*] Running Katana crawler to discover URLs with parameters...")
-    print(f"    Crawl depth: {depth}")
-    print(f"    Max URLs: {max_urls}")
-    print(f"    Rate limit: {rate_limit} req/s")
+    print(f"\n[*][Katana] Running Katana crawler to discover URLs with parameters...")
+    print(f"[*][Katana] Crawl depth: {depth}")
+    print(f"[*][Katana] Max URLs: {max_urls}")
+    print(f"[*][Katana] Rate limit: {rate_limit} req/s")
     
     if exclude_patterns is None:
         exclude_patterns = []
@@ -127,22 +127,22 @@ def run_katana_crawler(
                             break
                             
         except subprocess.TimeoutExpired:
-            print(f"    [!] Katana timeout for {base_url}")
+            print(f"[!][Katana] Timeout for {base_url}")
         except Exception as e:
-            print(f"    [!] Katana error for {base_url}: {e}")
+            print(f"[!][Katana] Error for {base_url}: {e}")
         
         if len(discovered_urls) >= max_urls:
             break
     
     urls_list = sorted(list(discovered_urls))
     
-    print(f"    [✓] Katana found {len(urls_list)} URLs with parameters")
+    print(f"[✓][Katana] Found {len(urls_list)} URLs with parameters")
     if urls_list:
-        print(f"    Sample URLs:")
+        print(f"[*][Katana] Sample URLs:")
         for url in urls_list[:5]:
-            print(f"      - {url[:80]}{'...' if len(url) > 80 else ''}")
+            print(f"[*][Katana]   - {url[:80]}{'...' if len(url) > 80 else ''}")
         if len(urls_list) > 5:
-            print(f"      ... and {len(urls_list) - 5} more")
+            print(f"[*][Katana]   ... and {len(urls_list) - 5} more")
     
     return urls_list
 

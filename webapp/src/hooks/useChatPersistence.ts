@@ -38,7 +38,7 @@ export function useChatPersistence(conversationId: string | null) {
       }
       flush()
     } else {
-      // Debounce streaming items (thinking, tool_start, tool_complete, plan_start, plan_complete, plan_analysis) in 500ms windows
+      // Debounce streaming items (thinking, tool_start, tool_complete, plan_start, plan_complete, plan_analysis, deep_think) in 500ms windows
       if (!flushTimerRef.current) {
         flushTimerRef.current = setTimeout(() => {
           flushTimerRef.current = null

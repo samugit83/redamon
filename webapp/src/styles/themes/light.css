@@ -43,7 +43,7 @@
   --graph-link-default: var(--color-gray-500);
 
   /* Drawer */
-  --drawer-bg: var(--color-white);
+  --drawer-bg: var(--color-gray-50);
   --drawer-header-bg: var(--color-gray-100);
 
   /* Status backgrounds - lighter versions */

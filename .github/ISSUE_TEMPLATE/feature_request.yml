@@ -1,0 +1,66 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for RedAmon
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of RedAmon would this affect?
+      options:
+        - webapp (Next.js frontend)
+        - recon-orchestrator (Python backend)
+        - agent (AI agent)
+        - kali-sandbox / MCP servers
+        - recon tools / modules
+        - docs / wiki
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: roadmap
+    attributes:
+      label: Related Roadmap Item
+      description: "Is this related to an existing roadmap issue? Link it here."
+      placeholder: "e.g., Relates to #42 (Cloud Security Assessment)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What should this feature do?
+      placeholder: Describe the feature clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this useful? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Proposed Implementation
+      description: Any ideas on how this could be built? (Optional)
+      placeholder: |
+        - Add a new MCP tool server for ...
+        - Integrate with ... API
+        - Modify the agent's planning phase to ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered other approaches? (Optional)
+    validations:
+      required: false

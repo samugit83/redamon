@@ -1,21 +1,34 @@
 'use client'
 
 import { useState } from 'react'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, ArrowLeft } from 'lucide-react'
 import { Drawer } from '@/components/ui'
 import { GraphNode } from '../../types'
 import { getNodeColor } from '../../utils'
-import { formatPropertyValue } from '../../utils/formatters'
+import { renderPropertyValue } from '../../utils/renderPropertyValue'
+import { ClusterNodeList } from './ClusterNodeList'
 import styles from './NodeDrawer.module.css'
+import clusterStyles from './ClusterNodeList.module.css'
 
 interface NodeDrawerProps {
   node: GraphNode | null
   isOpen: boolean
   onClose: () => void
   onDeleteNode?: (nodeId: string) => Promise<void>
+  expandedChild?: GraphNode | null
+  onExpandChild?: (child: GraphNode) => void
+  onCollapseChild?: () => void
 }
 
-export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerProps) {
+export function NodeDrawer({
+  node,
+  isOpen,
+  onClose,
+  onDeleteNode,
+  expandedChild,
+  onExpandChild,
+  onCollapseChild,
+}: NodeDrawerProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
@@ -23,11 +36,15 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
     setShowDeleteConfirm(true)
   }
 
+  const isCluster = !!node?.isCluster
+  const displayNode: GraphNode | null = isCluster ? (expandedChild ?? null) : node
+  const showList = isCluster && !expandedChild
+
   const handleDeleteConfirm = async () => {
-    if (!node || !onDeleteNode) return
+    if (!displayNode || !onDeleteNode) return
     setIsDeleting(true)
     try {
-      await onDeleteNode(node.id)
+      await onDeleteNode(displayNode.id)
       setShowDeleteConfirm(false)
       onClose()
     } finally {
@@ -39,10 +56,9 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
     setShowDeleteConfirm(false)
   }
 
-  // Filter out internal IDs and sort with timestamps at the bottom
   const hiddenKeys = ['project_id', 'user_id']
-  const sortedProperties = node
-    ? Object.entries(node.properties || {})
+  const sortedProperties = displayNode
+    ? Object.entries(displayNode.properties || {})
         .filter(([key]) => !hiddenKeys.includes(key))
         .sort(([a], [b]) => {
           const bottomKeys = ['created_at', 'updated_at']
@@ -55,20 +71,45 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
         })
     : []
 
+  const drawerTitle = node
+    ? isCluster
+      ? expandedChild
+        ? `${expandedChild.type}: ${expandedChild.name}`
+        : `Cluster: ${node.clusterChildType ?? ''}`
+      : `${node.type}: ${node.name}`
+    : undefined
+
   return (
     <Drawer
       isOpen={isOpen}
       onClose={onClose}
       position="left"
       mode="overlay"
-      title={node ? `${node.type}: ${node.name}` : undefined}
+      title={drawerTitle}
     >
-      {node && (
+      {node && showList && (
+        <ClusterNodeList
+          cluster={node}
+          onSelectChild={(child) => onExpandChild?.(child)}
+        />
+      )}
+
+      {displayNode && !showList && (
         <>
+          {isCluster && onCollapseChild && (
+            <button
+              className={clusterStyles.backBtn}
+              onClick={onCollapseChild}
+            >
+              <ArrowLeft size={14} />
+              Back to list
+            </button>
+          )}
+
           <div className={styles.section}>
             <div className={styles.sectionHeader}>
               <h3 className={styles.sectionTitleBasicInfo}>Basic Info</h3>
-              {node.type !== 'Domain' && node.type !== 'Subdomain' && onDeleteNode && (
+              {displayNode.type !== 'Domain' && displayNode.type !== 'Subdomain' && onDeleteNode && (
                 <button
                   className={styles.deleteButton}
                   onClick={handleDeleteClick}
@@ -83,18 +124,18 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
               <span className={styles.propertyKey}>Type</span>
               <span
                 className={styles.propertyBadge}
-                style={{ backgroundColor: getNodeColor(node) }}
+                style={{ backgroundColor: getNodeColor(displayNode) }}
               >
-                {node.type}
+                {displayNode.type}
               </span>
             </div>
             <div className={styles.propertyRow}>
               <span className={styles.propertyKey}>ID</span>
-              <span className={styles.propertyValue}>{node.id}</span>
+              <span className={styles.propertyValue}>{displayNode.id}</span>
             </div>
             <div className={styles.propertyRow}>
               <span className={styles.propertyKey}>Name</span>
-              <span className={styles.propertyValue}>{node.name}</span>
+              <span className={styles.propertyValue}>{displayNode.name}</span>
             </div>
           </div>
 
@@ -104,7 +145,7 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
               <div key={key} className={styles.propertyRow}>
                 <span className={styles.propertyKey}>{key}</span>
                 <span className={styles.propertyValue}>
-                  {formatPropertyValue(value)}
+                  {renderPropertyValue(value)}
                 </span>
               </div>
             ))}
@@ -122,7 +163,7 @@ export function NodeDrawer({ node, isOpen, onClose, onDeleteNode }: NodeDrawerPr
                 </div>
                 <h4 className={styles.confirmTitle}>Delete Node</h4>
                 <p className={styles.confirmText}>
-                  Deleting <strong>{node.type}: {node.name}</strong> will permanently remove
+                  Deleting <strong>{displayNode.type}: {displayNode.name}</strong> will permanently remove
                   this node and all its relationships from the graph.
                 </p>
                 <p className={styles.confirmWarning}>

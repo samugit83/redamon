@@ -82,18 +82,18 @@ export const getLinkWidth3D = (link: GraphLink, selectedNodeId?: string): number
  * Get particle width based on selection state and chain flow membership
  */
 export const getParticleWidth = (link: GraphLink, selectedNodeId?: string): number => {
-  if (isChainFlowLink(link)) return 3
   if (!selectedNodeId) return 0
-  return isLinkConnectedToNode(link, selectedNodeId) ? LINK_SIZES.particleWidth : 0
+  if (!isLinkConnectedToNode(link, selectedNodeId)) return 0
+  return isChainFlowLink(link) ? 3 : LINK_SIZES.particleWidth
 }
 
 /**
  * Get particle count based on selection state and chain flow membership
  */
 export const getParticleCount = (link: GraphLink, selectedNodeId?: string): number => {
-  if (isChainFlowLink(link)) return 4
   if (!selectedNodeId) return 0
-  return isLinkConnectedToNode(link, selectedNodeId) ? LINK_SIZES.particleCount : 0
+  if (!isLinkConnectedToNode(link, selectedNodeId)) return 0
+  return isChainFlowLink(link) ? 4 : LINK_SIZES.particleCount
 }
 
 /**
@@ -104,11 +104,21 @@ export const getParticleSpeed = (link: GraphLink): number => {
 }
 
 /**
- * Get particle color — grey for chain flow links, blue for selection highlights
+ * Check if a chain link belongs to the active chain (by inspecting its source/target nodes)
  */
-export const getParticleColor = (link: GraphLink): string => {
+const isLinkInActiveChain = (link: GraphLink, activeChainId?: string): boolean => {
+  if (!activeChainId) return false
+  const source = typeof link.source === 'string' ? null : link.source
+  const target = typeof link.target === 'string' ? null : link.target
+  return (source?.properties?.chain_id === activeChainId) || (target?.properties?.chain_id === activeChainId)
+}
+
+/**
+ * Get particle color — bright grey for active chain, dark grey for inactive, blue for selection highlights
+ */
+export const getParticleColor = (link: GraphLink, activeChainId?: string): string => {
   if (isChainFlowLink(link)) {
-    return CHAIN_SESSION_COLORS.inactive // always grey
+    return isLinkInActiveChain(link, activeChainId) ? '#9ca3af' : '#2d3748'
   }
   return LINK_COLORS.particle
 }

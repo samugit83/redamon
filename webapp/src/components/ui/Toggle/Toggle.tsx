@@ -17,7 +17,7 @@ interface ToggleProps {
   /** Accessible label for screen readers */
   'aria-label'?: string
   /** Size variant */
-  size?: 'small' | 'default'
+  size?: 'small' | 'default' | 'large'
   /** Additional className for the container */
   className?: string
 }
@@ -55,6 +55,7 @@ export function Toggle({
   const containerClasses = [
     styles.container,
     size === 'small' && styles.containerSmall,
+    size === 'large' && styles.containerLarge,
     className,
   ]
     .filter(Boolean)
@@ -63,6 +64,7 @@ export function Toggle({
   const switchClasses = [
     styles.switch,
     size === 'small' && styles.switchSmall,
+    size === 'large' && styles.switchLarge,
     disabled && styles.switchDisabled,
   ]
     .filter(Boolean)
@@ -71,6 +73,7 @@ export function Toggle({
   const knobClasses = [
     styles.knob,
     size === 'small' && styles.knobSmall,
+    size === 'large' && styles.knobLarge,
     checked && styles.knobActive,
   ]
     .filter(Boolean)

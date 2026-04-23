@@ -1,10 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, Globe } from 'lucide-react'
+import { ChevronDown, Globe, Play } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -12,9 +13,10 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 interface HttpxSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  onRun?: () => void
 }
 
-export function HttpxSection({ data, updateField }: HttpxSectionProps) {
+export function HttpxSection({ data, updateField, onRun }: HttpxSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   return (
@@ -23,11 +25,37 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Globe size={16} />
           httpx HTTP Probing
+          <NodeInfoTooltip section="Httpx" />
+          <span className={styles.badgeActive}>Active</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.httpxEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '4px',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                color: '#22c55e', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
+              }}
+              title="Run httpx HTTP Probing"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.httpxEnabled}
+              onChange={(checked) => updateField('httpxEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
       </div>
 
       {isOpen && (
@@ -35,6 +63,8 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
           <p className={styles.sectionDescription}>
             HTTP probing and fingerprinting using httpx. Validates live web services, extracts metadata like server headers, technologies, and TLS certificates. Integrates Wappalyzer for comprehensive technology detection.
           </p>
+          {data.httpxEnabled && (
+          <>
           <div className={styles.fieldRow}>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Threads</label>
@@ -530,6 +560,8 @@ export function HttpxSection({ data, updateField }: HttpxSectionProps) {
               disabled
             />
           </div>
+          </>
+          )}
         </div>
       )}
     </div>

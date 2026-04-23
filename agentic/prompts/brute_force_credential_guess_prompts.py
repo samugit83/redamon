@@ -11,7 +11,7 @@ Replaces the legacy Metasploit auxiliary/scanner login module workflow.
 # =============================================================================
 
 HYDRA_BRUTE_FORCE_TOOLS = """
-## ATTACK PATH: BRUTE FORCE CREDENTIAL GUESS (THC Hydra)
+## ATTACK SKILL: BRUTE FORCE CREDENTIAL GUESS (THC Hydra)
 
 **CRITICAL: This objective has been CLASSIFIED as brute force credential guessing.**
 **You MUST follow the Hydra workflow below. DO NOT switch to other attack methods.**
@@ -67,6 +67,9 @@ Look for keywords like:
 1. Query the graph: `"What technologies are detected on <target-ip>?"`
 2. Or use naabu with service detection: `-host <ip> -p <port> -json`
 3. Check SSH banner if targeting SSH (often reveals OS)
+
+**After Step 0, request `transition_phase` to exploitation before proceeding to Step 1.**
+This unlocks `execute_hydra` and ensures findings are tracked correctly.
 
 ### Step 1: Select Hydra Protocol
 

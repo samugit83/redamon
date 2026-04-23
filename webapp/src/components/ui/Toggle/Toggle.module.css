@@ -8,6 +8,10 @@
   gap: var(--space-1);
 }
 
+.containerLarge {
+  gap: var(--space-2);
+}
+
 .switch {
   position: relative;
   width: 32px;
@@ -24,6 +28,11 @@
 .switchSmall {
   width: 24px;
   height: 12px;
+}
+
+.switchLarge {
+  width: 44px;
+  height: 22px;
 }
 
 .switch:hover:not(.switchDisabled) {
@@ -59,6 +68,13 @@
   height: 8px;
 }
 
+.knobLarge {
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+}
+
 .knobActive {
   transform: translateX(16px);
   background: var(--toggle-knob-active);
@@ -66,6 +82,10 @@
 
 .switchSmall .knobActive {
   transform: translateX(12px);
+}
+
+.switchLarge .knobActive {
+  transform: translateX(22px);
 }
 
 .label {
@@ -79,4 +99,9 @@
 .labelActive {
   color: var(--accent-secondary);
   font-weight: var(--font-semibold);
+}
+
+.containerLarge .label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
 }

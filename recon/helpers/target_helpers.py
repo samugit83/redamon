@@ -188,7 +188,7 @@ def build_target_urls(
         if base_urls:
             # Combine base URLs with endpoint URLs for comprehensive coverage
             urls = list(set(base_urls + endpoint_urls))
-            print(f"    [*] Using {len(base_urls)} base URLs + {len(endpoint_urls)} endpoint URLs from resource_enum")
+            print(f"[*][Targets] Using {len(base_urls)} base URLs + {len(endpoint_urls)} endpoint URLs from resource_enum")
             return sorted(urls)
 
     # Priority 2: Use live URLs from httpx (fallback if resource_enum not run)
@@ -196,7 +196,7 @@ def build_target_urls(
     if httpx_data:
         urls = build_target_urls_from_httpx(httpx_data)
         if urls:
-            print(f"    [*] Using {len(urls)} live URLs from httpx probe")
+            print(f"[*][Targets] Using {len(urls)} live URLs from httpx probe")
             return urls
 
     # Priority 3: Fallback to default ports for all hostnames
@@ -210,6 +210,6 @@ def build_target_urls(
             urls.append(f"http://{ip}")
             urls.append(f"https://{ip}")
 
-    print(f"    [*] Using {len(urls)} default URLs (no httpx data)")
+    print(f"[*][Targets] Using {len(urls)} default URLs (no httpx data)")
     return sorted(list(set(urls)))
 

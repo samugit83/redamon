@@ -1,10 +1,12 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ChevronDown, Bot, Search, Loader2 } from 'lucide-react'
+import { ChevronDown, Bot, Search, Loader2, AlertTriangle } from 'lucide-react'
 import { Toggle } from '@/components/ui'
+import { useProject } from '@/providers/ProjectProvider'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { type ModelOption, formatContextLength, getDisplayName } from '@/app/graph/components/AIAssistantDrawer/modelUtils'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -13,30 +15,9 @@ interface AgentBehaviourSectionProps {
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
 }
 
-interface ModelOption {
-  id: string
-  name: string
-  context_length: number | null
-  description: string
-}
-
-function formatContextLength(ctx: number | null): string {
-  if (!ctx) return ''
-  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(1)}M`
-  if (ctx >= 1_000) return `${Math.round(ctx / 1_000)}K`
-  return String(ctx)
-}
-
-function getDisplayName(modelId: string, allModels: Record<string, ModelOption[]>): string {
-  for (const models of Object.values(allModels)) {
-    const found = models.find(m => m.id === modelId)
-    if (found) return found.name
-  }
-  return modelId
-}
-
 export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
+  const { userId } = useProject()
 
   // Model selector state
   const [allModels, setAllModels] = useState<Record<string, ModelOption[]>>({})
@@ -47,9 +28,11 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
   const dropdownRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Fetch models on mount
+
+  // Fetch models on mount (pass userId for user-specific providers)
   useEffect(() => {
-    fetch('/api/models')
+    const params = userId ? `?userId=${userId}` : ''
+    fetch(`/api/models${params}`)
       .then(r => {
         if (!r.ok) throw new Error('Failed to fetch')
         return r.json()
@@ -63,7 +46,7 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
       })
       .catch(() => setModelsError(true))
       .finally(() => setModelsLoading(false))
-  }, [])
+  }, [userId])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -113,7 +96,7 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
       {isOpen && (
         <div className={styles.sectionContent}>
           <p className={styles.sectionDescription}>
-            Configure the AI agent orchestrator that performs autonomous pentesting. Controls LLM model, phase transitions, payload settings, tool access, and safety gates.
+            Configure the AI agent orchestrator that performs autonomous pentesting. Controls LLM model, phase transitions, payload settings, and safety gates. Tool access per phase is configured in the Tool Matrix tab.
           </p>
 
           {/* LLM & Phase Configuration */}
@@ -203,7 +186,7 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                   )}
                 </div>
                 <span className={styles.fieldHint}>
-                  Model used by the agent. Each provider requires its own API key in the .env file.
+                  Model used by the agent. Configure providers in Global Settings.
                 </span>
               </div>
             </div>
@@ -215,6 +198,21 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
               <Toggle
                 checked={data.agentActivatePostExplPhase}
                 onChange={(checked) => updateField('agentActivatePostExplPhase', checked)}
+              />
+            </div>
+            <div className={styles.toggleRow}>
+              <div>
+                <span className={styles.toggleLabel}>Deep Think</span>
+                <p className={styles.toggleDescription}>
+                  When enabled, the agent performs an explicit deep reasoning step at key decision points
+                  (start of session, phase transitions, failure loops) to plan multi-step attack strategies
+                  before acting. Adds ~1 extra LLM call at these moments. Recommended for complex targets
+                  with multiple services.
+                </p>
+              </div>
+              <Toggle
+                checked={data.agentDeepThinkEnabled}
+                onChange={(checked) => updateField('agentDeepThinkEnabled', checked)}
               />
             </div>
             <div className={styles.fieldRow}>
@@ -288,8 +286,8 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 <option value="chisel">chisel (multi-port — requires VPS)</option>
               </select>
               <span className={styles.fieldHint}>
-                {data.agentNgrokTunnelEnabled && 'Requires NGROK_AUTHTOKEN in .env. Tunnels port 4444 only (handler). Stageless payloads required. Web delivery / HTA not supported.'}
-                {data.agentChiselTunnelEnabled && 'Requires CHISEL_SERVER_URL in .env and a chisel server running on your VPS. Tunnels ports 4444 (handler) + 8080 (web delivery). Stageless payloads required.'}
+                {data.agentNgrokTunnelEnabled && 'Configure ngrok auth token in Global Settings → Tunneling. Tunnels port 4444 only (handler). Stageless payloads required. Web delivery / HTA not supported.'}
+                {data.agentChiselTunnelEnabled && 'Configure chisel server URL in Global Settings → Tunneling. Requires a chisel server running on your VPS. Tunnels ports 4444 (handler) + 8080 (web delivery). Stageless payloads required.'}
                 {!data.agentNgrokTunnelEnabled && !data.agentChiselTunnelEnabled && 'No tunnel — configure LHOST/LPORT manually below.'}
               </span>
             </div>
@@ -351,6 +349,165 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
             </div>
           </div>
 
+          {/* Fireteam (multi-agent) */}
+          {(() => {
+            const fireteamEnabled = (data as any).fireteamEnabled ?? true
+            const maxConcurrent = (data as any).fireteamMaxConcurrent ?? 5
+            const maxMembers = (data as any).fireteamMaxMembers ?? 5
+            const memberMaxIter = (data as any).fireteamMemberMaxIterations ?? 20
+            const timeoutSec = (data as any).fireteamTimeoutSec ?? 3600
+            const propensity = (data as any).fireteamPropensity ?? 3
+            const allowedPhasesRaw = (data as any).fireteamAllowedPhases ?? ['informational', 'exploitation', 'post_exploitation']
+            const allowedPhases: string[] = Array.isArray(allowedPhasesRaw)
+              ? allowedPhasesRaw
+              : String(allowedPhasesRaw || '').split(',').map(s => s.trim()).filter(Boolean)
+            const togglePhase = (phase: string) => {
+              const next = allowedPhases.includes(phase)
+                ? allowedPhases.filter(p => p !== phase)
+                : [...allowedPhases, phase]
+              if (next.length === 0) return // at least one phase required
+              updateField('fireteamAllowedPhases' as any, next as any)
+            }
+            const crossError =
+              fireteamEnabled && maxConcurrent > maxMembers
+                ? 'Max concurrent cannot exceed max members'
+                : null
+            return (
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Fireteam (multi-agent)</h3>
+                <div className={styles.fieldHint} style={{ marginBottom: 8 }}>
+                  When on, the agent can deploy up to N specialist sub-agents in parallel on independent attack surfaces.
+                  Parent stays in charge of safety approvals and phase transitions.
+                </div>
+                <div className={styles.toggleRow}>
+                  <Toggle
+                    checked={fireteamEnabled}
+                    onChange={(v) => updateField('fireteamEnabled' as any, v as any)}
+                    labelOn="Fireteam enabled"
+                    labelOff="Fireteam disabled"
+                  />
+                </div>
+                {fireteamEnabled && (
+                  <>
+                    <div className={styles.fieldRow}>
+                      <div className={styles.fieldGroup}>
+                        <label className={styles.fieldLabel}>Max concurrent members</label>
+                        <input
+                          type="number"
+                          className="textInput"
+                          value={maxConcurrent}
+                          min={1}
+                          max={8}
+                          onChange={(e) => {
+                            const v = Math.max(1, Math.min(8, parseInt(e.target.value) || 5))
+                            updateField('fireteamMaxConcurrent' as any, v as any)
+                          }}
+                        />
+                        <span className={styles.fieldHint}>1-8. Upper limit on members in-flight at once.</span>
+                      </div>
+                      <div className={styles.fieldGroup}>
+                        <label className={styles.fieldLabel}>Max members per fireteam</label>
+                        <input
+                          type="number"
+                          className="textInput"
+                          value={maxMembers}
+                          min={2}
+                          max={8}
+                          onChange={(e) => {
+                            const v = Math.max(2, Math.min(8, parseInt(e.target.value) || 5))
+                            updateField('fireteamMaxMembers' as any, v as any)
+                          }}
+                        />
+                        <span className={styles.fieldHint}>2-8. Hard cap on fireteam size the LLM can request.</span>
+                      </div>
+                    </div>
+                    <div className={styles.fieldRow}>
+                      <div className={styles.fieldGroup}>
+                        <label className={styles.fieldLabel}>Per-member max iterations</label>
+                        <input
+                          type="number"
+                          className="textInput"
+                          value={memberMaxIter}
+                          min={5}
+                          max={50}
+                          onChange={(e) => {
+                            const v = Math.max(5, Math.min(50, parseInt(e.target.value) || 20))
+                            updateField('fireteamMemberMaxIterations' as any, v as any)
+                          }}
+                        />
+                        <span className={styles.fieldHint}>5-50. Each member's ReAct budget before it exits.</span>
+                      </div>
+                      <div className={styles.fieldGroup}>
+                        <label className={styles.fieldLabel}>Wave timeout (seconds)</label>
+                        <input
+                          type="number"
+                          className="textInput"
+                          value={timeoutSec}
+                          min={60}
+                          max={7200}
+                          onChange={(e) => {
+                            const v = Math.max(60, Math.min(7200, parseInt(e.target.value) || 1800))
+                            updateField('fireteamTimeoutSec' as any, v as any)
+                          }}
+                        />
+                        <span className={styles.fieldHint}>60-7200. Hard wall-clock ceiling for the whole fireteam.</span>
+                      </div>
+                    </div>
+                    <div className={styles.fieldGroup}>
+                      <label className={styles.fieldLabel}>Allowed phases</label>
+                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        {(['informational', 'exploitation', 'post_exploitation'] as const).map(p => (
+                          <label key={p} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input
+                              type="checkbox"
+                              checked={allowedPhases.includes(p)}
+                              onChange={() => togglePhase(p)}
+                            />
+                            <span style={{ fontSize: '0.85rem' }}>{p}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <span className={styles.fieldHint}>
+                        Phases in which the agent may deploy fireteams. Recon (informational) is safe; exploitation/post-exploitation are deeper and usually serial.
+                      </span>
+                    </div>
+                    <div className={styles.fieldGroup}>
+                      <label className={styles.fieldLabel}>
+                        Fireteam propensity: <strong>{propensity}/5</strong>
+                      </label>
+                      <input
+                        type="range"
+                        min={1}
+                        max={5}
+                        step={1}
+                        value={propensity}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(5, parseInt(e.target.value) || 3))
+                          updateField('fireteamPropensity' as any, v as any)
+                        }}
+                        style={{ width: '100%' }}
+                      />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted, #888)', marginTop: 2 }}>
+                        <span>1 - only very complex tasks</span>
+                        <span>3 - balanced (default)</span>
+                        <span>5 - deploy aggressively</span>
+                      </div>
+                      <span className={styles.fieldHint}>
+                        How strongly the agent leans toward deploying a fireteam over single-agent or plan_tools. Injected into the system prompt as a directive the LLM must follow.
+                      </span>
+                    </div>
+                    {crossError && (
+                      <div className={styles.shodanWarning} style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.08)' }}>
+                        <AlertTriangle size={14} style={{ color: '#ef4444' }} />
+                        <span>{crossError}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })()}
+
           {/* Agent Limits */}
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Agent Limits</h3>
@@ -388,12 +545,38 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 />
                 <span className={styles.fieldHint}>Truncation limit for tool output</span>
               </div>
+              <div className={styles.fieldGroup}>
+                <label className={styles.fieldLabel}>Plan Max Parallel Tools</label>
+                <input
+                  type="number"
+                  className="textInput"
+                  value={data.agentPlanMaxParallelTools ?? 10}
+                  onChange={(e) => updateField('agentPlanMaxParallelTools', parseInt(e.target.value) || 10)}
+                  min={1}
+                  max={50}
+                />
+                <span className={styles.fieldHint}>Concurrent tools per plan wave (root + fireteam); extras queue</span>
+              </div>
             </div>
           </div>
 
           {/* Approval Gates */}
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Approval Gates</h3>
+
+            {(!data.agentRequireApprovalForExploitation || !data.agentRequireApprovalForPostExploitation || !(data.agentGuardrailEnabled ?? true) || !(data.agentRequireToolConfirmation ?? true)) && (
+              <div className={styles.shodanWarning} style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.08)' }}>
+                <AlertTriangle size={14} style={{ color: '#ef4444' }} />
+                <span>
+                  <strong>Autonomous operation risk:</strong> One or more safety gates are disabled.
+                  The AI agent may perform exploitation, post-exploitation, dangerous tool executions, or out-of-scope actions without human approval.
+                  This significantly increases the risk of unintended damage to target systems.
+                  You assume full responsibility for all autonomous agent actions.
+                  See <a href="https://github.com/samugit83/redamon/blob/master/DISCLAIMER.md" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>DISCLAIMER.md</a> for details.
+                </span>
+              </div>
+            )}
+
             <div className={styles.toggleRow}>
               <div>
                 <span className={styles.toggleLabel}>Require Approval for Exploitation</span>
@@ -414,6 +597,76 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 onChange={(checked) => updateField('agentRequireApprovalForPostExploitation', checked)}
               />
             </div>
+            <div className={styles.toggleRow}>
+              <div>
+                <span className={styles.toggleLabel}>Require Tool Confirmation</span>
+                <p className={styles.toggleDescription}>
+                  Manual confirmation before executing dangerous tools
+                  (nmap, nuclei, metasploit, hydra, kali shell, etc.).
+                </p>
+              </div>
+              <Toggle
+                checked={data.agentRequireToolConfirmation ?? true}
+                onChange={(checked) => updateField('agentRequireToolConfirmation', checked)}
+              />
+            </div>
+            <div className={styles.toggleRow}>
+              <div>
+                <span className={styles.toggleLabel}>Agent Guardrail</span>
+                <p className={styles.toggleDescription}>
+                  Verify target authorization on session start and enforce scope restrictions
+                  in the agent&apos;s prompt. Blocks the agent from operating against well-known
+                  public targets and prevents out-of-scope actions.
+                  Government, military, educational, and international organization domains
+                  (.gov, .mil, .edu, .int) are always blocked regardless of this setting.
+                </p>
+              </div>
+              <Toggle
+                checked={data.agentGuardrailEnabled ?? true}
+                onChange={(checked) => updateField('agentGuardrailEnabled', checked)}
+              />
+            </div>
+          </div>
+
+          {/* Kali Shell — Library Installation */}
+          <div className={styles.subSection}>
+            <h3 className={styles.subSectionTitle}>Kali Shell — Library Installation</h3>
+            <div className={styles.toggleRow}>
+              <div>
+                <span className={styles.toggleLabel}>Allow Library Installation</span>
+                <p className={styles.toggleDescription}>Let the agent install packages (pip/apt) in kali_shell during a pentest. Installed packages are ephemeral — lost on container restart.</p>
+              </div>
+              <Toggle
+                checked={data.agentKaliInstallEnabled}
+                onChange={(checked) => updateField('agentKaliInstallEnabled', checked)}
+              />
+            </div>
+            {data.agentKaliInstallEnabled && (
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Authorized Packages</label>
+                  <textarea
+                    className="textInput"
+                    value={data.agentKaliInstallAllowedPackages}
+                    onChange={(e) => updateField('agentKaliInstallAllowedPackages', e.target.value)}
+                    rows={2}
+                    placeholder="e.g. pyftpdlib, scapy, droopescan"
+                  />
+                  <span className={styles.fieldHint}>Comma-separated whitelist. If non-empty, ONLY these packages can be installed.</span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Forbidden Packages</label>
+                  <textarea
+                    className="textInput"
+                    value={data.agentKaliInstallForbiddenPackages}
+                    onChange={(e) => updateField('agentKaliInstallForbiddenPackages', e.target.value)}
+                    rows={2}
+                    placeholder="e.g. metasploit-framework, cobalt-strike"
+                  />
+                  <span className={styles.fieldHint}>Comma-separated blacklist. These packages must NEVER be installed.</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Retries, Logging & Debug */}
@@ -464,66 +717,6 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                 checked={data.agentCreateGraphImageOnInit}
                 onChange={(checked) => updateField('agentCreateGraphImageOnInit', checked)}
               />
-            </div>
-          </div>
-
-          {/* Tool Phase Restrictions */}
-          <div className={styles.subSection}>
-            <h3 className={styles.subSectionTitle}>Tool Phase Restrictions</h3>
-            <span className={styles.fieldHint} style={{ marginBottom: 'var(--space-2)', display: 'block' }}>
-              Controls which tools the agent can use in each phase. Check the phases where each tool should be available.
-            </span>
-            <div className={styles.toolPhaseGrid}>
-              <div className={styles.toolPhaseHeader}>
-                <span className={styles.toolPhaseHeaderLabel}>Tool</span>
-                <span className={styles.toolPhaseHeaderLabel}>Informational</span>
-                <span className={styles.toolPhaseHeaderLabel}>Exploitation</span>
-                <span className={styles.toolPhaseHeaderLabel}>Post-Exploitation</span>
-              </div>
-              {[
-                { id: 'query_graph', label: 'query_graph' },
-                { id: 'web_search', label: 'web_search' },
-                { id: 'execute_curl', label: 'execute_curl' },
-                { id: 'execute_naabu', label: 'execute_naabu' },
-                { id: 'execute_nmap', label: 'execute_nmap' },
-                { id: 'execute_nuclei', label: 'execute_nuclei' },
-                { id: 'kali_shell', label: 'kali_shell' },
-                { id: 'execute_code', label: 'execute_code' },
-                { id: 'execute_hydra', label: 'execute_hydra' },
-                { id: 'metasploit_console', label: 'metasploit_console' },
-                { id: 'msf_restart', label: 'msf_restart' },
-              ].map(tool => {
-                const phaseMap = (typeof data.agentToolPhaseMap === 'string'
-                  ? JSON.parse(data.agentToolPhaseMap)
-                  : data.agentToolPhaseMap ?? {}) as Record<string, string[]>
-                const toolPhases = phaseMap[tool.id] || []
-
-                const togglePhase = (phase: string) => {
-                  const newMap = { ...phaseMap }
-                  const current = newMap[tool.id] || []
-                  if (current.includes(phase)) {
-                    newMap[tool.id] = current.filter((p: string) => p !== phase)
-                  } else {
-                    newMap[tool.id] = [...current, phase]
-                  }
-                  updateField('agentToolPhaseMap', newMap as typeof data.agentToolPhaseMap)
-                }
-
-                return (
-                  <div key={tool.id} className={styles.toolPhaseRow}>
-                    <span className={styles.toolPhaseName}>{tool.label}</span>
-                    {['informational', 'exploitation', 'post_exploitation'].map(phase => (
-                      <label key={phase} className={styles.phaseCheck}>
-                        <input
-                          type="checkbox"
-                          checked={toolPhases.includes(phase)}
-                          onChange={() => togglePhase(phase)}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                )
-              })}
             </div>
           </div>
 

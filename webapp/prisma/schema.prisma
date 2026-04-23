@@ -8,15 +8,112 @@ datasource db {
 }
 
 model User {
-  id            String         @id @default(cuid())
+  id            String            @id @default(cuid())
   name          String
-  email         String         @unique
+  email         String            @unique
+  password      String            @default("")
+  role          String            @default("standard")
   projects      Project[]
   conversations Conversation[]
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @updatedAt @map("updated_at")
+  llmProviders  UserLlmProvider[]
+  attackSkills  UserAttackSkill[]
+  chatSkills      UserChatSkill[]
+  projectPresets  UserProjectPreset[]
+  settings        UserSettings?
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
 
   @@map("users")
+}
+
+model UserLlmProvider {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // "openai" | "anthropic" | "openrouter" | "bedrock" | "openai_compatible"
+  providerType    String   @map("provider_type")
+  name            String
+
+  // Auth
+  apiKey          String   @default("") @map("api_key")
+
+  // OpenAI-Compatible only
+  baseUrl         String   @default("") @map("base_url")
+  modelIdentifier String   @default("") @map("model_identifier")
+  defaultHeaders  Json     @default("{}") @map("default_headers")
+  timeout         Int      @default(120)
+  temperature     Float    @default(0)
+  maxTokens       Int      @default(16384) @map("max_tokens")
+  sslVerify       Boolean  @default(true) @map("ssl_verify")
+
+  // Bedrock only
+  awsRegion       String   @default("us-east-1") @map("aws_region")
+  awsAccessKeyId  String   @default("") @map("aws_access_key_id")
+  awsSecretKey    String   @default("") @map("aws_secret_key")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("user_llm_providers")
+}
+
+model UserSettings {
+  id              String   @id @default(cuid())
+  userId          String   @unique @map("user_id")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Tool API Keys
+  githubAccessToken String @default("") @map("github_access_token")
+  tavilyApiKey    String   @default("") @map("tavily_api_key")
+  shodanApiKey    String   @default("") @map("shodan_api_key")
+  serpApiKey       String   @default("") @map("serp_api_key")
+  nvdApiKey       String   @default("") @map("nvd_api_key")
+  vulnersApiKey   String   @default("") @map("vulners_api_key")
+  urlscanApiKey   String   @default("") @map("urlscan_api_key")
+
+  // OSINT & Threat Intelligence API Keys
+  censysApiToken   String  @default("") @map("censys_api_token")
+  censysOrgId      String  @default("") @map("censys_org_id")
+  fofaApiKey       String  @default("") @map("fofa_api_key")
+  otxApiKey        String  @default("") @map("otx_api_key")
+  netlasApiKey     String  @default("") @map("netlas_api_key")
+  virusTotalApiKey String  @default("") @map("virustotal_api_key")
+  zoomEyeApiKey    String  @default("") @map("zoomeye_api_key")
+  criminalIpApiKey String  @default("") @map("criminalip_api_key")
+  quakeApiKey      String  @default("") @map("quake_api_key")
+  hunterApiKey     String  @default("") @map("hunter_api_key")
+  publicWwwApiKey  String  @default("") @map("publicwww_api_key")
+  hunterHowApiKey  String  @default("") @map("hunterhow_api_key")
+  googleApiKey     String  @default("") @map("google_api_key")
+  googleApiCx      String  @default("") @map("google_api_cx")
+  onypheApiKey     String  @default("") @map("onyphe_api_key")
+  driftnetApiKey   String  @default("") @map("driftnet_api_key")
+  wpscanApiToken   String  @default("") @map("wpscan_api_token")
+
+  // Tunneling & Infrastructure
+  ngrokAuthtoken  String   @default("") @map("ngrok_authtoken")
+  chiselServerUrl String   @default("") @map("chisel_server_url")
+  chiselAuth      String   @default("") @map("chisel_auth")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("user_settings")
+}
+
+model ApiKeyRotationConfig {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  toolName     String   @map("tool_name")
+  extraKeys    String   @default("") @map("extra_keys")
+  rotateEveryN Int      @default(10) @map("rotate_every_n")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, toolName])
+  @@map("api_key_rotation_configs")
 }
 
 model Project {
@@ -29,6 +126,7 @@ model Project {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   conversations               Conversation[]
+  graphViews                  GraphView[]
 
   // ========== TARGET CONFIGURATION ==========
   targetDomain                String   @default("") @map("target_domain")
@@ -39,19 +137,26 @@ model Project {
   ownershipToken              String   @default("your-secret-token-here") @map("ownership_token")
   ownershipTxtPrefix          String   @default("_redamon-verify") @map("ownership_txt_prefix")
   stealthMode                 Boolean  @default(false) @map("stealth_mode")
+  targetGuardrailEnabled      Boolean  @default(true) @map("target_guardrail_enabled")
+
+  // ========== RECON PRESET ==========
+  reconPresetId               String?  @map("recon_preset_id")
 
   // ========== SCAN MODULES ==========
   scanModules                 String[] @default(["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan"]) @map("scan_modules")
   updateGraphDb               Boolean  @default(true) @map("update_graph_db")
   useTorForRecon              Boolean  @default(false) @map("use_tor_for_recon")
-  useBruteforceForSubdomains  Boolean  @default(true) @map("use_bruteforce_for_subdomains")
+  useBruteforceForSubdomains  Boolean  @default(false) @map("use_bruteforce_for_subdomains")
 
   // ========== WHOIS/DNS ==========
+  whoisEnabled                Boolean  @default(true) @map("whois_enabled")
   whoisMaxRetries             Int      @default(6) @map("whois_max_retries")
+  dnsEnabled                  Boolean  @default(true) @map("dns_enabled")
   dnsMaxRetries               Int      @default(3) @map("dns_max_retries")
+  dnsMaxWorkers               Int      @default(80) @map("dns_max_workers")
+  dnsRecordParallelism        Boolean  @default(true) @map("dns_record_parallelism")
 
   // ========== GITHUB SECRET HUNT ==========
-  githubAccessToken           String   @default("") @map("github_access_token")
   githubTargetOrg             String   @default("") @map("github_target_org")
   githubTargetRepos           String   @default("") @map("github_target_repos")
   githubScanMembers           Boolean  @default(false) @map("github_scan_members")
@@ -60,7 +165,18 @@ model Project {
   githubMaxCommits            Int      @default(100) @map("github_max_commits")
   githubOutputJson            Boolean  @default(true) @map("github_output_json")
 
+  // ========== TRUFFLEHOG SECRET SCANNER ==========
+  trufflehogEnabled            Boolean  @default(false) @map("trufflehog_enabled")
+  trufflehogGithubOrg          String   @default("") @map("trufflehog_github_org")
+  trufflehogGithubRepos        String   @default("") @map("trufflehog_github_repos")
+  trufflehogOnlyVerified       Boolean  @default(false) @map("trufflehog_only_verified")
+  trufflehogNoVerification     Boolean  @default(false) @map("trufflehog_no_verification")
+  trufflehogConcurrency        Int      @default(8) @map("trufflehog_concurrency")
+  trufflehogIncludeDetectors   String   @default("") @map("trufflehog_include_detectors")
+  trufflehogExcludeDetectors   String   @default("") @map("trufflehog_exclude_detectors")
+
   // ========== NAABU PORT SCANNER ==========
+  naabuEnabled                Boolean  @default(true) @map("naabu_enabled")
   naabuDockerImage            String   @default("projectdiscovery/naabu:latest") @map("naabu_docker_image")
   naabuTopPorts               String   @default("1000") @map("naabu_top_ports")
   naabuCustomPorts            String   @default("") @map("naabu_custom_ports")
@@ -75,7 +191,27 @@ model Project {
   naabuVerifyPorts            Boolean  @default(true) @map("naabu_verify_ports")
   naabuPassiveMode            Boolean  @default(false) @map("naabu_passive_mode")
 
+  // ========== MASSCAN PORT SCANNER ==========
+  masscanEnabled              Boolean  @default(true) @map("masscan_enabled")
+  masscanTopPorts             String   @default("1000") @map("masscan_top_ports")
+  masscanCustomPorts          String   @default("") @map("masscan_custom_ports")
+  masscanRate                 Int      @default(1000) @map("masscan_rate")
+  masscanBanners              Boolean  @default(false) @map("masscan_banners")
+  masscanWait                 Int      @default(10) @map("masscan_wait")
+  masscanRetries              Int      @default(1) @map("masscan_retries")
+  masscanExcludeTargets       String   @default("") @map("masscan_exclude_targets")
+
+  // ========== NMAP SERVICE DETECTION & NSE VULN SCRIPTS ==========
+  nmapEnabled                 Boolean  @default(true) @map("nmap_enabled")
+  nmapVersionDetection        Boolean  @default(true) @map("nmap_version_detection")
+  nmapScriptScan              Boolean  @default(true) @map("nmap_script_scan")
+  nmapTimingTemplate          String   @default("T3") @map("nmap_timing_template")
+  nmapTimeout                 Int      @default(600) @map("nmap_timeout")
+  nmapHostTimeout             Int      @default(300) @map("nmap_host_timeout")
+  nmapParallelism             Int      @default(5) @map("nmap_parallelism")
+
   // ========== HTTPX HTTP PROBING ==========
+  httpxEnabled                Boolean  @default(true)  @map("httpx_enabled")
   httpxDockerImage            String   @default("projectdiscovery/httpx:latest") @map("httpx_docker_image")
   httpxThreads                Int      @default(50) @map("httpx_threads")
   httpxTimeout                Int      @default(10) @map("httpx_timeout")
@@ -123,11 +259,13 @@ model Project {
   bannerGrabMaxLength         Int      @default(500) @map("banner_grab_max_length")
 
   // ========== NUCLEI VULNERABILITY SCANNER ==========
+  nucleiEnabled               Boolean  @default(true)  @map("nuclei_enabled")
   nucleiSeverity              String[] @default(["critical", "high", "medium", "low"]) @map("nuclei_severity")
   nucleiTemplates             String[] @default([]) @map("nuclei_templates")
   nucleiExcludeTemplates      String[] @default([]) @map("nuclei_exclude_templates")
-  nucleiCustomTemplates       String[] @default([]) @map("nuclei_custom_templates")
-  nucleiRateLimit             Int      @default(100) @map("nuclei_rate_limit")
+  nucleiCustomTemplates          String[] @default([]) @map("nuclei_custom_templates")
+  nucleiSelectedCustomTemplates  String[] @default([]) @map("nuclei_selected_custom_templates")
+  nucleiRateLimit                Int      @default(100) @map("nuclei_rate_limit")
   nucleiBulkSize              Int      @default(25) @map("nuclei_bulk_size")
   nucleiConcurrency           Int      @default(25) @map("nuclei_concurrency")
   nucleiTimeout               Int      @default(10) @map("nuclei_timeout")
@@ -145,6 +283,30 @@ model Project {
   nucleiInteractsh            Boolean  @default(true) @map("nuclei_interactsh")
   nucleiDockerImage           String   @default("projectdiscovery/nuclei:latest") @map("nuclei_docker_image")
 
+  // ========== SUBDOMAIN TAKEOVER (Subjack + Nuclei takeover templates) ==========
+  subdomainTakeoverEnabled         Boolean  @default(false) @map("subdomain_takeover_enabled")
+  subjackEnabled                   Boolean  @default(true)  @map("subjack_enabled")
+  subjackThreads                   Int      @default(10)    @map("subjack_threads")
+  subjackTimeout                   Int      @default(30)    @map("subjack_timeout")
+  subjackSsl                       Boolean  @default(true)  @map("subjack_ssl")
+  subjackAll                       Boolean  @default(false) @map("subjack_all")
+  subjackCheckNs                   Boolean  @default(false) @map("subjack_check_ns")
+  subjackCheckAr                   Boolean  @default(false) @map("subjack_check_ar")
+  subjackCheckMail                 Boolean  @default(false) @map("subjack_check_mail")
+  subjackRunTimeout                Int      @default(900)   @map("subjack_run_timeout")
+  nucleiTakeoversEnabled           Boolean  @default(true)  @map("nuclei_takeovers_enabled")
+  nucleiTakeoverRunTimeout         Int      @default(1800)  @map("nuclei_takeover_run_timeout")
+  takeoverSeverity                 String[] @default(["critical", "high", "medium"]) @map("takeover_severity")
+  takeoverConfidenceThreshold      Int      @default(60)    @map("takeover_confidence_threshold")
+  takeoverRateLimit                Int      @default(50)    @map("takeover_rate_limit")
+  takeoverManualReviewAutoPublish  Boolean  @default(false) @map("takeover_manual_review_auto_publish")
+  // BadDNS (AGPL-3.0 isolated sidecar — off by default, opt-in)
+  baddnsEnabled                    Boolean  @default(false) @map("baddns_enabled")
+  baddnsDockerImage                String   @default("redamon-baddns:latest") @map("baddns_docker_image")
+  baddnsModules                    String[] @default(["cname", "ns", "mx", "txt", "spf"]) @map("baddns_modules")
+  baddnsNameservers                String[] @default([]) @map("baddns_nameservers")
+  baddnsRunTimeout                 Int      @default(1800) @map("baddns_run_timeout")
+
   // ========== KATANA WEB CRAWLER ==========
   katanaEnabled               Boolean  @default(true) @map("katana_enabled")
   katanaDockerImage           String   @default("projectdiscovery/katana:latest") @map("katana_docker_image")
@@ -157,6 +319,123 @@ model Project {
   katanaExcludePatterns       String[] @default([]) @map("katana_exclude_patterns")
   katanaScope                 String   @default("dn") @map("katana_scope")
   katanaCustomHeaders         String[] @default([]) @map("katana_custom_headers")
+  katanaParallelism           Int      @default(8) @map("katana_parallelism")
+  katanaConcurrency           Int      @default(15) @map("katana_concurrency")
+
+  // ========== HAKRAWLER WEB CRAWLER ==========
+  hakrawlerEnabled            Boolean  @default(true) @map("hakrawler_enabled")
+  hakrawlerDockerImage        String   @default("jauderho/hakrawler:latest") @map("hakrawler_docker_image")
+  hakrawlerDepth              Int      @default(2) @map("hakrawler_depth")
+  hakrawlerThreads            Int      @default(5) @map("hakrawler_threads")
+  hakrawlerTimeout            Int      @default(30) @map("hakrawler_timeout")
+  hakrawlerMaxUrls            Int      @default(500) @map("hakrawler_max_urls")
+  hakrawlerIncludeSubs        Boolean  @default(true) @map("hakrawler_include_subs")
+  hakrawlerInsecure           Boolean  @default(true) @map("hakrawler_insecure")
+  hakrawlerCustomHeaders      String[] @default([]) @map("hakrawler_custom_headers")
+  hakrawlerParallelism        Int      @default(5) @map("hakrawler_parallelism")
+
+  // ========== JSLUICE JS ANALYZER ==========
+  jsluiceEnabled              Boolean  @default(true) @map("jsluice_enabled")
+  jsluiceMaxFiles             Int      @default(100) @map("jsluice_max_files")
+  jsluiceTimeout              Int      @default(300) @map("jsluice_timeout")
+  jsluiceExtractUrls          Boolean  @default(true) @map("jsluice_extract_urls")
+  jsluiceExtractSecrets       Boolean  @default(true) @map("jsluice_extract_secrets")
+  jsluiceConcurrency          Int      @default(5) @map("jsluice_concurrency")
+  jsluiceParallelism          Int      @default(5) @map("jsluice_parallelism")
+
+  // ========== JS RECON SCANNER ==========
+  jsReconEnabled              Boolean  @default(false) @map("js_recon_enabled")
+  jsReconMaxFiles             Int      @default(500)   @map("js_recon_max_files")
+  jsReconTimeout              Int      @default(900)   @map("js_recon_timeout")
+  jsReconConcurrency          Int      @default(10)    @map("js_recon_concurrency")
+  jsReconValidateKeys         Boolean  @default(true)  @map("js_recon_validate_keys")
+  jsReconValidationTimeout    Int      @default(5)     @map("js_recon_validation_timeout")
+  jsReconExtractEndpoints     Boolean  @default(true)  @map("js_recon_extract_endpoints")
+  jsReconRegexPatterns        Boolean  @default(true)  @map("js_recon_regex_patterns")
+  jsReconSourceMaps           Boolean  @default(true)  @map("js_recon_source_maps")
+  jsReconDependencyCheck      Boolean  @default(true)  @map("js_recon_dependency_check")
+  jsReconDomSinks             Boolean  @default(true)  @map("js_recon_dom_sinks")
+  jsReconFrameworkDetect      Boolean  @default(true)  @map("js_recon_framework_detect")
+  jsReconDevComments          Boolean  @default(true)  @map("js_recon_dev_comments")
+  jsReconIncludeChunks        Boolean  @default(true)  @map("js_recon_include_chunks")
+  jsReconIncludeFrameworkJs   Boolean  @default(true)  @map("js_recon_include_framework_js")
+  jsReconIncludeArchivedJs    Boolean  @default(true)  @map("js_recon_include_archived_js")
+  jsReconMinConfidence        String   @default("low") @map("js_recon_min_confidence")
+  jsReconStandaloneCrawlDepth Int      @default(3)     @map("js_recon_standalone_crawl_depth")
+  jsReconStandaloneCrawlScope String   @default("subdomain") @map("js_recon_standalone_crawl_scope")
+  jsReconUploadedFiles        String[] @default([])    @map("js_recon_uploaded_files")
+  jsReconCustomPatterns       String   @default("")    @map("js_recon_custom_patterns")
+  jsReconCustomSourcemapPaths String   @default("")    @map("js_recon_custom_sourcemap_paths")
+  jsReconCustomPackages       String   @default("")    @map("js_recon_custom_packages")
+  jsReconCustomEndpointKeywords String @default("")    @map("js_recon_custom_endpoint_keywords")
+  jsReconCustomFrameworks     String   @default("")    @map("js_recon_custom_frameworks")
+
+  // ========== GRAPHQL SECURITY SCANNER ==========
+  graphqlSecurityEnabled      Boolean  @default(false) @map("graphql_security_enabled")
+  graphqlIntrospectionTest    Boolean  @default(true)  @map("graphql_introspection_test")
+  graphqlTimeout              Int      @default(30)    @map("graphql_timeout")
+  graphqlRateLimit            Int      @default(10)    @map("graphql_rate_limit")
+  graphqlConcurrency          Int      @default(5)     @map("graphql_concurrency")
+  graphqlAuthType             String   @default("")    @map("graphql_auth_type")
+  graphqlAuthValue            String   @default("")    @map("graphql_auth_value")
+  graphqlAuthHeader           String   @default("")    @map("graphql_auth_header")
+  graphqlEndpoints            String   @default("")    @map("graphql_endpoints")
+  graphqlDepthLimit           Int      @default(10)    @map("graphql_depth_limit")
+  graphqlRetryCount           Int      @default(3)     @map("graphql_retry_count")
+  graphqlRetryBackoff         Float    @default(2.0)   @map("graphql_retry_backoff")
+  graphqlVerifySsl            Boolean  @default(true)  @map("graphql_verify_ssl")
+
+  // ========== GRAPHQL COP (external misconfig scanner) ==========
+  graphqlCopEnabled                   Boolean @default(false) @map("graphql_cop_enabled")
+  graphqlCopDockerImage               String  @default("dolevf/graphql-cop:1.14") @map("graphql_cop_docker_image")
+  graphqlCopTimeout                   Int     @default(120)   @map("graphql_cop_timeout")
+  graphqlCopForceScan                 Boolean @default(false) @map("graphql_cop_force_scan")
+  graphqlCopDebug                     Boolean @default(false) @map("graphql_cop_debug")
+  graphqlCopTestFieldSuggestions      Boolean @default(true)  @map("graphql_cop_test_field_suggestions")
+  graphqlCopTestIntrospection         Boolean @default(false) @map("graphql_cop_test_introspection")
+  graphqlCopTestGraphiql              Boolean @default(true)  @map("graphql_cop_test_graphiql")
+  graphqlCopTestGetMethod             Boolean @default(true)  @map("graphql_cop_test_get_method")
+  graphqlCopTestAliasOverloading      Boolean @default(true)  @map("graphql_cop_test_alias_overloading")
+  graphqlCopTestBatchQuery            Boolean @default(true)  @map("graphql_cop_test_batch_query")
+  graphqlCopTestTraceMode             Boolean @default(true)  @map("graphql_cop_test_trace_mode")
+  graphqlCopTestDirectiveOverloading  Boolean @default(true)  @map("graphql_cop_test_directive_overloading")
+  graphqlCopTestCircularIntrospection Boolean @default(true)  @map("graphql_cop_test_circular_introspection")
+  graphqlCopTestGetMutation           Boolean @default(true)  @map("graphql_cop_test_get_mutation")
+  graphqlCopTestPostCsrf              Boolean @default(true)  @map("graphql_cop_test_post_csrf")
+  graphqlCopTestUnhandledError        Boolean @default(true)  @map("graphql_cop_test_unhandled_error")
+
+  // ========== FFUF DIRECTORY FUZZER ==========
+  ffufEnabled                 Boolean  @default(false) @map("ffuf_enabled")
+  ffufWordlist                String   @default("/usr/share/seclists/Discovery/Web-Content/common.txt") @map("ffuf_wordlist")
+  ffufThreads                 Int      @default(40) @map("ffuf_threads")
+  ffufRate                    Int      @default(0) @map("ffuf_rate")
+  ffufTimeout                 Int      @default(10) @map("ffuf_timeout")
+  ffufMaxTime                 Int      @default(600) @map("ffuf_max_time")
+  ffufMatchCodes              Int[]    @default([200, 201, 204, 301, 302, 307, 308, 401, 403, 405]) @map("ffuf_match_codes")
+  ffufFilterCodes             Int[]    @default([]) @map("ffuf_filter_codes")
+  ffufFilterSize              String   @default("") @map("ffuf_filter_size")
+  ffufExtensions              String[] @default([]) @map("ffuf_extensions")
+  ffufRecursion               Boolean  @default(false) @map("ffuf_recursion")
+  ffufRecursionDepth          Int      @default(2) @map("ffuf_recursion_depth")
+  ffufAutoCalibrate           Boolean  @default(true) @map("ffuf_auto_calibrate")
+  ffufFollowRedirects         Boolean  @default(false) @map("ffuf_follow_redirects")
+  ffufCustomHeaders           String[] @default([]) @map("ffuf_custom_headers")
+  ffufSmartFuzz               Boolean  @default(true) @map("ffuf_smart_fuzz")
+  ffufParallelism             Int      @default(4) @map("ffuf_parallelism")
+
+  // ========== ARJUN PARAMETER DISCOVERY ==========
+  arjunEnabled                Boolean  @default(true) @map("arjun_enabled")
+  arjunThreads                Int      @default(2) @map("arjun_threads")
+  arjunTimeout                Int      @default(15) @map("arjun_timeout")
+  arjunScanTimeout            Int      @default(600) @map("arjun_scan_timeout")
+  arjunMethods                String[] @default(["GET", "POST"]) @map("arjun_methods")
+  arjunMaxEndpoints           Int      @default(50) @map("arjun_max_endpoints")
+  arjunChunkSize              Int      @default(500) @map("arjun_chunk_size")
+  arjunRateLimit              Int      @default(0) @map("arjun_rate_limit")
+  arjunStable                 Boolean  @default(false) @map("arjun_stable")
+  arjunPassive                Boolean  @default(false) @map("arjun_passive")
+  arjunDisableRedirects       Boolean  @default(false) @map("arjun_disable_redirects")
+  arjunCustomHeaders          String[] @default([]) @map("arjun_custom_headers")
 
   // ========== GAU PASSIVE URL DISCOVERY ==========
   gauEnabled                  Boolean  @default(false) @map("gau_enabled")
@@ -179,9 +458,16 @@ model Project {
   gauMethodDetectRateLimit    Int      @default(50) @map("gau_method_detect_rate_limit")
   gauMethodDetectThreads      Int      @default(25) @map("gau_method_detect_threads")
   gauFilterDeadEndpoints      Boolean  @default(true) @map("gau_filter_dead_endpoints")
+  gauWorkers                  Int      @default(10) @map("gau_workers")
+
+  // ========== PARAMSPIDER PASSIVE PARAMETER DISCOVERY ==========
+  paramspiderEnabled          Boolean  @default(false) @map("paramspider_enabled")
+  paramspiderPlaceholder      String   @default("FUZZ") @map("paramspider_placeholder")
+  paramspiderTimeout          Int      @default(120) @map("paramspider_timeout")
+  paramspiderWorkers          Int      @default(8) @map("paramspider_workers")
 
   // ========== KITERUNNER API DISCOVERY ==========
-  kiterunnerEnabled           Boolean  @default(true) @map("kiterunner_enabled")
+  kiterunnerEnabled           Boolean  @default(false) @map("kiterunner_enabled")
   kiterunnerWordlists         String[] @default(["routes-large"]) @map("kiterunner_wordlists")
   kiterunnerRateLimit         Int      @default(100) @map("kiterunner_rate_limit")
   kiterunnerConnections       Int      @default(100) @map("kiterunner_connections")
@@ -198,16 +484,16 @@ model Project {
   kiterunnerMethodDetectTimeout Int    @default(5) @map("kiterunner_method_detect_timeout")
   kiterunnerMethodDetectRateLimit Int  @default(50) @map("kiterunner_method_detect_rate_limit")
   kiterunnerMethodDetectThreads Int    @default(25) @map("kiterunner_method_detect_threads")
+  kiterunnerParallelism       Int      @default(3) @map("kiterunner_parallelism")
 
   // ========== CVE LOOKUP ==========
   cveLookupEnabled            Boolean  @default(true) @map("cve_lookup_enabled")
   cveLookupSource             String   @default("nvd") @map("cve_lookup_source")
   cveLookupMaxCves            Int      @default(20) @map("cve_lookup_max_cves")
   cveLookupMinCvss            Float    @default(0.0) @map("cve_lookup_min_cvss")
-  vulnersApiKey               String   @default("") @map("vulners_api_key")
-  nvdApiKey                   String   @default("") @map("nvd_api_key")
 
   // ========== MITRE CWE/CAPEC ENRICHMENT ==========
+  mitreEnabled                Boolean  @default(true)  @map("mitre_enabled")
   mitreAutoUpdateDb           Boolean  @default(true) @map("mitre_auto_update_db")
   mitreIncludeCwe             Boolean  @default(true) @map("mitre_include_cwe")
   mitreIncludeCapec           Boolean  @default(true) @map("mitre_include_capec")
@@ -272,15 +558,32 @@ model Project {
   agentExecutionTraceMemorySteps        Int      @default(100) @map("agent_execution_trace_memory_steps")
   agentRequireApprovalForExploitation   Boolean  @default(true) @map("agent_require_approval_for_exploitation")
   agentRequireApprovalForPostExploitation Boolean @default(true) @map("agent_require_approval_for_post_exploitation")
+  agentRequireToolConfirmation           Boolean  @default(true) @map("agent_require_tool_confirmation")
   agentToolOutputMaxChars               Int      @default(20000) @map("agent_tool_output_max_chars")
+  agentPlanMaxParallelTools             Int      @default(10) @map("agent_plan_max_parallel_tools")
   agentCypherMaxRetries                 Int      @default(3) @map("agent_cypher_max_retries")
   agentLlmParseMaxRetries               Int      @default(3) @map("agent_llm_parse_max_retries")
+  agentDeepThinkEnabled                 Boolean  @default(true) @map("agent_deep_think_enabled")
   agentCreateGraphImageOnInit           Boolean  @default(false) @map("agent_create_graph_image_on_init")
   agentLogMaxMb                         Int      @default(10) @map("agent_log_max_mb")
   agentLogBackupCount                   Int      @default(5) @map("agent_log_backup_count")
-  agentToolPhaseMap                     Json     @default("{\"query_graph\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"web_search\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_curl\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_naabu\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_nmap\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_nuclei\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"kali_shell\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_code\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_hydra\":[\"exploitation\",\"post_exploitation\"],\"metasploit_console\":[\"exploitation\",\"post_exploitation\"],\"msf_restart\":[\"exploitation\",\"post_exploitation\"]}") @map("agent_tool_phase_map")
+  agentToolPhaseMap                     Json     @default("{\"query_graph\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"web_search\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"shodan\":[\"informational\",\"exploitation\"],\"google_dork\":[\"informational\"],\"execute_curl\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_naabu\":[\"informational\",\"exploitation\"],\"execute_httpx\":[\"informational\",\"exploitation\"],\"execute_subfinder\":[\"informational\",\"exploitation\"],\"execute_wpscan\":[\"informational\",\"exploitation\"],\"execute_jsluice\":[\"informational\",\"exploitation\"],\"execute_amass\":[\"informational\",\"exploitation\"],\"execute_katana\":[\"informational\",\"exploitation\"],\"execute_arjun\":[\"informational\",\"exploitation\"],\"execute_ffuf\":[\"informational\",\"exploitation\"],\"execute_gau\":[\"informational\",\"exploitation\"],\"execute_nmap\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_nuclei\":[\"informational\",\"exploitation\"],\"kali_shell\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_code\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_playwright\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_hydra\":[\"exploitation\",\"post_exploitation\"],\"metasploit_console\":[\"exploitation\",\"post_exploitation\"],\"msf_restart\":[\"exploitation\",\"post_exploitation\"]}") @map("agent_tool_phase_map")
+  agentKaliInstallEnabled               Boolean  @default(false) @map("agent_kali_install_enabled")
+  agentKaliInstallAllowedPackages       String   @default("") @map("agent_kali_install_allowed_packages")
+  agentKaliInstallForbiddenPackages     String   @default("") @map("agent_kali_install_forbidden_packages")
   agentBruteForceMaxWordlistAttempts    Int      @default(3) @map("agent_brute_force_max_wordlist_attempts")
   agentBruteforceSpeed                  Int      @default(5) @map("agent_bruteforce_speed")
+  agentGuardrailEnabled                 Boolean  @default(true) @map("agent_guardrail_enabled")
+
+  // Fireteam (multi-agent) Settings
+  fireteamEnabled                       Boolean  @default(true)            @map("fireteam_enabled")
+  fireteamMaxConcurrent                 Int      @default(5)               @map("fireteam_max_concurrent")
+  fireteamMaxMembers                    Int      @default(5)               @map("fireteam_max_members")
+  fireteamMemberMaxIterations           Int      @default(20)              @map("fireteam_member_max_iterations")
+  fireteamTimeoutSec                    Int      @default(3600)            @map("fireteam_timeout_sec")
+  fireteamAllowedPhases                 String[] @default(["informational", "exploitation", "post_exploitation"]) @map("fireteam_allowed_phases")
+  fireteamConfirmationTimeoutSec        Int      @default(600)             @map("fireteam_confirmation_timeout_sec")
+  fireteamPropensity                    Int      @default(3)               @map("fireteam_propensity")
 
   // Hydra Brute Force Settings
   hydraEnabled                          Boolean  @default(true) @map("hydra_enabled")
@@ -292,8 +595,90 @@ model Project {
   hydraVerbose                          Boolean  @default(true) @map("hydra_verbose")
   hydraMaxWordlistAttempts              Int      @default(3) @map("hydra_max_wordlist_attempts")
 
+  // Shodan OSINT Settings (agent tool toggle — kept separate from pipeline features)
+  shodanEnabled                         Boolean  @default(true) @map("shodan_enabled")
+
+  // Shodan Pipeline Enrichment (per-feature toggles, gated by global API key)
+  shodanHostLookup                      Boolean  @default(true)  @map("shodan_host_lookup")
+  shodanReverseDns                      Boolean  @default(true)  @map("shodan_reverse_dns")
+  shodanDomainDns                       Boolean  @default(false) @map("shodan_domain_dns")
+  shodanPassiveCves                     Boolean  @default(true)  @map("shodan_passive_cves")
+  shodanWorkers                         Int      @default(5) @map("shodan_workers")
+
+  // URLScan.io Passive Enrichment
+  urlscanEnabled                        Boolean  @default(true)  @map("urlscan_enabled")
+  urlscanMaxResults                     Int      @default(5000)  @map("urlscan_max_results")
+
+  // OSINT & Threat Intelligence Master Switch
+  osintEnrichmentEnabled                Boolean  @default(false) @map("osint_enrichment_enabled")
+
+  // OSINT & Threat Intelligence Pipeline Enrichment
+  censysEnabled                         Boolean  @default(false)  @map("censys_enabled_recon")
+  fofaEnabled                           Boolean  @default(false)  @map("fofa_enabled")
+  fofaMaxResults                        Int      @default(1000)   @map("fofa_max_results")
+  otxEnabled                            Boolean  @default(true)   @map("otx_enabled")
+  netlasEnabled                         Boolean  @default(false)  @map("netlas_enabled")
+  virusTotalEnabled                     Boolean  @default(false)  @map("virustotal_enabled")
+  zoomEyeEnabled                        Boolean  @default(false)  @map("zoomeye_enabled")
+  zoomEyeMaxResults                     Int      @default(1000)   @map("zoomeye_max_results")
+  criminalIpEnabled                     Boolean  @default(false)  @map("criminalip_enabled")
+  // OSINT Enrichment Parallelism
+  otxWorkers                            Int      @default(5) @map("otx_workers")
+  virusTotalWorkers                     Int      @default(3) @map("virustotal_workers")
+  censysWorkers                         Int      @default(5) @map("censys_workers")
+  criminalIpWorkers                     Int      @default(5) @map("criminalip_workers")
+  fofaWorkers                           Int      @default(5) @map("fofa_workers")
+  netlasWorkers                         Int      @default(5) @map("netlas_workers")
+  zoomEyeWorkers                        Int      @default(5) @map("zoomeye_workers")
+  uncoverEnabled                        Boolean  @default(false)  @map("uncover_enabled")
+  uncoverMaxResults                     Int      @default(500)    @map("uncover_max_results")
+  uncoverDockerImage                    String   @default("projectdiscovery/uncover:latest") @map("uncover_docker_image")
+
+  // Subdomain Discovery Master Switch
+  subdomainDiscoveryEnabled             Boolean  @default(true)  @map("subdomain_discovery_enabled")
+
+  // Subdomain Discovery Tool Toggles
+  crtshEnabled                          Boolean  @default(true)  @map("crtsh_enabled")
+  crtshMaxResults                       Int      @default(5000)  @map("crtsh_max_results")
+  hackerTargetEnabled                   Boolean  @default(true)  @map("hacker_target_enabled")
+  hackerTargetMaxResults                Int      @default(5000)  @map("hacker_target_max_results")
+  knockpyReconEnabled                   Boolean  @default(true)  @map("knockpy_recon_enabled")
+  knockpyReconMaxResults                Int      @default(5000)  @map("knockpy_recon_max_results")
+  subfinderEnabled                      Boolean  @default(true)  @map("subfinder_enabled")
+  subfinderMaxResults                   Int      @default(5000)  @map("subfinder_max_results")
+  subfinderDockerImage                  String   @default("projectdiscovery/subfinder:latest") @map("subfinder_docker_image")
+  amassEnabled                          Boolean  @default(true) @map("amass_enabled")
+  amassMaxResults                       Int      @default(5000)  @map("amass_max_results")
+  amassTimeout                          Int      @default(10)    @map("amass_timeout")
+  amassActive                           Boolean  @default(true) @map("amass_active")
+  amassBrute                            Boolean  @default(false) @map("amass_brute")
+  amassBruteWordlists                  Json     @default("[\"default\"]") @map("amass_brute_wordlists")
+  amassDockerImage                      String   @default("caffix/amass:latest") @map("amass_docker_image")
+
+  // Puredns (wildcard filtering)
+  purednsEnabled                        Boolean  @default(true)  @map("puredns_enabled")
+  purednsDockerImage                    String   @default("frost19k/puredns:latest") @map("puredns_docker_image")
+  purednsThreads                        Int      @default(0)     @map("puredns_threads")
+  purednsRateLimit                      Int      @default(0)     @map("puredns_rate_limit")
+  purednsWildcardBatch                  Int      @default(0)     @map("puredns_wildcard_batch")
+  purednsSkipValidation                 Boolean  @default(false) @map("puredns_skip_validation")
+
   // ========== PHISHING / SOCIAL ENGINEERING SETTINGS ==========
   phishingSmtpConfig                    String   @default("") @map("phishing_smtp_config")
+
+  // ========== DENIAL OF SERVICE SETTINGS ==========
+  dosMaxDuration                        Int      @default(60) @map("dos_max_duration")
+  dosMaxAttempts                        Int      @default(3) @map("dos_max_attempts")
+  dosConcurrentConnections              Int      @default(1000) @map("dos_concurrent_connections")
+  dosAssessmentOnly                     Boolean  @default(false) @map("dos_assessment_only")
+
+  // ========== SQL INJECTION SETTINGS ==========
+  sqliLevel                             Int      @default(1) @map("sqli_level")
+  sqliRisk                              Int      @default(1) @map("sqli_risk")
+  sqliTamperScripts                     String   @default("") @map("sqli_tamper_scripts")
+
+  // ========== ATTACK SKILL CONFIG ==========
+  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true},\"user\":{}}") @map("attack_skill_config")
 
   // ========== CYPHERFIX SETTINGS ==========
   cypherfixGithubToken              String   @default("") @map("cypherfix_github_token")
@@ -382,9 +767,11 @@ model Conversation {
   agentRunning   Boolean       @default(false) @map("agent_running")
   currentPhase   String        @default("informational") @map("current_phase")
   iterationCount Int           @default(0) @map("iteration_count")
+  activeSkillId  String        @default("") @map("active_skill_id")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
   messages       ChatMessage[]
+  fireteams      Fireteam[]
 
   @@index([projectId, userId])
   @@map("conversations")
@@ -397,10 +784,74 @@ model ChatMessage {
   sequenceNum    Int          @map("sequence_num")
   type           String
   data           Json
+  memberIdKey    String?      @map("member_id_key")
+  fireteamIdKey  String?      @map("fireteam_id_key")
   createdAt      DateTime     @default(now()) @map("created_at")
 
   @@index([conversationId, sequenceNum])
+  @@index([fireteamIdKey])
+  @@index([memberIdKey])
   @@map("chat_messages")
+}
+
+model Fireteam {
+  id                   String           @id @default(cuid())
+  parentConversationId String           @map("parent_conversation_id")
+  parentConversation   Conversation     @relation(fields: [parentConversationId], references: [id], onDelete: Cascade)
+  parentSessionId      String           @map("parent_session_id")
+  fireteamIdKey        String           @unique @map("fireteam_id_key")
+  fireteamNumber       Int              @map("fireteam_number")
+  iteration            Int
+  status               String           @default("pending")
+  memberCount          Int              @map("member_count")
+  planRationale        String?          @map("plan_rationale") @db.Text
+  statusCounts         Json?            @map("status_counts")
+  wallClockSeconds     Float?           @map("wall_clock_seconds")
+  startedAt            DateTime         @default(now()) @map("started_at")
+  completedAt          DateTime?        @map("completed_at")
+  members              FireteamMember[]
+
+  @@index([parentConversationId, fireteamNumber])
+  @@index([parentSessionId])
+  @@map("fireteams")
+}
+
+model FireteamSettingsAudit {
+  id         String   @id @default(cuid())
+  projectId  String   @map("project_id")
+  userId     String?  @map("user_id")
+  field      String                                  // e.g. "fireteamEnabled", "fireteamMaxConcurrent"
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  source     String   @default("api")                // "api" | "ui" | "import" | "admin"
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, createdAt])
+  @@index([field])
+  @@map("fireteam_settings_audit")
+}
+
+model FireteamMember {
+  id               String    @id @default(cuid())
+  fireteamId       String    @map("fireteam_id")
+  fireteam         Fireteam  @relation(fields: [fireteamId], references: [id], onDelete: Cascade)
+  memberIdKey      String    @unique @map("member_id_key")
+  name             String
+  task             String    @db.Text
+  skills           String[]
+  status           String    @default("running")
+  completionReason String?   @map("completion_reason")
+  iterationsUsed   Int       @default(0) @map("iterations_used")
+  tokensUsed       Int       @default(0) @map("tokens_used")
+  findingsCount    Int       @default(0) @map("findings_count")
+  wallClockSeconds Float?    @map("wall_clock_seconds")
+  errorMessage     String?   @map("error_message") @db.Text
+  resultBlob       Json?     @map("result_blob")
+  startedAt        DateTime  @default(now()) @map("started_at")
+  completedAt      DateTime? @map("completed_at")
+
+  @@index([fireteamId])
+  @@map("fireteam_members")
 }
 
 model Remediation {
@@ -471,4 +922,61 @@ model Report {
 
   @@index([projectId, createdAt])
   @@map("reports")
+}
+
+model UserAttackSkill {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?  @db.Text
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("user_attack_skills")
+}
+
+model UserChatSkill {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?  @db.Text
+  category    String   @default("general")
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("user_chat_skills")
+}
+
+model GraphView {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  description String   @default("")
+  cypherQuery String   @map("cypher_query") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([projectId])
+  @@map("graph_views")
+}
+
+model UserProjectPreset {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String   @default("") @db.Text
+  settings    Json
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("user_project_presets")
 }

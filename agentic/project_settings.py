@@ -13,6 +13,27 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
+
+# =============================================================================
+# DANGEROUS TOOLS — require manual confirmation before execution
+# =============================================================================
+DANGEROUS_TOOLS = frozenset({
+    'execute_nmap', 'execute_naabu', 'execute_nuclei', 'execute_curl',
+    'execute_httpx', 'msf_restart', 'kali_shell', 'metasploit_console',
+    'execute_code', 'execute_hydra', 'execute_playwright', 'execute_wpscan',
+    'execute_arjun', 'execute_ffuf', 'execute_amass', 'execute_gau',
+    'execute_katana',
+})
+
+# =============================================================================
+# FIRETEAM MUTEX GROUPS — tools with singleton state inside Kali sandbox
+# Two fireteam members cannot concurrently claim the same group.
+# =============================================================================
+TOOL_MUTEX_GROUPS = {
+    'metasploit': frozenset({'metasploit_console', 'msf_restart'}),
+}
+
 # =============================================================================
 # DEFAULT SETTINGS - Used as fallback for standalone usage and missing API fields
 # =============================================================================
@@ -26,6 +47,20 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
 
     # Stealth Mode
     'STEALTH_MODE': False,
+
+    # Agent Guardrail
+    'AGENT_GUARDRAIL_ENABLED': True,
+
+    # Fireteam (multi-agent deployment). Gated by PERSISTENT_CHECKPOINTER=true.
+    'PERSISTENT_CHECKPOINTER': True,             # master prerequisite for FIRETEAM_ENABLED
+    'FIRETEAM_ENABLED': True,                    # master switch, maps from Project.fireteamEnabled
+    'FIRETEAM_MAX_CONCURRENT': 5,                # asyncio.Semaphore permits
+    'FIRETEAM_MAX_MEMBERS': 5,                   # hard cap on members per fireteam
+    'FIRETEAM_MEMBER_MAX_ITERATIONS': 20,        # per-member ReAct iteration budget
+    'FIRETEAM_TIMEOUT_SEC': 3600,                  # wall-clock per fireteam (raised to accommodate 30-min tool timeouts)
+    'FIRETEAM_ALLOWED_PHASES': ['informational', 'exploitation', 'post_exploitation'],
+    'FIRETEAM_CONFIRMATION_TIMEOUT_SEC': 600,    # how long a member waits for operator approval before auto-rejecting
+    'FIRETEAM_PROPENSITY': 3,                    # 1-5 scalar: how strongly LLM is pushed to deploy fireteams (3=baseline, 1=reluctant, 5=aggressive)
 
     # Phase Configuration
     'ACTIVATE_POST_EXPL_PHASE': True,
@@ -43,16 +78,42 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'MAX_ITERATIONS': 100,
     'EXECUTION_TRACE_MEMORY_STEPS': 100,
     'TOOL_OUTPUT_MAX_CHARS': 20000,
+    # Cap on concurrent tools inside ONE plan_tools wave. Applies to both the
+    # root agent and every fireteam member because both paths execute through
+    # execute_plan_node. Semaphore semantics: a 20-step plan with cap=10 runs
+    # the first 10 immediately and queues the other 10 on the semaphore, so
+    # no tool is dropped. Primary purpose: prevent SSE head-of-line blocking
+    # on the MCP kali-sandbox stream (which tripped sse_read_timeout under
+    # heavy fan-out and forced agent-container restarts pre-reconnect-fix).
+    'PLAN_MAX_PARALLEL_TOOLS': 10,
 
     # Approval Gates
     'REQUIRE_APPROVAL_FOR_EXPLOITATION': True,
     'REQUIRE_APPROVAL_FOR_POST_EXPLOITATION': True,
+    'REQUIRE_TOOL_CONFIRMATION': True,
 
     # Neo4j
     'CYPHER_MAX_RETRIES': 3,
 
     # LLM Parse Retry
     'LLM_PARSE_MAX_RETRIES': 3,
+
+    # Knowledge Base
+    # Precedence for KB_* keys with a kb_config.yaml equivalent: 
+    # webapp API settings (when configured; TBD) → kb_config.yaml value → kb_config.py DEFAULTS dict.
+    # "None" preserves whatever the YAML loaded at construction time.
+    'KB_ENABLED': None,            # None = inherit from kb_config.yaml (KB_ENABLED top-level)
+    'KB_SCORE_THRESHOLD': None,    # None = inherit from retrieval.score_threshold
+    'KB_TOP_K': None,              # None = inherit from retrieval.top_k
+    'KB_FALLBACK_TO_WEB': True,    # Agent-level, no yaml equivalent
+    'KB_ENABLED_SOURCES': None,    # Project-wide allowlist: None = all sources; list to restrict
+    'KB_MMR_ENABLED': None,        # None = inherit from mmr.enabled
+    'KB_MMR_LAMBDA': None,         # None = inherit from mmr.lambda
+    'KB_OVERFETCH_FACTOR': None,   # None = inherit from retrieval.overfetch_factor
+    'KB_SOURCE_BOOSTS': None,      # None = inherit from source_boosts block; dict = merge overrides
+
+    # Deep Think (Strategic Reasoning)
+    'DEEP_THINK_ENABLED': True,
 
     # Debug
     'CREATE_GRAPH_IMAGE_ON_INIT': False,
@@ -65,18 +126,35 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'TOOL_PHASE_MAP': {
         'query_graph': ['informational', 'exploitation', 'post_exploitation'],
         'execute_curl': ['informational', 'exploitation', 'post_exploitation'],
-        'execute_naabu': ['informational', 'exploitation', 'post_exploitation'],
+        'execute_naabu': ['informational', 'exploitation'],
+        'execute_httpx': ['informational', 'exploitation'],
+        'execute_subfinder': ['informational', 'exploitation'],
+        'execute_wpscan': ['informational', 'exploitation'],
+        'execute_jsluice': ['informational', 'exploitation'],
+        'execute_amass': ['informational', 'exploitation'],
+        'execute_arjun': ['informational', 'exploitation'],
+        'execute_ffuf': ['informational', 'exploitation'],
+        'execute_gau': ['informational', 'exploitation'],
+        'execute_katana': ['informational', 'exploitation'],
         'execute_nmap': ['informational', 'exploitation', 'post_exploitation'],
-        'execute_nuclei': ['informational', 'exploitation', 'post_exploitation'],
+        'execute_nuclei': ['informational', 'exploitation'],
         'kali_shell': ['informational', 'exploitation', 'post_exploitation'],
         'execute_code': ['informational', 'exploitation', 'post_exploitation'],
+        'execute_playwright': ['informational', 'exploitation', 'post_exploitation'],
         'execute_hydra': ['exploitation', 'post_exploitation'],
         'metasploit_console': ['exploitation', 'post_exploitation'],
         'msf_restart': ['exploitation', 'post_exploitation'],
         'web_search': ['informational', 'exploitation', 'post_exploitation'],
+        'shodan': ['informational', 'exploitation'],
+        'google_dork': ['informational'],
     },
 
-    # Hydra Brute Force
+    # Kali Shell Library Installation
+    'KALI_INSTALL_ENABLED': False,
+    'KALI_INSTALL_ALLOWED_PACKAGES': '',
+    'KALI_INSTALL_FORBIDDEN_PACKAGES': '',
+
+    # Hydra Credential Testing
     'HYDRA_ENABLED': True,
     'HYDRA_THREADS': 16,
     'HYDRA_WAIT_BETWEEN_CONNECTIONS': 0,
@@ -86,8 +164,41 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'HYDRA_VERBOSE': True,
     'HYDRA_MAX_WORDLIST_ATTEMPTS': 3,
 
-    # Phishing / Social Engineering
+    # Shodan OSINT
+    'SHODAN_ENABLED': True,
+
+    # Social Engineering Simulation
     'PHISHING_SMTP_CONFIG': '',  # Free-text SMTP config for phishing email delivery (optional)
+
+    # Availability Testing
+    'DOS_MAX_DURATION': 60,             # Max seconds per DoS attempt
+    'DOS_MAX_ATTEMPTS': 3,              # Max different vectors to try
+    'DOS_CONCURRENT_CONNECTIONS': 1000, # Connections for app-layer DoS (slowloris etc.)
+    'DOS_ASSESSMENT_ONLY': False,       # True = only check vulnerability, don't attack
+
+    # SQL Injection Testing
+    'SQLI_LEVEL': 1,                    # sqlmap --level (1-5, higher = more payloads/injection points)
+    'SQLI_RISK': 1,                     # sqlmap --risk (1-3, higher = more aggressive tests)
+    'SQLI_TAMPER_SCRIPTS': '',          # Comma-separated tamper scripts (e.g., "space2comment,randomcase")
+
+    # XSS Testing
+    'XSS_DALFOX_ENABLED': True,           # Allow dalfox automated WAF evasion when manual payloads fail
+    'XSS_BLIND_CALLBACK_ENABLED': False,  # Allow interactsh-based blind XSS callbacks (sends data OOB to oast.fun)
+    'XSS_CSP_BYPASS_ENABLED': True,       # Include CSP bypass guidance in the workflow prompt
+
+    # Attack Skill Configuration
+    'ATTACK_SKILL_CONFIG': {
+        'builtIn': {
+            'cve_exploit': True,
+            'brute_force_credential_guess': False,
+            'phishing_social_engineering': False,
+            'denial_of_service': False,
+            'sql_injection': True,
+            'xss': True,
+        },
+        'user': {},
+    },
+    'USER_ATTACK_SKILLS': [],  # Populated from DB when user skills are enabled
 
     # Legacy (deprecated — kept for backward compat)
     'BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS': 3,
@@ -146,10 +257,10 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     """
     import requests
 
-    url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}"
+    url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}?includeSkillContent=true"
     logger.info(f"Fetching agent settings from {url}")
 
-    response = requests.get(url, timeout=30)
+    response = requests.get(url, headers=INTERNAL_HEADERS, timeout=30)
     response.raise_for_status()
     project = response.json()
 
@@ -173,15 +284,21 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['EXECUTION_TRACE_MEMORY_STEPS'] = project.get('agentExecutionTraceMemorySteps', DEFAULT_AGENT_SETTINGS['EXECUTION_TRACE_MEMORY_STEPS'])
     settings['REQUIRE_APPROVAL_FOR_EXPLOITATION'] = project.get('agentRequireApprovalForExploitation', DEFAULT_AGENT_SETTINGS['REQUIRE_APPROVAL_FOR_EXPLOITATION'])
     settings['REQUIRE_APPROVAL_FOR_POST_EXPLOITATION'] = project.get('agentRequireApprovalForPostExploitation', DEFAULT_AGENT_SETTINGS['REQUIRE_APPROVAL_FOR_POST_EXPLOITATION'])
+    settings['REQUIRE_TOOL_CONFIRMATION'] = project.get('agentRequireToolConfirmation', DEFAULT_AGENT_SETTINGS['REQUIRE_TOOL_CONFIRMATION'])
     settings['TOOL_OUTPUT_MAX_CHARS'] = project.get('agentToolOutputMaxChars', DEFAULT_AGENT_SETTINGS['TOOL_OUTPUT_MAX_CHARS'])
+    settings['PLAN_MAX_PARALLEL_TOOLS'] = int(project.get('agentPlanMaxParallelTools', DEFAULT_AGENT_SETTINGS['PLAN_MAX_PARALLEL_TOOLS']))
     settings['CYPHER_MAX_RETRIES'] = project.get('agentCypherMaxRetries', DEFAULT_AGENT_SETTINGS['CYPHER_MAX_RETRIES'])
     settings['LLM_PARSE_MAX_RETRIES'] = project.get('agentLlmParseMaxRetries', DEFAULT_AGENT_SETTINGS['LLM_PARSE_MAX_RETRIES'])
+    settings['DEEP_THINK_ENABLED'] = project.get('agentDeepThinkEnabled', DEFAULT_AGENT_SETTINGS['DEEP_THINK_ENABLED'])
     settings['CREATE_GRAPH_IMAGE_ON_INIT'] = project.get('agentCreateGraphImageOnInit', DEFAULT_AGENT_SETTINGS['CREATE_GRAPH_IMAGE_ON_INIT'])
     settings['LOG_MAX_MB'] = project.get('agentLogMaxMb', DEFAULT_AGENT_SETTINGS['LOG_MAX_MB'])
     settings['LOG_BACKUP_COUNT'] = project.get('agentLogBackupCount', DEFAULT_AGENT_SETTINGS['LOG_BACKUP_COUNT'])
     settings['TOOL_PHASE_MAP'] = project.get('agentToolPhaseMap', DEFAULT_AGENT_SETTINGS['TOOL_PHASE_MAP'])
     settings['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'] = project.get('agentBruteForceMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'])
     settings['BRUTEFORCE_SPEED'] = project.get('agentBruteforceSpeed', DEFAULT_AGENT_SETTINGS['BRUTEFORCE_SPEED'])
+    settings['KALI_INSTALL_ENABLED'] = project.get('agentKaliInstallEnabled', DEFAULT_AGENT_SETTINGS['KALI_INSTALL_ENABLED'])
+    settings['KALI_INSTALL_ALLOWED_PACKAGES'] = project.get('agentKaliInstallAllowedPackages', DEFAULT_AGENT_SETTINGS['KALI_INSTALL_ALLOWED_PACKAGES'])
+    settings['KALI_INSTALL_FORBIDDEN_PACKAGES'] = project.get('agentKaliInstallForbiddenPackages', DEFAULT_AGENT_SETTINGS['KALI_INSTALL_FORBIDDEN_PACKAGES'])
     settings['HYDRA_ENABLED'] = project.get('hydraEnabled', DEFAULT_AGENT_SETTINGS['HYDRA_ENABLED'])
     settings['HYDRA_THREADS'] = project.get('hydraThreads', DEFAULT_AGENT_SETTINGS['HYDRA_THREADS'])
     settings['HYDRA_WAIT_BETWEEN_CONNECTIONS'] = project.get('hydraWaitBetweenConnections', DEFAULT_AGENT_SETTINGS['HYDRA_WAIT_BETWEEN_CONNECTIONS'])
@@ -190,8 +307,25 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['HYDRA_EXTRA_CHECKS'] = project.get('hydraExtraChecks', DEFAULT_AGENT_SETTINGS['HYDRA_EXTRA_CHECKS'])
     settings['HYDRA_VERBOSE'] = project.get('hydraVerbose', DEFAULT_AGENT_SETTINGS['HYDRA_VERBOSE'])
     settings['HYDRA_MAX_WORDLIST_ATTEMPTS'] = project.get('hydraMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['HYDRA_MAX_WORDLIST_ATTEMPTS'])
+    settings['SHODAN_ENABLED'] = project.get('shodanEnabled', DEFAULT_AGENT_SETTINGS['SHODAN_ENABLED'])
     settings['STEALTH_MODE'] = project.get('stealthMode', DEFAULT_AGENT_SETTINGS['STEALTH_MODE'])
+    settings['AGENT_GUARDRAIL_ENABLED'] = project.get('agentGuardrailEnabled', DEFAULT_AGENT_SETTINGS['AGENT_GUARDRAIL_ENABLED'])
+    # Fireteam (multi-agent)
+    settings['FIRETEAM_ENABLED'] = bool(project.get('fireteamEnabled', DEFAULT_AGENT_SETTINGS['FIRETEAM_ENABLED']))
+    settings['FIRETEAM_MAX_CONCURRENT'] = int(project.get('fireteamMaxConcurrent', DEFAULT_AGENT_SETTINGS['FIRETEAM_MAX_CONCURRENT']))
+    settings['FIRETEAM_MAX_MEMBERS'] = int(project.get('fireteamMaxMembers', DEFAULT_AGENT_SETTINGS['FIRETEAM_MAX_MEMBERS']))
+    settings['FIRETEAM_MEMBER_MAX_ITERATIONS'] = int(project.get('fireteamMemberMaxIterations', DEFAULT_AGENT_SETTINGS['FIRETEAM_MEMBER_MAX_ITERATIONS']))
+    settings['FIRETEAM_TIMEOUT_SEC'] = int(project.get('fireteamTimeoutSec', DEFAULT_AGENT_SETTINGS['FIRETEAM_TIMEOUT_SEC']))
+    settings['FIRETEAM_ALLOWED_PHASES'] = list(project.get('fireteamAllowedPhases', DEFAULT_AGENT_SETTINGS['FIRETEAM_ALLOWED_PHASES']))
+    settings['FIRETEAM_CONFIRMATION_TIMEOUT_SEC'] = int(project.get('fireteamConfirmationTimeoutSec', DEFAULT_AGENT_SETTINGS['FIRETEAM_CONFIRMATION_TIMEOUT_SEC']))
+    settings['FIRETEAM_PROPENSITY'] = int(project.get('fireteamPropensity', DEFAULT_AGENT_SETTINGS['FIRETEAM_PROPENSITY']))
     settings['PHISHING_SMTP_CONFIG'] = project.get('phishingSmtpConfig', DEFAULT_AGENT_SETTINGS['PHISHING_SMTP_CONFIG'])
+    settings['DOS_MAX_DURATION'] = project.get('dosMaxDuration', DEFAULT_AGENT_SETTINGS['DOS_MAX_DURATION'])
+    settings['DOS_MAX_ATTEMPTS'] = project.get('dosMaxAttempts', DEFAULT_AGENT_SETTINGS['DOS_MAX_ATTEMPTS'])
+    settings['DOS_CONCURRENT_CONNECTIONS'] = project.get('dosConcurrentConnections', DEFAULT_AGENT_SETTINGS['DOS_CONCURRENT_CONNECTIONS'])
+    settings['DOS_ASSESSMENT_ONLY'] = project.get('dosAssessmentOnly', DEFAULT_AGENT_SETTINGS['DOS_ASSESSMENT_ONLY'])
+    settings['ATTACK_SKILL_CONFIG'] = project.get('attackSkillConfig', DEFAULT_AGENT_SETTINGS['ATTACK_SKILL_CONFIG'])
+    settings['USER_ATTACK_SKILLS'] = project.get('userAttackSkills', DEFAULT_AGENT_SETTINGS['USER_ATTACK_SKILLS'])
 
     # Target scope (used by guardrail checks inside the agent)
     settings['TARGET_DOMAIN'] = project.get('targetDomain', '')
@@ -235,6 +369,65 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['ROE_THIRD_PARTY_PROVIDERS'] = project.get('roeThirdPartyProviders', DEFAULT_AGENT_SETTINGS['ROE_THIRD_PARTY_PROVIDERS'])
     settings['ROE_COMPLIANCE_FRAMEWORKS'] = project.get('roeComplianceFrameworks', DEFAULT_AGENT_SETTINGS['ROE_COMPLIANCE_FRAMEWORKS'])
     settings['ROE_NOTES'] = project.get('roeNotes', DEFAULT_AGENT_SETTINGS['ROE_NOTES'])
+
+    # --- Fetch user-level LLM providers and settings from DB ---
+    user_id = project.get('userId', '')
+    if user_id and webapp_url:
+        # Fetch LLM providers (with full API keys via ?internal=true)
+        try:
+            providers_resp = requests.get(
+                f"{webapp_url.rstrip('/')}/api/users/{user_id}/llm-providers?internal=true",
+                headers=INTERNAL_HEADERS,
+                timeout=10,
+            )
+            providers_resp.raise_for_status()
+            settings['USER_LLM_PROVIDERS'] = providers_resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch user LLM providers: {e}")
+            settings['USER_LLM_PROVIDERS'] = []
+
+        # Fetch user settings (Tavily API key)
+        try:
+            user_settings_resp = requests.get(
+                f"{webapp_url.rstrip('/')}/api/users/{user_id}/settings?internal=true",
+                headers=INTERNAL_HEADERS,
+                timeout=10,
+            )
+            user_settings_resp.raise_for_status()
+            settings['USER_SETTINGS'] = user_settings_resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings: {e}")
+            settings['USER_SETTINGS'] = {}
+
+        # If selected model is custom/, extract its specific config
+        model_id = settings.get('OPENAI_MODEL', '')
+        if model_id.startswith('custom/'):
+            config_id = model_id[len('custom/'):]
+            providers = settings.get('USER_LLM_PROVIDERS', [])
+            matched = None
+            for p in providers:
+                if p.get('id') == config_id:
+                    matched = p
+                    break
+
+            if not matched and providers:
+                # Provider ID is stale (deleted & recreated). Fall back to the
+                # user's first compatible provider so the agent isn't stuck.
+                matched = providers[0]
+                logger.warning(
+                    f"Custom LLM config {config_id} not found; "
+                    f"falling back to provider {matched['id']} ({matched.get('name')})"
+                )
+                settings['OPENAI_MODEL'] = f"custom/{matched['id']}"
+
+            if matched:
+                settings['CUSTOM_LLM_CONFIG'] = matched
+            else:
+                logger.warning(f"Custom LLM config {config_id} not found and no providers available")
+                settings['CUSTOM_LLM_CONFIG'] = None
+    else:
+        settings['USER_LLM_PROVIDERS'] = []
+        settings['USER_SETTINGS'] = {}
 
     logger.info(f"Loaded {len(settings)} agent settings for project {project_id}")
     return settings
@@ -326,6 +519,24 @@ def reload_settings(project_id: Optional[str] = None) -> dict[str, Any]:
 
 
 # =============================================================================
+# ATTACK SKILL HELPERS
+# =============================================================================
+
+def get_enabled_builtin_skills() -> set[str]:
+    """Return the set of enabled built-in attack skill IDs."""
+    config = get_setting('ATTACK_SKILL_CONFIG', {})
+    return {k for k, v in config.get('builtIn', {}).items() if v}
+
+
+def get_enabled_user_skills() -> list[dict]:
+    """Return list of enabled user attack skills (id, name, content)."""
+    config = get_setting('ATTACK_SKILL_CONFIG', {})
+    user_toggles = config.get('user', {})
+    return [s for s in get_setting('USER_ATTACK_SKILLS', [])
+            if user_toggles.get(s['id'], True)]
+
+
+# =============================================================================
 # TOOL PHASE RESTRICTION HELPERS (moved from params.py)
 # =============================================================================
 
@@ -368,3 +579,12 @@ def get_hydra_flags_from_settings() -> str:
     if get_setting('HYDRA_VERBOSE', True):
         parts.append("-V")
     return " ".join(parts)
+
+
+def get_dos_settings_dict() -> dict:
+    """Get DoS settings as a dict for prompt template injection."""
+    return {
+        'dos_max_duration': get_setting('DOS_MAX_DURATION', 60),
+        'dos_max_attempts': get_setting('DOS_MAX_ATTEMPTS', 3),
+        'dos_connections': get_setting('DOS_CONCURRENT_CONNECTIONS', 1000),
+    }

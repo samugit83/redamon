@@ -56,6 +56,8 @@ class HealthResponse(BaseModel):
     running_recons: int
     running_gvm_scans: int = 0
     running_github_hunts: int = 0
+    running_trufflehog_scans: int = 0
+    gvm_available: bool = False
 
 
 # =============================================================================
@@ -150,3 +152,97 @@ class GithubHuntLogEvent(BaseModel):
     is_phase_start: bool = False
     is_phase_end: bool = False
     level: str = "info"
+
+
+# =============================================================================
+# TruffleHog Secret Scanner Models
+# =============================================================================
+
+
+class TrufflehogStatus(str, Enum):
+    """Status of a TruffleHog scan process"""
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ERROR = "error"
+    STOPPING = "stopping"
+
+
+class TrufflehogStartRequest(BaseModel):
+    """Request to start a TruffleHog scan"""
+    project_id: str
+    user_id: str
+    webapp_api_url: str
+
+
+class TrufflehogState(BaseModel):
+    """Current state of a TruffleHog scan process"""
+    project_id: str
+    status: TrufflehogStatus
+    current_phase: Optional[str] = None
+    phase_number: Optional[int] = None
+    total_phases: int = 3
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+    container_id: Optional[str] = None
+
+
+class TrufflehogLogEvent(BaseModel):
+    """A single log event from TruffleHog scanner container"""
+    log: str
+    timestamp: datetime
+    phase: Optional[str] = None
+    phase_number: Optional[int] = None
+    is_phase_start: bool = False
+    is_phase_end: bool = False
+    level: str = "info"
+
+
+# =============================================================================
+# Partial Recon Models
+# =============================================================================
+
+
+class PartialReconStatus(str, Enum):
+    """Status of a partial recon process"""
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+    STOPPING = "stopping"
+
+
+class PartialReconStartRequest(BaseModel):
+    """Request to start a partial recon run for a single tool"""
+    project_id: str
+    user_id: str
+    webapp_api_url: str
+    tool_id: str                              # e.g. "SubdomainDiscovery"
+    graph_inputs: dict                        # e.g. {"domain": "example.com"}
+    user_inputs: list[str] = []               # user-added values (SubdomainDiscovery)
+    user_targets: dict | None = None          # structured inputs (Naabu: {subdomains, ips, ip_attach_to})
+    include_graph_targets: bool = True        # whether to include existing graph data in scan
+    settings_overrides: dict = {}             # optional per-tool settings
+
+
+class PartialReconState(BaseModel):
+    """Current state of a partial recon process"""
+    project_id: str
+    run_id: str = ""
+    tool_id: str = ""
+    status: PartialReconStatus = PartialReconStatus.IDLE
+    container_id: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+    stats: Optional[dict] = None
+
+
+class PartialReconListResponse(BaseModel):
+    """Response listing all partial recon runs for a project"""
+    project_id: str
+    runs: list[PartialReconState]

@@ -1,15 +1,15 @@
 """
-RedAmon Unclassified Attack Path Prompts
+RedAmon Unclassified Attack Skill Prompts
 
-Generic exploitation guidance for attack paths that don't match
+Generic exploitation guidance for attack skills that don't match
 CVE exploit or brute force credential guess workflows.
 Provides tool descriptions without workflow-specific instructions.
 """
 
 UNCLASSIFIED_EXPLOIT_TOOLS = """
-## Exploitation Workflow (Unclassified Attack Path)
+## Exploitation Workflow (Unclassified Attack Skill)
 
-This attack path does not have a specialized workflow. Use the tools
+This attack skill does not have a specialized workflow. Use the tools
 listed in the **Available Tools** table above to accomplish the exploitation objective.
 
 ### Approach
@@ -21,7 +21,7 @@ listed in the **Available Tools** table above to accomplish the exploitation obj
 
 ### Important Notes
 
-- There is no mandatory step-by-step workflow for this attack path
+- There is no mandatory step-by-step workflow for this attack skill
 - Use your judgment to select the best tools for the specific attack technique
 - Only use tools that are listed as available in the current phase
 - If the attack requires a tool not available in this phase, request a phase transition

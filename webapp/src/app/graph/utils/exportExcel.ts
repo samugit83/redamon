@@ -16,12 +16,12 @@ export async function exportToExcel(rows: TableRow[], filename?: string) {
       'Connections Out Detail': row.connectionsOut
         .map(c => `${c.nodeType}: ${c.nodeName} (${c.relationType})`)
         .join('; '),
-      'Level 2': row.level2.length,
-      'Level 2 Detail': row.level2
+      'Level 2': row.getLevel2().length,
+      'Level 2 Detail': row.getLevel2()
         .map(c => `${c.nodeType}: ${c.nodeName}`)
         .join('; '),
-      'Level 3': row.level3.length,
-      'Level 3 Detail': row.level3
+      'Level 3': row.getLevel3().length,
+      'Level 3 Detail': row.getLevel3()
         .map(c => `${c.nodeType}: ${c.nodeName}`)
         .join('; '),
     }

@@ -139,6 +139,30 @@ def try_parse_llm_decision(response_text: str) -> Tuple[Optional[LLMDecision], O
         if "tool_plan" in data and (not data["tool_plan"] or data["tool_plan"] == {}):
             data["tool_plan"] = None
 
+        # Handle empty fireteam_plan object
+        if "fireteam_plan" in data and (not data["fireteam_plan"] or data["fireteam_plan"] == {}):
+            data["fireteam_plan"] = None
+
+        # Validate fireteam_plan when action is deploy_fireteam
+        if data.get("action") == "deploy_fireteam":
+            plan = data.get("fireteam_plan")
+            if not plan or not isinstance(plan, dict):
+                logger.warning("action=deploy_fireteam with malformed/missing fireteam_plan; downgrading to use_tool")
+                data["action"] = "use_tool"
+                data["fireteam_plan"] = None
+            else:
+                members = plan.get("members") or []
+                valid_members = [
+                    m for m in members
+                    if isinstance(m, dict) and m.get("name") and m.get("task")
+                ]
+                if not valid_members:
+                    logger.warning("fireteam_plan has no valid members; downgrading to use_tool")
+                    data["action"] = "use_tool"
+                    data["fireteam_plan"] = None
+                else:
+                    plan["members"] = valid_members
+
         # Validate tool_plan when action is plan_tools
         if data.get("action") == "plan_tools" and data.get("tool_plan"):
             plan = data["tool_plan"]

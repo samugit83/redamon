@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
         agentRunning: true,
         currentPhase: true,
         iterationCount: true,
+        activeSkillId: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { messages: true } },

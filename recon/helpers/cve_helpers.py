@@ -446,10 +446,11 @@ def classify_cvss_score(score: float) -> str:
 # =============================================================================
 
 def lookup_cves_nvd(
-    product: str, 
-    version: str = None, 
+    product: str,
+    version: str = None,
     max_results: int = 20,
-    api_key: str = None
+    api_key: str = None,
+    key_rotator=None,
 ) -> List[Dict]:
     """
     Query NVD API for CVEs affecting a product/version.
@@ -470,9 +471,10 @@ def lookup_cves_nvd(
     params = {"resultsPerPage": max_results}
     headers = {}
 
-    # Add API key if available
-    if api_key:
-        headers["apiKey"] = api_key
+    # Add API key if available (use rotator if present)
+    effective_key = key_rotator.current_key if key_rotator and key_rotator.has_keys else api_key
+    if effective_key:
+        headers["apiKey"] = effective_key
 
     if cpe_info and version:
         vendor, prod = cpe_info
@@ -489,17 +491,19 @@ def lookup_cves_nvd(
 
     try:
         response = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
+        if key_rotator:
+            key_rotator.tick()
 
         # Handle rate limiting (NVD returns 403 or 429 when rate limited)
         if response.status_code == 403:
-            print(f"        [!] NVD API rate limited. Add NVD_API_KEY env var for higher limits.")
+            print(f"[!][CVE] NVD API rate limited. Configure NVD API Key in Global Settings → Tool API Keys for higher limits.")
             return cves
         if response.status_code == 404:
             # 404 can occur with invalid CPE format or when service is unavailable
-            print(f"        [!] NVD API returned 404 for {product}. Skipping CVE lookup.")
+            print(f"[!][CVE] NVD API returned 404 for {product}. Skipping CVE lookup.")
             return cves
         if response.status_code == 429:
-            print(f"        [!] NVD API rate limited (429). Waiting...")
+            print(f"[!][CVE] NVD API rate limited (429). Waiting...")
             time.sleep(6)  # Wait 6 seconds and continue
             return cves
 
@@ -542,7 +546,7 @@ def lookup_cves_nvd(
             })
             
     except Exception as e:
-        print(f"        [!] NVD API error: {str(e)[:80]}")
+        print(f"[!][CVE] NVD API error: {str(e)[:80]}")
     
     return cves
 
@@ -551,28 +555,32 @@ def lookup_cves_nvd(
 # Vulners API Lookup
 # =============================================================================
 
-def lookup_cves_vulners(product: str, version: str, api_key: str = None) -> List[Dict]:
+def lookup_cves_vulners(product: str, version: str, api_key: str = None, key_rotator=None) -> List[Dict]:
     """
     Query Vulners API for CVEs (like Nmap's vulners script).
-    
+
     Args:
         product: Product name
         version: Version string (required for Vulners)
         api_key: Vulners API key
-        
+        key_rotator: Optional KeyRotator for key rotation
+
     Returns:
         List of CVE dictionaries
     """
     cves = []
     if not version:
         return cves
-    
+
+    effective_key = key_rotator.current_key if key_rotator and key_rotator.has_keys else api_key
     params = {"software": f"{product} {version}", "version": version, "type": "software"}
-    if api_key:
-        params["apiKey"] = api_key
-    
+    if effective_key:
+        params["apiKey"] = effective_key
+
     try:
         response = requests.get(VULNERS_API_URL, params=params, timeout=30)
+        if key_rotator:
+            key_rotator.tick()
         response.raise_for_status()
         data = response.json()
         
@@ -592,7 +600,7 @@ def lookup_cves_vulners(product: str, version: str, api_key: str = None) -> List
                     "url": f"https://vulners.com/{vuln.get('type', 'cve')}/{vuln_id}",
                 })
     except Exception as e:
-        print(f"        [!] Vulners API error: {str(e)[:80]}")
+        print(f"[!][CVE] Vulners API error: {str(e)[:80]}")
     
     return cves
 
@@ -609,6 +617,8 @@ def run_cve_lookup(
     min_cvss: float = 0.0,
     vulners_api_key: str = None,
     nvd_api_key: str = None,
+    nvd_key_rotator=None,
+    vulners_key_rotator=None,
 ) -> Dict:
     """
     Lookup CVEs for all technologies detected by httpx.
@@ -629,10 +639,10 @@ def run_cve_lookup(
         return {}
     
     print(f"\n{'='*60}")
-    print("CVE LOOKUP - Technology-Based Vulnerability Discovery")
+    print("[*][CVE] Technology-Based Vulnerability Discovery")
     print(f"{'='*60}")
-    print(f"    Source: {source.upper()}")
-    print(f"    Min CVSS: {min_cvss}")
+    print(f"[*][CVE] Source: {source.upper()}")
+    print(f"[*][CVE] Min CVSS: {min_cvss}")
     
     # Extract technologies from httpx
     technologies = set()
@@ -648,25 +658,46 @@ def run_cve_lookup(
             # into individual product strings
             for product in split_server_header(server):
                 technologies.add(product)
-    
-    # Filter technologies to lookup
+
+    # Also extract technologies from banner grab (non-HTTP services like SSH, FTP, MySQL)
+    banner_data = recon_data.get("banner_grab", {})
+    for service_type, instances in banner_data.get("services_found", {}).items():
+        for instance in instances:
+            version_str = instance.get("version")
+            if version_str:
+                technologies.add(version_str)
+
+    # Also extract technologies from Nmap service version detection
+    nmap_data = recon_data.get("nmap_scan", {})
+    for svc in nmap_data.get("services_detected", []):
+        product = svc.get("product", "")
+        version = svc.get("version", "")
+        if product and version:
+            technologies.add(f"{product}/{version}")
+
+    # Filter and deduplicate technologies to lookup
     tech_to_lookup = []
+    seen_normalized = set()
     skip_list = ["ubuntu", "debian", "centos", "linux", "windows",
                  "dreamweaver", "frontpage", "html", "css", "aws",
                  "cloudflare", "google analytics", "google tag manager",
                  "facebook pixel", "hotjar", "google font api"]
-    
+
     for tech in technologies:
         name, version = parse_technology_string(tech)
         name = normalize_product_name(name)
         if not version or name in skip_list:
             continue
+        key = (name.lower(), version.lower())
+        if key in seen_normalized:
+            continue
+        seen_normalized.add(key)
         tech_to_lookup.append(tech)
     
-    print(f"\n[*] Technologies with versions: {len(tech_to_lookup)}")
+    print(f"\n[*][CVE] Technologies with versions: {len(tech_to_lookup)}")
     
     if not tech_to_lookup:
-        print("[!] No technologies with versions found")
+        print("[!][CVE] No technologies with versions found")
         return {"technology_cves": {"summary": {"total_cves": 0}}}
     
     # Lookup CVEs
@@ -677,12 +708,12 @@ def run_cve_lookup(
         name, version = parse_technology_string(tech)
         name = normalize_product_name(name)
         
-        print(f"    [{i}/{len(tech_to_lookup)}] {tech}...", end=" ", flush=True)
+        print(f"[*][CVE] [{i}/{len(tech_to_lookup)}] {tech}...", end=" ", flush=True)
         
         if source == "vulners" and vulners_api_key:
-            cves = lookup_cves_vulners(name, version, vulners_api_key)
+            cves = lookup_cves_vulners(name, version, vulners_api_key, key_rotator=vulners_key_rotator)
         else:
-            cves = lookup_cves_nvd(name, version, max_cves, nvd_api_key)
+            cves = lookup_cves_nvd(name, version, max_cves, nvd_api_key, key_rotator=nvd_key_rotator)
         
         # Filter by min CVSS
         if min_cvss > 0:
@@ -744,14 +775,14 @@ def run_cve_lookup(
     
     # Print summary
     summary = result["technology_cves"]["summary"]
-    print(f"\n[+] CVE LOOKUP SUMMARY:")
-    print(f"    Total unique CVEs: {summary['total_unique_cves']}")
+    print(f"\n[+][CVE] CVE LOOKUP SUMMARY:")
+    print(f"[+][CVE] Total unique CVEs: {summary['total_unique_cves']}")
     if summary['critical'] > 0:
-        print(f"    🔴 CRITICAL: {summary['critical']}")
+        print(f"[!][CVE] CRITICAL: {summary['critical']}")
     if summary['high'] > 0:
-        print(f"    🟠 HIGH: {summary['high']}")
+        print(f"[!][CVE] HIGH: {summary['high']}")
     if summary['medium'] > 0:
-        print(f"    🟡 MEDIUM: {summary['medium']}")
+        print(f"[*][CVE] MEDIUM: {summary['medium']}")
     print(f"{'='*60}")
     
     return result

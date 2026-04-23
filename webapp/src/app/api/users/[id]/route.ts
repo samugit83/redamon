@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { getSession, isInternalRequest } from '@/lib/session'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -10,9 +11,26 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
+    // Check permissions: admin or internal can view any user, standard can only view self
+    if (!isInternalRequest(request)) {
+      const session = await getSession()
+      if (!session) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      if (session.role !== 'admin' && session.userId !== id) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    }
+
     const user = await prisma.user.findUnique({
       where: { id },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        updatedAt: true,
         projects: {
           orderBy: { createdAt: 'desc' },
           select: {
@@ -48,13 +66,41 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
     const body = await request.json()
-    const { name, email } = body
+    const { name, email, role } = body
+
+    // Check permissions
+    if (!isInternalRequest(request)) {
+      const session = await getSession()
+      if (!session) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+
+      // Standard users can only update their own name/email
+      if (session.role !== 'admin' && session.userId !== id) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+
+      // Only admin can change roles
+      if (role && session.role !== 'admin') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    }
+
+    const data: Record<string, string> = {}
+    if (name) data.name = name
+    if (email) data.email = email
+    if (role === 'admin' || role === 'standard') data.role = role
 
     const user = await prisma.user.update({
       where: { id },
-      data: {
-        ...(name && { name }),
-        ...(email && { email })
+      data,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        updatedAt: true,
       }
     })
 
@@ -76,10 +122,25 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-// DELETE /api/users/[id] - Delete user (cascades to projects)
+// DELETE /api/users/[id] - Delete user (admin only)
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
+
+    if (!isInternalRequest(request)) {
+      const session = await getSession()
+      if (!session || session.role !== 'admin') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+
+      // Prevent self-deletion
+      if (session.userId === id) {
+        return NextResponse.json(
+          { error: 'Cannot delete your own account' },
+          { status: 400 }
+        )
+      }
+    }
 
     await prisma.user.delete({
       where: { id }

@@ -30,10 +30,22 @@ export async function POST(
       })
     }
 
-    // Support single or batch messages
-    const items: Array<{ type: string; data: unknown }> = body.messages
+    // Support single or batch messages. Each item may carry optional
+    // memberIdKey / fireteamIdKey to attribute the row to a Fireteam member.
+    type ItemInput = {
+      type: string
+      data: unknown
+      memberIdKey?: string | null
+      fireteamIdKey?: string | null
+    }
+    const items: Array<ItemInput> = body.messages
       ? body.messages
-      : [{ type: body.type, data: body.data }]
+      : [{
+          type: body.type,
+          data: body.data,
+          memberIdKey: body.memberIdKey ?? null,
+          fireteamIdKey: body.fireteamIdKey ?? null,
+        }]
 
     // Get current max sequence number
     const maxSeq = await prisma.chatMessage.aggregate({
@@ -48,6 +60,8 @@ export async function POST(
         sequenceNum: nextSeq++,
         type: item.type,
         data: item.data as any,
+        memberIdKey: item.memberIdKey ?? null,
+        fireteamIdKey: item.fireteamIdKey ?? null,
       })),
     })
 

@@ -1,0 +1,4 @@
+# Knowledge Base heavy dependencies (skipped with --skipkbase)
+# torch (~2-3 GB) is a transitive dep of sentence-transformers
+faiss-cpu>=1.7.0
+sentence-transformers>=2.2.0

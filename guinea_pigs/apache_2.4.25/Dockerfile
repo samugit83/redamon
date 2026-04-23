@@ -4,6 +4,7 @@
 FROM debian:bullseye-slim
 
 # Install build dependencies
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \

@@ -90,6 +90,12 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       orderBy: { createdAt: 'asc' },
     })
 
+    // 2d. Fetch user project presets
+    const userPresets = await prisma.userProjectPreset.findMany({
+      where: { userId: project.userId },
+      orderBy: { createdAt: 'asc' },
+    })
+
     // 3. Export Neo4j data
     let neo4jNodes: Array<{ labels: string[]; properties: Record<string, unknown>; _exportId: string }> = []
     let neo4jRelationships: Array<{ startExportId: string; endExportId: string; type: string; properties: Record<string, unknown> }> = []
@@ -154,6 +160,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
         reports: reports.length,
         neo4jNodes: neo4jNodes.length,
         neo4jRelationships: neo4jRelationships.length,
+        userPresets: userPresets.length,
         artifacts: 0,
       },
     }
@@ -214,6 +221,11 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
     archive.append(Buffer.from(JSON.stringify(neo4jNodes, null, 2)), { name: 'neo4j/nodes.json' })
     archive.append(Buffer.from(JSON.stringify(neo4jRelationships, null, 2)), { name: 'neo4j/relationships.json' })
+
+    // Append user project presets
+    if (userPresets.length > 0) {
+      archive.append(Buffer.from(JSON.stringify(userPresets, null, 2)), { name: 'presets/user_project_presets.json' })
+    }
 
     // Append artifact files from disk
     for (const af of artifacts) {

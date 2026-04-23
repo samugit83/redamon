@@ -14,6 +14,12 @@ export const NODE_SIZES: Record<string, number> = {
   GithubPath: 1.2,          // File path nodes
   GithubSecret: 1,          // Leaf: leaked secret
   GithubSensitiveFile: 1,   // Leaf: sensitive file
+  TrufflehogScan: 2.5,       // Prominent scan node (same as GithubHunt)
+  TrufflehogRepository: 1.5, // Medium repo nodes
+  TrufflehogFinding: 1,      // Leaf: secret finding
+  Secret: 1.2,              // Slightly larger than default leaf nodes
+  JsReconFinding: 1,        // Leaf: JS analysis finding
+  ExternalDomain: 1.5,      // Small — informational
   // Attack Chain nodes (30% smaller than base)
   AttackChain: 1.4,            // Chain root
   ChainStep: 0.5,             // Individual steps (was 0.7)
@@ -55,3 +61,12 @@ export const LINK_SIZES = {
 
 // Drawer dimensions
 export const DRAWER_WIDTH = 400
+
+// Clustering: collapse >CLUSTER_THRESHOLD same-type leaf neighbors of a shared parent
+export const CLUSTER_THRESHOLD = 30
+export const CLUSTER_SIZE = {
+  base: 2.5,        // base multiplier for a cluster node (vs 1x for a leaf)
+  perDecade: 0.6,   // extra size per log10(childCount)
+  max: 5,           // hard cap
+} as const
+

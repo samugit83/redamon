@@ -53,13 +53,15 @@ class TriageNeo4jToolManager:
 class TriageWebSearchManager:
     """Web search tool for enriching triage analysis."""
 
-    def __init__(self):
-        self.tavily_api_key = os.environ.get("TAVILY_API_KEY", "")
+    def __init__(self, tavily_api_key: str = "", key_rotator=None):
+        self.tavily_api_key = tavily_api_key or ""
+        self.key_rotator = key_rotator  # Optional[KeyRotator]
 
     async def search(self, query: str, max_results: int = 5) -> str:
         """Search the web using Tavily API."""
-        if not self.tavily_api_key:
-            return "Web search unavailable: TAVILY_API_KEY not configured"
+        api_key = self.key_rotator.current_key if self.key_rotator and self.key_rotator.has_keys else self.tavily_api_key
+        if not api_key:
+            return "Web search unavailable: Tavily API key not configured in Global Settings"
 
         try:
             import httpx
@@ -67,7 +69,7 @@ class TriageWebSearchManager:
                 resp = await client.post(
                     "https://api.tavily.com/search",
                     json={
-                        "api_key": self.tavily_api_key,
+                        "api_key": api_key,
                         "query": query,
                         "max_results": max_results,
                         "search_depth": "basic",
@@ -75,6 +77,8 @@ class TriageWebSearchManager:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                if self.key_rotator:
+                    self.key_rotator.tick()
 
                 results = []
                 for r in data.get("results", []):

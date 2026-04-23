@@ -12,9 +12,15 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
+    "bcryptjs": "^2.4.3",
+    "jose": "^6.0.11",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-table": "^8.21.3",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "^12.6.0",
     "archiver": "^7.0.0",
     "d3-force": "^3.0.0",
     "jszip": "^3.10.1",
@@ -34,16 +40,22 @@
     "remark-gfm": "^4.0.1",
     "three": "^0.170.0",
     "three-spritetext": "^1.9.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/archiver": "^6.0.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.17.0",
     "eslint-config-next": "^16.1.0",
-    "typescript": "^5.7.0"
+    "jsdom": "^29.0.2",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -57,6 +57,7 @@ venv/
 ENV/
 env/
 .venv/
+knowledge_base/.redamon-venv/
 .env.local
 
 # Environment variables / Secrets
@@ -92,11 +93,18 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Recon data files (downloaded at runtime)
+recon/data/resolvers.txt
+
 # Recon output files (contain sensitive scan data)
 recon/output/*.json
 gvm_scan/output/*.json
+github_secret_hunt/output/*.json
+trufflehog_scan/output/*.json
 !recon/output/.gitkeep
 !gvm_scan/output/.gitkeep
+!github_secret_hunt/output/.gitkeep
+!trufflehog_scan/output/.gitkeep
 
 # Nmap scan results
 *.nmap
@@ -128,13 +136,31 @@ out/
 docker-compose.override.yml
 
 # Private strategy docs
-LAUNCHPLAN.md
-GAP.md
 agentic/readmes/README.EMPOWER.md
 agentic/readmes/README.CYPHERFIX.md
 agentic/readmes/README.FULLFIX.md
 agentic/readmes/README.TOOL_PLUGINS.md
-cai/
+readmes/README.EMPOWER.md
+readmes/README.FULLFIX.md
+readmes/README.TOOL_PLUGINS.md
+readmes/README.ATTACK_PATHS.md
+readmes/AGENT.PROMPTS.md
+readmes/agent_prompts/
+
+
+# Internal docs
+internal/
+
+# RedAmon local config (created by redamon.sh)
+.gvm-enabled
+.skipkbase
 
 # Claude Code config
 .claude/
+
+# Benchmark data
+bmark/
+
+# Knowledge base runtime data
+knowledge_base/data/
+**/.file_hashes.json

@@ -1,10 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, Link } from 'lucide-react'
+import { ChevronDown, Link, Play } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -12,11 +13,12 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 interface GauSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  onRun?: () => void
 }
 
 const PROVIDER_OPTIONS = ['wayback', 'commoncrawl', 'otx', 'urlscan']
 
-export function GauSection({ data, updateField }: GauSectionProps) {
+export function GauSection({ data, updateField, onRun }: GauSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   const toggleProvider = (provider: string) => {
@@ -34,29 +36,45 @@ export function GauSection({ data, updateField }: GauSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Link size={16} />
           GAU (GetAllUrls) Passive Discovery
+          <NodeInfoTooltip section="Gau" />
+          <span className={styles.badgePassive}>Passive</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
-      </div>
-
-      {isOpen && (
-        <div className={styles.sectionContent}>
-          <p className={styles.sectionDescription}>
-            Passive URL discovery using GetAllUrls (GAU). Retrieves historical URLs from web archives and threat intelligence sources without touching the target directly. Complements Katana's active crawling with archived data.
-          </p>
-          <div className={styles.toggleRow}>
-            <div>
-              <span className={styles.toggleLabel}>Enable GAU</span>
-              <p className={styles.toggleDescription}>Fetch historical URLs from Wayback Machine, Common Crawl, OTX, and URLScan</p>
-              <TimeEstimate estimate="~20-60 sec per domain" />
-            </div>
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.gauEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '4px',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                color: '#22c55e', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
+              }}
+              title="Run GAU"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
             <Toggle
               checked={data.gauEnabled}
               onChange={(checked) => updateField('gauEnabled', checked)}
             />
           </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className={styles.sectionContent}>
+          <p className={styles.sectionDescription}>
+            Passive URL discovery using GetAllUrls (GAU). Retrieves historical URLs from web archives and threat intelligence sources without touching the target directly. Complements Katana&apos;s active crawling with archived data.
+            GAU works without any API keys. To get higher rate limits and more results from URLScan, you can set a URLScan API key in <strong>Settings &gt; Tool API Keys</strong>.
+          </p>
 
           {data.gauEnabled && (
             <>
@@ -116,6 +134,21 @@ export function GauSection({ data, updateField }: GauSectionProps) {
                   />
                   <span className={styles.fieldHint}>Parallel fetch threads</span>
                 </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Workers</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.gauWorkers ?? 10}
+                    onChange={(e) => updateField('gauWorkers', parseInt(e.target.value) || 10)}
+                    min={1}
+                    max={20}
+                  />
+                  <span className={styles.fieldHint}>Parallel domain query workers</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Year Range</label>
                   <input

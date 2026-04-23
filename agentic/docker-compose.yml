@@ -1,6 +1,6 @@
 # RedAmon Agent Docker Compose (standalone)
 # For full stack, use the root docker-compose.yml instead.
-# API keys: set ANTHROPIC_API_KEY / OPENAI_API_KEY in your environment.
+# API keys and LLM providers are configured in Global Settings (UI).
 
 services:
   agent:
@@ -15,16 +15,6 @@ services:
       NEO4J_URI: bolt://host.docker.internal:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
-      # AI provider keys (from environment)
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
-      OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # WebSocket config
       WS_HEARTBEAT_INTERVAL: "30"
       WS_TIMEOUT: "300"
@@ -33,6 +23,7 @@ services:
       MCP_NETWORK_RECON_URL: http://host.docker.internal:8000/sse
       MCP_NMAP_URL: http://host.docker.internal:8004/sse
       MCP_METASPLOIT_URL: http://host.docker.internal:8003/sse
+      MCP_PLAYWRIGHT_URL: http://host.docker.internal:8005/sse
       MCP_METASPLOIT_PROGRESS_URL: http://host.docker.internal:8013/progress
       MCP_HYDRA_PROGRESS_URL: http://host.docker.internal:8014/progress
       # Webapp API (via host network)

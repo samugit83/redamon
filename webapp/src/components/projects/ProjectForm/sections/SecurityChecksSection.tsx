@@ -1,19 +1,21 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, ShieldCheck } from 'lucide-react'
+import { ChevronDown, Play, ShieldCheck } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
 interface SecurityChecksSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  onRun?: () => void
 }
 
-export function SecurityChecksSection({ data, updateField }: SecurityChecksSectionProps) {
+export function SecurityChecksSection({ data, updateField, onRun }: SecurityChecksSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   return (
@@ -22,11 +24,37 @@ export function SecurityChecksSection({ data, updateField }: SecurityChecksSecti
         <h2 className={styles.sectionTitle}>
           <ShieldCheck size={16} />
           Security Checks
+          <NodeInfoTooltip section="SecurityChecks" />
+          <span className={styles.badgeActive}>Active</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.securityCheckEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '4px',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                color: '#22c55e', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
+              }}
+              title="Run Security Checks"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.securityCheckEnabled}
+              onChange={(checked) => updateField('securityCheckEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
       </div>
 
       {isOpen && (
@@ -34,16 +62,6 @@ export function SecurityChecksSection({ data, updateField }: SecurityChecksSecti
           <p className={styles.sectionDescription}>
             Run custom security validation checks on discovered findings. Includes header analysis, SSL/TLS configuration review, and other automated security assessments to verify and contextualize vulnerabilities.
           </p>
-          <div className={styles.toggleRow}>
-            <div>
-              <span className={styles.toggleLabel}>Enable Security Checks</span>
-              <p className={styles.toggleDescription}>Run custom security checks on findings</p>
-            </div>
-            <Toggle
-              checked={data.securityCheckEnabled}
-              onChange={(checked) => updateField('securityCheckEnabled', checked)}
-            />
-          </div>
 
           {data.securityCheckEnabled && (
             <>

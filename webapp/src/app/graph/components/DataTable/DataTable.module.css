@@ -159,7 +159,7 @@
   border-radius: var(--radius-full);
   font-size: 10px;
   font-weight: var(--font-semibold);
-  color: #000;
+  color: #fff;
   white-space: nowrap;
 }
 

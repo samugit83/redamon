@@ -16,3 +16,6 @@
 
 /* Shared Component Styles */
 @import './components/index.css';
+
+/* xterm.js terminal */
+@import '@xterm/xterm/css/xterm.css';

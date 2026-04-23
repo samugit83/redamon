@@ -61,7 +61,6 @@ services:
 
       # API Keys (from environment)
       - GITHUB_ACCESS_TOKEN=${GITHUB_ACCESS_TOKEN:-}
-      - NVD_API_KEY=${NVD_API_KEY:-}
       - VULNERS_API_KEY=${VULNERS_API_KEY:-}
 
       # Host path mapping for Docker-in-Docker sibling containers

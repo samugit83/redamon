@@ -320,12 +320,12 @@ def get_session_config_prompt() -> str:
             lines += _section("""\
                 **Problem:** ngrok tunnel is enabled but the tunnel API is unreachable.
                 The user intended to use a REVERSE payload through ngrok, but the tunnel is not running.
-                Ask the user to check that `NGROK_AUTHTOKEN` is set in `.env` and the kali-sandbox container was restarted.""")
+                Ask the user to check that the ngrok auth token is configured in Global Settings → Tunneling.""")
         elif CHISEL_TUNNEL_ENABLED and chisel_error:
             lines += _section("""\
-                **Problem:** chisel tunnel is enabled but CHISEL_SERVER_URL is not set or invalid.
+                **Problem:** chisel tunnel is enabled but the chisel server URL is not set or invalid.
                 The user intended to use a REVERSE payload through chisel, but the tunnel is not configured.
-                Ask the user to check that `CHISEL_SERVER_URL` is set in `.env` and the kali-sandbox container was restarted.""")
+                Ask the user to check that the chisel server URL is configured in Global Settings → Tunneling.""")
         elif has_lhost and not has_lport:
             lines += _section("**Problem:** LHOST is set but LPORT is missing. For reverse payloads, both are required.")
         elif has_lport and not has_lhost:
@@ -395,24 +395,37 @@ def _query_ngrok_tunnel() -> dict | None:
 
 def _query_chisel_tunnel() -> dict | None:
     """
-    Derive public tunnel endpoints from CHISEL_SERVER_URL env var.
+    Derive public tunnel endpoints from the chisel server URL stored in the database.
 
     Unlike ngrok (which requires an API query to discover random ports),
-    chisel tunnels are deterministic: the VPS hostname from CHISEL_SERVER_URL
+    chisel tunnels are deterministic: the VPS hostname from the chisel server URL
     is the public endpoint, and the forwarded ports are always 4444 (handler)
     and 8080 (web delivery / HTA server).
 
     Returns:
         Dict with 'host' (str), 'port' (int = 4444), 'srv_port' (int = 8080),
-        and 'hostname' (str) if CHISEL_SERVER_URL is set,
+        and 'hostname' (str) if chisel is configured,
         or None if not configured.
     """
     import os
+    import requests as _requests
     from urllib.parse import urlparse
 
-    chisel_url = os.environ.get("CHISEL_SERVER_URL", "")
+    # Fetch chisel URL from webapp (stored in UserSettings via Global Settings UI)
+    webapp_url = os.environ.get("WEBAPP_API_URL", "http://webapp:3000")
+    try:
+        resp = _requests.get(
+            f"{webapp_url}/api/global/tunnel-config",
+            headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        chisel_url = resp.json().get("chiselServerUrl", "")
+    except Exception as e:
+        logger.warning(f"Failed to fetch chisel config from webapp: {e}")
+        chisel_url = ""
+
     if not chisel_url:
-        logger.warning("CHISEL_SERVER_URL not set")
         return None
 
     try:

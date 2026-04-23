@@ -1,0 +1,192 @@
+.content {
+  display: flex;
+  gap: var(--space-4);
+  min-width: 640px;
+}
+
+@media (max-width: 768px) {
+  .content {
+    flex-direction: column;
+    min-width: auto;
+  }
+}
+
+.card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cardIcon {
+  color: var(--text-tertiary);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: var(--space-0-5) var(--space-1-5);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.statusIdle {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-default);
+}
+
+.statusRunning {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.statusPaused {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.statusCompleted {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.statusError {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.cardDescription {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.cardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  margin-top: auto;
+}
+
+.actionButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-2-5);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.actionButton:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.actionButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.startButton {
+  composes: actionButton;
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.startButton:hover:not(:disabled) {
+  background: var(--status-success);
+  color: white;
+}
+
+.pauseButton {
+  composes: actionButton;
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.pauseButton:hover:not(:disabled) {
+  background: var(--status-warning);
+  color: white;
+}
+
+.resumeButton {
+  composes: actionButton;
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.resumeButton:hover:not(:disabled) {
+  background: var(--status-success);
+  color: white;
+}
+
+.stopButton {
+  composes: actionButton;
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.stopButton:hover:not(:disabled) {
+  background: var(--status-error);
+  color: white;
+}
+
+.logsButton {
+  composes: actionButton;
+}
+
+.logsButtonActive {
+  background: var(--accent-secondary);
+  border-color: var(--accent-secondary);
+  color: white;
+}
+
+.downloadButton {
+  composes: actionButton;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

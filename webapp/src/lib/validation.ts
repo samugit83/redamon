@@ -151,12 +151,6 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
     errors.push({ field: 'katanaCustomHeaders', message: 'Invalid header format (Name: Value)' })
   }
 
-  // GitHub token
-  const ghToken = data.githubAccessToken as string
-  if (ghToken && !REGEX_GITHUB_TOKEN.test(ghToken)) {
-    errors.push({ field: 'githubAccessToken', message: 'Invalid GitHub token format' })
-  }
-
   // GitHub org
   const ghOrg = data.githubTargetOrg as string
   if (ghOrg && !REGEX_GITHUB_ORG.test(ghOrg)) {
@@ -181,6 +175,60 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
   const cfBranch = data.cypherfixDefaultBranch as string
   if (cfBranch && !REGEX_GIT_BRANCH.test(cfBranch)) {
     errors.push({ field: 'cypherfixDefaultBranch', message: 'Invalid branch name' })
+  }
+
+  // FFuf match/filter codes
+  for (const field of ['ffufMatchCodes', 'ffufFilterCodes'] as const) {
+    const codes = data[field] as number[] || []
+    for (const code of codes) {
+      if (!Number.isInteger(code) || code < 100 || code > 599) {
+        errors.push({ field, message: 'Invalid status code (100-599)' })
+        break
+      }
+    }
+  }
+
+  // FFuf custom headers
+  const ffufHeaders = data.ffufCustomHeaders as string[] || []
+  if (!isValidHeaderList(ffufHeaders)) {
+    errors.push({ field: 'ffufCustomHeaders', message: 'Invalid header format (Name: Value)' })
+  }
+
+  // FFuf numeric ranges
+  const ffufThreads = data.ffufThreads as number
+  if (ffufThreads != null && (!Number.isInteger(ffufThreads) || ffufThreads < 1 || ffufThreads > 200)) {
+    errors.push({ field: 'ffufThreads', message: 'Threads must be 1-200' })
+  }
+  const ffufRate = data.ffufRate as number
+  if (ffufRate != null && (!Number.isInteger(ffufRate) || ffufRate < 0)) {
+    errors.push({ field: 'ffufRate', message: 'Rate must be 0 (unlimited) or positive' })
+  }
+  const ffufTimeout = data.ffufTimeout as number
+  if (ffufTimeout != null && (!Number.isInteger(ffufTimeout) || ffufTimeout < 1)) {
+    errors.push({ field: 'ffufTimeout', message: 'Timeout must be at least 1 second' })
+  }
+  const ffufMaxTime = data.ffufMaxTime as number
+  if (ffufMaxTime != null && (!Number.isInteger(ffufMaxTime) || ffufMaxTime < 60)) {
+    errors.push({ field: 'ffufMaxTime', message: 'Max time must be at least 60 seconds' })
+  }
+  const ffufRecursionDepth = data.ffufRecursionDepth as number
+  if (ffufRecursionDepth != null && (!Number.isInteger(ffufRecursionDepth) || ffufRecursionDepth < 1 || ffufRecursionDepth > 5)) {
+    errors.push({ field: 'ffufRecursionDepth', message: 'Recursion depth must be 1-5' })
+  }
+
+  // FFuf filter size
+  const ffufFilterSize = data.ffufFilterSize as string
+  if (ffufFilterSize && !/^\d+(,\d+)*$/.test(ffufFilterSize.replace(/\s/g, ''))) {
+    errors.push({ field: 'ffufFilterSize', message: 'Filter size must be comma-separated numbers (e.g., 0,4242)' })
+  }
+
+  // FFuf extensions format
+  const ffufExtensions = data.ffufExtensions as string[] || []
+  for (const ext of ffufExtensions) {
+    if (ext && !/^\.[a-zA-Z0-9]+$/.test(ext)) {
+      errors.push({ field: 'ffufExtensions', message: 'Extensions must start with a dot (e.g., .php, .bak)' })
+      break
+    }
   }
 
   // RoE excluded hosts

@@ -34,6 +34,9 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 ### web_search — NO RESTRICTIONS
 - Passive external API query. Use freely for CVE research and recon.
 
+### execute_jsluice -- NO RESTRICTIONS
+- Passive local file analysis only. No network traffic. Use freely.
+
 ### execute_curl — RESTRICTED
 - Single targeted requests ONLY (one URL per invocation)
 - MUST include a realistic User-Agent header (`-H 'User-Agent: Mozilla/5.0 ...'`)
@@ -41,12 +44,30 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Allowed: reachability checks, single vulnerability probes, specific endpoint verification
 - FORBIDDEN: directory enumeration, parameter fuzzing, bulk header testing
 
+### execute_httpx -- RESTRICTED
+- Single target (`-u`) ONLY -- file-based target lists (`-l`) are FORBIDDEN
+- MUST include rate limiting: `-rl 2` (max 2 requests/second)
+- MUST include `-timeout 10` to avoid hanging connections
+- Allowed: status code, title, server header, tech detection on single targets
+- FORBIDDEN: bulk host probing, path wordlist fuzzing, high thread counts (`-t` > 2)
+- Use `-silent` to minimize output noise
+
 ### execute_naabu — HEAVILY RESTRICTED
 - ONLY passive mode (`-passive`) is allowed
 - No SYN scans, no CONNECT scans against unknown ports
 - Rate: max 10 packets/sec, 1 thread
 - Use ONLY to verify specific known-open ports, never for discovery scans
 - FORBIDDEN: full port range scans, top-1000 scans, host discovery sweeps
+
+### execute_subfinder — NO RESTRICTIONS
+- Passive OSINT tool: queries third-party data sources only, sends NO traffic to the target
+- Certificate transparency logs, DNS datasets, search engine APIs
+- Use freely in all allowed phases
+
+### execute_gau — NO RESTRICTIONS
+- Passive OSINT tool: queries Wayback Machine, Common Crawl, AlienVault OTX, URLScan archives only
+- No traffic sent to target; purely passive archive lookups
+- Use freely in all allowed phases
 
 ### execute_nmap — HEAVILY RESTRICTED
 - ONLY `-sV` (version detection) on KNOWN-OPEN ports from the graph
@@ -65,6 +86,21 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Hydra is a brute force tool. ALL brute force attacks are FORBIDDEN in stealth mode.
 - DO NOT use execute_hydra under any circumstances when stealth mode is active.
 
+### execute_arjun — FORBIDDEN
+- Arjun sends hundreds to thousands of HTTP requests per URL to brute-force parameter names. This is inherently noisy and impossible to perform stealthily.
+- DO NOT use execute_arjun under any circumstances when stealth mode is active.
+- Instead, use execute_curl to test specific suspected parameter names individually, or check query_graph for parameters already discovered by the recon pipeline.
+
+### execute_ffuf — FORBIDDEN
+- FFuf is a web fuzzer that sends hundreds to thousands of requests using wordlists. ALL web fuzzing is FORBIDDEN in stealth mode.
+- DO NOT use execute_ffuf under any circumstances when stealth mode is active.
+- For targeted path checks, use execute_curl with a single specific URL instead.
+
+### denial_of_service — FORBIDDEN
+- DoS attacks are inherently noisy, destructive, and high-footprint. ALL DoS techniques are FORBIDDEN in stealth mode.
+- DO NOT use any auxiliary/dos/* modules, flooding tools (hping3, slowhttptest), or resource exhaustion techniques.
+- If the user requests DoS in stealth mode, STOP and explain via action="ask_user" that DoS cannot be performed stealthily.
+
 ### kali_shell — RESTRICTED
 - Single-target, purpose-specific commands only
 - Allowed: passive lookups (whois, dig, host), downloading specific PoCs, running single-target scripts
@@ -75,6 +111,43 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Scripts MUST NOT: loop over multiple requests, open network listeners, perform brute force, spawn scanners
 - Allowed: single-request exploit scripts (e.g., one POST to trigger a CVE), data processing, payload generation
 - FORBIDDEN: port scanners, fuzzers, credential sprayers, any script with request loops
+
+### execute_playwright — RESTRICTED
+- Single targeted URL per invocation only
+- MUST NOT be used for automated crawling, bulk scraping, or spider-crawling
+- Content mode: extract content from specific known pages only
+- Script mode: scripts MUST target a single specific URL per execution
+- Allowed: single login attempt with known credentials, single form submission for vulnerability verification
+- FORBIDDEN: credential spraying via forms, automated crawling, multi-page brute force, fuzzing via browser
+- Maximum 2 form submissions per target — then STOP and inform user
+
+### execute_wpscan — HEAVILY RESTRICTED
+- WPScan fingerprints targets and makes many requests
+- ALLOWED: Single target scan with `--throttle 1000` or higher (1+ second between requests)
+- ALLOWED: Passive detection only with `--detection-mode passive`
+- FORBIDDEN: Aggressive plugin/theme enumeration (`--plugins-detection aggressive`)
+- FORBIDDEN: Password brute force (`--passwords`)
+- FORBIDDEN: User enumeration without throttling
+- MUST use `--random-user-agent` to avoid fingerprinting
+- Prefer `--enumerate vp,vt` (vulnerable only) over full enumeration
+
+### execute_amass — HEAVILY RESTRICTED
+- ONLY passive mode is allowed: MUST use `-passive` flag
+- FORBIDDEN: `-active` flag (sends DNS queries to target nameservers)
+- FORBIDDEN: `-brute` flag (DNS brute-force generates massive query volume)
+- FORBIDDEN: `-w` (wordlist) flag
+- Allowed: `enum -passive -d DOMAIN -timeout 5` (cert transparency, passive DNS only)
+- Maximum timeout: 5 minutes in stealth mode
+
+### execute_katana -- HEAVILY RESTRICTED
+- Katana is a web crawler that sends many HTTP requests across pages and depth levels. Inherently noisy.
+- ONLY allowed with strict rate limiting: MUST include `-rl 2` (max 2 requests/second)
+- MUST limit depth to `-d 1` (single level only)
+- MUST use `-c 1` (single concurrent fetcher)
+- MUST target a single URL (`-u`) -- file-based target lists (`-list`) are FORBIDDEN
+- FORBIDDEN: `-jsl` (jsluice deep parsing), `-hl` (headless -- heavy browser traffic)
+- Allowed: targeted single-URL crawl with rate limiting to discover immediate endpoints
+- If you need endpoint data, prefer query_graph first (already discovered by recon pipeline)
 
 ### metasploit_console — HEAVILY RESTRICTED
 - FORBIDDEN: `auxiliary/scanner/*` modules (all scanner modules), brute force modules, credential stuffers

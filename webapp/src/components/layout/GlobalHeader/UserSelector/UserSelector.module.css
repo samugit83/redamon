@@ -185,3 +185,44 @@
   color: var(--text-primary);
   border-color: var(--text-tertiary);
 }
+
+.logoutButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  flex: 1;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--status-error);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.logoutButton:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--status-error);
+}
+
+.roleBadge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
+.roleBadgeAdmin {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-primary);
+}
+
+.roleBadgeStandard {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-secondary);
+}

@@ -26,6 +26,7 @@ interface UseAgentWebSocketConfig {
   userId: string
   projectId: string
   sessionId: string
+  graphViewCypher?: string
   enabled?: boolean
   onMessage?: (message: ServerMessage) => void
   onError?: (error: Error) => void
@@ -42,10 +43,14 @@ interface UseAgentWebSocketReturn {
   error: Error | null
   sendQuery: (question: string) => void
   sendApproval: (decision: 'approve' | 'modify' | 'abort', modification?: string) => void
+  sendToolConfirmation: (decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, any>) => void
+  sendFireteamMemberConfirmation: (wave_id: string, member_id: string, decision: 'approve' | 'reject', modifications?: Record<string, any>) => void
   sendAnswer: (answer: string) => void
   sendGuidance: (message: string) => void
+  sendSkillInject: (payload: { skill_id: string; skill_name: string; content: string }) => void
   sendStop: () => void
   sendResume: () => void
+  sendToolStop: (tool_name: string, wave_id?: string, step_index?: number) => void
   disconnect: () => void
   reconnect: () => void
 }
@@ -58,6 +63,7 @@ export function useAgentWebSocket({
   userId,
   projectId,
   sessionId,
+  graphViewCypher,
   enabled = true,
   onMessage,
   onError,
@@ -113,10 +119,11 @@ export function useAgentWebSocket({
       user_id: userId,
       project_id: projectId,
       session_id: sessionId,
+      ...(graphViewCypher && { graph_view_cypher: graphViewCypher }),
     }
 
     sendMessage(MessageType.INIT, initPayload)
-  }, [userId, projectId, sessionId, sendMessage])
+  }, [userId, projectId, sessionId, graphViewCypher, sendMessage])
 
   // Public API: Send query
   const sendQuery = useCallback((question: string) => {
@@ -138,6 +145,32 @@ export function useAgentWebSocket({
     sendMessage(MessageType.APPROVAL, approvalPayload)
   }, [sendMessage])
 
+  // Public API: Send tool confirmation
+  const sendToolConfirmation = useCallback((decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, any>) => {
+    if (!isAuthenticatedRef.current) {
+      return
+    }
+
+    const payload: any = { decision }
+    if (modifications) payload.modifications = modifications
+    sendMessage(MessageType.TOOL_CONFIRMATION, payload)
+  }, [sendMessage])
+
+  // Public API: Send a single fireteam member's dangerous-tool decision.
+  // Unlike sendToolConfirmation, this does NOT pause the parent graph —
+  // other members keep running while this one resumes on approve/reject.
+  const sendFireteamMemberConfirmation = useCallback((
+    wave_id: string,
+    member_id: string,
+    decision: 'approve' | 'reject',
+    modifications?: Record<string, any>,
+  ) => {
+    if (!isAuthenticatedRef.current) return
+    const payload: any = { wave_id, member_id, decision }
+    if (modifications) payload.modifications = modifications
+    sendMessage(MessageType.FIRETEAM_MEMBER_CONFIRMATION, payload)
+  }, [sendMessage])
+
   // Public API: Send answer
   const sendAnswer = useCallback((answer: string) => {
     if (!isAuthenticatedRef.current) {
@@ -154,6 +187,12 @@ export function useAgentWebSocket({
     sendMessage(MessageType.GUIDANCE, { message })
   }, [sendMessage])
 
+  // Public API: Send skill injection (push Chat Skill content into guidance queue)
+  const sendSkillInject = useCallback((payload: { skill_id: string; skill_name: string; content: string }) => {
+    if (!isAuthenticatedRef.current) return
+    sendMessage(MessageType.SKILL_INJECT, payload)
+  }, [sendMessage])
+
   // Public API: Stop agent execution
   const sendStop = useCallback(() => {
     if (!isAuthenticatedRef.current) return
@@ -164,6 +203,17 @@ export function useAgentWebSocket({
   const sendResume = useCallback(() => {
     if (!isAuthenticatedRef.current) return
     sendMessage(MessageType.RESUME, {})
+  }, [sendMessage])
+
+  // Public API: Stop a single tool (same semantics as the global Stop button
+  // but scoped to one tool_execution card). Backend cancels just that tool
+  // task; the tool completes with success=false and the agent flow proceeds.
+  const sendToolStop = useCallback((tool_name: string, wave_id?: string, step_index?: number) => {
+    if (!isAuthenticatedRef.current) return
+    const payload: { tool_name: string; wave_id?: string; step_index?: number } = { tool_name }
+    if (wave_id) payload.wave_id = wave_id
+    if (step_index !== undefined && step_index !== null) payload.step_index = step_index
+    sendMessage(MessageType.TOOL_STOP, payload)
   }, [sendMessage])
 
   // Start ping interval for keep-alive
@@ -357,7 +407,7 @@ export function useAgentWebSocket({
         wsRef.current.close()
       }
     }
-  }, [enabled, userId, projectId, sessionId]) // Reconnect if session changes
+  }, [enabled, userId, projectId, sessionId, graphViewCypher]) // Reconnect if session or graph view changes
 
   return {
     status,
@@ -366,10 +416,14 @@ export function useAgentWebSocket({
     error,
     sendQuery,
     sendApproval,
+    sendToolConfirmation,
+    sendFireteamMemberConfirmation,
     sendAnswer,
     sendGuidance,
+    sendSkillInject,
     sendStop,
     sendResume,
+    sendToolStop,
     disconnect,
     reconnect,
   }

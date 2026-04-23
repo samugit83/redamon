@@ -131,7 +131,7 @@ services:
   # --- GVM runtime services ---
 
   gvm-redis:
-    image: registry.community.greenbone.net/community/redis-server
+    image: registry.community.greenbone.net/community/redis-server:stable
     container_name: redamon-gvm-redis
     restart: on-failure
     volumes:
@@ -188,12 +188,24 @@ services:
     image: registry.community.greenbone.net/community/ospd-openvas:stable
     container_name: redamon-gvm-ospd
     restart: on-failure
+    hostname: ospd-openvas.local
     cap_add:
       - NET_ADMIN
       - NET_RAW
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
+    command:
+      [
+        "ospd-openvas",
+        "-f",
+        "--config",
+        "/etc/gvm/ospd-openvas.conf",
+        "--notus-feed-dir",
+        "/var/lib/notus/advisories",
+        "-m",
+        "666",
+      ]
     volumes:
       - gpg_data:/etc/openvas/gnupg
       - vt_data:/var/lib/openvas/plugins
@@ -235,6 +247,24 @@ services:
     image: redamon-github-hunter:latest
     profiles: ["tools"]
 
+  trufflehog-scanner:
+    build:
+      context: .
+      dockerfile: trufflehog_scan/Dockerfile
+    image: redamon-trufflehog:latest
+    profiles: ["tools"]
+
+  # BadDNS (AGPL-3.0) runs isolated in its own container. RedAmon never
+  # imports or links against it -- the recon container spawns this image
+  # via Docker-in-Docker and receives NDJSON on stdout. See baddns_scan/
+  # Dockerfile and THIRD-PARTY-LICENSES.md for the license boundary.
+  baddns-scanner:
+    build:
+      context: .
+      dockerfile: baddns_scan/Dockerfile
+    image: redamon-baddns:latest
+    profiles: ["tools"]
+
   # ===========================================================================
   # Backend Services
   # ===========================================================================
@@ -253,13 +283,19 @@ services:
       - ./gvm_scan/output:/app/gvm_scan/output:rw
       - ./github_secret_hunt:/app/github_secret_hunt:ro
       - ./github_secret_hunt/output:/app/github_secret_hunt/output:rw
+      - ./trufflehog_scan:/app/trufflehog_scan:ro
+      - ./trufflehog_scan/output:/app/trufflehog_scan/output:rw
+      - ./mcp/nuclei-templates:/app/nuclei-templates:ro
+      - /tmp/redamon:/tmp/redamon:rw
     environment:
       # Host paths are auto-detected from container mounts (no hardcoded paths needed)
       RECON_IMAGE: redamon-recon:latest
       GVM_IMAGE: redamon-vuln-scanner:latest
       GITHUB_HUNT_IMAGE: redamon-github-hunter:latest
+      TRUFFLEHOG_IMAGE: redamon-trufflehog:latest
+      # Auth (forwarded to spawned containers)
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-changeme}
       # Forwarded to spawned recon containers (host network, so localhost)
-      NVD_API_KEY: ${NVD_API_KEY:-}
       NEO4J_URI: bolt://localhost:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
@@ -298,10 +334,13 @@ services:
       - "${MCP_NUCLEI_PORT:-8002}:8002"
       - "${MCP_METASPLOIT_PORT:-8003}:8003"
       - "${MCP_NMAP_PORT:-8004}:8004"
+      - "${MCP_PLAYWRIGHT_PORT:-8005}:8005"
       - "8013:8013"
       - "8014:8014"
       - "4444:4444"
       - "4040:4040"
+      - "8015:8015"
+      - "127.0.0.1:8016:8016"
     volumes:
       - ./mcp/servers:/opt/mcp_servers
       - ./mcp/output:/opt/output
@@ -314,13 +353,15 @@ services:
       NUCLEI_PORT: "8002"
       METASPLOIT_PORT: "8003"
       NMAP_PORT: "8004"
+      PLAYWRIGHT_PORT: "8005"
       MSF_PROGRESS_PORT: "8013"
       HYDRA_PROGRESS_PORT: "8014"
       MSF_AUTO_UPDATE: "${MSF_AUTO_UPDATE:-true}"
       NUCLEI_AUTO_UPDATE: "${NUCLEI_AUTO_UPDATE:-true}"
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
-      CHISEL_SERVER_URL: ${CHISEL_SERVER_URL:-}
-      CHISEL_AUTH: ${CHISEL_AUTH:-}
+      TERMINAL_WS_PORT: "8016"
+      # Webapp API for fetching tunnel config from Global Settings on boot
+      WEBAPP_API_URL: http://webapp:3000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-changeme}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8000)); s.close()"]
@@ -333,8 +374,15 @@ services:
       pentest-net:
 
   agent:
-    build: ./agentic
+    build:
+      context: .
+      dockerfile: agentic/Dockerfile
+      args:
+        SKIP_KB: "${SKIP_KB:-false}"
     container_name: redamon-agent
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "${AGENT_PORT:-8090}:8080"
     environment:
@@ -342,19 +390,6 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
-      # AI provider keys (from root .env)
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
-      OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Tunnel env vars (for /tunnel-status badge detection)
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
-      CHISEL_SERVER_URL: ${CHISEL_SERVER_URL:-}
       # WebSocket config
       WS_HEARTBEAT_INTERVAL: "30"
       WS_TIMEOUT: "300"
@@ -363,20 +398,34 @@ services:
       MCP_NETWORK_RECON_URL: http://kali-sandbox:8000/sse
       MCP_NMAP_URL: http://kali-sandbox:8004/sse
       MCP_METASPLOIT_URL: http://kali-sandbox:8003/sse
+      MCP_PLAYWRIGHT_URL: http://kali-sandbox:8005/sse
       MCP_METASPLOIT_PROGRESS_URL: http://kali-sandbox:8013/progress
       MCP_HYDRA_PROGRESS_URL: http://kali-sandbox:8014/progress
+      KALI_TERMINAL_WS_URL: ws://kali-sandbox:8016
       # Webapp API (internal docker network)
       WEBAPP_API_URL: http://webapp:3000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-changeme}
+      # Knowledge Base
+      KB_ENABLED: "${KB_ENABLED:-true}"
+      KB_PATH: /app/knowledge_base/data
+      # Fireteam requires AsyncPostgresSaver for safe mid-wave checkpointing.
+      PERSISTENT_CHECKPOINTER: "true"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-redamon}:${POSTGRES_PASSWORD:-redamon_secret}@postgres:5432/${POSTGRES_DB:-redamon}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./agentic:/app
       - ./agentic/logs:/app/logs
+      - ./agentic/skills:/app/skills:ro
+      - ./agentic/community-skills:/app/community-skills:ro
       - cypherfix-repos:/tmp/cypherfix-repos
+      - ./knowledge_base/kb_config.yaml:/app/knowledge_base/kb_config.yaml:ro
+      - ./knowledge_base/data:/app/knowledge_base/data
     depends_on:
       neo4j:
         condition: service_healthy
       kali-sandbox:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -389,11 +438,99 @@ services:
       - redamon
 
   # ===========================================================================
+  # Knowledge Base Refresh Sidecar
+  # ===========================================================================
+  # Opt-in scheduled refresh for KB data sources. Reuses the agent image so we
+  # don't have to rebuild anything separately. Shares the kb_data volume with
+  # the agent so updates are immediately visible without restarting the agent.
+  #
+  # Schedule:
+  #   - Daily 03:00 UTC: NVD incremental update (~60 new CVEs/day)
+  #   - Mondays 04:00 UTC: ExploitDB + Nuclei templates
+  #   - 1st of month 05:00 UTC: GTFOBins + LOLBAS
+  #
+  # Enable with:
+  #   KB_REFRESH_ENABLED=true docker compose --profile kb-refresh up -d kb-refresh
+  #
+  # Or via redamon.sh once that integration lands. Default is OFF — users opt in.
+  # ===========================================================================
+
+  kb-refresh:
+    profiles: ["kb-refresh"]
+    build:
+      context: .
+      dockerfile: agentic/Dockerfile
+    image: redamon-agent
+    container_name: redamon-kb-refresh
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
+      KB_PATH: /app/knowledge_base/data
+      NVD_API_KEY: "${NVD_API_KEY:-}"
+    volumes:
+      - ./knowledge_base/kb_config.yaml:/app/knowledge_base/kb_config.yaml:ro
+      - kb_data:/app/knowledge_base/data
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - redamon
+    # Sleep loop scheduler — runs source updates on cadence.
+    # Production setups should replace this with a real cron container or
+    # external scheduler (host cron, systemd timer, GitHub Actions).
+    command: >
+      sh -c '
+      echo "[KB-REFRESH] sidecar started at $$(date -u +%Y-%m-%dT%H:%M:%SZ)";
+      while true; do
+        DAY_OF_WEEK=$$(date -u +%u);
+        DAY_OF_MONTH=$$(date -u +%d);
+        HOUR=$$(date -u +%H);
+
+        echo "[KB-REFRESH $$(date -u +%Y-%m-%dT%H:%M:%SZ)] daily NVD refresh";
+        python -m knowledge_base.curation.data_ingestion \
+          --source nvd \
+          --neo4j-uri bolt://neo4j:7687 \
+          --neo4j-user neo4j \
+          --neo4j-password $$NEO4J_PASSWORD \
+          $${NVD_API_KEY:+--nvd-key $$NVD_API_KEY} \
+          || echo "[KB-REFRESH] NVD refresh failed";
+
+        if [ "$$DAY_OF_WEEK" = "1" ]; then
+          echo "[KB-REFRESH $$(date -u +%Y-%m-%dT%H:%M:%SZ)] weekly ExploitDB + Nuclei refresh";
+          python -m knowledge_base.curation.data_ingestion --source exploitdb \
+            --neo4j-uri bolt://neo4j:7687 --neo4j-user neo4j --neo4j-password $$NEO4J_PASSWORD \
+            || echo "[KB-REFRESH] ExploitDB refresh failed";
+          python -m knowledge_base.curation.data_ingestion --source nuclei \
+            --neo4j-uri bolt://neo4j:7687 --neo4j-user neo4j --neo4j-password $$NEO4J_PASSWORD \
+            || echo "[KB-REFRESH] Nuclei refresh failed";
+        fi;
+
+        if [ "$$DAY_OF_MONTH" = "01" ]; then
+          echo "[KB-REFRESH $$(date -u +%Y-%m-%dT%H:%M:%SZ)] monthly GTFOBins + LOLBAS refresh";
+          python -m knowledge_base.curation.data_ingestion --source gtfobins \
+            --neo4j-uri bolt://neo4j:7687 --neo4j-user neo4j --neo4j-password $$NEO4J_PASSWORD \
+            || echo "[KB-REFRESH] GTFOBins refresh failed";
+          python -m knowledge_base.curation.data_ingestion --source lolbas \
+            --neo4j-uri bolt://neo4j:7687 --neo4j-user neo4j --neo4j-password $$NEO4J_PASSWORD \
+            || echo "[KB-REFRESH] LOLBAS refresh failed";
+        fi;
+
+        echo "[KB-REFRESH $$(date -u +%Y-%m-%dT%H:%M:%SZ)] sleeping 24h until next refresh";
+        sleep 86400;
+      done
+      '
+
+  # ===========================================================================
   # Frontend
   # ===========================================================================
 
   webapp:
-    build: ./webapp
+    build:
+      context: ./webapp
+      args:
+        REDAMON_VERSION: "${REDAMON_VERSION:-0.0.0}"
     container_name: redamon-webapp
     ports:
       - "${WEBAPP_PORT:-3000}:3000"
@@ -404,6 +541,9 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
+      # Auth
+      AUTH_SECRET: ${AUTH_SECRET:-changeme}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-changeme}
       # Backend services (server-side API routes → internal docker network)
       RECON_ORCHESTRATOR_URL: http://recon-orchestrator:8010
       AGENT_API_URL: http://agent:8080
@@ -414,12 +554,21 @@ services:
       RECON_OUTPUT_PATH: /data/recon-output
       GVM_OUTPUT_PATH: /data/gvm-output
       GITHUB_HUNT_OUTPUT_PATH: /data/github-hunt-output
+      TRUFFLEHOG_OUTPUT_PATH: /data/trufflehog-output
       REPORT_OUTPUT_PATH: /data/reports
+      WORDLIST_UPLOAD_PATH: /data/recon-wordlists
+      NUCLEI_TEMPLATES_PATH: /data/nuclei-templates
     volumes:
       - ./recon/output:/data/recon-output:ro
+      - ./recon/wordlists:/data/recon-wordlists:rw
+      - ./mcp/nuclei-templates:/data/nuclei-templates:rw
       - ./gvm_scan/output:/data/gvm-output:ro
       - ./github_secret_hunt/output:/data/github-hunt-output:ro
+      - ./trufflehog_scan/output:/data/trufflehog-output:ro
       - report_data:/data/reports
+      - js_recon_uploads:/data/js-recon-uploads
+      - js_recon_custom:/data/js-recon-custom
+      - ./VERSION:/app/VERSION:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -457,9 +606,13 @@ volumes:
   postgres_data:
   neo4j_data:
   report_data:
+  js_recon_uploads:
+  js_recon_custom:
   neo4j_logs:
   neo4j_import:
   neo4j_plugins:
+  kb_data:
+    name: redamon_kb_data
   # GVM volumes (names must match container_manager.py references)
   vt_data:
     name: redamon_vt_data

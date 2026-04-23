@@ -128,12 +128,12 @@ export function ProjectSelector() {
           </div>
 
           <div className={styles.footer}>
-            <button className={styles.footerButton} onClick={handleNewProject}>
+            <button className={styles.footerButton} onClick={handleNewProject} disabled={!userId}>
               <Plus size={12} />
               New Project
             </button>
             <button className={styles.footerButton} onClick={handleViewAll}>
-              View All
+              Manage Projects
             </button>
           </div>
         </div>

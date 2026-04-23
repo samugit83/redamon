@@ -12,8 +12,10 @@ export interface TableRow {
   node: GraphNode
   connectionsIn: ConnectionInfo[]
   connectionsOut: ConnectionInfo[]
-  level2: ConnectionInfo[]
-  level3: ConnectionInfo[]
+  /** Lazy BFS: computes level-2 connections on first call, cached thereafter */
+  getLevel2: () => ConnectionInfo[]
+  /** Lazy BFS: computes level-3 connections on first call, cached thereafter */
+  getLevel3: () => ConnectionInfo[]
 }
 
 function getNodeId(endpoint: string | GraphNode): string {
@@ -63,7 +65,7 @@ export function useTableData(data: GraphData | undefined): TableRow[] {
       adjacency.get(targetId)!.add(sourceId)
     })
 
-    // BFS to get nodes at exactly depth 2 and 3
+    // BFS to get nodes at exactly depth 2 and 3 (lazy, per-node)
     function getNodesAtDepth(startId: string): { level2: string[]; level3: string[] } {
       const visited = new Set<string>([startId])
       let currentLevel = [startId]
@@ -88,32 +90,44 @@ export function useTableData(data: GraphData | undefined): TableRow[] {
       return { level2: levels[1] || [], level3: levels[2] || [] }
     }
 
-    return data.nodes.map(node => {
-      const { level2, level3 } = getNodesAtDepth(node.id)
+    function toConnectionInfos(ids: string[], hopLabel: string): ConnectionInfo[] {
+      return ids.map(id => {
+        const n = nodeMap.get(id)
+        return {
+          nodeId: id,
+          nodeName: n?.name || id,
+          nodeType: n?.type || 'Unknown',
+          relationType: hopLabel,
+        }
+      })
+    }
+
+    const rows = data.nodes.map(node => {
+      // Memoized lazy getters: BFS runs only on first call per node
+      let cachedLevel2: ConnectionInfo[] | null = null
+      let cachedLevel3: ConnectionInfo[] | null = null
 
       return {
         node,
         connectionsIn: connectionsIn.get(node.id) || [],
         connectionsOut: connectionsOut.get(node.id) || [],
-        level2: level2.map(id => {
-          const n = nodeMap.get(id)
-          return {
-            nodeId: id,
-            nodeName: n?.name || id,
-            nodeType: n?.type || 'Unknown',
-            relationType: '2 hops',
-          }
-        }),
-        level3: level3.map(id => {
-          const n = nodeMap.get(id)
-          return {
-            nodeId: id,
-            nodeName: n?.name || id,
-            nodeType: n?.type || 'Unknown',
-            relationType: '3 hops',
-          }
-        }),
+        getLevel2: () => {
+          if (cachedLevel2 !== null) return cachedLevel2
+          const { level2, level3 } = getNodesAtDepth(node.id)
+          cachedLevel2 = toConnectionInfos(level2, '2 hops')
+          cachedLevel3 = toConnectionInfos(level3, '3 hops')
+          return cachedLevel2
+        },
+        getLevel3: () => {
+          if (cachedLevel3 !== null) return cachedLevel3
+          const { level2, level3 } = getNodesAtDepth(node.id)
+          cachedLevel2 = toConnectionInfos(level2, '2 hops')
+          cachedLevel3 = toConnectionInfos(level3, '3 hops')
+          return cachedLevel3
+        },
       }
     })
+
+    return rows
   }, [data])
 }

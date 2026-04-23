@@ -11,11 +11,13 @@ import {
   BACKGROUND_COLORS,
   SELECTION_COLORS,
   CHAIN_SESSION_COLORS,
+  GOAL_FINDING_COLORS,
   FORCE_CONFIG,
   ANIMATION_CONFIG,
   ZOOM_CONFIG,
 } from '../../config'
-import { hasHighSeverityNodes } from '../../utils/nodeHelpers'
+import { getPerformanceTier, TIER_CONFIG, getAdaptiveForceConfig } from '../../config/graph'
+import { hasHighSeverityNodes, isGoalFinding } from '../../utils/nodeHelpers'
 import { useAnimationFrame } from '../../hooks'
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
@@ -31,6 +33,8 @@ interface GraphCanvas2DProps {
   onNodeClick: (node: GraphNode) => void
   isDark?: boolean
   activeChainId?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  externalGraphRef?: React.MutableRefObject<any>
 }
 
 export function GraphCanvas2D({
@@ -42,27 +46,25 @@ export function GraphCanvas2D({
   onNodeClick,
   isDark = true,
   activeChainId,
+  externalGraphRef,
 }: GraphCanvas2DProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null)
-  const animationTimeRef = useRef<number>(0)
-  const lastDataFingerprintRef = useRef<string>('')
 
-  // Fingerprint the data so we only reheat when structure actually changes
-  const dataFingerprint = useMemo(() => {
-    const nodeIds = data.nodes.map(n => n.id).sort().join(',')
-    const linkIds = data.links.map(l => `${typeof l.source === 'object' ? (l.source as GraphNode).id : l.source}-${typeof l.target === 'object' ? (l.target as GraphNode).id : l.target}`).sort().join(',')
-    return `${data.nodes.length}:${data.links.length}:${nodeIds}:${linkIds}`
-  }, [data])
-
-  // Set up collision detection — only reheat when graph structure changes
+  // Sync internal ref to external ref (for parent component access)
   useEffect(() => {
-    const isFirstRender = lastDataFingerprintRef.current === ''
-    const structureChanged = dataFingerprint !== lastDataFingerprintRef.current
-    lastDataFingerprintRef.current = dataFingerprint
+    if (externalGraphRef) externalGraphRef.current = graphRef.current
+  })
+  const animationTimeRef = useRef<number>(0)
+  const prevNodeCountRef = useRef<number>(0)
 
-    if (!structureChanged) return
+  // Performance tier + adaptive force config
+  const tier = useMemo(() => getPerformanceTier(data.nodes.length), [data.nodes.length])
+  const tierConfig = useMemo(() => TIER_CONFIG[tier], [tier])
+  const forceConfig = useMemo(() => getAdaptiveForceConfig(data.nodes.length), [data.nodes.length])
 
+  // Configure forces (runs on mount and when data changes)
+  useEffect(() => {
     const timer = setTimeout(() => {
       const fg = graphRef.current
       if (!fg) return
@@ -74,19 +76,64 @@ export function GraphCanvas2D({
           .forceCollide()
           .radius(FORCE_CONFIG.collisionRadius)
           .strength(FORCE_CONFIG.collisionStrength)
-          .iterations(FORCE_CONFIG.collisionIterations)
+          .iterations(forceConfig.collisionIterations)
       )
-      // Only reheat on first render or when nodes/links actually changed
-      if (isFirstRender || structureChanged) {
-        fg.d3ReheatSimulation()
-      }
+      // Spread connected nodes further apart within clusters
+      const linkForce = fg.d3Force('link')
+      if (linkForce) linkForce.distance(80)
+      // Reduce repulsion so distant clusters don't fly apart
+      const chargeForce = fg.d3Force('charge')
+      if (chargeForce) chargeForce.strength(-40).distanceMax(250)
     }, ANIMATION_CONFIG.initDelay)
 
     return () => clearTimeout(timer)
-  }, [dataFingerprint])
+  }, [forceConfig.collisionIterations])
 
-  // Animation loop for pulsing glow effect
+  // Reheat on structural changes (new/removed nodes or links). Deferred via
+  // setTimeout so graphRef.current is attached on first mount (ForceGraph2D is
+  // next/dynamic-loaded — forwardRef isn't committed on the first render pass).
+  const prevLinkCountRef = useRef<number>(0)
+  useEffect(() => {
+    const prevNodeCount = prevNodeCountRef.current
+    const prevLinkCount = prevLinkCountRef.current
+    const newNodeCount = data.nodes.length
+    const newLinkCount = data.links.length
+    const structureChanged = newNodeCount !== prevNodeCount || newLinkCount !== prevLinkCount
+    prevNodeCountRef.current = newNodeCount
+    prevLinkCountRef.current = newLinkCount
+
+    if (structureChanged) {
+      const timer = setTimeout(() => {
+        graphRef.current?.d3ReheatSimulation()
+      }, ANIMATION_CONFIG.initDelay)
+      return () => clearTimeout(timer)
+    }
+  }, [data])
+
+  // Slow down zoom speed for smoother navigation
+  useEffect(() => {
+    const applyZoom = () => {
+      const fg = graphRef.current
+      if (!fg) return false
+      // d3-zoom: reduce wheel delta for slower zoom (default multiplier is ~1.0)
+      const zoom = fg.zoom()
+      if (zoom?.wheelDelta) {
+        zoom.wheelDelta((event: WheelEvent) => {
+          return -event.deltaY * (event.deltaMode === 1 ? 0.03 : event.deltaMode ? 1 : 0.0006)
+        })
+        return true
+      }
+      return false
+    }
+    if (!applyZoom()) {
+      const timer = setTimeout(applyZoom, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [data])
+
+  // Animation loop for pulsing glow effect (only when glow is enabled by tier)
   const hasHighSeverity = hasHighSeverityNodes(data.nodes)
+  const enableGlowAnim = hasHighSeverity && tierConfig.enableGlow
 
   useAnimationFrame(
     (time) => {
@@ -100,7 +147,7 @@ export function GraphCanvas2D({
         }
       }
     },
-    hasHighSeverity
+    enableGlowAnim
   )
 
   const selectedNodeId = selectedNode?.id
@@ -115,10 +162,22 @@ export function GraphCanvas2D({
       linkColor={(link) => getLinkColor(link as GraphLink, selectedNodeId)}
       linkDirectionalArrowColor={(link) => getLinkColor(link as GraphLink, selectedNodeId)}
       linkWidth={(link) => getLinkWidth2D(link as GraphLink, selectedNodeId)}
-      linkDirectionalParticles={(link) => getParticleCount(link as GraphLink, selectedNodeId)}
-      linkDirectionalParticleWidth={(link) => getParticleWidth(link as GraphLink, selectedNodeId)}
-      linkDirectionalParticleColor={(link) => getParticleColor(link as GraphLink)}
-      linkDirectionalParticleSpeed={(link) => getParticleSpeed(link as GraphLink)}
+      linkDirectionalParticles={tierConfig.enableParticles
+        ? (link) => getParticleCount(link as GraphLink, selectedNodeId)
+        : 0
+      }
+      linkDirectionalParticleWidth={tierConfig.enableParticles
+        ? (link) => getParticleWidth(link as GraphLink, selectedNodeId)
+        : undefined
+      }
+      linkDirectionalParticleColor={tierConfig.enableParticles
+        ? (link) => getParticleColor(link as GraphLink, activeChainId)
+        : undefined
+      }
+      linkDirectionalParticleSpeed={tierConfig.enableParticles
+        ? (link) => getParticleSpeed(link as GraphLink)
+        : undefined
+      }
       linkDirectionalArrowLength={LINK_SIZES.arrowLength}
       linkDirectionalArrowRelPos={1}
       backgroundColor={isDark ? BACKGROUND_COLORS.dark.graph : BACKGROUND_COLORS.light.graph}
@@ -126,11 +185,13 @@ export function GraphCanvas2D({
       height={height}
       d3AlphaDecay={FORCE_CONFIG.alphaDecay}
       d3VelocityDecay={FORCE_CONFIG.velocityDecay}
-      cooldownTime={FORCE_CONFIG.cooldownTime}
-      cooldownTicks={FORCE_CONFIG.cooldownTicks}
+      cooldownTime={forceConfig.cooldownTime}
+      cooldownTicks={forceConfig.cooldownTicks}
+      warmupTicks={forceConfig.warmupTicks}
       onNodeClick={(node) => onNodeClick(node as GraphNode)}
       nodeCanvasObject={(node, ctx, globalScale) => {
         const graphNode = node as GraphNode & { x: number; y: number }
+        if (!isFinite(graphNode.x) || !isFinite(graphNode.y)) return
         const nodeSize = BASE_SIZES.node2D * getNodeSize(graphNode)
         const color = getNodeColor(graphNode)
         const isSelected = selectedNodeId === graphNode.id
@@ -140,10 +201,20 @@ export function GraphCanvas2D({
         const isActiveChain = graphNode.type === 'AttackChain' && isInActiveChain
         const isExploit = graphNode.type === 'ExploitGvm' || graphNode.type === 'ChainFinding'
         const isExploitInActiveChain = isExploit && !!activeChainId && graphNode.properties?.chain_id === activeChainId
-        // Inactive chain nodes: grey by default, orange when selected
-        const effectiveColor = (isChainNode || isExploit) && !isInActiveChain && !isExploitInActiveChain
-          ? (isSelected ? CHAIN_SESSION_COLORS.inactiveSelected : CHAIN_SESSION_COLORS.inactive)
-          : color
+        const isGoal = isGoalFinding(graphNode)
+        // Inactive chain nodes: grey (dark yellow for diamonds, dark green for goal findings)
+        let effectiveColor: string
+        if ((isChainNode || isExploit) && !isInActiveChain && !isExploitInActiveChain) {
+          if (isGoal) {
+            effectiveColor = isSelected ? GOAL_FINDING_COLORS.active : GOAL_FINDING_COLORS.inactive
+          } else if (isExploit) {
+            effectiveColor = isSelected ? CHAIN_SESSION_COLORS.inactiveSelected : CHAIN_SESSION_COLORS.inactiveFinding
+          } else {
+            effectiveColor = isSelected ? CHAIN_SESSION_COLORS.inactiveSelected : CHAIN_SESSION_COLORS.inactive
+          }
+        } else {
+          effectiveColor = color
+        }
 
         // Helper: draw hexagon path centered at (cx, cy) with given radius
         const drawHexagon = (cx: number, cy: number, r: number) => {
@@ -156,6 +227,60 @@ export function GraphCanvas2D({
             else ctx.lineTo(px, py)
           }
           ctx.closePath()
+        }
+
+        // Cluster node: torus / donut ring with centered count
+        if (graphNode.isCluster) {
+          const clusterColor = graphNode.clusterColor ?? color
+          const outerR = nodeSize * 1.35
+          const thickness = outerR * 0.42
+          const midR = outerR - thickness / 2
+          const innerR = outerR - thickness
+
+          // Selection ring (outer bounding circle)
+          if (isSelected) {
+            ctx.beginPath()
+            ctx.arc(graphNode.x, graphNode.y, outerR + 5, 0, 2 * Math.PI)
+            ctx.strokeStyle = SELECTION_COLORS.ring
+            ctx.lineWidth = 3
+            ctx.stroke()
+          }
+
+          // Thick stroked circle renders as a donut
+          ctx.beginPath()
+          ctx.arc(graphNode.x, graphNode.y, midR, 0, 2 * Math.PI)
+          ctx.strokeStyle = clusterColor
+          ctx.lineWidth = thickness
+          ctx.stroke()
+
+          // Subtle inner edge highlight for depth
+          ctx.beginPath()
+          ctx.arc(graphNode.x, graphNode.y, innerR, 0, 2 * Math.PI)
+          ctx.strokeStyle = 'rgba(0,0,0,0.25)'
+          ctx.lineWidth = 0.5
+          ctx.stroke()
+
+          // Count text inside the hole (theme-aware for contrast)
+          const count = graphNode.clusterChildren?.length ?? 0
+          const text = count >= 1000 ? `${Math.floor(count / 100) / 10}k` : `${count}`
+          const fontSize = Math.max(innerR * 0.78, 4)
+          ctx.font = `bold ${fontSize}px Sans-Serif`
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillStyle = isDark ? BACKGROUND_COLORS.dark.label : BACKGROUND_COLORS.light.label
+          ctx.fillText(text, graphNode.x, graphNode.y)
+
+          // Label below (respects label tier + zoom threshold)
+          if (tierConfig.enableLabels && ((showLabels && globalScale > ZOOM_CONFIG.labelVisibilityThreshold) || isSelected)) {
+            const childType = graphNode.clusterChildType ?? ''
+            const labelFont = Math.max(6 / globalScale, BASE_SIZES.label2D.min)
+            ctx.font = `${labelFont}px Sans-Serif`
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'top'
+            ctx.fillStyle = isDark ? BACKGROUND_COLORS.dark.label : BACKGROUND_COLORS.light.label
+            ctx.fillText(`${count} ${childType}`, graphNode.x, graphNode.y + outerR + 2)
+          }
+          return
         }
 
         // Draw selection marker (outer ring) for selected node
@@ -203,13 +328,10 @@ export function GraphCanvas2D({
           ctx.restore()
         }
 
-        // Check if this is a high/critical severity vulnerability or CVE
+        // Glow effect (skip when tier disables it)
         const glowLevel = getGlowLevel(graphNode)
-
-        // Draw pulsing glow effect for high/critical severity
-        // Use effectiveColor so inactive chain nodes glow grey instead of amber
         const glowColor = (isChainNode || isExploit) ? effectiveColor : color
-        if (glowLevel) {
+        if (tierConfig.enableGlow && glowLevel) {
           const time = animationTimeRef.current || Date.now() / 1000
           const speed = glowLevel === 'critical' ? ANIMATION_CONFIG.criticalSpeed : ANIMATION_CONFIG.highSpeed
           const pulse = Math.sin(time * speed) * 0.5 + 0.5
@@ -265,16 +387,31 @@ export function GraphCanvas2D({
           ctx.strokeStyle = effectiveColor
           ctx.lineWidth = 1.5
           ctx.stroke()
+        } else if (graphNode.type === 'ExternalDomain') {
+          // Dashed circle
+          ctx.beginPath()
+          ctx.arc(graphNode.x, graphNode.y, nodeSize, 0, 2 * Math.PI)
+          ctx.save()
+          ctx.globalAlpha = 0.15
+          ctx.fillStyle = color
+          ctx.fill()
+          ctx.globalAlpha = 1
+          ctx.setLineDash([3, 3])
+          ctx.strokeStyle = color
+          ctx.lineWidth = 1.5
+          ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
         } else {
-          // Standard circle for all other nodes
+          // Standard circle
           ctx.beginPath()
           ctx.arc(graphNode.x, graphNode.y, nodeSize, 0, 2 * Math.PI)
           ctx.fillStyle = color
           ctx.fill()
         }
 
-        // Draw label if enabled or if node is selected
-        if ((showLabels && globalScale > ZOOM_CONFIG.labelVisibilityThreshold) || isSelected) {
+        // Draw label (skip when tier disables it)
+        if (tierConfig.enableLabels && ((showLabels && globalScale > ZOOM_CONFIG.labelVisibilityThreshold) || isSelected)) {
           const label = graphNode.name
           const fontSize = Math.max(6 / globalScale, BASE_SIZES.label2D.min)
           ctx.font = `${fontSize}px Sans-Serif`
@@ -286,6 +423,14 @@ export function GraphCanvas2D({
       }}
       nodePointerAreaPaint={(node, color, ctx) => {
         const graphNode = node as GraphNode & { x: number; y: number }
+        if (graphNode.isCluster) {
+          const outerR = BASE_SIZES.node2D * getNodeSize(graphNode) * 1.35
+          ctx.beginPath()
+          ctx.arc(graphNode.x, graphNode.y, Math.max(outerR, 10), 0, 2 * Math.PI)
+          ctx.fillStyle = color
+          ctx.fill()
+          return
+        }
         ctx.beginPath()
         ctx.arc(graphNode.x, graphNode.y, 10, 0, 2 * Math.PI)
         ctx.fillStyle = color

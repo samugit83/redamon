@@ -1,0 +1,5 @@
+{"subdomain":"promo.acme.com","vulnerable":true,"service":"Github"}
+{"subdomain":"blog.acme.com","vulnerable":false,"service":""}
+{"subdomain":"shop.acme.com","vulnerable":true,"service":"Heroku"}
+{"subdomain":"assets.acme.com","vulnerable":true,"service":"AWS/S3"}
+{"subdomain":"mail.acme.com","vulnerable":true,"service":"NS","nonexist_domain":"ns1.defunct.io"}

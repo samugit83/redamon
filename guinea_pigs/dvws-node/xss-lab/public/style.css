@@ -1,0 +1,126 @@
+/* Argentum Digital — corporate theme */
+:root {
+  --ink: #0e1320;
+  --paper: #ffffff;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2451d6;
+  --accent-soft: #eaf0ff;
+  --warn: #b54708;
+  --good: #027a48;
+  --radius: 8px;
+  --maxw: 1180px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+/* Header / nav */
+.site-header {
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  position: sticky; top: 0; z-index: 10;
+}
+.nav-row { display: flex; align-items: center; gap: 24px; padding: 14px 24px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
+.brand-mark {
+  width: 32px; height: 32px; border-radius: 6px;
+  background: var(--ink); color: var(--paper);
+  display: grid; place-items: center; font-weight: 700;
+}
+.brand-name { font-weight: 600; font-size: 18px; letter-spacing: -.01em; }
+.brand-name small { color: var(--muted); font-weight: 400; margin-left: 4px; font-size: 14px; }
+.primary-nav { display: flex; gap: 20px; flex: 1; margin-left: 16px; }
+.primary-nav a { color: var(--ink); text-decoration: none; font-size: 14px; padding: 6px 0; border-bottom: 2px solid transparent; }
+.primary-nav a:hover { border-color: var(--ink); }
+.nav-actions { display: flex; gap: 10px; align-items: center; }
+.btn-ghost { padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); text-decoration: none; font-size: 14px; }
+.btn-primary { padding: 8px 14px; border-radius: var(--radius); background: var(--ink); color: var(--paper); text-decoration: none; font-size: 14px; }
+.btn-primary:hover, .btn-ghost:hover { opacity: .9; }
+
+/* Hero */
+.hero { padding: 72px 0 48px; }
+.hero h1 { font-size: 44px; line-height: 1.1; margin: 0 0 16px; letter-spacing: -.02em; }
+.hero p.lead { font-size: 18px; color: var(--muted); max-width: 640px; }
+.hero .cta-row { display: flex; gap: 12px; margin-top: 24px; }
+
+/* Sections */
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+section:first-of-type { border-top: 0; }
+h2.section-title { font-size: 28px; margin: 0 0 8px; letter-spacing: -.01em; }
+p.section-lead { color: var(--muted); margin: 0 0 28px; max-width: 640px; }
+
+/* Card grid */
+.grid { display: grid; gap: 20px; }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.card { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; background: var(--paper); }
+.card h3 { margin: 0 0 8px; font-size: 18px; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; }
+.card .meta { display: flex; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 13px; }
+.card a.read-more { display: inline-block; margin-top: 12px; color: var(--accent); text-decoration: none; font-size: 14px; }
+.card a.read-more:hover { text-decoration: underline; }
+
+/* Forms */
+form.stacked { display: flex; flex-direction: column; gap: 14px; max-width: 540px; }
+.form-row label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+input[type=text], input[type=email], input[type=search], input[type=number], textarea, select {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+  font: inherit; background: var(--paper);
+}
+textarea { min-height: 100px; resize: vertical; }
+button, input[type=submit] {
+  padding: 10px 18px; border: 0; border-radius: var(--radius);
+  background: var(--ink); color: var(--paper); font: inherit; cursor: pointer;
+}
+button.secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--line); }
+
+/* Comments / reviews */
+.comments { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+.comment, .review { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: #fafbfc; }
+.comment .who, .review .who { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.comment .when, .review .when { color: var(--muted); font-size: 12px; }
+
+/* Blog */
+article.post { max-width: 760px; margin: 0 auto; }
+article.post h1 { font-size: 36px; line-height: 1.15; letter-spacing: -.02em; }
+article.post .byline { color: var(--muted); margin-bottom: 32px; }
+article.post p { font-size: 17px; }
+
+/* Tables */
+table.simple { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.simple th, table.simple td { text-align: left; padding: 12px; border-bottom: 1px solid var(--line); }
+table.simple th { background: #fafbfc; font-weight: 600; }
+
+/* Notes / status */
+.note { padding: 12px 14px; border-radius: var(--radius); font-size: 14px; }
+.note.info { background: var(--accent-soft); color: var(--accent); }
+.note.ok { background: #e6f4ee; color: var(--good); }
+.note.warn { background: #fef3c7; color: var(--warn); }
+
+/* Footer */
+.site-footer { border-top: 1px solid var(--line); margin-top: 56px; padding: 48px 0 24px; background: #fafbfc; color: var(--ink); }
+.footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; }
+.footer-grid h4 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 12px; color: var(--muted); }
+.footer-grid ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.footer-grid a { color: var(--ink); text-decoration: none; font-size: 14px; }
+.footer-grid a:hover { color: var(--accent); }
+.footer-brand { font-weight: 600; margin-bottom: 8px; }
+.footer-meta { color: var(--muted); font-size: 13px; }
+.footer-bottom { display: flex; justify-content: space-between; padding-top: 24px; margin-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+
+/* Misc */
+.tag { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 500; }
+code { font-family: var(--mono); font-size: 13px; background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+.muted { color: var(--muted); }
+.banner { padding: 24px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid #d4dffb; }

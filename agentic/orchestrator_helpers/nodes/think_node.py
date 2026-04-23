@@ -8,11 +8,13 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from state import (
     AgentState,
+    DeepThinkResult,
     ExecutionStep,
     LLMDecision,
     PhaseHistoryEntry,
     PhaseTransitionRequest,
     TargetInfo,
+    ToolConfirmationRequest,
     UserQuestionRequest,
     format_chain_context,
     format_todo_list,
@@ -21,14 +23,19 @@ from state import (
     utc_now,
 )
 import orchestrator_helpers.chain_graph_writer as chain_graph
+from orchestrator_helpers.agent_context import get_agent_context
 from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
 from orchestrator_helpers.parsing import try_parse_llm_decision
 from orchestrator_helpers.config import get_identifiers, is_session_config_complete
-from project_settings import get_setting, get_allowed_tools_for_phase
+from project_settings import get_setting, get_allowed_tools_for_phase, DANGEROUS_TOOLS
+
 from prompts import (
     REACT_SYSTEM_PROMPT,
     PENDING_OUTPUT_ANALYSIS_SECTION,
     PENDING_PLAN_OUTPUTS_SECTION,
+    DEEP_THINK_PROMPT,
+    DEEP_THINK_SECTION,
+    DEEP_THINK_SELF_REQUEST_INSTRUCTION,
     get_phase_tools,
     build_phase_definitions,
     build_informational_guidance,
@@ -36,12 +43,14 @@ from prompts import (
     build_tool_name_enum,
     build_tool_args_section,
 )
-from tools import set_tenant_context, set_phase_context
+from prompts.base import build_fireteam_prompt_fragments
+from utils import get_session_config_prompt
+from tools import set_tenant_context, set_phase_context, set_graph_view_context
 
 logger = logging.getLogger(__name__)
 
 
-async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_creds, streaming_callbacks=None) -> dict:
+async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_creds, streaming_callbacks=None, graph_view_cyphers=None) -> dict:
     """
     Core ReAct reasoning node.
 
@@ -70,6 +79,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     # Set context for tools
     set_tenant_context(user_id, project_id)
     set_phase_context(phase)
+    if graph_view_cyphers:
+        set_graph_view_context(graph_view_cyphers.get(session_id))
 
     # Get current objective from conversation objectives
     objectives = state.get("conversation_objectives", [])
@@ -93,8 +104,129 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     qa_history_formatted = format_qa_history(state.get("qa_history", []))
     objective_history_formatted = format_objective_history(state.get("objective_history", []))
 
+    # ─── Deep Think pre-step (conditional) ────────────────────────────────
+    deep_think_result = state.get("deep_think_result")  # existing from prior iterations
+    deep_think_triggered = False
+    # Deep-think token deltas — initialized unconditionally so the main
+    # think-loop can seed its tally from them whether deep-think ran or not.
+    _dt_in = 0
+    _dt_out = 0
+
+    if get_setting('DEEP_THINK_ENABLED', False):
+        trigger_reason = None
+
+        # Condition 1: first iteration of session
+        if iteration == 1:
+            trigger_reason = "First iteration — establishing initial strategy"
+
+        # Condition 2: phase transition just happened
+        elif just_transitioned:
+            trigger_reason = f"Phase transition to {just_transitioned} — re-evaluating strategy"
+
+        # Condition 3: failure loop (3+ consecutive failures)
+        _exec_trace = state.get("execution_trace", [])
+        if not trigger_reason and len(_exec_trace) >= 3:
+            _consecutive = 0
+            for _step in reversed(_exec_trace[-6:]):
+                _out = ((_step.get("tool_output") or "")[:500]).lower()
+                _is_fail = (
+                    not _step.get("success", True)
+                    or "failed" in _out
+                    or "error" in _out
+                    or "exploit completed, but no session" in _out
+                )
+                if _is_fail:
+                    _consecutive += 1
+                else:
+                    break
+            if _consecutive >= 3:
+                trigger_reason = f"Failure loop detected ({_consecutive} consecutive failures) — pivoting strategy"
+
+        # Condition 4: LLM self-requested deep think on previous iteration
+        if not trigger_reason and state.get("_need_deep_think", False):
+            trigger_reason = "Agent self-assessed stagnation — strategic re-evaluation requested"
+
+        if trigger_reason:
+            try:
+                # Build session config (tunnel/LHOST/LPORT) for deep think context
+                _attack_path = state.get("attack_path_type", "")
+                _is_statefull = get_setting('POST_EXPL_PHASE_TYPE', 'statefull') == 'statefull'
+                _needs_session = (
+                    (phase == "exploitation" and _is_statefull)
+                    or _attack_path == "phishing_social_engineering"
+                )
+                _session_config = ""
+                if _needs_session:
+                    _sc = get_session_config_prompt()
+                    if _sc:
+                        _session_config = f"\n{_sc}\n"
+
+                # Build RoE section if enabled
+                _roe_section = ""
+                if get_setting('ROE_ENABLED', False):
+                    from prompts.base import build_roe_prompt_section
+                    _roe = build_roe_prompt_section()
+                    if _roe:
+                        _roe_section = f"\n{_roe}\n"
+
+                deep_think_prompt = DEEP_THINK_PROMPT.format(
+                    current_phase=phase,
+                    objective=current_objective,
+                    attack_path_type=_attack_path,
+                    attack_path_behavior=build_attack_path_behavior(_attack_path),
+                    phase_definitions=build_phase_definitions(),
+                    iteration=iteration,
+                    max_iterations=state.get("max_iterations", get_setting('MAX_ITERATIONS', 100)),
+                    target_info=target_info_formatted,
+                    chain_context=chain_context_formatted,
+                    trigger_reason=trigger_reason,
+                    todo_list=todo_list_formatted,
+                    objective_history=objective_history_formatted,
+                    session_config=_session_config,
+                    roe_section=_roe_section,
+                )
+
+                dt_response = await llm.ainvoke([
+                    SystemMessage(content=deep_think_prompt),
+                    HumanMessage(content="Produce the deep think analysis JSON now."),
+                ])
+                dt_raw = normalize_content(dt_response.content).strip()
+                _dt_usage = getattr(dt_response, "usage_metadata", None) or {}
+                _dt_in += int(_dt_usage.get("input_tokens", 0) or 0)
+                _dt_out += int(_dt_usage.get("output_tokens", 0) or 0)
+                # Strip markdown code fences if present (LLMs often wrap JSON in ```json ... ```)
+                if dt_raw.startswith("```"):
+                    dt_raw = dt_raw.split("\n", 1)[1] if "\n" in dt_raw else dt_raw[3:]
+                    if dt_raw.endswith("```"):
+                        dt_raw = dt_raw[:-3].strip()
+                dt_parsed = DeepThinkResult.model_validate_json(dt_raw)
+
+                deep_think_result = (
+                    f"**Situation:** {dt_parsed.situation_assessment}\n\n"
+                    f"**Attack Vectors:** {', '.join(dt_parsed.attack_vectors_identified)}\n\n"
+                    f"**Approach:** {dt_parsed.recommended_approach}\n\n"
+                    f"**Priority:** {' → '.join(dt_parsed.priority_order)}\n\n"
+                    f"**Risks:** {dt_parsed.risks_and_mitigations}"
+                )
+                deep_think_triggered = True
+                logger.info(f"[{user_id}/{project_id}/{session_id}] Deep Think triggered: {trigger_reason}")
+
+                # Stream to frontend
+                if streaming_callbacks:
+                    streaming_cb = streaming_callbacks.get(session_id)
+                    if streaming_cb:
+                        await streaming_cb.on_deep_think(
+                            trigger_reason=trigger_reason,
+                            analysis=deep_think_result,
+                            iteration=iteration,
+                            phase=phase,
+                        )
+            except Exception as e:
+                logger.warning(f"[{user_id}/{project_id}/{session_id}] Deep Think failed (non-blocking): {e}")
+    # ─── End Deep Think ──────────────────────────────────────────────────
+
     # Get phase tools with attack path type for dynamic routing
-    attack_path_type = state.get("attack_path_type", "cve_exploit")
+    attack_path_type = state.get("attack_path_type", "")
     available_tools = get_phase_tools(
         phase,
         get_setting('ACTIVATE_POST_EXPL_PHASE', True),
@@ -104,6 +236,19 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     )
 
     allowed_tools = get_allowed_tools_for_phase(phase)
+
+    # Conditionally render the deploy_fireteam action based on project gates.
+    # When FIRETEAM_ENABLED=false OR current phase not in allowed phases, the
+    # three fragments are empty strings so the LLM never sees the action —
+    # saves ~500 tokens per call and avoids the LLM emitting a gated action.
+    ft_action_enum, ft_plan_field, ft_example = build_fireteam_prompt_fragments(
+        enabled=get_setting("FIRETEAM_ENABLED", False)
+                and get_setting("PERSISTENT_CHECKPOINTER", False),
+        phase=phase,
+        allowed_phases=get_setting("FIRETEAM_ALLOWED_PHASES", ["informational"]),
+        max_members=int(get_setting("FIRETEAM_MAX_MEMBERS", 5)),
+        propensity=int(get_setting("FIRETEAM_PROPENSITY", 3)),
+    )
 
     system_prompt = REACT_SYSTEM_PROMPT.format(
         current_phase=phase,
@@ -123,7 +268,18 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         todo_list=todo_list_formatted,
         target_info=target_info_formatted,
         qa_history=qa_history_formatted,
+        fireteam_action_enum=ft_action_enum,
+        fireteam_plan_field=ft_plan_field,
+        fireteam_example_section=ft_example,
     )
+
+    # Inject Deep Think section if available (from state or just computed)
+    if deep_think_result:
+        system_prompt += DEEP_THINK_SECTION.format(deep_think_result=deep_think_result)
+
+    # Inject Deep Think self-request instruction (only when enabled)
+    if get_setting('DEEP_THINK_ENABLED', False):
+        system_prompt += DEEP_THINK_SELF_REQUEST_INSTRUCTION
 
     # Inject stealth mode rules if enabled (prepended for maximum priority)
     if get_setting('STEALTH_MODE', False):
@@ -132,12 +288,22 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         logger.info(f"[{user_id}/{project_id}/{session_id}] STEALTH MODE active — injected stealth rules into prompt")
 
     # Scope guardrail: remind agent to stay within authorized targets
-    system_prompt += (
-        "\n\n## SCOPE GUARDRAIL\n\n"
-        "You must ONLY operate against the project's configured target domain/IPs. "
-        "Never scan, exploit, probe, or interact with domains or IPs outside the authorized scope. "
-        "If the user asks you to target something outside the project scope, refuse and explain why."
-    )
+    # Always inject for hard-blocked domains (government/public); also inject when soft guardrail is enabled
+    _inject_scope_guardrail = get_setting('AGENT_GUARDRAIL_ENABLED', True)
+    if not _inject_scope_guardrail:
+        from hard_guardrail import is_hard_blocked
+        _target_domain = get_setting('TARGET_DOMAIN', '')
+        _ip_mode = get_setting('IP_MODE', False)
+        if not _ip_mode and _target_domain:
+            _inject_scope_guardrail, _ = is_hard_blocked(_target_domain)
+
+    if _inject_scope_guardrail:
+        system_prompt += (
+            "\n\n## SCOPE GUARDRAIL\n\n"
+            "You must ONLY operate against the project's configured target domain/IPs. "
+            "Never scan, exploit, probe, or interact with domains or IPs outside the authorized scope. "
+            "If the user asks you to target something outside the project scope, refuse and explain why."
+        )
 
     # Rules of Engagement injection
     if get_setting('ROE_ENABLED', False):
@@ -288,6 +454,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     decision = None
     last_error = None
     response_text = ""
+    input_tokens_this_turn = _dt_in
+    output_tokens_this_turn = _dt_out
 
     for attempt in range(max_retries):
         if attempt > 0:
@@ -300,6 +468,10 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
 
         response = await llm.ainvoke(messages)
         response_text = normalize_content(response.content).strip()
+
+        usage = getattr(response, "usage_metadata", None) or {}
+        input_tokens_this_turn += int(usage.get("input_tokens", 0) or 0)
+        output_tokens_this_turn += int(usage.get("output_tokens", 0) or 0)
 
         logger.info(f"\n{'='*60}")
         logger.info(f"LLM RAW RESPONSE - Iteration {iteration} (attempt {attempt+1}/{max_retries})")
@@ -364,6 +536,30 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     else:
         logger.info(f"Q&A HISTORY: (none)")
 
+    # Fireteam gate: enforce feature-flag + persistent-checkpointer + allowed-phases.
+    # If the LLM emitted deploy_fireteam but any gate fails, rewrite the action
+    # to use_tool without a tool (so _route_after_think routes safely). The
+    # system note is injected after `updates` is constructed below.
+    _fireteam_gate_note: str | None = None
+    if decision.action == "deploy_fireteam":
+        ft_enabled = get_setting("FIRETEAM_ENABLED", False)
+        persistent = get_setting("PERSISTENT_CHECKPOINTER", False)
+        allowed_phases = get_setting("FIRETEAM_ALLOWED_PHASES", ["informational"])
+        if not ft_enabled:
+            _fireteam_gate_note = "fireteam feature disabled for this project"
+        elif not persistent:
+            _fireteam_gate_note = "persistent checkpointer required (PERSISTENT_CHECKPOINTER=false); fireteam cannot run safely without it"
+        elif phase not in allowed_phases:
+            _fireteam_gate_note = f"phase '{phase}' not in allowed phases {allowed_phases}"
+        if _fireteam_gate_note:
+            logger.warning(f"[{user_id}/{project_id}/{session_id}] deploy_fireteam rejected: {_fireteam_gate_note}")
+            decision = decision.model_copy(update={
+                "action": "use_tool",
+                "tool_name": None,
+                "tool_args": None,
+                "fireteam_plan": None,
+            })
+
     # Log user_question if action is ask_user
     if decision.action == "ask_user" and decision.user_question:
         logger.info(f"USER_QUESTION:")
@@ -389,21 +585,62 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     todo_list = [item.model_dump() for item in decision.updated_todo_list] if decision.updated_todo_list else state.get("todo_list", [])
 
     # Build state updates
+    _prev_input_tokens = int(state.get("input_tokens_used", 0) or 0)
+    _prev_output_tokens = int(state.get("output_tokens_used", 0) or 0)
+    _new_input_tokens = _prev_input_tokens + input_tokens_this_turn
+    _new_output_tokens = _prev_output_tokens + output_tokens_this_turn
+
     updates = {
         "current_iteration": iteration,
         "todo_list": todo_list,
         "_decision": decision.model_dump(),
         "_just_transitioned_to": None,  # Clear the marker
+        "_reject_tool": False,  # Clear tool rejection marker from previous iteration
+        "_tool_confirmation_mode": None,  # Clear mode from previous confirmation
         "_completed_step": None,  # Will be set if we process pending output
+        "input_tokens_used": _new_input_tokens,
+        "output_tokens_used": _new_output_tokens,
+        "tokens_used": _new_input_tokens + _new_output_tokens,
+        "_input_tokens_this_turn": input_tokens_this_turn,
+        "_output_tokens_this_turn": output_tokens_this_turn,
     }
 
-    # When action is plan_tools, set _current_plan instead of _current_step
+    logger.info(
+        f"[{user_id}/{project_id}/{session_id}] Tokens this turn: "
+        f"in={input_tokens_this_turn} out={output_tokens_this_turn} "
+        f"(cumulative in={_new_input_tokens} out={_new_output_tokens})"
+    )
+
+    # Inject fireteam-gate rejection note so the LLM doesn't just re-emit
+    # deploy_fireteam on the next iteration. Use HumanMessage to represent
+    # operator/system feedback mid-conversation (AIMessage would model the
+    # LLM's own past output, which is semantically wrong).
+    if _fireteam_gate_note:
+        updates["messages"] = [HumanMessage(
+            content=f"[system] deploy_fireteam rejected: {_fireteam_gate_note}. Choose use_tool, plan_tools, transition_phase, or complete instead."
+        )]
+
+    # Persist deep think result in state (only when newly triggered)
+    if deep_think_triggered:
+        updates["deep_think_result"] = deep_think_result
+
+    # Persist LLM self-request for deep think (triggers on next iteration)
+    updates["_need_deep_think"] = decision.need_deep_think if get_setting('DEEP_THINK_ENABLED', False) else False
+
+    # When action is plan_tools, set _current_plan instead of _current_step.
+    # When action is deploy_fireteam, set _current_fireteam_plan.
     if decision.action == "plan_tools" and decision.tool_plan:
         updates["_current_step"] = None  # No single step — plan node handles streaming
         updates["_current_plan"] = decision.tool_plan.model_dump()
+        updates["_current_fireteam_plan"] = None
+    elif decision.action == "deploy_fireteam" and decision.fireteam_plan:
+        updates["_current_step"] = None
+        updates["_current_plan"] = None
+        updates["_current_fireteam_plan"] = decision.fireteam_plan.model_dump()
     else:
         updates["_current_step"] = step.model_dump()
         updates["_current_plan"] = None  # Clear any stale plan
+        updates["_current_fireteam_plan"] = None
 
     # Process output analysis if we had pending tool output
     if has_pending_output:
@@ -513,6 +750,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     success=pending_step.get("success", True),
                     error_message=pending_step.get("error_message"),
                     extracted_info=analysis.extracted_info.model_dump() if analysis and analysis.extracted_info else {},
+                    **get_agent_context(state),
                 ),
             )
             updates["_last_chain_step_id"] = step_id
@@ -547,6 +785,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             for cf in (analysis.chain_findings or []):
                 if analysis.exploit_succeeded and cf.finding_type in _EXPLOIT_OVERLAP_TYPES:
                     continue
+                _ctx = get_agent_context(state)
                 chain_graph.fire_record_finding(
                     neo4j_uri, neo4j_user, neo4j_password,
                     chain_id=session_id, step_id=step_id,
@@ -556,6 +795,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     confidence=cf.confidence, phase=phase,
                     iteration=step_iteration,
                     related_cves=cf.related_cves, related_ips=cf.related_ips,
+                    agent_id=_ctx["agent_id"],
+                    source_agent=_ctx["agent_name"],
+                    fireteam_id=_ctx["fireteam_id"],
                 )
 
             # 6. Fire-and-forget: write ChainFailure if failed
@@ -577,7 +819,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             updates["execution_trace"] = execution_trace
             updates["target_info"] = merged_target.model_dump()
             updates["_completed_step"] = pending_step
-            updates["messages"] = [AIMessage(content=f"**Step {pending_step.get('iteration')}** [{phase}]\n\n{analysis.interpretation}")]
+            updates["messages"] = [AIMessage(content=f"**Step {step_iteration}** [{phase}]\n\n{analysis.interpretation}")]
 
         else:
             # LLM didn't return analysis — use raw output as fallback
@@ -712,11 +954,13 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
 
             # Neo4j chain step (sync so prev_step_id linkage is sequential)
             # Capture all loop variables via default args to avoid closure issues
+            _ctx = get_agent_context(state)
             await loop.run_in_executor(
                 None,
                 lambda _sid=step_id, _prev=prev_chain_step_id, _ps=plan_step,
                        _ei=combined_extracted, _thought=step_thought,
-                       _reasoning=step_reasoning, _oa=step_output_analysis: chain_graph.sync_record_step(
+                       _reasoning=step_reasoning, _oa=step_output_analysis,
+                       _c=_ctx: chain_graph.sync_record_step(
                     neo4j_uri, neo4j_user, neo4j_password,
                     step_id=_sid,
                     chain_id=session_id,
@@ -732,6 +976,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     success=_ps.get("success", False),
                     error_message=_ps.get("error_message"),
                     extracted_info=_ei,
+                    agent_id=_c["agent_id"],
+                    agent_name=_c["agent_name"],
+                    fireteam_id=_c["fireteam_id"],
                 ),
             )
             # Update prev for next tool in wave (sequential chain linkage)
@@ -783,6 +1030,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             last_step_id = new_trace_entries[-1]["step_id"]
             # Skip exploit-related findings if exploit success already recorded (mirrors single-tool)
             _EXPLOIT_OVERLAP_TYPES = {"exploit_success", "access_gained", "credential_found"}
+            _ctx = get_agent_context(state)
             for cf in (analysis.chain_findings or []):
                 if analysis.exploit_succeeded and cf.finding_type in _EXPLOIT_OVERLAP_TYPES:
                     continue
@@ -795,6 +1043,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     confidence=cf.confidence, phase=phase,
                     iteration=plan_iteration,
                     related_cves=cf.related_cves, related_ips=cf.related_ips,
+                    agent_id=_ctx["agent_id"],
+                    source_agent=_ctx["agent_name"],
+                    fireteam_id=_ctx["fireteam_id"],
                 )
 
         # Update state
@@ -945,5 +1196,51 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     phase=phase,
                 ).model_dump()
                 updates["awaiting_user_question"] = True
+
+    # Tool confirmation gate — only when setting enabled and no other gate active
+    if (get_setting('REQUIRE_TOOL_CONFIRMATION', True)
+            and not updates.get("awaiting_user_approval")
+            and not updates.get("awaiting_user_question")):
+
+        action = decision.action
+        if action == "use_tool" and decision.tool_name in DANGEROUS_TOOLS:
+            updates["awaiting_tool_confirmation"] = True
+            updates["tool_confirmation_pending"] = ToolConfirmationRequest(
+                mode="single",
+                tools=[{
+                    "tool_name": decision.tool_name,
+                    "tool_args": decision.tool_args or {},
+                    "rationale": decision.reasoning or "",
+                }],
+                reasoning=decision.reasoning or "",
+                phase=phase,
+                iteration=iteration,
+            ).model_dump()
+
+        elif action == "plan_tools" and decision.tool_plan:
+            dangerous = [
+                {
+                    "tool_name": s.tool_name,
+                    "tool_args": s.tool_args,
+                    "rationale": s.rationale,
+                }
+                for s in decision.tool_plan.steps
+                if s.tool_name in DANGEROUS_TOOLS
+            ]
+            if dangerous:
+                updates["awaiting_tool_confirmation"] = True
+                updates["tool_confirmation_pending"] = ToolConfirmationRequest(
+                    mode="plan",
+                    tools=dangerous,
+                    reasoning=decision.tool_plan.plan_rationale,
+                    phase=phase,
+                    iteration=iteration,
+                ).model_dump()
+
+    # If tool confirmation is pending, suppress the step analysis message
+    # (it would show as a premature "Step X" report in chat; analysis is already
+    # communicated via tool_complete streaming event)
+    if updates.get("awaiting_tool_confirmation"):
+        updates.pop("messages", None)
 
     return updates

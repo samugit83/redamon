@@ -1,8 +1,8 @@
 'use client'
 
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { NODE_COLORS } from '../../config'
-import { formatPropertyValue } from '../../utils/formatters'
+import { renderPropertyValue } from '../../utils/renderPropertyValue'
 import type { TableRow } from '../../hooks/useTableData'
 import styles from './ExpandedRowDetail.module.css'
 
@@ -17,6 +17,10 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
     .filter(([key]) => !HIDDEN_KEYS.has(key))
     .sort(([a], [b]) => a.localeCompare(b))
 
+  // Lazy BFS: computed on first expand, cached thereafter
+  const level2 = useMemo(() => row.getLevel2(), [row])
+  const level3 = useMemo(() => row.getLevel3(), [row])
+
   return (
     <div className={styles.detail}>
       <div className={styles.sections}>
@@ -30,7 +34,7 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
               {properties.map(([key, value]) => (
                 <div key={key} className={styles.propRow}>
                   <span className={styles.propKey}>{key}</span>
-                  <span className={styles.propValue}>{formatPropertyValue(value)}</span>
+                  <span className={styles.propValue}>{renderPropertyValue(value)}</span>
                 </div>
               ))}
             </div>
@@ -91,13 +95,13 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
         <div className={styles.section}>
           <h4 className={styles.sectionTitle}>
             Level 2 (2 hops)
-            <span className={styles.connCount}>{row.level2.length}</span>
+            <span className={styles.connCount}>{level2.length}</span>
           </h4>
-          {row.level2.length === 0 ? (
+          {level2.length === 0 ? (
             <p className={styles.empty}>No 2nd-level connections</p>
           ) : (
             <div className={styles.connList}>
-              {row.level2.map((conn, i) => (
+              {level2.map((conn, i) => (
                 <div key={`l2-${conn.nodeId}-${i}`} className={styles.connItem}>
                   <span
                     className={styles.connDot}
@@ -115,13 +119,13 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
         <div className={styles.section}>
           <h4 className={styles.sectionTitle}>
             Level 3 (3 hops)
-            <span className={styles.connCount}>{row.level3.length}</span>
+            <span className={styles.connCount}>{level3.length}</span>
           </h4>
-          {row.level3.length === 0 ? (
+          {level3.length === 0 ? (
             <p className={styles.empty}>No 3rd-level connections</p>
           ) : (
             <div className={styles.connList}>
-              {row.level3.map((conn, i) => (
+              {level3.map((conn, i) => (
                 <div key={`l3-${conn.nodeId}-${i}`} className={styles.connItem}>
                   <span
                     className={styles.connDot}

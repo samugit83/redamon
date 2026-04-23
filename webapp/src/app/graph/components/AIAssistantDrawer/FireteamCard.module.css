@@ -1,0 +1,81 @@
+.card {
+  background: var(--surface-primary, #0f131a);
+  border: 1px solid var(--border-default, #2a303b);
+  border-left-width: 4px;
+  border-left-color: #3b82f6;
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+}
+
+.status_completed { border-left-color: #4caf50; }
+.status_timeout, .status_failed { border-left-color: #ef4444; }
+.status_cancelled { border-left-color: #6b7280; }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.teamIcon { color: #3b82f6; }
+.icon { flex-shrink: 0; }
+
+.title {
+  font-weight: 600;
+  color: var(--text-primary, #e5e7eb);
+}
+
+.statusLabel {
+  font-size: 0.72rem;
+  color: var(--text-secondary, #9ca3af);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.meta {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rationale {
+  font-size: 0.82rem;
+  color: var(--text-secondary, #9ca3af);
+  padding-left: 8px;
+  border-left: 2px solid var(--border-default, #2a303b);
+  line-height: 1.45;
+}
+
+.grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.iconSuccess { color: #4caf50; }
+.iconWarn { color: #ff9800; }
+.iconError { color: #ef4444; }
+.iconMuted { color: #6b7280; }
+.spinner { animation: spin 1s linear infinite; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

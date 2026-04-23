@@ -205,8 +205,13 @@
   transition: var(--transition-all);
 }
 
-.footerButton:hover {
+.footerButton:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--text-tertiary);
+}
+
+.footerButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }

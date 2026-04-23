@@ -6,14 +6,22 @@ Passive URL discovery from web archives using GAU.
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, parse_qs
 
 from .classification import classify_parameter, classify_endpoint
+
+
+def _is_arm64_host() -> bool:
+    """Return True when running on an ARM64 host."""
+    machine = platform.machine().lower()
+    return machine in ("arm64", "aarch64")
 
 
 def _create_temp_dir(prefix: str = "gau") -> Path:
@@ -43,9 +51,14 @@ def pull_gau_docker_image(docker_image: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        print(f"    [*] Pulling GAU image: {docker_image}...")
+        print(f"[*][GAU] Pulling GAU image: {docker_image}...")
+        pull_cmd = ["docker", "pull"]
+        if _is_arm64_host():
+            pull_cmd.extend(["--platform", "linux/amd64"])
+        pull_cmd.append(docker_image)
+
         result = subprocess.run(
-            ["docker", "pull", docker_image],
+            pull_cmd,
             capture_output=True,
             text=True,
             timeout=300
@@ -83,6 +96,17 @@ def filter_gau_url(url: str, blacklist_extensions: List[str]) -> bool:
         return False
 
 
+def _write_gau_config(urlscan_api_key: str, temp_dir: Path) -> Path:
+    """Write a .gau.toml config file with API keys and return its path."""
+    config_path = temp_dir / ".gau.toml"
+    lines = []
+    if urlscan_api_key:
+        lines.append("[urlscan]")
+        lines.append(f'  apikey = "{urlscan_api_key}"')
+    config_path.write_text("\n".join(lines) + "\n")
+    return config_path
+
+
 def run_gau_for_domain(
     domain: str,
     docker_image: str,
@@ -93,7 +117,8 @@ def run_gau_for_domain(
     max_urls: int,
     year_range: Optional[List[str]] = None,
     verbose: bool = False,
-    use_proxy: bool = False
+    use_proxy: bool = False,
+    urlscan_api_key: str = ""
 ) -> List[str]:
     """
     Run GAU for a single domain to fetch historical URLs.
@@ -109,14 +134,53 @@ def run_gau_for_domain(
         year_range: Optional [from_year, to_year] filter
         verbose: Enable verbose output
         use_proxy: Whether to use Tor proxy
+        urlscan_api_key: Optional URLScan API key for higher rate limits
 
     Returns:
         List of discovered URLs
     """
+    # Write .gau.toml config if API key is provided
+    config_temp_dir = None
+    if urlscan_api_key:
+        config_temp_dir = _create_temp_dir("gau_config")
+        _write_gau_config(urlscan_api_key, config_temp_dir)
+
+    try:
+        return _run_gau_docker(
+            domain, docker_image, providers, threads, timeout,
+            blacklist_extensions, max_urls, year_range, verbose,
+            use_proxy, config_temp_dir,
+        )
+    finally:
+        if config_temp_dir:
+            _cleanup_temp_dir(config_temp_dir)
+
+
+def _run_gau_docker(
+    domain: str,
+    docker_image: str,
+    providers: List[str],
+    threads: int,
+    timeout: int,
+    blacklist_extensions: List[str],
+    max_urls: int,
+    year_range: Optional[List[str]],
+    verbose: bool,
+    use_proxy: bool,
+    config_temp_dir: Optional[Path],
+) -> List[str]:
+    """Internal: execute GAU Docker container."""
     discovered_urls = set()
 
     # Build GAU command
     cmd = ["docker", "run", "--rm"]
+    if _is_arm64_host():
+        cmd.extend(["--platform", "linux/amd64"])
+
+    # Mount .gau.toml config if available
+    if config_temp_dir:
+        config_file = config_temp_dir / ".gau.toml"
+        cmd.extend(["-v", f"{config_file}:/root/.gau.toml:ro"])
 
     # Network mode for Tor proxy
     if use_proxy:
@@ -167,12 +231,12 @@ def run_gau_for_domain(
                         break
 
         if result.stderr and verbose:
-            print(f"    [*] GAU stderr: {result.stderr[:200]}")
+            print(f"[*][GAU] GAU stderr: {result.stderr[:200]}")
 
     except subprocess.TimeoutExpired:
-        print(f"    [!] GAU timeout for {domain}")
+        print(f"[!][GAU] Timeout for {domain}")
     except Exception as e:
-        print(f"    [!] GAU error for {domain}: {e}")
+        print(f"[!][GAU] Error for {domain}: {e}")
 
     return sorted(list(discovered_urls))
 
@@ -187,7 +251,9 @@ def run_gau_discovery(
     max_urls: int,
     year_range: Optional[List[str]] = None,
     verbose: bool = False,
-    use_proxy: bool = False
+    use_proxy: bool = False,
+    urlscan_api_key: str = "",
+    workers: int = 10
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """
     Run GAU passive URL discovery for multiple domains.
@@ -196,39 +262,58 @@ def run_gau_discovery(
         target_domains: Set of domains to query
         ... (configuration parameters)
         use_proxy: Whether to use Tor proxy
+        urlscan_api_key: Optional URLScan API key for higher rate limits
 
     Returns:
         Tuple of (all_discovered_urls, urls_by_domain)
     """
-    print(f"\n[*] Running GAU passive URL discovery...")
-    print(f"    Providers: {', '.join(providers)}")
-    print(f"    Max URLs per domain: {max_urls if max_urls > 0 else 'unlimited'}")
+    print(f"\n[*][GAU] Running GAU passive URL discovery...")
+    print(f"[*][GAU] Providers: {', '.join(providers)}")
+    print(f"[*][GAU] Max URLs per domain: {max_urls if max_urls > 0 else 'unlimited'}")
+    if urlscan_api_key:
+        print(f"[*][GAU] URLScan API key: configured")
 
     all_discovered_urls = set()
     urls_by_domain = {}
+    total_domains = len(target_domains)
+    max_workers = min(workers, total_domains)
 
-    for i, domain in enumerate(sorted(target_domains), 1):
-        print(f"    [{i}/{len(target_domains)}] Querying GAU for: {domain}...")
+    print(f"[*][GAU] Processing {total_domains} domains with {max_workers} parallel workers (max configured: {workers})...")
 
-        domain_urls = run_gau_for_domain(
-            domain=domain,
-            docker_image=docker_image,
-            providers=providers,
-            threads=threads,
-            timeout=timeout,
-            blacklist_extensions=blacklist_extensions,
-            max_urls=max_urls,
-            year_range=year_range,
-            verbose=verbose,
-            use_proxy=use_proxy
-        )
-        urls_by_domain[domain] = domain_urls
-        all_discovered_urls.update(domain_urls)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_domain = {}
+        for domain in sorted(target_domains):
+            future = executor.submit(
+                run_gau_for_domain,
+                domain=domain,
+                docker_image=docker_image,
+                providers=providers,
+                threads=threads,
+                timeout=timeout,
+                blacklist_extensions=blacklist_extensions,
+                max_urls=max_urls,
+                year_range=year_range,
+                verbose=verbose,
+                use_proxy=use_proxy,
+                urlscan_api_key=urlscan_api_key
+            )
+            future_to_domain[future] = domain
 
-        print(f"        [+] Found {len(domain_urls)} URLs")
+        completed = 0
+        for future in as_completed(future_to_domain):
+            domain = future_to_domain[future]
+            completed += 1
+            try:
+                domain_urls = future.result()
+                urls_by_domain[domain] = domain_urls
+                all_discovered_urls.update(domain_urls)
+                print(f"[+][GAU] [{completed}/{total_domains}] {domain}: {len(domain_urls)} URLs")
+            except Exception as e:
+                print(f"[!][GAU] [{completed}/{total_domains}] {domain} failed: {e}")
+                urls_by_domain[domain] = []
 
     urls_list = sorted(list(all_discovered_urls))
-    print(f"    [+] GAU discovered {len(urls_list)} total URLs")
+    print(f"[+][GAU] Discovered {len(urls_list)} total URLs")
 
     return urls_list, urls_by_domain
 
@@ -299,7 +384,7 @@ def verify_gau_urls(
     if not urls:
         return set()
 
-    print(f"\n[*] Verifying {len(urls)} GAU URLs...")
+    print(f"\n[*][GAU] Verifying {len(urls)} GAU URLs...")
 
     # Create temp directory for httpx input/output (Docker-in-Docker compatible)
     temp_dir = _create_temp_dir("gau_verify")
@@ -333,10 +418,10 @@ def verify_gau_urls(
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
-            print("    [!] URL verification timeout")
+            print("[!][GAU] URL verification timeout")
             return set(urls)
         except Exception as e:
-            print(f"    [!] URL verification error: {e}")
+            print(f"[!][GAU] URL verification error: {e}")
             return set(urls)
 
         # Parse results
@@ -355,7 +440,7 @@ def verify_gau_urls(
                     except json.JSONDecodeError:
                         continue
 
-        print(f"    [+] Verified: {len(live_urls)}/{len(urls)} URLs are live")
+        print(f"[+][GAU] Verified: {len(live_urls)}/{len(urls)} URLs are live")
         return live_urls
     finally:
         _cleanup_temp_dir(temp_dir)
@@ -388,7 +473,7 @@ def detect_gau_methods(
     if not urls:
         return {}
 
-    print(f"\n[*] Detecting HTTP methods for {len(urls)} GAU endpoints...")
+    print(f"\n[*][GAU] Detecting HTTP methods for {len(urls)} GAU endpoints...")
 
     url_methods: Dict[str, List[str]] = {}
 
@@ -424,10 +509,10 @@ def detect_gau_methods(
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
-            print("    [!] Method detection timeout")
+            print("[!][GAU] Method detection timeout")
             return {url: ["GET"] for url in urls}
         except Exception as e:
-            print(f"    [!] Method detection error: {e}")
+            print(f"[!][GAU] Method detection error: {e}")
             return {url: ["GET"] for url in urls}
 
         options_responded = set()
@@ -472,7 +557,7 @@ def detect_gau_methods(
         urls_needing_get_check = [url for url in urls if url not in options_responded]
 
         if urls_needing_get_check and filter_dead:
-            print(f"    [*] Checking {len(urls_needing_get_check)} endpoints with GET fallback...")
+            print(f"[*][GAU] Checking {len(urls_needing_get_check)} endpoints with GET fallback...")
 
             get_urls_file = temp_dir / "get_urls.txt"
             get_output_file = temp_dir / "get_output.json"
@@ -514,7 +599,7 @@ def detect_gau_methods(
                             except json.JSONDecodeError:
                                 continue
             except Exception as e:
-                print(f"    [!] GET fallback error: {e}")
+                print(f"[!][GAU] GET fallback error: {e}")
                 for url in urls_needing_get_check:
                     if url not in url_methods:
                         url_methods[url] = ["GET"]
@@ -525,11 +610,11 @@ def detect_gau_methods(
         with_methods = sum(1 for methods in url_methods.values() if len(methods) > 1)
         filtered_out = len(urls) - len(url_methods)
 
-        print(f"    [+] Method detection complete:")
-        print(f"        - Endpoints with multiple methods: {with_methods}")
-        print(f"        - Endpoints with GET only: {len(url_methods) - with_methods}")
+        print(f"[+][GAU] Method detection complete:")
+        print(f"[*][GAU]   - Endpoints with multiple methods: {with_methods}")
+        print(f"[*][GAU]   - Endpoints with GET only: {len(url_methods) - with_methods}")
         if filter_dead:
-            print(f"        - Dead endpoints filtered out: {filtered_out}")
+            print(f"[*][GAU]   - Dead endpoints filtered out: {filtered_out}")
 
         return url_methods
     finally:

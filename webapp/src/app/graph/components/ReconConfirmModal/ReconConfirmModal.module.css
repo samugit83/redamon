@@ -28,14 +28,14 @@
   display: flex;
   gap: var(--space-3);
   padding: var(--space-3);
-  background: var(--status-warning-bg);
-  border: 1px solid var(--status-warning);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: var(--radius-default);
 }
 
 .warningIcon {
   flex-shrink: 0;
-  color: var(--status-warning);
+  color: #ef4444;
 }
 
 .warningContent {
@@ -46,13 +46,13 @@
   margin: 0 0 var(--space-1) 0;
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);
-  color: var(--text-primary);
+  color: #ef4444;
 }
 
 .warningText {
   margin: 0;
   font-size: var(--text-xs);
-  color: white;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 

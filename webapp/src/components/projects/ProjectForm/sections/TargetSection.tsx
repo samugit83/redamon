@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { ChevronDown, Target } from 'lucide-react'
+import { ChevronDown, Target, ShieldAlert, AlertTriangle } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
+import { isHardBlockedDomain } from '@/lib/hard-guardrail'
 import styles from '../ProjectForm.module.css'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -59,6 +60,12 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
 
   // Display value for IP textarea
   const displayIps = useMemo(() => (data.targetIps || []).join('\n'), [data.targetIps])
+
+  // Hard guardrail: deterministic check for government/public domains (non-disableable)
+  const hardBlockResult = useMemo(
+    () => (!ipMode && data.targetDomain ? isHardBlockedDomain(data.targetDomain) : { blocked: false, reason: '' }),
+    [ipMode, data.targetDomain]
+  )
 
   const handlePrefixesChange = (value: string) => {
     updateField('subdomainList', toStoredPrefixes(value, includesRootDomain))
@@ -151,6 +158,18 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             )}
           </div>
 
+          {/* Hard guardrail warning for government/public domains */}
+          {hardBlockResult.blocked && (
+            <div className={styles.shodanWarning} style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.08)' }}>
+              <ShieldAlert size={14} style={{ color: '#ef4444' }} />
+              <span>
+                <strong>Target permanently blocked:</strong> Government, military, educational, and international
+                organization websites (.gov, .mil, .edu, .int, etc.) are always blocked and cannot be used as targets,
+                regardless of guardrail settings. This restriction cannot be disabled.
+              </span>
+            </div>
+          )}
+
           {/* IP Mode: Target IPs textarea */}
           {ipMode && (
             <div className={styles.fieldGroup}>
@@ -202,8 +221,31 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 <span className={styles.fieldHint}>
                   {isLocked
                     ? 'Target domain and subdomains are locked after project creation to keep graph data consistent. To change them, create a new project.'
-                    : 'Leave empty to discover all subdomains. Enter prefixes without dots (e.g., "www, api, gpigs").'}
+                    : 'Leave empty to discover all subdomains. Enter prefixes without dots (e.g., "www, api, admin").'}
                 </span>
+                {!isLocked && displayPrefixes.trim().length === 0 && (
+                  <div
+                    className={styles.shodanWarning}
+                    style={{
+                      marginTop: 'var(--space-2)',
+                      marginBottom: 0,
+                      padding: 'var(--space-3) var(--space-4)',
+                      fontSize: 'var(--text-sm)',
+                      borderWidth: '2px',
+                      borderColor: 'rgba(251, 146, 60, 0.5)',
+                      background: 'rgba(251, 146, 60, 0.12)',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <AlertTriangle size={22} style={{ color: '#fb923c' }} />
+                    <span>
+                      <strong>Heads up:</strong> Leaving Subdomain Prefixes empty starts full
+                      subdomain enumeration across the entire domain. This will take
+                      <strong> much, much longer </strong>
+                      than scanning a specific set of prefixes.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className={styles.toggleRow}>
@@ -277,6 +319,27 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
               <Toggle
                 checked={data.stealthMode}
                 onChange={(checked) => updateField('stealthMode', checked)}
+              />
+            </div>
+          </div>
+
+          {/* Target Guardrail */}
+          <div className={styles.subSection}>
+            <h3 className={styles.subSectionTitle}>Target Guardrail</h3>
+            <div className={styles.toggleRow} style={{ gap: 'var(--space-4)' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span className={styles.toggleLabel}>Enable Target Guardrail</span>
+                <p className={styles.toggleDescription}>
+                  Block well-known public targets (major tech companies,
+                  cloud providers, financial institutions, etc.) when saving the project.
+                  Prevents accidental scanning of unauthorized domains.
+                  Government, military, educational, and international organization domains
+                  (.gov, .mil, .edu, .int) are always blocked regardless of this setting.
+                </p>
+              </div>
+              <Toggle
+                checked={data.targetGuardrailEnabled ?? true}
+                onChange={(checked) => updateField('targetGuardrailEnabled', checked)}
               />
             </div>
           </div>

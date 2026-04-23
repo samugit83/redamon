@@ -24,6 +24,13 @@ from models import (
     GithubHuntStartRequest,
     GithubHuntState,
     GithubHuntStatus,
+    TrufflehogStartRequest,
+    TrufflehogState,
+    TrufflehogStatus,
+    PartialReconStartRequest,
+    PartialReconState,
+    PartialReconStatus,
+    PartialReconListResponse,
 )
 
 # Configure logging
@@ -89,6 +96,13 @@ GVM_SCAN_PATH = _get_host_path(_host_mounts, "/app/gvm_scan", "GVM_SCAN_PATH")
 GVM_IMAGE = os.getenv("GVM_IMAGE", "redamon-vuln-scanner:latest")
 GITHUB_HUNT_PATH = _get_host_path(_host_mounts, "/app/github_secret_hunt", "GITHUB_HUNT_PATH")
 GITHUB_HUNT_IMAGE = os.getenv("GITHUB_HUNT_IMAGE", "redamon-github-hunter:latest")
+TRUFFLEHOG_PATH = _get_host_path(_host_mounts, "/app/trufflehog_scan", "TRUFFLEHOG_PATH")
+TRUFFLEHOG_IMAGE = os.getenv("TRUFFLEHOG_IMAGE", "redamon-trufflehog:latest")
+try:
+    CUSTOM_TEMPLATES_PATH = _get_host_path(_host_mounts, "/app/nuclei-templates", "CUSTOM_TEMPLATES_PATH")
+except RuntimeError:
+    CUSTOM_TEMPLATES_PATH = ""
+    logger.info("Custom nuclei templates not mounted — custom templates feature disabled")
 VERSION = "1.0.0"
 
 # Global container manager
@@ -100,7 +114,7 @@ async def lifespan(app: FastAPI):
     """Initialize and cleanup resources"""
     global container_manager
     logger.info("Starting Recon Orchestrator...")
-    container_manager = ContainerManager(recon_image=RECON_IMAGE, gvm_image=GVM_IMAGE, github_hunt_image=GITHUB_HUNT_IMAGE)
+    container_manager = ContainerManager(recon_image=RECON_IMAGE, gvm_image=GVM_IMAGE, github_hunt_image=GITHUB_HUNT_IMAGE, trufflehog_image=TRUFFLEHOG_IMAGE)
     yield
     logger.info("Shutting down Recon Orchestrator...")
     await container_manager.cleanup()
@@ -132,6 +146,8 @@ async def health_check():
         running_recons=container_manager.get_running_count() if container_manager else 0,
         running_gvm_scans=container_manager.get_gvm_running_count() if container_manager else 0,
         running_github_hunts=container_manager.get_github_hunt_running_count() if container_manager else 0,
+        running_trufflehog_scans=container_manager.get_trufflehog_running_count() if container_manager else 0,
+        gvm_available=container_manager.is_gvm_available() if container_manager else False,
     )
 
 
@@ -159,7 +175,27 @@ async def get_defaults():
         RUNTIME_ONLY_KEYS = {
             'PROJECT_ID',
             'USER_ID',
-            'TARGET_DOMAIN',  # Provided by user, not a default
+            'TARGET_DOMAIN',   # Provided by user, not a default
+            # API keys fetched at runtime from user's global settings (not stored per-project)
+            'SHODAN_API_KEY',
+            'URLSCAN_API_KEY',
+            'CENSYS_API_TOKEN',
+            'CENSYS_ORG_ID',
+            'OTX_API_KEY',
+            'NETLAS_API_KEY',
+            'VIRUSTOTAL_API_KEY',
+            'ZOOMEYE_API_KEY',
+            'CRIMINALIP_API_KEY',
+            'FOFA_EMAIL',
+            'FOFA_API_KEY',
+            'UNCOVER_QUAKE_API_KEY',
+            'UNCOVER_HUNTER_API_KEY',
+            'UNCOVER_PUBLICWWW_API_KEY',
+            'UNCOVER_HUNTERHOW_API_KEY',
+            'UNCOVER_GOOGLE_API_KEY',
+            'UNCOVER_GOOGLE_API_CX',
+            'UNCOVER_ONYPHE_API_KEY',
+            'UNCOVER_DRIFTNET_API_KEY',
         }
 
         # Convert snake_case keys to camelCase for frontend
@@ -246,9 +282,21 @@ async def start_recon(project_id: str, request: ReconStartRequest):
 
             url = f"{request.webapp_api_url.rstrip('/')}/api/projects/{project_id}"
             req = urllib.request.Request(url)
+            req.add_header("X-Internal-Key", os.environ.get("INTERNAL_API_KEY", ""))
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status == 200:
                     project = json_mod.loads(resp.read().decode())
+
+                    # Hard guardrail: deterministic, non-disableable — always blocks government/public domains
+                    if not project.get('ipMode', False) and project.get('targetDomain'):
+                        from hard_guardrail import is_hard_blocked
+                        blocked, reason = is_hard_blocked(project['targetDomain'])
+                        if blocked:
+                            raise HTTPException(
+                                status_code=403,
+                                detail=f"Hard guardrail: {reason}"
+                            )
+
                     if project.get('roeEnabled') and project.get('roeTimeWindowEnabled'):
                         tz_name = project.get('roeTimeWindowTimezone', 'UTC')
                         try:
@@ -291,6 +339,7 @@ async def start_recon(project_id: str, request: ReconStartRequest):
             user_id=request.user_id,
             webapp_api_url=request.webapp_api_url,
             recon_path=RECON_PATH,
+            custom_templates_path=CUSTOM_TEMPLATES_PATH,
         )
         return state
     except ValueError as e:
@@ -396,6 +445,241 @@ async def stream_logs(project_id: str):
         }
 
     return EventSourceResponse(event_generator())
+
+
+# =============================================================================
+# Partial Recon Endpoints
+# =============================================================================
+
+
+@app.post("/recon/{project_id}/partial", response_model=PartialReconState)
+async def start_partial_recon(project_id: str, request: PartialReconStartRequest):
+    """
+    Start a partial recon run for a specific tool.
+
+    Spawns a lightweight recon container that runs only the requested tool
+    (e.g., SubdomainDiscovery) and updates the graph with results.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # RoE time window + hard guardrail checks (same as full recon)
+    if request.webapp_api_url:
+        try:
+            import urllib.request
+            import json as json_mod
+            from datetime import datetime
+            try:
+                import zoneinfo
+            except ImportError:
+                from backports import zoneinfo
+
+            url = f"{request.webapp_api_url.rstrip('/')}/api/projects/{project_id}"
+            req = urllib.request.Request(url)
+            req.add_header("X-Internal-Key", os.environ.get("INTERNAL_API_KEY", ""))
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    project = json_mod.loads(resp.read().decode())
+
+                    # Hard guardrail check
+                    domain = request.graph_inputs.get("domain", "")
+                    if domain:
+                        from hard_guardrail import is_hard_blocked
+                        blocked, reason = is_hard_blocked(domain)
+                        if blocked:
+                            raise HTTPException(status_code=403, detail=f"Hard guardrail: {reason}")
+
+                    # RoE time window check
+                    if project.get('roeEnabled') and project.get('roeTimeWindowEnabled'):
+                        tz_name = project.get('roeTimeWindowTimezone', 'UTC')
+                        try:
+                            tz = zoneinfo.ZoneInfo(tz_name)
+                            now_local = datetime.now(tz)
+                            day_name = now_local.strftime('%A').lower()
+                            allowed_days = project.get('roeTimeWindowDays', [])
+                            start_time = project.get('roeTimeWindowStartTime', '09:00')
+                            end_time = project.get('roeTimeWindowEndTime', '18:00')
+                            current_time = now_local.strftime('%H:%M')
+
+                            if day_name not in allowed_days:
+                                raise HTTPException(
+                                    status_code=403,
+                                    detail=f"RoE time window: testing not allowed on {day_name.capitalize()}"
+                                )
+                            if start_time <= end_time:
+                                outside = current_time < start_time or current_time > end_time
+                            else:
+                                outside = current_time < start_time and current_time > end_time
+                            if outside:
+                                raise HTTPException(
+                                    status_code=403,
+                                    detail=f"RoE time window: current time {current_time} {tz_name} outside allowed ({start_time}-{end_time})"
+                                )
+                        except HTTPException:
+                            raise
+                        except Exception as e:
+                            logger.warning(f"RoE check failed (proceeding): {e}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not check RoE (proceeding): {e}")
+
+    # Note: settings are fetched by the recon container itself via get_settings()
+    # (uses PROJECT_ID + WEBAPP_API_URL env vars, same as main.py)
+
+    # Build the config dict for the partial recon container
+    config = {
+        "tool_id": request.tool_id,
+        "domain": request.graph_inputs.get("domain", ""),
+        "user_inputs": request.user_inputs,
+        "user_targets": request.user_targets,
+        "include_graph_targets": request.include_graph_targets,
+        "settings_overrides": request.settings_overrides,
+        "user_id": request.user_id,
+        "webapp_api_url": request.webapp_api_url,
+    }
+
+    try:
+        state = await container_manager.start_partial_recon(
+            project_id=project_id,
+            tool_id=request.tool_id,
+            config=config,
+            recon_path=RECON_PATH,
+        )
+        return state
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting partial recon: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/recon/{project_id}/partial/all", response_model=PartialReconListResponse)
+async def list_partial_recons(project_id: str):
+    """List all partial recon runs for a project"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    runs = await container_manager.get_all_partial_recon_statuses(project_id)
+    return PartialReconListResponse(project_id=project_id, runs=runs)
+
+
+@app.get("/recon/{project_id}/partial/{run_id}/status", response_model=PartialReconState)
+async def get_partial_recon_status(project_id: str, run_id: str):
+    """Get current status of a specific partial recon run"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    return await container_manager.get_partial_recon_status(project_id, run_id)
+
+
+@app.post("/recon/{project_id}/partial/{run_id}/stop", response_model=PartialReconState)
+async def stop_partial_recon(project_id: str, run_id: str):
+    """Stop a specific partial recon run"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    return await container_manager.stop_partial_recon(project_id, run_id)
+
+
+@app.get("/recon/{project_id}/partial/{run_id}/logs")
+async def stream_partial_logs(project_id: str, run_id: str):
+    """Stream logs from a specific partial recon container via SSE"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.get_partial_recon_status(project_id, run_id)
+    if state.status == PartialReconStatus.IDLE:
+        raise HTTPException(status_code=404, detail="No partial recon process found")
+
+    async def event_generator():
+        try:
+            async for event in container_manager.stream_partial_logs(project_id, run_id):
+                yield {
+                    "event": "log",
+                    "data": json.dumps({
+                        "log": event.log,
+                        "timestamp": event.timestamp.isoformat(),
+                        "phase": event.phase,
+                        "phaseNumber": event.phase_number,
+                        "isPhaseStart": event.is_phase_start,
+                        "level": event.level,
+                    }),
+                }
+        except Exception as e:
+            logger.error(f"Error streaming partial recon logs: {e}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+
+        final_state = await container_manager.get_partial_recon_status(project_id, run_id)
+        yield {
+            "event": "complete",
+            "data": json.dumps({
+                "status": final_state.status.value if hasattr(final_state.status, 'value') else final_state.status,
+                "completedAt": final_state.completed_at.isoformat() if final_state.completed_at else None,
+                "error": final_state.error,
+                "stats": final_state.stats,
+            }),
+        }
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/recon/{project_id}/graph-inputs/{tool_id}")
+async def get_graph_inputs(project_id: str, tool_id: str, user_id: str = ""):
+    """
+    Get existing graph inputs for a partial recon tool.
+
+    Queries Neo4j for relevant data (e.g., Domain node for SubdomainDiscovery).
+    Note: The neo4j Python driver is not installed in the orchestrator image.
+    This endpoint uses a raw Bolt connection via the neo4j library in graph_db
+    (which is volume-mounted read-only). If that fails, it falls back to
+    project settings from the webapp API.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    result = {"domain": None, "existing_subdomains_count": 0, "source": "settings"}
+
+    # Try querying Neo4j directly using the graph_db module (volume-mounted)
+    # This may fail if the neo4j Python package is not installed in the orchestrator
+    try:
+        import sys
+        from pathlib import Path
+        graph_parent = Path("/app")
+        if str(graph_parent) not in sys.path:
+            sys.path.insert(0, str(graph_parent))
+
+        from graph_db import Neo4jClient
+        with Neo4jClient() as client:
+            if client.verify_connection():
+                graph_result = client.get_graph_inputs_for_tool(tool_id, user_id, project_id)
+                if graph_result.get("domain"):
+                    return graph_result
+    except ImportError:
+        logger.info("neo4j package not available in orchestrator, falling back to webapp API")
+    except Exception as e:
+        logger.warning(f"Neo4j query failed for graph-inputs: {e}")
+
+    # Fallback: get domain from project settings via webapp API
+    webapp_url = os.environ.get("WEBAPP_API_URL", "")
+    if not webapp_url:
+        webapp_url = "http://localhost:3000"
+
+    try:
+        import urllib.request
+        import json as json_mod
+        url = f"{webapp_url}/api/projects/{project_id}"
+        req = urllib.request.Request(url)
+        req.add_header("X-Internal-Key", os.environ.get("INTERNAL_API_KEY", ""))
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                project = json_mod.loads(resp.read().decode())
+                result["domain"] = project.get("targetDomain", "")
+                result["source"] = "settings"
+    except Exception as e:
+        logger.warning(f"Could not fetch project settings for graph-inputs: {e}")
+
+    return result
 
 
 @app.get("/recon/running")
@@ -773,6 +1057,130 @@ async def stream_github_hunt_logs(project_id: str):
             }
 
         final_state = await container_manager.get_github_hunt_status(project_id)
+        yield {
+            "event": "complete",
+            "data": json.dumps({
+                "status": final_state.status.value,
+                "completedAt": final_state.completed_at.isoformat() if final_state.completed_at else None,
+                "error": final_state.error,
+            }),
+        }
+
+    return EventSourceResponse(event_generator())
+
+
+# =============================================================================
+# TruffleHog Secret Scanner Endpoints
+# =============================================================================
+
+
+@app.post("/trufflehog/{project_id}/start", response_model=TrufflehogState)
+async def start_trufflehog(project_id: str, request: TrufflehogStartRequest):
+    """
+    Start a TruffleHog Secret Scanner for a project.
+
+    Requires recon data to already exist for target context.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # Check that recon data exists
+    from pathlib import Path
+    recon_file = Path("/app/recon/output") / f"recon_{project_id}.json"
+    if not recon_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Recon data required. Run reconnaissance first.",
+        )
+
+    try:
+        state = await container_manager.start_trufflehog(
+            project_id=project_id,
+            user_id=request.user_id,
+            webapp_api_url=request.webapp_api_url,
+            trufflehog_path=TRUFFLEHOG_PATH,
+        )
+        return state
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting TruffleHog scan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/trufflehog/{project_id}/status", response_model=TrufflehogState)
+async def get_trufflehog_status(project_id: str):
+    """Get current status of a TruffleHog scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    return await container_manager.get_trufflehog_status(project_id)
+
+
+@app.post("/trufflehog/{project_id}/stop", response_model=TrufflehogState)
+async def stop_trufflehog(project_id: str):
+    """Stop a running TruffleHog scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.stop_trufflehog(project_id)
+    return state
+
+
+@app.post("/trufflehog/{project_id}/pause", response_model=TrufflehogState)
+async def pause_trufflehog(project_id: str):
+    """Pause a running TruffleHog scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.pause_trufflehog(project_id)
+    return state
+
+
+@app.post("/trufflehog/{project_id}/resume", response_model=TrufflehogState)
+async def resume_trufflehog(project_id: str):
+    """Resume a paused TruffleHog scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.resume_trufflehog(project_id)
+    return state
+
+
+@app.get("/trufflehog/{project_id}/logs")
+async def stream_trufflehog_logs(project_id: str):
+    """
+    Stream logs from a TruffleHog scanner container using Server-Sent Events.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.get_trufflehog_status(project_id)
+    if state.status == TrufflehogStatus.IDLE:
+        raise HTTPException(status_code=404, detail="No TruffleHog scan found for this project")
+
+    async def event_generator():
+        try:
+            async for event in container_manager.stream_trufflehog_logs(project_id):
+                yield {
+                    "event": "log",
+                    "data": json.dumps({
+                        "log": event.log,
+                        "timestamp": event.timestamp.isoformat(),
+                        "phase": event.phase,
+                        "phaseNumber": event.phase_number,
+                        "isPhaseStart": event.is_phase_start,
+                        "level": event.level,
+                    }),
+                }
+        except Exception as e:
+            logger.error(f"Error streaming TruffleHog logs: {e}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+
+        final_state = await container_manager.get_trufflehog_status(project_id)
         yield {
             "event": "complete",
             "data": json.dumps({

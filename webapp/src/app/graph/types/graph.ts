@@ -6,6 +6,12 @@ export interface GraphNode {
   x?: number
   y?: number
   z?: number
+  // Synthetic cluster flag: set by clusterGraphData when this node represents
+  // a collapsed group of same-type leaf neighbors sharing a common parent.
+  isCluster?: boolean
+  clusterChildren?: GraphNode[]
+  clusterChildType?: string
+  clusterColor?: string
 }
 
 export interface GraphLink {

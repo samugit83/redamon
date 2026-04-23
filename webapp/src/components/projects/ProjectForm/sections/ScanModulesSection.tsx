@@ -5,7 +5,6 @@ import { ChevronDown, Layers } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
-import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -15,8 +14,8 @@ interface ScanModulesSectionProps {
 }
 
 const SCAN_MODULE_OPTIONS = [
-  { id: 'domain_discovery', label: 'Domain Discovery', description: 'Subdomain enumeration', indent: 0 },
-  { id: 'port_scan', label: 'Port Scanning', description: 'Naabu port scanner', indent: 1 },
+  { id: 'domain_discovery', label: 'Discovery & OSINT', description: 'Subdomain enumeration, Shodan, URLScan', indent: 0 },
+  { id: 'port_scan', label: 'Port Scanning', description: 'Naabu + Masscan port scanners', indent: 1 },
   { id: 'http_probe', label: 'HTTP Probing', description: 'httpx HTTP analysis', indent: 2 },
   { id: 'resource_enum', label: 'Resource Enumeration', description: 'Katana, GAU, Kiterunner', indent: 3 },
   { id: 'vuln_scan', label: 'Vulnerability Scanning', description: 'Nuclei vulnerability scanner', indent: 3 },
@@ -155,44 +154,6 @@ export function ScanModulesSection({ data, updateField }: ScanModulesSectionProp
               <Toggle
                 checked={data.useTorForRecon}
                 onChange={(checked) => updateField('useTorForRecon', checked)}
-              />
-            </div>
-            <div className={styles.toggleRow}>
-              <div>
-                <span className={styles.toggleLabel}>Use Bruteforce for Subdomains</span>
-                <p className={styles.toggleDescription}>
-                  Use wordlist-based subdomain bruteforcing
-                </p>
-                <TimeEstimate estimate="+5-30 min depending on wordlist size" />
-              </div>
-              <Toggle
-                checked={data.useBruteforceForSubdomains}
-                onChange={(checked) => updateField('useBruteforceForSubdomains', checked)}
-              />
-            </div>
-          </div>
-
-          <div className={styles.fieldRow}>
-            <div className={styles.fieldGroup}>
-              <label className={styles.fieldLabel}>WHOIS Max Retries</label>
-              <input
-                type="number"
-                className="textInput"
-                value={data.whoisMaxRetries}
-                onChange={(e) => updateField('whoisMaxRetries', parseInt(e.target.value) || 6)}
-                min={1}
-                max={20}
-              />
-            </div>
-            <div className={styles.fieldGroup}>
-              <label className={styles.fieldLabel}>DNS Max Retries</label>
-              <input
-                type="number"
-                className="textInput"
-                value={data.dnsMaxRetries}
-                onChange={(e) => updateField('dnsMaxRetries', parseInt(e.target.value) || 3)}
-                min={1}
-                max={10}
               />
             </div>
           </div>

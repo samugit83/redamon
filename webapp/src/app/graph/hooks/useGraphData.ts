@@ -1,70 +1,74 @@
-import { useQuery } from '@tanstack/react-query'
-import { useMemo, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
 import { GraphData } from '../types'
 
-async function fetchGraphData(projectId: string): Promise<GraphData> {
-  const response = await fetch(`/api/graph?projectId=${projectId}`)
+// Store last ETag and data outside component to survive re-renders
+const etagStore = new Map<string, { etag: string; data: GraphData }>()
+
+
+async function fetchGraphData(projectId: string, fresh = false): Promise<GraphData> {
+  const stored = etagStore.get(projectId)
+  const headers: Record<string, string> = {}
+  const fetchOpts: RequestInit = { headers }
+
+  if (fresh) {
+    // Bypass server in-memory cache (?fresh=1) and client ETag store.
+    // Browser cache is already handled via Cache-Control: no-cache.
+    etagStore.delete(projectId)
+  } else if (stored?.etag) {
+    headers['If-None-Match'] = `"${stored.etag}"`
+  }
+
+  const url = `/api/graph?projectId=${projectId}${fresh ? '&fresh=1' : ''}`
+  const response = await fetch(url, fetchOpts)
+
+  // 304 Not Modified -- return previous data, skip JSON parse entirely
+  if (response.status === 304) {
+    if (stored?.data) return stored.data
+    // Fallback: shouldn't happen, but refetch without ETag
+    const fallback = await fetch(`/api/graph?projectId=${projectId}`)
+    return fallback.json()
+  }
+
   if (!response.ok) {
     throw new Error('Failed to fetch graph data')
   }
-  return response.json()
+
+  // Extract ETag from response
+  const newEtag = response.headers.get('etag')?.replace(/"/g, '') || ''
+
+  const data: GraphData = await response.json()
+
+  // Store for next conditional request
+  if (newEtag) {
+    etagStore.set(projectId, { etag: newEtag, data })
+  }
+
+  return data
 }
 
-/**
- * Generate a fingerprint of the graph data to detect actual changes.
- * Only considers structural changes (nodes/links added/removed), not position changes.
- */
-function getGraphFingerprint(data: GraphData | undefined): string {
-  if (!data) return ''
+export function useGraphData(projectId: string | null) {
+  const queryClient = useQueryClient()
 
-  // Sort IDs to ensure consistent fingerprint regardless of order
-  const nodeIds = data.nodes.map(n => n.id).sort().join(',')
-  const linkIds = data.links.map(l => `${l.source}-${l.target}`).sort().join(',')
-
-  // Include counts and IDs for a comprehensive fingerprint
-  return `${data.nodes.length}:${data.links.length}:${nodeIds}:${linkIds}`
-}
-
-interface UseGraphDataOptions {
-  isReconRunning?: boolean
-  isAgentRunning?: boolean
-}
-
-export function useGraphData(projectId: string | null, options?: UseGraphDataOptions) {
-  const { isReconRunning = false, isAgentRunning = false } = options || {}
-
-  // Keep track of the last stable data
-  const stableDataRef = useRef<GraphData | undefined>(undefined)
-  const lastFingerprintRef = useRef<string>('')
-
-  const shouldPoll = isReconRunning || isAgentRunning
-
+  // No timer-based polling. Refetches are driven by events (SSE log activity from
+  // full/partial recon, agent tool-completion websockets, pipeline completion).
   const query = useQuery({
     queryKey: ['graph', projectId],
     queryFn: () => fetchGraphData(projectId!),
     enabled: !!projectId,
-    // Poll every 5 seconds while recon or agent is running
-    refetchInterval: shouldPoll ? 5000 : false,
+    refetchInterval: false,
+    staleTime: 30000,
     // Only re-render the component when data or error actually change
-    // (not on isFetching / dataUpdatedAt / fetchStatus transitions)
     notifyOnChangeProps: ['data', 'error', 'isLoading'],
   })
 
-  // Only update the stable data reference when the fingerprint changes
-  const stableData = useMemo(() => {
-    const newFingerprint = getGraphFingerprint(query.data)
+  // Bypass all three cache layers (browser, server, client ETag) and
+  // update react-query cache directly. Used after pipeline completion.
+  const refetchFresh = useCallback(async () => {
+    if (!projectId) return
+    const data = await fetchGraphData(projectId, true)
+    queryClient.setQueryData(['graph', projectId], data)
+  }, [projectId, queryClient])
 
-    // If fingerprint changed, update the stable data
-    if (newFingerprint !== lastFingerprintRef.current) {
-      lastFingerprintRef.current = newFingerprint
-      stableDataRef.current = query.data
-    }
-
-    return stableDataRef.current
-  }, [query.data])
-
-  return {
-    ...query,
-    data: stableData,
-  }
+  return { ...query, refetchFresh }
 }

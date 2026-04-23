@@ -208,5 +208,59 @@ function condenseForAgent(data: ReturnType<typeof gatherReportData> extends Prom
       cvssScore: r.cvssScore,
       affectedAssets: r.affectedAssets,
     })),
+    trufflehog: {
+      totalFindings: data.trufflehog.totalFindings,
+      verifiedFindings: data.trufflehog.verifiedFindings,
+      repositories: data.trufflehog.repositories,
+      findings: data.trufflehog.findings.slice(0, 20).map(f => ({
+        detectorName: f.detectorName,
+        verified: f.verified,
+        repository: f.repository,
+        file: f.file,
+      })),
+    },
+    secrets: {
+      total: data.secrets.total,
+      bySeverity: data.secrets.bySeverity,
+      bySource: data.secrets.bySource,
+      byType: data.secrets.byType,
+    },
+    jsRecon: {
+      totalFindings: data.jsRecon.totalFindings,
+      bySeverity: data.jsRecon.bySeverity,
+      byType: data.jsRecon.byType,
+      findings: data.jsRecon.findings.slice(0, 20).map(f => ({
+        title: f.title,
+        severity: f.severity,
+        findingType: f.findingType,
+        confidence: f.confidence,
+      })),
+    },
+    graphqlScan: {
+      totalFindings: data.graphqlScan.totalFindings,
+      endpointsTested: data.graphqlScan.endpointsTested,
+      introspectionEnabled: data.graphqlScan.introspectionEnabled,
+      bySeverity: data.graphqlScan.bySeverity,
+      byType: data.graphqlScan.byType,
+      topFindings: data.graphqlScan.findings.slice(0, 15).map(f => ({
+        title: f.title,
+        severity: f.severity,
+        vulnerabilityType: f.vulnerabilityType,
+        source: f.source,   // 'graphql_scan' vs 'graphql_cop' — helps LLM narrate differently
+        endpoint: f.endpoint,
+      })),
+    },
+    otx: {
+      totalPulses: data.otx.totalPulses,
+      totalMalware: data.otx.totalMalware,
+      enrichedIps: data.otx.enrichedIps,
+      adversaries: data.otx.adversaries,
+      pulses: data.otx.pulses.slice(0, 15).map(p => ({
+        name: p.name,
+        adversary: p.adversary,
+        malwareFamilies: p.malwareFamilies,
+        attackIds: p.attackIds,
+      })),
+    },
   }
 }

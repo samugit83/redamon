@@ -25,7 +25,7 @@ export function getNodeTypePalette() {
     Service: getCssVar('--node-service') || '#06b6d4',
     BaseURL: getCssVar('--node-baseurl') || '#6366f1',
     Endpoint: getCssVar('--node-endpoint') || '#8b5cf6',
-    Parameter: getCssVar('--node-parameter') || '#a855f7',
+    Parameter: getCssVar('--node-parameter') || '#c026d3',
     Technology: getCssVar('--node-technology') || '#22c55e',
     Vulnerability: getCssVar('--node-vulnerability') || '#ef4444',
     CVE: getCssVar('--node-cve') || '#dc2626',

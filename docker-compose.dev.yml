@@ -12,14 +12,19 @@ services:
     build: !reset null
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm install && npx prisma db push && npm run dev"
+    command: sh -c "npm install && npx prisma db push --accept-data-loss && npm run dev"
     volumes:
       - ./webapp:/app
       - webapp_node_modules:/app/node_modules
       - webapp_next_cache:/app/.next
       - ./recon/output:/data/recon-output:ro
+      - ./recon/wordlists:/data/recon-wordlists:rw
+      - ./mcp/nuclei-templates:/data/nuclei-templates:rw
       - ./gvm_scan/output:/data/gvm-output:ro
       - ./github_secret_hunt/output:/data/github-hunt-output:ro
+      - ./VERSION:/app/VERSION:ro
+      - js_recon_uploads:/data/js-recon-uploads
+      - js_recon_custom:/data/js-recon-custom
 
 volumes:
   webapp_node_modules:

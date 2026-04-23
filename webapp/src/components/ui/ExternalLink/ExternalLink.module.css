@@ -1,0 +1,11 @@
+.link {
+  color: var(--accent-primary);
+  text-decoration: none;
+  transition: var(--transition-all);
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.link:hover {
+  text-decoration: underline;
+}

@@ -2,8 +2,9 @@ import type { Metadata } from 'next'
 import { Suspense } from 'react'
 import '@/styles/index.css'
 import { QueryProvider } from '@/providers/QueryProvider'
+import { AuthProvider } from '@/providers/AuthProvider'
 import { ProjectProvider } from '@/providers/ProjectProvider'
-import { ToastProvider } from '@/components/ui'
+import { ToastProvider, AlertProvider } from '@/components/ui'
 import { AppLayout } from '@/components/layout'
 
 export const metadata: Metadata = {
@@ -48,11 +49,15 @@ export default function RootLayout({
       <body>
         <QueryProvider>
           <Suspense fallback={null}>
-            <ProjectProvider>
-              <ToastProvider>
-                <AppLayout>{children}</AppLayout>
-              </ToastProvider>
-            </ProjectProvider>
+            <AuthProvider>
+              <ProjectProvider>
+                <ToastProvider>
+                  <AlertProvider>
+                    <AppLayout>{children}</AppLayout>
+                  </AlertProvider>
+                </ToastProvider>
+              </ProjectProvider>
+            </AuthProvider>
           </Suspense>
         </QueryProvider>
       </body>

@@ -1,0 +1,69 @@
+# =============================================================================
+# .dockerignore — excludes from `docker build` context
+# =============================================================================
+# ---------- VCS ----------
+.git/
+.gitignore
+.gitattributes
+
+# ---------- Editor / OS junk ----------
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- Python bytecode + caches ----------
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/coverage.xml
+
+# ---------- Virtualenvs ----------
+knowledge_base/.redamon-venv/
+**/*-env/
+**/*-venv/
+**/.venv/
+**/venv/
+**/env/
+
+# ---------- Node / JS ----------
+**/node_modules/
+**/.next/
+**/.nuxt/
+**/dist/
+**/build/
+
+# ---------- Test scaffolding (don't ship tests into production images) ----------
+agentic/tests/
+knowledge_base/tests/
+**/*.test.py
+**/*.spec.py
+
+# ---------- Runtime logs (mounted at runtime; shouldn't bake into image) ----------
+agentic/logs/
+*.log
+logs/
+
+# ---------- Agent scratch + worktrees ----------
+.claude/
+
+# ---------- Docker meta files (never needed inside the image) ----------
+**/Dockerfile
+**/docker-compose*.yml
+**/.dockerignore
+
+# ---------- Misc ----------
+*.bak
+*.tmp
+*.pid
+.env
+.env.*
+!.env.example

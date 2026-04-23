@@ -153,12 +153,12 @@ def get_tor_session(log_exit_ip: bool = True) -> Optional['requests.Session']:
         Configured requests Session or None if Tor not available.
     """
     if requests is None:
-        print("[!] requests library not available")
+        print("[!][Tor] requests library not available")
         return None
 
     if not is_tor_running():
-        print("[!] Tor is not running on port 9050")
-        print("    Start with: sudo systemctl start tor")
+        print("[!][Tor] Tor is not running on port 9050")
+        print("[*][Tor] Start with: sudo systemctl start tor")
         return None
 
     session = requests.Session()
@@ -180,13 +180,13 @@ def get_tor_session(log_exit_ip: bool = True) -> Optional['requests.Session']:
         exit_ip = get_tor_exit_ip(session)
         if exit_ip:
             print(f"\n{'=' * 50}")
-            print(f"TOR SESSION ACTIVE")
+            print(f"[+][Tor] TOR SESSION ACTIVE")
             print(f"{'=' * 50}")
-            print(f"   Exit IP (what targets see): {exit_ip}")
-            print(f"   Your real IP: HIDDEN")
+            print(f"[*][Tor] Exit IP (what targets see): {exit_ip}")
+            print(f"[*][Tor] Your real IP: HIDDEN")
             print(f"{'=' * 50}\n")
         else:
-            print("[!] Tor session created but could not verify exit IP")
+            print("[!][Tor] Tor session created but could not verify exit IP")
 
     return session
 
@@ -212,7 +212,7 @@ class TorProxy:
         if self.session and self.verify:
             self.exit_ip = get_tor_exit_ip(self.session)
             if not self.exit_ip:
-                print("[!] Warning: Could not verify Tor connection")
+                print("[!][Tor] Warning: Could not verify Tor connection")
 
         return self.session
 
@@ -254,7 +254,7 @@ def run_through_tor(command: list, timeout: int = 300) -> subprocess.CompletedPr
 
     full_command = [proxychains, "-q"] + command
 
-    print(f"[*] Running through Tor: {' '.join(command)}")
+    print(f"[*][Tor] Running through Tor: {' '.join(command)}")
 
     return subprocess.run(
         full_command,
@@ -272,7 +272,7 @@ def run_command_anonymous(command: list, timeout: int = 300) -> subprocess.Compl
     if is_proxychains_available() and is_tor_running():
         return run_through_tor(command, timeout)
     else:
-        print("[!] Warning: Running without Tor anonymization")
+        print("[!][Tor] Warning: Running without Tor anonymization")
         return subprocess.run(
             command,
             capture_output=True,
@@ -300,27 +300,27 @@ def get_real_ip() -> Optional[str]:
 def print_anonymity_status():
     """Print current anonymity configuration status."""
     print("\n" + "=" * 50)
-    print("ANONYMITY STATUS")
+    print("[*][Tor] ANONYMITY STATUS")
     print("=" * 50)
 
     # Check Tor
     tor_status = "Running" if is_tor_running() else "Not running"
-    print(f"Tor Service:      {tor_status}")
+    print(f"[*][Tor] Tor Service:      {tor_status}")
 
     # Check proxychains
     pc_status = "Available" if is_proxychains_available() else "Not installed"
-    print(f"Proxychains:      {pc_status}")
+    print(f"[*][Tor] Proxychains:      {pc_status}")
 
     # Get and display IPs
     print("\n" + "-" * 50)
-    print("IP ADDRESSES")
+    print("[*][Tor] IP ADDRESSES")
     print("-" * 50)
 
     real_ip = get_real_ip()
     if real_ip:
-        print(f"Your Real IP:     {real_ip}")
+        print(f"[*][Tor] Your Real IP:     {real_ip}")
     else:
-        print("Your Real IP:     Could not determine")
+        print("[*][Tor] Your Real IP:     Could not determine")
 
     # Check Tor exit IP
     if is_tor_running():
@@ -329,15 +329,15 @@ def print_anonymity_status():
             exit_ip = get_tor_exit_ip(session)
             session.close()
             if exit_ip:
-                print(f"Tor Exit IP:      {exit_ip} <- Targets see this!")
-                print("\nTor is working! Your real IP is hidden.")
+                print(f"[+][Tor] Tor Exit IP:      {exit_ip} <- Targets see this!")
+                print(f"\n[+][Tor] Tor is working! Your real IP is hidden.")
             else:
-                print("Tor Exit IP:      Could not verify")
-                print("\nWARNING: Tor running but could not verify connection")
+                print("[*][Tor] Tor Exit IP:      Could not verify")
+                print(f"\n[!][Tor] WARNING: Tor running but could not verify connection")
     else:
-        print("Tor Exit IP:      N/A (Tor not running)")
-        print("\nWARNING: Your real IP is EXPOSED!")
-        print("    Start Tor with: sudo systemctl start tor")
+        print("[*][Tor] Tor Exit IP:      N/A (Tor not running)")
+        print(f"\n[!][Tor] WARNING: Your real IP is EXPOSED!")
+        print("[*][Tor] Start Tor with: sudo systemctl start tor")
 
     print("=" * 50 + "\n")
 
@@ -363,15 +363,15 @@ if __name__ == "__main__":
     print_anonymity_status()
 
     if is_tor_running():
-        print("\nTesting Tor connection...")
+        print(f"\n[*][Tor] Testing Tor connection...")
         with TorProxy(log_exit_ip=False) as session:
             if session:
                 try:
                     resp = session.get("https://httpbin.org/ip", timeout=15)
-                    print(f"httpbin.org sees IP: {resp.json().get('origin')}")
+                    print(f"[+][Tor] httpbin.org sees IP: {resp.json().get('origin')}")
                 except Exception as e:
-                    print(f"Test failed: {e}")
+                    print(f"[!][Tor] Test failed: {e}")
     else:
-        print("\nTo enable Tor anonymity:")
-        print("   sudo apt install tor proxychains4")
-        print("   sudo systemctl start tor")
+        print(f"\n[*][Tor] To enable Tor anonymity:")
+        print("[*][Tor]    sudo apt install tor proxychains4")
+        print("[*][Tor]    sudo systemctl start tor")

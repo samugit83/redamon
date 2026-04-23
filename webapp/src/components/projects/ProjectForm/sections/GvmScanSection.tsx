@@ -5,6 +5,7 @@ import { ChevronDown, Shield } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -23,6 +24,8 @@ export function GvmScanSection({ data, updateField }: GvmScanSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Shield size={16} />
           GVM Vulnerability Scan
+          <NodeInfoTooltip section="GvmScan" />
+          <span className={styles.badgeActive}>Active</span>
         </h2>
         <ChevronDown
           size={16}

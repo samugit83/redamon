@@ -250,6 +250,48 @@
 }
 
 /* =============================================================================
+   RECON START BUTTON
+   Green outlined button matching the graph toolbar's Start Recon Pipeline style
+   ============================================================================= */
+
+.reconStartButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
+  background: transparent;
+  border: 1px solid var(--status-success);
+  border-radius: var(--radius-default);
+  color: var(--status-success);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.reconStartButton:hover {
+  background: var(--status-success);
+  color: white;
+}
+
+.reconStartButton:focus-visible {
+  outline: 2px solid var(--status-success);
+  outline-offset: 2px;
+}
+
+.reconStartButton.reconStartButtonActive {
+  background: var(--status-success);
+  color: white;
+  cursor: pointer;
+}
+
+.reconStartButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* =============================================================================
    BADGE
    Small indicator/counter on buttons
    ============================================================================= */

@@ -12,11 +12,24 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║           RedAmon Reconnaissance Module                    ║${NC}"
-echo -e "${BLUE}║              Containerized OSINT Framework                 ║${NC}"
-echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
-echo ""
+printf '%s\n' "
+                       ▄▄▄▄▄▄▄▄
+                 ▄▄███████████████▄▄▄
+             ▄▄█████▀▀▀        ▀▀▀█████▄▄
+          ▄█████▀▀   ▄▄▄▄████▄▄▄   ▄██████▄▄
+ ▄▄▄▄▄▄██████▀    ▄██████████████████▀ ▀███▀
+ ████████▀▀    ▄████▀▀   ████████▀▀██▄   ▀
+ ▀▀▀▀       ▄▄█████       ▀████▀    ███▄
+  ▄▄▄▄▄▄▄▄████▀▀██████▄▄▄▄▄▄▄▄▄▄█████▀▀
+  ████████▀▀        ▀▀▀▀▀▀███████▀
+  ▀▀▀▀▀   ▄█████▄        ▄██▀▀████
+          ███▀████    ▄▄██▀   ███▀
+          ██▄  ▀▀  ▄▄███▀     ███
+          ▀███▄▄▄████▀        ████
+            ▀▀▀▀▀▀▀
+
+  R E D A M O N — Recon Pipeline
+"
 
 # =============================================================================
 # Check Docker Socket Access
@@ -92,9 +105,24 @@ fi
 # =============================================================================
 echo -e "${YELLOW}[*] Ensuring output directories exist...${NC}"
 mkdir -p /app/recon/output
+mkdir -p /app/recon/wordlists
 mkdir -p /app/recon/data/mitre_db
 mkdir -p /app/recon/data/wappalyzer
 echo -e "${GREEN}[+] Directories ready${NC}"
+
+# =============================================================================
+# Download DNS resolvers for puredns (refresh every 7 days)
+# =============================================================================
+RESOLVER_FILE="/app/recon/data/resolvers.txt"
+if [ ! -f "$RESOLVER_FILE" ] || [ $(find "$RESOLVER_FILE" -mtime +7 2>/dev/null | wc -l) -gt 0 ]; then
+    echo -e "${YELLOW}[*][Puredns] Downloading fresh DNS resolvers...${NC}"
+    curl -sL https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt \
+        -o "$RESOLVER_FILE" 2>/dev/null && \
+        echo -e "${GREEN}[+][Puredns] Resolvers downloaded ($(wc -l < "$RESOLVER_FILE") entries)${NC}" || \
+        echo -e "${RED}[!][Puredns] Failed to download resolvers${NC}"
+else
+    echo -e "${GREEN}[✓][Puredns] DNS resolvers up to date${NC}"
+fi
 
 # =============================================================================
 # Pull required Docker images (ProjectDiscovery tools)
@@ -107,7 +135,13 @@ IMAGES=(
     "projectdiscovery/httpx:latest"
     "projectdiscovery/katana:latest"
     "projectdiscovery/nuclei:latest"
+    "projectdiscovery/subfinder:latest"
     "sxcurity/gau:latest"
+    "caffix/amass:latest"
+    "frost19k/puredns:latest"
+    "jauderho/hakrawler:latest"
+    "projectdiscovery/uncover:latest"
+    "dolevf/graphql-cop:1.14"
 )
 
 for IMAGE in "${IMAGES[@]}"; do
@@ -115,7 +149,11 @@ for IMAGE in "${IMAGES[@]}"; do
         echo -e "${GREEN}[+] $IMAGE already pulled${NC}"
     else
         echo -e "${YELLOW}[*] Pulling $IMAGE...${NC}"
-        docker pull "$IMAGE" 2>/dev/null || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
+        if [[ "$IMAGE" == "sxcurity/gau:latest" ]] && [[ "$(uname -m)" =~ ^(arm64|aarch64)$ ]]; then
+            docker pull --platform linux/amd64 "$IMAGE" 2>/dev/null || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
+        else
+            docker pull "$IMAGE" 2>/dev/null || echo -e "${RED}[!] Failed to pull $IMAGE${NC}"
+        fi
     fi
 done
 

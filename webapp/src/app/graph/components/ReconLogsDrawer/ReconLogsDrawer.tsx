@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { X, Terminal, CheckCircle, AlertCircle, Pause, Play, Trash2, Square, Loader2 } from 'lucide-react'
+import { X, Terminal, CheckCircle, AlertCircle, Pause, Play, Trash2, Square, Loader2, Download } from 'lucide-react'
 import { RECON_PHASES } from '@/lib/recon-types'
 import type { ReconLogEvent, ReconStatus } from '@/lib/recon-types'
 import styles from './ReconLogsDrawer.module.css'
@@ -20,6 +20,8 @@ interface ReconLogsDrawerProps {
   title?: string
   phases?: readonly string[]
   totalPhases?: number
+  errorMessage?: string | null
+  hidePhaseProgress?: boolean
 }
 
 export function ReconLogsDrawer({
@@ -36,6 +38,8 @@ export function ReconLogsDrawer({
   title = 'Reconnaissance Logs',
   phases = RECON_PHASES,
   totalPhases = 7,
+  errorMessage,
+  hidePhaseProgress = false,
 }: ReconLogsDrawerProps) {
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
@@ -79,22 +83,56 @@ export function ReconLogsDrawer({
       case 'starting':
         return 'Starting...'
       case 'running':
-        return currentPhase
-          ? `Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
-          : 'Running...'
+        if (!currentPhase) return 'Running...'
+        return hidePhaseProgress
+          ? `Scanning: ${currentPhase}`
+          : `Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
       case 'paused':
-        return currentPhase
-          ? `Paused — Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
-          : 'Paused'
+        if (!currentPhase) return 'Paused'
+        return hidePhaseProgress
+          ? `Paused: ${currentPhase}`
+          : `Paused — Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
       case 'completed':
         return 'Completed'
       case 'error':
-        return 'Error'
+        return errorMessage ? `Error: ${errorMessage}` : 'Error'
       case 'stopping':
         return 'Stopping...'
       default:
         return 'Idle'
     }
+  }
+
+  const handleDownloadLogs = () => {
+    if (logs.length === 0) return
+
+    const lines = logs.map(log => {
+      const ts = new Date(log.timestamp).toISOString()
+      const level = log.level.toUpperCase().padEnd(7)
+      const phase = log.phase ? ` [${log.phase}]` : ''
+      return `${ts}  ${level}${phase}  ${log.log}`
+    })
+
+    // Add header
+    const header = [
+      `# ${title}`,
+      `# Status: ${status}`,
+      `# Phase: ${currentPhase || 'N/A'} (${currentPhaseNumber || 0}/${totalPhases})`,
+      `# Exported: ${new Date().toISOString()}`,
+      `# Total lines: ${logs.length}`,
+      '',
+    ]
+
+    const content = [...header, ...lines].join('\n')
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    // Sanitize title for filename
+    const safeName = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+$/, '')
+    a.download = `${safeName}_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const getLogClassName = (level: string) => {
@@ -133,7 +171,7 @@ export function ReconLogsDrawer({
       <div className={styles.statusBar}>
         <div className={styles.statusLeft}>
           {getStatusIcon()}
-          <span className={styles.statusText}>{getStatusText()}</span>
+          <span className={styles.statusText} title={getStatusText()}>{getStatusText()}</span>
         </div>
         <div className={styles.statusActions}>
           {(status === 'running' || status === 'paused') && (
@@ -156,6 +194,14 @@ export function ReconLogsDrawer({
           )}
           <button
             className={styles.iconButton}
+            onClick={handleDownloadLogs}
+            disabled={logs.length === 0}
+            title="Download logs"
+          >
+            <Download size={14} />
+          </button>
+          <button
+            className={styles.iconButton}
             onClick={onClearLogs}
             title="Clear logs"
           >
@@ -164,25 +210,27 @@ export function ReconLogsDrawer({
         </div>
       </div>
 
-      {/* Phase progress */}
-      <div className={styles.phaseProgress}>
-        {phases.map((phase, index) => {
-          const phaseNum = index + 1
-          const isActive = currentPhaseNumber === phaseNum
-          const isCompleted = currentPhaseNumber !== null && phaseNum < currentPhaseNumber
-          const isPending = currentPhaseNumber === null || phaseNum > currentPhaseNumber
+      {/* Phase progress (hidden for single-phase partial recon) */}
+      {!hidePhaseProgress && (
+        <div className={styles.phaseProgress}>
+          {phases.map((phase, index) => {
+            const phaseNum = index + 1
+            const isActive = currentPhaseNumber === phaseNum
+            const isCompleted = currentPhaseNumber !== null && phaseNum < currentPhaseNumber
+            const isPending = currentPhaseNumber === null || phaseNum > currentPhaseNumber
 
-          return (
-            <div
-              key={phase}
-              className={`${styles.phaseItem} ${isActive ? styles.phaseActive : ''} ${isCompleted ? styles.phaseCompleted : ''} ${isPending ? styles.phasePending : ''}`}
-              title={phase}
-            >
-              <span className={styles.phaseNumber}>{phaseNum}</span>
-            </div>
-          )
-        })}
-      </div>
+            return (
+              <div
+                key={phase}
+                className={`${styles.phaseItem} ${isActive ? styles.phaseActive : ''} ${isCompleted ? styles.phaseCompleted : ''} ${isPending ? styles.phasePending : ''}`}
+                title={phase}
+              >
+                <span className={styles.phaseNumber}>{phaseNum}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Logs container */}
       <div

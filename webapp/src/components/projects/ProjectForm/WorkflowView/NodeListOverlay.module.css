@@ -1,0 +1,26 @@
+.nodeList {
+  display: flex;
+  flex-direction: column;
+}
+
+.nodeItem {
+  font-size: 12px;
+  padding: 3px 8px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.5;
+  border-radius: 4px;
+}
+
+.nodeItem:hover {
+  background: var(--bg-hover);
+}
+
+.moreIndicator {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-tertiary);
+  padding: 4px 8px;
+}

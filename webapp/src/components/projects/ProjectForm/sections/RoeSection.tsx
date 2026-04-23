@@ -29,8 +29,8 @@ const ENGAGEMENT_TYPES = [
 ]
 
 const FORBIDDEN_CATEGORIES = [
-  { value: 'brute_force', label: 'Brute Force' },
-  { value: 'dos', label: 'Denial of Service' },
+  { value: 'brute_force', label: 'Credential Testing' },
+  { value: 'dos', label: 'Availability Testing' },
   { value: 'social_engineering', label: 'Social Engineering' },
   { value: 'physical', label: 'Physical Access' },
 ]
@@ -449,7 +449,7 @@ export function RoeSection({ data, updateField, updateMultipleFields, mode, onFi
                 <h3 className={styles.subSectionTitle}>Testing Permissions</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   <div className={styles.fieldGroup}>
-                    <label className={styles.fieldLabel}>Allow DoS testing</label>
+                    <label className={styles.fieldLabel}>Allow Availability Testing</label>
                     <Toggle checked={data.roeAllowDos} onChange={(v) => updateField('roeAllowDos', v)} disabled={readOnly} />
                   </div>
                   <div className={styles.fieldGroup}>
@@ -479,7 +479,7 @@ export function RoeSection({ data, updateField, updateMultipleFields, mode, onFi
               <div className={styles.subSection}>
                 <h3 className={styles.subSectionTitle}>Forbidden Techniques</h3>
                 <p style={{ fontSize: '0.8rem', color: '#888', margin: '0 0 8px 0' }}>
-                  Tool-level restrictions are applied via Tool Phase Restrictions in the Agent Behaviour tab.
+                  Tool-level restrictions are applied via Tool Phase Restrictions in the Tool Matrix tab.
                 </p>
                 <div className={styles.fieldRow}>
                   <div className={styles.fieldGroup}>
@@ -676,7 +676,7 @@ export function RoeSection({ data, updateField, updateMultipleFields, mode, onFi
 
         <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <li><strong>Target &amp; Modules</strong> — target domain, IP addresses, scan modules, rate limits</li>
-          <li><strong>Agent Behaviour</strong> — Tool Phase Restrictions (forbidden tools are disabled in the matrix)</li>
+          <li><strong>Tool Matrix</strong> — Tool Phase Restrictions (forbidden tools are disabled in the matrix)</li>
           <li><strong>Rules of Engagement</strong> — excluded hosts, time windows, testing permissions, compliance</li>
         </ul>
 

@@ -48,6 +48,7 @@ def build_nuclei_command(
     templates: List[str] = None,
     exclude_templates: List[str] = None,
     custom_templates: List[str] = None,
+    selected_custom_templates: List[str] = None,
     tags: List[str] = None,
     exclude_tags: List[str] = None,
     rate_limit: int = 0,
@@ -89,7 +90,12 @@ def build_nuclei_command(
         "-v", f"{output_host_path}:/output",
         "-v", f"{NUCLEI_TEMPLATES_VOLUME}:/root/nuclei-templates",
     ]
-    
+
+    # Mount custom templates if any are selected
+    host_custom_templates = os.environ.get("HOST_CUSTOM_TEMPLATES_PATH", "")
+    if selected_custom_templates and host_custom_templates:
+        cmd.extend(["-v", f"{host_custom_templates}:/custom-templates:ro"])
+
     # Add network host mode for Tor proxy access
     if use_proxy:
         cmd.extend(["--network", "host"])
@@ -120,7 +126,16 @@ def build_nuclei_command(
     if custom_templates:
         for template in custom_templates:
             cmd.extend(["-t", template])
-    
+
+    # Include individually selected custom templates (alongside built-in)
+    if selected_custom_templates and os.environ.get("HOST_CUSTOM_TEMPLATES_PATH"):
+        # If no specific templates were requested, we must explicitly include
+        # the built-in templates too — otherwise nuclei only scans the custom ones
+        if not templates:
+            cmd.extend(["-t", "/root/nuclei-templates/"])
+        for tpl_path in selected_custom_templates:
+            cmd.extend(["-t", f"/custom-templates/{tpl_path}"])
+
     # Tags
     if tags:
         cmd.extend(["-tags", ",".join(tags)])

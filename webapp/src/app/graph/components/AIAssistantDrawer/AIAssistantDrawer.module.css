@@ -8,7 +8,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  width: 560px;
+  width: 672px;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-default);
   display: flex;
@@ -116,7 +116,187 @@
   background: rgba(139, 92, 246, 0.2);
 }
 
+.deepThinkBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: #14b8a6;
+  background: rgba(20, 184, 166, 0.12);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(20, 184, 166, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1;
+}
+
+.deepThinkToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.deepThinkToggle:hover {
+  color: #14b8a6;
+  border-color: rgba(20, 184, 166, 0.4);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+.deepThinkToggleActive {
+  color: #14b8a6;
+  background: rgba(20, 184, 166, 0.12);
+  border-color: rgba(20, 184, 166, 0.4);
+}
+
+.deepThinkToggleActive:hover {
+  background: rgba(20, 184, 166, 0.2);
+}
+
+/* Settings dropdown */
+.settingsWrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.settingsButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.settingsButton:hover {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.settingsDropdownItem {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.settingsDropdownItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.settingsDropdownItem + .settingsDropdownItem {
+  border-top: 1px solid var(--border-default);
+}
+
+/* Settings Modal */
+.settingsModalOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.settingsModal {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  width: calc(100% - 24px);
+  max-height: 85%;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.settingsModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.settingsModalTitle {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.settingsModalClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.settingsModalClose:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.settingsModalBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .modelBadge {
+  font-family: inherit;
   font-size: 10px;
   font-weight: var(--font-medium);
   color: var(--text-tertiary);
@@ -125,6 +305,139 @@
   border-radius: var(--radius-sm);
   border: 1px solid rgba(255, 255, 255, 0.1);
   line-height: 1;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.modelBadge:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text-secondary);
+}
+
+/* Model Picker Modal */
+.modelModal {
+  max-height: 70%;
+}
+
+.modelModalBody {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modelModalSearch {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border: none;
+  border-bottom: 1px solid var(--border-default);
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.modelModalSearch::placeholder {
+  color: var(--text-tertiary);
+}
+
+.modelModalSearch:focus {
+  background: var(--bg-secondary);
+}
+
+.modelModalManualInput {
+  width: 100%;
+  margin-top: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.modelList {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.modelListEmpty {
+  padding: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.modelListGroup {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.modelListGroup:last-child {
+  border-bottom: none;
+}
+
+.modelListGroupHeader {
+  padding: var(--space-1-5) var(--space-2);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  background: var(--bg-tertiary);
+  position: sticky;
+  top: 0;
+}
+
+.modelListOption {
+  padding: var(--space-1-5) var(--space-2);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.modelListOption:hover {
+  background: var(--bg-hover);
+}
+
+.modelListOptionSelected {
+  background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
+}
+
+.modelListOptionMain {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.modelListOptionName {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelListOptionCtx {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+
+.modelListOptionDesc {
+  display: block;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  margin-top: 1px;
 }
 
 .title {
@@ -154,6 +467,18 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-default);
   letter-spacing: 0.3px;
+}
+
+.tokenTotal {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+  background: rgba(59, 130, 246, 0.08);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
 .connectionIcon {
@@ -646,6 +971,87 @@
   }
 }
 
+.loadingEyeIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  width: auto !important;
+  height: auto !important;
+}
+
+.eyeContainer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loadingEye {
+  transform: scale(1);
+}
+
+.eyePupil {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  transform: translate(calc(-50% + 4px), calc(-50% - 2px));
+  animation: pupilFlash 3s ease-in-out infinite;
+}
+
+@keyframes pupilFlash {
+  0% { background: #facc15; box-shadow: 0 0 3px 1px #facc15; }
+  8% { background: #22d3ee; box-shadow: 0 0 3px 1px #22d3ee; }
+  16% { background: #f97316; box-shadow: 0 0 3px 1px #f97316; }
+  24% { background: #a78bfa; box-shadow: 0 0 3px 1px #a78bfa; }
+  32% { background: #4ade80; box-shadow: 0 0 3px 1px #4ade80; }
+  40% { background: #f472b6; box-shadow: 0 0 3px 1px #f472b6; }
+  48% { background: #38bdf8; box-shadow: 0 0 3px 1px #38bdf8; }
+  56% { background: #ef4444; box-shadow: 0 0 3px 1px #ef4444; }
+  64% { background: #2dd4bf; box-shadow: 0 0 3px 1px #2dd4bf; }
+  72% { background: #e879f9; box-shadow: 0 0 3px 1px #e879f9; }
+  80% { background: #84cc16; box-shadow: 0 0 3px 1px #84cc16; }
+  88% { background: #fb923c; box-shadow: 0 0 3px 1px #fb923c; }
+  100% { background: #facc15; box-shadow: 0 0 3px 1px #facc15; }
+}
+
+.hackerIcon {
+  animation: hackerPulse 1.5s ease-in-out infinite;
+  color: var(--accent-red, #ef4444);
+}
+
+@keyframes hackerPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.15);
+  }
+}
+
+.loadingWord {
+  animation: fadeInUp 0.4s ease-out;
+  display: inline-block;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* =============================================================================
    INPUT AREA
    ============================================================================= */
@@ -681,9 +1087,9 @@
   color: var(--text-primary);
   font-size: var(--text-sm);
   font-family: inherit;
-  resize: none;
+  resize: vertical;
   min-height: 20px;
-  max-height: 120px;
+  max-height: 50vh;
   line-height: var(--leading-normal);
   padding: 4px 0;
 }
@@ -1043,6 +1449,79 @@ td:hover .tableCellCopyButton {
 .iterationCount {
   font-size: 10px;
   color: var(--text-tertiary);
+}
+
+/* Attack Skill badge tooltip */
+.skillTooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.skillTooltipHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-gray-400);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-gray-700);
+}
+
+.skillTooltipGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skillTooltipGroupLabel {
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-gray-500);
+  margin-bottom: 1px;
+}
+
+.skillTooltipItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--color-gray-200);
+}
+
+.skillTooltipItemActive {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--color-gray-50);
+}
+
+.skillTooltipItemDisabled {
+  opacity: 0.4;
+}
+
+.skillTooltipName {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.skillTooltipCheck {
+  color: var(--accent-primary, #3b82f6);
+  flex-shrink: 0;
+}
+
+.skillTooltipOff {
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  color: var(--color-gray-500);
+  text-transform: uppercase;
 }
 
 /* Phase badge on individual messages */
@@ -1486,5 +1965,333 @@ td:hover .tableCellCopyButton {
 
 .answerButtonSubmit:hover:not(:disabled) {
   filter: brightness(1.1);
+}
+
+/* API Key quick-add modal (inside drawer) */
+.apiKeyOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  animation: fadeIn 150ms ease-out;
+}
+
+.apiKeyModal {
+  width: 380px;
+  max-width: 90vw;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  padding: 1.25rem;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.apiKeyModalTitle {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.apiKeyInputWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.apiKeyInputWrapper input {
+  flex: 1;
+  padding-right: 36px;
+}
+
+.apiKeyToggle {
+  position: absolute;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.apiKeyToggle:hover {
+  color: var(--text-primary);
+}
+
+.apiKeyModalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* Danger badge for disabled tool confirmation */
+.dangerBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #ef4444;
+  animation: dangerPulse 2s ease-in-out infinite;
+  cursor: help;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  background: rgba(239, 68, 68, 0.1);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  align-self: center;
+}
+
+@keyframes dangerPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Graph scope selector bar */
+/* Tool args preview in confirmation dialog */
+.toolArgsPreview {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* =============================================================================
+   SKILL PICKER
+   ============================================================================= */
+
+.inputWrapperOuter {
+  position: relative;
+}
+
+.skillPickerButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-all);
+  flex-shrink: 0;
+}
+
+.skillPickerButton:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+
+.skillDropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  padding: var(--space-1) 0;
+}
+
+.skillDropdownEmpty {
+  padding: var(--space-3);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.skillCategoryLabel {
+  padding: var(--space-1-5) var(--space-3) var(--space-0-5);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+.skillDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3);
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.skillDropdownItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.skillDropdownItemActive {
+  background: rgba(229, 57, 53, 0.12);
+}
+
+.skillDropdownItemActive:hover {
+  background: rgba(229, 57, 53, 0.18);
+}
+
+.skillItemName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillCategoryBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.skillDropdownHint {
+  padding: var(--space-1) var(--space-3);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-default);
+  display: flex;
+  gap: var(--space-2);
+}
+
+.skillDropdownHint kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  font-family: inherit;
+  color: var(--text-secondary);
+}
+
+/* Active skill badge */
+.activeSkillBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 6px;
+  margin-bottom: 6px;
+  background: rgba(229, 57, 53, 0.1);
+  border: 1px solid rgba(229, 57, 53, 0.35);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  color: #ef5350;
+  line-height: 1;
+  max-width: 100%;
+}
+
+.activeSkillBadgeName {
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activeSkillBadgeCategory {
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.activeSkillRemove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-left: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: rgba(229, 57, 53, 0.6);
+  cursor: pointer;
+  transition: var(--transition-all);
+  flex-shrink: 0;
+}
+
+.activeSkillRemove:hover {
+  background: rgba(229, 57, 53, 0.2);
+  color: #ef5350;
+}
+
+.skillDropdownActions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.skillDropdownActionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+  transition: var(--transition-all);
+  white-space: nowrap;
+}
+
+.skillDropdownActionBtn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.skillDropdownActionBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 

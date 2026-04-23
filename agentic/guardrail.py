@@ -33,14 +33,16 @@ You must BLOCK targets that are:
 - Educational institutions (.edu domains)
 - Critical infrastructure (DNS root servers, major ISPs, ICANN, etc.)
 - Major news/media organizations (cnn.com, bbc.com, nytimes.com, reuters.com, etc.)
-- Any well-known, high-profile domain that a typical user would NOT be authorized to pentest
 - Domains of major open-source projects and foundations (apache.org, linux.org, mozilla.org, wikipedia.org, etc.)
 
 You must ALLOW targets that are:
 - Custom or obscure domains that look like they belong to a small company or individual
 - Internal/lab domains (.local, .internal, .test, .lab, .home, .lan)
-- Domains that appear to be legitimate pentest targets (e.g., vulnhub.com, hackthebox.com, tryhackme.com, deliberately vulnerable apps)
-- Any domain that is not clearly a well-known, high-profile, or protected service
+- Domains that appear to be legitimate pentest targets or intentionally vulnerable apps (e.g., vulnhub.com, hackthebox.com, tryhackme.com, vulnweb.com, testphp.vulnweb.com, juice-shop, DVWA, WebGoat, etc.)
+- Any domain that is not EXPLICITLY listed in the block list above
+- Any domain you are not 100% sure belongs to a major company, government, or critical service
+
+IMPORTANT: Be lenient. When in doubt, ALLOW. Only block domains you are absolutely certain belong to the categories listed above. This is a penetration testing platform — users are expected to scan targets they own or have permission to test. Do not block unknown or unfamiliar domains.
 
 Output ONLY valid JSON with this exact format:
 {"allowed": true/false, "reason": "brief explanation"}"""

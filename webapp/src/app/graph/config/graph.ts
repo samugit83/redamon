@@ -1,12 +1,37 @@
-// Force simulation settings
+// Force simulation settings (legacy -- used as base, see getAdaptiveForceConfig)
 export const FORCE_CONFIG = {
   alphaDecay: 0.02,
   velocityDecay: 0.4,
   collisionRadius: 20,
   collisionStrength: 1,
   collisionIterations: 3,
-  cooldownTime: Infinity,
-  cooldownTicks: Infinity,
+  cooldownTime: 15000,
+  cooldownTicks: 300,
+} as const
+
+// Adaptive force config based on node count
+export function getAdaptiveForceConfig(nodeCount: number) {
+  if (nodeCount > 5000) return { cooldownTime: 3000,  cooldownTicks: 50,  collisionIterations: 1, warmupTicks: 100 }
+  if (nodeCount > 2000) return { cooldownTime: 5000,  cooldownTicks: 100, collisionIterations: 2, warmupTicks: 50  }
+  if (nodeCount > 500)  return { cooldownTime: 10000, cooldownTicks: 200, collisionIterations: 3, warmupTicks: 30  }
+  return                        { cooldownTime: 15000, cooldownTicks: 300, collisionIterations: 3, warmupTicks: 0   }
+}
+
+// Performance tiers based on node count
+export type PerformanceTier = 'full' | 'reduced' | 'minimal' | 'ultra-minimal'
+
+export function getPerformanceTier(nodeCount: number): PerformanceTier {
+  if (nodeCount <= 1000) return 'full'
+  if (nodeCount <= 2000) return 'reduced'
+  if (nodeCount <= 5000) return 'minimal'
+  return 'ultra-minimal'
+}
+
+export const TIER_CONFIG = {
+  full:            { sphereSegments: 16, enableGlow: true,  enableWireframe: true,  enableLabels: true,  enableParticles: true,  ringSegments: 32, lodDistances: [100, 300] as const },
+  reduced:         { sphereSegments: 8,  enableGlow: true,  enableWireframe: false, enableLabels: true,  enableParticles: true,  ringSegments: 16, lodDistances: [80, 200] as const },
+  minimal:         { sphereSegments: 6,  enableGlow: false, enableWireframe: false, enableLabels: true,  enableParticles: false, ringSegments: 8,  lodDistances: [50, 150] as const },
+  'ultra-minimal': { sphereSegments: 4,  enableGlow: false, enableWireframe: false, enableLabels: true,  enableParticles: false, ringSegments: 6,  lodDistances: [30, 100] as const },
 } as const
 
 // Animation settings
@@ -22,7 +47,7 @@ export const ANIMATION_CONFIG = {
 
 // Zoom settings
 export const ZOOM_CONFIG = {
-  labelVisibilityThreshold: 0.4,
+  labelVisibilityThreshold: 1.5,
 } as const
 
 // 3D specific settings

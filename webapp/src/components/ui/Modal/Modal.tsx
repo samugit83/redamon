@@ -24,6 +24,8 @@ interface ModalProps {
   closeOnEscape?: boolean
   /** Whether to show the close button */
   showCloseButton?: boolean
+  /** Optional actions rendered in the header (between title and close button) */
+  headerActions?: ReactNode
 }
 
 export function Modal({
@@ -36,6 +38,7 @@ export function Modal({
   closeOnOverlayClick = true,
   closeOnEscape = true,
   showCloseButton = true,
+  headerActions,
 }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
   const previousActiveElement = useRef<HTMLElement | null>(null)
@@ -114,6 +117,7 @@ export function Modal({
                 {title}
               </h2>
             )}
+            {headerActions && <div style={{ marginLeft: 'auto', marginRight: '8px' }}>{headerActions}</div>}
             {showCloseButton && (
               <button
                 type="button"

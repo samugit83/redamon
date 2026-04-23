@@ -1,0 +1,69 @@
+name: Test Report
+description: Report testing results for a PR or feature
+title: "[Test Report] "
+labels: ["testing"]
+body:
+  - type: input
+    id: pr_or_feature
+    attributes:
+      label: PR or Feature Tested
+      description: Link to the PR or feature you tested.
+      placeholder: "e.g., #64 or feature/shodan-integration"
+    validations:
+      required: true
+
+  - type: textarea
+    id: target
+    attributes:
+      label: Test Target
+      description: What did you test against? (your own lab, HackTheBox, TryHackMe, etc.)
+      placeholder: "e.g., Local Kali VM running DVWA, HackTheBox machine, etc."
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Test Environment
+      description: Your setup details.
+      placeholder: |
+        - OS: Ubuntu 22.04
+        - Docker: 24.0.7
+        - RAM: 16GB
+        - CPU: 8 cores
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps Performed
+      description: What did you do to test this?
+      placeholder: |
+        1. Pulled the branch with `git checkout feature/...`
+        2. Ran `docker compose build && docker compose up -d`
+        3. Configured target in the webapp
+        4. Launched recon pipeline
+        5. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: What happened? Did it pass or fail?
+      placeholder: |
+        - Pass / Fail
+        - The feature correctly ...
+        - Found an issue with ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Screenshots, logs, or other proof of your testing.
+    validations:
+      required: false

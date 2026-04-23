@@ -4,7 +4,7 @@ import { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { Link2 } from 'lucide-react'
 import { NODE_COLORS } from '../../config'
 import { GraphData } from '../../types'
-import type { ViewMode } from '../ViewTabs'
+import type { ViewMode, TableViewMode } from '../ViewTabs'
 import styles from './PageBottomBar.module.css'
 
 interface PageBottomBarProps {
@@ -12,6 +12,7 @@ interface PageBottomBarProps {
   is3D: boolean
   showLabels: boolean
   activeView: ViewMode
+  tableViewMode?: TableViewMode
   // Table view filter props
   activeNodeTypes?: Set<string>
   nodeTypeCounts?: Record<string, number>
@@ -32,6 +33,7 @@ export function PageBottomBar({
   is3D,
   showLabels,
   activeView,
+  tableViewMode = 'all',
   activeNodeTypes,
   nodeTypeCounts,
   onToggleNodeType,
@@ -94,6 +96,10 @@ export function PageBottomBar({
   )
 
   const visibleSessionCount = sessionChainIds.length - (hiddenSessions?.size ?? 0)
+
+  const hideBar = activeView === 'sessions' || activeView === 'terminal' || activeView === 'roe' || (activeView === 'table' && tableViewMode !== 'all')
+
+  if (hideBar) return null
 
   return (
     <div className={styles.bottomBar}>
@@ -224,20 +230,9 @@ export function PageBottomBar({
             <span className={styles.statLabel}>Links:</span>
             <span className={styles.statValue}>{data?.links.length ?? '-'}</span>
           </div>
-          {activeView === 'graph' && (
-            <>
-              <div className={styles.statItem}>
-                <span className={styles.statLabel}>View:</span>
-                <span className={styles.statValue}>{is3D ? '3D' : '2D'}</span>
-              </div>
-              <div className={styles.statItem}>
-                <span className={styles.statLabel}>Labels:</span>
-                <span className={styles.statValue}>{showLabels ? 'On' : 'Off'}</span>
-              </div>
-            </>
-          )}
         </div>
       </div>
+
     </div>
   )
 }

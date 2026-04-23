@@ -1,0 +1,1 @@
+export { GitHubStarBanner } from './GitHubStarBanner'

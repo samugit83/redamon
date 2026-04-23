@@ -15,9 +15,8 @@ venv/
 output/*
 !output/.gitkeep
 
-# Nuclei templates (custom only)
-nuclei-templates/*
-!nuclei-templates/.gitkeep
+# Nuclei templates
+# Built-in templates are tracked; user-uploaded ones will also appear here
 
 # Docker
 *.log

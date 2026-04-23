@@ -32,11 +32,11 @@ ApprovalDecision = Literal["approve", "modify", "abort"]
 QuestionFormat = Literal["text", "single_choice", "multi_choice"]
 
 # Attack path types for dynamic routing
-# Known types: "cve_exploit", "brute_force_credential_guess", "phishing_social_engineering"
-# Unclassified types: "<descriptive_term>-unclassified" (e.g., "sql_injection-unclassified")
+# Known types: "cve_exploit", "brute_force_credential_guess", "phishing_social_engineering", "denial_of_service", "sql_injection", "xss"
+# Unclassified types: "<descriptive_term>-unclassified" (e.g., "ssrf-unclassified", "file_upload-unclassified")
 AttackPathType = str  # Validated by AttackPathClassification.attack_path_type validator
 
-KNOWN_ATTACK_PATHS = {"cve_exploit", "brute_force_credential_guess", "phishing_social_engineering"}
+KNOWN_ATTACK_PATHS = {"cve_exploit", "brute_force_credential_guess", "phishing_social_engineering", "denial_of_service", "sql_injection", "xss"}
 _UNCLASSIFIED_RE = re.compile(r'^[a-z][a-z0-9_]*-unclassified$')
 
 
@@ -142,6 +142,16 @@ class PhaseHistoryEntry(BaseModel):
     exited_at: Optional[datetime] = None
 
 
+class ToolConfirmationRequest(BaseModel):
+    """Request for user confirmation before executing dangerous tool(s)."""
+    confirmation_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    mode: Literal["single", "plan"]  # single tool or plan wave
+    tools: List[dict]  # [{tool_name, tool_args, rationale}]
+    reasoning: str
+    phase: str
+    iteration: int
+
+
 # =============================================================================
 # USER Q&A MODELS
 # =============================================================================
@@ -197,7 +207,10 @@ class ObjectiveOutcome(BaseModel):
 # LLM RESPONSE MODELS (for structured parsing)
 # =============================================================================
 
-ActionType = Literal["use_tool", "plan_tools", "transition_phase", "complete", "ask_user"]
+ActionType = Literal[
+    "use_tool", "plan_tools", "transition_phase", "complete", "ask_user",
+    "deploy_fireteam",
+]
 
 
 class PhaseTransitionDecision(BaseModel):
@@ -238,13 +251,26 @@ class ExtractedTargetInfo(BaseModel):
 
 class ChainFindingExtract(BaseModel):
     """Single finding extracted by LLM from tool output for attack chain graph."""
-    finding_type: str = "custom"  # vulnerability_confirmed, credential_found, exploit_success, etc.
+    # Informational: service_identified, vulnerability_confirmed, configuration_found,
+    #                exploit_module_found, defense_detected, information_disclosure
+    # Goal/outcome:  exploit_success, access_gained, privilege_escalation, credential_found,
+    #                data_exfiltration, lateral_movement, persistence_established,
+    #                denial_of_service_success, social_engineering_success, remote_code_execution,
+    #                session_hijacked
+    # Fallback:      custom
+    finding_type: str = "custom"
     severity: str = "info"        # critical, high, medium, low, info
     title: str = ""
     evidence: str = ""
     related_cves: List[str] = Field(default_factory=list)
     related_ips: List[str] = Field(default_factory=list)
     confidence: int = 80
+    # Member think node stamps this with the producing ReAct iteration so the
+    # parent's format_chain_context renders "(step N)" after fireteam roll-up.
+    # Without this field declared, Pydantic drops the key when the deploy node
+    # rebuilds findings into ChainFindingExtract in _result_from_final_state,
+    # and the parent context shows "(step ?)".
+    step_iteration: int = 0
 
 
 class OutputAnalysisInline(BaseModel):
@@ -256,6 +282,19 @@ class OutputAnalysisInline(BaseModel):
     exploit_succeeded: bool = False
     exploit_details: Optional[dict] = None
     chain_findings: List[ChainFindingExtract] = Field(default_factory=list)
+
+
+# =============================================================================
+# DEEP THINK MODEL
+# =============================================================================
+
+class DeepThinkResult(BaseModel):
+    """Deep Think reasoning output — structured analysis before complex decisions."""
+    situation_assessment: str = Field(description="Current state summary")
+    attack_vectors_identified: List[str] = Field(default_factory=list, description="All possible attack vectors")
+    recommended_approach: str = Field(description="Chosen approach and rationale")
+    priority_order: List[str] = Field(default_factory=list, description="Ordered action steps")
+    risks_and_mitigations: str = Field(description="Potential risks and how to handle them")
 
 
 # =============================================================================
@@ -278,6 +317,133 @@ class ToolPlan(BaseModel):
     steps: List[ToolPlanStep]
     plan_rationale: str = ""
 
+
+# =============================================================================
+# FIRETEAM MODELS (multi-agent deployment)
+# =============================================================================
+
+FireteamMemberStatus = Literal[
+    "running", "success", "partial", "timeout",
+    "needs_confirmation", "cancelled", "error",
+]
+
+
+class FireteamMemberSpec(BaseModel):
+    """One member in a fireteam deployment plan (emitted by the LLM).
+
+    Note: `max_iterations` is intentionally NOT a field here. ReAct loops
+    run until the agent decides `complete` — the operator-facing safety cap
+    is set globally via project setting FIRETEAM_MEMBER_MAX_ITERATIONS and
+    applied in _build_member_state. Letting the root LLM pre-specify a
+    per-member iteration budget in advance is both wasteful (extra tokens
+    in the fireteam_plan JSON) and meaningless (the model has no way to
+    predict iteration count before the member encounters the target).
+    """
+    name: str = Field(description="Short human-readable name, shown in UI")
+    task: str = Field(description="Task description the member receives as its objective")
+    skills: List[str] = Field(
+        default_factory=list,
+        description="Skill slugs filtered into member's allowed tool set",
+    )
+
+
+class FireteamPlan(BaseModel):
+    """A deployment of independent fireteam members to run concurrently."""
+    members: List[FireteamMemberSpec] = Field(min_length=1, max_length=8)
+    plan_rationale: str
+    fireteam_id: Optional[str] = None  # Filled by fireteam_deploy_node
+
+
+class FireteamMemberResult(BaseModel):
+    """Shape returned by each member when its ReAct loop completes."""
+    member_id: str
+    name: str
+    status: FireteamMemberStatus
+    completion_reason: str = ""
+    iterations_used: int = 0
+    tokens_used: int = 0
+    input_tokens_used: int = 0
+    output_tokens_used: int = 0
+    wall_clock_seconds: float = 0.0
+    findings: List[ChainFindingExtract] = Field(default_factory=list)
+    target_info_delta: dict = Field(default_factory=dict)
+    execution_trace_summary: List[dict] = Field(default_factory=list)
+    # ID of the member's last-written ChainStep. Findings extracted from this
+    # member's run are anchored to this step when persisted to Neo4j — without
+    # it they would orphan (no PRODUCED edge). Propagated from the member's
+    # FireteamMemberState._last_chain_step_id by _result_from_final_state.
+    last_chain_step_id: Optional[str] = None
+    # When status == "needs_confirmation"
+    pending_confirmation: Optional[dict] = None
+    # When status == "error"
+    error_message: Optional[str] = None
+
+
+class FireteamMemberState(TypedDict):
+    """Stripped state for the fireteam member graph. NOT a superset of AgentState."""
+    messages: Annotated[list, add_messages]
+    current_iteration: int
+    max_iterations: int
+    task_complete: bool
+    completion_reason: Optional[str]
+
+    # Read-only inherited from parent
+    current_phase: Phase
+    attack_path_type: str
+    user_id: str
+    project_id: str
+    session_id: str
+    parent_target_info: dict     # snapshot of parent target_info at deploy time
+    member_name: str             # for streaming attribution
+    member_id: str               # UUID for chain graph and logging
+    fireteam_id: str             # fireteam this member belongs to
+    skills: List[str]            # tool filter
+    task: str                    # member's local objective
+
+    # Member-local
+    execution_trace: List[dict]
+    target_info: dict
+    chain_findings_memory: List[dict]
+    chain_failures_memory: List[dict]
+
+    # Tool confirmation escalation (member does not block; parent handles)
+    _pending_confirmation: Optional[dict]
+
+    # Parallel tool wave support (reuses execute_plan pattern)
+    _current_plan: Optional[dict]
+
+    # Current ExecutionStep (set by member think, read + updated by
+    # execute_tool_node, then analyzed on the next think iteration).
+    _current_step: Optional[dict]
+
+    # PREVIOUS step snapshot (populated by member think AFTER it analyzes
+    # the prev tool's output). emit_streaming_events watches this key to
+    # fire fireteam_tool_complete. Without this field being declared on
+    # the TypedDict, LangGraph filters the update out on merge and the
+    # UI never sees the tool transition from `running` → `success`.
+    _completed_step: Optional[dict]
+
+    # Parsed LLMDecision for the current turn.
+    _decision: Optional[dict]
+
+    # Raw tool result from execute_tool_node (success, output, error).
+    _tool_result: Optional[dict]
+
+    # Last-written ChainStep id so follow-on steps can link via prev_step_id.
+    _last_chain_step_id: Optional[str]
+
+    # Always False in members (parent does guardrail check); kept for shape parity.
+    _guardrail_blocked: bool
+
+    # Passive observability — tokens_used accumulates per turn for metrics
+    # and report display. No enforcement: iteration budget (max_iterations)
+    # is the sole cap on member runtime. input/output are broken out from
+    # the provider's usage_metadata; tokens_used = input + output.
+    tokens_used: int
+    input_tokens_used: int
+    output_tokens_used: int
+    _input_tokens_this_turn: int
+    _output_tokens_this_turn: int
 
 
 class LLMDecision(BaseModel):
@@ -313,6 +479,14 @@ class LLMDecision(BaseModel):
     # Tool plan fields (when action="plan_tools")
     tool_plan: Optional[ToolPlan] = Field(default=None, description="Wave of independent tools to execute")
 
+    # Fireteam plan fields (when action="deploy_fireteam")
+    fireteam_plan: Optional[FireteamPlan] = Field(
+        default=None,
+        description="Deployment of independent fireteam members to execute concurrently",
+    )
+
+    # Deep Think self-request (only used when Deep Think is enabled)
+    need_deep_think: bool = Field(default=False, description="Set to true if you feel stuck or not progressing, to trigger strategic re-evaluation on next iteration")
 
 
 class OutputAnalysis(BaseModel):
@@ -343,7 +517,7 @@ class AttackPathClassification(BaseModel):
         description="Required phase for this request: 'informational' for recon, 'exploitation' for attacks"
     )
     attack_path_type: str = Field(
-        description="The classified attack path type: 'cve_exploit', 'brute_force_credential_guess', or '<term>-unclassified'"
+        description="The classified attack path type: 'cve_exploit', 'brute_force_credential_guess', 'phishing_social_engineering', 'denial_of_service', or '<term>-unclassified'"
     )
     secondary_attack_path: Optional[str] = Field(
         default=None,
@@ -378,11 +552,13 @@ class AttackPathClassification(BaseModel):
     def validate_attack_path_type(cls, v: str) -> str:
         if v in KNOWN_ATTACK_PATHS:
             return v
+        if v.startswith("user_skill:"):
+            return v
         if _UNCLASSIFIED_RE.match(v):
             return v
         raise ValueError(
             f"attack_path_type must be 'cve_exploit', 'brute_force_credential_guess', "
-            f"'phishing_social_engineering', or match '<term>-unclassified' pattern. Got: '{v}'"
+            f"'phishing_social_engineering', 'user_skill:<id>', or match '<term>-unclassified' pattern. Got: '{v}'"
         )
 
 
@@ -445,6 +621,14 @@ class AgentState(TypedDict):
     user_question_answer: Optional[str]  # User's answer text
     qa_history: List[dict]  # List of QAHistoryEntry.model_dump() for context
 
+    # Tool confirmation control
+    awaiting_tool_confirmation: bool
+    tool_confirmation_pending: Optional[dict]  # ToolConfirmationRequest.model_dump() or None
+    tool_confirmation_response: Optional[str]  # "approve" | "modify" | "reject"
+    tool_confirmation_modification: Optional[dict]  # Modified tool args from user
+    _reject_tool: bool  # True when user rejected tool (routes to think)
+    _tool_confirmation_mode: Optional[str]  # "single" | "plan" — preserved for router after clearing pending
+
     # Internal fields for inter-node communication (not persisted long-term)
     _current_step: Optional[dict]  # Current ExecutionStep being processed
     _completed_step: Optional[dict]  # Previous step with analysis, for streaming emission
@@ -471,8 +655,40 @@ class AgentState(TypedDict):
     # Response tier for adaptive formatting ("conversational", "summary", "full_report")
     _response_tier: Optional[str]
 
+    # Deep Think result (persists for chain, replaced on re-trigger)
+    deep_think_result: Optional[str]
+    _need_deep_think: bool  # LLM self-requested Deep Think for next iteration
+
     # Metasploit state tracking
     msf_session_reset_done: bool  # True if metasploit was reset at start of this session
+
+    # LLM token accounting (cumulative across the session, populated from each
+    # ainvoke's usage_metadata). Used by the UI to render per-step and
+    # cumulative counters. tokens_used = input + output; kept alongside for
+    # backwards-compatible reporting.
+    input_tokens_used: int
+    output_tokens_used: int
+    tokens_used: int
+
+    # Per-turn deltas (reset every think iteration). emit_streaming_events
+    # picks these up when emitting on_thinking so the UI can render per-step
+    # in/out counts. MUST be declared here or LangGraph filters them out of
+    # state updates. See FIRETEAM.md §13.3.
+    _input_tokens_this_turn: int
+    _output_tokens_this_turn: int
+
+    # Fireteam (multi-agent) deployment state
+    _current_fireteam_plan: Optional[dict]       # FireteamPlan.model_dump()
+    _current_fireteam_results: Optional[list]    # List[FireteamMemberResult.model_dump()]
+    _fireteam_id: Optional[str]                  # active fireteam identifier
+    _fireteam_start_time: Optional[float]
+    _escalated_fireteam_confirmation: Optional[dict]  # pending_confirmation from a member
+    _escalated_member_id: Optional[str]
+    # Queue of additional pending_confirmation dicts from other members in the
+    # same wave. Drained one-at-a-time by fireteam_collect_node /
+    # process_fireteam_confirmation_node so each escalation gets its own
+    # operator decision. See FIRETEAM.md §20 Q3 ("v1: 3 times").
+    _pending_escalations: Optional[list]
 
 
 # =============================================================================
@@ -515,6 +731,13 @@ class InvokeResponse(BaseModel):
         description="Question request details if awaiting_question is True"
     )
 
+    # Tool confirmation flow
+    awaiting_tool_confirmation: bool = Field(default=False, description="True if waiting for tool confirmation")
+    tool_confirmation_request: Optional[dict] = Field(
+        default=None,
+        description="Tool confirmation request details if awaiting_tool_confirmation is True"
+    )
+
 
 class ApprovalRequest(BaseModel):
     """Request model for user approval endpoint."""
@@ -551,7 +774,7 @@ def create_initial_state(
         "current_phase": "informational",
         "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
         "phase_transition_pending": None,
-        "attack_path_type": "cve_exploit",  # Default, will be classified when entering exploitation
+        "attack_path_type": "",  # Empty until classified by classify_attack_path
         "execution_trace": [],
         "todo_list": [],
         # Multi-objective support
@@ -571,6 +794,13 @@ def create_initial_state(
         "pending_question": None,
         "user_question_answer": None,
         "qa_history": [],
+        # Tool confirmation fields
+        "awaiting_tool_confirmation": False,
+        "tool_confirmation_pending": None,
+        "tool_confirmation_response": None,
+        "tool_confirmation_modification": None,
+        "_reject_tool": False,
+        "_tool_confirmation_mode": None,
         # Internal fields
         "_current_step": None,
         "_completed_step": None,
@@ -587,8 +817,19 @@ def create_initial_state(
         "_last_chain_step_id": None,
         "_prior_chain_context": None,
         "_response_tier": None,
+        # Deep Think
+        "deep_think_result": None,
+        "_need_deep_think": False,
         # Metasploit state
         "msf_session_reset_done": False,
+        # Fireteam (multi-agent) deployment
+        "_current_fireteam_plan": None,
+        "_current_fireteam_results": None,
+        "_fireteam_id": None,
+        "_fireteam_start_time": None,
+        "_escalated_fireteam_confirmation": None,
+        "_escalated_member_id": None,
+        "_pending_escalations": None,
     }
 
 
@@ -827,19 +1068,75 @@ def format_objective_history(objective_history: List[dict]) -> str:
     return "\n".join(lines)
 
 
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _severity_rank(s: str) -> int:
+    return _SEVERITY_ORDER.get((s or "info").lower(), 4)
+
+
+def _dedup_findings(chain_findings: List[dict]) -> List[dict]:
+    """Deduplicate findings by normalized title, keeping earliest occurrence.
+
+    If a later duplicate has higher severity or confidence, upgrade the kept entry.
+    """
+    seen: dict[str, dict] = {}
+    for f in chain_findings:
+        raw_title = f.get("title") or f.get("finding_type") or "custom"
+        key = raw_title.strip().lower()
+        if not key:
+            continue
+        if key in seen:
+            existing = seen[key]
+            if _severity_rank(f.get("severity", "info")) < _severity_rank(existing.get("severity", "info")):
+                existing["severity"] = f["severity"]
+            if (f.get("confidence") or 0) > (existing.get("confidence") or 0):
+                existing["confidence"] = f["confidence"]
+        else:
+            seen[key] = dict(f)
+    return list(seen.values())
+
+
+def _group_trace_by_iteration(execution_trace: List[dict]) -> List[dict]:
+    """Group execution_trace entries by iteration number.
+
+    Returns a list of iteration groups, each containing:
+      - iteration, phase: from the first entry
+      - tools: list of individual tool entries
+      - output_analysis: the shared analysis (taken once)
+      - is_wave: True if multiple tools ran in this iteration
+    """
+    from collections import OrderedDict
+    groups: OrderedDict[int, dict] = OrderedDict()
+    for entry in execution_trace:
+        it = entry.get("iteration", 0)
+        if it not in groups:
+            groups[it] = {
+                "iteration": it,
+                "phase": entry.get("phase", "?"),
+                "tools": [],
+                "output_analysis": entry.get("output_analysis", ""),
+            }
+        groups[it]["tools"].append(entry)
+    result = list(groups.values())
+    for g in result:
+        g["is_wave"] = len(g["tools"]) > 1
+    return result
+
+
 def format_chain_context(
     chain_findings: List[dict],
     chain_failures: List[dict],
     chain_decisions: List[dict],
     execution_trace: List[dict],
-    recent_count: int = 5,
+    recent_iterations: int = 20,
 ) -> str:
     """Format attack chain memory for the LLM system prompt.
 
-    Replaces ``format_execution_trace()`` as the primary context injected
-    into the think node.  Puts findings/failures/decisions up front so
-    the LLM gets instant signal, followed by only the last *recent_count*
-    steps in compact form.  Scales O(findings+failures+decisions+N).
+    Groups tool calls by iteration -- a wave of parallel tools = 1 step.
+    Shows the last *recent_iterations* steps with wave tools collapsed
+    into a compact summary.  Findings/failures/decisions are listed up
+    front for instant signal.
     """
     if not execution_trace and not chain_findings and not chain_failures:
         return "No steps executed yet."
@@ -848,13 +1145,36 @@ def format_chain_context(
 
     # ── Findings ────────────────────────────────────────
     if chain_findings:
+        deduped = _dedup_findings(chain_findings)
+        deduped.sort(key=lambda f: _severity_rank(f.get("severity", "info")))
+
         lines.append("── Findings ──────────────────────────────────────")
-        for f in chain_findings:
+        for f in deduped:
             sev = (f.get("severity") or "info").upper()
-            ftype = f.get("finding_type") or "custom"
-            title = f.get("title") or ftype
+            title = f.get("title") or f.get("finding_type") or "custom"
             step = f.get("step_iteration", "?")
-            lines.append(f"  [{sev}] {title} (step {step})")
+            confidence = f.get("confidence")
+            conf_str = f", {confidence}%" if confidence is not None else ""
+            # Surface source_agent when present so the LLM can see that a
+            # fireteam already covered this ground. Root-agent findings leave
+            # source_agent unset — no attribution suffix in that case.
+            source_agent = f.get("source_agent")
+            source_str = f", from {source_agent}" if source_agent else ""
+            lines.append(f"  [{sev}] {title} (step {step}{source_str}{conf_str})")
+
+            evidence = (f.get("evidence") or "").strip()
+            if evidence:
+                lines.append(f"    Evidence: {evidence[:150]}")
+
+            cves = f.get("related_cves") or []
+            ips = f.get("related_ips") or []
+            meta_parts = []
+            if cves:
+                meta_parts.append(f"CVEs: {', '.join(cves[:5])}")
+            if ips:
+                meta_parts.append(f"IPs: {', '.join(ips[:5])}")
+            if meta_parts:
+                lines.append(f"    {' | '.join(meta_parts)}")
         lines.append("")
 
     # ── Failed Attempts ─────────────────────────────────
@@ -865,9 +1185,9 @@ def format_chain_context(
             ftype = fl.get("failure_type") or "error"
             err = fl.get("error_message") or ""
             lesson = fl.get("lesson_learned") or ""
-            lines.append(f"  [step {step}] {ftype}: {err[:200]}")
+            lines.append(f"  [step {step}] {ftype}: {err[:300]}")
             if lesson:
-                lines.append(f"           Lesson: {lesson[:200]}")
+                lines.append(f"           Lesson: {lesson[:300]}")
         lines.append("")
 
     # ── Decisions ───────────────────────────────────────
@@ -883,50 +1203,161 @@ def format_chain_context(
             lines.append(f"  [step {step}] {dtype}: {from_s} → {to_s} ({by} {approved})")
         lines.append("")
 
-    # ── Recent Steps (last N) ───────────────────────────
+    # ── Recent Steps (grouped by iteration) ─────────────
     if execution_trace:
-        recent = execution_trace[-recent_count:]
-        if len(execution_trace) > recent_count:
-            lines.append(f"── Recent Steps (last {recent_count} of {len(execution_trace)}) ──")
-        else:
-            lines.append(f"── Steps ({len(execution_trace)} total) ──────────────────")
+        iter_groups = _group_trace_by_iteration(execution_trace)
+        total_iterations = len(iter_groups)
+        total_tools = len(execution_trace)
 
-        for step in recent:
-            it = step.get("iteration", "?")
-            phase = step.get("phase", "?")
-            tool = step.get("tool_name") or "none"
-            args = step.get("tool_args") or {}
-            success = step.get("success", True)
-            err = step.get("error_message") or ""
-            thought = step.get("thought", "")
-            output = step.get("tool_output", "")
-            analysis = step.get("output_analysis", "")
+        recent = iter_groups[-recent_iterations:]
+        older = iter_groups[:-recent_iterations] if total_iterations > recent_iterations else []
 
-            # Compact header
-            lines.append(f"  Step {it} [{phase}]: {tool}")
-            # Thought (truncated)
-            if thought:
-                lines.append(f"    Thought: {thought[:500]}")
-            # Args (truncated)
-            if args and tool != "none":
-                args_str = str(args)
-                lines.append(f"    Args: {args_str[:300]}")
-            # Result line
-            if success:
-                out_preview = (analysis or output or "")[:500]
-                if out_preview:
-                    lines.append(f"    OK | {out_preview}")
-                else:
-                    lines.append(f"    OK")
+        # ── Summary tier for old steps ──
+        if older:
+            summary_max = 50
+            if len(older) > summary_max:
+                omitted = len(older) - summary_max
+                summary_groups = older[-summary_max:]
+                first_shown = summary_groups[0]["iteration"]
+                lines.append(
+                    f"── Earlier Steps (iterations {first_shown}-{older[-1]['iteration']} summary, "
+                    f"{omitted} older omitted -- findings preserved above) ──"
+                )
             else:
-                lines.append(f"    FAILED | {err[:300]}")
-            # Full output for the very last step (most relevant)
-            if step is recent[-1] and output:
-                max_out = 5000
-                if len(output) > max_out:
-                    lines.append(f"    Output (last step, truncated):\n{output[:max_out]}...")
+                summary_groups = older
+                lines.append(f"── Earlier Steps (iterations 1-{older[-1]['iteration']} summary) ──")
+
+            for group in summary_groups:
+                it = group["iteration"]
+                phase_raw = group["phase"] or "?"
+                phase = {"informational": "info", "exploitation": "exploit", "post_exploitation": "post-ex"}.get(phase_raw, phase_raw[:6])
+                analysis = group["output_analysis"] or ""
+                tools = group["tools"]
+                any_failed = any(not t.get("success", True) for t in tools)
+                fail_marker = " FAILED |" if any_failed else ""
+                if group["is_wave"]:
+                    tool_counts: dict = {}
+                    for t in tools:
+                        tname = t.get("tool_name") or "unknown"
+                        tool_counts[tname] = tool_counts.get(tname, 0) + 1
+                    tool_str = ", ".join(f"{c} {n}" for n, c in tool_counts.items())
+                    lines.append(f"  {it} [{phase}]: Wave[{tool_str}] ->{fail_marker} {analysis[:100]}")
                 else:
-                    lines.append(f"    Output (last step):\n{output}")
+                    tool_name = tools[0].get("tool_name") or "none"
+                    lines.append(f"  {it} [{phase}]: {tool_name} ->{fail_marker} {analysis[:100]}")
+            lines.append("")
+
+        if total_iterations > recent_iterations:
+            lines.append(
+                f"── Recent Steps (last {len(recent)} of {total_iterations} "
+                f"iterations, {total_tools} tool calls) ──"
+            )
+        else:
+            lines.append(
+                f"── Steps ({total_iterations} iterations, "
+                f"{total_tools} tool calls) ──"
+            )
+
+        for idx, group in enumerate(recent):
+            it = group["iteration"]
+            phase = group["phase"]
+            tools = group["tools"]
+            is_wave = group["is_wave"]
+            analysis = group["output_analysis"]
+            is_last = idx == len(recent) - 1
+
+            if is_wave:
+                # ── Wave: collapse tools into compact summary ──
+                tool_counts: dict = {}
+                ok_count = 0
+                fail_count = 0
+                failed_tools: list = []
+                tool_args_list: list = []
+                for t in tools:
+                    tname = t.get("tool_name") or "unknown"
+                    tool_counts[tname] = tool_counts.get(tname, 0) + 1
+                    if t.get("success", True):
+                        ok_count += 1
+                    else:
+                        fail_count += 1
+                        failed_tools.append(
+                            f"{tname}: {(t.get('error_message') or '')[:300]}"
+                        )
+                    targs = t.get("tool_args") or {}
+                    if targs:
+                        tool_args_list.append(
+                            f"    - {tname}: {str(targs)[:300]}"
+                        )
+
+                tool_summary = ", ".join(
+                    f"{cnt} {name}" for name, cnt in tool_counts.items()
+                )
+                status = f"{ok_count} OK" + (
+                    f", {fail_count} FAILED" if fail_count else ""
+                )
+                lines.append(
+                    f"  Step {it} [{phase}] Wave [{tool_summary}] ({status})"
+                )
+
+                # Rationale (from plan_rationale or first tool thought)
+                first_thought = tools[0].get("thought") or ""
+                if first_thought.startswith("[Wave] "):
+                    first_thought = first_thought[7:]
+                plan_reasoning = tools[0].get("reasoning") or ""
+                rationale = plan_reasoning or first_thought
+                if rationale:
+                    lines.append(f"    Rationale: {rationale[:400]}")
+
+                # Individual tool args (compact, one line each)
+                if tool_args_list:
+                    lines.append("    Tools:")
+                    for arg_line in tool_args_list:
+                        lines.append(arg_line)
+
+                # Failures
+                for ft in failed_tools:
+                    lines.append(f"    FAILED | {ft}")
+
+                # Analysis (once, not repeated per tool)
+                if analysis:
+                    lines.append(f"    Analysis: {analysis[:600]}")
+
+            else:
+                # ── Single tool ──
+                tool_entry = tools[0]
+                tool = tool_entry.get("tool_name") or "none"
+                args = tool_entry.get("tool_args") or {}
+                success = tool_entry.get("success", True)
+                err = tool_entry.get("error_message") or ""
+                thought = tool_entry.get("thought", "")
+                output = tool_entry.get("tool_output", "")
+
+                lines.append(f"  Step {it} [{phase}]: {tool}")
+                if thought:
+                    lines.append(f"    Thought: {thought[:500]}")
+                if args and tool != "none":
+                    lines.append(f"    Args: {str(args)[:300]}")
+                if success:
+                    out_preview = (analysis or output or "")[:500]
+                    if out_preview:
+                        lines.append(f"    OK | {out_preview}")
+                    else:
+                        lines.append(f"    OK")
+                else:
+                    lines.append(f"    FAILED | {err[:300]}")
+
+            # Full output for the very last iteration's last tool
+            if is_last:
+                last_output = tools[-1].get("tool_output", "")
+                if last_output:
+                    max_out = 5000
+                    if len(last_output) > max_out:
+                        lines.append(
+                            f"    Output (last tool):\n{last_output[:max_out]}..."
+                        )
+                    else:
+                        lines.append(f"    Output (last tool):\n{last_output}")
+
         lines.append("")
 
     return "\n".join(lines)

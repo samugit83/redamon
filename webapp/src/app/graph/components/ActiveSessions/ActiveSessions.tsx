@@ -57,7 +57,7 @@ export const ActiveSessions = memo(function ActiveSessions({
     return (
       <div className={styles.emptyState}>
         <Terminal size={40} className={styles.emptyIcon} />
-        <p className={styles.emptyTitle}>No Remote Shells</p>
+        <p className={styles.emptyTitle}>No Reverse Shells</p>
         <p className={styles.emptyText}>
           Sessions appear here when the agent establishes connections —
           reverse shells, meterpreter sessions, bind shells, and listeners.

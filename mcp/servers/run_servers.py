@@ -15,8 +15,9 @@ import os
 import sys
 import signal
 import logging
+import time
 from multiprocessing import Process
-from typing import List
+from typing import Dict
 
 # =============================================================================
 # METASPLOIT TIMING CONFIGURATION
@@ -72,6 +73,11 @@ SERVERS = {
         "module": "nmap_server",
         "port": 8004,
         "description": "Network Mapper"
+    },
+    "playwright": {
+        "module": "playwright_server",
+        "port": 8005,
+        "description": "Browser Automation"
     }
 }
 
@@ -126,41 +132,85 @@ def run_server(name: str, config: dict, transport: str = "sse"):
 
 
 def run_all_servers_sse():
-    """Run all servers in SSE mode using multiprocessing."""
-    processes: List[Process] = []
+    """
+    Run all MCP servers in SSE mode, with supervision.
+
+    Each server runs in its own child process. If a server crashes (seen
+    previously with network_recon dying under heavy fireteam concurrency and
+    leaving port 8000 refusing connections while the container stayed "up"
+    and other ports kept serving), the supervisor detects the dead child
+    and respawns it. No more manual `docker compose restart kali-sandbox`.
+    """
+    processes: Dict[str, Process] = {}
+    restart_counts: Dict[str, int] = {name: 0 for name in SERVERS}
+    parent_pid = os.getpid()
+    shutting_down = False
+
+    def spawn(name: str, config: dict) -> Process:
+        p = Process(target=run_server, args=(name, config, "sse"), name=f"mcp-{name}")
+        p.start()
+        processes[name] = p
+        logger.info(f"Started {name} server (PID: {p.pid}, port {config['port']})")
+        return p
 
     def shutdown(signum, frame):
-        logger.info("Shutting down all servers...")
-        for p in processes:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=5)
+        nonlocal shutting_down
+        # Guard: when uvicorn inside a child process catches SIGTERM and
+        # re-raises it, Python invokes our inherited handler in the CHILD,
+        # where `processes[]` holds Process objects whose _parent_pid is
+        # the original parent — calling is_alive() from a non-parent asserts.
+        # If we're not the supervisor, just exit cleanly.
+        if os.getpid() != parent_pid:
+            sys.exit(0)
+            return
+        shutting_down = True
+        logger.info("Shutting down all MCP servers...")
+        for p in processes.values():
+            try:
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5)
+            except Exception as e:
+                logger.warning(f"Error terminating {p.name}: {e}")
         sys.exit(0)
 
-    # Register signal handlers
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start each server in a separate process
     for name, config in SERVERS.items():
-        p = Process(
-            target=run_server,
-            args=(name, config, "sse"),
-            name=f"mcp-{name}"
-        )
-        p.start()
-        processes.append(p)
-        logger.info(f"Started {name} server (PID: {p.pid})")
+        spawn(name, config)
 
     logger.info("All MCP servers started successfully")
     logger.info("Servers available at:")
     for name, config in SERVERS.items():
         logger.info(f"  - {name}: http://0.0.0.0:{config['port']}")
 
-    # Wait for all processes
+    # Supervision loop. A crashed child is detected and respawned on the
+    # next 5-second poll. restart_counts is logged so operators can see
+    # churn (repeated crashes are a symptom of a bug in the server module
+    # itself — this supervisor doesn't fix bugs, it just prevents a single
+    # crash from taking the whole agent down).
+    SUPERVISION_POLL_SEC = 5
     try:
-        for p in processes:
-            p.join()
+        while not shutting_down:
+            time.sleep(SUPERVISION_POLL_SEC)
+            if shutting_down:
+                break
+            for name in list(processes.keys()):
+                p = processes[name]
+                if p.is_alive():
+                    continue
+                restart_counts[name] += 1
+                exit_code = p.exitcode
+                logger.error(
+                    f"[supervisor] MCP server '{name}' died "
+                    f"(pid={p.pid}, exitcode={exit_code}); respawning "
+                    f"(restart #{restart_counts[name]})"
+                )
+                try:
+                    spawn(name, SERVERS[name])
+                except Exception as e:
+                    logger.error(f"[supervisor] failed to respawn '{name}': {e}")
     except KeyboardInterrupt:
         shutdown(None, None)
 

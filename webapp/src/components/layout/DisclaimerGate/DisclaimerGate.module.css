@@ -1,0 +1,428 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(0, 0, 0, 0.85);
+  animation: fadeIn 200ms ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.card {
+  width: 100%;
+  max-width: 800px;
+  max-height: calc(100vh - var(--space-8));
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideIn 250ms ease-out;
+  position: relative;
+}
+
+.eyeBg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 520px !important;
+  height: 520px !important;
+  opacity: 0.06;
+  pointer-events: none;
+  z-index: 0;
+  object-fit: contain;
+  user-select: none;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+}
+
+.headerIcon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-5);
+  overflow-y: auto;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+.intro {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0 0 var(--space-3) 0;
+}
+
+.fullDisclaimerLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-size: var(--text-xs);
+  color: var(--accent-primary);
+  text-decoration: none;
+  transition: var(--transition-all);
+}
+
+.linkWrapper {
+  margin-bottom: var(--space-4);
+}
+
+.fullDisclaimerLink:hover {
+  text-decoration: underline;
+  color: var(--accent-primary-hover);
+}
+
+.checkboxList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.checkboxRow:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  cursor: pointer;
+  accent-color: var(--accent-primary);
+}
+
+.checkboxLabel {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.5;
+  user-select: none;
+}
+
+.footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.footerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.footerQuote {
+  font-size: var(--text-base);
+  font-style: italic;
+  color: #e53e3e;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.footerMessage {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.footerSignature {
+  font-size: var(--text-base);
+  color: var(--text-muted, var(--text-secondary));
+  font-style: italic;
+  margin: 0;
+  opacity: 0.7;
+}
+
+.acceptButton {
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: #ffffff;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.acceptButton:hover:not(:disabled) {
+  background: var(--accent-primary-hover);
+}
+
+.acceptButton:active:not(:disabled) {
+  background: var(--accent-primary-active);
+}
+
+.acceptButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.logoAccent {
+  color: var(--accent-primary);
+}
+
+.welcomeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.welcomeTitle {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+/* Welcome screen */
+.welcomeThank {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-3) 0;
+}
+
+.welcomeDesc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin: 0 0 var(--space-5) 0;
+}
+
+.missionBox {
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.missionText {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.starLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: var(--transition-all);
+}
+
+.starLink:hover {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+}
+
+.starLink:hover .starIcon {
+  fill: #facc15;
+  color: #facc15;
+}
+
+.starIcon {
+  color: #facc15;
+  fill: #facc15;
+  transition: var(--transition-all);
+}
+
+.starExternal {
+  margin-left: var(--space-1);
+  opacity: 0.6;
+}
+
+/* Guide page */
+.guideGroups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.guideGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.guideGroupLabel {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted, var(--text-secondary));
+  margin: 0;
+  opacity: 0.6;
+}
+
+.guideSteps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.guideStep {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary, var(--bg-hover));
+}
+
+.guideStepLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.guideStepNum {
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.guideStepIcon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.guideStepTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-0-5, 2px) 0;
+}
+
+.guideStepDesc {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.tabLegend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+}
+
+.tabLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-medium);
+}
+
+.tabLegendDot {
+  color: var(--text-muted, var(--text-secondary));
+  opacity: 0.4;
+  font-size: var(--text-xs);
+}

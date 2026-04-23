@@ -11,6 +11,7 @@ Endpoints:
     GET /models - Available AI models from all configured providers
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -18,6 +19,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
+import websockets
 from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
@@ -92,6 +94,10 @@ class HealthResponse(BaseModel):
     version: str
     tools_loaded: int
     active_sessions: int
+    # Fireteam (multi-agent) observability
+    fireteam_enabled: bool = False
+    persistent_checkpointer: bool = False
+    active_waves: int = 0
 
 
 # =============================================================================
@@ -108,6 +114,7 @@ class GuardrailRequest(BaseModel):
     target_domain: str = ""
     target_ips: list[str] = []
     project_id: str = ""
+    user_id: str = ""
 
 
 @app.post("/guardrail/check-target", tags=["Guardrail"])
@@ -115,14 +122,21 @@ async def check_target_guardrail(body: GuardrailRequest):
     """
     Check if a target domain or IP list is safe to scan.
 
-    Uses the LLM to evaluate whether the target is a well-known public service,
-    government website, or major company that the user is unlikely authorized to test.
-    For IPs, performs reverse DNS to resolve hostnames before checking.
-
-    Fails open: returns allowed=True if LLM is unavailable or any error occurs.
+    Two layers:
+    1. Hard guardrail (deterministic): always blocks government/public domains.
+       Cannot be disabled. Runs first.
+    2. Soft guardrail (LLM-based): blocks well-known private companies.
+       Fails open if LLM is unavailable.
     """
+    from hard_guardrail import is_hard_blocked
     from guardrail import check_target_allowed
     from project_settings import DEFAULT_AGENT_SETTINGS
+
+    # Hard guardrail: deterministic, non-disableable
+    if body.target_domain:
+        blocked, reason = is_hard_blocked(body.target_domain)
+        if blocked:
+            return {"allowed": False, "reason": reason, "hard_blocked": True}
 
     if not orchestrator or not orchestrator._initialized:
         return {"allowed": True, "reason": "Agent not initialized, guardrail skipped"}
@@ -134,12 +148,41 @@ async def check_target_guardrail(body: GuardrailRequest):
                 orchestrator._apply_project_settings(body.project_id)
             except Exception as e:
                 logger.warning(f"Guardrail: failed to load project settings: {e}")
-        # Still no LLM? Bootstrap with default model (no project_id at creation time)
+        # Still no LLM? Bootstrap with default model + user's API keys from DB
         if not orchestrator.llm:
             try:
-                orchestrator.model_name = DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
-                orchestrator._setup_llm()
-                logger.info(f"Guardrail: bootstrapped LLM with default model {orchestrator.model_name}")
+                from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+                import requests as _requests
+
+                model_name = DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
+                user_providers = []
+
+                # Fetch user's LLM providers from DB (needed for API keys)
+                if body.user_id:
+                    webapp_url = os.environ.get('WEBAPP_API_URL', 'http://webapp:3000')
+                    try:
+                        resp = _requests.get(
+                            f"{webapp_url.rstrip('/')}/api/users/{body.user_id}/llm-providers?internal=true",
+                            headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
+                            timeout=10,
+                        )
+                        resp.raise_for_status()
+                        user_providers = resp.json()
+                    except Exception as e:
+                        logger.warning(f"Guardrail: failed to fetch user LLM providers: {e}")
+
+                openai_p = _resolve_provider_key(user_providers, "openai")
+                anthropic_p = _resolve_provider_key(user_providers, "anthropic")
+                openrouter_p = _resolve_provider_key(user_providers, "openrouter")
+
+                orchestrator.llm = setup_llm(
+                    model_name,
+                    openai_api_key=(openai_p or {}).get("apiKey"),
+                    anthropic_api_key=(anthropic_p or {}).get("apiKey"),
+                    openrouter_api_key=(openrouter_p or {}).get("apiKey"),
+                )
+                orchestrator.model_name = model_name
+                logger.info(f"Guardrail: bootstrapped LLM with default model {model_name}")
             except Exception as e:
                 logger.warning(f"Guardrail: failed to bootstrap default LLM: {e}")
                 return {"allowed": True, "reason": "LLM not configured, guardrail skipped"}
@@ -262,17 +305,7 @@ async def parse_roe_document(body: RoeParseRequest):
 
     requested_model = body.model or DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
     try:
-        llm = setup_llm(
-            requested_model,
-            openai_api_key=orchestrator.openai_api_key,
-            anthropic_api_key=orchestrator.anthropic_api_key,
-            openrouter_api_key=orchestrator.openrouter_api_key,
-            openai_compat_api_key=orchestrator.openai_compat_api_key,
-            openai_compat_base_url=orchestrator.openai_compat_base_url,
-            aws_access_key_id=orchestrator.aws_access_key_id,
-            aws_secret_access_key=orchestrator.aws_secret_access_key,
-            aws_region=orchestrator.aws_region,
-        )
+        llm = _setup_llm_for_endpoint(requested_model)
     except Exception as e:
         logger.error(f"RoE parse: failed to set up LLM ({requested_model}): {e}")
         return JSONResponse(content={"error": f"LLM not available for model {requested_model}"}, status_code=503)
@@ -343,17 +376,7 @@ async def summarize_report(body: ReportSummarizeRequest):
 
     requested_model = body.model or DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
     try:
-        llm = setup_llm(
-            requested_model,
-            openai_api_key=orchestrator.openai_api_key,
-            anthropic_api_key=orchestrator.anthropic_api_key,
-            openrouter_api_key=orchestrator.openrouter_api_key,
-            openai_compat_api_key=orchestrator.openai_compat_api_key,
-            openai_compat_base_url=orchestrator.openai_compat_base_url,
-            aws_access_key_id=orchestrator.aws_access_key_id,
-            aws_secret_access_key=orchestrator.aws_secret_access_key,
-            aws_region=orchestrator.aws_region,
-        )
+        llm = _setup_llm_for_endpoint(requested_model)
     except Exception as e:
         logger.error(f"Report summarizer: failed to set up LLM ({requested_model}): {e}")
         return JSONResponse(content={"error": f"LLM not available for model {requested_model}"}, status_code=503)
@@ -392,11 +415,56 @@ async def health():
 
     sessions_count = get_session_count()
 
+    # Count in-flight fireteam waves by scanning active asyncio tasks for
+    # names starting with "fireteam-" (set by fireteam_deploy_node). Cheap
+    # probe — no DB roundtrip.
+    active_waves = 0
+    try:
+        for task in asyncio.all_tasks():
+            name = task.get_name() or ""
+            if name.startswith("fireteam-"):
+                active_waves += 1
+    except Exception:
+        pass
+
+    from project_settings import get_setting
     return HealthResponse(
         status="ok" if orchestrator and orchestrator._initialized else "initializing",
         version="3.0.0",
         tools_loaded=tools_count,
-        active_sessions=sessions_count
+        active_sessions=sessions_count,
+        fireteam_enabled=bool(get_setting("FIRETEAM_ENABLED", False)),
+        persistent_checkpointer=bool(get_setting("PERSISTENT_CHECKPOINTER", False)),
+        active_waves=active_waves,
+    )
+
+
+def _setup_llm_for_endpoint(model_name: str) -> "BaseChatModel":
+    """Set up an LLM for non-agent endpoints (RoE parse, report summarizer).
+
+    Uses the orchestrator's loaded project settings (user LLM providers from DB).
+    """
+    from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+    from project_settings import get_settings
+
+    settings = get_settings()
+    user_providers = settings.get('USER_LLM_PROVIDERS', [])
+    custom_config = settings.get('CUSTOM_LLM_CONFIG')
+
+    openai_p = _resolve_provider_key(user_providers, "openai")
+    anthropic_p = _resolve_provider_key(user_providers, "anthropic")
+    openrouter_p = _resolve_provider_key(user_providers, "openrouter")
+    bedrock_p = _resolve_provider_key(user_providers, "bedrock")
+
+    return setup_llm(
+        model_name,
+        openai_api_key=(openai_p or {}).get("apiKey"),
+        anthropic_api_key=(anthropic_p or {}).get("apiKey"),
+        openrouter_api_key=(openrouter_p or {}).get("apiKey"),
+        aws_access_key_id=(bedrock_p or {}).get("awsAccessKeyId"),
+        aws_secret_access_key=(bedrock_p or {}).get("awsSecretKey"),
+        aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
+        custom_llm_config=custom_config,
     )
 
 
@@ -419,11 +487,13 @@ async def get_defaults():
     # STEALTH_MODE is a project-level setting (not agent-specific), served by
     # recon defaults as "stealthMode".  Exclude it here to avoid creating a
     # duplicate "agentStealthMode" key that Prisma doesn't recognise.
-    SKIP_KEYS = {'STEALTH_MODE'}
+    SKIP_KEYS = {'STEALTH_MODE', 'USER_ATTACK_SKILLS'}
 
     # HYDRA_* keys map to Prisma fields without the 'agent' prefix
     # (e.g. HYDRA_ENABLED -> hydraEnabled, not agentHydraEnabled)
-    NO_PREFIX_KEYS = {k for k in DEFAULT_AGENT_SETTINGS if k.startswith(('HYDRA_', 'PHISHING_', 'ROE_'))}
+    NO_PREFIX_KEYS = {k for k in DEFAULT_AGENT_SETTINGS if k.startswith(('HYDRA_', 'PHISHING_', 'ROE_', 'ATTACK_SKILL_', 'SHODAN_', 'DOS_', 'FIRETEAM_'))}
+    # Exclude internal-only fireteam keys that the frontend should not see.
+    SKIP_KEYS = SKIP_KEYS | {'PERSISTENT_CHECKPOINTER'}
 
     camel_case_defaults = {}
     for k, v in DEFAULT_AGENT_SETTINGS.items():
@@ -438,16 +508,174 @@ async def get_defaults():
 
 
 @app.get("/models", tags=["System"])
-async def get_models():
+async def get_models(providers: str = Query(default="", description="JSON-encoded list of provider configs from DB")):
     """
     Fetch available AI models from all configured providers.
 
-    Returns a dict keyed by provider name, each containing a list of models
-    with {id, name, context_length, description}. Results are cached for 1 hour.
-    Only providers with valid API keys in the environment are queried.
+    When `providers` query param is supplied (JSON list of UserLlmProvider rows),
+    uses those configs for discovery. Otherwise falls back to env vars.
     """
     from model_providers import fetch_all_models
-    return await fetch_all_models()
+
+    provider_list = None
+    if providers:
+        import json as json_mod
+        try:
+            provider_list = json_mod.loads(providers)
+        except (json_mod.JSONDecodeError, TypeError):
+            logger.warning("Invalid providers JSON in /models request, falling back to env")
+
+    return await fetch_all_models(providers=provider_list)
+
+
+# =============================================================================
+# SKILLS — Infosec-skills-compatible skill catalog endpoint
+# =============================================================================
+
+@app.get("/skills", tags=["System"])
+async def list_skills():
+    """
+    Return the catalog of all available Infosec-skills-compatible skills.
+
+    Each entry contains: id, name, description, category.
+    The frontend uses this to populate the skill selector in Project Settings.
+    """
+    from skill_loader import list_skills as _list_skills
+    skills = _list_skills()
+    return {"skills": skills, "total": len(skills)}
+
+
+@app.get("/skills/{skill_id:path}", tags=["System"])
+async def get_skill_content(skill_id: str):
+    """Return full content of a specific skill."""
+    from skill_loader import load_skill_content, list_skills as _list_skills
+    content = load_skill_content(skill_id)
+    if content is None:
+        return JSONResponse({"error": f"Skill not found: {skill_id}"}, status_code=404)
+    # Find metadata
+    skills = _list_skills()
+    meta = next((s for s in skills if s['id'] == skill_id), {})
+    return {"id": skill_id, "name": meta.get("name", skill_id), "description": meta.get("description", ""), "category": meta.get("category", "general"), "content": content}
+
+
+@app.get("/community-skills", tags=["System"])
+async def list_community_skills():
+    """Return catalog of community Agent Skills from agentic/community-skills/."""
+    from pathlib import Path
+    skills_dir = Path(__file__).parent / "community-skills"
+    skills = []
+    if skills_dir.exists():
+        for md_file in sorted(skills_dir.glob("*.md")):
+            if md_file.name == "README.md":
+                continue
+            content = md_file.read_text(encoding="utf-8")
+            name = md_file.stem.replace("_", " ").title()
+            desc = ""
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    desc = stripped[:200]
+                    break
+            skills.append({
+                "id": md_file.stem,
+                "name": name,
+                "description": desc,
+                "file": str(md_file),
+            })
+    return {"skills": skills, "total": len(skills)}
+
+
+@app.get("/community-skills/{skill_id}", tags=["System"])
+async def get_community_skill_content(skill_id: str):
+    """Return full content of a specific community Agent Skill."""
+    from pathlib import Path
+    skills_dir = Path(__file__).parent / "community-skills"
+    skill_path = skills_dir / f"{skill_id}.md"
+    if not skill_path.exists():
+        return JSONResponse({"error": f"Community skill not found: {skill_id}"}, status_code=404)
+    content = skill_path.read_text(encoding="utf-8")
+    name = skill_id.replace("_", " ").title()
+    return {"id": skill_id, "name": name, "content": content}
+
+
+# =============================================================================
+# LLM PROVIDER TEST — test a provider config with a simple message
+# =============================================================================
+
+class LlmProviderTestRequest(BaseModel):
+    """Request model for testing an LLM provider config."""
+    providerType: str = "openai_compatible"
+    apiKey: str = ""
+    baseUrl: str = ""
+    modelIdentifier: str = ""
+    defaultHeaders: dict = {}
+    timeout: int = 120
+    temperature: float = 0
+    maxTokens: int = 16384
+    sslVerify: bool = True
+    awsRegion: str = "us-east-1"
+    awsAccessKeyId: str = ""
+    awsSecretKey: str = ""
+
+
+@app.post("/llm-provider/test", tags=["System"])
+async def test_llm_provider(body: LlmProviderTestRequest):
+    """Test an LLM provider config by sending a simple message."""
+    from orchestrator_helpers.llm_setup import setup_llm
+
+    try:
+        ptype = body.providerType
+
+        if ptype == "openai":
+            llm = setup_llm("gpt-4o-mini", openai_api_key=body.apiKey)
+        elif ptype == "anthropic":
+            llm = setup_llm("claude-sonnet-4-20250514", anthropic_api_key=body.apiKey)
+        elif ptype == "openrouter":
+            llm = setup_llm("openrouter/openai/gpt-4o-mini", openrouter_api_key=body.apiKey)
+        elif ptype == "bedrock":
+            llm = setup_llm(
+                "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+                aws_access_key_id=body.awsAccessKeyId,
+                aws_secret_access_key=body.awsSecretKey,
+                aws_region=body.awsRegion,
+            )
+        elif ptype == "openai_compatible":
+            from langchain_openai import ChatOpenAI
+            kwargs = dict(
+                model=body.modelIdentifier or "default",
+                api_key=body.apiKey or "ollama",
+                temperature=body.temperature,
+                max_tokens=body.maxTokens,
+            )
+            if body.baseUrl:
+                kwargs["base_url"] = body.baseUrl
+            if body.defaultHeaders:
+                kwargs["default_headers"] = body.defaultHeaders
+            if body.timeout:
+                kwargs["timeout"] = float(body.timeout)
+            if not body.sslVerify:
+                import httpx
+                kwargs["http_client"] = httpx.Client(verify=False)
+                kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
+            llm = ChatOpenAI(**kwargs)
+        else:
+            return JSONResponse(
+                content={"success": False, "error": f"Unknown provider type: {ptype}"},
+                status_code=400,
+            )
+
+        response = await llm.ainvoke([HumanMessage(content="Say hello in one sentence.")])
+        from orchestrator_helpers import normalize_content
+        text = normalize_content(response.content).strip()
+
+        return {"success": True, "response_text": text}
+
+    except Exception as e:
+        logger.error(f"LLM provider test failed: {e}")
+        return JSONResponse(
+            content={"success": False, "error": str(e)},
+            status_code=400,
+        )
 
 
 @app.get("/files", tags=["Files"])
@@ -620,8 +848,9 @@ async def get_tunnel_status():
     """Return live status of ngrok and chisel tunnels."""
     from utils import _query_ngrok_tunnel, _query_chisel_tunnel
 
-    ngrok_info = _query_ngrok_tunnel() if os.environ.get("NGROK_AUTHTOKEN") else None
-    chisel_info = _query_chisel_tunnel() if os.environ.get("CHISEL_SERVER_URL") else None
+    # Always try to query both — they return None gracefully if not running
+    ngrok_info = _query_ngrok_tunnel()
+    chisel_info = _query_chisel_tunnel()
 
     return {
         "ngrok": {"active": True, "host": ngrok_info["host"], "port": ngrok_info["port"]} if ngrok_info else {"active": False},
@@ -705,6 +934,241 @@ async def register_non_msf_session(body: dict):
     except Exception as e:
         logger.error(f"Non-MSF session register proxy error: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=502)
+
+
+# =============================================================================
+# TEXT-TO-CYPHER — Generate Cypher from natural language using existing prompt
+# =============================================================================
+
+class TextToCypherRequest(BaseModel):
+    """Request model for text-to-cypher conversion."""
+    question: str
+    user_id: str
+    project_id: str
+
+
+@app.post("/text-to-cypher", tags=["Graph"])
+async def text_to_cypher(body: TextToCypherRequest):
+    """
+    Generate a Cypher query from a natural language description.
+
+    Reuses the TEXT_TO_CYPHER_SYSTEM prompt and Neo4jToolManager._generate_cypher()
+    so the graph schema is always in sync with the agent's query_graph tool.
+
+    Returns the raw Cypher (without tenant filters) for the webapp to save and execute.
+    """
+    from tools import Neo4jToolManager
+    from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+    from project_settings import DEFAULT_AGENT_SETTINGS, fetch_agent_settings
+    import requests as _requests
+
+    # 1. Resolve LLM for the user
+    llm = None
+
+    # Try to get project-specific model first
+    model_name = DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
+    try:
+        webapp_url = os.environ.get('WEBAPP_API_URL', 'http://webapp:3000')
+        settings = fetch_agent_settings(body.project_id, webapp_url)
+        if settings and settings.get('OPENAI_MODEL'):
+            model_name = settings['OPENAI_MODEL']
+    except Exception as e:
+        logger.warning(f"text-to-cypher: failed to fetch project settings: {e}")
+
+    # Fetch user's LLM providers for API keys
+    user_providers = []
+    try:
+        webapp_url = os.environ.get('WEBAPP_API_URL', 'http://webapp:3000')
+        resp = _requests.get(
+            f"{webapp_url.rstrip('/')}/api/users/{body.user_id}/llm-providers?internal=true",
+            headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        user_providers = resp.json()
+    except Exception as e:
+        logger.warning(f"text-to-cypher: failed to fetch user LLM providers: {e}")
+
+    openai_p = _resolve_provider_key(user_providers, "openai")
+    anthropic_p = _resolve_provider_key(user_providers, "anthropic")
+    openrouter_p = _resolve_provider_key(user_providers, "openrouter")
+
+    try:
+        # Check if model uses custom provider config
+        if model_name.startswith("custom/"):
+            config_id = model_name[len("custom/"):]
+            matched = None
+            for p in user_providers:
+                if p.get("id") == config_id:
+                    matched = p
+                    break
+            if not matched and user_providers:
+                matched = user_providers[0]
+            if matched:
+                llm = setup_llm(model_name, custom_llm_config=matched)
+            else:
+                return JSONResponse(
+                    content={"error": "Custom LLM provider not found. Configure an AI model in settings."},
+                    status_code=400,
+                )
+        else:
+            llm = setup_llm(
+                model_name,
+                openai_api_key=(openai_p or {}).get("apiKey"),
+                anthropic_api_key=(anthropic_p or {}).get("apiKey"),
+                openrouter_api_key=(openrouter_p or {}).get("apiKey"),
+            )
+    except Exception as e:
+        logger.error(f"text-to-cypher: failed to create LLM: {e}")
+        return JSONResponse(
+            content={"error": f"Failed to initialize LLM: {str(e)}. Make sure an AI model is configured."},
+            status_code=400,
+        )
+
+    if not llm:
+        return JSONResponse(
+            content={"error": "No LLM configured. Configure an AI model in project settings to use graph views."},
+            status_code=400,
+        )
+
+    # 2. Create Neo4jToolManager and generate Cypher
+    neo4j_uri = os.environ.get('NEO4J_URI', 'bolt://neo4j:7687')
+    neo4j_user = os.environ.get('NEO4J_USER', 'neo4j')
+    neo4j_password = os.environ.get('NEO4J_PASSWORD', 'password')
+
+    manager = Neo4jToolManager(neo4j_uri, neo4j_user, neo4j_password, llm)
+
+    try:
+        from langchain_community.graphs import Neo4jGraph
+        manager.graph = Neo4jGraph(
+            url=neo4j_uri,
+            username=neo4j_user,
+            password=neo4j_password,
+        )
+    except Exception as e:
+        logger.error(f"text-to-cypher: failed to connect to Neo4j: {e}")
+        return JSONResponse(
+            content={"error": f"Failed to connect to graph database: {str(e)}"},
+            status_code=500,
+        )
+
+    # 3. Generate Cypher with retry logic
+    last_error = None
+    last_cypher = None
+    cypher = None
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            if attempt == 0:
+                cypher = await manager._generate_cypher(body.question, for_graph_view=True)
+            else:
+                cypher = await manager._generate_cypher(
+                    body.question,
+                    previous_error=last_error,
+                    previous_cypher=last_cypher,
+                    for_graph_view=True,
+                )
+
+            # Reject write operations -- data filters are read-only
+            _upper = cypher.upper()
+            _WRITE_KW = ['CREATE', 'MERGE', 'DELETE', 'DETACH', 'SET ', 'REMOVE', 'DROP', 'CALL']
+            if any(kw in _upper for kw in _WRITE_KW):
+                return JSONResponse(
+                    content={"error": "Write operations are not allowed in data filters"},
+                    status_code=400,
+                )
+
+            # Validate by executing (with tenant filter) to catch syntax errors
+            filtered = manager._inject_tenant_filter(cypher, body.user_id, body.project_id)
+            manager.graph.query(
+                filtered,
+                params={
+                    "tenant_user_id": body.user_id,
+                    "tenant_project_id": body.project_id,
+                },
+            )
+
+            # Return the raw (un-filtered) Cypher for saving
+            return JSONResponse(content={"cypher": cypher})
+
+        except Exception as e:
+            last_error = str(e)
+            last_cypher = cypher
+            logger.warning(f"text-to-cypher attempt {attempt + 1} failed: {last_error}")
+
+            if attempt == max_retries - 1:
+                return JSONResponse(
+                    content={"error": f"Failed to generate valid Cypher after {max_retries} attempts: {last_error}"},
+                    status_code=422,
+                )
+
+    return JSONResponse(content={"error": "Unexpected end of retry loop"}, status_code=500)
+
+
+# =============================================================================
+# KALI TERMINAL — WebSocket PTY proxy to kali-sandbox terminal server
+# =============================================================================
+
+_KALI_TERMINAL_WS_URL = os.environ.get("KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016")
+
+
+@app.websocket("/ws/kali-terminal")
+async def kali_terminal_proxy(websocket: WebSocket):
+    """
+    Proxy WebSocket connection to the kali-sandbox PTY terminal server.
+
+    Bridges the browser ↔ agent ↔ kali-sandbox terminal for interactive shell access.
+    """
+    await websocket.accept()
+
+    try:
+        async with websockets.connect(
+            _KALI_TERMINAL_WS_URL,
+            ping_interval=30,
+            ping_timeout=60,
+            max_size=2**20,
+        ) as kali_ws:
+
+            async def browser_to_kali():
+                try:
+                    while True:
+                        data = await websocket.receive()
+                        if "text" in data:
+                            await kali_ws.send(data["text"])
+                        elif "bytes" in data:
+                            await kali_ws.send(data["bytes"])
+                except Exception as e:
+                    logger.debug("Browser→Kali stream ended: %s", e)
+
+            async def kali_to_browser():
+                try:
+                    async for message in kali_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception as e:
+                    logger.debug("Kali→Browser stream ended: %s", e)
+
+            upstream = asyncio.create_task(browser_to_kali())
+            downstream = asyncio.create_task(kali_to_browser())
+            try:
+                await asyncio.wait(
+                    [upstream, downstream], return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                upstream.cancel()
+                downstream.cancel()
+                await asyncio.gather(upstream, downstream, return_exceptions=True)
+
+    except Exception as e:
+        logger.error("Kali terminal proxy error: %s", e)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.websocket("/ws/agent")

@@ -17,6 +17,7 @@ uvicorn>=0.24.0
 
 # Utility libraries
 pydantic>=2.0.0
+PyYAML>=6.0
 
 # Common libraries for execute_code scripts
 requests>=2.31.0
@@ -26,3 +27,12 @@ PyJWT>=2.8.0
 paramiko>=3.4.0
 impacket>=0.11.0
 pwntools>=4.11.0
+
+# HTTP parameter discovery
+arjun>=2.2.7
+
+# Browser automation (Playwright)
+playwright>=1.40.0
+
+# WebSocket terminal server
+websockets>=12.0

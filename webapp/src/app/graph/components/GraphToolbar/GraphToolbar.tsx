@@ -3,7 +3,8 @@
 import { Bot, Play, Download, Loader2, Terminal, Shield, Github, Target, Zap, MessageSquare, Pause, Square, ShieldAlert } from 'lucide-react'
 import { StealthIcon } from '@/components/icons/StealthIcon'
 import { Toggle } from '@/components/ui'
-import type { ReconStatus, GvmStatus, GithubHuntStatus } from '@/lib/recon-types'
+import type { ReconStatus, GvmStatus, GithubHuntStatus, TrufflehogStatus, PartialReconState } from '@/lib/recon-types'
+import { PartialReconBadges } from '@/components/PartialReconBadges'
 import styles from './GraphToolbar.module.css'
 
 interface GraphToolbarProps {
@@ -28,6 +29,7 @@ interface GraphToolbarProps {
   hasReconData?: boolean
   isLogsOpen?: boolean
   // GVM props
+  gvmAvailable?: boolean
   onStartGvm?: () => void
   onPauseGvm?: () => void
   onResumeGvm?: () => void
@@ -47,6 +49,23 @@ interface GraphToolbarProps {
   githubHuntStatus?: GithubHuntStatus
   hasGithubHuntData?: boolean
   isGithubHuntLogsOpen?: boolean
+  // TruffleHog props
+  onStartTrufflehog?: () => void
+  onPauseTrufflehog?: () => void
+  onResumeTrufflehog?: () => void
+  onStopTrufflehog?: () => void
+  onDownloadTrufflehogJSON?: () => void
+  onToggleTrufflehogLogs?: () => void
+  trufflehogStatus?: TrufflehogStatus
+  hasTrufflehogData?: boolean
+  isTrufflehogLogsOpen?: boolean
+  // Partial Recon props (multi-run)
+  activePartialRecons?: PartialReconState[]
+  activePartialReconLogsDrawer?: string | null  // run_id of currently open logs drawer
+  onStopPartialRecon?: (runId: string) => void
+  onTogglePartialReconLogs?: (runId: string) => void
+  // Other Scans modal
+  onToggleOtherScansModal?: () => void
   // Stealth mode
   stealthMode?: boolean
   // RoE
@@ -55,6 +74,8 @@ interface GraphToolbarProps {
   onEmergencyPauseAll?: () => void
   isAnyPipelineRunning?: boolean
   isEmergencyPausing?: boolean
+  // Tunnel status (displayed next to Pause All)
+  tunnelStatus?: { ngrok?: { active: boolean; host?: string; port?: number }; chisel?: { active: boolean; host?: string; port?: number; srvPort?: number } }
   // Agent status
   agentActiveCount?: number
   agentConversations?: Array<{
@@ -89,6 +110,7 @@ export function GraphToolbar({
   hasReconData = false,
   isLogsOpen = false,
   // GVM props
+  gvmAvailable = true,
   onStartGvm,
   onPauseGvm,
   onResumeGvm,
@@ -108,6 +130,23 @@ export function GraphToolbar({
   githubHuntStatus = 'idle',
   hasGithubHuntData = false,
   isGithubHuntLogsOpen = false,
+  // TruffleHog props
+  onStartTrufflehog,
+  onPauseTrufflehog,
+  onResumeTrufflehog,
+  onStopTrufflehog,
+  onDownloadTrufflehogJSON,
+  onToggleTrufflehogLogs,
+  trufflehogStatus = 'idle',
+  hasTrufflehogData = false,
+  isTrufflehogLogsOpen = false,
+  // Partial Recon props (multi-run)
+  activePartialRecons = [],
+  activePartialReconLogsDrawer = null,
+  onStopPartialRecon,
+  onTogglePartialReconLogs,
+  // Other Scans modal
+  onToggleOtherScansModal,
   // Stealth mode
   stealthMode = false,
   // RoE
@@ -116,6 +155,7 @@ export function GraphToolbar({
   onEmergencyPauseAll,
   isAnyPipelineRunning = false,
   isEmergencyPausing = false,
+  tunnelStatus,
   // Agent status
   agentActiveCount = 0,
   agentConversations = [],
@@ -135,6 +175,12 @@ export function GraphToolbar({
   const isGithubHuntRunning = isGithubHuntBusy || isGithubHuntStopping
   const isGithubHuntPaused = githubHuntStatus === 'paused'
   const isGithubHuntActive = isGithubHuntRunning || isGithubHuntPaused
+  const isTrufflehogBusy = trufflehogStatus === 'running' || trufflehogStatus === 'starting'
+  const isTrufflehogStopping = trufflehogStatus === 'stopping'
+  const isTrufflehogRunning = isTrufflehogBusy || isTrufflehogStopping
+  const isTrufflehogPaused = trufflehogStatus === 'paused'
+  const isTrufflehogActive = isTrufflehogRunning || isTrufflehogPaused
+  const hasActivePartialRecons = activePartialRecons.length > 0
 
   // Agent status derived values
   const runningAgent = agentConversations.find(c => c.agentRunning)
@@ -148,30 +194,6 @@ export function GraphToolbar({
 
   return (
     <div className={styles.toolbar}>
-      <div className={styles.section}>
-        <span className={styles.sectionLabel}>View Mode</span>
-        <Toggle
-          checked={is3D}
-          onChange={onToggle3D}
-          labelOff="2D"
-          labelOn="3D"
-          aria-label="Toggle 2D/3D view"
-        />
-      </div>
-
-      <div className={styles.divider} />
-
-      <div className={styles.section}>
-        <span className={styles.sectionLabel}>Labels</span>
-        <Toggle
-          checked={showLabels}
-          onChange={onToggleLabels}
-          labelOff="Off"
-          labelOn="On"
-          aria-label="Toggle labels"
-        />
-      </div>
-
       {targetDomain && (
         <>
           <div className={styles.divider} />
@@ -226,6 +248,23 @@ export function GraphToolbar({
         <span>{isEmergencyPausing ? 'PAUSING...' : 'PAUSE ALL'}</span>
       </button>
 
+      {(tunnelStatus?.ngrok?.active || tunnelStatus?.chisel?.active) && (
+        <div className={styles.tunnelBadges}>
+          {tunnelStatus.ngrok?.active && (
+            <span className={styles.tunnelBadge} title={`Tunnel active: ${tunnelStatus.ngrok.host}:${tunnelStatus.ngrok.port}`}>
+              <span className={styles.tunnelDot} />
+              ngrok
+            </span>
+          )}
+          {tunnelStatus.chisel?.active && (
+            <span className={styles.tunnelBadge} title={`Tunnel active: ${tunnelStatus.chisel.host}:${tunnelStatus.chisel.port}`}>
+              <span className={styles.tunnelDot} />
+              chisel
+            </span>
+          )}
+        </div>
+      )}
+
       <div className={styles.spacer} />
 
       <div className={styles.actionsRight}>
@@ -236,15 +275,15 @@ export function GraphToolbar({
               <button
                 className={`${styles.reconButton} ${isReconActive ? styles.reconButtonActive : ''}`}
                 onClick={isReconPaused ? onResumeRecon : onStartRecon}
-                disabled={isReconRunning}
-                title={isReconStopping ? 'Stopping...' : isReconRunning ? 'Recon in progress...' : isReconPaused ? 'Resume Recon' : 'Start Reconnaissance'}
+                disabled={isReconRunning || hasActivePartialRecons}
+                title={hasActivePartialRecons ? 'Partial recon is running -- stop it first' : isReconStopping ? 'Stopping...' : isReconRunning ? 'Recon in progress...' : isReconPaused ? 'Resume Recon' : 'Start Reconnaissance'}
               >
                 {isReconRunning ? (
                   <Loader2 size={14} className={styles.spinner} />
                 ) : (
                   <Play size={14} />
                 )}
-                <span>{isReconStopping ? 'Stopping...' : isReconBusy ? 'Running...' : isReconPaused ? 'Resume' : 'Start Recon'}</span>
+                <span>{isReconStopping ? 'Stopping...' : isReconBusy ? 'Running...' : isReconPaused ? 'Resume' : 'Start Recon Pipeline'}</span>
               </button>
 
               {isReconBusy && (
@@ -288,14 +327,26 @@ export function GraphToolbar({
               </button>
             </div>
 
+            {/* Partial Recon Badges (multi-run) */}
+            {hasActivePartialRecons && (
+              <PartialReconBadges
+                activePartialRecons={activePartialRecons}
+                activeLogsRunId={activePartialReconLogsDrawer}
+                onToggleLogs={(runId) => onTogglePartialReconLogs?.(runId)}
+                onStop={(runId) => onStopPartialRecon?.(runId)}
+              />
+            )}
+
             {/* GVM Scan Actions */}
             <div className={styles.actionGroup}>
               <button
                 className={`${styles.gvmButton} ${isGvmActive ? styles.gvmButtonActive : ''}`}
                 onClick={isGvmPaused ? onResumeGvm : onStartGvm}
-                disabled={isGvmRunning || (!hasReconData && !isGvmPaused) || (stealthMode && !isGvmPaused)}
+                disabled={!gvmAvailable || isGvmRunning || (!hasReconData && !isGvmPaused) || (stealthMode && !isGvmPaused)}
                 title={
-                  stealthMode && !isGvmPaused
+                  !gvmAvailable
+                    ? 'GVM is not installed. Run ./redamon.sh install --gvm to enable vulnerability scanning'
+                    : stealthMode && !isGvmPaused
                     ? 'GVM scanning is disabled in Stealth Mode (generates ~50,000 active probes per target)'
                     : !hasReconData && !isGvmPaused
                     ? 'Run recon first'
@@ -357,70 +408,19 @@ export function GraphToolbar({
               </button>
             </div>
 
-            {/* GitHub Secret Hunt Actions */}
+            {/* Other Scans (GitHub Hunt + TruffleHog) */}
             <div className={styles.actionGroup}>
               <button
-                className={`${styles.githubHuntButton} ${isGithubHuntActive ? styles.githubHuntButtonActive : ''}`}
-                onClick={isGithubHuntPaused ? onResumeGithubHunt : onStartGithubHunt}
-                disabled={isGithubHuntRunning || (!hasReconData && !isGithubHuntPaused)}
-                title={
-                  !hasReconData && !isGithubHuntPaused
-                    ? 'Run recon first'
-                    : isGithubHuntStopping
-                    ? 'Stopping...'
-                    : isGithubHuntRunning
-                    ? 'GitHub hunt in progress...'
-                    : isGithubHuntPaused
-                    ? 'Resume GitHub Hunt'
-                    : 'Start GitHub Secret Hunt'
-                }
+                className={`${styles.githubHuntButton} ${(isGithubHuntActive || isTrufflehogActive) ? styles.githubHuntButtonActive : ''}`}
+                onClick={onToggleOtherScansModal}
+                title="Other Scans (GitHub Hunt, TruffleHog)"
               >
-                {isGithubHuntRunning ? (
+                {(isGithubHuntRunning || isTrufflehogRunning) ? (
                   <Loader2 size={14} className={styles.spinner} />
                 ) : (
                   <Github size={14} />
                 )}
-                <span>{isGithubHuntStopping ? 'Stopping...' : isGithubHuntBusy ? 'Hunting...' : isGithubHuntPaused ? 'Resume' : 'GitHub Hunt'}</span>
-              </button>
-
-              {isGithubHuntBusy && (
-                <button
-                  className={styles.pauseButton}
-                  onClick={onPauseGithubHunt}
-                  title="Pause GitHub Hunt"
-                >
-                  <Pause size={14} />
-                </button>
-              )}
-
-              {isGithubHuntActive && (
-                <button
-                  className={styles.stopButton}
-                  onClick={onStopGithubHunt}
-                  disabled={isGithubHuntStopping}
-                  title="Stop GitHub Hunt"
-                >
-                  <Square size={14} />
-                </button>
-              )}
-
-              {isGithubHuntActive && (
-                <button
-                  className={`${styles.logsButton} ${isGithubHuntLogsOpen ? styles.logsButtonActive : ''}`}
-                  onClick={onToggleGithubHuntLogs}
-                  title="View GitHub Hunt Logs"
-                >
-                  <Terminal size={14} />
-                </button>
-              )}
-
-              <button
-                className={styles.downloadButton}
-                onClick={onDownloadGithubHuntJSON}
-                disabled={!hasGithubHuntData || isGithubHuntActive}
-                title={hasGithubHuntData ? 'Download GitHub Hunt JSON' : 'No GitHub hunt data available'}
-              >
-                <Download size={14} />
+                <span>{(isGithubHuntBusy || isTrufflehogBusy) ? 'Scanning...' : 'Other Scans'}</span>
               </button>
             </div>
           </>

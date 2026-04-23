@@ -1,7 +1,7 @@
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: 1200;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -22,9 +22,9 @@
 .modal {
   position: relative;
   width: 100%;
-  max-width: 480px;
+  max-width: 576px;
   max-height: calc(100vh - var(--space-8));
-  background: var(--bg-secondary);
+  background: var(--drawer-bg);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xl);
@@ -50,7 +50,7 @@
 }
 
 .modalLarge {
-  max-width: 640px;
+  max-width: 768px;
 }
 
 .modalFull {
@@ -63,6 +63,7 @@
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
+  background: var(--drawer-header-bg);
   border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
 }

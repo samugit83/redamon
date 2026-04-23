@@ -22,11 +22,20 @@ export function MitreSection({ data, updateField }: MitreSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Network size={16} />
           MITRE ATT&CK / CWE / CAPEC
+          <span className={styles.badgePassive}>Passive</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
+        <div className={styles.sectionHeaderRight}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.mitreEnabled}
+              onChange={(checked) => updateField('mitreEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
       </div>
 
       {isOpen && (
@@ -34,6 +43,8 @@ export function MitreSection({ data, updateField }: MitreSectionProps) {
           <p className={styles.sectionDescription}>
             Map discovered vulnerabilities to MITRE ATT&CK techniques, CWE weaknesses, and CAPEC attack patterns. Provides context for understanding how vulnerabilities could be exploited and prioritizing remediation efforts.
           </p>
+          {data.mitreEnabled && (
+          <>
           <div className={styles.toggleRow}>
             <div>
               <span className={styles.toggleLabel}>Auto Update Database</span>
@@ -104,6 +115,8 @@ export function MitreSection({ data, updateField }: MitreSectionProps) {
               max={168}
             />
           </div>
+          </>
+          )}
         </div>
       )}
     </div>

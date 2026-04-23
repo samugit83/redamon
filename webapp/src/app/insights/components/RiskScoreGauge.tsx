@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo } from 'react'
+import { RadialBarChart, RadialBar, ResponsiveContainer, PolarAngleAxis } from 'recharts'
 import { useTheme } from '@/hooks/useTheme'
 import { ChartCard } from './ChartCard'
 import type { VulnerabilityData, AttackSurfaceData, GraphOverviewData } from '../types'
@@ -46,42 +47,29 @@ export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSucces
   const { score, color, label } = useMemo(() => {
     if (!vulnData) return { score: 0, color: '#22c55e', label: 'N/A' }
 
-    // 1. Vulnerability nodes × severity weight
     const vulnScore = (vulnData.severityDistribution || []).reduce(
       (sum, d) => sum + d.count * severityWeight(d.severity), 0
     )
-    // 2. CVE nodes × severity weight
     const cveScore = (vulnData.cveSeverity || []).reduce(
       (sum, d) => sum + d.count * severityWeight(d.severity), 0
     )
-    // 3. GVM exploits (QoD=100 = confirmed compromise)
     const gvmExploitScore = (vulnData.exploits?.length || 0) * 100
-    // 4. CISA KEV (known exploited in the wild — highest threat)
     const kevScore = (vulnData.exploits?.filter(e => e.cisaKev)?.length || 0) * 120
-    // 5. Chain exploit successes (agent actually exploited it)
     const chainExploitScore = exploitSuccessCount * 100
-    // 6. Chain findings by severity (non-exploit: credential_found, access_gained, etc.)
     const chainFindingsScore = (chainFindingsBySeverity || []).reduce(
       (sum, d) => sum + d.count * severityWeight(d.severity), 0
     )
-    // 7. CVEs with CAPEC attack patterns (mapped = more actionable)
     const cvesWithCapec = new Set(
       vulnData.cveChains?.filter(c => c.capecId).map(c => c.cveId)
     ).size
     const capecScore = cvesWithCapec * 15
-    // 8. GitHub secrets (direct credential exposure)
     const secretsScore = (vulnData.githubSecrets?.secrets || 0) * 60
-    // 9. GitHub sensitive files (indirect exposure — .env, config)
     const sensitiveFilesScore = (vulnData.githubSecrets?.sensitiveFiles || 0) * 30
-    // 10. Injectable parameters (DAST-confirmed injection points)
     const injectableCount = surfaceData?.parameterAnalysis?.reduce(
       (s, p) => s + p.injectable, 0
     ) || 0
     const injectableScore = injectableCount * 25
-    // 11. Expired certificates (MITM / trust risk)
     const expiredCertScore = (graphData?.certificateHealth?.expired || 0) * 10
-    // 12. Missing security headers penalty (defensive weakness)
-    // Each missing critical header across BaseURLs adds risk
     const SEC_HEADERS = [
       'strict-transport-security', 'content-security-policy',
       'x-frame-options', 'x-content-type-options',
@@ -94,7 +82,6 @@ export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSucces
       )
       for (const hdr of SEC_HEADERS) {
         const coverage = (headerMap.get(hdr) || 0) / totalBaseUrls
-        // Penalty for missing headers: up to 5 per header × BaseURLs without it
         missingHeaderScore += Math.round((1 - Math.min(coverage, 1)) * 5)
       }
     }
@@ -103,8 +90,6 @@ export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSucces
       + chainExploitScore + chainFindingsScore + capecScore
       + secretsScore + sensitiveFilesScore + injectableScore
       + expiredCertScore + missingHeaderScore
-    // Logarithmic scale: score = min(100, 15 * ln(raw + 1))
-    // k=15 (tuned down from 20 to accommodate broader input range)
     const normalized = Math.min(100, Math.round(15 * Math.log(raw + 1)))
 
     return {
@@ -116,58 +101,50 @@ export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSucces
 
   const isEmpty = !vulnData
 
-  // SVG gauge — use a canvas-like approach: draw everything relative to a
-  // generous viewBox so nothing gets clipped by the .card overflow:hidden
-  const sw = 14
-  const r = 70
-  // Arc from ~172° to ~8° so round caps don't stick out sideways
-  const arcStart = Math.PI - 0.14
-  const arcEnd = 0.14
-  const arcRange = arcStart - arcEnd
-  const scoreAngle = arcStart - (score / 100) * arcRange
-  // viewBox sized so arc + stroke + caps fit with room to spare
-  const cx = 100
-  const cy = 90
-  const vbW = 200
-  const vbH = 130
-
-  const bgArcD = describeArc(cx, cy, r, arcEnd, arcStart)
-  const fgArcD = describeArc(cx, cy, r, scoreAngle, arcStart)
+  const data = [{ name: 'Risk', value: score, fill: color }]
 
   return (
     <ChartCard title="Risk Score" subtitle={label} isLoading={isLoading} isEmpty={isEmpty}>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 220, padding: '8px 0' }}>
-        <svg
-          viewBox={`0 0 ${vbW} ${vbH}`}
-          style={{ width: '100%', maxWidth: 240, flex: '1 1 auto', marginTop: -80 }}
-        >
-          {/* Background arc */}
-          <path d={bgArcD} fill="none" stroke="var(--border-secondary)" strokeWidth={sw} strokeLinecap="round" />
-          {/* Score arc */}
-          {score > 0 && (
-            <path d={fgArcD} fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" />
-          )}
-          {/* Score text */}
-          <text x={cx} y={cy - 10} textAnchor="middle" fontSize={38} fontWeight={700} fill={color}>
-            {score}
-          </text>
-          <text x={cx} y={cy + 14} textAnchor="middle" fontSize={13} fill="var(--text-tertiary)">
-            / 100
-          </text>
-        </svg>
-        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingBottom: 4, textAlign: 'center' }}>
-          12 signals: vulns, CVEs, exploits, KEV, chains, secrets, injection & headers
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 280, padding: '0 0 8px' }}>
+        <div style={{ position: 'relative', width: '100%', flex: '1 1 auto' }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <RadialBarChart
+              cx="50%"
+              cy="50%"
+              innerRadius="70%"
+              outerRadius="95%"
+              startAngle={210}
+              endAngle={-30}
+              data={data}
+              barSize={14}
+            >
+              <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
+              <RadialBar
+                background={{ fill: 'var(--border-secondary)' }}
+                dataKey="value"
+                angleAxisId={0}
+                cornerRadius={10}
+              />
+            </RadialBarChart>
+          </ResponsiveContainer>
+          {/* Score overlay — centered on the chart */}
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}>
+            <span style={{ fontSize: 36, fontWeight: 700, lineHeight: 1, color }}>{score}</span>
+            <span style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 4 }}>/ 100</span>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'center' }}>
+          12 signals: vulns, CVEs, exploits, KEV, chains, secrets, injection &amp; headers
         </div>
       </div>
     </ChartCard>
   )
-}
-
-function describeArc(cx: number, cy: number, r: number, startAngle: number, endAngle: number): string {
-  const x1 = cx + r * Math.cos(startAngle)
-  const y1 = cy - r * Math.sin(startAngle)
-  const x2 = cx + r * Math.cos(endAngle)
-  const y2 = cy - r * Math.sin(endAngle)
-  const largeArc = Math.abs(endAngle - startAngle) > Math.PI ? 1 : 0
-  return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`
 }

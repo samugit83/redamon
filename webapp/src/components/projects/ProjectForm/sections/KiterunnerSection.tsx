@@ -1,10 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, Zap } from 'lucide-react'
+import { ChevronDown, Play, Zap } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -12,9 +13,10 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 interface KiterunnerSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  onRun?: () => void
 }
 
-export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps) {
+export function KiterunnerSection({ data, updateField, onRun }: KiterunnerSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   return (
@@ -23,11 +25,37 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
         <h2 className={styles.sectionTitle}>
           <Zap size={16} />
           Kiterunner API Discovery
+          <NodeInfoTooltip section="Kiterunner" />
+          <span className={styles.badgeActive}>Active</span>
         </h2>
-        <ChevronDown
-          size={16}
-          className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
-        />
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.kiterunnerEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '4px',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                color: '#22c55e', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
+              }}
+              title="Run Kiterunner"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.kiterunnerEnabled}
+              onChange={(checked) => updateField('kiterunnerEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
       </div>
 
       {isOpen && (
@@ -35,17 +63,6 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
           <p className={styles.sectionDescription}>
             API endpoint bruteforcing using Kiterunner from Assetnote. Discovers hidden REST API routes by testing against comprehensive wordlists derived from real-world Swagger/OpenAPI specifications.
           </p>
-          <div className={styles.toggleRow}>
-            <div>
-              <span className={styles.toggleLabel}>Enable Kiterunner</span>
-              <p className={styles.toggleDescription}>Bruteforce API routes using Swagger/OpenAPI specifications to find hidden endpoints</p>
-              <TimeEstimate estimate="5-30 min per endpoint" />
-            </div>
-            <Toggle
-              checked={data.kiterunnerEnabled}
-              onChange={(checked) => updateField('kiterunnerEnabled', checked)}
-            />
-          </div>
 
           {data.kiterunnerEnabled && (
             <>
@@ -125,6 +142,21 @@ export function KiterunnerSection({ data, updateField }: KiterunnerSectionProps)
                   />
                   <span className={styles.fieldHint}>Parallel scanning threads</span>
                 </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Parallelism</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.kiterunnerParallelism ?? 2}
+                    onChange={(e) => updateField('kiterunnerParallelism', parseInt(e.target.value) || 2)}
+                    min={1}
+                    max={5}
+                  />
+                  <span className={styles.fieldHint}>Number of wordlists to process in parallel</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Min Content Length</label>
                   <input

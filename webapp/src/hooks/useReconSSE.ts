@@ -191,7 +191,15 @@ export function useReconSSE({
 
   }, [projectId, enabled, onLog, onPhaseChange, onComplete, onError])
 
-  // Connect when enabled
+  // Clear logs only when switching to a different project
+  useEffect(() => {
+    setLogs([])
+    setCurrentPhase(null)
+    setCurrentPhaseNumber(null)
+    reconnectAttempts.current = 0
+  }, [projectId])
+
+  // Connect/disconnect when enabled or project changes
   useEffect(() => {
     if (enabled && projectId) {
       connect()

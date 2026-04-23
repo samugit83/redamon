@@ -295,7 +295,7 @@ def _write_attack_chain(
         MERGE (ac)-[:CHAIN_TARGETS]->(p))
     WITH ac
     UNWIND (CASE WHEN size($target_cves) > 0 THEN $target_cves ELSE [null] END) AS cve_id
-    OPTIONAL MATCH (c:CVE {id: cve_id})
+    OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $user_id, project_id: $project_id})
     FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
         MERGE (ac)-[:CHAIN_TARGETS]->(c))
     // Fallback: Domain when no CHAIN_TARGETS was actually created
@@ -314,7 +314,7 @@ def _write_attack_chain(
             "project_id": project_id,
             "title": title or "",
             "objective": objective or "",
-            "attack_path_type": attack_path_type or "cve_exploit",
+            "attack_path_type": attack_path_type or "",
             "target_host": target_host or "",
             "target_port": target_port,
             "target_cves": target_cves or [],
@@ -348,6 +348,9 @@ def fire_record_step(
     error_message: Optional[str] = None,
     duration_ms: Optional[int] = None,
     extracted_info: Optional[dict] = None,
+    agent_id: str = "root",
+    agent_name: str = "root",
+    fireteam_id: Optional[str] = None,
 ) -> None:
     if not neo4j_uri or not neo4j_password:
         return
@@ -371,6 +374,9 @@ def fire_record_step(
         error_message=error_message,
         duration_ms=duration_ms,
         extracted_info=extracted_info,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        fireteam_id=fireteam_id,
     )
 
 
@@ -396,6 +402,9 @@ def sync_record_step(
     error_message: Optional[str] = None,
     duration_ms: Optional[int] = None,
     extracted_info: Optional[dict] = None,
+    agent_id: str = "root",
+    agent_name: str = "root",
+    fireteam_id: Optional[str] = None,
 ) -> None:
     """Write ChainStep synchronously (blocking).
 
@@ -424,6 +433,9 @@ def sync_record_step(
             error_message=error_message,
             duration_ms=duration_ms,
             extracted_info=extracted_info,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            fireteam_id=fireteam_id,
         )
     except Exception as exc:
         logger.error("Chain graph step write failed (sync): %s", exc)
@@ -437,6 +449,7 @@ def _write_step(
     tool_name, tool_args_summary, thought, reasoning,
     output_summary, output_analysis, success, error_message,
     duration_ms, extracted_info,
+    agent_id="root", agent_name="root", fireteam_id=None,
 ):
     driver = _get_driver(uri, user, password)
 
@@ -458,6 +471,9 @@ def _write_step(
         s.success           = $success,
         s.error_message     = $error_message,
         s.duration_ms       = $duration_ms,
+        s.agent_id          = $agent_id,
+        s.agent_name        = $agent_name,
+        s.fireteam_id       = $fireteam_id,
         s.created_at        = datetime()
     """
     params = {
@@ -476,6 +492,9 @@ def _write_step(
         "success": success,
         "error_message": error_message,
         "duration_ms": duration_ms,
+        "agent_id": agent_id or "root",
+        "agent_name": agent_name or "root",
+        "fireteam_id": fireteam_id,
     }
 
     with driver.session() as session:
@@ -531,6 +550,47 @@ def _write_step(
             _resolve_step_bridges(session, step_id, extracted_info or {}, user_id, project_id)
 
     logger.debug("[%s/%s] ChainStep recorded: iter=%d tool=%s", user_id, project_id, iteration, tool_name)
+
+
+def fire_resolve_step_bridges(
+    neo4j_uri: str,
+    neo4j_user: str,
+    neo4j_password: str,
+    *,
+    step_id: str,
+    extracted_info: dict,
+    user_id: str,
+    project_id: str,
+    tool_name: str = "",
+) -> None:
+    """Fire-and-forget: resolve (ChainStep)-[:STEP_*]->(recon node) edges
+    for a previously-written ChainStep.
+
+    Used by callers (notably fireteam_member_think_node) that wrote the
+    ChainStep before the output-analysis LLM call completed. Root think_node
+    doesn't need this because its sync_record_step is invoked AFTER analysis.
+
+    No-op when tool_name == 'query_graph' (matches the inline bridge logic
+    inside _write_step).
+    """
+    if not neo4j_uri or not neo4j_password:
+        return
+    if tool_name == "query_graph":
+        return
+    if not extracted_info:
+        return
+    _fire_and_forget(
+        _write_bridges,
+        neo4j_uri, neo4j_user, neo4j_password,
+        step_id, extracted_info, user_id, project_id,
+    )
+
+
+def _write_bridges(uri, user, password, step_id, extracted_info, user_id, project_id):
+    """Open a Neo4j session and delegate to the existing bridge resolver."""
+    driver = _get_driver(uri, user, password)
+    with driver.session() as session:
+        _resolve_step_bridges(session, step_id, extracted_info or {}, user_id, project_id)
 
 
 def _resolve_step_bridges(session, step_id, extracted_info, user_id, project_id):
@@ -635,6 +695,9 @@ def fire_record_finding(
     related_cves: Optional[List[str]] = None,
     related_ips: Optional[List[str]] = None,
     metadata: Optional[dict] = None,
+    agent_id: str = "root",
+    source_agent: str = "root",
+    fireteam_id: Optional[str] = None,
 ) -> None:
     if not neo4j_uri or not neo4j_password:
         return
@@ -656,6 +719,9 @@ def fire_record_finding(
         iteration=iteration,
         related_cves=related_cves or [],
         related_ips=related_ips or [],
+        agent_id=agent_id,
+        source_agent=source_agent,
+        fireteam_id=fireteam_id,
     )
 
 
@@ -665,6 +731,7 @@ def _write_finding(
     finding_id, chain_id, step_id, user_id, project_id,
     finding_type, severity, title, description, evidence,
     confidence, phase, iteration, related_cves, related_ips,
+    agent_id="root", source_agent="root", fireteam_id=None,
 ):
     driver = _get_driver(uri, user, password)
     # MATCH step first so the finding is only created if the step exists
@@ -684,6 +751,9 @@ def _write_finding(
         confidence:   $confidence,
         phase:        $phase,
         iteration:    $iteration,
+        agent_id:     $agent_id,
+        source_agent: $source_agent,
+        fireteam_id:  $fireteam_id,
         created_at:   datetime()
     })
     MERGE (s)-[:PRODUCED]->(f)
@@ -703,6 +773,9 @@ def _write_finding(
         "confidence": confidence if confidence is not None else 80,
         "phase": phase or "",
         "iteration": iteration,
+        "agent_id": agent_id or "root",
+        "source_agent": source_agent or "root",
+        "fireteam_id": fireteam_id,
     }
 
     with driver.session() as session:
@@ -710,18 +783,78 @@ def _write_finding(
         if result.single() is None:
             logger.warning("ChainStep %s not found — skipping finding %s", step_id, title[:60])
             return
-        _resolve_finding_bridges(session, finding_id, related_cves, related_ips, finding_type, user_id, project_id)
+        _resolve_finding_bridges(
+            session, finding_id, related_cves, related_ips, finding_type,
+            user_id, project_id, evidence=evidence or "",
+        )
 
     logger.debug("[%s/%s] ChainFinding created: %s (%s)", user_id, project_id, title[:60], finding_type)
 
 
-def _resolve_finding_bridges(session, finding_id, related_cves, related_ips, finding_type, user_id, project_id):
+_CVE_REGEX = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+_URL_PATH_REGEX = re.compile(r"(?<![\w/])(/[A-Za-z0-9][A-Za-z0-9_\-./]{0,200})")
+_PORT_REGEX = re.compile(r"(?:port\s*|:)(\d{2,5})(?:/(?:tcp|udp))?\b", re.IGNORECASE)
+
+
+def _auto_extract_from_evidence(evidence: str) -> dict:
+    """Pull CVE ids, URL paths, and port numbers out of free-form evidence text.
+
+    LLM-structured fields (related_cves, related_ips) are often left empty
+    because the extraction prompt doesn't emphasize them. This regex sweep is a
+    best-effort fallback so bridges still land when the evidence text obviously
+    names a CVE / endpoint / port.
+
+    Duplicates against explicit input fields are de-duped by the caller.
+    """
+    text = evidence or ""
+    if not text:
+        return {"cves": [], "paths": [], "ports": []}
+
+    cves = sorted({m.group(0).upper() for m in _CVE_REGEX.finditer(text)})
+
+    # Only accept paths with a plausible application shape; reject asset noise.
+    paths = []
+    for m in _URL_PATH_REGEX.finditer(text):
+        p = m.group(1).rstrip(").,:;\"'")
+        if not p or len(p) < 2:
+            continue
+        # Skip obviously-static-asset paths that explode Endpoint matching.
+        lower = p.lower()
+        if any(lower.endswith(ext) for ext in (
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+            ".css", ".woff", ".woff2", ".ttf", ".map",
+        )):
+            continue
+        if p not in paths:
+            paths.append(p)
+        if len(paths) >= 20:
+            break
+
+    ports = sorted({int(m.group(1)) for m in _PORT_REGEX.finditer(text)
+                    if 1 <= int(m.group(1)) <= 65535})
+
+    return {"cves": cves, "paths": paths, "ports": ports}
+
+
+def _resolve_finding_bridges(
+    session, finding_id, related_cves, related_ips, finding_type, user_id, project_id,
+    *, evidence: str = "",
+):
     """Create bridge rels from ChainFinding to recon nodes.
 
-    Uses UNWIND for batch efficiency.
+    Explicit `related_cves` / `related_ips` come from the LLM's structured
+    extraction. Since the LLM often leaves those empty, we ALSO regex-scan
+    the evidence text for CVE ids, URL paths, and port numbers, and bridge
+    those to Endpoint / Port / Technology nodes when they exist in-scope.
+
+    All MATCHes are scoped by (user_id, project_id) to respect tenant
+    isolation. Uses UNWIND for batch efficiency; silently skips bridges to
+    nodes that don't exist.
     """
     uid = user_id
     pid = project_id
+
+    auto = _auto_extract_from_evidence(evidence)
 
     # FOUND_ON -> IP or Subdomain (pre-sort by type, then batch each)
     ip_addrs = []
@@ -758,18 +891,63 @@ def _resolve_finding_bridges(session, finding_id, related_cves, related_ips, fin
             {"fid": finding_id, "hosts": hostnames, "uid": uid, "pid": pid},
         )
 
-    # FINDING_RELATES_CVE -> CVE (batched via UNWIND)
-    cves = [c for c in (related_cves or []) if c]
+    # FINDING_RELATES_CVE -> CVE (batched via UNWIND). Merge explicit + auto.
+    explicit_cves = [c for c in (related_cves or []) if c]
+    cves = sorted({c.upper() for c in explicit_cves + auto["cves"]})
     if cves:
         session.run(
             """
             UNWIND $cves AS cve_id
             MATCH (f:ChainFinding {finding_id: $fid})
-            OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $uid, project_id: $pid})
+            OPTIONAL MATCH (c:CVE {user_id: $uid, project_id: $pid})
+            WHERE toUpper(coalesce(c.id, c.cve_id, '')) = cve_id
             FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (f)-[:FINDING_RELATES_CVE]->(c))
             """,
             {"fid": finding_id, "cves": cves, "uid": uid, "pid": pid},
+        )
+
+    # FINDING_AFFECTS_ENDPOINT -> Endpoint (matched by path or full_url suffix)
+    if auto["paths"]:
+        session.run(
+            """
+            UNWIND $paths AS p
+            MATCH (f:ChainFinding {finding_id: $fid})
+            OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+            WHERE e.path = p OR (e.full_url IS NOT NULL AND e.full_url ENDS WITH p)
+            FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (f)-[:FINDING_AFFECTS_ENDPOINT]->(e))
+            """,
+            {"fid": finding_id, "paths": auto["paths"], "uid": uid, "pid": pid},
+        )
+
+    # FINDING_AFFECTS_PORT -> Port (number match within tenant).
+    if auto["ports"]:
+        session.run(
+            """
+            UNWIND $ports AS pn
+            MATCH (f:ChainFinding {finding_id: $fid})
+            OPTIONAL MATCH (p:Port {number: pn, user_id: $uid, project_id: $pid})
+            FOREACH (_ IN CASE WHEN p IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (f)-[:FINDING_AFFECTS_PORT]->(p))
+            """,
+            {"fid": finding_id, "ports": auto["ports"], "uid": uid, "pid": pid},
+        )
+
+    # FINDING_AFFECTS_TECH -> Technology (name appears as whole word in evidence).
+    # Uses a server-side scan of the in-scope Technology set; cheap because
+    # there are usually <20 Technology nodes per project and evidence is short.
+    if (evidence or "").strip():
+        session.run(
+            """
+            MATCH (f:ChainFinding {finding_id: $fid})
+            MATCH (t:Technology {user_id: $uid, project_id: $pid})
+            WHERE t.name IS NOT NULL
+              AND size(t.name) >= 3
+              AND toLower($evidence) CONTAINS toLower(t.name)
+            MERGE (f)-[:FINDING_AFFECTS_TECH]->(t)
+            """,
+            {"fid": finding_id, "evidence": evidence[:4000], "uid": uid, "pid": pid},
         )
 
 

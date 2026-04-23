@@ -83,6 +83,10 @@
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
   color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
 }
 
 .statusActions {
@@ -218,7 +222,7 @@
   padding: var(--space-2);
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.4;
   background: var(--bg-primary);
 }
 
@@ -240,7 +244,7 @@
 .logLine {
   display: flex;
   gap: var(--space-2);
-  padding: var(--space-0-5) var(--space-1);
+  padding: 1px var(--space-1);
   border-radius: var(--radius-sm);
 }
 

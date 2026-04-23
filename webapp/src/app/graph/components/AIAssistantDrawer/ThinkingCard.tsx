@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { Brain, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react'
 import styles from './ThinkingCard.module.css'
 import { TodoListWidget } from './TodoListWidget'
+import { formatTokenCount } from '@/lib/formatTokens'
 import type { ThinkingItem } from './AgentTimeline'
 
 interface ThinkingCardProps {
@@ -20,6 +21,9 @@ interface ThinkingCardProps {
 
 export function ThinkingCard({ item, isExpanded, onToggleExpand }: ThinkingCardProps) {
   const [copied, setCopied] = useState(false)
+  const inTok = item.input_tokens ?? 0
+  const outTok = item.output_tokens ?? 0
+  const hasTokens = inTok > 0 || outTok > 0
 
   const handleCopy = async () => {
     try {
@@ -49,6 +53,11 @@ export function ThinkingCard({ item, isExpanded, onToggleExpand }: ThinkingCardP
             <span className={styles.titleText}>Thinking</span>
             {item.action && item.action !== 'thinking' && (
               <span className={styles.actionBadge}>{item.action}</span>
+            )}
+            {hasTokens && (
+              <span className={styles.tokenMeta} title="LLM usage for this step">
+                in {formatTokenCount(inTok)} · out {formatTokenCount(outTok)}
+              </span>
             )}
           </div>
           <div className={styles.cardActions}>

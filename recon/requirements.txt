@@ -27,5 +27,9 @@ setuptools>=65.0.0           # Required for python-Wappalyzer (pkg_resources)
 # Graph database integration (optional - for Neo4j updates)
 neo4j>=5.0.0                 # Neo4j graph database driver
 
+# HTTP parameter discovery
+arjun>=2.2.7                 # Hidden parameter discovery
+paramspider @ git+https://github.com/devanshbatham/ParamSpider.git  # Passive URL parameter mining from Wayback Machine
+
 # MITRE enrichment
 # (uses requests - already included above)

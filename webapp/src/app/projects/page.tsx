@@ -8,12 +8,15 @@ import { useProjects, useDeleteProject } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
 import { ProjectCard } from '@/components/projects/ProjectCard'
+import { useAlertModal, useToast } from '@/components/ui'
 import { ImportModal } from './ImportModal'
 import styles from './page.module.css'
 
 export default function ProjectsPage() {
   const router = useRouter()
   const { userId, setUserId, setCurrentProject } = useProject()
+  const { alertError, dangerConfirm } = useAlertModal()
+  const toast = useToast()
   const [showUserModal, setShowUserModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [newUserName, setNewUserName] = useState('')
@@ -50,8 +53,9 @@ export default function ProjectsPage() {
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+    if (await dangerConfirm('Are you sure you want to delete this project? This action cannot be undone.')) {
       await deleteProjectMutation.mutateAsync(projectId)
+      toast.success('Project deleted')
     }
   }
 
@@ -66,8 +70,9 @@ export default function ProjectsPage() {
       setShowUserModal(false)
       setNewUserName('')
       setNewUserEmail('')
+      toast.success('User created')
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to create user')
+      alertError(error instanceof Error ? error.message : 'Failed to create user')
     }
   }
 
@@ -78,13 +83,14 @@ export default function ProjectsPage() {
     const warning = projectCount > 0
       ? `This will permanently delete user "${selectedUser?.name}" and their ${projectCount} project(s). This action cannot be undone.`
       : `Are you sure you want to delete user "${selectedUser?.name}"? This action cannot be undone.`
-    if (confirm(warning)) {
+    if (await dangerConfirm(warning)) {
       try {
         await deleteUserMutation.mutateAsync(userId)
         setUserId(null)
         setCurrentProject(null)
+        toast.success('User deleted')
       } catch (error) {
-        alert(error instanceof Error ? error.message : 'Failed to delete user')
+        alertError(error instanceof Error ? error.message : 'Failed to delete user')
       }
     }
   }

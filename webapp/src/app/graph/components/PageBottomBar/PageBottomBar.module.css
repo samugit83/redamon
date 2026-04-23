@@ -325,3 +325,12 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
+/* View mode toggles (far right) */
+.viewToggles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+  flex-shrink: 0;
+}

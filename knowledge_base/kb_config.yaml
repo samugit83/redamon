@@ -1,0 +1,209 @@
+# =============================================================================
+# Knowledge Base Configuration
+# =============================================================================
+# Single source of truth for all KB tunables. Edit this file for repo-wide
+# defaults. For per-deployment overrides without touching git, set environment
+# variables (see precedence below) or point KB_CONFIG_FILE at a different file.
+#
+# Precedence (lowest → highest):
+#   1. Code defaults inside knowledge_base/kb_config.py
+#   2. This file (knowledge_base/kb_config.yaml)
+#   3. KB_CONFIG_FILE=path/to/other.yaml override
+#   4. Environment variables (see "Override at runtime" notes per section)
+#   5. Function/CLI arguments at call time
+#
+# Secrets (NEO4J_PASSWORD, NVD_API_KEY) belong in env variables or creds.yaml,
+# NOT in this file — this file is checked into git.
+# =============================================================================
+KB_ENABLED: true
+
+# -----------------------------------------------------------------------------
+# Runtime: how the Makefile launches KB ingestion
+# -----------------------------------------------------------------------------
+runtime:
+  # Default execution mode for `make kb-*` targets:
+  #   local  — run on host (~7x faster, requires `pip install -r agentic/requirements.txt`)
+  #   docker — run inside redamon-agent container (slower, no host setup needed)
+  # Override per-invocation: `make kb-rebuild MODE=docker`
+  mode: local
+
+# -----------------------------------------------------------------------------
+# Embedder: bi-encoder used for vector search
+# -----------------------------------------------------------------------------
+embedder:
+  # SentenceTransformer model. Must match the dimension expected by the
+  # FAISS index — switching here requires a full KB rebuild.
+  #   intfloat/e5-large-v2  → 1024 dim, ~50 docs/sec on CPU, best quality
+  #   intfloat/e5-base-v2   → 768 dim, ~150 docs/sec on CPU, slight quality drop
+  #   all-MiniLM-L6-v2      → 384 dim, ~500 docs/sec on CPU, much smaller (dev)
+  model: intfloat/e5-large-v2
+  # Encode batch size during ingestion. 32 is safe; 64 is ~30% faster on hosts
+  # with > 8 GB RAM headroom.
+  batch_size: 64
+  # Override at runtime: KB_EMBEDDING_MODEL=...
+
+
+# -----------------------------------------------------------------------------
+# Chunking: token budget for the markdown / text chunker
+# -----------------------------------------------------------------------------
+# These values must be kept in sync with the embedder above. The chunker
+# uses a chars/4 heuristic (knowledge_base/chunking.py estimate_tokens) which
+# is approximate — prose-heavy text is roughly accurate, code/CLI-heavy text
+# under-counts. Always leave margin under the embedder's hard cap.
+#
+# Embedder max_seq_length reference for common models:
+#   intfloat/e5-large-v2                    → 512
+#   intfloat/e5-base-v2                     → 512
+#   BAAI/bge-large-en-v1.5                  → 512
+#   nomic-ai/nomic-embed-text-v1            → 8192
+#   Snowflake/snowflake-arctic-embed-l-v2.0 → 8192
+#   text-embedding-3-large (OpenAI)         → 8191
+#
+# When swapping to a longer-context embedder, bump max_tokens accordingly
+# AND rebuild the KB so existing chunks get re-split with the new budget.
+chunking:
+  # Hard upper bound per chunk before the chunker splits at paragraph
+  # boundaries with "(part N)" suffixes. Set this to (embedder cap - margin).
+  # For e5-large-v2 (cap=512), 480 leaves a 32-token slop for the chars/4
+  # estimator's imprecision.
+  max_tokens: 480
+  # Soft target for the paragraph-splitting fallback. The splitter cuts at
+  # the first paragraph boundary that pushes past this number, capped at
+  # max_tokens. Smaller = more, finer chunks; larger = fewer, denser chunks.
+  preferred_tokens: 256
+
+
+# -----------------------------------------------------------------------------
+# Reranker: cross-encoder for the final relevance reorder
+# -----------------------------------------------------------------------------
+reranker:
+  # Lazy-loaded on first query. Disable to skip the rerank stage entirely.
+  enabled: true
+  # HuggingFace cross-encoder model id.
+  # Reranker capacities for common models:
+  #   BAAI/bge-reranker-base                  → 512
+  #   BAAI/bge-reranker-large                 → 512
+  #   cross-encoder/ms-marco-MiniLM-L-6-v2    → 512
+  #   BAAI/bge-reranker-v2-m3                 → 8192
+  model: BAAI/bge-reranker-base
+  # How many candidates from the hybrid pool to feed the cross-encoder.
+  # Bigger = better recall on long-tail queries, slower per query.
+  pool_size: 30
+  # Max tokens per side (query, doc) fed to the cross-encoder before the
+  # tokenizer truncates. Must not exceed the model's tokenizer model_max_length.
+  # Note: the cross-encoder receives (query + [SEP] + doc) as one
+  # concatenated sequence. Setting this to the model's full capacity
+  # means a long query steals tokens from the doc. 480 leaves room for
+  # queries up to ~30 tokens without any doc truncation.
+  max_tokens_per_side: 480
+  # Override at runtime: KB_RERANK_ENABLED=false, KB_RERANKER_MODEL=...,
+  # KB_RERANKER_MAX_TOKENS_PER_SIDE=256
+
+
+# -----------------------------------------------------------------------------
+# Fulltext: Neo4j Lucene keyword search (the keyword half of hybrid retrieval)
+# -----------------------------------------------------------------------------
+fulltext:
+  enabled: true
+  # Override at runtime: KB_FULLTEXT_ENABLED=false
+
+# -----------------------------------------------------------------------------
+# Retrieval: candidate pool sizing and scoring thresholds
+# -----------------------------------------------------------------------------
+retrieval:
+  # Final number of results returned to the caller (web_search default).
+  top_k: 5
+  # Multiply top_k by this when fetching candidates from FAISS / fulltext.
+  # 6 means top_k=5 fetches 30 candidates per source for re-ranking.
+  overfetch_factor: 6
+  # Above this final score, the KB is considered "good enough" and the agent
+  # skips the Tavily web fallback.
+  score_threshold: 0.80
+  # Reciprocal Rank Fusion constant. Standard value from Cormack et al. 2009
+  # is 60. Smaller = top ranks weighted more aggressively.
+  rrf_k: 60
+
+# -----------------------------------------------------------------------------
+# MMR: Maximal Marginal Relevance diversity re-ranking
+# -----------------------------------------------------------------------------
+mmr:
+  enabled: true
+  # 1.0 = pure relevance, 0.0 = pure diversity. 0.5 = balanced.
+  lambda: 0.65
+
+# -----------------------------------------------------------------------------
+# Source boosts: per-source score multipliers
+# -----------------------------------------------------------------------------
+# Compensates for source-volume bias — ExploitDB has 100x more chunks than
+# LOLBAS, so without this it would dominate vector search results purely on
+# volume. The boost is applied:
+#   - Multiplicatively on the RRF score (pre-rerank)
+#   - Multiplicatively on the SIGMOID of the rerank logit (post-rerank, so
+#     it has consistent semantics whether the cross-encoder logit is positive
+#     or negative)
+#
+# 1.0 = neutral, > 1.0 = boost, < 1.0 = penalty.
+source_boosts:
+  tool_docs:  1.20  # curated tool playbooks — your own files, highest trust
+  gtfobins:   1.15  # Linux priv-esc one-liners
+  lolbas:     1.15  # Windows LOLBin abuse
+  owasp:      1.05  # methodology
+  nuclei:     1.00  # neutral
+  nvd:        0.90  # CVE descriptions noisy for technique queries
+                    # (often match on homonym product names like "Payload" CMS)
+  exploitdb:  0.85  # very large pool — aggressive penalty
+
+# -----------------------------------------------------------------------------
+# Ingestion: which sources run in each profile, NVD lookback window
+# -----------------------------------------------------------------------------
+# Profile philosophy:
+#   - lite:     committed source caches only. tool_docs + gtfobins + lolbas
+#               + owasp + exploitdb. No NVD — avoids the multi-minute NVD
+#               API fetch on every bootstrap. Bootstraps in ~30-60 sec on
+#               host, fully offline after initial git clone. Use this for
+#               fast local iteration; use standard or full when CVE
+#               coverage matters.
+#   - standard: lite + 2 years of NVD history (CVSS >= 7.0 by default).
+#               Bootstraps in ~6-8 min on host. Requires network for NVD.
+#   - full:     standard + Nuclei templates (downloaded as a tarball
+#               directly from projectdiscovery/nuclei-templates). Host-only
+#               — no Kali sandbox dependency.
+#
+# Source caches for gtfobins, lolbas, owasp, exploitdb are committed to git,
+# so fresh clones need network only for NVD (standard/full) and nuclei
+# templates (full).
+ingestion:
+  default_profile: lite
+  # NVD lookback window in days. Only applies when the profile includes
+  # NVD (standard, full). The lite profile ignores this because it doesn't
+  # run the NVD client at all.
+  #
+  # The Makefile's `kb-build-*` targets override this via target-specific
+  # variables:
+  #   kb-build-standard → NVD_DAYS=730
+  #   kb-build-full     → NVD_DAYS=730
+  # Other targets (kb-update-nvd) use this default unless explicitly
+  # overridden.
+  nvd_lookback_days: 90
+  # Override at runtime: NVD_LOOKBACK_DAYS=730 or `make kb-update-nvd NVD_DAYS=730`
+
+  # Minimum CVSS score for NVD CVEs in the standard profile. The full
+  # profile ignores this field and fetches every CVE regardless of severity.
+  #
+  # Standard cutoffs:
+  #   9.0 = critical only
+  #   7.0 = high + critical (default — matches most pentest workflows)
+  #   4.0 = medium + high + critical
+  #   0.0 = everything (no filter)
+  #
+  # Lower values dramatically increase the chunk count: 90 days of CVSS>=7.0
+  # returns ~7500 CVEs, but CVSS>=4.0 returns ~20000+ and CVSS=0 returns
+  # ~50000+. Size your embedding budget accordingly.
+  nvd_min_cvss: 7.0
+  # Override at runtime: NVD_MIN_CVSS=9.0 make kb-build-standard
+
+  profiles:
+    cpu-lite:  [tool_docs, gtfobins, lolbas]
+    lite:      [tool_docs, gtfobins, lolbas, owasp, exploitdb]
+    standard:  [tool_docs, gtfobins, lolbas, owasp, exploitdb, nvd]
+    full:      [tool_docs, gtfobins, lolbas, owasp, exploitdb, nvd, nuclei]

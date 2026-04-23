@@ -1,5 +1,6 @@
 """Execute tool node — runs the selected tool with progress streaming support."""
 
+import asyncio
 import os
 import re
 import logging
@@ -9,9 +10,46 @@ import httpx
 from state import AgentState
 from orchestrator_helpers.json_utils import json_dumps_safe
 from orchestrator_helpers.config import get_identifiers
-from tools import set_tenant_context, set_phase_context
+from tools import set_tenant_context, set_phase_context, set_graph_view_context
 
 logger = logging.getLogger(__name__)
+
+
+# Patterns that indicate an MCP-server-wrapped failure returned with success=True.
+# Matched against the tool output body; the first hit's match group becomes the
+# synthesized error_message. Keep specific — broad patterns like 'error' alone
+# false-positive on benign text (e.g., a ffuf result row that mentions 'error').
+_EMBEDDED_ERROR_PATTERNS = [
+    re.compile(r"^\[ERROR\][^\n]*", re.MULTILINE),
+    re.compile(r"Navigation failed:[^\n]*", re.IGNORECASE),
+    re.compile(r"Page\.goto:\s*Timeout[^\n]*", re.IGNORECASE),
+    re.compile(r"playwright\._impl\._errors\.[A-Za-z]+Error[^\n]*"),
+    re.compile(r"ConnectionError:[^\n]*"),
+    re.compile(r"TimeoutError:[^\n]*"),
+    # MCP tool wrappers commonly prefix their error envelope with this.
+    re.compile(r"Tool execution failed:[^\n]*", re.IGNORECASE),
+]
+
+
+def _detect_embedded_tool_error(tool_output: str) -> str | None:
+    """Scan tool output for embedded error signals that the MCP wrapper missed.
+
+    Returns the first matched error fragment (truncated to 500 chars) or None
+    when the output looks clean. Called on success=True outputs so a tool
+    that "succeeded" but actually carried a Playwright timeout / connection
+    failure still flips to success=False and a ChainFailure gets written.
+    """
+    if not tool_output:
+        return None
+    # Quick-reject: common success markers mean no need to pattern-scan.
+    # Playwright's HTML dumps routinely exceed 40k chars; running 7 regexes
+    # against each is fine, but skip obvious non-error outputs.
+    head = tool_output[:4000]
+    for pat in _EMBEDDED_ERROR_PATTERNS:
+        m = pat.search(head)
+        if m:
+            return m.group(0)[:500]
+    return None
 
 
 async def execute_tool_node(
@@ -21,6 +59,7 @@ async def execute_tool_node(
     tool_executor,
     streaming_callbacks,
     session_manager_base,
+    graph_view_cyphers=None,
 ) -> dict:
     """
     Execute the selected tool.
@@ -71,6 +110,8 @@ async def execute_tool_node(
     # Set context
     set_tenant_context(user_id, project_id)
     set_phase_context(phase)
+    if graph_view_cyphers:
+        set_graph_view_context(graph_view_cyphers.get(session_id))
 
     # RoE enforcement: tool restrictions are handled via agentToolPhaseMap
     # (is_tool_allowed_in_phase already blocks tools with empty/missing phases).
@@ -101,10 +142,14 @@ async def execute_tool_node(
     is_long_running_hydra = (tool_name == "execute_hydra")
 
     # Execute the tool (with progress streaming for long-running commands)
-    streaming_cb = streaming_callbacks.get(session_id)
+    from orchestrator_helpers.member_streaming import resolve_streaming_callback
+    import time as _time
+    streaming_cb = resolve_streaming_callback(streaming_callbacks, session_id)
+    _tool_t0 = _time.monotonic()
+    user_stopped = False
     if is_long_running_msf and streaming_cb:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Using execute_with_progress for long-running MSF command")
-        result = await tool_executor.execute_with_progress(
+        _tool_coro = tool_executor.execute_with_progress(
             tool_name,
             tool_args,
             phase,
@@ -112,7 +157,7 @@ async def execute_tool_node(
         )
     elif is_long_running_hydra and streaming_cb:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Using execute_with_progress for Hydra brute force")
-        result = await tool_executor.execute_with_progress(
+        _tool_coro = tool_executor.execute_with_progress(
             tool_name,
             tool_args,
             phase,
@@ -120,7 +165,51 @@ async def execute_tool_node(
             progress_url=os.environ.get('MCP_HYDRA_PROGRESS_URL', 'http://kali-sandbox:8014/progress')
         )
     else:
-        result = await tool_executor.execute(tool_name, tool_args, phase)
+        _tool_coro = tool_executor.execute(tool_name, tool_args, phase)
+
+    # Wrap in a cancellable inner task so the per-tool Stop button can cancel
+    # just this tool without tearing down the whole orchestrator run. If the
+    # user clicks Stop, we recover the CancelledError here, mark the tool as
+    # failed, and let the agent loop proceed to the next iteration normally.
+    _tool_task = asyncio.ensure_future(_tool_coro)
+    if streaming_cb and hasattr(streaming_cb, "register_tool_task"):
+        try:
+            streaming_cb.register_tool_task(tool_name, None, None, _tool_task)
+        except Exception as e:
+            logger.debug(f"register_tool_task failed: {e}")
+    try:
+        try:
+            result = await _tool_task
+        except asyncio.CancelledError:
+            # See execute_plan_node for the rationale: use current_task().cancelling()
+            # (not _tool_task.cancelled()) to tell a per-tool Stop apart from
+            # an outer cancel. Python propagates an outer cancel down into
+            # awaited tasks, so both scenarios leave _tool_task cancelled.
+            _cur = asyncio.current_task()
+            outer_being_cancelled = bool(_cur and _cur.cancelling())
+            if outer_being_cancelled:
+                if not _tool_task.done():
+                    _tool_task.cancel()
+                raise
+            user_stopped = True
+            result = {
+                "success": False,
+                "error": "Stopped by user",
+                "output": "Stopped by user",
+            }
+    finally:
+        if streaming_cb and hasattr(streaming_cb, "unregister_tool_task"):
+            try:
+                streaming_cb.unregister_tool_task(tool_name, None, None)
+            except Exception:
+                pass
+    # Record wall-clock duration on the step so the UI can show "17.3s" on
+    # the tool card. Without this, emit_streaming_events had nothing to
+    # pass into on_tool_complete(duration_ms=...) and the frontend reducer
+    # patched `duration: 0` on the completed ToolExecutionItem.
+    step_data["duration_ms"] = int((_time.monotonic() - _tool_t0) * 1000)
+    if user_stopped:
+        step_data["stopped_by_user"] = True
 
     # Update step with output (handle None result)
     if result:
@@ -131,6 +220,17 @@ async def execute_tool_node(
         step_data["tool_output"] = ""
         step_data["success"] = False
         step_data["error_message"] = "Tool execution returned no result"
+
+    # Detect embedded errors in tool output: MCP servers often return success=True
+    # with an error message inside the body (e.g. Playwright's
+    # "[ERROR] Navigation failed: Page.goto: Timeout 30000ms exceeded"). Without
+    # this, ChainFailure nodes never get written and the LLM's chain_failures_memory
+    # stays empty — so it retries the same failing pattern instead of learning.
+    embedded_err = _detect_embedded_tool_error(step_data.get("tool_output") or "")
+    if step_data.get("success") and embedded_err:
+        step_data["success"] = False
+        step_data["error_message"] = step_data.get("error_message") or embedded_err
+        step_data["error_embedded"] = True
 
     # Detailed logging - tool output
     tool_output = step_data.get("tool_output", "")

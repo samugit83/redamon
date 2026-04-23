@@ -71,7 +71,7 @@ def fix_file_ownership(file_path: Path) -> None:
             
     except Exception as e:
         # Non-fatal - file might still be usable
-        print(f"    [!] Warning: Could not fix file ownership: {e}")
+        print(f"[!][Docker] Warning: Could not fix file ownership: {e}")
 
 
 # =============================================================================
@@ -89,7 +89,7 @@ def pull_nuclei_docker_image(docker_image: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        print(f"    [*] Pulling Docker image: {docker_image}...")
+        print(f"[*][Docker] Pulling Docker image: {docker_image}...")
         result = subprocess.run(
             ["docker", "pull", docker_image],
             capture_output=True,
@@ -126,7 +126,7 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
         needs_download = False
         
         if not volume_exists:
-            print(f"    [*] Creating templates volume: {NUCLEI_TEMPLATES_VOLUME}...")
+            print(f"[*][Docker] Creating templates volume: {NUCLEI_TEMPLATES_VOLUME}...")
             subprocess.run(
                 ["docker", "volume", "create", NUCLEI_TEMPLATES_VOLUME],
                 capture_output=True,
@@ -151,9 +151,9 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
         
         # Download templates if needed OR auto-update is enabled
         if needs_download:
-            print(f"    [*] Downloading nuclei templates (first run, this may take a minute)...")
+            print(f"[*][Docker] Downloading nuclei templates (first run, this may take a minute)...")
         elif auto_update:
-            print(f"    [*] Checking for template updates...")
+            print(f"[*][Docker] Checking for template updates...")
         
         if needs_download or auto_update:
             update_result = subprocess.run(
@@ -167,33 +167,33 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
             )
             
             if update_result.returncode != 0:
-                print(f"    [!] Warning: Template update may have issues")
+                print(f"[!][Docker] Warning: Template update may have issues")
                 if update_result.stderr:
                     # Filter out info messages
                     errors = [l for l in update_result.stderr.split('\n') if 'FTL' in l or 'ERR' in l]
                     if errors:
-                        print(f"    [!] {errors[0][:200]}")
+                        print(f"[!][Docker] {errors[0][:200]}")
             else:
                 # Parse update info from output
                 if update_result.stdout:
                     for line in update_result.stdout.split('\n'):
                         if 'Successfully updated' in line or 'already up to date' in line.lower():
-                            print(f"    [✓] {line.strip()[:80]}")
+                            print(f"[✓][Docker] {line.strip()[:80]}")
                             break
                     else:
-                        print(f"    [✓] Templates updated successfully")
+                        print(f"[✓][Docker] Templates updated successfully")
                 else:
-                    print(f"    [✓] Templates ready")
+                    print(f"[✓][Docker] Templates ready")
         else:
-            print(f"    [✓] Templates volume ready (auto-update disabled)")
+            print(f"[✓][Docker] Templates volume ready (auto-update disabled)")
         
         return True
         
     except subprocess.TimeoutExpired:
-        print(f"    [!] Timeout while setting up templates")
+        print(f"[!][Docker] Timeout while setting up templates")
         return False
     except Exception as e:
-        print(f"    [!] Error setting up templates: {e}")
+        print(f"[!][Docker] Error setting up templates: {e}")
         return False
 
 
@@ -212,7 +212,7 @@ def pull_katana_docker_image(docker_image: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        print(f"    [*] Pulling Katana image: {docker_image}...")
+        print(f"[*][Docker] Pulling Katana image: {docker_image}...")
         result = subprocess.run(
             ["docker", "pull", docker_image],
             capture_output=True,

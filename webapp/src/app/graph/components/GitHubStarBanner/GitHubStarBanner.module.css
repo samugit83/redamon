@@ -1,0 +1,67 @@
+.banner {
+  position: absolute;
+  bottom: 48px;
+  right: 16px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-secondary, #1e1e2e);
+  border: 1px solid var(--border-primary, #333);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  font-size: var(--text-xs, 12px);
+  color: var(--text-secondary, #aaa);
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.icon {
+  flex-shrink: 0;
+  color: #f59e0b;
+}
+
+.text {
+  line-height: 1.4;
+}
+
+.text a {
+  color: #f59e0b;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.text a:hover {
+  text-decoration: underline;
+}
+
+.close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: var(--text-tertiary, #666);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+
+.close:hover {
+  color: var(--text-primary, #fff);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.1));
+}

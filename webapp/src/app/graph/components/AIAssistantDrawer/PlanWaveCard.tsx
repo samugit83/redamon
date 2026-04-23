@@ -17,9 +17,16 @@ interface PlanWaveCardProps {
   item: PlanWaveItem
   isExpanded: boolean
   onToggleExpand: () => void
+  missingApiKeys?: Set<string>
+  onAddApiKey?: (toolId: string) => void
+  onApprove?: () => void
+  onReject?: () => void
+  confirmationDisabled?: boolean
+  /** Cancel a single running tool inside this wave. Receives the tool's item.id. */
+  onToolStop?: (itemId: string) => void
 }
 
-export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardProps) {
+export function PlanWaveCard({ item, isExpanded, onToggleExpand, missingApiKeys, onAddApiKey, onApprove, onReject, confirmationDisabled, onToolStop }: PlanWaveCardProps) {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
   const toggleToolExpand = (toolId: string) => {
@@ -37,6 +44,7 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardP
   const getStatusIcon = () => {
     switch (item.status) {
       case 'running':
+      case 'pending_approval':
         return <Loader2 size={14} className={`${styles.statusIcon} ${styles.spinner}`} />
       case 'success':
         return <CheckCircle2 size={14} className={`${styles.statusIcon} ${styles.successIcon}`} />
@@ -56,6 +64,8 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardP
     switch (item.status) {
       case 'running':
         return `Running ${completedCount}/${item.tool_count}`
+      case 'pending_approval':
+        return 'Awaiting approval'
       case 'success':
         return `${successCount}/${item.tool_count} completed`
       case 'partial':
@@ -71,6 +81,8 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardP
     switch (item.status) {
       case 'running':
         return styles.statusRunning
+      case 'pending_approval':
+        return styles.statusPendingApproval
       case 'success':
         return styles.statusSuccess
       case 'partial':
@@ -104,6 +116,12 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardP
               {getStatusIcon()}
               <span>{getStatusText()}</span>
             </div>
+            {item.status === 'pending_approval' && onApprove && (
+              <div className={styles.confirmActions}>
+                <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }} disabled={confirmationDisabled}>Allow</button>
+                <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }} disabled={confirmationDisabled}>Deny</button>
+              </div>
+            )}
             <button className={styles.expandButton}>
               {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
@@ -126,6 +144,9 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand }: PlanWaveCardP
                 item={tool}
                 isExpanded={expandedTools.has(tool.id)}
                 onToggleExpand={() => toggleToolExpand(tool.id)}
+                missingApiKey={missingApiKeys?.has(tool.tool_name)}
+                onAddApiKey={onAddApiKey ? () => onAddApiKey(tool.tool_name) : undefined}
+                onStop={onToolStop ? () => onToolStop(tool.id) : undefined}
               />
             ))}
           </div>

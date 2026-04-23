@@ -10,6 +10,7 @@ export interface Conversation {
   agentRunning: boolean
   currentPhase: string
   iterationCount: number
+  activeSkillId: string
   createdAt: string
   updatedAt: string
   _count?: { messages: number }

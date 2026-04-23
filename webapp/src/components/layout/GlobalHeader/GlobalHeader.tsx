@@ -3,30 +3,37 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Crosshair, FolderOpen, Shield, CircleHelp, TrendingUp, FileText } from 'lucide-react'
+import { Crosshair, FolderOpen, Shield, CircleHelp, TrendingUp, FileText, Settings, Users, GitBranch } from 'lucide-react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
+import { useAuth } from '@/providers/AuthProvider'
+import { useProject } from '@/providers/ProjectProvider'
 import styles from './GlobalHeader.module.css'
-
-const coreNav = [
-  { label: 'Red Zone', href: '/graph', icon: <Crosshair size={14} /> },
-  { label: 'CypherFix', href: '/cypherfix', icon: <Shield size={14} /> },
-  { label: 'Insights', href: '/insights', icon: <TrendingUp size={14} /> },
-  { label: 'Reports', href: '/reports', icon: <FileText size={14} /> },
-]
 
 export function GlobalHeader() {
   const pathname = usePathname()
+  const { isAdmin } = useAuth()
+  const { projectId } = useProject()
+
+  const coreNav = [
+    { label: 'Red Zone', href: '/graph', icon: <Crosshair size={14} /> },
+    ...(projectId
+      ? [{ label: 'Recon Pipeline', href: `/projects/${projectId}/settings`, icon: <GitBranch size={14} /> }]
+      : []),
+    { label: 'CypherFix', href: '/cypherfix', icon: <Shield size={14} /> },
+    { label: 'Insights', href: '/insights', icon: <TrendingUp size={14} /> },
+    { label: 'Reports', href: '/reports', icon: <FileText size={14} /> },
+  ]
 
   return (
     <header className={styles.header}>
-      <div className={styles.logo}>
+      <Link href="/graph" className={styles.logo}>
         <Image src="/logo.png" alt="RedAmon" width={28} height={28} className={styles.logoImg} />
         <span className={styles.logoText}>
           <span className={styles.logoAccent}>Red</span>Amon
         </span>
-      </div>
+      </Link>
 
       <div className={styles.spacer} />
 
@@ -55,6 +62,16 @@ export function GlobalHeader() {
           <span>Projects</span>
         </Link>
 
+        {isAdmin && (
+          <Link
+            href="/settings/users"
+            className={`${styles.navItem} ${pathname === '/settings/users' ? styles.navItemActive : ''}`}
+          >
+            <Users size={14} />
+            <span>Users</span>
+          </Link>
+        )}
+
         <div className={styles.divider} />
 
         <ProjectSelector />
@@ -78,6 +95,16 @@ export function GlobalHeader() {
         <div className={styles.divider} />
 
         <UserSelector />
+
+        <div className={styles.divider} />
+
+        <Link
+          href="/settings"
+          className={`${styles.helpLink} ${pathname === '/settings' ? styles.navItemActive : ''}`}
+          title="Global Settings"
+        >
+          <Settings size={17} />
+        </Link>
       </div>
     </header>
   )

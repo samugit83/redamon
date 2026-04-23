@@ -81,7 +81,7 @@ services:
   # ===========================================================================
 
   redis-server:
-    image: registry.community.greenbone.net/community/redis-server
+    image: registry.community.greenbone.net/community/redis-server:stable
     container_name: redamon-gvm-redis
     restart: on-failure
     volumes:
@@ -129,15 +129,27 @@ services:
   # works via version checks and response analysis. Using network_mode: host
   # would break socket communication with other containers.
   ospd-openvas:
-    image: registry.community.greenbone.net/community/ospd-openvas:stable
+    image: registry.community.greenbone.net/community/ospd-openvas:22.7.1
     container_name: redamon-gvm-ospd
     restart: on-failure
+    hostname: ospd-openvas.local
     cap_add:
       - NET_ADMIN
       - NET_RAW
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
+    command:
+      [
+        "ospd-openvas",
+        "-f",
+        "--config",
+        "/etc/gvm/ospd-openvas.conf",
+        "--notus-feed-dir",
+        "/var/lib/notus/advisories",
+        "-m",
+        "666",
+      ]
     volumes:
       - gpg_data:/etc/openvas/gnupg
       - vt_data:/var/lib/openvas/plugins

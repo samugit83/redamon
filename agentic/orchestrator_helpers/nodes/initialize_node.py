@@ -41,6 +41,30 @@ def _build_guardrail_block(user_id, project_id, session_id, target_desc, reason)
     }
 
 
+def _build_guardrail_error(user_id, project_id, session_id, target_desc, error) -> dict:
+    """Build state update when the guardrail check itself fails (LLM error)."""
+    return {
+        "messages": [AIMessage(content=(
+            f"**Scope Guardrail: Check Failed**\n\n"
+            f"The guardrail could not verify whether `{target_desc}` is authorized for scanning "
+            f"because the LLM check encountered an error.\n\n"
+            f"**Error:** {error}\n\n"
+            f"**What to do:**\n"
+            f"- Verify your LLM model is correctly configured (must be a chat model)\n"
+            f"- Check that your API key is valid and the provider is reachable\n"
+            f"- Check the agent logs for more details\n\n"
+            f"The agent uses a fail-closed policy — it will not proceed until the guardrail "
+            f"can successfully verify the target."
+        ))],
+        "task_complete": True,
+        "completion_reason": f"Guardrail check failed: {error}",
+        "_guardrail_blocked": True,
+        "user_id": user_id,
+        "project_id": project_id,
+        "session_id": session_id,
+    }
+
+
 async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | None:
     """Run LLM-based guardrail check on the project's target scope.
 
@@ -81,10 +105,8 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
         logger.error(
             f"[{user_id}/{project_id}/{session_id}] Scope guardrail error (fail closed): {e}"
         )
-        return _build_guardrail_block(
-            user_id, project_id, session_id, target_desc,
-            "Guardrail verification failed — cannot confirm target is authorized. "
-            "Please check agent logs and LLM configuration."
+        return _build_guardrail_error(
+            user_id, project_id, session_id, target_desc, str(e)
         )
 
     return None
@@ -170,9 +192,23 @@ async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dic
             # Inject warning into state so it appears in the agent's prompt context
             state["_roe_warnings"] = warnings
 
-    # Scope guardrail: on first invocation, verify the project target is authorized
-    # Skip if already blocked (avoid redundant LLM calls on retry in same session)
+    # Hard guardrail: deterministic, non-disableable — always blocks government/public domains
+    # Runs unconditionally regardless of AGENT_GUARDRAIL_ENABLED setting
     if not state.get("execution_trace") and not state.get("_guardrail_blocked"):
+        from hard_guardrail import is_hard_blocked
+        target_domain = get_setting('TARGET_DOMAIN', '')
+        ip_mode = get_setting('IP_MODE', False)
+        if not ip_mode and target_domain:
+            blocked, reason = is_hard_blocked(target_domain)
+            if blocked:
+                logger.warning(
+                    f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
+                )
+                return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
+
+    # Soft guardrail (LLM-based): on first invocation, verify the project target is authorized
+    # Skip if already blocked (avoid redundant LLM calls on retry in same session)
+    if get_setting('AGENT_GUARDRAIL_ENABLED', True) and not state.get("execution_trace") and not state.get("_guardrail_blocked"):
         guardrail_block = await _run_scope_guardrail(llm, user_id, project_id, session_id)
         if guardrail_block is not None:
             return guardrail_block

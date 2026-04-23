@@ -1,23 +1,24 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, Github } from 'lucide-react'
+import { ChevronDown, Github, AlertTriangle } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
+import Link from 'next/link'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
 interface GithubSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  hasGithubToken?: boolean
 }
 
-export function GithubSection({ data, updateField }: GithubSectionProps) {
+export function GithubSection({ data, updateField, hasGithubToken = false }: GithubSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
-
-  const hasToken = (data.githubAccessToken ?? '').length > 0
 
   return (
     <div className={styles.section}>
@@ -25,6 +26,8 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
         <h2 className={styles.sectionTitle}>
           <Github size={16} />
           GitHub Secret Hunting
+          <NodeInfoTooltip section="Github" />
+          <span className={styles.badgePassive}>Passive</span>
         </h2>
         <ChevronDown
           size={16}
@@ -37,19 +40,27 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
           <p className={styles.sectionDescription}>
             Search GitHub repositories for exposed secrets, API keys, and credentials related to your target domain. Identifies leaked sensitive data that could enable unauthorized access to systems and services.
           </p>
-          <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>GitHub Access Token</label>
-            <input
-              type="password"
-              className="textInput"
-              value={data.githubAccessToken}
-              onChange={(e) => updateField('githubAccessToken', e.target.value)}
-              placeholder="ghp_xxxxxxxxxxxx"
-            />
-            <span className={styles.fieldHint}>
-              Required for GitHub secret scanning. Create a token with repo scope.
-            </span>
-          </div>
+
+          {!hasGithubToken && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 14px',
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '8px',
+              marginBottom: '12px',
+            }}>
+              <AlertTriangle size={16} style={{ color: '#f59e0b', flexShrink: 0 }} />
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                GitHub Access Token required.{' '}
+                <Link href="/settings" style={{ color: 'var(--accent-primary)', fontWeight: 500 }}>
+                  Configure it in Global Settings
+                </Link>
+              </span>
+            </div>
+          )}
 
           <div className={styles.fieldGroup}>
             <label className={styles.fieldLabel}>Target Organization</label>
@@ -59,7 +70,7 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
               value={data.githubTargetOrg}
               onChange={(e) => updateField('githubTargetOrg', e.target.value)}
               placeholder="organization-name"
-              disabled={!hasToken}
+              disabled={!hasGithubToken}
             />
           </div>
 
@@ -71,14 +82,14 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
               value={data.githubTargetRepos}
               onChange={(e) => updateField('githubTargetRepos', e.target.value)}
               placeholder="repo1, repo2, repo3"
-              disabled={!hasToken}
+              disabled={!hasGithubToken}
             />
             <span className={styles.fieldHint}>
               Comma-separated list. Leave empty to scan all repositories.
             </span>
           </div>
 
-          {hasToken && (
+          {hasGithubToken && (
             <>
               <div className={styles.subSection}>
                 <h3 className={styles.subSectionTitle}>Scan Options</h3>
@@ -142,14 +153,6 @@ export function GithubSection({ data, updateField }: GithubSectionProps) {
                 />
               </div>
             </>
-          )}
-
-          {!hasToken && (
-            <div className={styles.subSection}>
-              <p className={styles.fieldHint}>
-                Enter a GitHub access token to enable secret scanning options.
-              </p>
-            </div>
           )}
         </div>
       )}

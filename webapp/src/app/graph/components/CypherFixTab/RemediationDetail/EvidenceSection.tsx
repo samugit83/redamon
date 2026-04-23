@@ -2,6 +2,7 @@
 
 import { memo } from 'react'
 import { AlertTriangle, Link, Terminal } from 'lucide-react'
+import { ExternalLink } from '@/components/ui'
 import type { Remediation } from '@/lib/cypherfix-types'
 import styles from './RemediationDetail.module.css'
 
@@ -31,7 +32,7 @@ export const EvidenceSection = memo(function EvidenceSection({ remediation }: Ev
               <div key={i} className={styles.assetItem}>
                 <span className={styles.assetType}>{asset.type}</span>
                 <span className={styles.assetName}>{asset.name}</span>
-                {asset.url && <span className={styles.assetUrl}>{asset.url}</span>}
+                {asset.url && <span className={styles.assetUrl}><ExternalLink href={asset.url}>{asset.url}</ExternalLink></span>}
                 {asset.ip && <span className={styles.assetIp}>{asset.ip}{asset.port ? `:${asset.port}` : ''}</span>}
               </div>
             ))}

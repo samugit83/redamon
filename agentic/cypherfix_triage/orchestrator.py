@@ -17,6 +17,7 @@ from .project_settings import load_cypherfix_settings
 logger = logging.getLogger(__name__)
 
 WEBAPP_API_URL = os.environ.get("WEBAPP_API_URL", "http://webapp:3000")
+INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
 
 
 class TriageOrchestrator:
@@ -31,7 +32,7 @@ class TriageOrchestrator:
         self.project_id = project_id
         self.callback = callback
         self.neo4j = TriageNeo4jToolManager(user_id, project_id)
-        self.web_search = TriageWebSearchManager()
+        self.web_search = None  # Initialized after settings load
         self.llm_client = None
 
     async def run(self, state: TriageState) -> TriageState:
@@ -39,6 +40,11 @@ class TriageOrchestrator:
         # Load settings
         settings = await load_cypherfix_settings(self.project_id)
         state["settings"] = settings
+
+        # Initialize web search with Tavily key from user settings
+        user_settings = settings.get("user_settings", {})
+        tavily_key = user_settings.get("tavilyApiKey", "")
+        self.web_search = TriageWebSearchManager(tavily_api_key=tavily_key)
 
         # Initialize LLM
         self.llm_client = await self._init_llm(settings)
@@ -229,6 +235,7 @@ class TriageOrchestrator:
                 resp = await client.post(
                     f"{WEBAPP_API_URL}/api/remediations/batch",
                     json={"projectId": self.project_id, "remediations": remediations},
+                    headers=INTERNAL_HEADERS,
                 )
                 resp.raise_for_status()
                 logger.info(f"Saved {len(remediations)} remediations")
@@ -243,6 +250,7 @@ class TriageOrchestrator:
                 resp = await client.get(
                     f"{WEBAPP_API_URL}/api/remediations",
                     params={"projectId": self.project_id},
+                    headers=INTERNAL_HEADERS,
                 )
                 resp.raise_for_status()
                 all_rems = resp.json()
@@ -368,109 +376,31 @@ class TriageOrchestrator:
             logger.error(f"Failed to parse LLM JSON: {e}")
             return RemediationDraft(summary=f"JSON parse error: {e}")
 
-    @staticmethod
-    def _parse_model_provider(model_name: str) -> tuple[str, str]:
-        """
-        Parse provider and API model name from the stored model identifier.
-
-        Prefix convention (same as main orchestrator):
-          - "openai_compat/<model>" → ("openai_compat", "<model>")
-          - "openrouter/<model>"  → ("openrouter", "<model>")
-          - "bedrock/<model>"     → ("bedrock", "<model>")
-          - "claude-*"            → ("anthropic", "claude-*")
-          - anything else         → ("openai", "<model>")
-        """
-        if model_name.startswith("openai_compat/"):
-            return ("openai_compat", model_name[len("openai_compat/"):])
-        elif model_name.startswith("openrouter/"):
-            return ("openrouter", model_name[len("openrouter/"):])
-        elif model_name.startswith("bedrock/"):
-            return ("bedrock", model_name[len("bedrock/"):])
-        elif model_name.startswith("claude-"):
-            return ("anthropic", model_name)
-        else:
-            return ("openai", model_name)
-
     async def _init_llm(self, settings: dict):
-        """Initialize LLM client based on settings (same provider routing as main orchestrator)."""
+        """Initialize LLM client using centralized setup_llm."""
+        from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+
         model = settings.get("llm_model", "")
-        provider, api_model = self._parse_model_provider(model)
-        logger.info(f"Setting up LLM: {model} (provider={provider}, api_model={api_model})")
+        logger.info(f"Setting up triage LLM: {model}")
 
-        if provider == "openai_compat":
-            openai_compat_base_url = os.environ.get("OPENAI_COMPAT_BASE_URL")
-            if not openai_compat_base_url:
-                raise ValueError(
-                    f"OPENAI_COMPAT_BASE_URL environment variable is required for model '{model}'"
-                )
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                model=api_model,
-                api_key=os.environ.get("OPENAI_COMPAT_API_KEY") or "ollama",
-                base_url=openai_compat_base_url,
-                temperature=0,
-                max_tokens=16384,
-            )
+        user_providers = settings.get("user_llm_providers", [])
+        custom_config = settings.get("custom_llm_config")
 
-        elif provider == "openrouter":
-            openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-            if not openrouter_api_key:
-                raise ValueError(
-                    f"OPENROUTER_API_KEY environment variable is required for model '{model}'"
-                )
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                model=api_model,
-                api_key=openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1",
-                temperature=0,
-                max_tokens=16384,
-                default_headers={
-                    "HTTP-Referer": "https://redamon.dev",
-                    "X-Title": "RedAmon CypherFix",
-                },
-            )
+        openai_p = _resolve_provider_key(user_providers, "openai")
+        anthropic_p = _resolve_provider_key(user_providers, "anthropic")
+        openrouter_p = _resolve_provider_key(user_providers, "openrouter")
+        bedrock_p = _resolve_provider_key(user_providers, "bedrock")
 
-        elif provider == "bedrock":
-            if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
-                raise ValueError(
-                    f"AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required for model '{model}'"
-                )
-            from langchain_aws import ChatBedrockConverse
-            return ChatBedrockConverse(
-                model=api_model,
-                region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
-                temperature=0,
-                max_tokens=16384,
-            )
-
-        elif provider == "anthropic":
-            anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if not anthropic_api_key:
-                raise ValueError(
-                    f"ANTHROPIC_API_KEY environment variable is required for model '{model}'"
-                )
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(
-                model=api_model,
-                api_key=anthropic_api_key,
-                temperature=0,
-                max_tokens=16384,
-            )
-
-        else:  # openai
-            openai_api_key = os.environ.get("OPENAI_API_KEY")
-            if not openai_api_key:
-                raise ValueError(
-                    f"OPENAI_API_KEY environment variable is required for model '{model}'"
-                )
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                model=api_model,
-                api_key=openai_api_key,
-                temperature=0,
-                max_tokens=16384,
-            )
+        return setup_llm(
+            model,
+            openai_api_key=(openai_p or {}).get("apiKey"),
+            anthropic_api_key=(anthropic_p or {}).get("apiKey"),
+            openrouter_api_key=(openrouter_p or {}).get("apiKey"),
+            aws_access_key_id=(bedrock_p or {}).get("awsAccessKeyId"),
+            aws_secret_access_key=(bedrock_p or {}).get("awsSecretKey"),
+            aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
+            custom_llm_config=custom_config,
+        )
 
     async def _call_llm(self, system: str, messages: list, tools: list = None) -> dict:
         """Call the LLM and return structured response."""

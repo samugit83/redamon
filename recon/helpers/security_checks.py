@@ -2031,7 +2031,7 @@ def run_security_checks(
         Dictionary with security check findings
     """
     print("\n" + "=" * 70)
-    print("         RedAmon - Custom Security Checks")
+    print("[*][SecurityCheck] Custom Security Checks")
     print("=" * 70)
 
     # Extract IPs and hostnames from recon data
@@ -2070,9 +2070,9 @@ def run_security_checks(
     ips = [ip for ip in ips if ip]
     hostnames = [h for h in hostnames if h]
 
-    print(f"  Targets: {len(hostnames)} hostnames, {len(ips)} IPs")
-    print(f"  Timeout: {timeout}s")
-    print(f"  Workers: {max_workers}")
+    print(f"[*][SecurityCheck] Targets: {len(hostnames)} hostnames, {len(ips)} IPs")
+    print(f"[*][SecurityCheck] Timeout: {timeout}s")
+    print(f"[*][SecurityCheck] Workers: {max_workers}")
 
     # Count enabled checks by category
     ip_checks = ["direct_ip_http", "direct_ip_https", "ip_api_exposed", "waf_bypass"]
@@ -2097,17 +2097,17 @@ def run_security_checks(
     enabled_app = sum(1 for c in app_checks if enabled_checks.get(c, False))
     enabled_rate = sum(1 for c in rate_checks if enabled_checks.get(c, False))
 
-    print(f"  Enabled checks:")
-    print(f"    - Direct IP: {enabled_ip}, TLS: {enabled_tls}, Headers: {enabled_headers}")
-    print(f"    - Auth: {enabled_auth}, DNS: {enabled_dns}, Port/Service: {enabled_port}")
-    print(f"    - App Security: {enabled_app}, Rate Limit: {enabled_rate}")
+    print(f"[*][SecurityCheck] Enabled checks:")
+    print(f"[*][SecurityCheck]   - Direct IP: {enabled_ip}, TLS: {enabled_tls}, Headers: {enabled_headers}")
+    print(f"[*][SecurityCheck]   - Auth: {enabled_auth}, DNS: {enabled_dns}, Port/Service: {enabled_port}")
+    print(f"[*][SecurityCheck]   - App Security: {enabled_app}, Rate Limit: {enabled_rate}")
     print("=" * 70 + "\n")
 
     all_findings = []
 
     # Run direct IP access checks
     if enabled_ip > 0 and ips:
-        print(f"[*] Running Direct IP Access checks on {len(ips)} IPs...")
+        print(f"[*][SecurityCheck] Running Direct IP Access checks on {len(ips)} IPs...")
         ip_findings = run_direct_ip_checks(
             ips=list(ips),
             subdomains_to_ips=subdomains_to_ips,
@@ -2116,11 +2116,11 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(ip_findings)
-        print(f"    [+] Found {len(ip_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(ip_findings)} issues")
 
     # Run TLS/SSL checks
     if enabled_tls > 0 and hostnames:
-        print(f"[*] Running TLS/SSL checks on {len(hostnames)} hostnames...")
+        print(f"[*][SecurityCheck] Running TLS/SSL checks on {len(hostnames)} hostnames...")
         tls_findings = run_tls_checks(
             hostnames=list(hostnames),
             enabled_checks=enabled_checks,
@@ -2129,11 +2129,11 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(tls_findings)
-        print(f"    [+] Found {len(tls_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(tls_findings)} issues")
 
     # Run Security Headers checks
     if enabled_headers > 0 and hostnames:
-        print(f"[*] Running Security Headers checks on {len(hostnames)} hostnames...")
+        print(f"[*][SecurityCheck] Running Security Headers checks on {len(hostnames)} hostnames...")
         headers_findings = run_security_headers_checks(
             hostnames=list(hostnames),
             enabled_checks=enabled_checks,
@@ -2141,11 +2141,11 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(headers_findings)
-        print(f"    [+] Found {len(headers_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(headers_findings)} issues")
 
     # Run Authentication checks
     if enabled_auth > 0 and hostnames:
-        print(f"[*] Running Authentication checks on {len(hostnames)} hostnames...")
+        print(f"[*][SecurityCheck] Running Authentication checks on {len(hostnames)} hostnames...")
         auth_findings = run_auth_checks(
             hostnames=list(hostnames),
             enabled_checks=enabled_checks,
@@ -2153,25 +2153,25 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(auth_findings)
-        print(f"    [+] Found {len(auth_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(auth_findings)} issues")
 
     # Run DNS Security checks
     if enabled_dns > 0:
         # Extract domain from recon_data
         domain = recon_data.get("domain", "")
         if domain:
-            print(f"[*] Running DNS Security checks on {domain}...")
+            print(f"[*][SecurityCheck] Running DNS Security checks on {domain}...")
             dns_findings = run_dns_checks(
                 domain=domain,
                 enabled_checks=enabled_checks,
                 timeout=timeout
             )
             all_findings.extend(dns_findings)
-            print(f"    [+] Found {len(dns_findings)} issues")
+            print(f"[+][SecurityCheck] Found {len(dns_findings)} issues")
 
     # Run Port/Service Security checks
     if enabled_port > 0:
-        print(f"[*] Running Port/Service Security checks...")
+        print(f"[*][SecurityCheck] Running Port/Service Security checks...")
         port_findings = run_port_service_checks(
             recon_data=recon_data,
             enabled_checks=enabled_checks,
@@ -2179,11 +2179,11 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(port_findings)
-        print(f"    [+] Found {len(port_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(port_findings)} issues")
 
     # Run Application Security checks
     if enabled_app > 0 and hostnames:
-        print(f"[*] Running Application Security checks on {len(hostnames)} hostnames...")
+        print(f"[*][SecurityCheck] Running Application Security checks on {len(hostnames)} hostnames...")
         app_findings = run_app_security_checks(
             hostnames=list(hostnames),
             enabled_checks=enabled_checks,
@@ -2191,11 +2191,11 @@ def run_security_checks(
             max_workers=max_workers
         )
         all_findings.extend(app_findings)
-        print(f"    [+] Found {len(app_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(app_findings)} issues")
 
     # Run Rate Limiting checks
     if enabled_rate > 0 and hostnames:
-        print(f"[*] Running Rate Limiting checks on {len(hostnames)} hostnames...")
+        print(f"[*][SecurityCheck] Running Rate Limiting checks on {len(hostnames)} hostnames...")
         rate_findings = run_rate_limit_checks(
             hostnames=list(hostnames),
             recon_data=recon_data,
@@ -2204,7 +2204,7 @@ def run_security_checks(
             max_workers=min(max_workers, 5)  # Lower concurrency for rate limit checks
         )
         all_findings.extend(rate_findings)
-        print(f"    [+] Found {len(rate_findings)} issues")
+        print(f"[+][SecurityCheck] Found {len(rate_findings)} issues")
 
     # Organize findings by type and severity
     by_type = {}
@@ -2241,24 +2241,24 @@ def run_security_checks(
 
     # Print summary
     print(f"\n{'=' * 70}")
-    print(f"[+] SECURITY CHECKS COMPLETE")
-    print(f"[+] Total findings: {len(all_findings)}")
+    print(f"[+][SecurityCheck] SECURITY CHECKS COMPLETE")
+    print(f"[+][SecurityCheck] Total findings: {len(all_findings)}")
 
     if any(severity_counts[s] > 0 for s in ["critical", "high", "medium", "low"]):
-        print(f"\n[+] SEVERITY SUMMARY:")
+        print(f"\n[+][SecurityCheck] SEVERITY SUMMARY:")
         if severity_counts['critical'] > 0:
-            print(f"    CRITICAL: {severity_counts['critical']}")
+            print(f"[!][SecurityCheck] CRITICAL: {severity_counts['critical']}")
         if severity_counts['high'] > 0:
-            print(f"    HIGH: {severity_counts['high']}")
+            print(f"[!][SecurityCheck] HIGH: {severity_counts['high']}")
         if severity_counts['medium'] > 0:
-            print(f"    MEDIUM: {severity_counts['medium']}")
+            print(f"[*][SecurityCheck] MEDIUM: {severity_counts['medium']}")
         if severity_counts['low'] > 0:
-            print(f"    LOW: {severity_counts['low']}")
+            print(f"[*][SecurityCheck] LOW: {severity_counts['low']}")
 
     if by_type:
-        print(f"\n[+] FINDINGS BY TYPE:")
+        print(f"\n[+][SecurityCheck] FINDINGS BY TYPE:")
         for finding_type, findings_list in sorted(by_type.items(), key=lambda x: len(x[1]), reverse=True):
-            print(f"    {finding_type}: {len(findings_list)}")
+            print(f"[*][SecurityCheck]   {finding_type}: {len(findings_list)}")
 
     print(f"{'=' * 70}")
 

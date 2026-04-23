@@ -210,11 +210,6 @@ describe('validateProjectForm', () => {
     expect(errors.some(e => e.field === 'httpxMatchCodes')).toBe(true)
   })
 
-  test('validates github token format', () => {
-    const errors = validateProjectForm({ ...baseData, githubAccessToken: 'bad-token' })
-    expect(errors.some(e => e.field === 'githubAccessToken')).toBe(true)
-  })
-
   test('validates agent lhost', () => {
     const errors = validateProjectForm({ ...baseData, agentLhost: 'not-an-ip' })
     expect(errors.some(e => e.field === 'agentLhost')).toBe(true)
@@ -223,7 +218,6 @@ describe('validateProjectForm', () => {
   test('skips empty optional fields', () => {
     const data = {
       ...baseData,
-      githubAccessToken: '',
       agentLhost: '',
       naabuCustomPorts: '',
       cypherfixGithubToken: '',

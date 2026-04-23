@@ -64,7 +64,7 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
             asset_name = "kiterunner_1.0.2_linux_arm64.tar.gz"
             binary_name = "kr"
         else:
-            print(f"    [!] Unsupported architecture: {machine}")
+            print(f"[!][Kiterunner] Unsupported architecture: {machine}")
             return None, None
     elif system == "darwin":
         if machine in ["x86_64", "amd64"]:
@@ -74,10 +74,10 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
             asset_name = "kiterunner_1.0.2_macOS_arm64.tar.gz"
             binary_name = "kr"
         else:
-            print(f"    [!] Unsupported architecture: {machine}")
+            print(f"[!][Kiterunner] Unsupported architecture: {machine}")
             return None, None
     else:
-        print(f"    [!] Unsupported OS: {system}")
+        print(f"[!][Kiterunner] Unsupported OS: {system}")
         return None, None
 
     binary_path = kr_dir / binary_name
@@ -85,7 +85,7 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
 
     # Download binary if not present
     if not binary_path.exists():
-        print(f"    [*] Downloading Kiterunner binary...")
+        print(f"[*][Kiterunner] Downloading Kiterunner binary...")
         download_url = f"https://github.com/assetnote/kiterunner/releases/download/v1.0.2/{asset_name}"
 
         try:
@@ -111,20 +111,20 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
             # Make binary executable
             if binary_path.exists():
                 binary_path.chmod(0o755)
-                print(f"    [+] Kiterunner binary installed: {binary_path}")
+                print(f"[+][Kiterunner] Binary installed: {binary_path}")
 
             # Cleanup archive
             archive_path.unlink()
 
         except Exception as e:
-            print(f"    [!] Failed to download Kiterunner: {e}")
+            print(f"[!][Kiterunner] Failed to download Kiterunner: {e}")
             return None, None
 
     # Download wordlist if not present
     # Note: routes-large.kite is the comprehensive wordlist (~140k routes)
     # The apiroutes-* wordlists are only available via the -A flag (auto-download by kr)
     if not wordlist_path.exists():
-        print(f"    [*] Downloading Kiterunner wordlist: {wordlist_name}...")
+        print(f"[*][Kiterunner] Downloading wordlist: {wordlist_name}...")
 
         # Map wordlist names to download URLs
         wordlist_urls = {
@@ -160,14 +160,14 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
                 if extracted_path.exists() and not wordlist_path.exists():
                     extracted_path.rename(wordlist_path)
 
-                print(f"    [+] Wordlist downloaded: {wordlist_path}")
+                print(f"[+][Kiterunner] Wordlist downloaded: {wordlist_path}")
             except Exception as e:
-                print(f"    [!] Failed to download wordlist: {e}")
+                print(f"[!][Kiterunner] Failed to download wordlist: {e}")
                 return None, None
         else:
             # For apiroutes-* wordlists, they're downloaded automatically by kr using -A flag
             # We'll return a special marker to use -A flag instead of -w
-            print(f"    [*] Wordlist '{wordlist_name}' will be fetched by Kiterunner using -A flag")
+            print(f"[*][Kiterunner] Wordlist '{wordlist_name}' will be fetched by Kiterunner using -A flag")
             return str(binary_path), f"ASSETNOTE:{wordlist_name}"
 
     if binary_path.exists() and wordlist_path.exists():
@@ -216,20 +216,20 @@ def run_kiterunner_discovery(
     Returns:
         List of discovered endpoint dictionaries with url, path, method, status
     """
-    print(f"\n[*] Running Kiterunner API discovery...")
-    print(f"    Wordlist: {wordlist_name}")
-    print(f"    Rate limit: {rate_limit} req/s")
-    print(f"    Targets: {len(target_urls)}")
+    print(f"\n[*][Kiterunner] Running Kiterunner API discovery...")
+    print(f"[*][Kiterunner] Wordlist: {wordlist_name}")
+    print(f"[*][Kiterunner] Rate limit: {rate_limit} req/s")
+    print(f"[*][Kiterunner] Targets: {len(target_urls)}")
 
     discovered_endpoints = []
 
     # Check if binary and wordlist are available
     if not binary_path or not wordlist_path:
-        print("    [!] Kiterunner binary or wordlist not available")
+        print("[!][Kiterunner] Binary or wordlist not available")
         return discovered_endpoints
 
     if not Path(binary_path).exists():
-        print(f"    [!] Kiterunner binary not found: {binary_path}")
+        print(f"[!][Kiterunner] Binary not found: {binary_path}")
         return discovered_endpoints
 
     # Check if using Assetnote wordlist (via -A flag) or local file
@@ -237,7 +237,7 @@ def run_kiterunner_discovery(
     assetnote_wordlist_name = wordlist_path.replace("ASSETNOTE:", "") if use_assetnote_wordlist else None
 
     if not use_assetnote_wordlist and not Path(wordlist_path).exists():
-        print(f"    [!] Kiterunner wordlist not found: {wordlist_path}")
+        print(f"[!][Kiterunner] Wordlist not found: {wordlist_path}")
         return discovered_endpoints
 
     # Create temp directory for targets file (use /tmp/redamon for Docker-in-Docker compatibility)
@@ -301,7 +301,7 @@ def run_kiterunner_discovery(
             cmd.extend(["--proxy", "socks5://127.0.0.1:9050"])
 
         try:
-            print(f"    [*] Command: {' '.join(cmd[:6])}...")  # Show partial command
+            print(f"[*][Kiterunner] Command: {' '.join(cmd[:6])}...")  # Show partial command
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -402,16 +402,16 @@ def run_kiterunner_discovery(
                             discovered_endpoints.append(endpoint)
 
             if result.stderr and "error" in result.stderr.lower():
-                print(f"    [!] Kiterunner stderr: {result.stderr[:200]}")
+                print(f"[!][Kiterunner] stderr: {result.stderr[:200]}")
 
         except subprocess.TimeoutExpired:
-            print(f"    [!] Kiterunner timeout after {scan_timeout}s")
+            print(f"[!][Kiterunner] Timeout after {scan_timeout}s")
         except Exception as e:
-            print(f"    [!] Kiterunner error: {e}")
+            print(f"[!][Kiterunner] Error: {e}")
     finally:
         _cleanup_temp_dir(temp_path)
 
-    print(f"    [+] Kiterunner discovered {len(discovered_endpoints)} API endpoints")
+    print(f"[+][Kiterunner] Discovered {len(discovered_endpoints)} API endpoints")
     return discovered_endpoints
 
 
@@ -581,8 +581,8 @@ def detect_kiterunner_methods(
         return {r['url']: [r.get('method', 'GET')] for r in kr_results if r.get('url')}
 
     mode = method_detection_mode.lower()
-    print(f"\n[*] Detecting HTTP methods for {len(kr_results)} Kiterunner endpoints...")
-    print(f"    Mode: {mode}")
+    print(f"\n[*][Kiterunner] Detecting HTTP methods for {len(kr_results)} endpoints...")
+    print(f"[*][Kiterunner] Mode: {mode}")
 
     # Extract unique URLs from Kiterunner results
     urls = list(set(r['url'] for r in kr_results if r.get('url')))
@@ -668,14 +668,14 @@ def detect_kiterunner_methods(
                                 continue
 
             except subprocess.TimeoutExpired:
-                print("    [!] OPTIONS probe timeout")
+                print("[!][Kiterunner] OPTIONS probe timeout")
             except Exception as e:
-                print(f"    [!] OPTIONS probe error: {e}")
+                print(f"[!][Kiterunner] OPTIONS probe error: {e}")
 
         elif mode == "bruteforce":
             # Bruteforce mode - try each method directly
             methods_to_try = bruteforce_methods
-            print(f"    Methods to try: {', '.join(methods_to_try)}")
+            print(f"[*][Kiterunner] Methods to try: {', '.join(methods_to_try)}")
 
             for method in methods_to_try:
                 urls_file = temp_path / f"urls_{method.lower()}.txt"
@@ -729,9 +729,9 @@ def detect_kiterunner_methods(
                                     continue
 
                 except subprocess.TimeoutExpired:
-                    print(f"    [!] {method} probe timeout")
+                    print(f"[!][Kiterunner] {method} probe timeout")
                 except Exception as e:
-                    print(f"    [!] {method} probe error: {e}")
+                    print(f"[!][Kiterunner] {method} probe error: {e}")
     finally:
         _cleanup_temp_dir(temp_path)
 
@@ -742,9 +742,9 @@ def detect_kiterunner_methods(
         for m in methods:
             method_counts[m] = method_counts.get(m, 0) + 1
 
-    print(f"    [+] Method detection complete:")
-    print(f"        - Endpoints with multiple methods: {with_multiple}")
-    print(f"        - Method distribution: {method_counts}")
+    print(f"[+][Kiterunner] Method detection complete:")
+    print(f"[+][Kiterunner] Endpoints with multiple methods: {with_multiple}")
+    print(f"[+][Kiterunner] Method distribution: {method_counts}")
 
     return url_methods
 

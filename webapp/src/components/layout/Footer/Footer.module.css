@@ -5,10 +5,23 @@
   flex-shrink: 0;
 }
 
+:global([data-theme="light"]) .footer {
+  --bg-secondary: var(--color-gray-900);
+  --text-tertiary: var(--color-gray-500);
+  --text-secondary: var(--color-gray-400);
+  --border-default: var(--color-gray-800);
+}
+
 .content {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .copyright {
@@ -16,8 +29,57 @@
   color: var(--text-tertiary);
 }
 
+.legalLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-decoration: none;
+  transition: var(--transition-all);
+}
+
+.legalLink:hover {
+  color: var(--text-secondary);
+  text-decoration: underline;
+}
+
+.versionWrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .version {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
+}
+
+.updateBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-all);
+  animation: badgePulse 3s ease-in-out infinite;
+}
+
+.updateBadge:hover {
+  background: rgba(255, 107, 107, 0.22);
+  border-color: rgba(255, 107, 107, 0.55);
+}
+
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }

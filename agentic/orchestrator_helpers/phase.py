@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AttackPathClassification
-from prompts import ATTACK_PATH_CLASSIFICATION_PROMPT
+from prompts.classification import build_classification_prompt
 from .json_utils import normalize_content, extract_json
 
 logger = logging.getLogger(__name__)
@@ -33,13 +33,14 @@ async def classify_attack_path(
 
     Returns:
         Tuple of (attack_path_type, required_phase, target_host, target_port, target_cves):
-        - attack_path_type: "cve_exploit", "brute_force_credential_guess", or "<term>-unclassified"
+        - attack_path_type: "cve_exploit", "brute_force_credential_guess", "phishing_social_engineering", "denial_of_service", or "<term>-unclassified"
         - required_phase: "informational", "exploitation", or "post_exploitation"
         - target_host: IP or hostname extracted from objective (or None)
         - target_port: port number extracted from objective (or None)
         - target_cves: list of CVE IDs extracted from objective
     """
-    prompt = ATTACK_PATH_CLASSIFICATION_PROMPT.format(objective=objective)
+    prompt = build_classification_prompt(objective)
+    logger.debug(f"Classification prompt ({len(prompt)} chars):\n{prompt}")
 
     messages = [
         SystemMessage(content="You are an attack path classifier. Output only valid JSON."),

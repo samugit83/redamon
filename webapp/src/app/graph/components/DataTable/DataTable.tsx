@@ -128,22 +128,9 @@ export const DataTable = memo(function DataTable({
         )
       },
     }),
-    columnHelper.accessor(row => row.level2.length, {
-      id: 'level2',
-      header: 'L2',
-      size: 60,
-      cell: info => {
-        const count = info.getValue()
-        return count > 0 ? (
-          <span className={styles.connBadge}>{count}</span>
-        ) : (
-          <span className={styles.connEmpty}>0</span>
-        )
-      },
-    }),
-    columnHelper.accessor(row => row.level3.length, {
-      id: 'level3',
-      header: 'L3',
+    columnHelper.accessor(row => row.connectionsIn.length + row.connectionsOut.length, {
+      id: 'totalConns',
+      header: 'Conns',
       size: 60,
       cell: info => {
         const count = info.getValue()
