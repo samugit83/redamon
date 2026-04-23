@@ -20,24 +20,24 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     # Core identifiers (empty for CLI usage)
-    'PROJECT_ID': os.getenv('PROJECT_ID', ''),
-    'USER_ID': os.getenv('USER_ID', ''),
+    'PROJECT_ID': '',
+    'USER_ID': '',
 
     # Target Configuration
-    'TARGET_DOMAIN': os.getenv('TARGET_DOMAIN', ''),
-    'SUBDOMAIN_LIST': os.getenv('SUBDOMAIN_LIST', '').split(',') if os.getenv('SUBDOMAIN_LIST') else [],
-    'IP_MODE': os.getenv('IP_MODE', 'false').lower() == 'true',
-    'TARGET_IPS': os.getenv('TARGET_IPS', '').split(',') if os.getenv('TARGET_IPS') else [],
-    'VERIFY_DOMAIN_OWNERSHIP': os.getenv('VERIFY_DOMAIN_OWNERSHIP', 'false').lower() == 'true',
-    'OWNERSHIP_TOKEN': os.getenv('OWNERSHIP_TOKEN', 'your-secret-token-here'),
-    'OWNERSHIP_TXT_PREFIX': os.getenv('OWNERSHIP_TXT_PREFIX', '_redamon-verify'),
+    'TARGET_DOMAIN': '',
+    'SUBDOMAIN_LIST': [],
+    'IP_MODE': False,
+    'TARGET_IPS': [],
+    'VERIFY_DOMAIN_OWNERSHIP': False,
+    'OWNERSHIP_TOKEN': 'your-secret-token-here',
+    'OWNERSHIP_TXT_PREFIX': '_redamon-verify',
 
     # Scan Modules
-    'SCAN_MODULES': os.getenv('SCAN_MODULES', 'domain_discovery,port_scan,http_probe,resource_enum,vuln_scan').split(','),
-    'UPDATE_GRAPH_DB': os.getenv('UPDATE_GRAPH_DB', 'true').lower() == 'true',
-    'USE_TOR_FOR_RECON': os.getenv('USE_TOR_FOR_RECON', 'false').lower() == 'true',
-    'USE_BRUTEFORCE_FOR_SUBDOMAINS': os.getenv('USE_BRUTEFORCE_FOR_SUBDOMAINS', 'true').lower() == 'true',
-    'STEALTH_MODE': os.getenv('STEALTH_MODE', 'false').lower() == 'true',
+    'SCAN_MODULES': ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan'],
+    'UPDATE_GRAPH_DB': True,
+    'USE_TOR_FOR_RECON': False,
+    'USE_BRUTEFORCE_FOR_SUBDOMAINS': True,
+    'STEALTH_MODE': False,
 
     # WHOIS/DNS
     'WHOIS_MAX_RETRIES': 6,

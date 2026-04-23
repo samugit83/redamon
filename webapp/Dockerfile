@@ -1,6 +1,4 @@
-cd /workspaces/redamon
-# Start core services (without GVM for faster startup)
-docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp# ============================================
+# ============================================
 # RedAmon Web Application - Production Dockerfile
 # Multi-stage build for optimized production image
 # ============================================
