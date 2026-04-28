@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/samugit83-redamon-badge.png)](https://mseep.ai/app/samugit83-redamon)
+
 <p align="center">
   <img src="assets/logo.png" alt="RedAmon Logo" width="120"/>
   <br/>
