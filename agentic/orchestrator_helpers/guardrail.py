@@ -161,6 +161,7 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
         HumanMessage(content=user_prompt),
     ]
 
+    last_error=None
     for attempt in range(3):
         try:
             response = await llm.ainvoke(messages)
@@ -177,7 +178,7 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
             logger.warning(f"Guardrail attempt {attempt + 1}: no JSON in response")
 
         except Exception as e:
-            logger.warning(f"Guardrail attempt {attempt + 1} error: {e}")
+            last_error=e; logger.warning(f"Guardrail attempt {attempt + 1} error: {e}")
 
     # All retries exhausted — raise so callers can decide fail-open vs fail-closed
-    raise RuntimeError("Guardrail LLM check failed after 3 attempts")
+    raise RuntimeError(f"Guardrail LLM check failed after 3 attempts. Last error: {last_error}") from last_error
