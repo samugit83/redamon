@@ -18,6 +18,7 @@ import json as _json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 from uuid import uuid4
 
@@ -590,6 +591,23 @@ async def fireteam_deploy_node(
                 )
             except asyncio.CancelledError:
                 logger.info("[%s] wave=%s member=%s CANCELLED", session_id, fireteam_id_key, member_id)
+                # Bug 5c FIX: best-effort persist member status before propagating cancellation.
+                # Without this, members cancelled by FIRETEAM_TIMEOUT_SEC stay at status=running
+                # in Postgres because the _patch_member call at line ~599 is skipped by the raise.
+                try:
+                    await asyncio.wait_for(
+                        _patch_member(session_id, fireteam_id_key, member_id, {
+                            "status": "timeout",
+                            "completionReason": "fireteam_timeout",
+                            "completedAt": datetime.now(timezone.utc).isoformat(),
+                        }),
+                        timeout=2.0,
+                    )
+                except Exception as patch_exc:
+                    logger.warning(
+                        "[%s] best-effort _patch_member on cancel failed: %s",
+                        session_id, patch_exc
+                    )
                 # Propagate cancellation to gather.
                 raise
             except Exception as exc:

@@ -57,7 +57,7 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'FIRETEAM_MAX_CONCURRENT': 5,                # asyncio.Semaphore permits
     'FIRETEAM_MAX_MEMBERS': 5,                   # hard cap on members per fireteam
     'FIRETEAM_MEMBER_MAX_ITERATIONS': 20,        # per-member ReAct iteration budget
-    'FIRETEAM_TIMEOUT_SEC': 3600,                  # wall-clock per fireteam (raised to accommodate 30-min tool timeouts)
+    'FIRETEAM_TIMEOUT_SEC': 7200,                  # wall-clock per fireteam (raised to accommodate 30-min tool timeouts)
     'FIRETEAM_ALLOWED_PHASES': ['informational', 'exploitation', 'post_exploitation'],
     'FIRETEAM_CONFIRMATION_TIMEOUT_SEC': 600,    # how long a member waits for operator approval before auto-rejecting
     'FIRETEAM_PROPENSITY': 3,                    # 1-5 scalar: how strongly LLM is pushed to deploy fireteams (3=baseline, 1=reluctant, 5=aggressive)
