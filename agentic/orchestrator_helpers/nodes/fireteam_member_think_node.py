@@ -877,6 +877,22 @@ async def fireteam_member_think_node(
     if is_dangerous:
         pending = _build_pending_confirmation(decision, state)
         update["_pending_confirmation"] = pending
+        # FIX: Populate _current_plan / _current_step now so they survive
+        # the await round-trip. Without this, the await node returns to
+        # the router with these fields unset and the router falls back to
+        # fireteam_think -> infinite plan/approve loop, no tool execution.
+        if decision.action == "plan_tools" and decision.tool_plan:
+            update["_current_plan"] = decision.tool_plan.model_dump()
+        elif decision.action == "use_tool":
+            update["_current_step"] = {
+                "step_id": uuid4().hex,
+                "iteration": current_iter + 1,
+                "phase": state.get("current_phase"),
+                "tool_name": decision.tool_name,
+                "tool_args": decision.tool_args or {},
+                "thought": decision.thought,
+                "reasoning": decision.reasoning,
+            }
         # Even though we're escalating the NEW decision, the PREVIOUS
         # single-tool step (if any) is now completed — its output was the
         # input to this think call. Signal it to the streaming layer so the
