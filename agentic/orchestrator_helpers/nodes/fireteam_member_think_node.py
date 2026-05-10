@@ -773,13 +773,33 @@ async def fireteam_member_think_node(
                 )
             ))
 
-        try:
-            response = await llm.ainvoke(llm_messages)
-        except Exception as exc:
-            logger.error("[%s] member %s LLM call failed: %s", session_id, member_id, exc)
+        # P4 FIX: retry on transient LLM connection/overload errors before giving up.
+        response = None
+        last_conn_exc = None
+        for _conn_attempt in range(3):
+            try:
+                response = await llm.ainvoke(llm_messages)
+                last_conn_exc = None
+                break
+            except Exception as exc:
+                last_conn_exc = exc
+                err_str = str(exc).lower()
+                is_transient = any(s in err_str for s in [
+                    'connection', 'timeout', 'timed out', '529', 'overloaded',
+                    'rate_limit', 'rate limit', 'apiconnectionerror',
+                ])
+                logger.warning(
+                    "[%s] member %s LLM attempt %d/3 error (transient=%s): %s",
+                    session_id, member_id, _conn_attempt + 1, is_transient, exc
+                )
+                if not is_transient:
+                    break
+                await asyncio.sleep(min(2 ** _conn_attempt, 8))
+        if response is None:
+            logger.error("[%s] member %s LLM call failed after 3 attempts: %s", session_id, member_id, last_conn_exc)
             return {
                 "task_complete": True,
-                "completion_reason": f"llm_error: {exc}",
+                "completion_reason": f"llm_error after 3 attempts: {last_conn_exc}",
             }
 
         raw_content = normalize_content(response.content if hasattr(response, "content") else response)
