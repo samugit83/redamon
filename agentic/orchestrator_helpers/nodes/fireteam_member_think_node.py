@@ -1100,54 +1100,6 @@ async def fireteam_member_think_node(
     # defining it here, the is_dangerous branch crashed with NameError.
     analysis = decision.output_analysis
 
-    if is_dangerous:
-        pending = _build_pending_confirmation(decision, state)
-        update["_pending_confirmation"] = pending
-        # FIX: Populate _current_plan / _current_step now so they survive
-        # the await round-trip. Without this, the await node returns to
-        # the router with these fields unset and the router falls back to
-        # fireteam_think -> infinite plan/approve loop, no tool execution.
-        if decision.action == "plan_tools" and decision.tool_plan:
-            update["_current_plan"] = decision.tool_plan.model_dump()
-        elif decision.action == "use_tool":
-            update["_current_step"] = {
-                "step_id": uuid4().hex,
-                "iteration": current_iter + 1,
-                "phase": state.get("current_phase"),
-                "tool_name": decision.tool_name,
-                "tool_args": decision.tool_args or {},
-                "thought": decision.thought,
-                "reasoning": decision.reasoning,
-            }
-        # Even though we're escalating the NEW decision, the PREVIOUS
-        # single-tool step (if any) is now completed — its output was the
-        # input to this think call. Signal it to the streaming layer so the
-        # UI flips the prior tool card from `running` to `success/error`.
-        # Without this, the frontend sees: tool_start → (never completes) →
-        # pending-approval card, and the prior tool stays stuck visually.
-        if has_pending_single_output and prev_step:
-            completed_prev = dict(prev_step)
-            if analysis is not None:
-                completed_prev["output_analysis"] = (
-                    analysis.interpretation
-                    or (prev_step.get("tool_output") or "")
-                )[:20000]
-                completed_prev["actionable_findings"] = list(analysis.actionable_findings or [])
-                completed_prev["recommended_next_steps"] = list(analysis.recommended_next_steps or [])
-            else:
-                completed_prev["output_analysis"] = (prev_step.get("tool_output") or "")[:20000]
-                completed_prev["actionable_findings"] = []
-                completed_prev["recommended_next_steps"] = []
-            update["_completed_step"] = completed_prev
-        logger.info(
-            "[%s] member %s escalating dangerous tool for parent approval: %s",
-            session_id, member_id,
-            decision.tool_name or [s.tool_name for s in (decision.tool_plan.steps if decision.tool_plan else [])],
-        )
-        # Router will send us to fireteam_await_confirmation because
-        # _pending_confirmation is set.
-        return update
-
     # If action is complete, ensure task_complete is True so the router exits.
     if decision.action == "complete":
         update["task_complete"] = True
@@ -1499,5 +1451,55 @@ async def fireteam_member_think_node(
             pass  # update["_current_plan"] already set to the new plan above
         else:
             update["_current_plan"] = None
+
+    # Dangerous-tool escalation runs AFTER analysis-write so the prior wave's
+    # chain_findings, target_info merge, and Neo4j writes commit before we
+    # pause for operator approval. `_pending_confirmation` is the router's
+    # signal to fireteam_await_confirmation — its placement in this function
+    # does not affect routing, only whether analysis-write fires first.
+    if is_dangerous:
+        pending = _build_pending_confirmation(decision, state)
+        update["_pending_confirmation"] = pending
+        # Populate _current_plan / _current_step so they survive the await
+        # round-trip. Without this, the await node returns to the router
+        # with these fields unset and the router falls back to fireteam_think
+        # -> infinite plan/approve loop, no tool execution.
+        if decision.action == "plan_tools" and decision.tool_plan:
+            update["_current_plan"] = decision.tool_plan.model_dump()
+        elif decision.action == "use_tool":
+            update["_current_step"] = {
+                "step_id": uuid4().hex,
+                "iteration": current_iter + 1,
+                "phase": state.get("current_phase"),
+                "tool_name": decision.tool_name,
+                "tool_args": decision.tool_args or {},
+                "thought": decision.thought,
+                "reasoning": decision.reasoning,
+            }
+        # Even though we're escalating the NEW decision, the PREVIOUS
+        # single-tool step (if any) is now completed — its output was the
+        # input to this think call. Signal it to the streaming layer so the
+        # UI flips the prior tool card from `running` to `success/error`.
+        # Without this, the frontend sees: tool_start → (never completes) →
+        # pending-approval card, and the prior tool stays stuck visually.
+        if has_pending_single_output and prev_step:
+            completed_prev = dict(prev_step)
+            if analysis is not None:
+                completed_prev["output_analysis"] = (
+                    analysis.interpretation
+                    or (prev_step.get("tool_output") or "")
+                )[:20000]
+                completed_prev["actionable_findings"] = list(analysis.actionable_findings or [])
+                completed_prev["recommended_next_steps"] = list(analysis.recommended_next_steps or [])
+            else:
+                completed_prev["output_analysis"] = (prev_step.get("tool_output") or "")[:20000]
+                completed_prev["actionable_findings"] = []
+                completed_prev["recommended_next_steps"] = []
+            update["_completed_step"] = completed_prev
+        logger.info(
+            "[%s] member %s escalating dangerous tool for parent approval: %s",
+            session_id, member_id,
+            decision.tool_name or [s.tool_name for s in (decision.tool_plan.steps if decision.tool_plan else [])],
+        )
 
     return update
