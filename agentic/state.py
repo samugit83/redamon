@@ -1314,6 +1314,19 @@ def format_chain_context(
                 else:
                     tool_name = tools[0].get("tool_name") or "none"
                     lines.append(f"  {it} [{phase}]: {tool_name} ->{fail_marker} {analysis[:10000]}")
+                # Tool digest: name + short args per tool, joined. Gives the
+                # Self-Check duplicate-target rule something to match on for
+                # iterations beyond the recent window — without this, only
+                # the LLM's own analysis text survives, and identical tool
+                # calls become invisible to the duplicate detector.
+                digest_parts = []
+                for t in tools:
+                    tname = t.get("tool_name") or "unknown"
+                    targs = t.get("tool_args") or {}
+                    args_str = str(targs)[:80] if targs else ""
+                    digest_parts.append(f"{tname}({args_str})" if args_str else tname)
+                if digest_parts:
+                    lines.append(f"      tools: {'; '.join(digest_parts)}")
             lines.append("")
 
         if total_iterations > recent_iterations:
@@ -1341,7 +1354,12 @@ def format_chain_context(
                 ok_count = 0
                 fail_count = 0
                 failed_tools: list = []
-                tool_args_list: list = []
+                # Per-tool entries carry (args_line, output_preview). The
+                # output preview is what the Self-Check duplicate-target rule
+                # uses to recognize "I already ran this and got the same
+                # answer", so retain it across iterations rather than only on
+                # the very last shown tool.
+                tool_entries: list = []
                 for t in tools:
                     tname = t.get("tool_name") or "unknown"
                     tool_counts[tname] = tool_counts.get(tname, 0) + 1
@@ -1354,9 +1372,13 @@ def format_chain_context(
                         )
                     targs = t.get("tool_args") or {}
                     if targs:
-                        tool_args_list.append(
-                            f"    - {tname}: {str(targs)[:300]}"
-                        )
+                        args_line = f"    - {tname}: {str(targs)[:300]}"
+                        preview = ""
+                        if t.get("success", True):
+                            raw = (t.get("tool_output") or t.get("output_summary") or "")
+                            if raw:
+                                preview = str(raw).replace("\n", " ")[:200]
+                        tool_entries.append((args_line, preview))
 
                 tool_summary = ", ".join(
                     f"{cnt} {name}" for name, cnt in tool_counts.items()
@@ -1377,11 +1399,17 @@ def format_chain_context(
                 if rationale:
                     lines.append(f"    Rationale: {rationale[:400]}")
 
-                # Individual tool args (compact, one line each)
-                if tool_args_list:
+                # Individual tool args + short output preview. The preview
+                # is the load-bearing addition: without it the LLM at
+                # iteration N can spot identical tool args from iter N-1
+                # only by guessing; with it the LLM sees the actual result
+                # shape and won't re-run the same probe.
+                if tool_entries:
                     lines.append("    Tools:")
-                    for arg_line in tool_args_list:
-                        lines.append(arg_line)
+                    for args_line, preview in tool_entries:
+                        lines.append(args_line)
+                        if preview:
+                            lines.append(f"      → {preview}")
 
                 # Failures
                 for ft in failed_tools:
@@ -1412,6 +1440,15 @@ def format_chain_context(
                         lines.append(f"    OK | {out_preview}")
                     else:
                         lines.append(f"    OK")
+                    # When both analysis AND raw output are present, the OK
+                    # line above shadowed raw output behind the LLM's
+                    # summary. Surface a short raw-output preview separately
+                    # so the duplicate-target rule has the actual response
+                    # to match on, not just the LLM's interpretation.
+                    if analysis and output:
+                        raw_preview = str(output).replace("\n", " ")[:300]
+                        if raw_preview:
+                            lines.append(f"    Raw: {raw_preview}")
                 else:
                     lines.append(f"    FAILED | {err[:300]}")
 
