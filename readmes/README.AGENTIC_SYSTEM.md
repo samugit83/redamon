@@ -2098,7 +2098,7 @@ The proxy MUST forward `wave_id` and `step_index` for every `on_tool_*` call. If
 | Trigger | Behavior |
 |---|---|
 | Operator clicks Stop | parent task cancel -> `fireteam_deploy_node` catches `CancelledError` -> `drop_wave(session, wave)` wakes pending Events with reject -> `task.cancel()` on each member -> members exit -> wave marked `cancelled` |
-| Wave wall-clock timeout (`FIRETEAM_TIMEOUT_SEC`, default 1800s) | `asyncio.wait_for` on the gather raises `TimeoutError` -> same cleanup path as cancel; status `timeout` |
+| Wave wall-clock timeout (`FIRETEAM_TIMEOUT_SEC`, default 7200s) | Deploy node's deadline loop raises `TimeoutError` -> same cleanup path as cancel; status `timeout`. Time spent awaiting operator confirmation is credited back to the wave deadline, so slow approvals do not consume the wall-clock budget. |
 | Member exceeds iteration budget (`FIRETEAM_MEMBER_MAX_ITERATIONS`) | member exits with status `partial`, findings preserved |
 | Operator never decides a confirmation | member's own `asyncio.wait_for(event.wait(), 600s)` -> `TimeoutError` -> treated as reject with a distinctive note |
 | Single member crashes | `return_exceptions=True` on gather -> that member gets `status=error` + `error_message`, wave completes normally |
@@ -2207,7 +2207,7 @@ Mapped from Prisma `Project.*` fields into the agent's `FIRETEAM_*` settings on 
 | `FIRETEAM_MAX_CONCURRENT` | `5` | `asyncio.Semaphore` permits during a wave |
 | `FIRETEAM_MAX_MEMBERS` | `5` | Hard cap on members per wave |
 | `FIRETEAM_MEMBER_MAX_ITERATIONS` | `20` | Per-member ReAct iteration budget |
-| `FIRETEAM_TIMEOUT_SEC` | `1800` | Wall-clock ceiling per wave |
+| `FIRETEAM_TIMEOUT_SEC` | `7200` | Wall-clock ceiling per wave (operator-confirmation waits are credited back, so they do not consume this budget) |
 | `FIRETEAM_CONFIRMATION_TIMEOUT_SEC` | `600` | Per-member confirmation wait before auto-reject |
 | `FIRETEAM_ALLOWED_PHASES` | `[informational, exploitation, post_exploitation]` | Phases in which the agent may deploy a fireteam |
 
@@ -4077,7 +4077,7 @@ flowchart LR
 | `FIRETEAM_MAX_CONCURRENT` | `5` | `asyncio.Semaphore` permits during a wave |
 | `FIRETEAM_MAX_MEMBERS` | `5` | Hard cap on members per wave |
 | `FIRETEAM_MEMBER_MAX_ITERATIONS` | `20` | Per-member ReAct iteration budget |
-| `FIRETEAM_TIMEOUT_SEC` | `1800` | Wall-clock ceiling per wave (gather timeout) |
+| `FIRETEAM_TIMEOUT_SEC` | `7200` | Wall-clock ceiling per wave (deadline loop; operator-confirmation waits are credited back so they do not consume this budget) |
 | `FIRETEAM_CONFIRMATION_TIMEOUT_SEC` | `600` | Per-member confirmation wait before auto-reject |
 | `FIRETEAM_ALLOWED_PHASES` | `["informational","exploitation","post_exploitation"]` | Phases in which the agent may deploy a fireteam |
 | `INFORMATIONAL_SYSTEM_PROMPT` | `""` | Custom system prompt injected during informational phase |

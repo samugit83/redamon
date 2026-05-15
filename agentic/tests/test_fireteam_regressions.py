@@ -605,5 +605,409 @@ class WaveTimeoutWebsocketEmitRegression(unittest.IsolatedAsyncioTestCase):
                              f"per-member emit must carry status=timeout; got {call.kwargs}")
 
 
+# =============================================================================
+# BUG: Wave-timeout reported zero counters / no findings for productive members.
+# =============================================================================
+#
+# When FIRETEAM_TIMEOUT_SEC fires while a member is mid-execution, the closure-
+# local ``final_state`` inside ``_run_one`` is GC'd at cancellation, and the
+# outer timeout handler built ``_timeout_result(spec, mid, wall_s)`` which
+# hardcoded iterations_used=0, tokens_used=0 and defaulted findings=[]. Those
+# zeros were PATCHed to Postgres and propagated to the UI.
+#
+# Fix: snapshot-by-reference. ``_run_one`` registers a reference to its
+# ``final_state`` in an outer-scope ``member_snapshots`` dict; the in-place
+# ``.update(node_update)`` mutations in the astream loop keep the reference
+# current. The timeout handler reads from that map via
+# ``_timeout_result_from_snapshot`` (which reuses ``_result_from_final_state``
+# and overrides status/completion_reason).
+
+
+def _mid_flight_graph_factory(
+    *,
+    iterations_used: int = 2,
+    input_tokens: int = 1500,
+    output_tokens: int = 300,
+    findings: list | None = None,
+    delay_s: float = 5.0,
+):
+    """Member graph that yields a productive in-flight state update once,
+    then sleeps past the wave timeout. Simulates a member that did real work
+    before being cancelled by the outer wave-timeout handler."""
+    if findings is None:
+        findings = [{
+            "finding_type": "service_identified",
+            "severity": "info",
+            "title": "nginx 1.18 banner",
+            "evidence": "Server: nginx/1.18",
+            "confidence": 100,
+            "step_iteration": 1,
+        }]
+
+    class _MidFlightGraph:
+        async def _run(self, s, config=None):
+            yield {
+                "fireteam_think": {
+                    "current_iteration": iterations_used,
+                    "tokens_used": input_tokens + output_tokens,
+                    "input_tokens_used": input_tokens,
+                    "output_tokens_used": output_tokens,
+                    "chain_findings_memory": list(findings),
+                    "execution_trace": [],
+                    "target_info": {},
+                }
+            }
+            await asyncio.sleep(delay_s)
+
+        def astream(self, s, config=None):
+            return self._run(s, config)
+    return _MidFlightGraph()
+
+
+class WaveTimeoutPreservesPartialStateRegression(unittest.IsolatedAsyncioTestCase):
+    """Locks the fix: cancelled members surface real iter/token/findings
+    counts from their in-flight final_state rather than all-zeros."""
+
+    async def test_patch_body_carries_in_flight_iterations_and_tokens(self):
+        from orchestrator_helpers.nodes.fireteam_deploy_node import fireteam_deploy_node
+
+        patch_member_mock = AsyncMock()
+        with patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._persist_deploy",
+            new=AsyncMock(return_value="id"),
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._patch_member",
+            new=patch_member_mock,
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._patch_fireteam",
+            new=AsyncMock(),
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node.get_setting",
+            side_effect=_settings_for_timeout_test(),
+        ):
+            await fireteam_deploy_node(
+                _parent_state(n_members=1), None,
+                member_graph=_mid_flight_graph_factory(
+                    iterations_used=2,
+                    input_tokens=1500,
+                    output_tokens=300,
+                ),
+                streaming_callbacks={},
+                neo4j_creds=None,
+            )
+
+        self.assertGreater(len(patch_member_mock.call_args_list), 0,
+                           "no _patch_member calls — DB never updated")
+        last_body = patch_member_mock.call_args_list[-1].args[3]
+        self.assertEqual(last_body["status"], "timeout")
+        self.assertEqual(last_body["completionReason"], "wave_timeout")
+        self.assertEqual(
+            last_body["iterationsUsed"], 2,
+            f"expected real iterationsUsed=2 from in-flight snapshot, "
+            f"got {last_body.get('iterationsUsed')}",
+        )
+        self.assertEqual(
+            last_body["tokensUsed"], 1800,
+            f"expected real tokensUsed=1800 (1500+300), "
+            f"got {last_body.get('tokensUsed')}",
+        )
+        self.assertEqual(
+            last_body["findingsCount"], 1,
+            f"expected findingsCount=1 from in-flight chain_findings_memory, "
+            f"got {last_body.get('findingsCount')}",
+        )
+
+    def test_timeout_result_from_snapshot_with_populated_state(self):
+        """Unit test for the helper: populated snapshot → real counts +
+        timeout labels."""
+        from orchestrator_helpers.nodes.fireteam_deploy_node import (
+            _timeout_result_from_snapshot,
+        )
+
+        snapshot = {
+            "current_iteration": 3,
+            "tokens_used": 2400,
+            "input_tokens_used": 2000,
+            "output_tokens_used": 400,
+            "chain_findings_memory": [
+                {
+                    "finding_type": "configuration_found",
+                    "severity": "low",
+                    "title": "CORS wildcard",
+                    "evidence": "Access-Control-Allow-Origin: *",
+                    "confidence": 95,
+                    "step_iteration": 2,
+                },
+            ],
+            "execution_trace": [],
+            "target_info": {},
+            "parent_target_info": {},
+            "_pending_confirmation": {"tool_name": "execute_curl"},
+        }
+        spec = {"name": "Scout", "task": "t", "tools": ["curl"]}
+        result = _timeout_result_from_snapshot(snapshot, spec, "member-0-x", 30.5)
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["completion_reason"], "wave_timeout")
+        self.assertEqual(result["iterations_used"], 3)
+        self.assertEqual(result["tokens_used"], 2400)
+        self.assertEqual(result["input_tokens_used"], 2000)
+        self.assertEqual(result["output_tokens_used"], 400)
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertEqual(result["findings"][0]["title"], "CORS wildcard")
+        # pending_confirmation suppressed: member is terminating, not awaiting.
+        self.assertIsNone(result.get("pending_confirmation"))
+
+    def test_timeout_result_from_snapshot_fallback_when_no_snapshot(self):
+        """When no snapshot is registered (member cancelled before any state
+        update), fall back to the all-zeros _timeout_result."""
+        from orchestrator_helpers.nodes.fireteam_deploy_node import (
+            _timeout_result_from_snapshot,
+        )
+        result = _timeout_result_from_snapshot(None, {"name": "Scout"}, "m-0", 1.0)
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["completion_reason"], "wave_timeout")
+        self.assertEqual(result["iterations_used"], 0)
+        self.assertEqual(result["tokens_used"], 0)
+        self.assertEqual(result.get("findings") or [], [])
+
+
+# =============================================================================
+# BUG: Single try/except wrapped the whole findings-conversion loop at debug
+# level, dropping the entire batch on one bad item and hiding the failure.
+# =============================================================================
+#
+# Fix moved the try/except inside the loop (per-item isolation) and raised the
+# log level to warning so schema drift / malformed LLM emissions surface on
+# the default console handler (CONSOLE_LOG_LEVEL=INFO).
+
+
+class FindingConversionPerItemExceptionRegression(unittest.TestCase):
+    """Locks the fix: a malformed finding skips itself, not the whole batch,
+    and emits a warning-level log identifying the failure."""
+
+    def test_one_bad_finding_doesnt_drop_the_batch(self):
+        from orchestrator_helpers.nodes.fireteam_deploy_node import (
+            _result_from_final_state,
+        )
+
+        final_state = {
+            "chain_findings_memory": [
+                {
+                    "finding_type": "service_identified",
+                    "severity": "info",
+                    "title": "good 1",
+                    "evidence": "nginx 1.18 detected",
+                    "confidence": 80,
+                    "step_iteration": 1,
+                },
+                {
+                    # Pydantic v2 ValidationError: "high" can't coerce to int.
+                    "finding_type": "vulnerability_confirmed",
+                    "severity": "high",
+                    "title": "bad item — confidence is a string",
+                    "evidence": "unparseable confidence",
+                    "confidence": "high",
+                    "step_iteration": 1,
+                },
+                {
+                    "finding_type": "configuration_found",
+                    "severity": "low",
+                    "title": "good 2",
+                    "evidence": "CORS *",
+                    "confidence": 90,
+                    "step_iteration": 2,
+                },
+            ],
+            "execution_trace": [],
+            "target_info": {},
+            "parent_target_info": {},
+        }
+        spec = {"name": "Scout", "task": "t", "tools": []}
+
+        with self.assertLogs(
+            "orchestrator_helpers.nodes.fireteam_deploy_node", level="WARNING",
+        ) as cm:
+            result = _result_from_final_state(final_state, spec, "m-0", 1.0)
+
+        # Both valid findings survive — pre-fix the whole batch would be [].
+        self.assertEqual(
+            len(result["findings"]), 2,
+            f"expected 2 valid findings to survive (good 1, good 2); got "
+            f"{len(result['findings'])}: {[f.get('title') for f in result['findings']]}",
+        )
+        titles = [f["title"] for f in result["findings"]]
+        self.assertIn("good 1", titles)
+        self.assertIn("good 2", titles)
+        self.assertNotIn("bad item — confidence is a string", titles)
+
+        # A WARNING was emitted that mentions the failure. Either the offending
+        # dict's title or the Pydantic field name ('confidence') is enough.
+        joined = "\n".join(cm.output)
+        self.assertTrue(
+            "bad item" in joined or "confidence" in joined,
+            f"warning log did not surface the bad item: {joined!r}",
+        )
+
+
+# =============================================================================
+# BUG: Operator confirmation wait time consumed the wave wall-clock budget.
+# =============================================================================
+#
+# Per-member `await asyncio.wait_for(entry.event.wait(), timeout=600)` runs
+# inside the wave's outer asyncio timer. From the event loop's perspective,
+# operator delay is a normal `await` that accumulates monotonically against
+# the wave timeout. A slow operator could exhaust the wave clock entirely
+# before any tools ran.
+#
+# Fix: deadline-extension. The confirmation registry tracks wall-clock time
+# spent in operator-wait per wave (interval-union so parallel waits do not
+# double-count). The deploy node's manual deadline loop polls
+# `get_credit_s(...)` and extends its deadline by any new credit, so
+# operator-side delay no longer reduces the budget available for tools.
+
+
+def _settings_for_credit_test():
+    return lambda k, d=None: {
+        "FIRETEAM_MAX_CONCURRENT": 3,
+        "FIRETEAM_MAX_MEMBERS": 8,
+        "FIRETEAM_TIMEOUT_SEC": 2,   # short base so credit is the deciding factor
+        "FIRETEAM_MEMBER_MAX_ITERATIONS": 10,
+    }.get(k, d)
+
+
+def _credit_simulating_graph_factory(*, simulated_wait_s: float):
+    """Member graph that simulates an operator-confirmation wait by directly
+    calling the registry's begin/end_confirmation_wait helpers, then completes
+    successfully. Total wall-clock duration ~= simulated_wait_s + small work
+    bookends; without the fix the wave would time out at FIRETEAM_TIMEOUT_SEC."""
+    from orchestrator_helpers.fireteam_confirmation_registry import (
+        begin_confirmation_wait, end_confirmation_wait,
+    )
+
+    class _CreditGraph:
+        async def _run(self, s, config=None):
+            session_id = s.get("session_id") or ""
+            wave_id = s.get("fireteam_id") or ""
+            # Bookend 1: a touch of "work" so total wall > base timeout
+            await asyncio.sleep(0.1)
+            # Simulate operator confirmation wait (credited back to wave).
+            begin_confirmation_wait(session_id, wave_id)
+            try:
+                await asyncio.sleep(simulated_wait_s)
+            finally:
+                end_confirmation_wait(session_id, wave_id)
+            # Bookend 2: more "work" to consume more wall-clock past base timeout
+            await asyncio.sleep(0.5)
+            yield {
+                "fireteam_complete": {
+                    "task_complete": True,
+                    "completion_reason": "complete",
+                    "current_iteration": 1,
+                    "tokens_used": 5,
+                    "input_tokens_used": 4,
+                    "output_tokens_used": 1,
+                    "execution_trace": [],
+                    "target_info": {},
+                    "chain_findings_memory": [],
+                }
+            }
+
+        def astream(self, s, config=None):
+            return self._run(s, config)
+    return _CreditGraph()
+
+
+class WaveClockExcludesConfirmationWaitRegression(unittest.IsolatedAsyncioTestCase):
+    """Locks the fix: a long operator-confirmation wait does not consume the
+    wave wall-clock budget. With FIRETEAM_TIMEOUT_SEC=2 and a simulated 3s
+    wait, the member should still complete (pre-fix it would have been
+    cancelled when the wave clock hit 2s)."""
+
+    async def test_long_confirmation_wait_extends_wave_deadline(self):
+        from orchestrator_helpers.nodes.fireteam_deploy_node import fireteam_deploy_node
+
+        patch_member_mock = AsyncMock()
+        with patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._persist_deploy",
+            new=AsyncMock(return_value="id"),
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._patch_member",
+            new=patch_member_mock,
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node._patch_fireteam",
+            new=AsyncMock(),
+        ), patch(
+            "orchestrator_helpers.nodes.fireteam_deploy_node.get_setting",
+            side_effect=_settings_for_credit_test(),
+        ):
+            t0 = _time.monotonic()
+            await fireteam_deploy_node(
+                _parent_state(n_members=1), None,
+                member_graph=_credit_simulating_graph_factory(simulated_wait_s=3.0),
+                streaming_callbacks={},
+                neo4j_creds=None,
+            )
+            wall = _time.monotonic() - t0
+            # Total wall ≈ 0.1 + 3.0 + 0.5 = 3.6s. Base timeout was 2s; without
+            # the fix the wave would have timed out around 2s. Assert wall > 3s
+            # so we know the wait actually happened (not skipped/raced).
+            self.assertGreater(
+                wall, 3.0,
+                f"wave finished suspiciously fast ({wall:.2f}s) — confirmation "
+                f"wait may have been skipped",
+            )
+            # And bounded — wall should be < 6s (sanity); if it's hitting a
+            # 1800/7200s default the test infra is misconfigured.
+            self.assertLess(wall, 6.0, f"wave took too long: {wall:.2f}s")
+
+        # Find the final patch per member. Pre-fix this would be status=timeout
+        # because the wave clock ran out before the member yielded its complete
+        # event. Post-fix the deadline was extended by the simulated wait, so
+        # the member completes successfully.
+        self.assertGreater(len(patch_member_mock.call_args_list), 0)
+        last_body = patch_member_mock.call_args_list[-1].args[3]
+        self.assertEqual(
+            last_body["status"], "success",
+            f"member should have completed successfully (operator wait was "
+            f"credited back); got status={last_body.get('status')!r}, "
+            f"completionReason={last_body.get('completionReason')!r}",
+        )
+
+    def test_credit_accumulator_interval_union_semantics(self):
+        """Unit test for the registry's interval-union behavior: two parallel
+        waits credit only their wall-clock overlap, not their sum."""
+        import time as _t
+        from orchestrator_helpers.fireteam_confirmation_registry import (
+            begin_confirmation_wait, end_confirmation_wait,
+            get_credit_s, drop_wave_credit,
+        )
+
+        session_id = "test-session-iu"
+        wave_id = "test-wave-iu"
+        drop_wave_credit(session_id, wave_id)  # ensure clean slate
+
+        # Member A starts waiting.
+        begin_confirmation_wait(session_id, wave_id)
+        _t.sleep(0.2)
+        # Member B starts waiting WHILE A is still waiting (parallel).
+        begin_confirmation_wait(session_id, wave_id)
+        _t.sleep(0.2)
+        # Member A finishes; B still waiting (count goes 2→1, no commit yet).
+        end_confirmation_wait(session_id, wave_id)
+        _t.sleep(0.2)
+        # Member B finishes; count goes 1→0, commit total elapsed pause.
+        end_confirmation_wait(session_id, wave_id)
+
+        credit = get_credit_s(session_id, wave_id)
+        # Wall-clock pause = ~0.6s (A's start through B's end).
+        # Simple sum would be ~0.4 + 0.4 = 0.8s — wrong.
+        # Interval-union gives ~0.6s — right.
+        self.assertGreater(credit, 0.5, f"credit too low: {credit:.3f}")
+        self.assertLess(credit, 0.75,
+                        f"credit too high (simple-sum bug?): {credit:.3f}")
+        drop_wave_credit(session_id, wave_id)
+
+
 if __name__ == "__main__":
     unittest.main()
