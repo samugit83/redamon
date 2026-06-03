@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
 from models import (
+    ReconStartRequest,
     PartialReconState,
     PartialReconStatus,
     PartialReconListResponse,
@@ -51,6 +52,10 @@ def manager(mock_docker_client):
 # ---------------------------------------------------------------------------
 
 class TestPartialReconModels:
+    def test_recon_start_request_delete_graph_defaults_false(self):
+        request = ReconStartRequest(project_id="proj-1", user_id="u1", webapp_api_url="http://localhost")
+        assert request.delete_graph is False
+
     def test_partial_recon_state_has_run_id(self):
         state = PartialReconState(project_id="proj-1", run_id="run-abc")
         assert state.run_id == "run-abc"
@@ -95,6 +100,29 @@ class TestPartialReconModels:
 # ---------------------------------------------------------------------------
 
 class TestContainerNaming:
+    def test_sibling_host_path_preserves_windows_parent(self):
+        graph_path = ContainerManager._sibling_host_path(
+            r"D:\Repositories\Gabriel\redamon\recon",
+            "graph_db",
+        )
+        assert graph_path == r"D:\Repositories\Gabriel\redamon\graph_db"
+
+    def test_sibling_host_path_preserves_posix_parent(self):
+        graph_path = ContainerManager._sibling_host_path(
+            "/home/gabriel/redamon/recon",
+            "graph_db",
+        )
+        assert graph_path == "/home/gabriel/redamon/graph_db"
+
+    def test_format_recon_job_id_uses_prefix_timestamp_and_suffix(self, manager):
+        started = datetime(2026, 5, 29, 14, 15, 30, tzinfo=timezone.utc)
+        job_id = manager._format_recon_job_id("full", started, "abcdef1234567890")
+        assert job_id == "full-20260529T141530Z-abcdef12"
+
+    def test_format_recon_job_started_at_is_utc_iso(self, manager):
+        started = datetime(2026, 5, 29, 14, 15, 30, tzinfo=timezone.utc)
+        assert manager._format_recon_job_started_at(started) == "2026-05-29T14:15:30Z"
+
     def test_partial_container_name_includes_run_id(self, manager):
         name = manager._get_partial_container_name("proj-1", "abcdef12-3456-7890-abcd-ef1234567890")
         assert "abcdef12" in name
@@ -351,6 +379,11 @@ class TestStartPartialRecon:
         assert state.status == PartialReconStatus.RUNNING
         assert state.container_id == "container-123"
         assert state.project_id == "proj-1"
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["RECON_JOB_ID"].startswith("partial-")
+        assert env["RECON_JOB_ID"].endswith(state.run_id[:8])
+        assert env["RECON_JOB_STARTED_AT"].endswith("Z")
+        assert "RECON_DELETE_GRAPH" not in env
 
     @pytest.mark.asyncio
     async def test_start_stores_in_nested_dict(self, manager, mock_docker_client):
@@ -510,6 +543,29 @@ class TestStopPartialRecon:
 # ---------------------------------------------------------------------------
 
 class TestFullReconMutualExclusion:
+    @pytest.mark.asyncio
+    async def test_full_recon_env_includes_delete_graph_and_job_metadata(self, manager, mock_docker_client):
+        mock_docker_client.images.get.return_value = MagicMock()
+        mock_container = MagicMock()
+        mock_container.id = "container-123"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with patch('container_manager.Path') as mock_path:
+            mock_path.return_value = MagicMock()
+            state = await manager.start_recon(
+                project_id="proj-1",
+                user_id="u1",
+                webapp_api_url="http://localhost",
+                recon_path="/app/recon",
+                delete_graph=True,
+            )
+
+        assert state.status == ReconStatus.RUNNING
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["RECON_DELETE_GRAPH"] == "true"
+        assert env["RECON_JOB_ID"].startswith("full-")
+        assert env["RECON_JOB_STARTED_AT"].endswith("Z")
+
     @pytest.mark.asyncio
     async def test_full_recon_blocked_by_partial(self, manager):
         manager.partial_recon_states["proj-1"] = {

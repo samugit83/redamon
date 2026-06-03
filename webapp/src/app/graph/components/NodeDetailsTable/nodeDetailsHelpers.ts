@@ -10,6 +10,13 @@ export interface GroupedRows {
   rowsByType: Map<string, TableRow[]>
 }
 
+const PRIORITY_DYNAMIC_KEYS = [
+  'first_seen',
+  'last_seen',
+  'first_seen_job_id',
+  'last_seen_job_id',
+]
+
 /**
  * Partitions a flat list of TableRows by node.type and computes per-type counts
  * + a sorted type list. Pure — no side effects.
@@ -45,7 +52,9 @@ export function deriveDynamicColumnKeys(rows: readonly TableRow[]): string[] {
       keys.add(k)
     }
   }
-  return Array.from(keys).sort((a, b) => a.localeCompare(b))
+  const prioritized = PRIORITY_DYNAMIC_KEYS.filter(key => keys.delete(key))
+  const remaining = Array.from(keys).sort((a, b) => a.localeCompare(b))
+  return [...prioritized, ...remaining]
 }
 
 /**

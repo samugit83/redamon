@@ -32,6 +32,34 @@ export function formatNeo4jDateTime(value: unknown): string | null {
 }
 
 /**
+ * Format ISO UTC timestamp strings to a compact readable display.
+ */
+export function formatIsoTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const match = value.match(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?Z$/
+  )
+  if (!match) {
+    return null
+  }
+
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+
+  const isoSecond = `${match[1]}T${match[2]}`
+  if (parsed.toISOString().slice(0, 19) !== isoSecond) {
+    return null
+  }
+
+  return `${match[1]} ${match[2]} UTC`
+}
+
+/**
  * Format a property value for display in the drawer
  */
 export function formatPropertyValue(value: unknown): React.ReactNode {
@@ -39,6 +67,12 @@ export function formatPropertyValue(value: unknown): React.ReactNode {
 
   if (formattedDate) {
     return formattedDate
+  }
+
+  const formattedIsoTimestamp = formatIsoTimestamp(value)
+
+  if (formattedIsoTimestamp) {
+    return formattedIsoTimestamp
   }
 
   if (

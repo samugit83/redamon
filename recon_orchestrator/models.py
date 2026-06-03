@@ -23,6 +23,7 @@ class ReconStartRequest(BaseModel):
     project_id: str
     user_id: str
     webapp_api_url: str
+    delete_graph: bool = False
 
 
 class CaptureProxyConfig(BaseModel):

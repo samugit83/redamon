@@ -111,9 +111,14 @@ class HttpMixin:
                         """
                         MERGE (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
                         SET u += $props,
-                            u.updated_at = datetime()
+                            u.updated_at = datetime(),
+                            u.first_seen = coalesce(u.first_seen, $recon_job_started_at),
+                            u.first_seen_job_id = coalesce(u.first_seen_job_id, $recon_job_id),
+                            u.last_seen = $recon_job_started_at,
+                            u.last_seen_job_id = $recon_job_id
                         """,
-                        base_url=base_url, user_id=user_id, project_id=project_id, props=baseurl_props
+                        base_url=base_url, user_id=user_id, project_id=project_id, props=baseurl_props,
+                        **self._recon_job_params(),
                     )
                     stats["baseurls_created"] += 1
 
@@ -160,9 +165,14 @@ class HttpMixin:
                         """
                         MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url, user_id: $user_id, project_id: $project_id})
                         SET e += $props,
-                            e.updated_at = datetime()
+                            e.updated_at = datetime(),
+                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = $recon_job_started_at,
+                            e.last_seen_job_id = $recon_job_id
                         """,
-                        path=path, base_url=base_url, user_id=user_id, project_id=project_id, props=endpoint_props
+                        path=path, base_url=base_url, user_id=user_id, project_id=project_id, props=endpoint_props,
+                        **self._recon_job_params(),
                     )
                     stats.setdefault("endpoints_created", 0)
                     stats["endpoints_created"] += 1
@@ -207,9 +217,14 @@ class HttpMixin:
                                 """
                                 MERGE (c:Certificate {subject_cn: $subject_cn, user_id: $user_id, project_id: $project_id})
                                 SET c += $props,
-                                    c.updated_at = datetime()
+                                    c.updated_at = datetime(),
+                                    c.first_seen = coalesce(c.first_seen, $recon_job_started_at),
+                                    c.first_seen_job_id = coalesce(c.first_seen_job_id, $recon_job_id),
+                                    c.last_seen = $recon_job_started_at,
+                                    c.last_seen_job_id = $recon_job_id
                                 """,
-                                subject_cn=subject_cn, user_id=user_id, project_id=project_id, props=cert_props
+                                subject_cn=subject_cn, user_id=user_id, project_id=project_id, props=cert_props,
+                                **self._recon_job_params(),
                             )
                             stats["certificates_created"] += 1
                             
@@ -257,10 +272,15 @@ class HttpMixin:
                                 session.run(
                                     """
                                     MERGE (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
-                                    SET svc.updated_at = datetime()
+                                    SET svc.updated_at = datetime(),
+                                        svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                        svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                        svc.last_seen = $recon_job_started_at,
+                                        svc.last_seen_job_id = $recon_job_id
                                     """,
                                     service_name=service_name, port_number=port_number, ip_addr=resolved_ip,
-                                    user_id=user_id, project_id=project_id
+                                    user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["services_created"] += 1
 
@@ -282,14 +302,19 @@ class HttpMixin:
                                 """
                                 MERGE (p:Port {number: $port_number, protocol: 'tcp', ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                                 SET p.state = 'open',
-                                    p.updated_at = datetime()
+                                    p.updated_at = datetime(),
+                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen_job_id = $recon_job_id
                                 WITH p
                                 MATCH (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                                 MERGE (p)-[:RUNS_SERVICE]->(svc)
                                 """,
                                 port_number=port_number, ip_addr=resolved_ip,
                                 service_name=service_name,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
 
                             # Also ensure IP -[:HAS_PORT]-> Port relationship exists
@@ -342,21 +367,35 @@ class HttpMixin:
                                     """
                                     MERGE (t:Technology {name: $name, version: $version, user_id: $user_id, project_id: $project_id})
                                     SET t += $props,
-                                        t.updated_at = datetime()
+                                        t.updated_at = datetime(),
+                                        t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                        t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                        t.last_seen = $recon_job_started_at,
+                                        t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=tech_name, version=tech_version, props=tech_props,
-                                    user_id=user_id, project_id=project_id
+                                    user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 processed_techs.add((tech_name, tech_version))
                             else:
                                 session.run(
                                     """
                                     MERGE (t:Technology {name: $name, version: '', user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET t += $props, t.updated_at = datetime()
-                                    ON MATCH SET t.updated_at = datetime()
+                                    ON CREATE SET t += $props, t.updated_at = datetime(),
+                                                  t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                                  t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                                  t.last_seen = $recon_job_started_at,
+                                                  t.last_seen_job_id = $recon_job_id
+                                    ON MATCH SET t.updated_at = datetime(),
+                                                 t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                                 t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                                 t.last_seen = $recon_job_started_at,
+                                                 t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=tech_name, props=tech_props,
-                                    user_id=user_id, project_id=project_id
+                                    user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 processed_techs.add((tech_name, None))
                             stats["technologies_created"] += 1
@@ -415,10 +454,15 @@ class HttpMixin:
                                 MERGE (t:Technology {name: $name, user_id: $user_id, project_id: $project_id})
                                 SET t.category = $category,
                                     t.source = 'ai-surface-recon',
-                                    t.updated_at = datetime()
+                                    t.updated_at = datetime(),
+                                    t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                    t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                    t.last_seen = $recon_job_started_at,
+                                    t.last_seen_job_id = $recon_job_id
                                 """,
                                 name=ai_name, category=ai_category,
                                 user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats.setdefault("ai_technologies_created", 0)
                             stats["ai_technologies_created"] += 1
@@ -480,20 +524,34 @@ class HttpMixin:
                                     """
                                     MERGE (t:Technology {name: $name, version: $version, user_id: $user_id, project_id: $project_id})
                                     SET t += $props,
-                                        t.updated_at = datetime()
+                                        t.updated_at = datetime(),
+                                        t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                        t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                        t.last_seen = $recon_job_started_at,
+                                        t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=tech_name, version=tech_version, props=tech_props,
-                                    user_id=user_id, project_id=project_id
+                                    user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                             else:
                                 session.run(
                                     """
                                     MERGE (t:Technology {name: $name, version: '', user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET t += $props, t.updated_at = datetime()
-                                    ON MATCH SET t.updated_at = datetime()
+                                    ON CREATE SET t += $props, t.updated_at = datetime(),
+                                                  t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                                  t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                                  t.last_seen = $recon_job_started_at,
+                                                  t.last_seen_job_id = $recon_job_id
+                                    ON MATCH SET t.updated_at = datetime(),
+                                                 t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                                 t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                                 t.last_seen = $recon_job_started_at,
+                                                 t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=tech_name, props=tech_props,
-                                    user_id=user_id, project_id=project_id
+                                    user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                             stats["technologies_created"] += 1
 
@@ -545,11 +603,16 @@ class HttpMixin:
                                     h.project_id = $project_id,
                                     h.is_security_header = $is_security,
                                     h.reveals_technology = $reveals_tech,
-                                    h.updated_at = datetime()
+                                    h.updated_at = datetime(),
+                                    h.first_seen = coalesce(h.first_seen, $recon_job_started_at),
+                                    h.first_seen_job_id = coalesce(h.first_seen_job_id, $recon_job_id),
+                                    h.last_seen = $recon_job_started_at,
+                                    h.last_seen_job_id = $recon_job_id
                                 """,
                                 name=header_name, value=str(header_value), url=url,
                                 user_id=user_id, project_id=project_id,
-                                is_security=is_security, reveals_tech=reveals_tech
+                                is_security=is_security, reveals_tech=reveals_tech,
+                                **self._recon_job_params(),
                             )
                             stats["headers_created"] += 1
 
@@ -586,12 +649,17 @@ class HttpMixin:
                         SET d.http_probe_timestamp = $scan_timestamp,
                             d.http_probe_live_urls = $live_urls,
                             d.http_probe_technology_count = $tech_count,
-                            d.updated_at = datetime()
+                            d.updated_at = datetime(),
+                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
+                            d.last_seen = $recon_job_started_at,
+                            d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,
                         scan_timestamp=scan_metadata.get("scan_timestamp"),
                         live_urls=summary.get("live_urls", 0),
-                        tech_count=summary.get("technology_count", 0)
+                        tech_count=summary.get("technology_count", 0),
+                        **self._recon_job_params(),
                     )
                 except Exception as e:
                     stats["errors"].append(f"Domain update failed: {e}")
@@ -619,11 +687,16 @@ class HttpMixin:
                             s.status_codes = $status_codes,
                             s.http_live_url_count = $live_count,
                             s.http_probed_at = datetime(),
-                            s.updated_at = datetime()
+                            s.updated_at = datetime(),
+                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                            s.last_seen = $recon_job_started_at,
+                            s.last_seen_job_id = $recon_job_id
                         """,
                         hostname=hostname, user_id=user_id, project_id=project_id,
                         status=http_status, status_codes=status_codes,
-                        live_count=len(live_urls)
+                        live_count=len(live_urls),
+                        **self._recon_job_params(),
                     )
                     stats["subdomains_updated"] += 1
                 except Exception as e:
@@ -641,9 +714,14 @@ class HttpMixin:
                     WHERE s.status = 'resolved'
                     SET s.status = 'no_http',
                         s.http_probed_at = datetime(),
-                        s.updated_at = datetime()
+                        s.updated_at = datetime(),
+                        s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                        s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                        s.last_seen = $recon_job_started_at,
+                        s.last_seen_job_id = $recon_job_id
                     """,
-                    hosts=list(no_response_hosts), user_id=user_id, project_id=project_id
+                    hosts=list(no_response_hosts), user_id=user_id, project_id=project_id,
+                    **self._recon_job_params(),
                 )
 
             print(f"[+][graph-db] Created {stats['baseurls_created']} BaseURL nodes")

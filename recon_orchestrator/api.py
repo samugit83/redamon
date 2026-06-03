@@ -617,6 +617,7 @@ async def start_recon(project_id: str, request: ReconStartRequest):
             webapp_api_url=_spawned_webapp_url(),
             recon_path=RECON_PATH,
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
+            delete_graph=request.delete_graph,
         )
         return state
     except ValueError as e:

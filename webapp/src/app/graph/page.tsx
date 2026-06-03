@@ -986,13 +986,13 @@ export default function GraphPage() {
     }
   }, [searchParams, projectId, router])
 
-  const handleConfirmRecon = useCallback(async () => {
+  const handleConfirmRecon = useCallback(async (deleteGraph: boolean) => {
     clearLogs()
-    const result = await startRecon()
+    const result = await startRecon({ deleteGraph })
     if (result) {
       setIsReconModalOpen(false)
       setActiveLogsDrawer('recon')
-      toast.info('Recon scan started')
+      toast.info(deleteGraph ? 'Recon scan started; existing graph will be reset' : 'Recon scan started')
       return
     }
     // Failed to start — surface a tailored modal (Part 5). Memory-governor

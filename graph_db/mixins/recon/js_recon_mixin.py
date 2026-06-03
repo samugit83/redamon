@@ -39,6 +39,15 @@ class JsReconMixin:
 
         scan_ts = js_recon_data.get("scan_metadata", {}).get("scan_timestamp", "")
         domain_name = recon_data.get('domain', '')
+        js_finding_seen_query = """
+            MERGE (jf:JsReconFinding {id: $id})
+            SET jf += $props,
+                jf.updated_at = datetime(),
+                jf.first_seen = coalesce(jf.first_seen, $recon_job_started_at),
+                jf.first_seen_job_id = coalesce(jf.first_seen_job_id, $recon_job_id),
+                jf.last_seen = $recon_job_started_at,
+                jf.last_seen_job_id = $recon_job_id
+        """
 
         def _is_uploaded(source_url: str) -> bool:
             return source_url.startswith('upload://')
@@ -115,8 +124,9 @@ class JsReconMixin:
                     }
 
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=file_node_id, props=props
+                        js_finding_seen_query,
+                        id=file_node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     file_node_ids[source_url] = file_node_id
                     stats["file_nodes_created"] += 1
@@ -234,8 +244,9 @@ class JsReconMixin:
                         }
 
                         session.run(
-                            "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                            id=node_id, props=props
+                            js_finding_seen_query,
+                            id=node_id, props=props,
+                            **self._recon_job_params(),
                         )
                         stats["findings_created"] += 1
 
@@ -272,8 +283,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -314,8 +326,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -356,8 +369,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -399,8 +413,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -445,8 +460,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -489,8 +505,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["findings_created"] += 1
 
@@ -542,7 +559,11 @@ class JsReconMixin:
                             s.matched_text = $matched_text,
                             s.validation_info = $validation_info,
                             s.discovered_at = $discovered_at,
-                            s.updated_at = datetime()
+                            s.updated_at = datetime(),
+                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                            s.last_seen = $recon_job_started_at,
+                            s.last_seen_job_id = $recon_job_id
                         """,
                         id=node_id, user_id=user_id, project_id=project_id,
                         secret_type=secret.get("name", "unknown"),
@@ -557,6 +578,7 @@ class JsReconMixin:
                         validation_status=validation.get("status", "unvalidated"),
                         validation_info=json.dumps(validation) if validation else "",
                         discovered_at=scan_ts,
+                        **self._recon_job_params(),
                     )
                     created_secrets.add(node_id)
                     stats["secrets_created"] += 1
@@ -615,7 +637,11 @@ class JsReconMixin:
                             e.validation_status = $validation_status,
                             e.endpoint_type = $ep_type,
                             e._js_recon_created = true,
-                            e.updated_at = datetime()
+                            e.updated_at = datetime(),
+                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = $recon_job_started_at,
+                            e.last_seen_job_id = $recon_job_id
                         ON MATCH SET e.id = COALESCE(e.id, $id),
                             e.js_recon_source = true,
                             e.endpoint_type = COALESCE(e.endpoint_type, $ep_type),
@@ -623,7 +649,11 @@ class JsReconMixin:
                             e.status_code = COALESCE($status_code, e.status_code),
                             e.resolved_url = CASE WHEN $resolved_url <> '' THEN $resolved_url ELSE e.resolved_url END,
                             e.validation_status = COALESCE($validation_status, e.validation_status),
-                            e.updated_at = datetime()
+                            e.updated_at = datetime(),
+                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = $recon_job_started_at,
+                            e.last_seen_job_id = $recon_job_id
                         WITH e, COALESCE(e._js_recon_created, false) AS created
                         REMOVE e._js_recon_created
                         RETURN created AS created
@@ -637,6 +667,7 @@ class JsReconMixin:
                         resolved_url=ep.get("resolved_url", ""),
                         validation_status=ep.get("validation_status"),
                         ep_type=ep.get("type", "rest"),
+                        **self._recon_job_params(),
                     )
                     record = result.single()
                     if record and bool(record.get("created", False)):
@@ -695,8 +726,9 @@ class JsReconMixin:
                         "discovered_at": scan_ts,
                     }
                     session.run(
-                        "MERGE (jf:JsReconFinding {id: $id}) SET jf += $props, jf.updated_at = datetime()",
-                        id=node_id, props=props
+                        js_finding_seen_query,
+                        id=node_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["ai_sdk_findings_created"] += 1
 
@@ -739,12 +771,17 @@ class JsReconMixin:
                                    OR $needle CONTAINS s.matched_text)
                             SET s.ai_provider = $sdk_name,
                                 s.ai_finding_id = $ai_finding_id,
-                                s.updated_at = datetime()
+                                s.updated_at = datetime(),
+                                s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                s.last_seen = $recon_job_started_at,
+                                s.last_seen_job_id = $recon_job_id
                             RETURN count(s) AS enriched
                             """,
                             source_url=source_url, uid=user_id, pid=project_id,
                             needle=captured,
                             sdk_name=sdk_name, ai_finding_id=node_id,
+                            **self._recon_job_params(),
                         ).single()
                         if result and result.get("enriched"):
                             stats["ai_sdk_secrets_enriched"] += int(result["enriched"])

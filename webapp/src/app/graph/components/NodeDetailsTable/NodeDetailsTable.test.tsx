@@ -64,7 +64,15 @@ function makeData(): GraphData {
         id: 'd1',
         name: 'example.com',
         type: 'Domain',
-        properties: { name: 'example.com', registrar: 'GoDaddy', country: 'US' },
+        properties: {
+          name: 'example.com',
+          registrar: 'GoDaddy',
+          country: 'US',
+          first_seen: '2026-05-29T14:15:30Z',
+          last_seen: '2026-05-29T14:15:30Z',
+          first_seen_job_id: 'full-20260529T141530Z-abcdef12',
+          last_seen_job_id: 'full-20260529T141530Z-abcdef12',
+        },
       },
       {
         id: 'd2',
@@ -149,6 +157,24 @@ describe('NodeDetailsTable', () => {
     expect(headerText).not.toContain('asn') // asn belongs to IP, not Domain
   })
 
+  test('renders first and last seen metadata columns with readable timestamps', async () => {
+    const { container } = render(
+      <NodeDetailsTable data={makeData()} isLoading={false} error={null} />,
+      { wrapper: makeWrapper() }
+    )
+
+    await waitFor(() => {
+      const headerText = container.querySelector('thead tr')?.textContent || ''
+      expect(headerText).toContain('first_seen')
+      expect(headerText).toContain('last_seen')
+      expect(headerText).toContain('first_seen_job_id')
+      expect(headerText).toContain('last_seen_job_id')
+    })
+
+    expect(screen.getAllByText('2026-05-29 14:15:30 UTC').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('full-20260529T141530Z-abcdef12').length).toBeGreaterThan(0)
+  })
+
   test('row count badge matches number of nodes of selected type', async () => {
     render(
       <NodeDetailsTable data={makeData()} isLoading={false} error={null} />,
@@ -219,12 +245,12 @@ describe('NodeDetailsTable', () => {
       expect(container.querySelector('thead tr')?.textContent).toContain('registrar')
     })
 
-    // For Domain: 3 dynamic (registrar/country/city) + 2 fixed-hideable (In/Out) = 5
+    // For Domain: 7 dynamic props + 2 fixed-hideable (In/Out) = 9
     const colBtn = Array.from(container.querySelectorAll('button')).find(b =>
       b.textContent?.includes('Columns')
     )
     expect(colBtn).toBeDefined()
-    expect(colBtn!.textContent).toMatch(/5\/5/)
+    expect(colBtn!.textContent).toMatch(/9\/9/)
   })
 
   test('"Hide all" button hides every dynamic column; "Show all" restores them', async () => {

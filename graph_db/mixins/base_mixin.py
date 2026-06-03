@@ -9,6 +9,8 @@ Provides:
 """
 
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from neo4j import GraphDatabase
@@ -25,9 +27,40 @@ class BaseMixin:
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER")
         self.password = password or os.getenv("NEO4J_PASSWORD")
+        self._init_recon_job_context()
         self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
         with self.driver.session() as session:
             init_schema(session)
+
+    def _init_recon_job_context(self):
+        self.recon_job_started_at = os.getenv("RECON_JOB_STARTED_AT")
+        if not self.recon_job_started_at:
+            self.recon_job_started_at = (
+                datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+
+        self.recon_job_id = os.getenv("RECON_JOB_ID")
+        if not self.recon_job_id:
+            stamp = self.recon_job_started_at.replace("-", "").replace(":", "")
+            stamp = stamp.replace("+0000", "Z").replace(".", "")
+            self.recon_job_id = f"adhoc-{stamp[:16]}-{uuid.uuid4().hex[:8]}"
+
+    def _recon_job_params(self) -> dict:
+        return {
+            "recon_job_id": self.recon_job_id,
+            "recon_job_started_at": self.recon_job_started_at,
+        }
+
+    def _node_seen_set_clause(self, alias: str) -> str:
+        return (
+            f"{alias}.first_seen = coalesce({alias}.first_seen, $recon_job_started_at), "
+            f"{alias}.first_seen_job_id = coalesce({alias}.first_seen_job_id, $recon_job_id), "
+            f"{alias}.last_seen = $recon_job_started_at, "
+            f"{alias}.last_seen_job_id = $recon_job_id"
+        )
 
     def close(self):
         self.driver.close()

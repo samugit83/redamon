@@ -69,10 +69,15 @@ class PortMixin:
                         MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                         SET i.is_cdn = $is_cdn,
                             i.cdn_name = $cdn_name,
-                            i.updated_at = datetime()
+                            i.updated_at = datetime(),
+                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                            i.last_seen = $recon_job_started_at,
+                            i.last_seen_job_id = $recon_job_id
                         """,
                         address=ip_addr, user_id=user_id, project_id=project_id,
-                        is_cdn=is_cdn, cdn_name=cdn_name
+                        is_cdn=is_cdn, cdn_name=cdn_name,
+                        **self._recon_job_params(),
                     )
                     stats["ips_updated"] += 1
 
@@ -94,10 +99,15 @@ class PortMixin:
                             MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                             SET i.is_cdn = $is_cdn,
                                 i.cdn_name = $cdn_name,
-                                i.updated_at = datetime()
+                                i.updated_at = datetime(),
+                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             """,
                             address=ip_addr, user_id=user_id, project_id=project_id,
-                            is_cdn=is_cdn, cdn_name=cdn_name
+                            is_cdn=is_cdn, cdn_name=cdn_name,
+                            **self._recon_job_params(),
                         )
                     except Exception as e:
                         stats["errors"].append(f"IP {ip_addr} update failed: {e}")
@@ -118,10 +128,15 @@ class PortMixin:
                             """
                             MERGE (p:Port {number: $port_number, protocol: $protocol, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                             SET p.state = 'open',
-                                p.updated_at = datetime()
+                                p.updated_at = datetime(),
+                                p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                p.last_seen = $recon_job_started_at,
+                                p.last_seen_job_id = $recon_job_id
                             """,
                             port_number=port_number, protocol=protocol, ip_addr=ip_addr,
-                            user_id=user_id, project_id=project_id
+                            user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["ports_created"] += 1
 
@@ -143,10 +158,15 @@ class PortMixin:
                             session.run(
                                 """
                                 MERGE (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
-                                SET svc.updated_at = datetime()
+                                SET svc.updated_at = datetime(),
+                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen_job_id = $recon_job_id
                                 """,
                                 service_name=service_name, port_number=port_number, ip_addr=ip_addr,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["services_created"] += 1
 
@@ -178,10 +198,15 @@ class PortMixin:
                                     MERGE (t:Technology {name: $name, user_id: $user_id, project_id: $project_id})
                                     SET t.category = $category,
                                         t.source = 'ai-port-catalog',
-                                        t.updated_at = datetime()
+                                        t.updated_at = datetime(),
+                                        t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                        t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                                        t.last_seen = $recon_job_started_at,
+                                        t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=ai_name, category=ai_category,
                                     user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats.setdefault("ai_technologies_created", 0)
                                 stats["ai_technologies_created"] += 1
@@ -231,13 +256,18 @@ class PortMixin:
                             d.port_scan_type = $scan_type,
                             d.port_scan_ports_config = $ports_config,
                             d.port_scan_total_open_ports = $total_open_ports,
-                            d.updated_at = datetime()
+                            d.updated_at = datetime(),
+                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
+                            d.last_seen = $recon_job_started_at,
+                            d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,
                         scan_timestamp=scan_metadata.get("scan_timestamp"),
                         scan_type=scan_metadata.get("scan_type"),
                         ports_config=scan_metadata.get("ports_config"),
-                        total_open_ports=port_scan_data.get("summary", {}).get("total_open_ports", 0)
+                        total_open_ports=port_scan_data.get("summary", {}).get("total_open_ports", 0),
+                        **self._recon_job_params(),
                     )
                 except Exception as e:
                     stats["errors"].append(f"Domain update failed: {e}")
@@ -305,11 +335,16 @@ class PortMixin:
                                 p.version = $version,
                                 p.cpe = $cpe,
                                 p.nmap_scanned = true,
-                                p.updated_at = datetime()
+                                p.updated_at = datetime(),
+                                p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                p.last_seen = $recon_job_started_at,
+                                p.last_seen_job_id = $recon_job_id
                             """,
                             port_number=port_number, ip_addr=ip_addr,
                             product=product, version=version, cpe=cpe,
-                            user_id=user_id, project_id=project_id
+                            user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["ports_enriched"] += 1
 
@@ -321,11 +356,16 @@ class PortMixin:
                                 SET svc.product = $product,
                                     svc.version = $version,
                                     svc.cpe = $cpe,
-                                    svc.updated_at = datetime()
+                                    svc.updated_at = datetime(),
+                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen_job_id = $recon_job_id
                                 """,
                                 port_number=port_number, ip_addr=ip_addr,
                                 product=product, version=version, cpe=cpe,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["services_enriched"] += 1
 
@@ -336,11 +376,16 @@ class PortMixin:
                                 """
                                 MATCH (svc:Service {port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                                 SET svc.ai_runtime_version = $ai_runtime_version,
-                                    svc.updated_at = datetime()
+                                    svc.updated_at = datetime(),
+                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen_job_id = $recon_job_id
                                 """,
                                 port_number=port_number, ip_addr=ip_addr,
                                 ai_runtime_version=ai_runtime_version,
                                 user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats.setdefault("ai_runtime_versions_set", 0)
                             stats["ai_runtime_versions_set"] += 1
@@ -373,11 +418,16 @@ class PortMixin:
                         SET t.version = $version,
                             t.source = 'nmap',
                             t.cpe = $cpe,
-                            t.updated_at = datetime()
+                            t.updated_at = datetime(),
+                            t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                            t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                            t.last_seen = $recon_job_started_at,
+                            t.last_seen_job_id = $recon_job_id
                         """,
                         name=tech_name, version=version or "",
                         cpe=svc.get("cpe", ""),
-                        user_id=user_id, project_id=project_id
+                        user_id=user_id, project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["technologies_created"] += 1
 
@@ -437,12 +487,17 @@ class PortMixin:
                             v.output = $output,
                             v.state = $state,
                             v.cve_id = $cve_id,
-                            v.updated_at = datetime()
+                            v.updated_at = datetime(),
+                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                            v.last_seen = $recon_job_started_at,
+                            v.last_seen_job_id = $recon_job_id
                         """,
                         name=script_id, ip_addr=ip_addr, port_number=port_number,
                         severity=severity, output=output[:2000], state=state,
                         cve_id=cve_id,
-                        user_id=user_id, project_id=project_id
+                        user_id=user_id, project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["nse_vulns_created"] += 1
 

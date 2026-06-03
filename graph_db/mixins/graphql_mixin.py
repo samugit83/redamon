@@ -187,7 +187,15 @@ class GraphQLMixin:
                             project_id: $project_id
                         })
                           ON CREATE SET bu.source = 'graphql_scan',
-                                        bu.updated_at = datetime()
+                                        bu.updated_at = datetime(),
+                                        bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                        bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                        bu.last_seen = $recon_job_started_at,
+                                        bu.last_seen_job_id = $recon_job_id
+                          ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                       bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                       bu.last_seen = $recon_job_started_at,
+                                       bu.last_seen_job_id = $recon_job_id
                         WITH bu
                         MERGE (e:Endpoint {
                             path: $path,
@@ -197,8 +205,16 @@ class GraphQLMixin:
                             project_id: $project_id
                         })
                           ON CREATE SET e.source = 'graphql_scan',
-                                        e.created_at = datetime()
-                        SET e += $props
+                                        e.created_at = datetime(),
+                                        e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                        e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                        e.last_seen = $recon_job_started_at,
+                                        e.last_seen_job_id = $recon_job_id
+                        SET e += $props,
+                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = $recon_job_started_at,
+                            e.last_seen_job_id = $recon_job_id
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         RETURN e.path as path, e.is_graphql as was_graphql
                         """,
@@ -206,7 +222,8 @@ class GraphQLMixin:
                         baseurl=baseurl,
                         user_id=user_id,
                         project_id=project_id,
-                        props=graphql_props
+                        props=graphql_props,
+                        **self._recon_job_params(),
                     )
 
                     record = result.single()
@@ -320,13 +337,18 @@ class GraphQLMixin:
                             user_id: $user_id,
                             project_id: $project_id
                         })
-                        SET v += $props
+                        SET v += $props,
+                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                            v.last_seen = $recon_job_started_at,
+                            v.last_seen_job_id = $recon_job_id
                         RETURN v.id as id
                         """,
                         id=vuln_id,
                         user_id=user_id,
                         project_id=project_id,
-                        props=vuln_props
+                        props=vuln_props,
+                        **self._recon_job_params(),
                     )
 
                     record = result.single()
@@ -353,7 +375,15 @@ class GraphQLMixin:
                             project_id: $project_id
                         })
                           ON CREATE SET bu.source = 'graphql_scan',
-                                        bu.updated_at = datetime()
+                                        bu.updated_at = datetime(),
+                                        bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                        bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                        bu.last_seen = $recon_job_started_at,
+                                        bu.last_seen_job_id = $recon_job_id
+                          ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                       bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                       bu.last_seen = $recon_job_started_at,
+                                       bu.last_seen_job_id = $recon_job_id
                         MERGE (e:Endpoint {
                             path: $path,
                             method: 'POST',
@@ -363,7 +393,15 @@ class GraphQLMixin:
                         })
                           ON CREATE SET e.source = 'graphql_scan',
                                         e.is_graphql = true,
-                                        e.created_at = datetime()
+                                        e.created_at = datetime(),
+                                        e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                        e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                        e.last_seen = $recon_job_started_at,
+                                        e.last_seen_job_id = $recon_job_id
+                          ON MATCH SET e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                       e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                       e.last_seen = $recon_job_started_at,
+                                       e.last_seen_job_id = $recon_job_id
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         MERGE (e)-[:HAS_VULNERABILITY]->(v)
                         """,
@@ -371,7 +409,8 @@ class GraphQLMixin:
                         path=path,
                         baseurl=baseurl,
                         user_id=user_id,
-                        project_id=project_id
+                        project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["relationships_created"] += 1
 
@@ -403,13 +442,18 @@ class GraphQLMixin:
                                     user_id: $user_id,
                                     project_id: $project_id
                                 })
-                                SET v += $props
+                                SET v += $props,
+                                    v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                    v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                    v.last_seen = $recon_job_started_at,
+                                    v.last_seen_job_id = $recon_job_id
                                 RETURN v.id as id
                                 """,
                                 id=sensitive_vuln_id,
                                 user_id=user_id,
                                 project_id=project_id,
-                                props=sensitive_props
+                                props=sensitive_props,
+                                **self._recon_job_params(),
                             )
 
                             if result.single():
@@ -429,7 +473,15 @@ class GraphQLMixin:
                                         project_id: $project_id
                                     })
                                       ON CREATE SET bu.source = 'graphql_scan',
-                                                    bu.updated_at = datetime()
+                                                    bu.updated_at = datetime(),
+                                                    bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                                    bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                                    bu.last_seen = $recon_job_started_at,
+                                                    bu.last_seen_job_id = $recon_job_id
+                                      ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                                   bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                                   bu.last_seen = $recon_job_started_at,
+                                                   bu.last_seen_job_id = $recon_job_id
                                     MERGE (e:Endpoint {
                                         path: $path,
                                         method: 'POST',
@@ -439,7 +491,15 @@ class GraphQLMixin:
                                     })
                                       ON CREATE SET e.source = 'graphql_scan',
                                                     e.is_graphql = true,
-                                                    e.created_at = datetime()
+                                                    e.created_at = datetime(),
+                                                    e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                                    e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                                    e.last_seen = $recon_job_started_at,
+                                                    e.last_seen_job_id = $recon_job_id
+                                      ON MATCH SET e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                                   e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                                   e.last_seen = $recon_job_started_at,
+                                                   e.last_seen_job_id = $recon_job_id
                                     MERGE (bu)-[:HAS_ENDPOINT]->(e)
                                     MERGE (e)-[:HAS_VULNERABILITY]->(v)
                                     """,
@@ -447,7 +507,8 @@ class GraphQLMixin:
                                     path=path,
                                     baseurl=baseurl,
                                     user_id=user_id,
-                                    project_id=project_id
+                                    project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["relationships_created"] += 1
 

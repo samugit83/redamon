@@ -15,6 +15,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { projectId } = await params
     const __denied = await guardProject(projectId)
     if (__denied) return __denied
+    const body = await request.json().catch(() => ({}))
+    const deleteGraph = body?.deleteGraph === true
 
     // Verify project exists
     const project = await prisma.project.findUnique({
@@ -54,6 +56,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         project_id: projectId,
         user_id: project.userId,
         webapp_api_url: WEBAPP_URL,
+        delete_graph: deleteGraph,
       }),
     })
 

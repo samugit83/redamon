@@ -20,6 +20,7 @@ Run this file to execute the full recon pipeline.
 import sys
 import json
 import copy
+import os
 from pathlib import Path
 from datetime import datetime
 import threading
@@ -52,6 +53,7 @@ SUBDOMAIN_LIST = _settings['SUBDOMAIN_LIST']
 USE_BRUTEFORCE_FOR_SUBDOMAINS = _settings['USE_BRUTEFORCE_FOR_SUBDOMAINS']
 SCAN_MODULES = _settings['SCAN_MODULES']
 UPDATE_GRAPH_DB = _settings['UPDATE_GRAPH_DB']
+DELETE_GRAPH_BEFORE_RECON = os.environ.get("RECON_DELETE_GRAPH", "false").strip().lower() in {"1", "true", "yes", "on"}
 USER_ID = _settings['USER_ID']
 PROJECT_ID = _settings['PROJECT_ID']
 VERIFY_DOMAIN_OWNERSHIP = _settings['VERIFY_DOMAIN_OWNERSHIP']
@@ -1654,7 +1656,7 @@ def main():
         print("═" * 63)
 
         # Clear previous graph data
-        if UPDATE_GRAPH_DB:
+        if UPDATE_GRAPH_DB and DELETE_GRAPH_BEFORE_RECON:
             print("[*][graph-db] Clearing previous graph data for this project...")
             try:
                 from graph_db import Neo4jClient
@@ -1666,6 +1668,8 @@ def main():
                         print("[!][graph-db] Could not connect to Neo4j - skipping clear\n")
             except Exception as e:
                 print(f"[!][graph-db] Failed to clear previous graph data: {e}\n")
+        elif UPDATE_GRAPH_DB:
+            print("[*][graph-db] Preserving existing graph data for this project")
 
         run_ip_recon(TARGET_IPS, _settings)
 
@@ -1742,7 +1746,7 @@ def main():
         return 1
 
     # Clear previous graph data for this project before starting new scan
-    if UPDATE_GRAPH_DB:
+    if UPDATE_GRAPH_DB and DELETE_GRAPH_BEFORE_RECON:
         print("[*][graph-db] Clearing previous graph data for this project...")
         try:
             from graph_db import Neo4jClient
@@ -1754,6 +1758,8 @@ def main():
                     print("[!][graph-db] Could not connect to Neo4j - skipping clear\n")
         except Exception as e:
             print(f"[!][graph-db] Failed to clear previous graph data: {e}\n")
+    elif UPDATE_GRAPH_DB:
+        print("[*][graph-db] Preserving existing graph data for this project")
 
     # Phase 1 & 2: Domain recon (WHOIS + Subdomains + DNS) - Combined JSON
     output_file = Path(__file__).parent / "output" / f"recon_{PROJECT_ID}.json"

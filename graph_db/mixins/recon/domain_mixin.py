@@ -116,9 +116,14 @@ class DomainMixin:
                 session.run(
                     """
                     MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
-                    SET d += $props
+                    SET d += $props,
+                        d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                        d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
+                        d.last_seen = $recon_job_started_at,
+                        d.last_seen_job_id = $recon_job_id
                     """,
-                    name=root_domain, user_id=user_id, project_id=project_id, props=domain_props
+                    name=root_domain, user_id=user_id, project_id=project_id, props=domain_props,
+                    **self._recon_job_params(),
                 )
                 stats["domain_created"] = True
                 print(f"[+][graph-db] Created Domain node: {root_domain}")
@@ -151,6 +156,10 @@ class DomainMixin:
                             s.status = coalesce(s.status, $status),
                             s.discovered_at = coalesce(s.discovered_at, datetime()),
                             s.updated_at = datetime(),
+                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                            s.last_seen = $recon_job_started_at,
+                            s.last_seen_job_id = $recon_job_id,
                             s.ai_service_hint = CASE
                                 WHEN $ai_service_hint IS NULL THEN s.ai_service_hint
                                 WHEN s.ai_service_hint IS NULL THEN $ai_service_hint
@@ -161,6 +170,7 @@ class DomainMixin:
                         name=subdomain, user_id=user_id, project_id=project_id,
                         has_records=has_records, status=status,
                         ai_service_hint=ai_service_hint,
+                        **self._recon_job_params(),
                     )
                     stats["subdomains_created"] += 1
                     if ai_service_hint:
@@ -195,10 +205,15 @@ class DomainMixin:
                                         """
                                         MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                                         SET i.version = $version,
-                                            i.updated_at = datetime()
+                                            i.updated_at = datetime(),
+                                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                            i.last_seen = $recon_job_started_at,
+                                            i.last_seen_job_id = $recon_job_id
                                         """,
                                         address=ip_addr, user_id=user_id, project_id=project_id,
-                                        version=ip_version
+                                        version=ip_version,
+                                        **self._recon_job_params(),
                                     )
                                     stats["ips_created"] += 1
 
@@ -232,10 +247,15 @@ class DomainMixin:
                                             MERGE (dns:DNSRecord {type: $type, value: $value, subdomain: $subdomain, user_id: $user_id, project_id: $project_id})
                                             SET dns.user_id = $user_id,
                                                 dns.project_id = $project_id,
-                                                dns.updated_at = datetime()
+                                                dns.updated_at = datetime(),
+                                                dns.first_seen = coalesce(dns.first_seen, $recon_job_started_at),
+                                                dns.first_seen_job_id = coalesce(dns.first_seen_job_id, $recon_job_id),
+                                                dns.last_seen = $recon_job_started_at,
+                                                dns.last_seen_job_id = $recon_job_id
                                             """,
                                             type=record_type, value=str(value), subdomain=subdomain,
-                                            user_id=user_id, project_id=project_id
+                                            user_id=user_id, project_id=project_id,
+                                            **self._recon_job_params(),
                                         )
                                         stats["dns_records_created"] += 1
 
@@ -317,9 +337,14 @@ class DomainMixin:
                 session.run(
                     """
                     MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
-                    SET d += $props
+                    SET d += $props,
+                        d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                        d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
+                        d.last_seen = $recon_job_started_at,
+                        d.last_seen_job_id = $recon_job_id
                     """,
-                    name=mock_domain, user_id=user_id, project_id=project_id, props=domain_props
+                    name=mock_domain, user_id=user_id, project_id=project_id, props=domain_props,
+                    **self._recon_job_params(),
                 )
                 stats["domain_created"] = True
                 print(f"[+][graph-db] Created mock Domain node: {mock_domain}")
@@ -356,13 +381,22 @@ class DomainMixin:
                     session.run(
                         """
                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
-                        ON CREATE SET s += $props, s.status = 'resolved'
-                        ON MATCH SET s += $props
+                        ON CREATE SET s += $props, s.status = 'resolved',
+                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen_job_id = $recon_job_id
+                        ON MATCH SET s += $props,
+                                     s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                     s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                     s.last_seen = $recon_job_started_at,
+                                     s.last_seen_job_id = $recon_job_id
                         WITH s
                         WHERE s.status IS NULL
                         SET s.status = 'resolved'
                         """,
-                        name=subdomain_name, user_id=user_id, project_id=project_id, props=sub_props
+                        name=subdomain_name, user_id=user_id, project_id=project_id, props=sub_props,
+                        **self._recon_job_params(),
                     )
                     stats["subdomains_created"] += 1
 
@@ -401,9 +435,14 @@ class DomainMixin:
                         session.run(
                             """
                             MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                            SET i += $props
+                            SET i += $props,
+                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             """,
-                            addr=ip, uid=user_id, pid=project_id, props=ip_props
+                            addr=ip, uid=user_id, pid=project_id, props=ip_props,
+                            **self._recon_job_params(),
                         )
                         stats["ips_created"] += 1
 

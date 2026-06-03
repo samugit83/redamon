@@ -25,7 +25,7 @@ Properties written on each Vulnerability:
     verdict                confirmed | likely | manual_review
     evidence               raw response / fingerprint hit excerpt
     tool_raw               JSON-encoded raw output per tool
-    first_seen, last_seen  ISO timestamps
+    detected_at            tool-native detection timestamp
 """
 
 from __future__ import annotations
@@ -110,21 +110,27 @@ class TakeoverMixin:
                         "host": hostname,
                         "is_dast_finding": False,
                         "tool_raw": tool_raw,
-                        "last_seen": detected_at,
+                        "detected_at": detected_at,
                     }
                     # Remove None values so MERGE's SET += doesn't wipe existing props
                     vuln_props = {k: v for k, v in vuln_props.items() if v is not None}
 
-                    # Merge the Vulnerability node (set last_seen on every run,
-                    # first_seen only on create).
+                    # Merge the Vulnerability node. Job-level first/last seen
+                    # metadata is stamped from the active recon job context.
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $id})
-                        ON CREATE SET v.first_seen = $detected_at
+                        ON CREATE SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                      v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id)
                         SET v += $props,
-                            v.updated_at = datetime()
+                            v.updated_at = datetime(),
+                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                            v.last_seen = $recon_job_started_at,
+                            v.last_seen_job_id = $recon_job_id
                         """,
-                        id=vuln_id, props=vuln_props, detected_at=detected_at,
+                        id=vuln_id, props=vuln_props,
+                        **self._recon_job_params(),
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -166,13 +172,22 @@ class TakeoverMixin:
                             """
                             MERGE (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
                             ON CREATE SET s.source = 'takeover_scan',
-                                          s.created_at = datetime()
-                            SET s.updated_at = datetime()
+                                          s.created_at = datetime(),
+                                          s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                          s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                          s.last_seen = $recon_job_started_at,
+                                          s.last_seen_job_id = $recon_job_id
+                            SET s.updated_at = datetime(),
+                                s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                s.last_seen = $recon_job_started_at,
+                                s.last_seen_job_id = $recon_job_id
                             WITH s
                             MATCH (v:Vulnerability {id: $id})
                             MERGE (s)-[:HAS_VULNERABILITY]->(v)
                             """,
                             hostname=hostname, uid=user_id, pid=project_id, id=vuln_id,
+                            **self._recon_job_params(),
                         )
                         stats["relationships_created"] += 1
 

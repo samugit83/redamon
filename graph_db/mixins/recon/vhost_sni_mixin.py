@@ -28,7 +28,7 @@ Properties written on each Vulnerability:
     observed_size            body size returned with vhost lie applied
     size_delta               observed_size - baseline_size
     internal_pattern_match   matched internal-keyword (e.g. "admin"), or None
-    first_seen, last_seen    ISO timestamps
+    detected_at              tool-native detection timestamp
 
 Properties enriched on existing Subdomain nodes:
     vhost_tested, vhost_hidden, vhost_routing_layer, vhost_status_code,
@@ -100,10 +100,15 @@ class VhostSniMixin:
                     res = session.run(
                         """
                         MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                        SET i += $props
+                        SET i += $props,
+                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                            i.last_seen = $recon_job_started_at,
+                            i.last_seen_job_id = $recon_job_id
                         RETURN count(i) AS matched
                         """,
                         addr=ip_addr, uid=user_id, pid=project_id, props=ip_props,
+                        **self._recon_job_params(),
                     )
                     if res.single()["matched"] > 0:
                         stats["ips_enriched"] += 1
@@ -149,18 +154,24 @@ class VhostSniMixin:
                         "internal_pattern_match": finding.get("internal_pattern_match"),
                         "matched_at": _build_url(hostname, port, finding.get("scheme") or "https"),
                         "is_dast_finding": False,
-                        "last_seen": detected_at,
+                        "detected_at": detected_at,
                     }
                     vuln_props = {k: v for k, v in vuln_props.items() if v is not None}
 
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $id})
-                        ON CREATE SET v.first_seen = $detected_at
+                        ON CREATE SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                      v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id)
                         SET v += $props,
-                            v.updated_at = datetime()
+                            v.updated_at = datetime(),
+                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                            v.last_seen = $recon_job_started_at,
+                            v.last_seen_job_id = $recon_job_id
                         """,
-                        id=vuln_id, props=vuln_props, detected_at=detected_at,
+                        id=vuln_id, props=vuln_props,
+                        **self._recon_job_params(),
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -180,15 +191,24 @@ class VhostSniMixin:
                         """
                         MERGE (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
                         ON CREATE SET s.source = 'vhost_sni_enum',
-                                      s.created_at = datetime()
+                                      s.created_at = datetime(),
+                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen_job_id = $recon_job_id
                         SET s += $sprops,
-                            s.updated_at = datetime()
+                            s.updated_at = datetime(),
+                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                            s.last_seen = $recon_job_started_at,
+                            s.last_seen_job_id = $recon_job_id
                         WITH s
                         MATCH (v:Vulnerability {id: $id})
                         MERGE (s)-[:HAS_VULNERABILITY]->(v)
                         """,
                         hostname=hostname, uid=user_id, pid=project_id,
                         id=vuln_id, sprops=sub_props,
+                        **self._recon_job_params(),
                     )
                     stats["subdomains_enriched"] += 1
                     stats["relationships_created"] += 1
@@ -271,17 +291,34 @@ class VhostSniMixin:
                                       b.created_at = datetime(),
                                       b.scheme = $scheme,
                                       b.host = $host,
-                                      b.port = $port
-                        SET b.updated_at = datetime()
+                                      b.port = $port,
+                                      b.first_seen = coalesce(b.first_seen, $recon_job_started_at),
+                                      b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                      b.last_seen = $recon_job_started_at,
+                                      b.last_seen_job_id = $recon_job_id
+                        SET b.updated_at = datetime(),
+                            b.first_seen = coalesce(b.first_seen, $recon_job_started_at),
+                            b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                            b.last_seen = $recon_job_started_at,
+                            b.last_seen_job_id = $recon_job_id
                         WITH b
                         MERGE (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
                         ON CREATE SET s.source = 'vhost_sni_enum',
-                                      s.created_at = datetime()
+                                      s.created_at = datetime(),
+                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen_job_id = $recon_job_id
+                        ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                     s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                     s.last_seen = $recon_job_started_at,
+                                     s.last_seen_job_id = $recon_job_id
                         MERGE (s)-[:HAS_BASEURL]->(b)
                         RETURN count(b) AS created
                         """,
                         url=url, uid=user_id, pid=project_id,
                         scheme=_scheme(url), host=hostname, port=_port(url),
+                        **self._recon_job_params(),
                     )
                     if res.single()["created"] > 0:
                         stats["baseurls_created"] += 1

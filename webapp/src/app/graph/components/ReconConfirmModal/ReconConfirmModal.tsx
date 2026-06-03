@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ShieldAlert, Play, Loader2 } from 'lucide-react'
 import { Modal } from '@/components/ui'
 import styles from './ReconConfirmModal.module.css'
@@ -12,7 +13,7 @@ interface GraphStats {
 interface ReconConfirmModalProps {
   isOpen: boolean
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: (deleteGraph: boolean) => void
   projectName: string
   targetDomain: string
   ipMode?: boolean
@@ -32,10 +33,23 @@ export function ReconConfirmModal({
   stats,
   isLoading,
 }: ReconConfirmModalProps) {
+  const [deleteGraph, setDeleteGraph] = useState(false)
   const targetDisplay = ipMode && targetIps?.length
     ? targetIps.slice(0, 5).join(', ') + (targetIps.length > 5 ? ` (+${targetIps.length - 5} more)` : '')
     : targetDomain
-  const hasExistingData = stats && stats.totalNodes > 0
+  const existingStats = stats && stats.totalNodes > 0 ? stats : null
+  const hasExistingData = existingStats !== null
+  const targetIpsKey = useMemo(() => targetIps?.join('\0') ?? '', [targetIps])
+
+  useEffect(() => {
+    if (isOpen || !hasExistingData) {
+      setDeleteGraph(false)
+    }
+  }, [isOpen, projectName, targetDomain, ipMode, targetIpsKey, hasExistingData])
+
+  const handleConfirm = () => {
+    onConfirm(deleteGraph && hasExistingData)
+  }
 
   return (
     <Modal
@@ -69,17 +83,25 @@ export function ReconConfirmModal({
         </div>
 
         {hasExistingData ? (
-          <div className={styles.warning}>
+          <div className={deleteGraph ? styles.warning : styles.retentionNotice}>
             <AlertTriangle size={20} className={styles.warningIcon} />
             <div className={styles.warningContent}>
               <p className={styles.warningTitle}>Existing Data Found</p>
               <p className={styles.warningText}>
-                This project has <strong>{stats.totalNodes}</strong> nodes in the graph database.
-                Starting a new reconnaissance will <strong>delete all existing data</strong> and
-                replace it with fresh scan results.
+                {deleteGraph ? (
+                  <>
+                    Starting a new reconnaissance will <strong>delete all existing graph data</strong> and
+                    replace it with fresh scan results.
+                  </>
+                ) : (
+                  <>
+                    Existing graph data will be retained. New reconnaissance results will be added to
+                    the current <strong>{existingStats.totalNodes}</strong> graph nodes.
+                  </>
+                )}
               </p>
               <div className={styles.stats}>
-                {Object.entries(stats.nodesByType).map(([type, count]) => (
+                {Object.entries(existingStats.nodesByType).map(([type, count]) => (
                   <span key={type} className={styles.statBadge}>
                     {type}: {count}
                   </span>
@@ -97,6 +119,18 @@ export function ReconConfirmModal({
           </div>
         )}
 
+        {hasExistingData && (
+          <label className={styles.toggleRow}>
+            <input
+              type="checkbox"
+              checked={deleteGraph}
+              onChange={(event) => setDeleteGraph(event.target.checked)}
+              disabled={isLoading}
+            />
+            <span>Delete existing graph before starting</span>
+          </label>
+        )}
+
         <div className={styles.actions}>
           <button
             className={styles.cancelButton}
@@ -107,7 +141,7 @@ export function ReconConfirmModal({
           </button>
           <button
             className={styles.confirmButton}
-            onClick={onConfirm}
+            onClick={handleConfirm}
             disabled={isLoading}
           >
             {isLoading ? (
@@ -118,7 +152,7 @@ export function ReconConfirmModal({
             ) : (
               <>
                 <Play size={14} />
-                <span>{hasExistingData ? 'Delete & Start' : 'Start Recon'}</span>
+                <span>{deleteGraph && hasExistingData ? 'Delete & Start' : 'Start Recon'}</span>
               </>
             )}
           </button>

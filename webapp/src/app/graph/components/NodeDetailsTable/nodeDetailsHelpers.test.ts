@@ -147,6 +147,28 @@ describe('deriveDynamicColumnKeys', () => {
     expect(a).toEqual(b)
     expect(a).toEqual(['a', 'b', 'm', 'y', 'z'])
   })
+
+  test('prioritizes first and last seen metadata before other keys', () => {
+    const rows = [
+      makeRow(makeNode('Domain', 'd1', {
+        registrar: 'GoDaddy',
+        last_seen_job_id: 'full-20260529T141530Z-abcdef12',
+        first_seen: '2026-05-29T14:15:30Z',
+      })),
+      makeRow(makeNode('Domain', 'd2', {
+        last_seen: '2026-05-29T14:15:30Z',
+        first_seen_job_id: 'full-20260529T141530Z-abcdef12',
+      })),
+    ]
+
+    expect(deriveDynamicColumnKeys(rows)).toEqual([
+      'first_seen',
+      'last_seen',
+      'first_seen_job_id',
+      'last_seen_job_id',
+      'registrar',
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------

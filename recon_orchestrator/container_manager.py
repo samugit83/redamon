@@ -410,6 +410,20 @@ class ContainerManager:
         # long-lived log-stream readers, so status/spawn calls can't be starved.
         return await loop.run_in_executor(self._docker_op_executor, fn, *args)
 
+    def _format_recon_job_id(self, prefix: str, started_at: datetime, unique_value: str) -> str:
+        """Format graph job metadata ID for recon containers."""
+        started_utc = started_at.astimezone(timezone.utc)
+        stamp = started_utc.strftime("%Y%m%dT%H%M%SZ")
+        suffix = "".join(ch for ch in unique_value if ch.isalnum())[:8]
+        if not suffix:
+            suffix = uuid.uuid4().hex[:8]
+        return f"{prefix}-{stamp}-{suffix}"
+
+    def _format_recon_job_started_at(self, started_at: datetime) -> str:
+        """Format graph job start time as UTC ISO-8601 without microseconds."""
+        started_utc = started_at.astimezone(timezone.utc).replace(microsecond=0)
+        return started_utc.isoformat().replace("+00:00", "Z")
+
     async def get_status(self, project_id: str) -> ReconState:
         """Get current status of a recon process.
 
@@ -485,6 +499,7 @@ class ContainerManager:
         webapp_api_url: str,
         recon_path: str,
         custom_templates_path: str = "",
+        delete_graph: bool = False,
     ) -> ReconState:
         """Start a recon container for a project"""
 
@@ -521,6 +536,9 @@ class ContainerManager:
             started_at=datetime.now(timezone.utc),
         )
         self.running_states[project_id] = state
+        job_unique = uuid.uuid4().hex
+        recon_job_id = self._format_recon_job_id("full", state.started_at, job_unique)
+        recon_job_started_at = self._format_recon_job_started_at(state.started_at)
 
         try:
             # Ensure recon image exists
@@ -556,6 +574,9 @@ class ContainerManager:
                     "RECON_EXTRA_ALLOWED_IMAGES": os.environ.get("RECON_EXTRA_ALLOWED_IMAGES", ""),
                     "RECON_RUN_ID": recon_run_id,
                     "UPDATE_GRAPH_DB": "true",
+                    "RECON_DELETE_GRAPH": "true" if delete_graph else "false",
+                    "RECON_JOB_ID": recon_job_id,
+                    "RECON_JOB_STARTED_AT": recon_job_started_at,
                     # HOST_RECON_OUTPUT_PATH: Required for nested Docker containers (naabu, httpx, etc.)
                     # These run as sibling containers and need host paths for volume mounts
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",
@@ -1479,6 +1500,8 @@ class ContainerManager:
             started_at=datetime.now(timezone.utc),
         )
         self.partial_recon_states.setdefault(project_id, {})[run_id] = state
+        recon_job_id = self._format_recon_job_id("partial", state.started_at, run_id)
+        recon_job_started_at = self._format_recon_job_started_at(state.started_at)
 
         try:
             # Ensure recon image exists. images.build (cold-image case) is a
@@ -1522,6 +1545,8 @@ class ContainerManager:
                     "PARTIAL_RECON_CONFIG": f"/tmp/redamon/partial_{project_id}_{run_id}.json",
                     "PARTIAL_RECON_RUN_ID": run_id,
                     "UPDATE_GRAPH_DB": "true",
+                    "RECON_JOB_ID": recon_job_id,
+                    "RECON_JOB_STARTED_AT": recon_job_started_at,
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",
                     # Required for nuclei custom-template support: build_nuclei_command
                     # uses this env var to bind-mount mcp/nuclei-templates into the

@@ -134,7 +134,11 @@ class ResourceMixin:
                                     END,
                                     e.ai_interface_type = COALESCE($ai_interface_type, e.ai_interface_type),
                                     e.is_ai_rag_ingest = COALESCE($is_ai_rag_ingest, e.is_ai_rag_ingest),
-                                    e.updated_at = datetime()
+                                    e.updated_at = datetime(),
+                                    e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                    e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                    e.last_seen = $recon_job_started_at,
+                                    e.last_seen_job_id = $recon_job_id
                                 """,
                                 path=path, method=method, baseurl=base_url,
                                 user_id=user_id, project_id=project_id,
@@ -147,6 +151,7 @@ class ResourceMixin:
                                 sources=ep_sources,
                                 ai_interface_type=ai_interface_type,
                                 is_ai_rag_ingest=is_ai_rag_ingest,
+                                **self._recon_job_params(),
                             )
                             stats["endpoints_created"] += 1
                             created_endpoints.add(endpoint_key)
@@ -156,13 +161,22 @@ class ResourceMixin:
                                 """
                                 MERGE (bu:BaseURL {url: $baseurl, user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET bu.source = 'resource_enum',
-                                              bu.updated_at = datetime()
+                                              bu.updated_at = datetime(),
+                                              bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                              bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                              bu.last_seen = $recon_job_started_at,
+                                              bu.last_seen_job_id = $recon_job_id
+                                ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                             bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                             bu.last_seen = $recon_job_started_at,
+                                             bu.last_seen_job_id = $recon_job_id
                                 WITH bu
                                 MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                 MERGE (bu)-[:HAS_ENDPOINT]->(e)
                                 """,
                                 baseurl=base_url, path=path, method=method,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["relationships_created"] += 1
 
@@ -198,7 +212,11 @@ class ResourceMixin:
                                     p.source = 'resource_enum',
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
-                                    p.updated_at = datetime()
+                                    p.updated_at = datetime(),
+                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen_job_id = $recon_job_id
                                 """,
                                 name=param_name, position="query", endpoint_path=path, baseurl=base_url,
                                 user_id=user_id, project_id=project_id,
@@ -207,6 +225,7 @@ class ResourceMixin:
                                 sample_values=sample_values[:5],  # Limit sample values
                                 is_ai_prompt_injectable=is_ai_prompt_injectable,
                                 ai_tool_arg_path=ai_tool_arg_path,
+                                **self._recon_job_params(),
                             )
                             stats["parameters_created"] += 1
                             created_parameters.add(param_key)
@@ -250,7 +269,11 @@ class ResourceMixin:
                                     p.source = 'resource_enum',
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
-                                    p.updated_at = datetime()
+                                    p.updated_at = datetime(),
+                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen_job_id = $recon_job_id
                                 """,
                                 name=param_name, position="body", endpoint_path=path, baseurl=base_url,
                                 user_id=user_id, project_id=project_id,
@@ -260,6 +283,7 @@ class ResourceMixin:
                                 required=param.get("required", False),
                                 is_ai_prompt_injectable=is_ai_prompt_injectable,
                                 ai_tool_arg_path=ai_tool_arg_path,
+                                **self._recon_job_params(),
                             )
                             stats["parameters_created"] += 1
                             created_parameters.add(param_key)
@@ -339,14 +363,19 @@ class ResourceMixin:
                             e.form_enctype = $enctype,
                             e.form_found_at_pages = $found_at_pages,
                             e.form_input_names = $input_names,
-                            e.form_count = $form_count
+                            e.form_count = $form_count,
+                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = $recon_job_started_at,
+                            e.last_seen_job_id = $recon_job_id
                         """,
                         path=path, method=method, baseurl=baseurl,
                         user_id=user_id, project_id=project_id,
                         enctype=form_info["enctype"],
                         found_at_pages=list(form_info["found_at_pages"]),
                         input_names=list(form_info["input_names"]),
-                        form_count=len(form_info["found_at_pages"])
+                        form_count=len(form_info["found_at_pages"]),
+                        **self._recon_job_params(),
                     )
                     stats["forms_created"] += 1
 
@@ -400,7 +429,11 @@ class ResourceMixin:
                             s.base_url = $base_url,
                             s.sample = $sample,
                             s.discovered_at = $discovered_at,
-                            s.updated_at = datetime()
+                            s.updated_at = datetime(),
+                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                            s.last_seen = $recon_job_started_at,
+                            s.last_seen_job_id = $recon_job_id
                         WITH s
                         MATCH (bu:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
                         MERGE (bu)-[:HAS_SECRET]->(s)
@@ -408,7 +441,8 @@ class ResourceMixin:
                         id=node_id, user_id=user_id, project_id=project_id,
                         secret_type=secret_type, severity=severity,
                         source_url=source_url, base_url=base_url,
-                        sample=sample, discovered_at=scan_ts
+                        sample=sample, discovered_at=scan_ts,
+                        **self._recon_job_params(),
                     )
                     created_secrets.add(node_id)
                     stats["secrets_created"] += 1
@@ -433,13 +467,18 @@ class ResourceMixin:
                             d.resource_enum_total_endpoints = $total_endpoints,
                             d.resource_enum_total_parameters = $total_parameters,
                             d.resource_enum_total_forms = $total_forms,
-                            d.updated_at = datetime()
+                            d.updated_at = datetime(),
+                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
+                            d.last_seen = $recon_job_started_at,
+                            d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,
                         scan_timestamp=resource_enum_data.get("scan_metadata", {}).get("scan_timestamp"),
                         total_endpoints=summary.get("total_endpoints", 0),
                         total_parameters=summary.get("total_parameters", 0),
-                        total_forms=summary.get("total_forms", 0)
+                        total_forms=summary.get("total_forms", 0),
+                        **self._recon_job_params(),
                     )
                 except Exception as e:
                     stats["errors"].append(f"Domain update failed: {e}")

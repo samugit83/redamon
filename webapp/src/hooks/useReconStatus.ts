@@ -25,12 +25,16 @@ export interface ReconStartError {
   limit?: ReconStartLimit
 }
 
+export interface StartReconOptions {
+  deleteGraph?: boolean
+}
+
 interface UseReconStatusReturn {
   state: ReconState | null
   isLoading: boolean
   error: string | null
   refetch: () => Promise<void>
-  startRecon: () => Promise<ReconState | null>
+  startRecon: (options?: StartReconOptions) => Promise<ReconState | null>
   stopRecon: () => Promise<ReconState | null>
   pauseRecon: () => Promise<ReconState | null>
   resumeRecon: () => Promise<ReconState | null>
@@ -102,7 +106,7 @@ export function useReconStatus({
     }
   }, [projectId]) // Only depends on projectId now
 
-  const startRecon = useCallback(async (): Promise<ReconState | null> => {
+  const startRecon = useCallback(async (options: StartReconOptions = {}): Promise<ReconState | null> => {
     if (!projectId) return null
 
     setIsLoading(true)
@@ -112,6 +116,12 @@ export function useReconStatus({
     try {
       const response = await fetch(`/api/recon/${projectId}/start`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          deleteGraph: options.deleteGraph ?? false,
+        }),
       })
 
       if (!response.ok) {

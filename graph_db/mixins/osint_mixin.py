@@ -75,9 +75,15 @@ class OsintMixin:
                     session.run(
                         """
                         MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                        SET i += $props, i.updated_at = datetime()
+                        SET i += $props,
+                            i.updated_at = datetime(),
+                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                            i.last_seen = $recon_job_started_at,
+                            i.last_seen_job_id = $recon_job_id
                         """,
-                        address=ip, user_id=user_id, project_id=project_id, props=props
+                        address=ip, user_id=user_id, project_id=project_id, props=props,
+                        **self._recon_job_params(),
                     )
                     stats["ips_enriched"] += 1
 
@@ -93,13 +99,26 @@ class OsintMixin:
                             """
                             MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                            user_id: $user_id, project_id: $project_id})
-                            ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime()
-                            ON MATCH SET p.updated_at = datetime()
+                            ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime(),
+                                          p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                          p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                          p.last_seen = $recon_job_started_at,
+                                          p.last_seen_job_id = $recon_job_id
+                            ON MATCH SET p.updated_at = datetime(),
+                                         p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                         p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                         p.last_seen = $recon_job_started_at,
+                                         p.last_seen_job_id = $recon_job_id
                             MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                            SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             MERGE (i)-[:HAS_PORT]->(p)
                             """,
                             port=port_num, protocol=protocol, ip=ip,
-                            user_id=user_id, project_id=project_id
+                            user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["ports_created"] += 1
                         stats["relationships_created"] += 1
@@ -118,15 +137,24 @@ class OsintMixin:
                                 """
                                 MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                     user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET svc += $props, svc.updated_at = datetime()
-                                ON MATCH SET svc.updated_at = datetime()
+                                ON CREATE SET svc += $props, svc.updated_at = datetime(),
+                                              svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                              svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                              svc.last_seen = $recon_job_started_at,
+                                              svc.last_seen_job_id = $recon_job_id
+                                ON MATCH SET svc.updated_at = datetime(),
+                                             svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                             svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                             svc.last_seen = $recon_job_started_at,
+                                             svc.last_seen_job_id = $recon_job_id
                                 WITH svc
                                 MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
                                 MERGE (p)-[:RUNS_SERVICE]->(svc)
                                 """,
                                 name=product, port=port_num, protocol=protocol, ip=ip,
-                                user_id=user_id, project_id=project_id, props=svc_props
+                                user_id=user_id, project_id=project_id, props=svc_props,
+                                **self._recon_job_params(),
                             )
                             stats["services_created"] += 1
                             stats["relationships_created"] += 1
@@ -142,13 +170,26 @@ class OsintMixin:
                                 """
                                 MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime()
-                                ON MATCH SET p.updated_at = datetime()
+                                ON CREATE SET p.state = 'open', p.source = 'shodan', p.updated_at = datetime(),
+                                              p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                              p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                              p.last_seen = $recon_job_started_at,
+                                              p.last_seen_job_id = $recon_job_id
+                                ON MATCH SET p.updated_at = datetime(),
+                                             p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                             p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                             p.last_seen = $recon_job_started_at,
+                                             p.last_seen_job_id = $recon_job_id
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (i)-[:HAS_PORT]->(p)
                                 """,
                                 port=port_num, protocol="tcp", ip=ip,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["ports_created"] += 1
                             stats["relationships_created"] += 1
@@ -172,11 +213,24 @@ class OsintMixin:
                                 """
                                 MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET s.source = 'shodan_rdns', s.status = 'resolved',
-                                              s.discovered_at = datetime(), s.updated_at = datetime()
+                                              s.discovered_at = datetime(), s.updated_at = datetime(),
+                                              s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                              s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                              s.last_seen = $recon_job_started_at,
+                                              s.last_seen_job_id = $recon_job_id
+                                ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                             s.last_seen = $recon_job_started_at,
+                                             s.last_seen_job_id = $recon_job_id
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
                                 """,
-                                name=hostname, ip=ip, user_id=user_id, project_id=project_id
+                                name=hostname, ip=ip, user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["subdomains_created"] += 1
                             stats["relationships_created"] += 1
@@ -202,13 +256,18 @@ class OsintMixin:
                                 ON CREATE SET ed.first_seen_at = datetime()
                                 SET ed.sources = coalesce(ed.sources, []) + CASE WHEN NOT 'shodan_rdns' IN coalesce(ed.sources, []) THEN ['shodan_rdns'] ELSE [] END,
                                     ed.ips_seen = coalesce(ed.ips_seen, []) + CASE WHEN NOT $ip IN coalesce(ed.ips_seen, []) THEN [$ip] ELSE [] END,
-                                    ed.updated_at = datetime()
+                                    ed.updated_at = datetime(),
+                                    ed.first_seen = coalesce(ed.first_seen, $recon_job_started_at),
+                                    ed.first_seen_job_id = coalesce(ed.first_seen_job_id, $recon_job_id),
+                                    ed.last_seen = $recon_job_started_at,
+                                    ed.last_seen_job_id = $recon_job_id
                                 WITH ed
                                 MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                                 MERGE (ed)-[:DISCOVERED_BY]->(d)
                                 """,
                                 ed_domain=hostname, ip=ip, domain=domain,
-                                user_id=user_id, project_id=project_id
+                                user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["relationships_created"] += 1
 
@@ -231,9 +290,18 @@ class OsintMixin:
                             """
                             MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                             ON CREATE SET s.source = 'shodan_dns', s.status = 'resolved',
-                                          s.discovered_at = datetime(), s.updated_at = datetime()
+                                          s.discovered_at = datetime(), s.updated_at = datetime(),
+                                          s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                          s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                          s.last_seen = $recon_job_started_at,
+                                          s.last_seen_job_id = $recon_job_id
+                            ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                         s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                         s.last_seen = $recon_job_started_at,
+                                         s.last_seen_job_id = $recon_job_id
                             """,
-                            name=fqdn, user_id=user_id, project_id=project_id
+                            name=fqdn, user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["subdomains_created"] += 1
 
@@ -256,13 +324,18 @@ class OsintMixin:
                             MERGE (ed:ExternalDomain {domain: $ed_domain, user_id: $user_id, project_id: $project_id})
                             ON CREATE SET ed.first_seen_at = datetime()
                             SET ed.sources = coalesce(ed.sources, []) + CASE WHEN NOT 'shodan_dns' IN coalesce(ed.sources, []) THEN ['shodan_dns'] ELSE [] END,
-                                ed.updated_at = datetime()
+                                ed.updated_at = datetime(),
+                                ed.first_seen = coalesce(ed.first_seen, $recon_job_started_at),
+                                ed.first_seen_job_id = coalesce(ed.first_seen_job_id, $recon_job_id),
+                                ed.last_seen = $recon_job_started_at,
+                                ed.last_seen_job_id = $recon_job_id
                             WITH ed
                             MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                             MERGE (ed)-[:DISCOVERED_BY]->(d)
                             """,
                             ed_domain=fqdn, domain=domain,
-                            user_id=user_id, project_id=project_id
+                            user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
 
                 except Exception as e:
@@ -280,10 +353,20 @@ class OsintMixin:
                         """
                         MERGE (dns:DNSRecord {type: $type, value: $value, subdomain: $subdomain,
                                               user_id: $user_id, project_id: $project_id})
-                        ON CREATE SET dns.source = 'shodan', dns.updated_at = datetime()
+                        ON CREATE SET dns.source = 'shodan',
+                                      dns.updated_at = datetime(),
+                                      dns.first_seen = coalesce(dns.first_seen, $recon_job_started_at),
+                                      dns.first_seen_job_id = coalesce(dns.first_seen_job_id, $recon_job_id),
+                                      dns.last_seen = $recon_job_started_at,
+                                      dns.last_seen_job_id = $recon_job_id
+                        ON MATCH SET dns.first_seen = coalesce(dns.first_seen, $recon_job_started_at),
+                                     dns.first_seen_job_id = coalesce(dns.first_seen_job_id, $recon_job_id),
+                                     dns.last_seen = $recon_job_started_at,
+                                     dns.last_seen_job_id = $recon_job_id
                         """,
                         type=rec_type, value=rec_value, subdomain=fqdn,
-                        user_id=user_id, project_id=project_id
+                        user_id=user_id, project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["dns_records_created"] += 1
 
@@ -293,10 +376,15 @@ class OsintMixin:
                             """
                             MATCH (s:Subdomain {name: $subdomain, user_id: $user_id, project_id: $project_id})
                             MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                            SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             MERGE (s)-[:RESOLVES_TO {record_type: $type, timestamp: datetime()}]->(i)
                             """,
                             subdomain=fqdn, ip=rec_value, type=rec_type,
-                            user_id=user_id, project_id=project_id
+                            user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["relationships_created"] += 1
 
@@ -317,10 +405,19 @@ class OsintMixin:
                         MERGE (v:Vulnerability {id: $vuln_id})
                         ON CREATE SET v.source = $source, v.name = $cve_id,
                                       v.cves = [$cve_id], v.user_id = $user_id,
-                                      v.project_id = $project_id, v.updated_at = datetime()
+                                      v.project_id = $project_id, v.updated_at = datetime(),
+                                      v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                      v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                      v.last_seen = $recon_job_started_at,
+                                      v.last_seen_job_id = $recon_job_id
+                        ON MATCH SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                     v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                     v.last_seen = $recon_job_started_at,
+                                     v.last_seen_job_id = $recon_job_id
                         """,
                         vuln_id=vuln_id, cve_id=cve_id, source=cve_source,
-                        user_id=user_id, project_id=project_id
+                        user_id=user_id, project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -423,11 +520,20 @@ class OsintMixin:
                                 MERGE (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 MERGE (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
                                 ON CREATE SET s.discovered_by = 'urlscan', s.status = 'resolved',
-                                              s.updated_at = datetime()
+                                              s.updated_at = datetime(),
+                                              s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                              s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                              s.last_seen = $recon_job_started_at,
+                                              s.last_seen_job_id = $recon_job_id
+                                ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                             s.last_seen = $recon_job_started_at,
+                                             s.last_seen_job_id = $recon_job_id
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                 """,
                                 domain=domain, subdomain=subdomain,
-                                uid=user_id, pid=project_id
+                                uid=user_id, pid=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["subdomains_created"] += 1
                             stats["relationships_created"] += 1
@@ -437,13 +543,18 @@ class OsintMixin:
                                 MERGE (ed:ExternalDomain {domain: $ed_domain, user_id: $uid, project_id: $pid})
                                 ON CREATE SET ed.first_seen_at = datetime()
                                 SET ed.sources = coalesce(ed.sources, []) + CASE WHEN NOT 'urlscan' IN coalesce(ed.sources, []) THEN ['urlscan'] ELSE [] END,
-                                    ed.updated_at = datetime()
+                                    ed.updated_at = datetime(),
+                                    ed.first_seen = coalesce(ed.first_seen, $recon_job_started_at),
+                                    ed.first_seen_job_id = coalesce(ed.first_seen_job_id, $recon_job_id),
+                                    ed.last_seen = $recon_job_started_at,
+                                    ed.last_seen_job_id = $recon_job_id
                                 WITH ed
                                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 MERGE (ed)-[:DISCOVERED_BY]->(d)
                                 """,
                                 ed_domain=subdomain, domain=domain,
-                                uid=user_id, pid=project_id
+                                uid=user_id, pid=project_id,
+                                **self._recon_job_params(),
                             )
                     except Exception as e:
                         stats["errors"].append(f"Subdomain {subdomain}: {e}")
@@ -462,9 +573,15 @@ class OsintMixin:
                         session.run(
                             """
                             MERGE (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                            SET i += $props, i.updated_at = datetime()
+                            SET i += $props,
+                                i.updated_at = datetime(),
+                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             """,
-                            ip=ip, uid=user_id, pid=project_id, props=props
+                            ip=ip, uid=user_id, pid=project_id, props=props,
+                            **self._recon_job_params(),
                         )
                         stats["ips_enriched"] += 1
                     except Exception as e:
@@ -480,10 +597,15 @@ class OsintMixin:
                                 """
                                 MATCH (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
                                 MERGE (i:IP {address: $ip, user_id: $uid, project_id: $pid})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (s)-[:RESOLVES_TO]->(i)
                                 """,
                                 subdomain=subdomain, ip=ip,
-                                uid=user_id, pid=project_id
+                                uid=user_id, pid=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["relationships_created"] += 1
                         except Exception as e:
@@ -574,10 +696,16 @@ class OsintMixin:
                         result = session.run(
                             """
                             MATCH (bu:BaseURL {url: $base_url, user_id: $uid, project_id: $pid})
-                            SET bu += $props, bu.updated_at = datetime()
+                            SET bu += $props,
+                                bu.updated_at = datetime(),
+                                bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                                bu.last_seen = $recon_job_started_at,
+                                bu.last_seen_job_id = $recon_job_id
                             RETURN bu.url AS url
                             """,
-                            base_url=base_url, uid=user_id, pid=project_id, props=props
+                            base_url=base_url, uid=user_id, pid=project_id, props=props,
+                            **self._recon_job_params(),
                         )
                         if result.single():
                             stats["baseurls_enriched"] += 1
@@ -605,12 +733,21 @@ class OsintMixin:
                         MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url,
                                            user_id: $uid, project_id: $pid})
                         ON CREATE SET e.source = 'urlscan', e.full_url = $full_url,
-                                      e.has_parameters = $has_params, e.updated_at = datetime()
+                                      e.has_parameters = $has_params, e.updated_at = datetime(),
+                                      e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                      e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                      e.last_seen = $recon_job_started_at,
+                                      e.last_seen_job_id = $recon_job_id
+                        ON MATCH SET e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                     e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                     e.last_seen = $recon_job_started_at,
+                                     e.last_seen_job_id = $recon_job_id
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         RETURN e.path AS path
                         """,
                         base_url=base_url, path=path, full_url=full_url,
-                        has_params=has_params, uid=user_id, pid=project_id
+                        has_params=has_params, uid=user_id, pid=project_id,
+                        **self._recon_job_params(),
                     )
                     record = result.single()
                     if record:
@@ -629,12 +766,21 @@ class OsintMixin:
                                                         endpoint_path: $path, baseurl: $base_url,
                                                         user_id: $uid, project_id: $pid})
                                     ON CREATE SET p.source = 'urlscan', p.sample_value = $sample_val,
-                                                  p.is_injectable = false, p.updated_at = datetime()
+                                                  p.is_injectable = false, p.updated_at = datetime(),
+                                                  p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                                  p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                                  p.last_seen = $recon_job_started_at,
+                                                  p.last_seen_job_id = $recon_job_id
+                                    ON MATCH SET p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                                 p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                                 p.last_seen = $recon_job_started_at,
+                                                 p.last_seen_job_id = $recon_job_id
                                     MERGE (e)-[:HAS_PARAMETER]->(p)
                                     """,
                                     path=path, base_url=base_url, param_name=param_name,
                                     sample_val=sample_val[:500],
-                                    uid=user_id, pid=project_id
+                                    uid=user_id, pid=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["parameters_created"] += 1
                                 stats["relationships_created"] += 1
@@ -691,7 +837,11 @@ class OsintMixin:
                             ed.ips_seen = $ips,
                             ed.countries_seen = $countries,
                             ed.times_seen = $times_seen,
-                            ed.updated_at = datetime()
+                            ed.updated_at = datetime(),
+                            ed.first_seen = coalesce(ed.first_seen, $recon_job_started_at),
+                            ed.first_seen_job_id = coalesce(ed.first_seen_job_id, $recon_job_id),
+                            ed.last_seen = $recon_job_started_at,
+                            ed.last_seen_job_id = $recon_job_id
                         RETURN ed.first_seen_at = ed.updated_at AS is_new
                     """, ed_domain=ed_domain, uid=user_id, pid=project_id,
                         sources=ed.get("sources", []),
@@ -703,6 +853,7 @@ class OsintMixin:
                         ips=ed.get("ips_seen", []),
                         countries=ed.get("countries_seen", []),
                         times_seen=ed.get("times_seen", 0),
+                        **self._recon_job_params(),
                     )
                     record = result.single()
                     if record and record["is_new"]:
@@ -787,9 +938,15 @@ class OsintMixin:
                             session.run(
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                                SET i += $props, i.updated_at = datetime()
+                                SET i += $props,
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id, props=ip_props,
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
 
@@ -806,12 +963,21 @@ class OsintMixin:
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'censys', p.updated_at = datetime()
+                                    SET p.source = 'censys', p.updated_at = datetime(),
+                                        p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                        p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                        p.last_seen = $recon_job_started_at,
+                                        p.last_seen_job_id = $recon_job_id
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:HAS_PORT]->(p)
                                     """,
                                     port=int(port_num), protocol=protocol, ip=ip,
                                     user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["ports_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -847,7 +1013,11 @@ class OsintMixin:
                                         MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                             user_id: $user_id, project_id: $project_id})
                                         ON CREATE SET svc.updated_at = datetime()
-                                        SET svc += $props, svc.updated_at = datetime()
+                                        SET svc += $props, svc.updated_at = datetime(),
+                                            svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                            svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                            svc.last_seen = $recon_job_started_at,
+                                            svc.last_seen_job_id = $recon_job_id
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                        user_id: $user_id, project_id: $project_id})
@@ -855,6 +1025,7 @@ class OsintMixin:
                                         """,
                                         name=sname, port=int(port_num), protocol=protocol, ip=ip,
                                         user_id=user_id, project_id=project_id, props=svc_props,
+                                        **self._recon_job_params(),
                                     )
                                     stats["services_merged"] += 1
                                     stats["relationships_created"] += 1
@@ -880,13 +1051,19 @@ class OsintMixin:
                                                 MERGE (c:Certificate {subject_cn: $subject_cn,
                                                                        user_id: $user_id,
                                                                        project_id: $project_id})
-                                                SET c += $props, c.updated_at = datetime()
+                                                SET c += $props,
+                                                    c.updated_at = datetime(),
+                                                    c.first_seen = coalesce(c.first_seen, $recon_job_started_at),
+                                                    c.first_seen_job_id = coalesce(c.first_seen_job_id, $recon_job_id),
+                                                    c.last_seen = $recon_job_started_at,
+                                                    c.last_seen_job_id = $recon_job_id
                                                 WITH c
                                                 MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                                 MERGE (i)-[:HAS_CERTIFICATE]->(c)
                                                 """,
                                                 subject_cn=subject_cn, user_id=user_id,
                                                 project_id=project_id, props=cert_props, ip=ip,
+                                                **self._recon_job_params(),
                                             )
                                             stats["certificates_merged"] += 1
                                             stats["relationships_created"] += 1
@@ -905,11 +1082,20 @@ class OsintMixin:
                                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                                         ON CREATE SET s.discovered_at = datetime(), s.updated_at = datetime()
                                         SET s.source = 'censys_rdns', s.status = 'unverified',
-                                            s.updated_at = datetime()
+                                            s.updated_at = datetime(),
+                                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                            s.last_seen = $recon_job_started_at,
+                                            s.last_seen_job_id = $recon_job_id
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                        SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                            i.last_seen = $recon_job_started_at,
+                                            i.last_seen_job_id = $recon_job_id
                                         MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
                                         """,
                                         name=hostname, ip=ip, user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     session.run(
                                         """
@@ -977,9 +1163,15 @@ class OsintMixin:
                             session.run(
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                                SET i += $props, i.updated_at = datetime()
+                                SET i += $props,
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id, props=ip_props,
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
 
@@ -996,11 +1188,20 @@ class OsintMixin:
                                 MERGE (p:Port {number: $port, protocol: 'tcp', ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                SET p.source = 'fofa', p.updated_at = datetime()
+                                SET p.source = 'fofa', p.updated_at = datetime(),
+                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen_job_id = $recon_job_id
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (i)-[:HAS_PORT]->(p)
                                 """,
                                 port=pnum, ip=ip, user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["ports_merged"] += 1
                             stats["relationships_created"] += 1
@@ -1022,7 +1223,11 @@ class OsintMixin:
                                         svc.version      = CASE WHEN $version <> '' THEN $version ELSE svc.version END,
                                         svc.app_protocol = CASE WHEN $app_proto <> '' THEN $app_proto ELSE svc.app_protocol END,
                                         svc.jarm         = CASE WHEN $jarm <> '' THEN $jarm ELSE svc.jarm END,
-                                        svc.tls_version  = CASE WHEN $tls_ver <> '' THEN $tls_ver ELSE svc.tls_version END
+                                        svc.tls_version  = CASE WHEN $tls_ver <> '' THEN $tls_ver ELSE svc.tls_version END,
+                                        svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                        svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                        svc.last_seen = $recon_job_started_at,
+                                        svc.last_seen_job_id = $recon_job_id
                                     WITH svc
                                     MATCH (p:Port {number: $port, protocol: 'tcp', ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
@@ -1036,6 +1241,7 @@ class OsintMixin:
                                     jarm=row.get("jarm") or "",
                                     tls_ver=row.get("tls_version") or "",
                                     user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["services_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1046,13 +1252,25 @@ class OsintMixin:
                                 session.run(
                                     """
                                     MERGE (c:Certificate {subject_cn: $cn, user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET c.source = 'fofa', c.updated_at = datetime()
+                                    ON CREATE SET c.source = 'fofa', c.updated_at = datetime(),
+                                                  c.first_seen = coalesce(c.first_seen, $recon_job_started_at),
+                                                  c.first_seen_job_id = coalesce(c.first_seen_job_id, $recon_job_id),
+                                                  c.last_seen = $recon_job_started_at,
+                                                  c.last_seen_job_id = $recon_job_id
                                     SET c.issuer       = CASE WHEN $issuer_cn <> '' THEN $issuer_cn ELSE c.issuer END,
                                         c.subject_org  = CASE WHEN $subject_org <> '' THEN $subject_org ELSE c.subject_org END,
                                         c.tls_version  = CASE WHEN $tls_ver <> '' THEN $tls_ver ELSE c.tls_version END,
                                         c.is_valid     = CASE WHEN $cert_valid <> '' THEN ($cert_valid = 'true') ELSE c.is_valid END,
-                                        c.updated_at   = datetime()
+                                        c.updated_at   = datetime(),
+                                        c.first_seen = coalesce(c.first_seen, $recon_job_started_at),
+                                        c.first_seen_job_id = coalesce(c.first_seen_job_id, $recon_job_id),
+                                        c.last_seen = $recon_job_started_at,
+                                        c.last_seen_job_id = $recon_job_id
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:HAS_CERTIFICATE]->(c)
                                     """,
                                     cn=cert_cn,
@@ -1061,6 +1279,7 @@ class OsintMixin:
                                     tls_ver=row.get("tls_version") or "",
                                     cert_valid=str(row.get("certs_valid") or "").lower(),
                                     ip=ip, user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["certificates_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1076,11 +1295,20 @@ class OsintMixin:
                                     """
                                     MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET s.status = 'unverified', s.discovered_at = datetime(), s.updated_at = datetime()
-                                    SET s.source = 'fofa', s.updated_at = datetime()
+                                    SET s.source = 'fofa', s.updated_at = datetime(),
+                                        s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                        s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                        s.last_seen = $recon_job_started_at,
+                                        s.last_seen_job_id = $recon_job_id
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
                                     """,
                                     name=host, ip=ip, user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["subdomains_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1147,7 +1375,11 @@ class OsintMixin:
                                 i.country_name = CASE WHEN i.country_name IS NULL OR i.country_name = '' THEN $country_name ELSE i.country_name END,
                                 i.city = CASE WHEN i.city IS NULL OR i.city = '' THEN $city ELSE i.city END,
                                 i.asn = CASE WHEN i.asn IS NULL OR i.asn = '' THEN $asn ELSE i.asn END,
-                                i.updated_at = datetime()
+                                i.updated_at = datetime(),
+                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             """,
                             address=ip, user_id=user_id, project_id=project_id,
                             pulse=rep.get("pulse_count"),
@@ -1160,6 +1392,7 @@ class OsintMixin:
                             country_name=geo.get("country_name") or "",
                             city=geo.get("city") or "",
                             asn=geo.get("asn") or "",
+                            **self._recon_job_params(),
                         )
                         stats["ips_enriched"] += 1
 
@@ -1189,15 +1422,24 @@ class OsintMixin:
                                         """
                                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                                         ON CREATE SET s.discovered_at = datetime(), s.updated_at = datetime()
-                                        SET s.source = 'otx_passive_dns', s.status = 'unverified', s.updated_at = datetime()
+                                        SET s.source = 'otx_passive_dns', s.status = 'unverified', s.updated_at = datetime(),
+                                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                            s.last_seen = $recon_job_started_at,
+                                            s.last_seen_job_id = $recon_job_id
                                         WITH s
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                        SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                            i.last_seen = $recon_job_started_at,
+                                            i.last_seen_job_id = $recon_job_id
                                         MERGE (s)-[r:RESOLVES_TO {record_type: $record_type}]->(i)
                                         ON CREATE SET r.first_seen = $first_seen, r.last_seen = $last_seen, r.timestamp = datetime()
                                         SET r.last_seen = CASE WHEN $last_seen <> '' THEN $last_seen ELSE r.last_seen END
                                         """,
                                         name=hostname, ip=ip, user_id=user_id, project_id=project_id,
                                         record_type=record_type, first_seen=first_seen, last_seen=last_seen,
+                                        **self._recon_job_params(),
                                     )
                                     stats["subdomains_merged"] += 1
                                     stats["relationships_created"] += 1
@@ -1223,13 +1465,18 @@ class OsintMixin:
                                         ON CREATE SET ed.first_seen_at = datetime()
                                         SET ed.sources = coalesce(ed.sources, []) + CASE WHEN NOT 'otx_passive_dns' IN coalesce(ed.sources, []) THEN ['otx_passive_dns'] ELSE [] END,
                                             ed.ips_seen = coalesce(ed.ips_seen, []) + CASE WHEN NOT $ip IN coalesce(ed.ips_seen, []) THEN [$ip] ELSE [] END,
-                                            ed.updated_at = datetime()
+                                            ed.updated_at = datetime(),
+                                            ed.first_seen = coalesce(ed.first_seen, $recon_job_started_at),
+                                            ed.first_seen_job_id = coalesce(ed.first_seen_job_id, $recon_job_id),
+                                            ed.last_seen = $recon_job_started_at,
+                                            ed.last_seen_job_id = $recon_job_id
                                         WITH ed
                                         MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                                         MERGE (d)-[:HAS_EXTERNAL_DOMAIN]->(ed)
                                         """,
                                         ed_domain=hostname, ip=ip, domain=domain,
                                         user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     stats["external_domains_merged"] += 1
                                     stats["relationships_created"] += 1
@@ -1247,14 +1494,23 @@ class OsintMixin:
                                 session.run(
                                     """
                                     MERGE (m:Malware {hash: $hash, user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET m.first_seen = datetime()
+                                    ON CREATE SET m.first_seen = coalesce(m.first_seen, $recon_job_started_at),
+                                                  m.first_seen_job_id = coalesce(m.first_seen_job_id, $recon_job_id)
                                     SET m.hash_type = $hash_type,
                                         m.file_type = $file_type,
                                         m.file_name = $file_name,
                                         m.source = 'otx',
-                                        m.updated_at = datetime()
+                                        m.updated_at = datetime(),
+                                        m.first_seen = coalesce(m.first_seen, $recon_job_started_at),
+                                        m.first_seen_job_id = coalesce(m.first_seen_job_id, $recon_job_id),
+                                        m.last_seen = $recon_job_started_at,
+                                        m.last_seen_job_id = $recon_job_id
                                     WITH m
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:ASSOCIATED_WITH_MALWARE]->(m)
                                     """,
                                     hash=h, user_id=user_id, project_id=project_id,
@@ -1262,6 +1518,7 @@ class OsintMixin:
                                     file_type=sample.get("file_type") or "",
                                     file_name=sample.get("file_name") or "",
                                     ip=ip,
+                                    **self._recon_job_params(),
                                 )
                                 stats["malware_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1289,9 +1546,17 @@ class OsintMixin:
                                         tp.author_name = $author_name,
                                         tp.targeted_countries = $targeted_countries,
                                         tp.modified = $modified,
-                                        tp.updated_at = datetime()
+                                        tp.updated_at = datetime(),
+                                        tp.first_seen = coalesce(tp.first_seen, $recon_job_started_at),
+                                        tp.first_seen_job_id = coalesce(tp.first_seen_job_id, $recon_job_id),
+                                        tp.last_seen = $recon_job_started_at,
+                                        tp.last_seen_job_id = $recon_job_id
                                     WITH tp
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:APPEARS_IN_PULSE]->(tp)
                                     """,
                                     pulse_id=pulse_id, user_id=user_id, project_id=project_id,
@@ -1305,6 +1570,7 @@ class OsintMixin:
                                     targeted_countries=pulse.get("targeted_countries") or [],
                                     modified=pulse.get("modified") or "",
                                     ip=ip,
+                                    **self._recon_job_params(),
                                 )
                                 stats["threat_pulses_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1363,12 +1629,17 @@ class OsintMixin:
                                 session.run(
                                     """
                                     MERGE (m:Malware {hash: $hash, user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET m.first_seen = datetime()
+                                    ON CREATE SET m.first_seen = coalesce(m.first_seen, $recon_job_started_at),
+                                                  m.first_seen_job_id = coalesce(m.first_seen_job_id, $recon_job_id)
                                     SET m.hash_type = $hash_type,
                                         m.file_type = $file_type,
                                         m.file_name = $file_name,
                                         m.source = 'otx',
-                                        m.updated_at = datetime()
+                                        m.updated_at = datetime(),
+                                        m.first_seen = coalesce(m.first_seen, $recon_job_started_at),
+                                        m.first_seen_job_id = coalesce(m.first_seen_job_id, $recon_job_id),
+                                        m.last_seen = $recon_job_started_at,
+                                        m.last_seen_job_id = $recon_job_id
                                     WITH m
                                     MATCH (d:Domain {name: $dom_name, user_id: $user_id, project_id: $project_id})
                                     MERGE (d)-[:ASSOCIATED_WITH_MALWARE]->(m)
@@ -1378,6 +1649,7 @@ class OsintMixin:
                                     file_type=sample.get("file_type") or "",
                                     file_name=sample.get("file_name") or "",
                                     dom_name=dom_name,
+                                    **self._recon_job_params(),
                                 )
                                 stats["malware_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1405,7 +1677,11 @@ class OsintMixin:
                                         tp.author_name = $author_name,
                                         tp.targeted_countries = $targeted_countries,
                                         tp.modified = $modified,
-                                        tp.updated_at = datetime()
+                                        tp.updated_at = datetime(),
+                                        tp.first_seen = coalesce(tp.first_seen, $recon_job_started_at),
+                                        tp.first_seen_job_id = coalesce(tp.first_seen_job_id, $recon_job_id),
+                                        tp.last_seen = $recon_job_started_at,
+                                        tp.last_seen_job_id = $recon_job_id
                                     WITH tp
                                     MATCH (d:Domain {name: $dom_name, user_id: $user_id, project_id: $project_id})
                                     MERGE (d)-[:APPEARS_IN_PULSE]->(tp)
@@ -1421,6 +1697,7 @@ class OsintMixin:
                                     targeted_countries=pulse.get("targeted_countries") or [],
                                     modified=pulse.get("modified") or "",
                                     dom_name=dom_name,
+                                    **self._recon_job_params(),
                                 )
                                 stats["threat_pulses_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1439,7 +1716,11 @@ class OsintMixin:
                                     """
                                     MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET i.created_at = datetime()
-                                    SET i.updated_at = datetime()
+                                    SET i.updated_at = datetime(),
+                                        i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     WITH i
                                     MATCH (d:Domain {name: $dom_name, user_id: $user_id, project_id: $project_id})
                                     MERGE (d)-[r:HISTORICALLY_RESOLVED_TO]->(i)
@@ -1450,6 +1731,7 @@ class OsintMixin:
                                     first_seen=hist.get("first") or "",
                                     last_seen=hist.get("last") or "",
                                     record_type=hist.get("record_type") or "A",
+                                    **self._recon_job_params(),
                                 )
                                 stats["relationships_created"] += 1
                             except Exception as e2:
@@ -1505,9 +1787,15 @@ class OsintMixin:
                             session.run(
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                                SET i += $props, i.updated_at = datetime()
+                                SET i += $props,
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id, props=ip_props,
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
 
@@ -1526,11 +1814,20 @@ class OsintMixin:
                                 MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                SET p.source = 'netlas', p.updated_at = datetime()
+                                SET p.source = 'netlas', p.updated_at = datetime(),
+                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen_job_id = $recon_job_id
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (i)-[:HAS_PORT]->(p)
                                 """,
                                 port=pnum, protocol=protocol, ip=ip, user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["ports_merged"] += 1
                             stats["relationships_created"] += 1
@@ -1556,7 +1853,11 @@ class OsintMixin:
                                     MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                         user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET svc.updated_at = datetime()
-                                    SET svc += $props, svc.updated_at = datetime()
+                                    SET svc += $props, svc.updated_at = datetime(),
+                                        svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                        svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                        svc.last_seen = $recon_job_started_at,
+                                        svc.last_seen_job_id = $recon_job_id
                                     WITH svc
                                     MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
@@ -1564,6 +1865,7 @@ class OsintMixin:
                                     """,
                                     name=prot_name, port=pnum, protocol=protocol, ip=ip,
                                     user_id=user_id, project_id=project_id, props=svc_props,
+                                    **self._recon_job_params(),
                                 )
                                 stats["services_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1596,7 +1898,11 @@ class OsintMixin:
                                                                      user_id: $user_id,
                                                                      project_id: $project_id})
                                             ON CREATE SET v.created_at = datetime()
-                                            SET v += $props, v.updated_at = datetime()
+                                            SET v += $props, v.updated_at = datetime(),
+                                                v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                                v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                                v.last_seen = $recon_job_started_at,
+                                                v.last_seen_job_id = $recon_job_id
                                             WITH v
                                             MATCH (svc:Service {name: $svc_name, port_number: $port,
                                                                 ip_address: $ip,
@@ -1606,6 +1912,7 @@ class OsintMixin:
                                             """,
                                             cve_id=cve_id, user_id=user_id, project_id=project_id,
                                             props=vuln_props, svc_name=prot_name, port=pnum, ip=ip,
+                                            **self._recon_job_params(),
                                         )
                                         stats["vulnerabilities_merged"] += 1
                                         stats["relationships_created"] += 1
@@ -1703,7 +2010,11 @@ class OsintMixin:
                                     i.asn = CASE WHEN i.asn IS NOT NULL THEN i.asn ELSE $asn END,
                                     i.as_owner = CASE WHEN i.as_owner IS NOT NULL THEN i.as_owner ELSE $as_owner END,
                                     i.country = CASE WHEN i.country IS NOT NULL THEN i.country ELSE $country END,
-                                    i.updated_at = datetime()
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id,
                                 reputation=rep.get("reputation"),
@@ -1722,6 +2033,7 @@ class OsintMixin:
                                 asn=rep.get("asn"),
                                 as_owner=rep.get("as_owner"),
                                 country=rep.get("country"),
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
                         except Exception as e:
@@ -1772,9 +2084,15 @@ class OsintMixin:
                             session.run(
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                                SET i += $props, i.updated_at = datetime()
+                                SET i += $props,
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id, props=ip_props,
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
 
@@ -1793,12 +2111,21 @@ class OsintMixin:
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'zoomeye', p.updated_at = datetime()
+                                    SET p.source = 'zoomeye', p.updated_at = datetime(),
+                                        p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                        p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                        p.last_seen = $recon_job_started_at,
+                                        p.last_seen_job_id = $recon_job_id
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:HAS_PORT]->(p)
                                     """,
                                     port=pnum, protocol=protocol, ip=ip,
                                     user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["ports_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -1825,7 +2152,11 @@ class OsintMixin:
                                                             ip_address: $ip,
                                                             user_id: $user_id, project_id: $project_id})
                                         ON CREATE SET svc.updated_at = datetime()
-                                        SET svc += $props, svc.updated_at = datetime()
+                                        SET svc += $props, svc.updated_at = datetime(),
+                                            svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                            svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                            svc.last_seen = $recon_job_started_at,
+                                            svc.last_seen_job_id = $recon_job_id
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol,
                                                        ip_address: $ip,
@@ -1834,6 +2165,7 @@ class OsintMixin:
                                         """,
                                         name=svc_name, port=pnum, protocol=protocol, ip=ip,
                                         props=svc_props, user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     stats["services_merged"] += 1
                                     stats["relationships_created"] += 1
@@ -1857,14 +2189,27 @@ class OsintMixin:
                                         ON CREATE SET s.source = 'zoomeye_rdns',
                                                       s.status = 'resolved',
                                                       s.discovered_at = datetime(),
-                                                      s.updated_at = datetime()
+                                                      s.updated_at = datetime(),
+                                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                                      s.last_seen = $recon_job_started_at,
+                                                      s.last_seen_job_id = $recon_job_id
+                                        ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                                     s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                                     s.last_seen = $recon_job_started_at,
+                                                     s.last_seen_job_id = $recon_job_id
                                         MERGE (i:IP {address: $ip, user_id: $user_id,
                                                      project_id: $project_id})
+                                        SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                            i.last_seen = $recon_job_started_at,
+                                            i.last_seen_job_id = $recon_job_id
                                         MERGE (s)-[:RESOLVES_TO {record_type: 'A',
                                                                   timestamp: datetime()}]->(i)
                                         """,
                                         name=hostname_val, ip=ip,
                                         user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     stats["subdomains_merged"] += 1
                                     stats["relationships_created"] += 1
@@ -1987,9 +2332,15 @@ class OsintMixin:
                             session.run(
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                                SET i += $props, i.updated_at = datetime()
+                                SET i += $props,
+                                    i.updated_at = datetime(),
+                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip, user_id=user_id, project_id=project_id, props=ip_props,
+                                **self._recon_job_params(),
                             )
                             stats["ips_enriched"] += 1
 
@@ -2009,12 +2360,21 @@ class OsintMixin:
                                     MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                    user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET p.state = 'open', p.updated_at = datetime()
-                                    SET p.source = 'criminalip', p.updated_at = datetime()
+                                    SET p.source = 'criminalip', p.updated_at = datetime(),
+                                        p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                        p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                        p.last_seen = $recon_job_started_at,
+                                        p.last_seen_job_id = $recon_job_id
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen_job_id = $recon_job_id
                                     MERGE (i)-[:HAS_PORT]->(p)
                                     """,
                                     port=pnum, protocol=proto, ip=ip,
                                     user_id=user_id, project_id=project_id,
+                                    **self._recon_job_params(),
                                 )
                                 stats["ports_merged"] += 1
                                 stats["relationships_created"] += 1
@@ -2030,7 +2390,11 @@ class OsintMixin:
                                         SET svc.source = 'criminalip',
                                             svc.version = $version,
                                             svc.banner  = $banner,
-                                            svc.updated_at = datetime()
+                                            svc.updated_at = datetime(),
+                                            svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                            svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
+                                            svc.last_seen = $recon_job_started_at,
+                                            svc.last_seen_job_id = $recon_job_id
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
                                                        user_id: $user_id, project_id: $project_id})
@@ -2040,6 +2404,7 @@ class OsintMixin:
                                         version=pentry.get("app_version"),
                                         banner=(pentry.get("banner") or "")[:500] or None,
                                         user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     stats["services_created"] += 1
                                     stats["relationships_created"] += 1
@@ -2060,10 +2425,19 @@ class OsintMixin:
                                         ON CREATE SET v.source = 'criminalip', v.name = $cve_id,
                                                       v.cves = [$cve_id], v.cvss = $cvss,
                                                       v.user_id = $user_id, v.project_id = $project_id,
-                                                      v.updated_at = datetime()
+                                                      v.updated_at = datetime(),
+                                                      v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                                      v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                                      v.last_seen = $recon_job_started_at,
+                                                      v.last_seen_job_id = $recon_job_id
+                                        ON MATCH SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                                     v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                                                     v.last_seen = $recon_job_started_at,
+                                                     v.last_seen_job_id = $recon_job_id
                                         """,
                                         vuln_id=vuln_id, cve_id=cve_id, cvss=cvss,
                                         user_id=user_id, project_id=project_id,
+                                        **self._recon_job_params(),
                                     )
                                     stats["vulnerabilities_created"] += 1
 
@@ -2144,13 +2518,22 @@ class OsintMixin:
                             """
                             MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                             ON CREATE SET s.discovered_at = datetime(), s.updated_at = datetime(),
-                                          s.source = 'uncover', s.status = 'unverified'
+                                          s.source = 'uncover', s.status = 'unverified',
+                                          s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                          s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                          s.last_seen = $recon_job_started_at,
+                                          s.last_seen_job_id = $recon_job_id
                             SET s.uncover_sources = $sources,
                                 s.uncover_total_raw = $total_raw,
-                                s.uncover_total_deduped = $total_deduped
+                                s.uncover_total_deduped = $total_deduped,
+                                s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                s.last_seen = $recon_job_started_at,
+                                s.last_seen_job_id = $recon_job_id
                             """,
                             name=hostname, user_id=user_id, project_id=project_id,
                             sources=sources, total_raw=total_raw, total_deduped=total_deduped,
+                            **self._recon_job_params(),
                         )
                         stats["subdomains_created"] += 1
                         if domain:
@@ -2180,12 +2563,17 @@ class OsintMixin:
                                 i.uncover_sources = $sources,
                                 i.uncover_source_counts = $source_counts_str,
                                 i.uncover_total_raw = $total_raw,
-                                i.uncover_total_deduped = $total_deduped
+                                i.uncover_total_deduped = $total_deduped,
+                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = $recon_job_started_at,
+                                i.last_seen_job_id = $recon_job_id
                             """,
                             address=ip, user_id=user_id, project_id=project_id,
                             sources=sources,
                             source_counts_str=str(source_counts),
                             total_raw=total_raw, total_deduped=total_deduped,
+                            **self._recon_job_params(),
                         )
                         stats["ips_created"] += 1
 
@@ -2211,12 +2599,25 @@ class OsintMixin:
                                 MERGE (p:Port {number: $port, protocol: 'tcp', ip_address: $ip,
                                                user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET p.state = 'open', p.source = 'uncover',
-                                              p.updated_at = datetime()
+                                              p.updated_at = datetime(),
+                                              p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                              p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                              p.last_seen = $recon_job_started_at,
+                                              p.last_seen_job_id = $recon_job_id
+                                ON MATCH SET p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                             p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                                             p.last_seen = $recon_job_started_at,
+                                             p.last_seen_job_id = $recon_job_id
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                SET i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen_job_id = $recon_job_id
                                 MERGE (i)-[:HAS_PORT]->(p)
                                 """,
                                 port=int(port_num), ip=ip,
                                 user_id=user_id, project_id=project_id,
+                                **self._recon_job_params(),
                             )
                             stats["relationships_created"] += 1
                     except Exception as e:
@@ -2230,9 +2631,18 @@ class OsintMixin:
                             """
                             MERGE (e:Endpoint {url: $url, user_id: $user_id, project_id: $project_id})
                             ON CREATE SET e.discovered_at = datetime(), e.updated_at = datetime(),
-                                          e.source = 'uncover', e.method = 'GET'
+                                          e.source = 'uncover', e.method = 'GET',
+                                          e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                          e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                          e.last_seen = $recon_job_started_at,
+                                          e.last_seen_job_id = $recon_job_id
+                            ON MATCH SET e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                         e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                                         e.last_seen = $recon_job_started_at,
+                                         e.last_seen_job_id = $recon_job_id
                             """,
                             url=url, user_id=user_id, project_id=project_id,
+                            **self._recon_job_params(),
                         )
                         stats["urls_created"] += 1
                         # Link Endpoint to Domain

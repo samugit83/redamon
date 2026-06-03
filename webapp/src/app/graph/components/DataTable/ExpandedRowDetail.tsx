@@ -12,6 +12,13 @@ interface ExpandedRowDetailProps {
   row: TableRow
 }
 
+const PROPERTY_LABELS: Record<string, string> = {
+  first_seen: 'First seen',
+  last_seen: 'Last seen',
+  first_seen_job_id: 'First seen job',
+  last_seen_job_id: 'Last seen job',
+}
+
 export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: ExpandedRowDetailProps) {
   const properties = Object.entries(row.node.properties)
     .filter(([key]) => !HIDDEN_KEYS.has(key))
@@ -42,7 +49,7 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
             <div className={styles.propsGrid}>
               {properties.map(([key, value]) => (
                 <div key={key} className={styles.propRow}>
-                  <span className={styles.propKey}>{key}</span>
+                  <span className={styles.propKey}>{PROPERTY_LABELS[key] ?? key}</span>
                   <span className={styles.propValue}>
                     {key === 'name' && nodeUrl
                       ? <ExternalLink href={nodeUrl}>{String(value)}</ExternalLink>
