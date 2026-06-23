@@ -57,6 +57,11 @@ export const OPENAI_COMPAT_PRESETS: LlmProviderPreset[] = [
     description: 'Deepinfra cloud',
   },
   {
+    name: 'Atlas Cloud',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    description: 'Atlas Cloud — 300+ models via one OpenAI-compatible endpoint',
+  },
+  {
     name: 'Custom',
     baseUrl: '',
     description: 'Enter a custom base URL',
