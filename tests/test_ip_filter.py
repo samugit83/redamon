@@ -53,6 +53,18 @@ class TestIsNonRoutableIp(unittest.TestCase):
     def test_ipv6_public(self):
         self.assertFalse(is_non_routable_ip("2607:f8b0:4004:800::200e"))
 
+    def test_strip_whitespace_from_public_ip(self):
+        """IPs surrounded by spaces must still be classified correctly."""
+        self.assertFalse(is_non_routable_ip(" 8.8.8.8 "))
+        self.assertFalse(is_non_routable_ip("\t1.1.1.1\n"))
+        self.assertTrue(is_non_routable_ip("  10.0.0.1  "))
+
+    def test_ipv6_bracket_notation(self):
+        """Bracket-wrapped IPv6 addresses (HTTP Host header style) must parse."""
+        self.assertTrue(is_non_routable_ip("[::1]"))
+        self.assertFalse(is_non_routable_ip("[2607:f8b0:4004:800::200e]"))
+        self.assertTrue(is_non_routable_ip(" [::1] "))
+
 
 class TestCollectCdnIps(unittest.TestCase):
 
