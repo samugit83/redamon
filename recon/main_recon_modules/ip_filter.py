@@ -29,7 +29,13 @@ def is_non_routable_ip(ip_str: str) -> bool:
 
     Covers RFC 1918 private, loopback, link-local, CGNAT (100.64.0.0/10),
     and IETF reserved ranges.
+
+    Leading/trailing whitespace and IPv6 bracket notation (``[::1]``) are
+    stripped before parsing so callers don't need to normalise the string
+    themselves.
     """
+    # Normalise: strip whitespace, remove surrounding brackets for IPv6
+    ip_str = ip_str.strip().strip("[]")
     try:
         addr = ipaddress.ip_address(ip_str)
     except ValueError:
