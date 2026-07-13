@@ -123,6 +123,12 @@ broker.ALLOWED_RW_PREFIXES = ["/tmp/redamon"]
 print("=== pull policy ===")
 ok, _ = broker.validate_pull("/v1.43/images/create?fromImage=projectdiscovery/naabu&tag=latest")
 check("ALLOW pull allowlisted", ok is True)
+ok, _ = broker.validate_pull("/v1.51/images/create?fromImage=docker.io%2Fprojectdiscovery%2Fnaabu&tag=latest")
+check("ALLOW encoded Docker Hub pull", ok is True)
+ok, _ = broker.validate_pull("/v1.51/images/create?fromImage=ghcr.io%2Fzaproxy%2Fzaproxy&tag=stable")
+check("ALLOW encoded GHCR pull", ok is True)
+ok, _ = broker.validate_pull("/v1.51/images/create?fromImage=docker.io%2Flibrary%2Falpine&tag=latest")
+check("ALLOW encoded official Docker Hub pull", ok is True)
 ok, _ = broker.validate_pull("/v1.43/images/create?fromImage=attacker/evil&tag=latest")
 check("DENY pull non-allowlisted", ok is False)
 

@@ -354,6 +354,9 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
                 const preset = OPENAI_COMPAT_PRESETS.find(p => p.name === e.target.value)
                 if (preset && preset.baseUrl) {
                   updateForm('baseUrl', preset.baseUrl)
+                  if (preset.defaultModel) {
+                    updateForm('modelIdentifier', preset.defaultModel)
+                  }
                 }
               }}
             >

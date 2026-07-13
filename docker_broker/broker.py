@@ -41,6 +41,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 # --------------------------------------------------------------------------
 # Policy (allowlist). Seeded from env so it can be kept in sync with V3.
@@ -122,12 +123,22 @@ def _log(msg: str) -> None:
 def _image_allowed(image: str) -> bool:
     if not image:
         return False
-    if image in ALLOWED_IMAGES:
-        return True
-    # also accept the implicit ":latest" form (docker normalizes "alpine" ->
-    # "alpine:latest"); accept if either spelling is allowlisted.
-    if ":" not in image.split("/")[-1] and f"{image}:latest" in ALLOWED_IMAGES:
-        return True
+    # Docker's pull API canonicalizes Docker Hub names to docker.io/<repo> and
+    # official images to docker.io/library/<name>.  Compare those canonical
+    # spellings with the short allowlist form, but do not strip other registries.
+    candidates = {image}
+    if image.startswith("docker.io/"):
+        short = image[len("docker.io/"):]
+        candidates.add(short)
+        if short.startswith("library/"):
+            candidates.add(short[len("library/"):])
+    for candidate in candidates:
+        if candidate in ALLOWED_IMAGES:
+            return True
+        # Also accept the implicit ":latest" spelling.
+        if ":" not in candidate.split("/")[-1] \
+                and f"{candidate}:latest" in ALLOWED_IMAGES:
+            return True
     return False
 
 
@@ -302,11 +313,12 @@ def inject_limits(cfg: dict) -> dict:
 
 def validate_pull(path: str) -> tuple[bool, str]:
     """Validate docker pull (POST /images/create?fromImage=...&tag=...)."""
-    q = path.split("?", 1)[1] if "?" in path else ""
-    params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
-    from_image = params.get("fromImage", "")
-    tag = params.get("tag", "")
-    # URL-decode minimally (handle %2F etc. is rare for these)
+    # Docker percent-encodes repository separators (for example
+    # docker.io%2Fprojectdiscovery%2Fnuclei).  parse_qs performs the required
+    # decoding before the value is compared with the allowlist.
+    params = parse_qs(urlsplit(path).query, keep_blank_values=True)
+    from_image = params.get("fromImage", [""])[0]
+    tag = params.get("tag", [""])[0]
     image = f"{from_image}:{tag}" if tag else from_image
     if _image_allowed(image) or _image_allowed(from_image):
         return True, "ok"

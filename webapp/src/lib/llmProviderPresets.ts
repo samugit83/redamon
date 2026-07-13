@@ -11,11 +11,18 @@ export interface LlmProviderPreset {
   name: string
   baseUrl: string
   description: string
+  defaultModel?: string
 }
 
 export type ProviderIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
 export const OPENAI_COMPAT_PRESETS: LlmProviderPreset[] = [
+  {
+    name: 'Ollama remoto (10.172.124.113)',
+    baseUrl: 'http://10.172.124.113:11434/v1',
+    description: 'gpt-oss:latest en la red local',
+    defaultModel: 'gpt-oss:latest',
+  },
   {
     name: 'Ollama',
     baseUrl: 'http://host.docker.internal:11434/v1',
