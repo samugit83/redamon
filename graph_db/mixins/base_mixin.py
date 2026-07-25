@@ -23,8 +23,6 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 class BaseMixin:
-    _SEEN_TIMESTAMP_BATCH_SIZE = 1000
-
     def __init__(self, uri=None, user=None, password=None):
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER")
@@ -103,94 +101,6 @@ class BaseMixin:
         except Exception as e:
             print(f"[!][graph-db] Neo4j connection failed: {e}")
             return False
-
-    def normalize_recon_seen_timestamps(self) -> dict[str, int]:
-        """Convert project-scoped legacy string seen timestamps to datetimes."""
-        stats = {
-            "first_seen_converted": 0,
-            "last_seen_converted": 0,
-            "malformed_first_seen": 0,
-            "malformed_last_seen": 0,
-        }
-
-        with self.driver.session() as session:
-            for property_name in ("first_seen", "last_seen"):
-                converted, malformed = self._normalize_recon_seen_property(
-                    session, property_name
-                )
-                stats[f"{property_name}_converted"] = converted
-                stats[f"malformed_{property_name}"] = malformed
-
-        return stats
-
-    def _normalize_recon_seen_property(self, session, property_name: str):
-        after_element_id = None
-        converted = 0
-        malformed = 0
-
-        while True:
-            records = list(
-                session.run(
-                    f"""
-                    MATCH (n)
-                    WHERE n.project_id IS NOT NULL
-                      AND n.{property_name} IS :: STRING NOT NULL
-                      AND (
-                          $after_element_id IS NULL
-                          OR elementId(n) > $after_element_id
-                      )
-                    RETURN elementId(n) AS element_id,
-                           n.{property_name} AS value
-                    ORDER BY element_id
-                    LIMIT $batch_size
-                    """,
-                    after_element_id=after_element_id,
-                    batch_size=self._SEEN_TIMESTAMP_BATCH_SIZE,
-                )
-            )
-            if not records:
-                break
-
-            update_rows = []
-            for record in records:
-                value = record["value"]
-                try:
-                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                except ValueError:
-                    malformed += 1
-                    continue
-
-                if parsed.tzinfo is None or parsed.utcoffset() is None:
-                    malformed += 1
-                    continue
-
-                update_rows.append(
-                    {
-                        "element_id": record["element_id"],
-                        "value": parsed.astimezone(timezone.utc).isoformat(),
-                    }
-                )
-
-            if update_rows:
-                result = session.run(
-                    f"""
-                    UNWIND $rows AS row
-                    MATCH (n)
-                    WHERE elementId(n) = row.element_id
-                      AND n.project_id IS NOT NULL
-                      AND n.{property_name} IS :: STRING NOT NULL
-                    SET n.{property_name} = datetime(row.value)
-                    RETURN count(n) AS converted
-                    """,
-                    rows=update_rows,
-                )
-                record = result.single()
-                if record:
-                    converted += record["converted"]
-
-            after_element_id = records[-1]["element_id"]
-
-        return converted, malformed
 
     def clear_project_data(self, user_id: str, project_id: str) -> dict:
         """
