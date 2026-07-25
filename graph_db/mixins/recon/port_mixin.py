@@ -70,9 +70,9 @@ class PortMixin:
                         SET i.is_cdn = $is_cdn,
                             i.cdn_name = $cdn_name,
                             i.updated_at = datetime(),
-                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                            i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                             i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                            i.last_seen = $recon_job_started_at,
+                            i.last_seen = datetime($recon_job_started_at),
                             i.last_seen_job_id = $recon_job_id
                         """,
                         address=ip_addr, user_id=user_id, project_id=project_id,
@@ -100,9 +100,9 @@ class PortMixin:
                             SET i.is_cdn = $is_cdn,
                                 i.cdn_name = $cdn_name,
                                 i.updated_at = datetime(),
-                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                                 i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                                i.last_seen = $recon_job_started_at,
+                                i.last_seen = datetime($recon_job_started_at),
                                 i.last_seen_job_id = $recon_job_id
                             """,
                             address=ip_addr, user_id=user_id, project_id=project_id,
@@ -129,9 +129,9 @@ class PortMixin:
                             MERGE (p:Port {number: $port_number, protocol: $protocol, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                             SET p.state = 'open',
                                 p.updated_at = datetime(),
-                                p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                 p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                p.last_seen = $recon_job_started_at,
+                                p.last_seen = datetime($recon_job_started_at),
                                 p.last_seen_job_id = $recon_job_id
                             """,
                             port_number=port_number, protocol=protocol, ip_addr=ip_addr,
@@ -159,9 +159,9 @@ class PortMixin:
                                 """
                                 MERGE (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                                 SET svc.updated_at = datetime(),
-                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen = coalesce(svc.first_seen, datetime($recon_job_started_at)),
                                     svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
-                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen = datetime($recon_job_started_at),
                                     svc.last_seen_job_id = $recon_job_id
                                 """,
                                 service_name=service_name, port_number=port_number, ip_addr=ip_addr,
@@ -199,9 +199,9 @@ class PortMixin:
                                     SET t.category = $category,
                                         t.source = 'ai-port-catalog',
                                         t.updated_at = datetime(),
-                                        t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                                        t.first_seen = coalesce(t.first_seen, datetime($recon_job_started_at)),
                                         t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
-                                        t.last_seen = $recon_job_started_at,
+                                        t.last_seen = datetime($recon_job_started_at),
                                         t.last_seen_job_id = $recon_job_id
                                     """,
                                     name=ai_name, category=ai_category,
@@ -257,9 +257,9 @@ class PortMixin:
                             d.port_scan_ports_config = $ports_config,
                             d.port_scan_total_open_ports = $total_open_ports,
                             d.updated_at = datetime(),
-                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                             d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                            d.last_seen = $recon_job_started_at,
+                            d.last_seen = datetime($recon_job_started_at),
                             d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,
@@ -336,9 +336,9 @@ class PortMixin:
                                 p.cpe = $cpe,
                                 p.nmap_scanned = true,
                                 p.updated_at = datetime(),
-                                p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                 p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                p.last_seen = $recon_job_started_at,
+                                p.last_seen = datetime($recon_job_started_at),
                                 p.last_seen_job_id = $recon_job_id
                             """,
                             port_number=port_number, ip_addr=ip_addr,
@@ -357,9 +357,9 @@ class PortMixin:
                                     svc.version = $version,
                                     svc.cpe = $cpe,
                                     svc.updated_at = datetime(),
-                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen = coalesce(svc.first_seen, datetime($recon_job_started_at)),
                                     svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
-                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen = datetime($recon_job_started_at),
                                     svc.last_seen_job_id = $recon_job_id
                                 """,
                                 port_number=port_number, ip_addr=ip_addr,
@@ -377,9 +377,9 @@ class PortMixin:
                                 MATCH (svc:Service {port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                                 SET svc.ai_runtime_version = $ai_runtime_version,
                                     svc.updated_at = datetime(),
-                                    svc.first_seen = coalesce(svc.first_seen, $recon_job_started_at),
+                                    svc.first_seen = coalesce(svc.first_seen, datetime($recon_job_started_at)),
                                     svc.first_seen_job_id = coalesce(svc.first_seen_job_id, $recon_job_id),
-                                    svc.last_seen = $recon_job_started_at,
+                                    svc.last_seen = datetime($recon_job_started_at),
                                     svc.last_seen_job_id = $recon_job_id
                                 """,
                                 port_number=port_number, ip_addr=ip_addr,
@@ -419,9 +419,9 @@ class PortMixin:
                             t.source = 'nmap',
                             t.cpe = $cpe,
                             t.updated_at = datetime(),
-                            t.first_seen = coalesce(t.first_seen, $recon_job_started_at),
+                            t.first_seen = coalesce(t.first_seen, datetime($recon_job_started_at)),
                             t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
-                            t.last_seen = $recon_job_started_at,
+                            t.last_seen = datetime($recon_job_started_at),
                             t.last_seen_job_id = $recon_job_id
                         """,
                         name=tech_name, version=version or "",
@@ -488,9 +488,9 @@ class PortMixin:
                             v.state = $state,
                             v.cve_id = $cve_id,
                             v.updated_at = datetime(),
-                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                             v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                            v.last_seen = $recon_job_started_at,
+                            v.last_seen = datetime($recon_job_started_at),
                             v.last_seen_job_id = $recon_job_id
                         """,
                         name=script_id, ip_addr=ip_addr, port_number=port_number,

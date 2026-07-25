@@ -101,9 +101,9 @@ class VhostSniMixin:
                         """
                         MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
                         SET i += $props,
-                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                            i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                             i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                            i.last_seen = $recon_job_started_at,
+                            i.last_seen = datetime($recon_job_started_at),
                             i.last_seen_job_id = $recon_job_id
                         RETURN count(i) AS matched
                         """,
@@ -161,13 +161,13 @@ class VhostSniMixin:
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $id})
-                        ON CREATE SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                        ON CREATE SET v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                                       v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id)
                         SET v += $props,
                             v.updated_at = datetime(),
-                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                             v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                            v.last_seen = $recon_job_started_at,
+                            v.last_seen = datetime($recon_job_started_at),
                             v.last_seen_job_id = $recon_job_id
                         """,
                         id=vuln_id, props=vuln_props,
@@ -192,15 +192,15 @@ class VhostSniMixin:
                         MERGE (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
                         ON CREATE SET s.source = 'vhost_sni_enum',
                                       s.created_at = datetime(),
-                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                       s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen = datetime($recon_job_started_at),
                                       s.last_seen_job_id = $recon_job_id
                         SET s += $sprops,
                             s.updated_at = datetime(),
-                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                            s.last_seen = $recon_job_started_at,
+                            s.last_seen = datetime($recon_job_started_at),
                             s.last_seen_job_id = $recon_job_id
                         WITH s
                         MATCH (v:Vulnerability {id: $id})
@@ -292,26 +292,26 @@ class VhostSniMixin:
                                       b.scheme = $scheme,
                                       b.host = $host,
                                       b.port = $port,
-                                      b.first_seen = coalesce(b.first_seen, $recon_job_started_at),
+                                      b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
                                       b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
-                                      b.last_seen = $recon_job_started_at,
+                                      b.last_seen = datetime($recon_job_started_at),
                                       b.last_seen_job_id = $recon_job_id
                         SET b.updated_at = datetime(),
-                            b.first_seen = coalesce(b.first_seen, $recon_job_started_at),
+                            b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
                             b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
-                            b.last_seen = $recon_job_started_at,
+                            b.last_seen = datetime($recon_job_started_at),
                             b.last_seen_job_id = $recon_job_id
                         WITH b
                         MERGE (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
                         ON CREATE SET s.source = 'vhost_sni_enum',
                                       s.created_at = datetime(),
-                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                       s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen = datetime($recon_job_started_at),
                                       s.last_seen_job_id = $recon_job_id
-                        ON MATCH SET s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                        ON MATCH SET s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                     s.last_seen = $recon_job_started_at,
+                                     s.last_seen = datetime($recon_job_started_at),
                                      s.last_seen_job_id = $recon_job_id
                         MERGE (s)-[:HAS_BASEURL]->(b)
                         RETURN count(b) AS created

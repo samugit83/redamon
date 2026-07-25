@@ -141,9 +141,14 @@ class CacheMixin:
                             user_id: $user_id,
                             project_id: $project_id
                         })
-                        SET v += $props
+                        SET v += $props,
+                            v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
+                            v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                            v.last_seen = datetime($recon_job_started_at),
+                            v.last_seen_job_id = $recon_job_id
                         """,
                         id=vuln_id, user_id=user_id, project_id=project_id, props=vuln_props,
+                        **self._recon_job_params(),
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -160,18 +165,27 @@ class CacheMixin:
                         })
                           ON CREATE SET bu.source = 'cache_poisoning',
                                         bu.updated_at = datetime()
+                        SET bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
+                            bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
+                            bu.last_seen = datetime($recon_job_started_at),
+                            bu.last_seen_job_id = $recon_job_id
                         MERGE (e:Endpoint {
                             path: $path, method: 'GET', baseurl: $baseurl,
                             user_id: $user_id, project_id: $project_id
                         })
                           ON CREATE SET e.source = 'cache_poisoning',
                                         e.created_at = datetime()
+                        SET e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
+                            e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                            e.last_seen = datetime($recon_job_started_at),
+                            e.last_seen_job_id = $recon_job_id
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         MERGE (e)-[:HAS_VULNERABILITY]->(v)
                         MERGE (bu)-[:HAS_VULNERABILITY]->(v)
                         """,
                         vuln_id=vuln_id, baseurl=baseurl, path=path,
                         user_id=user_id, project_id=project_id,
+                        **self._recon_job_params(),
                     )
                     stats["relationships_created"] += 2
 

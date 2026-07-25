@@ -16,9 +16,14 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from graph_db import Neo4jClient
+from graph_db.mixins.cache_mixin import CacheMixin
 
 _UID = "itest-cache-user"
 _PID = "itest-cache-project"
+_RECON_JOB_PARAMS = {
+    "recon_job_id": "job-cache-123",
+    "recon_job_started_at": "2026-07-24T10:11:12Z",
+}
 
 
 def _neo4j_available() -> bool:
@@ -54,6 +59,88 @@ def _finding(url="https://shop.itest/home", header="X-Forwarded-Host", impact="o
         },
         "cross_vantage": False,
     }
+
+
+class _FakeResult:
+    pass
+
+
+class _FakeSession:
+    def __init__(self):
+        self.queries = []
+
+    def run(self, query, **params):
+        self.queries.append((query, params))
+        return _FakeResult()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeDriver:
+    def __init__(self, session):
+        self._session = session
+
+    def session(self):
+        return self._session
+
+
+class _FakeCacheClient(CacheMixin):
+    def __init__(self, session):
+        self.driver = _FakeDriver(session)
+
+    def _recon_job_params(self):
+        return dict(_RECON_JOB_PARAMS)
+
+
+def _assert_seen_stamped(test_case, query, alias):
+    test_case.assertIn(
+        f"{alias}.first_seen = coalesce("
+        f"{alias}.first_seen, datetime($recon_job_started_at))",
+        query,
+    )
+    test_case.assertIn(
+        f"{alias}.first_seen_job_id = coalesce("
+        f"{alias}.first_seen_job_id, $recon_job_id)",
+        query,
+    )
+    test_case.assertIn(
+        f"{alias}.last_seen = datetime($recon_job_started_at)",
+        query,
+    )
+    test_case.assertIn(f"{alias}.last_seen_job_id = $recon_job_id", query)
+
+
+class TestCacheScanSeenStamping(unittest.TestCase):
+    def test_every_cache_node_write_is_seen_stamped_with_job_params(self):
+        session = _FakeSession()
+        stats = _FakeCacheClient(session).update_graph_from_cache_scan(
+            _sample_recon([_finding()]), _UID, _PID
+        )
+        self.assertEqual(stats["errors"], [])
+
+        self.assertEqual(len(session.queries), 2)
+        vuln_query, vuln_params = session.queries[0]
+        wiring_query, wiring_params = session.queries[1]
+
+        self.assertIn("SET v += $props", vuln_query)
+        _assert_seen_stamped(self, vuln_query, "v")
+        self.assertIn("MERGE (bu:BaseURL", wiring_query)
+        self.assertIn("MERGE (e:Endpoint", wiring_query)
+        _assert_seen_stamped(self, wiring_query, "bu")
+        _assert_seen_stamped(self, wiring_query, "e")
+
+        for params in (vuln_params, wiring_params):
+            for name, value in _RECON_JOB_PARAMS.items():
+                self.assertEqual(params.get(name), value)
+
+        for relationship in ("HAS_ENDPOINT", "HAS_VULNERABILITY"):
+            self.assertIn(relationship, wiring_query)
+        self.assertNotIn("r.first_seen", wiring_query)
+        self.assertNotIn("r.last_seen", wiring_query)
 
 
 @unittest.skipUnless(_neo4j_available(), "Neo4j not reachable")

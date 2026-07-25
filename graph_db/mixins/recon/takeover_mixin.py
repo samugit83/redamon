@@ -120,13 +120,13 @@ class TakeoverMixin:
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $id})
-                        ON CREATE SET v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                        ON CREATE SET v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                                       v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id)
                         SET v += $props,
                             v.updated_at = datetime(),
-                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                             v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                            v.last_seen = $recon_job_started_at,
+                            v.last_seen = datetime($recon_job_started_at),
                             v.last_seen_job_id = $recon_job_id
                         """,
                         id=vuln_id, props=vuln_props,
@@ -173,14 +173,14 @@ class TakeoverMixin:
                             MERGE (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
                             ON CREATE SET s.source = 'takeover_scan',
                                           s.created_at = datetime(),
-                                          s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                          s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                           s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                          s.last_seen = $recon_job_started_at,
+                                          s.last_seen = datetime($recon_job_started_at),
                                           s.last_seen_job_id = $recon_job_id
                             SET s.updated_at = datetime(),
-                                s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                 s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                s.last_seen = $recon_job_started_at,
+                                s.last_seen = datetime($recon_job_started_at),
                                 s.last_seen_job_id = $recon_job_id
                             WITH s
                             MATCH (v:Vulnerability {id: $id})

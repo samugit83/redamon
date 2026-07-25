@@ -117,9 +117,9 @@ class DomainMixin:
                     """
                     MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
                     SET d += $props,
-                        d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                        d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                         d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                        d.last_seen = $recon_job_started_at,
+                        d.last_seen = datetime($recon_job_started_at),
                         d.last_seen_job_id = $recon_job_id
                     """,
                     name=root_domain, user_id=user_id, project_id=project_id, props=domain_props,
@@ -156,9 +156,9 @@ class DomainMixin:
                             s.status = coalesce(s.status, $status),
                             s.discovered_at = coalesce(s.discovered_at, datetime()),
                             s.updated_at = datetime(),
-                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                            s.last_seen = $recon_job_started_at,
+                            s.last_seen = datetime($recon_job_started_at),
                             s.last_seen_job_id = $recon_job_id,
                             s.ai_service_hint = CASE
                                 WHEN $ai_service_hint IS NULL THEN s.ai_service_hint
@@ -206,9 +206,9 @@ class DomainMixin:
                                         MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                                         SET i.version = $version,
                                             i.updated_at = datetime(),
-                                            i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                            i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                                             i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                                            i.last_seen = $recon_job_started_at,
+                                            i.last_seen = datetime($recon_job_started_at),
                                             i.last_seen_job_id = $recon_job_id
                                         """,
                                         address=ip_addr, user_id=user_id, project_id=project_id,
@@ -248,9 +248,9 @@ class DomainMixin:
                                             SET dns.user_id = $user_id,
                                                 dns.project_id = $project_id,
                                                 dns.updated_at = datetime(),
-                                                dns.first_seen = coalesce(dns.first_seen, $recon_job_started_at),
+                                                dns.first_seen = coalesce(dns.first_seen, datetime($recon_job_started_at)),
                                                 dns.first_seen_job_id = coalesce(dns.first_seen_job_id, $recon_job_id),
-                                                dns.last_seen = $recon_job_started_at,
+                                                dns.last_seen = datetime($recon_job_started_at),
                                                 dns.last_seen_job_id = $recon_job_id
                                             """,
                                             type=record_type, value=str(value), subdomain=subdomain,
@@ -338,9 +338,9 @@ class DomainMixin:
                     """
                     MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
                     SET d += $props,
-                        d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                        d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                         d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                        d.last_seen = $recon_job_started_at,
+                        d.last_seen = datetime($recon_job_started_at),
                         d.last_seen_job_id = $recon_job_id
                     """,
                     name=mock_domain, user_id=user_id, project_id=project_id, props=domain_props,
@@ -382,14 +382,14 @@ class DomainMixin:
                         """
                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                         ON CREATE SET s += $props, s.status = 'resolved',
-                                      s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                      s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                       s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                      s.last_seen = $recon_job_started_at,
+                                      s.last_seen = datetime($recon_job_started_at),
                                       s.last_seen_job_id = $recon_job_id
                         ON MATCH SET s += $props,
-                                     s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                     s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                      s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                     s.last_seen = $recon_job_started_at,
+                                     s.last_seen = datetime($recon_job_started_at),
                                      s.last_seen_job_id = $recon_job_id
                         WITH s
                         WHERE s.status IS NULL
@@ -436,9 +436,9 @@ class DomainMixin:
                             """
                             MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
                             SET i += $props,
-                                i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                                 i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                                i.last_seen = $recon_job_started_at,
+                                i.last_seen = datetime($recon_job_started_at),
                                 i.last_seen_job_id = $recon_job_id
                             """,
                             addr=ip, uid=user_id, pid=project_id, props=ip_props,

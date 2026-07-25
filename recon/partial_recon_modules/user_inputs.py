@@ -26,9 +26,14 @@ def _create_user_subdomains_in_graph(domain: str, subdomains: list, user_id: str
                     MERGE (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                     ON CREATE SET s.source = 'partial_recon_user_input',
                                   s.updated_at = datetime()
+                    SET s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
+                        s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                        s.last_seen = datetime($recon_job_started_at),
+                        s.last_seen_job_id = $recon_job_id
                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                     """,
                     domain=domain, sub=sub, uid=user_id, pid=project_id,
+                    **graph_client._recon_job_params(),
                 )
                 # Create IP nodes and RESOLVES_TO relationships
                 for bucket in ("ipv4", "ipv6"):
@@ -39,12 +44,17 @@ def _create_user_subdomains_in_graph(domain: str, subdomains: list, user_id: str
                             ON CREATE SET i.version = $version,
                                           i.source = 'partial_recon_user_input',
                                           i.updated_at = datetime()
+                            SET i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                i.last_seen = datetime($recon_job_started_at),
+                                i.last_seen_job_id = $recon_job_id
                             WITH i
                             MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                             MERGE (s)-[:RESOLVES_TO]->(i)
                             """,
                             addr=addr, uid=user_id, pid=project_id,
                             version=bucket, sub=sub,
+                            **graph_client._recon_job_params(),
                         )
             if subdomains:
                 print(f"[+][Partial Recon] Created/merged {len(subdomains)} user subdomain nodes in graph")

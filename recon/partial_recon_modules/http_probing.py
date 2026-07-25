@@ -178,9 +178,14 @@ def run_httpx(config: dict) -> None:
                                         s.status = coalesce(s.status, 'resolved'),
                                         s.discovered_at = coalesce(s.discovered_at, datetime()),
                                         s.updated_at = datetime(),
-                                        s.source = 'partial_recon_user_input'
+                                        s.source = 'partial_recon_user_input',
+                                        s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
+                                        s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                        s.last_seen = datetime($recon_job_started_at),
+                                        s.last_seen_job_id = $recon_job_id
                                     """,
                                     name=hostname, uid=user_id, pid=project_id,
+                                    **graph_client._recon_job_params(),
                                 )
                                 session.run(
                                     """
@@ -196,9 +201,15 @@ def run_httpx(config: dict) -> None:
                                         session.run(
                                             """
                                             MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                                            SET i.version = $version, i.updated_at = datetime()
+                                            SET i.version = $version,
+                                                i.updated_at = datetime(),
+                                                i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                                i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                                i.last_seen = datetime($recon_job_started_at),
+                                                i.last_seen_job_id = $recon_job_id
                                             """,
                                             addr=ip_addr, uid=user_id, pid=project_id, version=ip_version,
+                                            **graph_client._recon_job_params(),
                                         )
                                         record_type = "A" if ip_version == "ipv4" else "AAAA"
                                         session.run(
@@ -441,13 +452,19 @@ def run_httpx(config: dict) -> None:
                                 session.run(
                                     """
                                     MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                                    SET i.version = $version, i.updated_at = datetime()
+                                    SET i.version = $version,
+                                        i.updated_at = datetime(),
+                                        i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = datetime($recon_job_started_at),
+                                        i.last_seen_job_id = $recon_job_id
                                     WITH i
                                     MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                     MERGE (s)-[:RESOLVES_TO {record_type: $rtype}]->(i)
                                     """,
                                     addr=ip_addr, uid=user_id, pid=project_id,
                                     version=ip_version, sub=ip_attach_to, rtype=record_type,
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked {len(user_ip_addrs)} IPs to {ip_attach_to} via RESOLVES_TO")
                         elif user_input_id:
@@ -456,13 +473,19 @@ def run_httpx(config: dict) -> None:
                                 session.run(
                                     """
                                     MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                                    SET i.version = $version, i.updated_at = datetime()
+                                    SET i.version = $version,
+                                        i.updated_at = datetime(),
+                                        i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = datetime($recon_job_started_at),
+                                        i.last_seen_job_id = $recon_job_id
                                     WITH i
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(i)
                                     """,
                                     addr=ip_addr, uid=user_id, pid=project_id,
                                     version=ip_version, ui_id=user_input_id,
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats

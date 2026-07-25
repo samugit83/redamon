@@ -135,9 +135,9 @@ class ResourceMixin:
                                     e.ai_interface_type = COALESCE($ai_interface_type, e.ai_interface_type),
                                     e.is_ai_rag_ingest = COALESCE($is_ai_rag_ingest, e.is_ai_rag_ingest),
                                     e.updated_at = datetime(),
-                                    e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                    e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                                     e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                                    e.last_seen = $recon_job_started_at,
+                                    e.last_seen = datetime($recon_job_started_at),
                                     e.last_seen_job_id = $recon_job_id
                                 """,
                                 path=path, method=method, baseurl=base_url,
@@ -162,13 +162,13 @@ class ResourceMixin:
                                 MERGE (bu:BaseURL {url: $baseurl, user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET bu.source = 'resource_enum',
                                               bu.updated_at = datetime(),
-                                              bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                              bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                               bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                              bu.last_seen = $recon_job_started_at,
+                                              bu.last_seen = datetime($recon_job_started_at),
                                               bu.last_seen_job_id = $recon_job_id
-                                ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                ON MATCH SET bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                              bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                             bu.last_seen = $recon_job_started_at,
+                                             bu.last_seen = datetime($recon_job_started_at),
                                              bu.last_seen_job_id = $recon_job_id
                                 WITH bu
                                 MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
@@ -213,9 +213,9 @@ class ResourceMixin:
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
                                     p.updated_at = datetime(),
-                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                     p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen = datetime($recon_job_started_at),
                                     p.last_seen_job_id = $recon_job_id
                                 """,
                                 name=param_name, position="query", endpoint_path=path, baseurl=base_url,
@@ -270,9 +270,9 @@ class ResourceMixin:
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
                                     p.updated_at = datetime(),
-                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                     p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen = datetime($recon_job_started_at),
                                     p.last_seen_job_id = $recon_job_id
                                 """,
                                 name=param_name, position="body", endpoint_path=path, baseurl=base_url,
@@ -364,9 +364,9 @@ class ResourceMixin:
                             e.form_found_at_pages = $found_at_pages,
                             e.form_input_names = $input_names,
                             e.form_count = $form_count,
-                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                             e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                            e.last_seen = $recon_job_started_at,
+                            e.last_seen = datetime($recon_job_started_at),
                             e.last_seen_job_id = $recon_job_id
                         """,
                         path=path, method=method, baseurl=baseurl,
@@ -430,9 +430,9 @@ class ResourceMixin:
                             s.sample = $sample,
                             s.discovered_at = $discovered_at,
                             s.updated_at = datetime(),
-                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                            s.last_seen = $recon_job_started_at,
+                            s.last_seen = datetime($recon_job_started_at),
                             s.last_seen_job_id = $recon_job_id
                         WITH s
                         MATCH (bu:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
@@ -468,9 +468,9 @@ class ResourceMixin:
                             d.resource_enum_total_parameters = $total_parameters,
                             d.resource_enum_total_forms = $total_forms,
                             d.updated_at = datetime(),
-                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                             d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                            d.last_seen = $recon_job_started_at,
+                            d.last_seen = datetime($recon_job_started_at),
                             d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,

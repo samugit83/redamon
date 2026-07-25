@@ -156,12 +156,17 @@ def run_shodan(config: dict) -> None:
                                         ON CREATE SET i.version = $version,
                                                       i.source = 'partial_recon_user_input',
                                                       i.created_at = datetime()
+                                        SET i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                            i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                            i.last_seen = datetime($recon_job_started_at),
+                                            i.last_seen_job_id = $recon_job_id
                                         WITH i
                                         MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                         MERGE (s)-[:RESOLVES_TO]->(i)
                                         """,
                                         addr=ip_str, uid=user_id, pid=project_id,
                                         version=version, sub=ip_attach_to,
+                                        **graph_client._recon_job_params(),
                                     )
                                 print(f"[+][Partial Recon] Linked {len(user_ips)} IPs to {ip_attach_to}")
                             else:
@@ -177,10 +182,15 @@ def run_shodan(config: dict) -> None:
                                               ui.values = $ips,
                                               ui.created_at = datetime(),
                                               ui.tool = 'Shodan'
+                                SET ui.first_seen = coalesce(ui.first_seen, datetime($recon_job_started_at)),
+                                    ui.first_seen_job_id = coalesce(ui.first_seen_job_id, $recon_job_id),
+                                    ui.last_seen = datetime($recon_job_started_at),
+                                    ui.last_seen_job_id = $recon_job_id
                                 MERGE (d)-[:HAS_USER_INPUT]->(ui)
                                 """,
                                 domain=domain, uid=user_id, pid=project_id,
                                 ui_id=user_input_id, ips=user_ips,
+                                **graph_client._recon_job_params(),
                             )
                             for ip_str in user_ips:
                                 version = _classify_ip(ip_str)
@@ -190,12 +200,17 @@ def run_shodan(config: dict) -> None:
                                     ON CREATE SET i.version = $version,
                                                   i.source = 'partial_recon_user_input',
                                                   i.created_at = datetime()
+                                    SET i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
+                                        i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
+                                        i.last_seen = datetime($recon_job_started_at),
+                                        i.last_seen_job_id = $recon_job_id
                                     WITH i
                                     MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(i)
                                     """,
                                     addr=ip_str, uid=user_id, pid=project_id,
                                     version=version, ui_id=user_input_id,
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Created UserInput node for {len(user_ips)} IPs")
             else:
@@ -589,9 +604,14 @@ def run_osint_enrichment(config: dict) -> None:
                                 ON CREATE SET ui.source = 'OsintEnrichment',
                                               ui.created_at = datetime(),
                                               ui.label = 'Custom IPs for OSINT enrichment'
+                                SET ui.first_seen = coalesce(ui.first_seen, datetime($recon_job_started_at)),
+                                    ui.first_seen_job_id = coalesce(ui.first_seen_job_id, $recon_job_id),
+                                    ui.last_seen = datetime($recon_job_started_at),
+                                    ui.last_seen_job_id = $recon_job_id
                                 MERGE (d)-[:HAS_USER_INPUT]->(ui)
                                 """,
                                 uid=user_id, pid=project_id, ui_id=user_input_id,
+                                **gc._recon_job_params(),
                             )
                             # Link each IP to UserInput
                             for raw_ip in user_ips:
@@ -608,9 +628,14 @@ def run_osint_enrichment(config: dict) -> None:
                                         """
                                         MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                         MERGE (ip:IP {address: $addr, user_id: $uid, project_id: $pid})
+                                        SET ip.first_seen = coalesce(ip.first_seen, datetime($recon_job_started_at)),
+                                            ip.first_seen_job_id = coalesce(ip.first_seen_job_id, $recon_job_id),
+                                            ip.last_seen = datetime($recon_job_started_at),
+                                            ip.last_seen_job_id = $recon_job_id
                                         MERGE (ui)-[:PRODUCED]->(ip)
                                         """,
                                         uid=user_id, pid=project_id, ui_id=user_input_id, addr=ip_addr,
+                                        **gc._recon_job_params(),
                                     )
                             print(f"[+][Partial Recon] Created UserInput -> PRODUCED -> IP links")
                         elif ip_attach_to:
@@ -629,9 +654,18 @@ def run_osint_enrichment(config: dict) -> None:
                                         """
                                         MERGE (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                         MERGE (ip:IP {address: $addr, user_id: $uid, project_id: $pid})
+                                        SET s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
+                                            s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
+                                            s.last_seen = datetime($recon_job_started_at),
+                                            s.last_seen_job_id = $recon_job_id,
+                                            ip.first_seen = coalesce(ip.first_seen, datetime($recon_job_started_at)),
+                                            ip.first_seen_job_id = coalesce(ip.first_seen_job_id, $recon_job_id),
+                                            ip.last_seen = datetime($recon_job_started_at),
+                                            ip.last_seen_job_id = $recon_job_id
                                         MERGE (s)-[:RESOLVES_TO]->(ip)
                                         """,
                                         uid=user_id, pid=project_id, sub=ip_attach_to, addr=ip_addr,
+                                        **gc._recon_job_params(),
                                     )
                             print(f"[+][Partial Recon] Created Subdomain -> RESOLVES_TO -> IP links")
         except Exception as e:

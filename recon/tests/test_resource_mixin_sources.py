@@ -25,6 +25,12 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 from graph_db.mixins.recon.resource_mixin import ResourceMixin  # noqa: E402
 
 
+_RECON_JOB_PARAMS = {
+    "recon_job_id": "job-resource-sources-123",
+    "recon_job_started_at": "2026-07-24T10:11:12Z",
+}
+
+
 def _make_mixin_with_captured_session():
     """
     Build a ResourceMixin-using class plus a session mock whose every
@@ -37,7 +43,11 @@ def _make_mixin_with_captured_session():
     def fake_run(query, **kwargs):
         captured.append((query, kwargs))
         result = MagicMock()
-        result.single.return_value = None
+        result.single.return_value = (
+            {"linked": 0}
+            if "RETURN count(*) AS linked" in query
+            else None
+        )
         result.__iter__ = lambda self: iter([])
         return result
 
@@ -50,6 +60,9 @@ def _make_mixin_with_captured_session():
     class _Client(ResourceMixin):
         def __init__(self):
             self.driver = driver
+
+        def _recon_job_params(self):
+            return dict(_RECON_JOB_PARAMS)
 
     return _Client(), captured
 
@@ -113,12 +126,36 @@ class TestResourceMixinSourcesPersistence(unittest.TestCase):
         client, captured = _make_mixin_with_captured_session()
         recon_data = _recon_data_for({"/api/users": ["zap_ajax_spider"]})
 
-        client.update_graph_from_resource_enum(recon_data, "u1", "p1")
+        stats = client.update_graph_from_resource_enum(recon_data, "u1", "p1")
 
+        self.assertEqual(stats["errors"], [])
         ep_runs = _endpoint_runs(captured)
         self.assertEqual(len(ep_runs), 1)
-        _query, params = ep_runs[0]
+        query, params = ep_runs[0]
         self.assertEqual(params.get("sources"), ["zap_ajax_spider"])
+        self.assertEqual(
+            params.get("recon_job_id"),
+            _RECON_JOB_PARAMS["recon_job_id"],
+        )
+        self.assertEqual(
+            params.get("recon_job_started_at"),
+            _RECON_JOB_PARAMS["recon_job_started_at"],
+        )
+        self.assertIn(
+            "e.first_seen = coalesce("
+            "e.first_seen, datetime($recon_job_started_at))",
+            query,
+        )
+        self.assertIn(
+            "e.first_seen_job_id = coalesce("
+            "e.first_seen_job_id, $recon_job_id)",
+            query,
+        )
+        self.assertIn(
+            "e.last_seen = datetime($recon_job_started_at)",
+            query,
+        )
+        self.assertIn("e.last_seen_job_id = $recon_job_id", query)
 
     def test_katana_sources_reaches_cypher(self):
         """Sanity: same path works for any crawler tag, not just ZAP."""

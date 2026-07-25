@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -70,6 +72,38 @@ def test_graph_job_context_uses_env_values():
     }
 
 
+def test_graph_job_context_normalizes_aware_timestamp_to_utc_seconds():
+    with patch.dict(
+        os.environ,
+        {"RECON_JOB_STARTED_AT": "2026-05-29T16:15:30.123456+02:00"},
+        clear=True,
+    ):
+        base = make_base_without_init()
+        base._init_recon_job_context()
+
+    assert base.recon_job_started_at == "2026-05-29T14:15:30Z"
+
+
+def test_graph_job_context_rejects_naive_explicit_timestamp():
+    with patch.dict(
+        os.environ, {"RECON_JOB_STARTED_AT": "2026-05-29T14:15:30"}, clear=True
+    ):
+        base = make_base_without_init()
+
+        with pytest.raises(ValueError, match=r"RECON_JOB_STARTED_AT.*timezone"):
+            base._init_recon_job_context()
+
+
+def test_graph_job_context_rejects_invalid_explicit_timestamp():
+    with patch.dict(
+        os.environ, {"RECON_JOB_STARTED_AT": "not-a-timestamp"}, clear=True
+    ):
+        base = make_base_without_init()
+
+        with pytest.raises(ValueError, match="RECON_JOB_STARTED_AT"):
+            base._init_recon_job_context()
+
+
 def test_graph_job_context_generates_fallback_values():
     with patch.dict(os.environ, {}, clear=True):
         base = make_base_without_init()
@@ -96,8 +130,8 @@ def test_node_seen_set_clause_preserves_first_seen_and_updates_last_seen():
     clause = base._node_seen_set_clause("d")
 
     assert clause == (
-        "d.first_seen = coalesce(d.first_seen, $recon_job_started_at), "
+        "d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)), "
         "d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id), "
-        "d.last_seen = $recon_job_started_at, "
+        "d.last_seen = datetime($recon_job_started_at), "
         "d.last_seen_job_id = $recon_job_id"
     )

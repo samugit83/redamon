@@ -225,11 +225,16 @@ def run_katana(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     MERGE (b)-[:DISCOVERED_FROM]->(parent)
                                     """,
                                     parent_url=url_attach_to, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
                         elif needs_user_input:
@@ -255,6 +260,10 @@ def run_katana(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     WITH b
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(b)
@@ -262,6 +271,7 @@ def run_katana(config: dict) -> None:
                                     ui_id=user_input_id, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats
@@ -483,11 +493,16 @@ def run_hakrawler(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     MERGE (b)-[:DISCOVERED_FROM]->(parent)
                                     """,
                                     parent_url=url_attach_to, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
                         elif needs_user_input:
@@ -513,6 +528,10 @@ def run_hakrawler(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     WITH b
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(b)
@@ -520,6 +539,7 @@ def run_hakrawler(config: dict) -> None:
                                     ui_id=user_input_id, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats
@@ -823,11 +843,16 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     MERGE (b)-[:DISCOVERED_FROM]->(parent)
                                     """,
                                     parent_url=url_attach_to, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
                         elif needs_user_input:
@@ -853,6 +878,10 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     WITH b
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(b)
@@ -860,6 +889,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                     ui_id=user_input_id, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats
@@ -1155,11 +1185,16 @@ def run_ffuf(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     MERGE (b)-[:DISCOVERED_FROM]->(parent)
                                     """,
                                     parent_url=url_attach_to, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
                         elif needs_user_input:
@@ -1184,6 +1219,10 @@ def run_ffuf(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     WITH b
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(b)
@@ -1191,6 +1230,7 @@ def run_ffuf(config: dict) -> None:
                                     ui_id=user_input_id, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats
@@ -1766,11 +1806,16 @@ def run_jsluice(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     MERGE (b)-[:DISCOVERED_FROM]->(parent)
                                     """,
                                     parent_url=url_attach_to, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
                         elif needs_user_input:
@@ -1795,6 +1840,10 @@ def run_jsluice(config: dict) -> None:
                                     ON CREATE SET b.source = 'partial_recon_user_input',
                                                   b.host = $host,
                                                   b.updated_at = datetime()
+                                    SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                                        b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                                        b.last_seen = datetime($recon_job_started_at),
+                                        b.last_seen_job_id = $recon_job_id
                                     WITH b
                                     MATCH (ui:UserInput {id: $ui_id})
                                     MERGE (ui)-[:PRODUCED]->(b)
@@ -1802,6 +1851,7 @@ def run_jsluice(config: dict) -> None:
                                     ui_id=user_input_id, url=base_url,
                                     uid=user_id, pid=project_id,
                                     host=parsed.netloc.split(":")[0],
+                                    **graph_client._recon_job_params(),
                                 )
                             graph_client.update_user_input_status(
                                 user_input_id, "completed", stats

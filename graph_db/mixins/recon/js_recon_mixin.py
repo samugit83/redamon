@@ -43,9 +43,9 @@ class JsReconMixin:
             MERGE (jf:JsReconFinding {id: $id})
             SET jf += $props,
                 jf.updated_at = datetime(),
-                jf.first_seen = coalesce(jf.first_seen, $recon_job_started_at),
+                jf.first_seen = coalesce(jf.first_seen, datetime($recon_job_started_at)),
                 jf.first_seen_job_id = coalesce(jf.first_seen_job_id, $recon_job_id),
-                jf.last_seen = $recon_job_started_at,
+                jf.last_seen = datetime($recon_job_started_at),
                 jf.last_seen_job_id = $recon_job_id
         """
 
@@ -560,9 +560,9 @@ class JsReconMixin:
                             s.validation_info = $validation_info,
                             s.discovered_at = $discovered_at,
                             s.updated_at = datetime(),
-                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                            s.last_seen = $recon_job_started_at,
+                            s.last_seen = datetime($recon_job_started_at),
                             s.last_seen_job_id = $recon_job_id
                         """,
                         id=node_id, user_id=user_id, project_id=project_id,
@@ -638,9 +638,9 @@ class JsReconMixin:
                             e.endpoint_type = $ep_type,
                             e._js_recon_created = true,
                             e.updated_at = datetime(),
-                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                             e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                            e.last_seen = $recon_job_started_at,
+                            e.last_seen = datetime($recon_job_started_at),
                             e.last_seen_job_id = $recon_job_id
                         ON MATCH SET e.id = COALESCE(e.id, $id),
                             e.js_recon_source = true,
@@ -650,9 +650,9 @@ class JsReconMixin:
                             e.resolved_url = CASE WHEN $resolved_url <> '' THEN $resolved_url ELSE e.resolved_url END,
                             e.validation_status = COALESCE($validation_status, e.validation_status),
                             e.updated_at = datetime(),
-                            e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                            e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                             e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                            e.last_seen = $recon_job_started_at,
+                            e.last_seen = datetime($recon_job_started_at),
                             e.last_seen_job_id = $recon_job_id
                         WITH e, COALESCE(e._js_recon_created, false) AS created
                         REMOVE e._js_recon_created
@@ -772,9 +772,9 @@ class JsReconMixin:
                             SET s.ai_provider = $sdk_name,
                                 s.ai_finding_id = $ai_finding_id,
                                 s.updated_at = datetime(),
-                                s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                                s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                                 s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                                s.last_seen = $recon_job_started_at,
+                                s.last_seen = datetime($recon_job_started_at),
                                 s.last_seen_job_id = $recon_job_id
                             RETURN count(s) AS enriched
                             """,

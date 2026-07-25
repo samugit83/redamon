@@ -270,9 +270,9 @@ class VulnMixin:
                                 e.full_url = $full_url,
                                 e.source = 'katana_crawl',
                                 e.updated_at = datetime(),
-                                e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                                 e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                                e.last_seen = $recon_job_started_at,
+                                e.last_seen = datetime($recon_job_started_at),
                                 e.last_seen_job_id = $recon_job_id
                             """,
                             path=path, method=method, baseurl=base_url,
@@ -291,13 +291,13 @@ class VulnMixin:
                             MERGE (bu:BaseURL {url: $baseurl, user_id: $user_id, project_id: $project_id})
                             ON CREATE SET bu.source = 'resource_enum',
                                           bu.updated_at = datetime(),
-                                          bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                          bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                           bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                          bu.last_seen = $recon_job_started_at,
+                                          bu.last_seen = datetime($recon_job_started_at),
                                           bu.last_seen_job_id = $recon_job_id
-                            ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                            ON MATCH SET bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                          bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                         bu.last_seen = $recon_job_started_at,
+                                         bu.last_seen = datetime($recon_job_started_at),
                                          bu.last_seen_job_id = $recon_job_id
                             WITH bu
                             MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
@@ -326,9 +326,9 @@ class VulnMixin:
                                         p.sample_value = $sample_value,
                                         p.is_injectable = false,
                                         p.updated_at = datetime(),
-                                        p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                        p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                         p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                        p.last_seen = $recon_job_started_at,
+                                        p.last_seen = datetime($recon_job_started_at),
                                         p.last_seen_job_id = $recon_job_id
                                     """,
                                     name=param_name, position="query", endpoint_path=path, baseurl=base_url,
@@ -459,9 +459,9 @@ class VulnMixin:
                             MERGE (v:Vulnerability {id: $id})
                             SET v += $props,
                                 v.updated_at = datetime(),
-                                v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                                 v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                                v.last_seen = $recon_job_started_at,
+                                v.last_seen = datetime($recon_job_started_at),
                                 v.last_seen_job_id = $recon_job_id
                             """,
                             id=vuln_id, props=vuln_props,
@@ -488,9 +488,9 @@ class VulnMixin:
                                     e.has_parameters = true,
                                     e.source = 'vuln_scan',
                                     e.updated_at = datetime(),
-                                    e.first_seen = coalesce(e.first_seen, $recon_job_started_at),
+                                    e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
                                     e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
-                                    e.last_seen = $recon_job_started_at,
+                                    e.last_seen = datetime($recon_job_started_at),
                                     e.last_seen_job_id = $recon_job_id
                                 """,
                                 path=vuln_path, method=fuzzing_method, baseurl=vuln_base_url,
@@ -506,13 +506,13 @@ class VulnMixin:
                                 MERGE (bu:BaseURL {url: $baseurl, user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET bu.source = 'vuln_scan',
                                               bu.updated_at = datetime(),
-                                              bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                              bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                               bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                              bu.last_seen = $recon_job_started_at,
+                                              bu.last_seen = datetime($recon_job_started_at),
                                               bu.last_seen_job_id = $recon_job_id
-                                ON MATCH SET bu.first_seen = coalesce(bu.first_seen, $recon_job_started_at),
+                                ON MATCH SET bu.first_seen = coalesce(bu.first_seen, datetime($recon_job_started_at)),
                                              bu.first_seen_job_id = coalesce(bu.first_seen_job_id, $recon_job_id),
-                                             bu.last_seen = $recon_job_started_at,
+                                             bu.last_seen = datetime($recon_job_started_at),
                                              bu.last_seen_job_id = $recon_job_id
                                 WITH bu
                                 MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
@@ -551,9 +551,9 @@ class VulnMixin:
                                     p.project_id = $project_id,
                                     p.is_injectable = true,
                                     p.updated_at = datetime(),
-                                    p.first_seen = coalesce(p.first_seen, $recon_job_started_at),
+                                    p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
                                     p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
-                                    p.last_seen = $recon_job_started_at,
+                                    p.last_seen = datetime($recon_job_started_at),
                                     p.last_seen_job_id = $recon_job_id
                                 """,
                                 name=fuzzing_param, position=fuzzing_position, endpoint_path=vuln_path, baseurl=vuln_base_url,
@@ -824,9 +824,9 @@ class VulnMixin:
                             MERGE (v:Vulnerability {id: $id})
                             SET v += $props,
                                 v.updated_at = datetime(),
-                                v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                                v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                                 v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                                v.last_seen = $recon_job_started_at,
+                                v.last_seen = datetime($recon_job_started_at),
                                 v.last_seen_job_id = $recon_job_id
                             """,
                             id=vuln_id, props=vuln_props,
@@ -842,9 +842,9 @@ class VulnMixin:
                                 """
                                 MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime(),
-                                    i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                    i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                                     i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                                    i.last_seen = $recon_job_started_at,
+                                    i.last_seen = datetime($recon_job_started_at),
                                     i.last_seen_job_id = $recon_job_id
                                 """,
                                 address=ip_address, user_id=user_id, project_id=project_id,
@@ -954,9 +954,9 @@ class VulnMixin:
                         MERGE (v:Vulnerability {id: $id})
                         SET v += $props,
                             v.updated_at = datetime(),
-                            v.first_seen = coalesce(v.first_seen, $recon_job_started_at),
+                            v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
                             v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
-                            v.last_seen = $recon_job_started_at,
+                            v.last_seen = datetime($recon_job_started_at),
                             v.last_seen_job_id = $recon_job_id
                         """,
                         id=vuln_id, props=vuln_props,
@@ -1117,9 +1117,9 @@ class VulnMixin:
                             d.vuln_scan_medium_count = $medium_count,
                             d.vuln_scan_low_count = $low_count,
                             d.updated_at = datetime(),
-                            d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                            d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                             d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                            d.last_seen = $recon_job_started_at,
+                            d.last_seen = datetime($recon_job_started_at),
                             d.last_seen_job_id = $recon_job_id
                         """,
                         root_domain=root_domain, user_id=user_id, project_id=project_id,

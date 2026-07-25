@@ -38,9 +38,9 @@ class UserInputMixin:
                     ui.created_at = datetime(),
                     ui.user_id = $user_id,
                     ui.project_id = $project_id,
-                    ui.first_seen = coalesce(ui.first_seen, $recon_job_started_at),
+                    ui.first_seen = coalesce(ui.first_seen, datetime($recon_job_started_at)),
                     ui.first_seen_job_id = coalesce(ui.first_seen_job_id, $recon_job_id),
-                    ui.last_seen = $recon_job_started_at,
+                    ui.last_seen = datetime($recon_job_started_at),
                     ui.last_seen_job_id = $recon_job_id
                 """,
                 id=node_id,
@@ -57,13 +57,13 @@ class UserInputMixin:
                 """
                 MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
                 ON CREATE SET d.updated_at = datetime(),
-                              d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                              d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                               d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                              d.last_seen = $recon_job_started_at,
+                              d.last_seen = datetime($recon_job_started_at),
                               d.last_seen_job_id = $recon_job_id
-                ON MATCH SET d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                ON MATCH SET d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                              d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                             d.last_seen = $recon_job_started_at,
+                             d.last_seen = datetime($recon_job_started_at),
                              d.last_seen_job_id = $recon_job_id
                 WITH d
                 MATCH (ui:UserInput {id: $ui_id})
@@ -89,9 +89,14 @@ class UserInputMixin:
             session.run(
                 """
                 MATCH (ui:UserInput {id: $id})
-                SET ui += $props
+                SET ui += $props,
+                    ui.first_seen = coalesce(ui.first_seen, datetime($recon_job_started_at)),
+                    ui.first_seen_job_id = coalesce(ui.first_seen_job_id, $recon_job_id),
+                    ui.last_seen = datetime($recon_job_started_at),
+                    ui.last_seen_job_id = $recon_job_id
                 """,
                 id=user_input_id, props=props,
+                **self._recon_job_params(),
             )
 
     def update_graph_from_partial_discovery(
@@ -143,14 +148,14 @@ class UserInputMixin:
                 """
                 MERGE (d:Domain {name: $name, user_id: $user_id, project_id: $project_id})
                 ON CREATE SET d.updated_at = datetime(),
-                              d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                              d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                               d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                              d.last_seen = $recon_job_started_at,
+                              d.last_seen = datetime($recon_job_started_at),
                               d.last_seen_job_id = $recon_job_id
                 ON MATCH SET d.updated_at = datetime(),
-                             d.first_seen = coalesce(d.first_seen, $recon_job_started_at),
+                             d.first_seen = coalesce(d.first_seen, datetime($recon_job_started_at)),
                              d.first_seen_job_id = coalesce(d.first_seen_job_id, $recon_job_id),
-                             d.last_seen = $recon_job_started_at,
+                             d.last_seen = datetime($recon_job_started_at),
                              d.last_seen_job_id = $recon_job_id
                 """,
                 name=domain, user_id=user_id, project_id=project_id,
@@ -189,9 +194,9 @@ class UserInputMixin:
                             s.status = coalesce(s.status, $status),
                             s.discovered_at = coalesce(s.discovered_at, datetime()),
                             s.updated_at = datetime(),
-                            s.first_seen = coalesce(s.first_seen, $recon_job_started_at),
+                            s.first_seen = coalesce(s.first_seen, datetime($recon_job_started_at)),
                             s.first_seen_job_id = coalesce(s.first_seen_job_id, $recon_job_id),
-                            s.last_seen = $recon_job_started_at,
+                            s.last_seen = datetime($recon_job_started_at),
                             s.last_seen_job_id = $recon_job_id
                         """,
                         name=subdomain, user_id=user_id, project_id=project_id,
@@ -250,9 +255,9 @@ class UserInputMixin:
                                     MERGE (i:IP {address: $address, user_id: $uid, project_id: $pid})
                                     SET i.version = $version,
                                         i.updated_at = datetime(),
-                                        i.first_seen = coalesce(i.first_seen, $recon_job_started_at),
+                                        i.first_seen = coalesce(i.first_seen, datetime($recon_job_started_at)),
                                         i.first_seen_job_id = coalesce(i.first_seen_job_id, $recon_job_id),
-                                        i.last_seen = $recon_job_started_at,
+                                        i.last_seen = datetime($recon_job_started_at),
                                         i.last_seen_job_id = $recon_job_id
                                     """,
                                     address=ip_addr, uid=user_id, pid=project_id,
@@ -304,9 +309,9 @@ class UserInputMixin:
                                     """
                                     MERGE (dns:DNSRecord {type: $type, value: $value, subdomain: $sub, user_id: $uid, project_id: $pid})
                                     SET dns.updated_at = datetime(),
-                                        dns.first_seen = coalesce(dns.first_seen, $recon_job_started_at),
+                                        dns.first_seen = coalesce(dns.first_seen, datetime($recon_job_started_at)),
                                         dns.first_seen_job_id = coalesce(dns.first_seen_job_id, $recon_job_id),
-                                        dns.last_seen = $recon_job_started_at,
+                                        dns.last_seen = datetime($recon_job_started_at),
                                         dns.last_seen_job_id = $recon_job_id
                                     """,
                                     type=record_type, value=str(value), sub=subdomain,

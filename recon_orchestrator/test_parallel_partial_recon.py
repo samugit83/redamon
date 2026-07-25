@@ -21,7 +21,11 @@ from models import (
     ReconState,
     ReconStatus,
 )
-from container_manager import ContainerManager, MAX_PARALLEL_PARTIAL_RECONS
+from container_manager import (
+    ContainerManager,
+    MAX_PARALLEL_PARTIAL_RECONS,
+    sibling_host_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,14 +105,14 @@ class TestPartialReconModels:
 
 class TestContainerNaming:
     def test_sibling_host_path_preserves_windows_parent(self):
-        graph_path = ContainerManager._sibling_host_path(
+        graph_path = sibling_host_path(
             r"D:\Repositories\Gabriel\redamon\recon",
             "graph_db",
         )
         assert graph_path == r"D:\Repositories\Gabriel\redamon\graph_db"
 
     def test_sibling_host_path_preserves_posix_parent(self):
-        graph_path = ContainerManager._sibling_host_path(
+        graph_path = sibling_host_path(
             "/home/gabriel/redamon/recon",
             "graph_db",
         )

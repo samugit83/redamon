@@ -19,6 +19,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from graph_db.mixins.recon.ai_surface_recon_mixin import AiSurfaceReconMixin
 
 
+RECON_JOB_PARAMS = {
+    "recon_job_id": "job-ai-surface-123",
+    "recon_job_started_at": "2026-07-24T10:11:12Z",
+}
+
+
 class FakeRecord(dict):
     def get(self, k, default=None):
         return dict.get(self, k, default)
@@ -61,6 +67,27 @@ class FakeDriver:
 class FakeClient(AiSurfaceReconMixin):
     def __init__(self, session):
         self.driver = FakeDriver(session)
+
+    def _recon_job_params(self):
+        return dict(RECON_JOB_PARAMS)
+
+
+def _assert_seen_stamped(query, alias):
+    assert (
+        f"{alias}.first_seen = coalesce("
+        f"{alias}.first_seen, datetime($recon_job_started_at))"
+    ) in query
+    assert (
+        f"{alias}.first_seen_job_id = coalesce("
+        f"{alias}.first_seen_job_id, $recon_job_id)"
+    ) in query
+    assert f"{alias}.last_seen = datetime($recon_job_started_at)" in query
+    assert f"{alias}.last_seen_job_id = $recon_job_id" in query
+
+
+def _assert_job_params(params):
+    for name, value in RECON_JOB_PARAMS.items():
+        assert params.get(name) == value
 
 
 def _sample_payload():
@@ -114,6 +141,43 @@ def test_full_payload_writes_expected_nodes():
     assert "HAS_VULNERABILITY" in joined
     assert "ai-vector-db" in joined
     assert "USES_TECHNOLOGY" in joined   # julius -> Technology promotion
+
+
+def test_every_ai_surface_node_write_is_seen_stamped_with_job_params():
+    sess = FakeSession()
+    FakeClient(sess).update_graph_from_ai_surface_recon(_sample_payload(), "u", "p")
+
+    blocks = [
+        ("e.ai_model_ids", ("b", "e")),
+        ("e.ai_mcp_server_name", ("b", "e")),
+        ("MERGE (p:Parameter", ("p",)),
+        ("ai-surface-recon-julius", ("t", "b", "e")),
+        ("SET v += $props", ("v",)),
+        ("t.category = 'ai-vector-db'", ("t",)),
+    ]
+    matched = {selector: 0 for selector, _ in blocks}
+    for query, params in sess.queries:
+        for selector, aliases in blocks:
+            if selector not in query:
+                continue
+            matched[selector] += 1
+            for alias in aliases:
+                _assert_seen_stamped(query, alias)
+            _assert_job_params(params)
+
+    assert matched == {
+        "e.ai_model_ids": 1,
+        "e.ai_mcp_server_name": 1,
+        "MERGE (p:Parameter": 2,
+        "ai-surface-recon-julius": 1,
+        "SET v += $props": 1,
+        "t.category = 'ai-vector-db'": 1,
+    }
+
+    joined = "\n".join(query for query, _ in sess.queries)
+    for relationship_alias in ("r", "r2", "r3"):
+        assert f"{relationship_alias}.first_seen" not in joined
+        assert f"{relationship_alias}.last_seen" not in joined
 
 
 def test_julius_service_promoted_to_technology():

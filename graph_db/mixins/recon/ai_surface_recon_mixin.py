@@ -98,7 +98,11 @@ class AiSurfaceReconMixin:
                 MERGE (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
                 MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $baseurl,
                                    user_id: $uid, project_id: $pid})
-                SET e.user_id = $uid, e.project_id = $pid,
+                SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                    b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                    b.last_seen = datetime($recon_job_started_at),
+                    b.last_seen_job_id = $recon_job_id,
+                    e.user_id = $uid, e.project_id = $pid,
                     e.source = COALESCE(e.source, 'ai_surface_recon'),
                     e.ai_interface_type     = COALESCE($iface, e.ai_interface_type),
                     e.ai_supports_streaming = COALESCE($streaming, e.ai_supports_streaming),
@@ -108,7 +112,11 @@ class AiSurfaceReconMixin:
                     e.ai_model_ids          = COALESCE($model_ids, e.ai_model_ids),
                     e.ai_tool_schema_ref    = COALESCE($schema_ref, e.ai_tool_schema_ref),
                     e.ai_latency_p50_ms     = COALESCE($latency, e.ai_latency_p50_ms),
-                    e.updated_at = datetime()
+                    e.updated_at = datetime(),
+                    e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
+                    e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                    e.last_seen = datetime($recon_job_started_at),
+                    e.last_seen_job_id = $recon_job_id
                 MERGE (b)-[:HAS_ENDPOINT]->(e)
                 """,
                 path=primary_path, baseurl=base_url, uid=user_id, pid=project_id,
@@ -120,6 +128,7 @@ class AiSurfaceReconMixin:
                 model_ids=model_ids,
                 schema_ref=oa.get("tool_schema_ref"),
                 latency=chat.get("latency_p50_ms"),
+                **self._recon_job_params(),
             )
             stats["endpoints_annotated"] += 1
 
@@ -131,7 +140,11 @@ class AiSurfaceReconMixin:
                 MERGE (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
                 MERGE (e:Endpoint {path: $path, method: 'POST', baseurl: $baseurl,
                                    user_id: $uid, project_id: $pid})
-                SET e.user_id = $uid, e.project_id = $pid,
+                SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                    b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                    b.last_seen = datetime($recon_job_started_at),
+                    b.last_seen_job_id = $recon_job_id,
+                    e.user_id = $uid, e.project_id = $pid,
                     e.source = COALESCE(e.source, 'ai_surface_recon'),
                     e.ai_interface_type        = COALESCE('mcp', e.ai_interface_type),
                     e.ai_mcp_server_name       = COALESCE($name, e.ai_mcp_server_name),
@@ -144,7 +157,11 @@ class AiSurfaceReconMixin:
                     e.ai_mcp_auth_required     = COALESCE($auth, e.ai_mcp_auth_required),
                     e.ai_mcp_tools_hash        = COALESCE($thash, e.ai_mcp_tools_hash),
                     e.ai_mcp_instructions_hash = COALESCE($ihash, e.ai_mcp_instructions_hash),
-                    e.updated_at = datetime()
+                    e.updated_at = datetime(),
+                    e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
+                    e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                    e.last_seen = datetime($recon_job_started_at),
+                    e.last_seen_job_id = $recon_job_id
                 MERGE (b)-[:HAS_ENDPOINT]->(e)
                 """,
                 path=mcp_path, baseurl=base_url, uid=user_id, pid=project_id,
@@ -153,6 +170,7 @@ class AiSurfaceReconMixin:
                 rcount=mcp.get("resource_count"), pcount=mcp.get("prompt_count"),
                 caps=mcp.get("capabilities"), auth=mcp.get("auth_required"),
                 thash=mcp.get("tools_hash"), ihash=mcp.get("instructions_hash"),
+                **self._recon_job_params(),
             )
             stats["endpoints_annotated"] += 1
 
@@ -176,7 +194,11 @@ class AiSurfaceReconMixin:
                         SET p.user_id = $uid, p.project_id = $pid,
                             p.is_ai_prompt_injectable = COALESCE($inj, p.is_ai_prompt_injectable),
                             p.ai_tool_arg_path = COALESCE($apath, p.ai_tool_arg_path),
-                            p.updated_at = datetime()
+                            p.updated_at = datetime(),
+                            p.first_seen = coalesce(p.first_seen, datetime($recon_job_started_at)),
+                            p.first_seen_job_id = coalesce(p.first_seen_job_id, $recon_job_id),
+                            p.last_seen = datetime($recon_job_started_at),
+                            p.last_seen_job_id = $recon_job_id
                         WITH p
                         MATCH (e:Endpoint {path: $epath, method: 'POST', baseurl: $baseurl,
                                            user_id: $uid, project_id: $pid})
@@ -185,6 +207,7 @@ class AiSurfaceReconMixin:
                         name=arg_name, epath=mcp_path, baseurl=base_url,
                         uid=user_id, pid=project_id,
                         inj=(True if injectable else None), apath=arg_path,
+                        **self._recon_job_params(),
                     )
                     stats["parameters_created"] += 1
 
@@ -197,12 +220,24 @@ class AiSurfaceReconMixin:
             session.run(
                 """
                 MERGE (t:Technology {name: $name, version: '', user_id: $uid, project_id: $pid})
-                SET t.category = $cat, t.source = 'ai-surface-recon', t.updated_at = datetime()
+                SET t.category = $cat, t.source = 'ai-surface-recon', t.updated_at = datetime(),
+                    t.first_seen = coalesce(t.first_seen, datetime($recon_job_started_at)),
+                    t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                    t.last_seen = datetime($recon_job_started_at),
+                    t.last_seen_job_id = $recon_job_id
                 WITH t
                 MERGE (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
                 MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $baseurl,
                                    user_id: $uid, project_id: $pid})
                 ON CREATE SET e.source = 'ai_surface_recon', e.updated_at = datetime()
+                SET b.first_seen = coalesce(b.first_seen, datetime($recon_job_started_at)),
+                    b.first_seen_job_id = coalesce(b.first_seen_job_id, $recon_job_id),
+                    b.last_seen = datetime($recon_job_started_at),
+                    b.last_seen_job_id = $recon_job_id,
+                    e.first_seen = coalesce(e.first_seen, datetime($recon_job_started_at)),
+                    e.first_seen_job_id = coalesce(e.first_seen_job_id, $recon_job_id),
+                    e.last_seen = datetime($recon_job_started_at),
+                    e.last_seen_job_id = $recon_job_id
                 MERGE (b)-[:HAS_ENDPOINT]->(e)
                 MERGE (e)-[r:USES_TECHNOLOGY]->(t)
                 SET r.detected_by = 'ai-surface-recon-julius',
@@ -210,6 +245,7 @@ class AiSurfaceReconMixin:
                 """,
                 name=svc, cat=cat_val, path=primary_path, baseurl=base_url,
                 uid=user_id, pid=project_id,
+                **self._recon_job_params(),
             )
             stats["technologies_promoted"] += 1
 
@@ -230,10 +266,14 @@ class AiSurfaceReconMixin:
         session.run(
             """
             MERGE (v:Vulnerability {id: $id})
-            ON CREATE SET v.first_seen = datetime()
-            SET v += $props, v.updated_at = datetime()
+            SET v += $props, v.updated_at = datetime(),
+                v.first_seen = coalesce(v.first_seen, datetime($recon_job_started_at)),
+                v.first_seen_job_id = coalesce(v.first_seen_job_id, $recon_job_id),
+                v.last_seen = datetime($recon_job_started_at),
+                v.last_seen_job_id = $recon_job_id
             """,
             id=finding["id"], props=props,
+            **self._recon_job_params(),
         )
         base_url = finding.get("baseurl")
         path = finding.get("path") or "/"
@@ -284,7 +324,11 @@ class AiSurfaceReconMixin:
             """
             MERGE (t:Technology {name: $name, version: '', user_id: $uid, project_id: $pid})
             SET t.category = 'ai-vector-db', t.source = 'ai-surface-recon',
-                t.updated_at = datetime()
+                t.updated_at = datetime(),
+                t.first_seen = coalesce(t.first_seen, datetime($recon_job_started_at)),
+                t.first_seen_job_id = coalesce(t.first_seen_job_id, $recon_job_id),
+                t.last_seen = datetime($recon_job_started_at),
+                t.last_seen_job_id = $recon_job_id
             WITH t
             OPTIONAL MATCH (ip:IP {address: $ip, user_id: $uid, project_id: $pid})
                           -[:HAS_PORT]->(p:Port {number: $port, user_id: $uid, project_id: $pid})
@@ -307,5 +351,6 @@ class AiSurfaceReconMixin:
                 SET r3.detected_by = 'ai-surface-recon-probe')
             """,
             name=tech, ip=ip, port=port, uid=user_id, pid=project_id,
+            **self._recon_job_params(),
         )
         stats["technologies_promoted"] += 1
