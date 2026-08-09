@@ -493,8 +493,13 @@ Cypher Query:"""
 
         # Prefer the per-session LLM (task-isolated) so concurrent projects run
         # text-to-Cypher on their OWN model; fall back to the manager's llm.
+        from orchestrator_helpers.llm_retry import retry_llm_call
         llm = current_llm.get() or self.llm
-        response = await llm.ainvoke(prompt)
+        response = await retry_llm_call(
+            llm,
+            prompt,
+            label="query_graph text-to-cypher",
+        )
         from orchestrator_helpers.json_utils import normalize_content
         return self._extract_cypher_from_response(normalize_content(response.content))
 
