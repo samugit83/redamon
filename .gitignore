@@ -265,3 +265,6 @@ testing/guinea_pigs/supply_chain_target/.dryrun/
 
 # XBEN benchmark slot state (local only)
 /.xben-slots/
+
+# Agent worktrees
+/.worktrees/
