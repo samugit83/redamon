@@ -1,5 +1,9 @@
 # Authenticated Recon Login Flows Implementation Plan
 
+> **Do not execute:** The underlying hosted-recorder design was superseded by
+> `../specs/2026-08-24-chrome-recorder-authenticated-recon-design.md`. A new
+> implementation plan must be written after that specification is reviewed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Record simple username/password login flows inside RedAmon and replay explicitly selected identities as origin-scoped authenticated sessions for recon tools.

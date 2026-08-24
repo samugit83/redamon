@@ -1,5 +1,9 @@
 # Authenticated Recon Login Flows
 
+> **Superseded:** This hosted-recorder design was replaced by
+> `2026-08-24-chrome-recorder-authenticated-recon-design.md`, which uses uploaded
+> Chrome DevTools Recorder JSON and a simpler version-one scope.
+
 **Date:** 2026-08-23
 
 **Status:** Approved design
