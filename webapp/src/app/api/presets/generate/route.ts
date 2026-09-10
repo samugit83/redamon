@@ -29,6 +29,7 @@ RULES:
 - Numbers must be plain integers or floats (not strings).
 - Arrays must use JSON array syntax.
 - Do NOT include target-specific fields (targetDomain, subdomainList, ipMode, etc.).
+- Do NOT include OpenAPI source URLs or fetch/discovery headers; they are target-specific and may contain credentials.
 - Do NOT include agent behaviour, attack skills, RoE, or CypherFix fields.
 - Focus on enabling/disabling tools and tuning their numeric settings to match the user's intent.
 

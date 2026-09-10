@@ -335,6 +335,9 @@ def _dispatch(tool_id: str, config: dict):
         return run_arjun(config)
     elif tool_id == "EndpointAiClassifier":
         return run_endpoint_ai_classifier(config)
+    elif tool_id == "OpenAPI":
+        from recon.partial_recon_modules.openapi_recon import run_openapi_partial
+        return run_openapi_partial(config)
     elif tool_id == "AiSurfaceRecon":
         return run_ai_surface_partial(config)
     elif tool_id == "JsRecon":

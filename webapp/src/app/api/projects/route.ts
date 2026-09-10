@@ -6,6 +6,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateDomainBatch, splitWildcard } from '@/lib/domainBatch'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 
@@ -79,6 +80,14 @@ export async function POST(request: NextRequest) {
       }
     } else {
       body = await request.json()
+    }
+
+    const openapiError = validateOpenApiSettings(body)
+    if (openapiError) {
+      return NextResponse.json({ error: openapiError }, { status: 400 })
+    }
+    if ('openapiSources' in body) {
+      body.openapiSources = normalizeOpenApiSourceIds(body.openapiSources)
     }
 
     const { userId: _bodyUserId, name, targetDomain, ipMode, domainBatchMode,

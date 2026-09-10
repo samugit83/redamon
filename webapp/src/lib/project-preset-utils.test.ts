@@ -205,13 +205,15 @@ describe('extractPresetSettings', () => {
       jsReconUploadedFiles: ['file1.js'],
       roeGlobalMaxRps: 5,
       roeClientName: 'ACME',
+      openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: ['Authorization: Bearer secret'] }],
+      openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['X-API-Key: secret'] }],
       naabuEnabled: true,
       nucleiEnabled: false,
       agentMaxIterations: 50,
     })
     for (const key of ['name', 'description', 'targetDomain', 'subdomainList', 'ipMode',
       'targetIps', 'roeDocumentData', 'roeDocumentName', 'jsReconUploadedFiles',
-      'roeGlobalMaxRps', 'roeClientName']) {
+      'roeGlobalMaxRps', 'roeClientName', 'openapiSources', 'openapiDiscoveryHeaders']) {
       expect(result, key).not.toHaveProperty(key)
     }
     expect(result.naabuEnabled).toBe(true)
