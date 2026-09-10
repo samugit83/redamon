@@ -696,6 +696,15 @@ model Project {
   katanaParallelism           Int      @default(8) @map("katana_parallelism")
   katanaConcurrency           Int      @default(15) @map("katana_concurrency")
 
+  // ========== OPENAPI INGESTION ==========
+  openapiEnabled              Boolean  @default(true) @map("openapi_enabled")
+  openapiDiscoveryPaths String[] @default(["/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml", "/v3/api-docs", "/v2/api-docs", "/swagger/v1/swagger.json", "/swagger-ui/index.html", "/swagger-ui.html", "/docs", "/api-docs", "/api-docs/"]) @map("openapi_discovery_paths")
+  openapiAutoDiscover         Boolean  @default(true) @map("openapi_auto_discover")
+  openapiSources              Json     @default("[]") @map("openapi_sources")
+  openapiDiscoveryHeaders     Json     @default("[]") @map("openapi_discovery_headers")
+  openapiTimeout              Int      @default(10) @map("openapi_timeout")
+  openapiMaxDocuments         Int      @default(50) @map("openapi_max_documents")
+
   // ========== ZAP AJAX SPIDER ==========
   zapAjaxSpiderEnabled           Boolean  @default(false) @map("zap_ajax_spider_enabled")
   zapAjaxSpiderDockerImage       String   @default("ghcr.io/zaproxy/zaproxy:stable") @map("zap_ajax_spider_docker_image")

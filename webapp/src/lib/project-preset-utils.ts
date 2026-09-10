@@ -25,6 +25,8 @@ export const PRESET_EXCLUDED_FIELDS = new Set([
   'jsReconUploadedFiles',
   // Per-project custom wordlists (text content tied to the project, not reusable across targets)
   'vhostSniCustomWordlist',
+  'openapiSources',
+  'openapiDiscoveryHeaders',
 ])
 
 /**

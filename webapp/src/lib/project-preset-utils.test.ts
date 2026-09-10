@@ -43,10 +43,14 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     expect(PRESET_EXCLUDED_FIELDS.has('vhostSniCustomWordlist')).toBe(true)
   })
 
-  test('has exactly 14 excluded fields', () => {
-    // 11 originally + the three domainBatch* target-identity fields (F3): a
-    // preset that carried them leaked one project's hostname list into another.
-    expect(PRESET_EXCLUDED_FIELDS.size).toBe(14)
+  test('excludes OpenAPI sources because their headers may contain credentials', () => {
+    expect(PRESET_EXCLUDED_FIELDS.has('openapiSources')).toBe(true)
+    expect(PRESET_EXCLUDED_FIELDS.has('openapiDiscoveryHeaders')).toBe(true)
+  })
+
+  test('has exactly 16 excluded fields', () => {
+    expect(PRESET_EXCLUDED_FIELDS.size).toBe(16)
+
   })
 
   test('does NOT exclude recon settings fields', () => {
@@ -91,6 +95,8 @@ describe('extractPresetSettings', () => {
       roeDocumentName: 'roe.pdf',
       roeDocumentMimeType: 'application/pdf',
       jsReconUploadedFiles: ['file1.js'],
+      openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: ['Authorization: Bearer secret'] }],
+      openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['X-API-Key: secret'] }],
       // These should be preserved:
       naabuEnabled: true,
       nucleiEnabled: false,
@@ -110,6 +116,8 @@ describe('extractPresetSettings', () => {
     expect(result).not.toHaveProperty('roeDocumentName')
     expect(result).not.toHaveProperty('roeDocumentMimeType')
     expect(result).not.toHaveProperty('jsReconUploadedFiles')
+    expect(result).not.toHaveProperty('openapiSources')
+    expect(result).not.toHaveProperty('openapiDiscoveryHeaders')
 
     // Preserved fields should be present with correct values
     expect(result.naabuEnabled).toBe(true)

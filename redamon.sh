@@ -2478,7 +2478,12 @@ pull_gvm_images() {
     # registry instability. Pull individually with retries.
     local max_retries=5
     local gvm_services
-    gvm_services=$(docker compose config --services 2>/dev/null | grep '^gvm-')
+    local compose_services
+    if ! compose_services=$(docker compose config --services); then
+        error "Cannot read Compose configuration for GVM startup."
+        return 1
+    fi
+    gvm_services=$(printf '%s\n' "$compose_services" | grep '^gvm-' || true)
 
     if [[ -z "$gvm_services" ]]; then
         return 0
@@ -2716,7 +2721,18 @@ _gpu_compose_overlay() {
     # Idempotent: install -> _kb_bootstrap both call this in one process.
     if [[ "${COMPOSE_FILE:-}" != *"docker-compose.gpu.yml"* ]]; then
         # Absolute paths: some call sites run from a different cwd.
-        export COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}:$SCRIPT_DIR/docker-compose.gpu.yml"
+        local base_file="$SCRIPT_DIR/docker-compose.yml"
+        local overlay_file="$SCRIPT_DIR/docker-compose.gpu.yml"
+        local separator="${COMPOSE_PATH_SEPARATOR:-:}"
+        case "$OSTYPE" in
+            msys*|cygwin*)
+                # Windows Compose needs native paths and its native list separator.
+                base_file=$(cygpath -m "$base_file")
+                overlay_file=$(cygpath -m "$overlay_file")
+                separator="${COMPOSE_PATH_SEPARATOR:-;}"
+                ;;
+        esac
+        export COMPOSE_FILE="${COMPOSE_FILE:-$base_file}${separator}${overlay_file}"
     fi
     GPU_COMPOSE_ARGS="-f $SCRIPT_DIR/docker-compose.gpu.yml"
 }

@@ -1,5 +1,6 @@
 'use client'
 
+import { DEFAULT_OPENAPI_DISCOVERY_PATHS } from '@/lib/openapi-defaults'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -39,6 +40,7 @@ import { NmapSection } from './sections/NmapSection'
 import { HttpxSection } from './sections/HttpxSection'
 import { NucleiSection } from './sections/NucleiSection'
 import { KatanaSection } from './sections/KatanaSection'
+import { OpenApiSection } from './sections/OpenApiSection'
 import { ZapAjaxSpiderSection } from './sections/ZapAjaxSpiderSection'
 import { HakrawlerSection } from './sections/HakrawlerSection'
 import { ResourceEnumAiSection } from './sections/ResourceEnumAiSection'
@@ -169,6 +171,13 @@ const MINIMAL_DEFAULTS: Partial<ProjectFormData> = {
   domainBatchMode: false,
   domainBatchHosts: [],
   scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan'],
+  openapiEnabled: true,
+  openapiAutoDiscover: true,
+  openapiDiscoveryPaths: [...DEFAULT_OPENAPI_DISCOVERY_PATHS],
+  openapiSources: [],
+  openapiDiscoveryHeaders: [],
+  openapiTimeout: 10,
+  openapiMaxDocuments: 50,
 }
 
 /** The target requirement per mode, shared by Save and Save-and-stay so the two
@@ -1081,6 +1090,7 @@ export function ProjectForm({
         {activeTab === 'resource' && viewMode === 'tabs' && (
           <>
             <KatanaSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Katana') : undefined} />
+            <OpenApiSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('OpenAPI') : undefined} />
             <ZapAjaxSpiderSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('ZapAjaxSpider') : undefined} />
             <HakrawlerSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Hakrawler') : undefined} />
             <JsluiceSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Jsluice') : undefined} />

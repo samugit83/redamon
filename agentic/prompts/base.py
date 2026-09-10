@@ -1551,6 +1551,8 @@ to use the Triage page rather than trying to query for them.
 - criminalip_risk_grade (string): domain risk grade from Criminal IP
 - criminalip_abuse_count (int): number of abuse reports for this domain from Criminal IP
 - criminalip_current_service (string): current service classification from Criminal IP
+- openapi_summary (string): JSON with OpenAPI document metadata and diagnostics; excludes raw specs and credentials
+- openapi_last_import_at (datetime): last OpenAPI declaration import
 
 **Subdomain** - Discovered subdomains
 - name (string): "api.example.com", "www.example.com"
@@ -1644,6 +1646,8 @@ to use the Triage page rather than trying to query for them.
 
 **BaseURL** - HTTP-probed base URLs
 - url (string): "https://api.example.com:443"
+- scheme, host, port: normalized HTTP service identity (OpenAPI can declare a BaseURL before it is probed)
+- source (string): first writer, including "http_probe", "resource_enum", or "openapi"
 - status_code (integer): 200, 301, 404
 - title (string): page title
 - content_type (string): "text/html"
@@ -1654,6 +1658,8 @@ to use the Triage page rather than trying to query for them.
 - path (string): "/api/v1/users"
 - method (string): "GET", "POST"
 - status_code (integer)
+- openapi_declared (boolean): at least one OpenAPI document declares this method-specific endpoint
+- openapi_declarations (string): JSON list of declarations keyed by source_id + operation_ref (source URL fallback), each retaining source_url, document_hash, operation_ref, and the nested effective operation metadata. A declaration is inventory, not proof the operation was executed or is live.
 - GraphQL enrichment (set by graphql_scan when endpoint is a GraphQL endpoint):
   - is_graphql (boolean): True if the endpoint is a GraphQL endpoint
   - graphql_introspection_enabled (boolean): True if __schema introspection query succeeded
@@ -2941,4 +2947,3 @@ Example:
 }}
 ```
 """
-

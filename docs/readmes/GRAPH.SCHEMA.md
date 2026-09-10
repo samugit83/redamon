@@ -247,6 +247,8 @@ The entry point for all queries. Contains project/user ownership.
     filtered_mode: true,                    // Was SUBDOMAIN_LIST filter used?
     subdomain_filter: ["testphp."],         // Subdomain prefixes from SUBDOMAIN_LIST
     modules_executed: ["whois", "dns_resolution", "port_scan", "http_probe", "vuln_scan"],
+    openapi_summary: "{\"documents\":[...],\"diagnostics\":[...]}", // JSON declaration-source summary; never raw specs or credentials
+    openapi_last_import_at: datetime,        // Last OpenAPI declaration import
     
     // Scan modes (from metadata)
     anonymous_mode: false,                   // Retained for compatibility; always false
@@ -346,7 +348,7 @@ Discovered subdomains/hostnames under a domain.
     source: "crt.sh"                        // Discovery source: "crt.sh", "hackertarget", "knockpy",
                                             // "subfinder", "amass", "shodan_rdns", "shodan_dns",
                                             // "urlscan", "fofa", "otx_passive_dns", "censys_rdns",
-                                            // "uncover"
+                                            // "uncover", "openapi"
     uncover_sources: ['shodan', 'censys'],  // Uncover engines that contributed (when source='uncover')
     uncover_total_raw: 42,                  // Uncover raw results count
     uncover_total_deduped: 30,              // Uncover deduplicated results count
@@ -563,7 +565,7 @@ Specific paths and endpoints discovered during vulnerability scanning are stored
     response_time_ms: null,                 // Response time in milliseconds
 
     // Discovery source
-    source: "http_probe",                   // http_probe
+    source: "http_probe",                   // First writer: http_probe, resource_enum, openapi, etc.
 
     // Network info
     resolved_ip: "44.228.249.3",
@@ -645,6 +647,8 @@ These are linked to their parent BaseURL and contain discovered parameters.
     body_param_count: 0,                    // Number of body parameters
     path_param_count: 0,                    // Number of path parameters
     urls_found: 3,                          // Number of URLs pointing to this endpoint
+    openapi_declared: true,                 // Operation was declared by at least one OpenAPI document
+    openapi_declarations: "[{...}]",        // JSON list keyed by document identity + operation_ref
 
     // Form properties (for POST endpoints discovered via HTML forms)
     is_form: true,                          // True if this endpoint receives form submissions
@@ -680,6 +684,16 @@ These are linked to their parent BaseURL and contain discovered parameters.
     graphql_batching_enabled: false                  // Array-based batched queries accepted
 })
 ```
+
+Each `openapi_declarations` entry contains `source_id` (when supplied),
+`source_url`, `document_hash`, `operation_ref`, and the nested `operation`
+object. Re-importing the same `source_id` and `operation_ref` replaces that
+declaration while preserving declarations from other documents or references
+and properties written by other tools. The nested object retains effective
+parameters, security, request body,
+responses, tags, summary, and operation ID without flattening incompatible
+methods into shared properties. These nodes describe API declarations; they do
+not prove that an operation was executed or is live.
 
 **Constraints:**
 ```cypher
@@ -1582,6 +1596,12 @@ FOR (m:Malware) ON (m.user_id, m.project_id);
 
 // Subdomain has DNS records
 (Subdomain)-[:HAS_DNS_RECORD]->(DNSRecord)
+
+// OpenAPI-declared and vhost-discovered HTTP services
+(Subdomain)-[:HAS_BASEURL]->(BaseURL)
+
+// Reverse ownership edge used by domain and OpenAPI ingestion
+(Subdomain)-[:BELONGS_TO]->(Domain)
 ```
 
 ---
@@ -1622,7 +1642,7 @@ FOR (m:Malware) ON (m.user_id, m.project_id);
 ### BaseURL Relationships
 
 ```cypher
-// BaseURL has endpoints (discovered paths from vuln_scan)
+// BaseURL has observed or declared endpoints
 (BaseURL)-[:HAS_ENDPOINT]->(Endpoint)
 
 // Endpoint has parameters

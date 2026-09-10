@@ -369,6 +369,54 @@ def save_recon_file(data: dict, output_file: Path):
             json.dump(data, f, indent=2)
 
 
+def _maybe_run_openapi(result: dict, settings: dict, output_file: Path) -> dict:
+    """Configured descriptions remain usable even when live HTTP probing fails."""
+    if not settings.get('OPENAPI_ENABLED', True):
+        return result
+    try:
+        from recon.main_recon_modules.openapi_recon import run_openapi_recon
+        if settings.get('DOMAIN_BATCH_MODE'):
+            group = next((group for group in settings.get('DOMAIN_BATCH_GROUPS', [])
+                          if group.get('rootDomain') == result.get('domain')), None)
+            if group is None:
+                raise ValueError('OpenAPI batch target is not in the approved groups')
+            settings = {**settings, 'TARGET_DOMAIN': group['rootDomain'],
+                        'SUBDOMAIN_LIST': list(group.get('prefixes') or [])}
+        result = run_openapi_recon(result, settings)
+        modules = result.setdefault('metadata', {}).setdefault('modules_executed', [])
+        if 'openapi' not in modules:
+            modules.append('openapi')
+        if settings.get('UPDATE_GRAPH_DB', True):
+            # This stage also runs when no background graph executor exists
+            # (the saved-recon entry path); record actual persistence results.
+            result['metadata']['openapi_graph_updated'] = False
+            try:
+                from graph_db import Neo4jClient
+                with Neo4jClient() as client:
+                    if not client.verify_connection():
+                        raise RuntimeError('Graph unavailable')
+                    stats = client.update_graph_from_openapi(result, USER_ID, PROJECT_ID)
+                    error_count = len(stats.get('errors', []))
+                    result['metadata']['openapi_graph_stats'] = {
+                        **{key: value for key, value in stats.items() if key != 'errors'},
+                        'error_count': error_count,
+                    }
+                    result['metadata']['openapi_graph_updated'] = not error_count
+                    if error_count:
+                        print(f'[!][OpenAPI] Graph ingestion incomplete: {error_count} write errors')
+                    else:
+                        print(f"[+][OpenAPI] Graph stored {stats.get('operations_imported', 0)} declarations")
+            except Exception:
+                result['metadata'].setdefault('phase_errors', {})['openapi_graph'] = 'OpenAPI graph ingestion failed'
+                print('[!][OpenAPI] Graph ingestion failed; parsed inventory retained')
+    except Exception:
+        # Request exceptions can embed credentials in URLs; persist a fixed error.
+        print('[!][OpenAPI] Ingestion failed; inspect document diagnostics')
+        result.setdefault('metadata', {}).setdefault('phase_errors', {})['openapi'] = 'OpenAPI ingestion failed'
+    save_recon_file(result, output_file)
+    return result
+
+
 def _maybe_run_ai_surface(result: dict, settings: dict, output_file: Path) -> dict:
     """GROUP 4.5 — AI Surface Recon. Runs after resource_enum at every call site.
 
@@ -909,6 +957,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 save_recon_file(combined_result, output_file)
 
     # GROUP 4.5 -- AI Surface Recon (runs after resource_enum)
+    combined_result = _maybe_run_openapi(combined_result, settings, output_file)
     combined_result = _maybe_run_ai_surface(combined_result, settings, output_file)
 
     # GROUP 5b -- JS Recon (runs after resource_enum, before vuln_scan;
@@ -1474,6 +1523,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 save_recon_file(combined_result, output_file)
 
     # GROUP 4.5 — AI Surface Recon (runs after resource_enum)
+    combined_result = _maybe_run_openapi(combined_result, _settings, output_file)
     combined_result = _maybe_run_ai_surface(combined_result, _settings, output_file)
 
     # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;
@@ -2056,6 +2106,7 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
                         json.dump(domain_result, f, indent=2)
 
         # GROUP 4.5 — AI Surface Recon (runs after resource_enum)
+        domain_result = _maybe_run_openapi(domain_result, _settings, output_file)
         domain_result = _maybe_run_ai_surface(domain_result, _settings, output_file)
 
         # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;
