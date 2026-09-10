@@ -107,6 +107,30 @@ describe('readLiveGraph', () => {
     expect(LIVE_GRAPH_QUERY.split('$projectId').length - 1).toBeGreaterThanOrEqual(matches.length - 6)
   })
 
+  test('excludes muted findings from both ends of every relationship', async () => {
+    // A muted finding must be invisible in the graph view. The filter is
+    // applied once to the whole union, so assert it is there and covers BOTH
+    // endpoint variables -- filtering only `n` would still render a muted node
+    // whenever it happened to be the target of a relationship.
+    expect(LIVE_GRAPH_QUERY).toContain('WHERE NOT n:Muted AND NOT m:Muted')
+  })
+
+  test('applies the mute filter to the union, not to one branch', async () => {
+    // Guards the shape rather than the text: the filter has to sit after the
+    // CALL subquery closes, or branches added later silently bypass it.
+    const afterUnion = LIVE_GRAPH_QUERY.slice(LIVE_GRAPH_QUERY.lastIndexOf('}'))
+    expect(afterUnion).toContain('NOT n:Muted')
+    expect(afterUnion).toContain('NOT m:Muted')
+  })
+
+  test('filters muted nodes before the record ceiling is applied', async () => {
+    // If LIMIT ran first, suppressed findings would consume the row budget and
+    // silently push real findings out of the view.
+    expect(LIVE_GRAPH_QUERY.indexOf('NOT n:Muted')).toBeLessThan(
+      LIVE_GRAPH_QUERY.indexOf('LIMIT $maxRecords')
+    )
+  })
+
   test('returns the formatted { nodes, links } payload', async () => {
     h.run.mockResolvedValueOnce({ records: [] }).mockResolvedValueOnce({ records: [{}, {}] })
     const out = await readLiveGraph('p1')

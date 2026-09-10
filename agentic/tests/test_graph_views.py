@@ -121,7 +121,8 @@ class TestTenantFilterInjection(unittest.TestCase):
         self.assertIn("project_id: $tenant_project_id", result)
         self.assertEqual(
             result,
-            "MATCH (d:Domain {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN d"
+            "MATCH (d:Domain&!Muted {user_id: $tenant_user_id, "
+            "project_id: $tenant_project_id}) RETURN d"
         )
 
     def test_node_with_existing_props(self):

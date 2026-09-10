@@ -77,6 +77,7 @@ from recon.partial_recon_modules.js_analysis import run_jsrecon
 from recon.partial_recon_modules.supply_chain import run_supply_chain
 from recon.partial_recon_modules.graphql_scanning import run_graphqlscan
 from recon.partial_recon_modules.cache_scanning import run_webcachepoison
+from recon.partial_recon_modules.origin_enrichment import run_origin_discovery
 from recon.partial_recon_modules.vulnerability_scanning import (
     run_nuclei,
     run_security_checks_partial,
@@ -187,6 +188,8 @@ def main():
         run_uncover(config)
     elif tool_id == "OsintEnrichment":
         run_osint_enrichment(config)
+    elif tool_id == "OriginDiscovery":
+        run_origin_discovery(config)
     else:
         print(f"[!][Partial Recon] Unknown tool_id: {tool_id}")
         sys.exit(1)

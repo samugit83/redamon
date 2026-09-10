@@ -254,19 +254,25 @@ export function useGraphTypeFilterPrefs(projectId: string | null) {
   return { hiddenTypes, setHiddenTypes, isLoading }
 }
 
-// ---- Graph view toggles (2D/3D, labels) - per-project per-user -----------
+// ---- Graph view toggles (2D/3D, labels, render) - per-project per-user ----
 
 const GRAPH_VIEW_KEY = 'graphView'
 
 interface GraphViewPrefs {
-  [projectId: string]: { is3D?: boolean; showLabels?: boolean }
+  [projectId: string]: { is3D?: boolean; showLabels?: boolean; renderEnabled?: boolean }
 }
 
-export const GRAPH_VIEW_DEFAULTS = { is3D: true, showLabels: true } as const
+export const GRAPH_VIEW_DEFAULTS = { is3D: true, showLabels: true, renderEnabled: true } as const
 
 /**
- * Per-project persistent values for the 2D/3D mode and label visibility
- * toggles. Defaults to { is3D: true, showLabels: true } when not yet set.
+ * Per-project persistent values for the 2D/3D mode, label visibility and
+ * graph-rendering toggles. Defaults to everything on when not yet set.
+ *
+ * `renderEnabled` is the escape hatch for projects whose graph has grown big
+ * enough to make the tab sluggish: while it is off the page must not fetch
+ * /api/graph at all, so callers have to wait for `isLoading` before deciding -
+ * treating "not loaded yet" as on would fire exactly the expensive query the
+ * user turned off.
  */
 export function useGraphViewPrefs(projectId: string | null) {
   const { prefs, isLoading, updatePref } = useUserPreferences()
@@ -274,9 +280,10 @@ export function useGraphViewPrefs(projectId: string | null) {
   const projectPrefs = projectId ? featurePrefs[projectId] : undefined
   const is3D = projectPrefs?.is3D ?? GRAPH_VIEW_DEFAULTS.is3D
   const showLabels = projectPrefs?.showLabels ?? GRAPH_VIEW_DEFAULTS.showLabels
+  const renderEnabled = projectPrefs?.renderEnabled ?? GRAPH_VIEW_DEFAULTS.renderEnabled
 
   const writeProjectPref = useCallback(
-    (patch: { is3D?: boolean; showLabels?: boolean }) => {
+    (patch: { is3D?: boolean; showLabels?: boolean; renderEnabled?: boolean }) => {
       if (!projectId) return
       updatePref(GRAPH_VIEW_KEY, (prev: unknown) => {
         const prevObj = (prev ?? {}) as GraphViewPrefs
@@ -291,8 +298,12 @@ export function useGraphViewPrefs(projectId: string | null) {
     (v: boolean) => writeProjectPref({ showLabels: v }),
     [writeProjectPref]
   )
+  const setRenderEnabled = useCallback(
+    (v: boolean) => writeProjectPref({ renderEnabled: v }),
+    [writeProjectPref]
+  )
 
-  return { is3D, showLabels, setIs3D, setShowLabels, isLoading }
+  return { is3D, showLabels, renderEnabled, setIs3D, setShowLabels, setRenderEnabled, isLoading }
 }
 
 // ---- Theme - per-user only (no project scope) ----------------------------

@@ -28,7 +28,8 @@ from fastapi.responses import Response, JSONResponse
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel
 
-from llm_guard import require_internal_auth, require_internal_auth_only
+from llm_guard import (require_internal_auth, require_internal_auth_only,
+                       require_master_internal_auth)
 from logging_config import setup_logging
 from orchestrator import AgentOrchestrator
 from orchestrator_helpers import normalize_content
@@ -158,6 +159,10 @@ class GuardrailRequest(BaseModel):
     """Request model for target guardrail check."""
     target_domain: str = ""
     target_ips: list[str] = []
+    # Domain batch sends every in-scope root here. A joined string in
+    # target_domain would reach a SINGULAR prompt and invite one aggregate
+    # verdict, so a blocked domain among many could be allowed.
+    target_domains: list[str] = []
     project_id: str = ""
     user_id: str = ""
 
@@ -177,11 +182,14 @@ async def check_target_guardrail(body: GuardrailRequest):
     from orchestrator_helpers.guardrail import check_target_allowed
     from project_settings import DEFAULT_AGENT_SETTINGS
 
-    # Hard guardrail: deterministic, non-disableable
-    if body.target_domain:
-        blocked, reason = is_hard_blocked(body.target_domain)
+    # Hard guardrail: deterministic, non-disableable. Checks EVERY domain the
+    # caller named: a Domain-batch create sends its roots in target_domains and
+    # leaves target_domain empty, so a check on the single field alone would let
+    # a blocked root through the one control that cannot be switched off.
+    for _domain in ([body.target_domain] if body.target_domain else []) + list(body.target_domains or []):
+        blocked, reason = is_hard_blocked(_domain)
         if blocked:
-            return {"allowed": False, "reason": reason, "hard_blocked": True}
+            return {"allowed": False, "reason": f"{_domain}: {reason}", "hard_blocked": True}
 
     if not orchestrator or not orchestrator._initialized:
         return {"allowed": True, "reason": "Agent not initialized, guardrail skipped"}
@@ -251,6 +259,7 @@ async def check_target_guardrail(body: GuardrailRequest):
             orchestrator.llm,
             target_domain=body.target_domain,
             target_ips=body.target_ips,
+            target_domains=body.target_domains,
         )
         return result
     except Exception as e:
@@ -1143,6 +1152,19 @@ async def health():
         persistent_checkpointer=bool(get_setting("PERSISTENT_CHECKPOINTER", False)),
         active_waves=active_waves,
     )
+
+
+@app.get("/host-ip", tags=["System"])
+async def get_host_ip():
+    """The Docker host's LAN IP, for the UI to suggest as the reverse-shell LHOST.
+
+    Detected on the host by redamon.sh (export_host_lan_ip) and passed in via the
+    HOST_LAN_IP env var, because a container cannot discover the host's routable
+    address from inside the 172.x sandbox (issue #180). Empty string when
+    detection failed or a HOST_LAN_IP override is unset; the caller then simply
+    shows no suggestion. Read-only, no parameters, no secrets.
+    """
+    return {"detectedHostIp": os.getenv("HOST_LAN_IP", "").strip()}
 
 
 def _setup_llm_for_endpoint(model_name: str) -> "BaseChatModel":
@@ -2776,9 +2798,15 @@ async def text_to_cypher(body: TextToCypherRequest):
 #  graph_db.tenant_filter.scope_query, which checks EVERY node pattern)
 _graph_exec_driver = None
 
+# Fixed op, so it never reaches scope_query - the mute exclusion that every
+# agent-emitted pattern gets for free has to be written out by hand here, or a
+# suppressed finding still shows up in the node-type counts. Excluding the node
+# also keeps `Muted` itself out of the returned label list, since the only nodes
+# carrying it are the ones this filter drops.
 _GRAPH_TYPES_CYPHER = (
     "MATCH (n) "
     "WHERE n.user_id = $tenant_user_id AND n.project_id = $tenant_project_id "
+    "AND NOT n:Muted "
     "UNWIND labels(n) AS label "
     "RETURN DISTINCT label AS type ORDER BY type"
 )
@@ -2820,6 +2848,122 @@ def _graph_exec_coerce(v):
     return str(v)
 
 
+_triage_client = None
+
+
+def _triage_graph_client():
+    """One long-lived Neo4jClient for the triage endpoint.
+
+    Constructing a client per request also re-runs the FULL schema DDL, because
+    `BaseMixin.__init__` calls `init_schema`. Measured on a live stack that put
+    /graph/triage at 0.26-0.41s against /graph/exec's 0.002-0.012s, and it built
+    and abandoned a Bolt connection pool every time - the same create-and-drop
+    pattern documented in webapp/src/app/api/graph/neo4j.ts as having produced
+    Neo4j's "Increase in network aborts detected" on a busy instance.
+
+    A neo4j Driver is designed to be long-lived and shared, and reconnects on
+    its own, so caching it is the intended usage rather than an optimisation.
+    """
+    global _triage_client
+    if _triage_client is None:
+        from graph_db.neo4j_client import Neo4jClient
+        _triage_client = Neo4jClient()
+    return _triage_client
+
+
+class GraphTriageRequest(BaseModel):
+    """Webapp -> agent triage write.
+
+    The tenant is supplied by the CALLER, which resolved it through
+    `guardProject` before calling. `node_id` is scoped by that tenant inside the
+    mixin, so a guessed id from another project matches nothing rather than
+    mutating anything.
+    """
+    op: str  # "mute" | "unmute" | "list_muted" | "list_findings" | "human_verdict"
+    user_id: str
+    project_id: str
+    node_id: Optional[str] = None
+    reason: Optional[str] = None
+    muted_by: Optional[str] = None
+    status: Optional[str] = None
+
+
+@app.post("/graph/triage", tags=["Graph"], dependencies=[Depends(require_master_internal_auth)])
+async def graph_triage(body: GraphTriageRequest):
+    """Mute / unmute a finding, and read the triage tables.
+
+    Graph writes live in Python behind this endpoint rather than in the webapp's
+    own Neo4j driver, so the tenant scoping and the muteable-label guard have
+    exactly one implementation (`graph_db/mixins/recon/triage_mixin.py`).
+
+    Auth is the MASTER key only, deliberately stricter than `/graph/exec`.
+    `/graph/exec` accepts the scoped SCANNER_API_KEY because the kali-sandbox
+    holds it and needs read-only graph access; this endpoint WRITES suppression
+    state, and the sandbox is the least-trusted, target-facing component. It
+    stays outside the LLM rate-limit bucket either way: these are cheap graph
+    operations, not billed LLM calls.
+    """
+    if not body.user_id or not body.project_id:
+        return JSONResponse(status_code=400, content={"error": "missing tenant identity"})
+
+    needs_node = ("mute", "unmute", "human_verdict")
+    if body.op in needs_node and not body.node_id:
+        return JSONResponse(status_code=400, content={"error": f"op {body.op} needs node_id"})
+
+    try:
+        client = _triage_graph_client()
+        if body.op == "mute":
+            result = client.mute_finding(
+                body.user_id, body.project_id, body.node_id,
+                muted_by=body.muted_by or body.user_id, reason=body.reason or "")
+        elif body.op == "unmute":
+            result = client.unmute_finding(body.user_id, body.project_id, body.node_id)
+        elif body.op == "list_muted":
+            result = {"findings": client.list_muted(body.user_id, body.project_id)}
+        elif body.op == "list_findings":
+            # `total` is what stops the table lying: the query is capped, so
+            # without it the operator reads a truncated list as complete.
+            result = {
+                "findings": client.list_triage_findings(body.user_id, body.project_id),
+                "total": client.count_triage_findings(body.user_id, body.project_id),
+            }
+        elif body.op == "human_verdict":
+            result = client.set_human_verdict(
+                body.user_id, body.project_id, body.node_id,
+                body.status or "", body.reason or "")
+        else:
+            return JSONResponse(status_code=400,
+                                content={"error": f"unknown op {body.op!r}"})
+    except Exception as e:
+        logger.error(f"graph/triage {body.op} failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    # Who suppressed what, and when. The node itself carries muted_by/muted_at;
+    # this is the time-ordered half. log_event never raises, so auditability
+    # cannot turn a successful mute into a 500.
+    if body.op in ("mute", "unmute"):
+        from session_log import log_event
+        if result.get(f"{body.op}d"):
+            log_event(
+                f"finding_{body.op}d",
+                user_id=body.user_id,
+                project_id=body.project_id,
+                node_id=body.node_id,
+                label=result.get("label"),
+                reason=body.reason or "",
+            )
+        else:
+            # Matched nothing: a stale node id (version-activate recreates
+            # nodes), an asset id, or another tenant's. The caller gets a
+            # generic failure on purpose, so this is the only place the id is
+            # recorded and the only way to diagnose it afterwards.
+            logger.warning(
+                "graph/triage %s matched no finding: node_id=%s user=%s project=%s",
+                body.op, body.node_id, body.user_id, body.project_id)
+
+    return JSONResponse(content=result)
+
+
 class GraphExecRequest(BaseModel):
     """Worker (redagraph) -> agent graph query. `op` selects a fixed operation
     so arbitrary unscoped queries are impossible."""
@@ -2854,6 +2998,10 @@ async def graph_exec(body: GraphExecRequest):
     op = body.op
     if op == "schema":
         # Fixed, read-only structural query — server-controlled, worker can't alter it.
+        # It is database-global (never tenant-scoped), so it does surface the
+        # existence of the `Muted` label. Accepted: it exposes no node and no
+        # count, and scope_query refuses any follow-up query that names the
+        # label, so knowing it exists buys nothing.
         final, params = "CALL db.schema.visualization()", {}
     elif op == "types":
         final = _GRAPH_TYPES_CYPHER
@@ -2890,6 +3038,321 @@ async def graph_exec(body: GraphExecRequest):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     return JSONResponse(content={"records": records})
+
+
+# =============================================================================
+# TRAFFIC — proxy_brain broker endpoints (kali `redamon` SDK -> agent)
+# =============================================================================
+#
+# The kali sandbox runs agent-authored code (`proxy_brain`) but holds NO
+# DATABASE_URL. Its `redamon` SDK reaches the captured-traffic corpus and the
+# active replay path ONLY through these two endpoints — the mirror of the
+# redagraph -> /graph/exec pattern. Tenant identity is NOT taken from the body:
+# it is derived from a signed `ctx` tag (source=agent) that only the agent could
+# have minted (it holds INTERNAL_API_KEY; kali does not), so a foothold inside
+# the least-trusted worker cannot forge a cross-tenant read or send.
+
+# Per-session live-send budget for /traffic/replay. One proxy_brain confirmation
+# fans out to many sends (a loop / batch); without a cap a single confirmed run
+# could flood a target. Counted per session (from the verified tag) across the
+# agent process (single-worker; startup_guard enforces one worker, and async
+# increments here happen with no intervening await, so no lock is needed).
+_TRAFFIC_REPLAY_SENDS: dict[str, int] = {}
+
+
+def _replay_budget() -> int:
+    try:
+        return max(1, int(os.environ.get("TRAFFIC_REPLAY_BUDGET", "1000") or "1000"))
+    except (TypeError, ValueError):
+        return 1000
+
+
+class TrafficExecRequest(BaseModel):
+    """kali redamon SDK -> agent, read-only corpus access. `ctx` is the signed
+    agent tag; tenant is derived from it (never from the body). `op` selects a
+    fixed read operation; `args` are the op's parameters."""
+    ctx: str
+    op: str  # search|get|sitemap|params|grep|diff|to_curl|query
+    args: dict = {}
+
+
+class TrafficReplayRequest(BaseModel):
+    """kali redamon SDK -> agent, ACTIVE replay PREPARE. The agent validates
+    tenant + phase, reads the origin (tenant-scoped), builds the HOST-PINNED curl
+    and signs the replay lineage tag, then returns them for the worker to send
+    through the capture proxy. The agent never reaches the target itself."""
+    ctx: str
+    op: str = "replay"  # replay | fuzz
+    id: str
+    mutate: dict = {}
+    insertion_point: Optional[str] = None  # fuzz only
+    payloads: Optional[list] = None        # fuzz only
+
+
+def _verify_traffic_ctx(ctx: str) -> Optional[dict]:
+    """Verify the signed agent tag and return its claims, or None (fail closed).
+
+    The tag is HMAC-signed with INTERNAL_API_KEY, which the kali worker does not
+    hold, so it can present the scoped SCANNER_API_KEY for transport auth yet
+    cannot mint a tag for a tenant it was not issued for."""
+    try:
+        from redamon_ctx import verify_tag
+    except Exception:  # noqa: BLE001
+        return None
+    key = os.environ.get("INTERNAL_API_KEY", "")
+    if not key or key == "changeme":
+        # Fail closed: without the signing key we cannot authenticate the tenant
+        # claim, and this path authorizes cross-tenant reads + live sends.
+        return None
+    payload = verify_tag(ctx, {"agent": key})
+    if not payload or not payload.get("user_id") or not payload.get("project_id"):
+        return None
+    return payload
+
+
+def _apply_traffic_tenant(claims: dict) -> None:
+    """Bind the verified tenant into request-local ContextVars so the reused
+    traffic_tools logic scopes to it. FastAPI runs each request in its own task
+    context, so these sets never leak across concurrent requests."""
+    from agent_context import (
+        current_user_id, current_project_id, current_session_id, current_phase,
+    )
+    current_user_id.set(claims["user_id"])
+    current_project_id.set(claims["project_id"])
+    if claims.get("session_id"):
+        current_session_id.set(claims["session_id"])
+    if claims.get("phase"):
+        current_phase.set(claims["phase"])
+
+
+@app.post("/traffic/exec", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
+async def traffic_exec(body: TrafficExecRequest):
+    """Read-only corpus access for the kali `redamon` SDK. Constrained ops only;
+    tenant from the verified tag; every underlying query hard-injects the tenant
+    filter (traffic_tools). Returns the tool's formatted text under `result`."""
+    claims = _verify_traffic_ctx(body.ctx)
+    if not claims:
+        return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+    _apply_traffic_tenant(claims)
+
+    import json as _json
+    from traffic_tools import (
+        proxy_search, proxy_get, proxy_sitemap, proxy_params, proxy_grep,
+        proxy_diff, proxy_to_curl, proxy_query,
+    )
+    a = body.args or {}
+    op = body.op
+    try:
+        if op == "search":
+            filt = a if isinstance(a, dict) else {}
+            out = await proxy_search.ainvoke({"filters": _json.dumps(filt)})
+        elif op == "get":
+            out = await proxy_get.ainvoke({"id": str(a.get("id", "")), "part": a.get("part", "response")})
+        elif op == "sitemap":
+            out = await proxy_sitemap.ainvoke({})
+        elif op == "params":
+            out = await proxy_params.ainvoke({})
+        elif op == "grep":
+            out = await proxy_grep.ainvoke({"pattern": str(a.get("pattern", "")), "limit": int(a.get("limit", 50) or 50)})
+        elif op == "diff":
+            out = await proxy_diff.ainvoke({"id_a": str(a.get("id_a", "")), "id_b": str(a.get("id_b", ""))})
+        elif op == "to_curl":
+            out = await proxy_to_curl.ainvoke({"id": str(a.get("id", ""))})
+        elif op == "query":
+            out = await proxy_query.ainvoke({"spec": _json.dumps(a.get("spec", a))})
+        else:
+            return JSONResponse(status_code=400, content={"error": f"unknown op {op!r}"})
+    except Exception as e:  # noqa: BLE001 — surface to the SDK, never a trace
+        return JSONResponse(status_code=500, content={"error": str(e)[:300]})
+    return JSONResponse(content={"result": out})
+
+
+@app.post("/traffic/replay", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
+async def traffic_replay(body: TrafficReplayRequest):
+    """ACTIVE replay PREPARE. Validates tenant + phase, reads the origin
+    (tenant-scoped), builds the host-pinned curl and signs the replay lineage
+    tag. The worker performs the send through the capture proxy. Per-send gating
+    lives here because one proxy_brain run fans out to many sends."""
+    claims = _verify_traffic_ctx(body.ctx)
+    if not claims:
+        return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+
+    # Per-send phase gate (the tag carries the session phase). Active sends are
+    # confined to the exploitation phases, mirroring TOOL_PHASE_MAP for the old
+    # proxy_replay/proxy_fuzz. Fail closed on anything else.
+    phase = claims.get("phase") or "informational"
+    if phase not in ("exploitation", "post_exploitation"):
+        return JSONResponse(status_code=403, content={"error": f"active replay not allowed in phase '{phase}'"})
+
+    _apply_traffic_tenant(claims)
+
+    import json as _json
+    from traffic_tools import fetch_transaction, build_replay_curl, build_fuzz_curls
+    txn = await fetch_transaction(str(body.id))
+    if not txn:
+        return JSONResponse(status_code=404, content={"error": "origin transaction not found (or not in your project)"})
+
+    # Sign the replay lineage tag (source=agent, is_replay, origin_id) so the
+    # ingest attributes the re-captured row from the VERIFIED tag, not the body.
+    try:
+        from redamon_ctx import sign_tag
+        replay_tag = sign_tag({
+            "source": "agent",
+            "project_id": claims["project_id"],
+            "user_id": claims["user_id"],
+            "session_id": claims.get("session_id") or None,
+            "tool": "proxy_brain",
+            "phase": phase,
+            "is_replay": True,
+            "origin_id": str(body.id),
+        }, os.environ.get("INTERNAL_API_KEY", ""))
+    except Exception:  # noqa: BLE001
+        replay_tag = ""
+
+    try:
+        if body.op == "fuzz":
+            ip = str(body.insertion_point or "")
+            # Bound the INPUT before materializing (build_fuzz_curls also caps the
+            # output, but a huge input list would still be stringified in full).
+            payloads = [str(x) for x in (body.payloads or [])[:200]]
+            if not ip or not payloads:
+                return JSONResponse(status_code=400, content={"error": "fuzz requires insertion_point + payloads"})
+            sends = [{"payload": pl, "curl_args": args} for pl, args in build_fuzz_curls(txn, ip, payloads)]
+        else:
+            mutate = body.mutate if isinstance(body.mutate, dict) else {}
+            sends = [{"payload": None, "curl_args": build_replay_curl(txn, mutate)}]
+    except ValueError as e:
+        # Host-pin / scope violation (F1) or a malformed mutate — refuse, fail closed.
+        return JSONResponse(status_code=400, content={"error": f"replay refused: {str(e)[:200]}"})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": f"could not build replay: {str(e)[:200]}"})
+
+    # Per-session send budget (F2): one confirmed proxy_brain run must not emit
+    # unbounded live traffic. Count PREPARED sends per session; refuse over budget.
+    budget = _replay_budget()
+    bkey = claims.get("session_id") or f"{claims['user_id']}:{claims['project_id']}"
+    used = _TRAFFIC_REPLAY_SENDS.get(bkey, 0)
+    if used + len(sends) > budget:
+        return JSONResponse(status_code=429, content={
+            "error": f"replay send budget exhausted for this session ({used}/{budget}); refusing {len(sends)} more"})
+    _TRAFFIC_REPLAY_SENDS[bkey] = used + len(sends)
+
+    return JSONResponse(content={"sends": sends, "ctx": replay_tag})
+
+
+# Per-session browser-action budget for /traffic/browser. proxy_brain's
+# `redamon.browser` drives a real chromium in the kali sandbox; its page loads
+# fan out to sub-requests the /traffic/replay send-budget never sees (they go
+# kali -> capture proxy directly), so a separate counter caps browser ACTIONS
+# (goto/click/eval). Same in-process single-worker model as _TRAFFIC_REPLAY_SENDS.
+_TRAFFIC_BROWSER_ACTIONS: dict[str, int] = {}
+
+
+def _browser_budget() -> int:
+    try:
+        return max(1, int(os.environ.get("TRAFFIC_BROWSER_ACTION_BUDGET", "100") or "100"))
+    except (TypeError, ValueError):
+        return 100
+
+
+class TrafficBrowserRequest(BaseModel):
+    """kali `redamon.browser` -> agent, browser PREPARE. `open` mints one signed
+    capture tag pinned to the origin transaction's host; `navigate`/`interact`/
+    `eval` enforce the per-session action budget, and `navigate` additionally
+    refuses any URL whose host is not the pinned origin host. The kali worker
+    holds no signing key, so it can neither forge a tenant nor retarget the pin."""
+    ctx: str
+    action: str  # open | navigate | interact | eval
+    origin_id: str
+    url: Optional[str] = None  # navigate only (for the host-pin check)
+
+
+@app.post("/traffic/browser", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
+async def traffic_browser(body: TrafficBrowserRequest):
+    """Browser PREPARE for the kali `redamon.browser` SDK. Mirrors /traffic/replay:
+    validates tenant + phase, re-reads the origin transaction tenant-scoped to pin
+    the host, and (for `open`) signs the capture-lineage tag the browser stamps on
+    every request. Active navigation is exploitation-phase only and per-session
+    action-budgeted, because one proxy_brain run drives many browser actions."""
+    claims = _verify_traffic_ctx(body.ctx)
+    if not claims:
+        return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+
+    # Browsing emits live traffic; confine it to the exploitation phases exactly
+    # like /traffic/replay. Fail closed on anything else.
+    phase = claims.get("phase") or "informational"
+    if phase not in ("exploitation", "post_exploitation"):
+        return JSONResponse(status_code=403, content={"error": f"browser not allowed in phase '{phase}'"})
+
+    _apply_traffic_tenant(claims)
+
+    from traffic_tools import fetch_transaction
+    txn = await fetch_transaction(str(body.origin_id))
+    if not txn:
+        return JSONResponse(status_code=404, content={"error": "origin transaction not found (or not in your project)"})
+    origin_host = txn.get("host")
+    origin_scheme = txn.get("scheme", "http")
+    origin_port = txn.get("port")
+    _DEFAULT_PORT = {"http": 80, "https": 443}
+
+    # Host-pin: a navigation may only ever land on the ORIGIN transaction's host
+    # AND port AND scheme. Hostname alone would let `:8443` or an http->https
+    # upgrade reach a DIFFERENT service on the same host, so pin all three exactly
+    # like the curl replay path (_origin_url). Sub-resource / redirect egress is
+    # contained by the capture proxy's egress guard, not here. Checked BEFORE the
+    # budget so a refused nav costs nothing.
+    if body.action == "navigate":
+        from urllib.parse import urlsplit
+        u = urlsplit(str(body.url or ""))
+        nav_host = u.hostname
+        nav_port = u.port if u.port is not None else _DEFAULT_PORT.get(u.scheme)
+        pin_port = origin_port if origin_port is not None else _DEFAULT_PORT.get(origin_scheme)
+        if (not nav_host or nav_host != origin_host
+                or u.scheme != origin_scheme or nav_port != pin_port):
+            return JSONResponse(status_code=400, content={
+                "error": (f"browser host pin violated (navigation "
+                          f"{u.scheme}://{nav_host}:{nav_port} != pinned "
+                          f"{origin_scheme}://{origin_host}:{pin_port})")})
+    elif body.action not in ("open", "interact", "eval"):
+        return JSONResponse(status_code=400, content={"error": f"unknown browser action {body.action!r}"})
+
+    # Per-session action budget. EVERY action costs one unit, INCLUDING `open`:
+    # each open launches a real chromium, so an unbudgeted open would let a loop
+    # spawn unbounded browsers and OOM the shared kali container. The get and set
+    # have no await between them (single worker), so no lock is needed.
+    budget = _browser_budget()
+    bkey = claims.get("session_id") or f"{claims['user_id']}:{claims['project_id']}"
+    used = _TRAFFIC_BROWSER_ACTIONS.get(bkey, 0)
+    if used + 1 > budget:
+        return JSONResponse(status_code=429, content={
+            "error": f"browser action budget exhausted for this session ({used}/{budget})"})
+    _TRAFFIC_BROWSER_ACTIONS[bkey] = used + 1
+
+    if body.action == "open":
+        # Sign ONE capture tag for the browser's lifetime. The browser stamps it
+        # as X-Redamon-Ctx so every re-captured row is attributed from the VERIFIED
+        # tag (tool=proxy_brain_browser), not from anything the target controls.
+        try:
+            from redamon_ctx import sign_tag
+            cap_tag = sign_tag({
+                "source": "agent",
+                "project_id": claims["project_id"],
+                "user_id": claims["user_id"],
+                "session_id": claims.get("session_id") or None,
+                "tool": "proxy_brain_browser",
+                "phase": phase,
+                "origin_id": str(body.origin_id),
+            }, os.environ.get("INTERNAL_API_KEY", ""))
+        except Exception:  # noqa: BLE001
+            cap_tag = ""
+        return JSONResponse(content={
+            "origin_host": origin_host,
+            "scheme": origin_scheme,
+            "port": origin_port,
+            "ctx": cap_tag,
+        })
+
+    return JSONResponse(content={"ok": True})
 
 
 # =============================================================================

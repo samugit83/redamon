@@ -75,21 +75,38 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
     Returns a state update dict if blocked, or None if allowed.
     """
     from orchestrator_helpers.guardrail import check_target_allowed
+    from project_settings import target_scope_domains
 
-    target_domain = get_setting('TARGET_DOMAIN', '')
     ip_mode = get_setting('IP_MODE', False)
     target_ips = get_setting('TARGET_IPS', [])
+    # Every in-scope domain, whatever the target mode. A Domain-batch project has
+    # no TARGET_DOMAIN, so reading that field alone used to skip this check on the
+    # projects with the MOST targets.
+    scope_domains = target_scope_domains()
+
+    # A batch project with no derivable scope is misconfigured, not unconstrained:
+    # fail closed rather than fall through to "nothing to check".
+    if get_setting('DOMAIN_BATCH_MODE', False) and not ip_mode and not scope_domains:
+        return _build_guardrail_block(
+            user_id, project_id, session_id, '',
+            "This project is in Domain batch mode but has no valid domain groups, "
+            "so its scope cannot be verified. Re-save its hostname list.",
+        )
 
     # Nothing to check (no target configured yet)
-    if not target_domain and not target_ips:
+    if not scope_domains and not target_ips:
         return None
 
-    target_desc = target_domain if not ip_mode else ", ".join(target_ips[:5])
+    target_desc = ", ".join(scope_domains[:5]) if not ip_mode else ", ".join(target_ips[:5])
 
     try:
         result = await check_target_allowed(
             llm,
-            target_domain='' if ip_mode else target_domain,
+            # A LIST, never a joined string: the singular prompt would ask for one
+            # verdict on "a.com, b.com, c.com" and could allow the set despite one
+            # blocked member. check_target_allowed routes a list to the
+            # block-if-any prompt.
+            target_domains=[] if ip_mode else scope_domains,
             target_ips=target_ips if ip_mode else [],
         )
 
@@ -196,15 +213,20 @@ async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dic
     # Runs unconditionally regardless of AGENT_GUARDRAIL_ENABLED setting
     if not state.get("execution_trace") and not state.get("_guardrail_blocked"):
         from orchestrator_helpers.hard_guardrail import is_hard_blocked
-        target_domain = get_setting('TARGET_DOMAIN', '')
+        from project_settings import target_scope_domains
         ip_mode = get_setting('IP_MODE', False)
-        if not ip_mode and target_domain:
-            blocked, reason = is_hard_blocked(target_domain)
-            if blocked:
-                logger.warning(
-                    f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
-                )
-                return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
+        # EVERY in-scope domain, not just TARGET_DOMAIN: a Domain-batch project
+        # keeps its scope in DOMAIN_BATCH_GROUPS, and is_hard_blocked('') returns
+        # "not blocked", so checking the empty field disarmed this guardrail
+        # entirely on batch projects. One blocked domain blocks the session.
+        if not ip_mode:
+            for target_domain in target_scope_domains():
+                blocked, reason = is_hard_blocked(target_domain)
+                if blocked:
+                    logger.warning(
+                        f"[{user_id}/{project_id}/{session_id}] HARD GUARDRAIL BLOCKED: {reason}"
+                    )
+                    return _build_guardrail_block(user_id, project_id, session_id, target_domain, reason)
 
     # Soft guardrail (LLM-based): on first invocation, verify the project target is authorized
     # Skip if already blocked (avoid redundant LLM calls on retry in same session)

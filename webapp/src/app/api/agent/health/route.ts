@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
-
-const AGENT_API_BASE_URL = process.env.AGENT_API_URL || process.env.NEXT_PUBLIC_AGENT_API_URL || 'http://localhost:8080'
+import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 
 export interface AgentHealthResponse {
   status: string
@@ -11,7 +10,10 @@ export interface AgentHealthResponse {
 
 export async function GET() {
   try {
-    const response = await fetch(`${AGENT_API_BASE_URL}/health`)
+    // Short budget: this is the preflight the settings UI uses to decide
+    // whether to offer a Test button, so it must fail fast rather than make
+    // the operator wait out a full request timeout.
+    const response = await agentFetch('/health', {}, { timeoutMs: 5_000 })
 
     if (!response.ok) {
       return NextResponse.json(
@@ -23,6 +25,10 @@ export async function GET() {
     const data: AgentHealthResponse = await response.json()
     return NextResponse.json(data)
   } catch (error) {
+    if (error instanceof AgentUnreachableError) {
+      console.error('Agent health check: agent unreachable:', error.message, error.cause_)
+      return NextResponse.json({ error: error.message }, { status: 503 })
+    }
     console.error('Agent health check error:', error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Health check failed' },

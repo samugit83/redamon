@@ -171,6 +171,21 @@ class TestFuzzBuilder(unittest.TestCase):
         variants = list(tt.build_fuzz_curls(ORIGIN, "id", [str(i) for i in range(200)]))
         self.assertEqual(len(variants), tt._FUZZ_MAX_PAYLOADS)
 
+    def test_payload_is_url_encoded_no_param_or_host_injection(self):
+        # A fuzz payload is a VALUE: "&"/"@" in it must be percent-encoded so it
+        # can neither inject an extra query param nor open a URL authority.
+        import shlex
+        from urllib.parse import urlsplit, parse_qs
+        variants = dict(tt.build_fuzz_curls(ORIGIN, "id", ["1&admin=1", "@evil.test"]))
+        for payload in ("1&admin=1", "@evil.test"):
+            url = shlex.split(variants[payload])[-1]
+            parts = urlsplit(url)
+            self.assertEqual(parts.netloc, "target.test")   # host still pinned
+            self.assertNotIn("evil.test", parts.netloc)
+            q = parse_qs(parts.query)
+            self.assertNotIn("admin", q)                     # "&" did not add a param
+            self.assertEqual(q.get("id"), [payload])         # value carried verbatim (decoded)
+
 
 if __name__ == "__main__":
     unittest.main()

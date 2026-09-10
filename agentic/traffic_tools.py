@@ -500,7 +500,7 @@ def _build_order(order) -> str:
 # it through the worker's execute_curl -> capture proxy.
 # --------------------------------------------------------------------------
 import shlex  # noqa: E402
-from urllib.parse import parse_qsl, urlencode  # noqa: E402
+from urllib.parse import parse_qsl, urlencode, urlsplit  # noqa: E402
 
 _FUZZ_MAX_PAYLOADS = 50
 
@@ -539,8 +539,24 @@ def _origin_url(txn: Dict[str, Any], path: str, query: str) -> str:
     host = txn.get("host")           # PINNED — never taken from mutate
     port = txn.get("port")
     hostport = f"{host}:{port}" if port not in (80, 443, None) else host
+    # SCOPE SAFETY (host pin): the path must never re-open the URL authority. A
+    # mutate path like "@evil.com/" would turn scheme://host{path} into
+    # scheme://host@evil.com/ — curl reads `host` as userinfo and connects to the
+    # INJECTED host, defeating the pin (and the capture proxy would forward it,
+    # since the egress guard only blocks internal IPs). Forcing a rooted path
+    # keeps the authority exactly `hostport`: everything after the first "/" is
+    # the path and can no longer name a host.
+    p = str(path if path is not None else "/")
+    if not p.startswith("/"):
+        p = "/" + p
     q = ("?" + query.lstrip("?")) if query else ""
-    return f"{scheme}://{hostport}{path}{q}"
+    url = f"{scheme}://{hostport}{p}{q}"
+    # Belt-and-braces: the built URL's authority MUST be the pinned host,
+    # regardless of any current or future mutate field. Refuse rather than send
+    # off-origin.
+    if urlsplit(url).netloc != hostport:
+        raise ValueError(f"replay host pin violated (built authority differs from pinned {hostport!r})")
+    return url
 
 
 def build_replay_curl(txn: Dict[str, Any], mutate: Dict[str, Any]) -> str:

@@ -90,13 +90,28 @@ export async function startFullScan(input: StartFullScanInput): Promise<StartFul
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, userId: true, targetDomain: true, ipMode: true, targetIps: true },
+    select: {
+      id: true, userId: true, targetDomain: true, ipMode: true, targetIps: true,
+      domainBatchMode: true, domainBatchGroups: true,
+    },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
 
   if (project.ipMode) {
     if (!project.targetIps || project.targetIps.length === 0) {
       return { ok: false, status: 400, error: 'Project has no target IPs configured' }
+    }
+  } else if (project.domainBatchMode) {
+    // A batch's scope lives in its derived groups, not targetDomain. Fail closed:
+    // an empty group list means the list was never saved, not that there is
+    // nothing to scan, and the orchestrator would refuse the start anyway.
+    const groups = Array.isArray(project.domainBatchGroups) ? project.domainBatchGroups : []
+    if (groups.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Project has no valid domain groups. Re-save its hostname list before scanning.',
+      }
     }
   } else if (!project.targetDomain) {
     return { ok: false, status: 400, error: 'Project has no target domain configured' }

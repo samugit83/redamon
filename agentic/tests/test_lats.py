@@ -355,9 +355,9 @@ class TestExpandParsing(unittest.TestCase):
     def test_malformed_arg_keys_dropped(self):
         # Fix #1: the LLM inventing url/flags instead of the real `args` key is
         # dropped pre-flight; a correctly-shaped probe survives.
-        allowed = {"execute_curl", "proxy_get", "execute_httpx"}
+        allowed = {"execute_curl", "proxy_brain", "execute_httpx"}
         text = ('{"probes": ['
-                '{"tool_name": "proxy_get", "tool_args": {"url": "http://t/"}},'          # wrong: needs id
+                '{"tool_name": "proxy_brain", "tool_args": {"url": "http://t/"}},'          # wrong: needs code
                 '{"tool_name": "execute_httpx", "tool_args": {"flags": "-title", "target": "t"}},'  # wrong: needs args
                 '{"tool_name": "execute_curl", "tool_args": {"args": "-s http://t/"}}'      # correct
                 ']}')
@@ -365,9 +365,9 @@ class TestExpandParsing(unittest.TestCase):
         self.assertEqual([p["tool_name"] for p in probes], ["execute_curl"])
 
     def test_correctly_shaped_probes_kept(self):
-        allowed = {"proxy_get", "kali_shell"}
+        allowed = {"proxy_brain", "kali_shell"}
         text = ('{"probes": ['
-                '{"tool_name": "proxy_get", "tool_args": {"id": "42", "part": "response"}},'
+                '{"tool_name": "proxy_brain", "tool_args": {"code": "print(1)"}},'
                 '{"tool_name": "kali_shell", "tool_args": {"command": "whoami"}}'
                 ']}')
         probes = lats._parse_expand_response(text, allowed, 5)
@@ -378,8 +378,8 @@ class TestArgValidator(unittest.TestCase):
     def test_primary_key_required_per_tool(self):
         self.assertTrue(lats._probe_args_valid("execute_curl", {"args": "-s x"}))
         self.assertFalse(lats._probe_args_valid("execute_curl", {"url": "x"}))
-        self.assertTrue(lats._probe_args_valid("proxy_get", {"id": "1"}))
-        self.assertFalse(lats._probe_args_valid("proxy_get", {"url": "x"}))
+        self.assertTrue(lats._probe_args_valid("proxy_brain", {"code": "x"}))
+        self.assertFalse(lats._probe_args_valid("proxy_brain", {"url": "x"}))
         self.assertTrue(lats._probe_args_valid("execute_httpx", {"args": "-title"}))
         self.assertFalse(lats._probe_args_valid("execute_httpx", {"flags": "-title", "target": "t"}))
         self.assertTrue(lats._probe_args_valid("kali_shell", {"command": "id"}))
@@ -390,16 +390,16 @@ class TestArgValidator(unittest.TestCase):
         self.assertTrue(lats._probe_args_valid("some_unknown_tool", {"whatever": 1}))
 
     def test_schema_block_lists_tool_arg_formats(self):
-        block = lats._tool_schema_block({"execute_httpx", "proxy_get"})
+        block = lats._tool_schema_block({"execute_httpx", "proxy_brain"})
         self.assertIn("execute_httpx", block)
         self.assertIn("args", block)          # httpx schema mentions the args key
-        self.assertIn("id", block)            # proxy_get schema mentions id
+        self.assertIn("code", block)          # proxy_brain schema mentions code
 
     def test_expand_prompt_carries_schema_and_warning(self):
         state = {"current_phase": "exploitation",
                  "conversation_objectives": [{"content": "get the flag"}],
                  "current_objective_index": 0}
-        msgs = lats._expand_prompt_messages(state, None, {"execute_httpx", "proxy_get"}, 3)
+        msgs = lats._expand_prompt_messages(state, None, {"execute_httpx", "proxy_brain"}, 3)
         system = msgs[0]["content"]
         self.assertIn("EXACTLY", system)             # instructs exact keys
         self.assertIn("do NOT invent keys", system.replace("Do NOT", "do NOT"))

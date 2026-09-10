@@ -185,6 +185,43 @@ def _trusted_webapp_base() -> str:
     return os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
 
 
+def _recon_output_files(output_dir, project_id: str) -> list:
+    """Every recon JSON this project owns: the canonical file plus each
+    Domain-batch group file (`recon_<id>__<domain>.json`).
+
+    Deleting only the canonical name leaks one file per domain per batch run.
+
+    Group files are matched by LITERAL PREFIX, never by glob. A project id is
+    client-suppliable at creation and is interpolated straight into this URL's
+    path, so a glob built from it lets an id of `*` (or `[a-z]*`) select every
+    OTHER project's group files - and this function's callers DELETE what it
+    returns. startswith/endswith has no metacharacters to abuse. The parent-dir
+    check stays as a second line of defence against a traversing id.
+    """
+    from pathlib import Path
+    output_dir = Path(output_dir)
+    prefix = f"recon_{project_id}__"
+
+    candidates = [output_dir / f"recon_{project_id}.json"]
+    try:
+        candidates.extend(sorted(
+            p for p in output_dir.iterdir()
+            if p.name.startswith(prefix) and p.name.endswith(".json")
+        ))
+    except OSError:
+        pass
+
+    resolved_dir = output_dir.resolve()
+    files = []
+    for path in candidates:
+        try:
+            if path.is_file() and path.resolve().parent == resolved_dir:
+                files.append(path)
+        except OSError:
+            continue
+    return files
+
+
 def _spawned_webapp_url() -> str:
     """The webapp URL forwarded to *spawned* scan containers (V2).
 
@@ -577,6 +614,11 @@ async def system_active_scans():
             "tool_id": tool_id,
             "status": status,
             "current_phase": getattr(state, "current_phase", None),
+            # Domain batch: phases restart per group, so the outer progress is
+            # what tells "still on group 1" from "now on group 3".
+            "current_group": getattr(state, "current_group", None),
+            "group_number": getattr(state, "group_number", None),
+            "total_groups": getattr(state, "total_groups", None),
             "started_at": started.isoformat() if started else None,
         })
 
@@ -748,6 +790,9 @@ async def get_defaults():
             'PROJECT_ID',
             'USER_ID',
             'TARGET_DOMAIN',   # Provided by user, not a default
+            # Same reasoning: a per-project target list, never a global default.
+            'DOMAIN_BATCH_MODE',
+            'DOMAIN_BATCH_GROUPS',
             # API keys fetched at runtime from user's global settings (not stored per-project)
             'SHODAN_API_KEY',
             'URLSCAN_API_KEY',
@@ -768,6 +813,9 @@ async def get_defaults():
             'UNCOVER_GOOGLE_API_CX',
             'UNCOVER_ONYPHE_API_KEY',
             'UNCOVER_DRIFTNET_API_KEY',
+            # Origin-IP Discovery passive-DNS credentials (per-user, never a default)
+            'SECURITYTRAILS_API_KEY',
+            'VIEWDNS_API_KEY',
         }
 
         # Convert snake_case keys to camelCase for frontend
@@ -860,14 +908,31 @@ async def start_recon(project_id: str, request: ReconStartRequest):
                     project = json_mod.loads(resp.read().decode())
 
                     # Hard guardrail: deterministic, non-disableable — always blocks government/public domains
-                    if not project.get('ipMode', False) and project.get('targetDomain'):
+                    if not project.get('ipMode', False):
                         from hard_guardrail import is_hard_blocked
-                        blocked, reason = is_hard_blocked(project['targetDomain'])
-                        if blocked:
+                        from batch_scope import guardrail_targets
+                        # Domain batch has NO targetDomain: its targets are the derived
+                        # group roots. Checking targetDomain alone would hand every batch
+                        # a free pass through the one control that cannot be switched off,
+                        # so check whatever this project actually scans.
+                        targets = guardrail_targets(project)
+                        if project.get('domainBatchMode', False) and not targets:
+                            # Fail CLOSED: batch mode with nothing to check means the
+                            # groups are missing or malformed, not that there is
+                            # nothing to guard.
                             raise HTTPException(
-                                status_code=403,
-                                detail=f"Hard guardrail: {reason}"
+                                status_code=400,
+                                detail="Domain batch project has no valid domain groups. "
+                                       "Re-save the project's hostname list before scanning.",
                             )
+
+                        for target in targets:
+                            blocked, reason = is_hard_blocked(target)
+                            if blocked:
+                                raise HTTPException(
+                                    status_code=403,
+                                    detail=f"Hard guardrail: {reason}"
+                                )
 
                     if project.get('roeEnabled') and project.get('roeTimeWindowEnabled'):
                         tz_name = project.get('roeTimeWindowTimezone', 'UTC')
@@ -997,6 +1062,11 @@ async def stream_logs(project_id: str):
                         "phaseNumber": event.phase_number,
                         "isPhaseStart": event.is_phase_start,
                         "level": event.level,
+                        # Domain batch outer progress; null for every other run.
+                        "groupNumber": event.group_number,
+                        "totalGroups": event.total_groups,
+                        "currentGroup": event.current_group,
+                        "isGroupStart": event.is_group_start,
                     }),
                 }
         except Exception as e:
@@ -1227,7 +1297,11 @@ async def get_graph_inputs(project_id: str, tool_id: str, user_id: str = ""):
         with Neo4jClient() as client:
             if client.verify_connection():
                 graph_result = client.get_graph_inputs_for_tool(tool_id, user_id, project_id)
-                if graph_result.get("domain"):
+                # A Domain-batch project has SEVERAL Domain nodes. `domain` is
+                # populated only when there is exactly one, so returning on
+                # `domains` here hands the caller the full list to choose from
+                # instead of silently scanning an arbitrary one.
+                if graph_result.get("domain") or graph_result.get("domains"):
                     return graph_result
     except ImportError:
         logger.info("neo4j package not available in orchestrator, falling back to webapp API")
@@ -1283,19 +1357,20 @@ async def delete_recon_data(project_id: str):
     # Build the path to the recon output file
     # Inside the orchestrator container, the output is at /app/recon/output
     output_dir = Path("/app/recon/output")
-    recon_file = output_dir / f"recon_{project_id}.json"
 
     deleted_files = []
     errors = []
 
-    # Delete recon JSON file
-    if recon_file.exists():
+    # Delete the canonical recon JSON file AND every Domain-batch per-group file
+    # (recon_<id>__<domain>.json). Without the glob a batch project leaks one file
+    # per domain on every run, forever.
+    for path in _recon_output_files(output_dir, project_id):
         try:
-            os.remove(recon_file)
-            deleted_files.append(str(recon_file))
-            logger.info(f"Deleted recon file: {recon_file}")
+            os.remove(path)
+            deleted_files.append(str(path))
+            logger.info(f"Deleted recon file: {path}")
         except Exception as e:
-            errors.append(f"Failed to delete {recon_file}: {e}")
+            errors.append(f"Failed to delete {path}: {e}")
             logger.error(f"Failed to delete recon file: {e}")
 
     # Also clean up any running state for this project
@@ -1321,7 +1396,8 @@ async def delete_project_files(project_id: str):
     from pathlib import Path
 
     files_to_delete = [
-        Path("/app/recon/output") / f"recon_{project_id}.json",
+        # Canonical recon file plus every Domain-batch per-group file.
+        *_recon_output_files(Path("/app/recon/output"), project_id),
         Path("/app/gvm_scan/output") / f"gvm_{project_id}.json",
         Path("/app/github_secret_hunt/output") / f"github_hunt_{project_id}.json",
     ]

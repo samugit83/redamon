@@ -65,16 +65,16 @@ httpx -u https://target.com/api -status-code -content-length -title -tech-detect
 httpx -u https://target.com/api -include-response-header "Authorization,X-API-Key,Set-Cookie"
 ```
 
-### 1.3 Captured-traffic workflow (proxy_* tools)
+### 1.3 Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive this survey from the recorded history instead of rebuilding requests by hand. proxy_* tools only see traffic that went through the capture proxy.
+If HTTP Traffic Capture is enabled, source and drive this survey from the recorded history instead of rebuilding requests by hand. proxy_brain tools only see traffic that went through the capture proxy.
 
-- `proxy_sitemap()` lists the distinct endpoints already observed; `proxy_search({"q":"graphql"})` and `proxy_grep("__schema")` find the API-doc and schema surfaces (`/swagger.json`, `/openapi.json`, `/api-docs`, `/graphql`) that section 1.1 fuzzes for.
-- 401/403 bypass (Phase 4.1) runs off one captured forbidden request: `proxy_replay(<403_txn_id>, {"headers":{"X-Original-URL":"/api/admin/users"}})`, then `{"headers":{"X-Forwarded-For":"127.0.0.1"}}`, then method override `{"headers":{"X-HTTP-Method-Override":"GET"}}` or `{"method":"GET"}`. `proxy_diff(<403_txn>, <replay_txn>)` shows the 403 -> 200 flip cleanly.
-- BOLA/IDOR sequential enumeration (Phase 4.2) and version enumeration (Phase 4.4): `proxy_fuzz(<captured_txn>, "id", ["1","2","100"])` walks one query parameter (50 payloads max, origin host only) returning per-value status+length. For path-segment IDs (`/api/users/1`) or `/api/vN/` version walks, iterate proxy_replay with `{"path":...}` instead, since proxy_fuzz only iterates a query param.
-- `proxy_params()` flags injectable params (sequential-id / uuid / jwt / base64) to prioritise; `proxy_query({...})` aggregates the observed status matrix; `proxy_to_curl(id)` renders any hit for the report.
+- `redamon.sitemap()` lists the distinct endpoints already observed; `redamon.search({"q":"graphql"})` and `redamon.grep("__schema")` find the API-doc and schema surfaces (`/swagger.json`, `/openapi.json`, `/api-docs`, `/graphql`) that section 1.1 fuzzes for.
+- 401/403 bypass (Phase 4.1) runs off one captured forbidden request: `redamon.replay(<403_txn_id>, {"headers":{"X-Original-URL":"/api/admin/users"}})`, then `{"headers":{"X-Forwarded-For":"127.0.0.1"}}`, then method override `{"headers":{"X-HTTP-Method-Override":"GET"}}` or `{"method":"GET"}`. `redamon.diff(<403_txn>, <replay_txn>)` shows the 403 -> 200 flip cleanly.
+- BOLA/IDOR sequential enumeration (Phase 4.2) and version enumeration (Phase 4.4): `redamon.fuzz(<captured_txn>, "id", ["1","2","100"])` walks one query parameter (50 payloads max, origin host only) returning per-value status+length. For path-segment IDs (`/api/users/1`) or `/api/vN/` version walks, iterate redamon.replay with `{"path":...}` instead, since redamon.fuzz only iterates a query param.
+- `redamon.params()` flags injectable params (sequential-id / uuid / jwt / base64) to prioritise; `redamon.query({...})` aggregates the observed status matrix; `redamon.to_curl(id)` renders any hit for the report.
 
-Caveat: proxy_replay pins host/scheme/port to the origin transaction and cannot retarget a sibling host (use execute_curl for cross-host probes). All proxy_* tools require HTTP Traffic Capture enabled and only see proxied requests.
+Caveat: redamon.replay pins host/scheme/port to the origin transaction and cannot retarget a sibling host (use execute_curl for cross-host probes). All proxy_brain tools require HTTP Traffic Capture enabled and only see proxied requests.
 
 ---
 

@@ -10,6 +10,11 @@ export interface ProjectSummary {
   targetDomain: string
   ipMode?: boolean
   targetIps?: string[]
+  /** Domain batch: true, plus the derived group roots in run order. A batch
+   *  project has an EMPTY targetDomain, so anything rendering a target must
+   *  fall back to these. */
+  domainBatchMode?: boolean
+  domainBatchDomains?: string[]
   subdomainList?: string[]
   description?: string
   agentOpenaiModel?: string
@@ -117,6 +122,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
               targetDomain: project.targetDomain,
               ipMode: project.ipMode,
               targetIps: project.targetIps,
+              domainBatchMode: project.domainBatchMode,
+              domainBatchDomains: Array.isArray(project.domainBatchGroups)
+                ? (project.domainBatchGroups as Array<{ rootDomain?: string }>)
+                    .map(g => String(g?.rootDomain || '')).filter(Boolean)
+                : [],
               subdomainList: project.subdomainList,
               description: project.description,
               agentOpenaiModel: project.agentOpenaiModel,

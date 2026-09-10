@@ -69,6 +69,8 @@ Discover every subdomain that exists and squeeze every possible takeover finding
 - **\`subjackCheckAr\`** (stale A record detection) probes cloud IP ranges and historically needed root/ICMP. RedAmon's recon container runs with the right privileges so this is fine, but expect some false positives -- those are exactly the findings the manual-review queue is for.
 - **High discovery breadth** can produce thousands of subdomains on large targets. Puredns filters wildcards but the downstream Nuclei pass can still take 30+ minutes. Run timeouts are set to 30 min (Subjack) and 40 min (Nuclei takeover pass).
 - **Manual-review noise**: auto-publish is ON, so stale-A and low-confidence findings appear as \`severity: medium\`. Filter by \`verdict\` in the Findings table to triage -- \`confirmed\` first, then \`likely\`, then \`manual_review\`.`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Pipeline modules: discovery + http_probe + resource_enum (for GAU only) + vuln_scan.
     // resource_enum is present so GAU runs; all other resource_enum tools are

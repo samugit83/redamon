@@ -67,6 +67,105 @@ longer carry.
 
 ---
 
+## 🔇 The `Muted` Label (suppressed findings)
+
+`Muted` is the one label that is **added to** a node rather than being its type.
+When an operator suppresses a finding as noise it keeps its functional label and
+gains this one, so a suppressed Nuclei finding is `:Vulnerability:Muted`.
+
+```cypher
+// mute   - add the label, keep the type
+MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
+SET v:Muted, v.muted = true, v.muted_at = datetime(), v.muted_by = $uid
+
+// unmute - lossless, nothing was destroyed
+MATCH (v:Vulnerability:Muted {id: $id, user_id: $uid, project_id: $pid})
+REMOVE v:Muted, v.muted, v.muted_at, v.muted_by, v.muted_reason
+```
+
+**Only finding-bearing nodes may be muted.** `Vulnerability`, `JsReconFinding`,
+`Secret`, `MultiscannerFinding`, `GithubSecret`, `GithubSensitiveFile`,
+`MalPackageFinding`, `ExploitGvm`. Asset and reference nodes (`IP`, `Port`,
+`Domain`, `Endpoint`, `CVE`, ...) are context: muting one would orphan the real
+findings hanging off it.
+
+### Why add a label instead of swapping it
+
+Adding is what makes unmute lossless and what makes mute survive a re-scan.
+Recon re-runs `MERGE (v:Vulnerability {id, user_id, project_id})`, which still
+matches a `:Vulnerability:Muted` node, refreshes its scan properties and leaves
+the mute intact. Had mute *replaced* the functional label, that MERGE would match
+nothing and create a second, un-muted duplicate of the same finding, because
+`vulnerability_unique` is on `:Vulnerability(id)`.
+
+### The single-label convention this bends, and its price
+
+Everywhere else in this schema a node has exactly ONE label, because the graph
+renderer and several aggregations take `labels[0]` and **Neo4j does not order
+labels**. A muted node is dual-labelled, so its `labels[0]` is nondeterministic.
+
+That is safe only because of a containment rule that must hold for every read
+path: **no `labels[0]` consumer ever receives a muted node.** Excluding `:Muted`
+is therefore a correctness requirement, not only a visibility one - a reader that
+forgets the filter both leaks a suppressed finding and may mis-type it as
+`"Muted"`. The one legitimate reader of muted nodes is the Triage page's Muted
+table, which derives the type as `[l IN labels(n) WHERE l <> 'Muted'][0]` and
+never uses `labels[0]`.
+
+### Invisibility is enforced at the tenant chokepoint
+
+`graph_db/tenant_filter.py` rewrites every node pattern to carry the tenant keys;
+the same rewrite now also excludes `Muted`, so the guarantee rides on the
+mechanism that already covers every query shape the agent can emit:
+
+```cypher
+MATCH (v:Vulnerability)  ->  MATCH (v:Vulnerability&!Muted {user_id: .., project_id: ..})
+MATCH (n)                ->  MATCH (n:!Muted {user_id: .., project_id: ..})
+MATCH (n:A|B)            ->  MATCH (n:(A|B)&!Muted {user_id: .., project_id: ..})
+```
+
+A query that names the label itself is refused rather than scoped, so the agent
+has no vocabulary for mute at all:
+
+```cypher
+MATCH (v:Vulnerability&!Muted {...}) RETURN v   // ✅ what injection produces
+MATCH (n:Muted) RETURN n                        // ❌ refused: reserved label
+MATCH (v:Vulnerability) WHERE NOT v:Muted ...   // ❌ refused: exclusion is automatic
+```
+
+Readers that hand-write their own Cypher and never reach `scope_query` are
+separate enforcement sites and must exclude `:Muted` themselves: the `/graph`
+loader (`webapp/src/app/api/graph/liveRead.ts`), the fixed-op node-type query
+(`agentic/api.py` `_GRAPH_TYPES_CYPHER`), analytics, insights and reports.
+
+### Properties
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `muted` | Boolean | Always `true` when present; the label is the real marker |
+| `muted_at` | datetime | When it was suppressed |
+| `muted_by` | String | `user_id` of the operator who suppressed it |
+| `muted_reason` | String | Optional operator note |
+
+### Triage verdict properties (any finding node, independent of mute)
+
+Written by the AI triage pass; a verdict ranks a finding but never hides it, and
+mute stays a human action.
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `triage_status` | String | `confirmed` \| `likely_noise` \| `needs_verification` \| `unreviewed` (absent = unreviewed) |
+| `triage_confidence` | Float | 0.0 - 1.0 |
+| `triage_reason` | String | One line, why |
+| `triage_source` | String | `ai` \| `human`; a human verdict is never overwritten by a re-run |
+| `triage_cluster_id` | String | Cross-tool dedup group |
+| `triaged_at` | datetime | When the verdict was written |
+
+`Muted` carries no colour in `webapp/src/app/graph/config/colors.ts` on purpose:
+it is never rendered, because it never reaches the renderer.
+
+---
+
 ## 🏗️ Multi-Tenant AWS Scalability Strategy
 
 This schema uses **Logical Partitioning with Composite Indexes** for multi-tenant isolation.
@@ -3439,3 +3538,48 @@ JSON only, never written as malicious.
 All writes MERGE (`ON CREATE SET first_seen`, unconditional `SET last_seen`).
 Constraints live in `graph_db/schema.py` (`package_unique`, `malpackagefinding_unique`);
 the writer is `graph_db/mixins/supply_chain_mixin.py`.
+
+---
+
+## Origin-IP Discovery (CDN/WAF unmasking)
+
+The `origin_discovery` module (recon `GROUP 6 Phase A`) unmasks the real origin
+server behind a CDN/WAF and records it by **reusing the existing `IP` and
+`Vulnerability` labels** — no new node label — plus one new relationship,
+`HAS_ORIGIN`. Writer: `graph_db/mixins/osint_mixin.py`
+(`update_graph_from_origin_discovery`).
+
+### IP node — origin provenance properties
+
+Set on the confirmed origin `IP` node (tenant-keyed `{address, user_id, project_id}`):
+
+- `origin_confirmed` (bool) — the IP was confirmed as the origin by weighted-similarity validation.
+- `is_origin_candidate` (bool), `origin_discovery_enriched` (bool) — provenance markers.
+- `origin_discovery_method` (string) — `subdomain` | `email_record` | `cert_san` | `favicon_hash` | `passive_dns`.
+- `origin_source` (string) — `shodan` | `censys` | `fofa` | `zoomeye` | `otx` | `virustotal` | `securitytrails` | `viewdns` | `crtsh` | `dns`.
+- `origin_confidence` (0-100), `origin_for` (the fronted host), `cdn_fronting` (the CDN name).
+- `first_seen` / `last_seen` / `created_at` (ISO ts) — stamped like the sibling recon mixins so Recon Delta diffs by identity (`address`), not by a `scan_id`.
+
+### Vulnerability node
+
+The exposure reuses the existing security-check finding shape:
+`Vulnerability {type: 'waf_bypass', source: 'origin_discovery'}` with
+`matched_ip`, `hostname`, `url`, `matched_at`, `confidence_score`,
+`origin_discovery_method`, `origin_source`, `cdn_fronting`, `port`, `match_method`,
+`html_similarity`, `cert_match`, `header_match`, `status_code`, and `probe_url`.
+Note `url`/`matched_at` are the **canonical, port-less** `https://<ip>` (IPv6
+bracketed) — this is what converges with the security-check producer — while
+`probe_url` records the actual `scheme://ip:port` that was probed. Its `id` is the
+shared **tenant-scoped** `stable_vuln_id(type, url, ip, user_id, project_id)`, so
+the same exposure emitted by both the security-check producer and
+origin_discovery within one tenant MERGEs to a single node (and never collides
+across tenants, despite the global `vulnerability_unique` constraint on `id`).
+
+### Relationships
+
+- `(s:Subdomain)-[:HAS_ORIGIN {method, confidence, origin_source, discovered_at}]->(i:IP)` — the fronted Subdomain's real origin server.
+- `(i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)` — the origin-exposure finding.
+- `(s:Subdomain)-[:WAF_BYPASS_VIA {evidence, discovered_at, source}]->(i:IP)` — reuses the existing WAF-bypass edge.
+
+All writes MERGE on the tenant triple; a project wipe (`clear_project_data`)
+sweeps these nodes and the `HAS_ORIGIN` edge with no per-type code.

@@ -28,7 +28,8 @@ interface WorkflowViewProps {
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
   projectId?: string
   mode: 'create' | 'edit'
-  onSave?: () => Promise<void>
+  /** Resolves TRUE only when the save actually happened (see WorkflowNodeModal). */
+  onSave?: () => Promise<boolean>
   onRunPartial?: (toolId: string) => void
   runningPartialToolIds?: Set<string>
   onAutoSaveField?: <K extends keyof FormData>(field: K, value: FormData[K]) => void

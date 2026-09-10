@@ -68,14 +68,14 @@ Metacharacters: `' " ( ) [ ]` plus the path separators `/ //`.
 
 XPath 2.0+ gives richer extraction (`doc()`, `unparsed-text()`, regex). XPath 1.0 is what most legacy apps still use.
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_* only see traffic that crossed the capture proxy).
+If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_brain only see traffic that crossed the capture proxy).
 
-- `proxy_grep "Saxon"` (also `Xalan`, `lxml`, `DOMXPath`) reads verbatim XPath engine errors already sitting in captured response bodies, fingerprinting engine and version.
-- For a GET search param, `proxy_fuzz id "q" [...]` drives the boolean-blind `substring()` binary search over one captured QUERY param, iterating the character-position payload sets.
-- For login / search body params (proxy_fuzz is query-only), `proxy_replay id mutate:{param:{"username":"' or '1'='1"}}` mutates the field with quote-flip payloads.
-- `proxy_diff id_legit id_injected` exposes the success-versus-failure oracle between a legitimate and an injected response.
+- `redamon.grep "Saxon"` (also `Xalan`, `lxml`, `DOMXPath`) reads verbatim XPath engine errors already sitting in captured response bodies, fingerprinting engine and version.
+- For a GET search param, `redamon.fuzz id "q" [...]` drives the boolean-blind `substring()` binary search over one captured QUERY param, iterating the character-position payload sets.
+- For login / search body params (redamon.fuzz is query-only), `redamon.replay id mutate:{param:{"username":"' or '1'='1"}}` mutates the field with quote-flip payloads.
+- `redamon.diff id_legit id_injected` exposes the success-versus-failure oracle between a legitimate and an injected response.
 
 ## Attack matrix
 

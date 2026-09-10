@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
-import { existsSync, createReadStream } from 'fs'
+import { existsSync, createReadStream, readdirSync } from 'fs'
 import path from 'path'
 import archiver from 'archiver'
 import { Readable } from 'stream'
@@ -159,8 +159,21 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
     // 5. Check for artifact files
     const artifacts: Array<{ type: string; filePath: string; archiveName: string }> = []
+    // Domain batch writes one file per group beside the canonical one; without
+    // them an export silently loses the per-group raw output.
+    const batchArtifacts = (() => {
+      try {
+        return readdirSync(RECON_OUTPUT_PATH)
+          .filter(n => n.startsWith(`recon_${id}__`) && n.endsWith('.json'))
+          .map(n => ({ type: 'recon', filePath: path.join(RECON_OUTPUT_PATH, n), archiveName: `artifacts/${n}` }))
+      } catch {
+        return []
+      }
+    })()
+
     const artifactFiles = [
       { type: 'recon', filePath: path.join(RECON_OUTPUT_PATH, `recon_${id}.json`), archiveName: `artifacts/recon_${id}.json` },
+      ...batchArtifacts,
       { type: 'gvm', filePath: path.join(GVM_OUTPUT_PATH, `gvm_${id}.json`), archiveName: `artifacts/gvm_${id}.json` },
       { type: 'github_hunt', filePath: path.join(GITHUB_HUNT_OUTPUT_PATH, `github_hunt_${id}.json`), archiveName: `artifacts/github_hunt_${id}.json` },
     ]

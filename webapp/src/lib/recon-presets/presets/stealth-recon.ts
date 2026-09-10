@@ -50,6 +50,8 @@ Red team operators performing authorized reconnaissance against targets with act
 9. Nuclei runs only critical/high templates at 5 req/s, with intrusive and fuzzing templates excluded
 10. OSINT providers enrich all discovered assets through third-party APIs at reduced query limits
 11. CVE and MITRE enrichment map services to known vulnerabilities offline`,
+  targetProfile: 'both',
+  environment: 'either',
   parameters: {
     // Modules: include vuln_scan so the throttled Nuclei config below (critical/high,
     // 5 rps, 2 concurrent, no DAST/Interactsh) plus CVE lookup and MITRE enrichment
@@ -216,6 +218,8 @@ Red team operators performing authorized reconnaissance against targets with act
     mitreEnrichRecon: true,
 
     // --- OSINT: all enabled at reduced limits ---
+    // --- Origin-IP Discovery: off (this preset runs no active validation probes) ---
+    originDiscoveryEnabled: false,
     osintEnrichmentEnabled: true,
 
     shodanEnabled: true,

@@ -1,0 +1,14 @@
+# Global pip constraints for the kali-sandbox venv (issue #181).
+#
+# Referenced by PIP_CONSTRAINT in the Dockerfile, so these bounds apply to EVERY
+# `pip install` in the image, not just requirements.txt. The problem this guards
+# against: the image installs many packages across separate `pip install` RUN
+# lines into one shared venv, and each install resolves in isolation and will
+# silently downgrade a package an earlier line pinned (e.g. `pip install semgrep`
+# pulled mcp==1.29.0 over the mcp the MCP servers needed, and the build still
+# exited 0). Constraints turn such a skew into a hard build-time error instead.
+#
+# A constraint only binds a package if something else pulls it in; it never
+# installs a package on its own. Keep this in sync with requirements.txt.
+mcp==1.29.0
+fastmcp==3.2.4

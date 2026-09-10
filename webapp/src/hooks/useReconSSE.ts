@@ -19,6 +19,10 @@ interface UseReconSSEReturn {
   clearLogs: () => void
   currentPhase: string | null
   currentPhaseNumber: number | null
+  /** Domain batch outer progress; null for every other kind of run. */
+  currentGroup: string | null
+  groupNumber: number | null
+  totalGroups: number | null
 }
 
 export function useReconSSE({
@@ -34,6 +38,11 @@ export function useReconSSE({
   const [error, setError] = useState<string | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string | null>(null)
   const [currentPhaseNumber, setCurrentPhaseNumber] = useState<number | null>(null)
+  // Domain batch: the OUTER progress. Phases restart at 1 for every group, so
+  // without this the drawer cannot tell group 2 starting from group 1 looping.
+  const [currentGroup, setCurrentGroup] = useState<string | null>(null)
+  const [groupNumber, setGroupNumber] = useState<number | null>(null)
+  const [totalGroups, setTotalGroups] = useState<number | null>(null)
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -44,6 +53,9 @@ export function useReconSSE({
     setLogs([])
     setCurrentPhase(null)
     setCurrentPhaseNumber(null)
+    setCurrentGroup(null)
+    setGroupNumber(null)
+    setTotalGroups(null)
   }, [])
 
   const connect = useCallback(() => {
@@ -88,6 +100,13 @@ export function useReconSSE({
           setCurrentPhase(logEvent.phase)
           setCurrentPhaseNumber(logEvent.phaseNumber)
           onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
+        }
+
+        // Domain batch: a new group resets the phase counter, so track it too.
+        if (data.isGroupStart && data.groupNumber) {
+          setCurrentGroup(data.currentGroup ?? null)
+          setGroupNumber(data.groupNumber)
+          setTotalGroups(data.totalGroups ?? null)
         }
       } catch (err) {
         console.error('Error parsing SSE log event:', err)
@@ -196,6 +215,9 @@ export function useReconSSE({
     setLogs([])
     setCurrentPhase(null)
     setCurrentPhaseNumber(null)
+    setCurrentGroup(null)
+    setGroupNumber(null)
+    setTotalGroups(null)
     reconnectAttempts.current = 0
   }, [projectId])
 
@@ -224,6 +246,9 @@ export function useReconSSE({
     clearLogs,
     currentPhase,
     currentPhaseNumber,
+    currentGroup,
+    groupNumber,
+    totalGroups,
   }
 }
 

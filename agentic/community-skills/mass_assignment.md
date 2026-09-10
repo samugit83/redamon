@@ -113,17 +113,17 @@ The goal of this phase is to enumerate every write surface the caller can reach,
 
 7. **Confirm a second authentication context.** Mass assignment proofs are strongest when the privileged value is something the caller absolutely cannot grant themselves. If the engagement provides a second user (different tenant, different role), capture its `Authorization` header now so Phase 2 can run cross-account ownership swaps.
 
-#### Captured-traffic workflow (proxy_* tools)
+#### Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive over-posting from the recorded history instead of rebuilding the write by hand. proxy_* tools only see requests that went through the capture proxy, so run the low-privilege caller's create/update flow through it first.
+If HTTP Traffic Capture is enabled, source and drive over-posting from the recorded history instead of rebuilding the write by hand. proxy_brain tools only see requests that went through the capture proxy, so run the low-privilege caller's create/update flow through it first.
 
-- `proxy_params()` lists request params actually observed with an injectability heuristic, and `proxy_grep("ownerId")` / `proxy_grep("role")` pull field names out of response bodies and JS: both seed the sensitive-field dictionary in step 5.
-- `proxy_search({"method":"PATCH"})` and `proxy_search({"method":"POST"})` inventory the write surfaces that were exercised; `proxy_get(id,"both")` shows the exact baseline request/response so you know which keys the binder already surfaces.
-- Injection is one privileged field added to a captured write and replayed: `proxy_replay(<captured_patch_id>, {"body":"{\"displayName\":\"probe\",\"role\":\"admin\"}"})`. Ship one field per replay (role, then isAdmin, then plan, then tenantId, then ownerId) so the win-state is unambiguous. For the JSON Patch / Merge Patch variants of 2.6, add `{"headers":{"Content-Type":"application/merge-patch+json"}}`.
-- Persistence proof: capture a follow-up GET, then `proxy_diff(<before_get_txn>, <after_get_txn>)` shows the field flipped (structural diff of status / length / headers / body). This is the before/after oracle from step 6 without hand-diffing files.
-- `proxy_to_curl(id)` renders the winning payload for the report; `proxy_query({...})` sweeps sibling write routes for the cross-channel parity check in Phase 3.
+- `redamon.params()` lists request params actually observed with an injectability heuristic, and `redamon.grep("ownerId")` / `redamon.grep("role")` pull field names out of response bodies and JS: both seed the sensitive-field dictionary in step 5.
+- `redamon.search({"method":"PATCH"})` and `redamon.search({"method":"POST"})` inventory the write surfaces that were exercised; `redamon.get(id,"both")` shows the exact baseline request/response so you know which keys the binder already surfaces.
+- Injection is one privileged field added to a captured write and replayed: `redamon.replay(<captured_patch_id>, {"body":"{\"displayName\":\"probe\",\"role\":\"admin\"}"})`. Ship one field per replay (role, then isAdmin, then plan, then tenantId, then ownerId) so the win-state is unambiguous. For the JSON Patch / Merge Patch variants of 2.6, add `{"headers":{"Content-Type":"application/merge-patch+json"}}`.
+- Persistence proof: capture a follow-up GET, then `redamon.diff(<before_get_txn>, <after_get_txn>)` shows the field flipped (structural diff of status / length / headers / body). This is the before/after oracle from step 6 without hand-diffing files.
+- `redamon.to_curl(id)` renders the winning payload for the report; `redamon.query({...})` sweeps sibling write routes for the cross-channel parity check in Phase 3.
 
-Caveat: proxy_replay pins host/scheme/port to the origin, so the `/api/v1` vs `/api/v2` and mobile-back-end parity sweeps only work when those routes share the captured host (hit a different host with execute_curl). A `200` still is not a hit: always confirm with the follow-up GET diff.
+Caveat: redamon.replay pins host/scheme/port to the origin, so the `/api/v1` vs `/api/v2` and mobile-back-end parity sweeps only work when those routes share the captured host (hit a different host with execute_curl). A `200` still is not a hit: always confirm with the follow-up GET diff.
 
 Once at least one mutable endpoint, a populated sensitive-field dictionary, a captured baseline response, and a chosen oracle are ready, **request transition to exploitation phase**.
 

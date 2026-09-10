@@ -1,104 +1,105 @@
 #!/usr/bin/env python3
 """Tests for the orchestrator API authentication (V1-auth).
 
-Part A - PURE UNIT tests of the security decision (auth.is_orchestrator_request_
-authorized). No FastAPI, no docker, no network: runs anywhere. This is the
-security-critical core - it decides which requests reach the Docker-socket holder.
+Part A - pure unit tests of the security decision (auth.is_orchestrator_request_
+authorized). No FastAPI, no docker, no network. This is the security-critical
+core: it decides which requests reach the Docker-socket holder.
 
-Part B - INTEGRATION / EXPLOIT REPRODUCTION via FastAPI TestClient: a minimal app
-WITHOUT the middleware (pre-patch: unauth request succeeds = the vulnerability) vs.
-WITH the real middleware (post-patch: unauth = 401, /health exempt, valid key = 200).
-Part B is skipped automatically if fastapi/httpx are unavailable.
-
-Run:  cd recon_orchestrator && python3 tests/test_orchestrator_auth.py
-      (or inside the orchestrator container, which has fastapi, for Part B)
+Part B - exploit reproduction against a minimal ASGI app: the same routes
+WITHOUT the middleware (pre-patch: unauth request succeeds = the vulnerability)
+vs. WITH the real middleware (post-patch: unauth = 401, /health exempt, valid
+key = 200). Part B self-skips when fastapi is unavailable.
 """
+import asyncio
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import auth  # noqa: E402
 
-PASS = 0
-FAIL = 0
-
-
-def check(desc, cond):
-    global PASS, FAIL
-    if cond:
-        PASS += 1
-        print(f"  PASS {desc}")
-    else:
-        FAIL += 1
-        print(f"  FAIL {desc}")
-
-
 KEY = "s3cret-orchestrator-key-0123456789abcdef"
 
 
-def allow(desc, path, method, presented, expected=KEY):
-    check(f"ALLOW {desc}", auth.is_orchestrator_request_authorized(path, method, presented, expected) is True)
+def authorized(path, method, presented, expected=KEY):
+    return auth.is_orchestrator_request_authorized(path, method, presented, expected)
 
 
-def deny(desc, path, method, presented, expected=KEY):
-    check(f"DENY  {desc}", auth.is_orchestrator_request_authorized(path, method, presented, expected) is False)
+# --------------------------------------------------------------------------
+# Part A: the auth decision
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path,method", [
+    ("/recon/running", "GET"),
+    ("/recon/x/start", "POST"),
+    ("/defaults", "GET"),
+])
+def test_legitimate_webapp_call_with_correct_key_allowed(path, method):
+    assert authorized(path, method, KEY) is True
 
 
-def part_a_unit():
-    print("=== Part A: pure auth-decision unit tests ===")
-
-    print("--- legitimate webapp calls (correct key) ---")
-    allow("GET /recon/running with correct key", "/recon/running", "GET", KEY)
-    allow("POST /recon/x/start with correct key", "/recon/x/start", "POST", KEY)
-    allow("GET /defaults with correct key", "/defaults", "GET", KEY)
-
-    print("--- the exploit: unauthenticated access must be DENIED ---")
-    deny("GET /recon/running with NO key", "/recon/running", "GET", "")
-    deny("POST /recon/x/start with NO key", "/recon/x/start", "POST", "")
-    deny("POST /ai-attack-surface/x/start with NO key", "/ai-attack-surface/x/start", "POST", "")
-    deny("DELETE /recon/x/data with NO key", "/recon/x/data", "DELETE", "")
-    deny("wrong key", "/recon/running", "GET", "wrong-key")
-    deny("almost-right key (trailing space)", "/recon/running", "GET", KEY + " ")
-    deny("almost-right key (one char off)", "/recon/running", "GET", KEY[:-1] + "X")
-    deny("prefix of the key", "/recon/running", "GET", KEY[:10])
-
-    print("--- /health is exempt (Docker healthcheck), any method, no key ---")
-    allow("GET /health no key", "/health", "GET", "")
-    allow("HEAD /health no key", "/health", "HEAD", "")
-
-    print("--- CORS preflight (OPTIONS) is exempt ---")
-    allow("OPTIONS /recon/x/start no key", "/recon/x/start", "OPTIONS", "")
-
-    print("--- fail-closed: no key configured => deny everything non-exempt ---")
-    deny("expected key empty, presented empty", "/recon/running", "GET", "", expected="")
-    deny("expected key empty, presented anything", "/recon/running", "GET", "anything", expected="")
-    allow("expected key empty, /health still exempt", "/health", "GET", "", expected="")
-
-    print("--- BYPASS attempts: no protected route may masquerade as /health ---")
-    deny("/health/ trailing slash (no key)", "/health/", "GET", "")
-    deny("/health/../recon/running (no key)", "/health/../recon/running", "GET", "")
-    deny("/HEALTH uppercase (no key)", "/HEALTH", "GET", "")
-    deny("/health/x subpath (no key)", "/health/x", "GET", "")
-    deny("//health double slash (no key)", "//health", "GET", "")
-    deny("/healthz (no key)", "/healthz", "GET", "")
-    deny("/health with query but wrong route (no key)", "/health2", "GET", "")
-    # and the exempt path is NOT a free pass for a wrong key when it IS /health-like:
-    deny("/health/../local-llm/ensure (no key)", "/health/../local-llm/ensure", "POST", "")
+@pytest.mark.parametrize("desc,path,method,presented", [
+    ("no key, list running", "/recon/running", "GET", ""),
+    ("no key, start recon", "/recon/x/start", "POST", ""),
+    ("no key, start ai-attack-surface", "/ai-attack-surface/x/start", "POST", ""),
+    ("no key, delete data", "/recon/x/data", "DELETE", ""),
+    ("wrong key", "/recon/running", "GET", "wrong-key"),
+    ("trailing space", "/recon/running", "GET", KEY + " "),
+    ("one char off", "/recon/running", "GET", KEY[:-1] + "X"),
+    ("prefix of the key", "/recon/running", "GET", KEY[:10]),
+])
+def test_unauthenticated_or_wrong_key_denied(desc, path, method, presented):
+    assert authorized(path, method, presented) is False
 
 
-def part_b_integration():
-    print()
-    print("=== Part B: ASGI exploit reproduction (pre-patch vs post-patch) ===")
-    try:
-        import asyncio
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_health_is_exempt_without_a_key(method):
+    """The Docker healthcheck polls /health unauthenticated."""
+    assert authorized("/health", method, "") is True
 
-        from fastapi import FastAPI, Request
-        from fastapi.responses import JSONResponse
-    except Exception as e:  # pragma: no cover
-        print(f"  SKIP (fastapi unavailable: {e})")
-        return
 
-    def build_app(with_auth: bool):
+def test_cors_preflight_is_exempt():
+    assert authorized("/recon/x/start", "OPTIONS", "") is True
+
+
+@pytest.mark.parametrize("presented", ["", "anything"])
+def test_fail_closed_when_no_key_is_configured(presented):
+    assert authorized("/recon/running", "GET", presented, expected="") is False
+
+
+def test_health_stays_exempt_when_no_key_is_configured():
+    assert authorized("/health", "GET", "", expected="") is True
+
+
+@pytest.mark.parametrize("path,method", [
+    ("/health/", "GET"),
+    ("/health/../recon/running", "GET"),
+    ("/HEALTH", "GET"),
+    ("/health/x", "GET"),
+    ("//health", "GET"),
+    ("/healthz", "GET"),
+    ("/health2", "GET"),
+    ("/health/../local-llm/ensure", "POST"),
+])
+def test_no_protected_route_may_masquerade_as_health(path, method):
+    """Exact-match exemption: nothing /health-ish is a free pass."""
+    assert authorized(path, method, "") is False
+
+
+# --------------------------------------------------------------------------
+# Part B: exploit reproduction, pre-patch vs post-patch
+# --------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def apps():
+    """(pre_patch, post_patch): identical routes, only the middleware differs,
+    so the exploit and its fix are asserted against one harness."""
+    pytest.importorskip("fastapi", reason="Part B needs fastapi (orchestrator image has it)")
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+
+    def build(with_auth: bool):
         app = FastAPI()
 
         if with_auth:
@@ -122,52 +123,69 @@ def part_b_integration():
 
         return app
 
-    async def call(app, method, path, headers=None):
-        """Drive an ASGI app directly (no httpx). Returns the HTTP status code."""
-        hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
-        scope = {
-            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-            "method": method, "path": path, "raw_path": path.encode(),
-            "query_string": b"", "headers": hdrs, "client": ("127.0.0.1", 12345),
-            "server": ("127.0.0.1", 8010), "scheme": "http",
-        }
-        state = {"status": None}
-
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(msg):
-            if msg["type"] == "http.response.start":
-                state["status"] = msg["status"]
-
-        await app(scope, receive, send)
-        return state["status"]
-
-    def run(coro):
-        return asyncio.new_event_loop().run_until_complete(coro)
-
-    # PRE-PATCH: no middleware -> the exploit works (unauth POST starts a scan).
-    pre = build_app(with_auth=False)
-    st = run(call(pre, "POST", "/recon/victim/start"))
-    check("PRE-PATCH: unauth POST /recon/start SUCCEEDS (200) = the vulnerability", st == 200)
-
-    # POST-PATCH: real middleware in front.
-    post = build_app(with_auth=True)
-    check("POST-PATCH: unauth POST /recon/start REJECTED (401)",
-          run(call(post, "POST", "/recon/victim/start")) == 401)
-    check("POST-PATCH: wrong key REJECTED (401)",
-          run(call(post, "POST", "/recon/victim/start", {"X-Orchestrator-Key": "wrong"})) == 401)
-    check("POST-PATCH: correct key ALLOWED (200)",
-          run(call(post, "POST", "/recon/victim/start", {"X-Orchestrator-Key": KEY})) == 200)
-    check("POST-PATCH: /health exempt without key (200)",
-          run(call(post, "GET", "/health")) == 200)
-    check("POST-PATCH: lowercase header name accepted (200)",
-          run(call(post, "POST", "/recon/victim/start", {"x-orchestrator-key": KEY})) == 200)
+    return build(with_auth=False), build(with_auth=True)
 
 
-if __name__ == "__main__":
-    part_a_unit()
-    part_b_integration()
-    print()
-    print(f"RESULT: PASS={PASS} FAIL={FAIL}")
-    sys.exit(0 if FAIL == 0 else 1)
+def status(app, method, path, headers=None):
+    """Drive an ASGI app directly (no httpx). Returns the HTTP status code.
+
+    Uses a private loop rather than asyncio.run so the process-wide current
+    loop is never cleared for whatever test runs next.
+    """
+    hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+        "method": method, "path": path, "raw_path": path.encode(),
+        "query_string": b"", "headers": hdrs, "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8010), "scheme": "http",
+    }
+    state = {"status": None}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            state["status"] = msg["status"]
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(app(scope, receive, send))
+    finally:
+        loop.close()
+    return state["status"]
+
+
+def test_pre_patch_unauthenticated_start_succeeds(apps):
+    """The vulnerability, reproduced: without the middleware an unauthenticated
+    POST starts a scan. This is the control that proves Part B can see it."""
+    pre, _ = apps
+    assert status(pre, "POST", "/recon/victim/start") == 200
+
+
+def test_post_patch_unauthenticated_start_rejected(apps):
+    _, post = apps
+    assert status(post, "POST", "/recon/victim/start") == 401
+
+
+def test_post_patch_wrong_key_rejected(apps):
+    _, post = apps
+    assert status(post, "POST", "/recon/victim/start",
+                  {"X-Orchestrator-Key": "wrong"}) == 401
+
+
+def test_post_patch_correct_key_allowed(apps):
+    _, post = apps
+    assert status(post, "POST", "/recon/victim/start",
+                  {"X-Orchestrator-Key": KEY}) == 200
+
+
+def test_post_patch_health_exempt_without_key(apps):
+    _, post = apps
+    assert status(post, "GET", "/health") == 200
+
+
+def test_post_patch_header_name_is_case_insensitive(apps):
+    _, post = apps
+    assert status(post, "POST", "/recon/victim/start",
+                  {"x-orchestrator-key": KEY}) == 200

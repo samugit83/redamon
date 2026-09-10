@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { promises as fs } from 'fs'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 import { resolveTranscriptPath, transcriptContentType, transcriptDisposition } from '@/lib/aiAttackTranscript'
 
 interface RouteParams {
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const owned = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
-       WHERE v.ai_transcript_ref = $ref
+       WHERE v.ai_transcript_ref = $ref AND ${notMuted('v')}
        RETURN count(v) AS n LIMIT 1`,
       { pid: projectId, ref },
     )

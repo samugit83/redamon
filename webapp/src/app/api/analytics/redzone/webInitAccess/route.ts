@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 import { deriveWebInitGrade, WEB_INIT_HEADER_CHECKS } from '@/app/graph/components/RedZoneTables/webInitGrade'
 
 function toNum(val: unknown): number {
@@ -57,7 +58,8 @@ export async function GET(request: NextRequest) {
          )
        OPTIONAL MATCH (bu)-[:HAS_ENDPOINT]->(anyEp:Endpoint)
        OPTIONAL MATCH (bu)-[:HAS_VULNERABILITY]->(v:Vulnerability)
-         WHERE v.type IN $allTypes OR v.vulnerability_type IN $allTypes OR v.name IN $allTypes
+         WHERE (v.type IN $allTypes OR v.vulnerability_type IN $allTypes OR v.name IN $allTypes)
+           AND ${notMuted('v')}
        OPTIONAL MATCH (bu)-[:HAS_HEADER]->(h:Header)
          WHERE h.is_security_header = true
        OPTIONAL MATCH (sd:Subdomain)-[:HAS_BASE_URL]->(bu)

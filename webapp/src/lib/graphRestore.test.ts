@@ -224,3 +224,48 @@ describe('restoreGraph — strategy', () => {
     expect(res).toEqual({ nodes: 2, relationships: 1 })
   })
 })
+
+describe('restoreGraph — a suppressed finding is dual-labelled', () => {
+  // This was a real bug. Nodes are bucketed by label to look up the uniqueness
+  // key for apoc.merge.node. A muted finding carries TWO labels and Neo4j does
+  // not order them, so bucketing on labels[0] could yield "Muted", miss the
+  // uniqueKeyMap, and fall through to apoc.create.node -- recreating the finding
+  // with NO uniqueness key and duplicating it on the next import.
+  const constraints = [{ label: 'Vulnerability', properties: ['id'] }]
+
+  const mutedNode = (order: string[]) =>
+    ({ labels: order, properties: { id: 'v1' }, _exportId: 'n1' })
+
+  test('merges on the uniqueness key whichever way the labels are ordered', async () => {
+    for (const order of [['Vulnerability', 'Muted'], ['Muted', 'Vulnerability']]) {
+      const { session, calls } = fakeSession(constraints)
+      await restoreGraph(session, [mutedNode(order)], [], { projectId: 'p1' })
+
+      const merge = calls.find(c => c.cypher.includes('apoc.merge.node'))
+      expect(merge, `labels ${order.join(',')} fell through to create`).toBeDefined()
+      expect(merge!.cypher).toContain('`id`: node.properties.`id`')
+      expect(calls.find(c => c.cypher.includes('apoc.create.node'))).toBeUndefined()
+    }
+  })
+
+  test('recreates the node with BOTH labels, so the mute survives activation', async () => {
+    const { session, calls } = fakeSession(constraints)
+    await restoreGraph(session, [mutedNode(['Muted', 'Vulnerability'])], [], { projectId: 'p1' })
+
+    const batch = calls.find(c => c.cypher.includes('apoc.merge.node'))!.params.nodes as Array<{
+      labels: string[]
+    }>
+    expect(batch[0].labels).toEqual(expect.arrayContaining(['Vulnerability', 'Muted']))
+  })
+
+  test('an ordinary single-label node is unaffected', async () => {
+    const { session, calls } = fakeSession(constraints)
+    await restoreGraph(
+      session,
+      [{ labels: ['Vulnerability'], properties: { id: 'v2' }, _exportId: 'n2' }],
+      [],
+      { projectId: 'p1' }
+    )
+    expect(calls.find(c => c.cypher.includes('apoc.merge.node'))).toBeDefined()
+  })
+})

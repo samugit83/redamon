@@ -21,6 +21,7 @@ import { WEB_APP_PENTESTER } from './presets/web-app-pentester'
 import { PARAMETER_INJECTION } from './presets/parameter-injection'
 import { DNS_EMAIL_SECURITY } from './presets/dns-email-security'
 import { LARGE_NETWORK } from './presets/large-network'
+import { INTERNAL_NETWORK } from './presets/internal-network'
 import { AI_SURFACE_RECON } from './presets/ai-surface-recon'
 import { WEB_CACHE_POISONING } from './presets/web-cache-poisoning'
 import { SUPPLY_CHAIN_AUDIT } from './presets/supply-chain-audit'
@@ -50,6 +51,7 @@ export const RECON_PRESETS: ReconPreset[] = [
   PARAMETER_INJECTION,
   DNS_EMAIL_SECURITY,
   LARGE_NETWORK,
+  INTERNAL_NETWORK,
   AI_SURFACE_RECON,
   WEB_CACHE_POISONING,
   SUPPLY_CHAIN_AUDIT,

@@ -30,6 +30,17 @@ interface UseCypherFixTriageWSConfig {
   userId: string
   projectId: string
   enabled?: boolean
+  /**
+   * Open the socket on mount instead of waiting for `startTriage`.
+   *
+   * A triage run outlives the tab that started it, but the server can only
+   * re-attach a tab that actually connects. Without this the hook connected
+   * ONLY from startTriage, so returning to the page after leaving mid-run
+   * showed an idle screen over a run that was still going.
+   *
+   * Off by default so the CypherFix page keeps connecting lazily.
+   */
+  autoConnect?: boolean
   onPhase?: (payload: TriagePhasePayload) => void
   onFinding?: (payload: TriageFindingPayload) => void
   onComplete?: (payload: TriageCompletePayload) => void
@@ -56,6 +67,7 @@ export function useCypherFixTriageWS({
   userId,
   projectId,
   enabled = true,
+  autoConnect = false,
   onPhase,
   onFinding,
   onComplete,
@@ -72,6 +84,9 @@ export function useCypherFixTriageWS({
   const isAuthenticatedRef = useRef(false)
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const pendingStartRef = useRef(false)
+  //: `${userId}:${projectId}` the live socket is bound to, so a project switch
+  // can tell "already connected here" from "connected to a different project".
+  const connectedIdRef = useRef<string | null>(null)
   // S4: connect() became async (it awaits a ws-ticket fetch) which opened a
   // double-fire window before wsRef is set. This synchronous sentinel prevents a
   // second concurrent connect() from opening an orphan socket whose later onclose
@@ -226,6 +241,37 @@ export function useCypherFixTriageWS({
     }
   }, [enabled, userId, projectId, getWebSocketUrl, sendMessage, onPhase, onFinding, onComplete, onError, status])
 
+  const resetState = useCallback(() => {
+    setStatus('disconnected')
+    setCurrentPhase(null)
+    setProgress(0)
+    setFindings([])
+    setThinking('')
+    setError(null)
+    isAuthenticatedRef.current = false
+    pendingStartRef.current = false
+  }, [])
+
+  const teardownSocket = useCallback(() => {
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+    }
+    const stale = wsRef.current
+    wsRef.current = null
+    connectingRef.current = false
+    if (stale) {
+      // Sever the handlers BEFORE closing: a closing socket's onclose nulls the
+      // shared wsRef, which would otherwise orphan the next socket we open for
+      // the project just switched to.
+      stale.onopen = null
+      stale.onmessage = null
+      stale.onerror = null
+      stale.onclose = null
+      try { stale.close() } catch { /* already closing */ }
+    }
+  }, [])
+
   const startTriage = useCallback(() => {
     // Reset state
     setFindings([])
@@ -253,6 +299,33 @@ export function useCypherFixTriageWS({
       wsRef.current = null
     }
   }, [])
+
+  // Bind the socket to the CURRENT identity, and rebind when the project (or
+  // user) changes. Without this, switching project left project A's socket open
+  // (connect() no-ops while one exists), so its "running" phase kept this hook
+  // in status:'running' and the "Priority Board running" banner bled onto every
+  // other project. On an identity change we drop the old socket and its streamed
+  // state, then reconnect so the server can re-attach us to THIS project's run
+  // (or none). `connect` is deliberately excluded from the deps: it is memoised
+  // on `status`, so including it would tear the socket down on every phase event.
+  useEffect(() => {
+    if (!enabled || !userId || !projectId) {
+      if (wsRef.current) {
+        teardownSocket()
+        resetState()
+      }
+      connectedIdRef.current = null
+      return
+    }
+    const id = `${userId}:${projectId}`
+    if (connectedIdRef.current !== null && connectedIdRef.current !== id) {
+      teardownSocket()
+      resetState()
+    }
+    connectedIdRef.current = id
+    if (autoConnect) void connect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConnect, enabled, userId, projectId, teardownSocket, resetState])
 
   // Cleanup on unmount
   useEffect(() => {

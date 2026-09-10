@@ -130,9 +130,9 @@ execute_httpx args: "-l /tmp/hosts.txt -fr -sr -srd /tmp/httpx_store -sc -title 
 
 The `httpx_store/` tree holds `<host>/req.txt` and `<host>/resp.txt` pairs. Useful for `grep -RE 'api[_-]?key|secret|token' /tmp/httpx_store`.
 
-### Captured traffic (proxy_* tools)
+### Captured traffic (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled and httpx routes through the capture proxy (via `-proxy`), its probes fold into captured history. The `-sr -srd` plus grep-for-secrets move then has a direct in-platform analog: proxy_grep(pattern) runs the same substring search across captured response bodies, and the URL/status/tech inventory overlaps proxy_search (filter by host, method, statusClass) and proxy_sitemap (distinct observed endpoints). Query captured traffic with proxy_* instead of re-probing, no re-run needed.
+When HTTP Traffic Capture is enabled and httpx routes through the capture proxy (via `-proxy`), its probes fold into captured history. The `-sr -srd` plus grep-for-secrets move then has a direct in-platform analog: redamon.grep(pattern) runs the same substring search across captured response bodies, and the URL/status/tech inventory overlaps redamon.search (filter by host, method, statusClass) and redamon.sitemap (distinct observed endpoints). Query captured traffic with proxy_brain instead of re-probing, no re-run needed.
 
 ### Authenticated probing
 

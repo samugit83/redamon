@@ -42,6 +42,21 @@ except ImportError:
 USER_ID = os.environ.get("USER_ID", "")
 PROJECT_ID = os.environ.get("PROJECT_ID", "")
 
+# Ordered fallbacks when the project's configured port list is absent from GVM.
+# Cheapest-first: the full IANA list sweeps the entire UDP range, whose closed
+# ports answer with silence and must each be timed out, so its discovery phase
+# can run for hours before gvmd reports a first percent (issue #177).
+# These are the ONLY three the Greenbone community feed ships (verified against
+# the data-objects feed and gvmd's predefined rows). A name outside this set can
+# never match, so the scan silently falls through to whatever is next - which is
+# how "All TCP and Nmap top 1000 UDP" (no such list; it is top *100*) went
+# unnoticed here for so long.
+DEFAULT_PORT_LIST_FALLBACKS = (
+    "All TCP and Nmap top 100 UDP",
+    "All IANA assigned TCP",
+    "All IANA assigned TCP and UDP",
+)
+
 # GVM connection settings (from environment, set by orchestrator)
 GVM_SOCKET_PATH = os.environ.get("GVM_SOCKET_PATH", "/run/gvmd/gvmd.sock")
 GVM_USERNAME = os.environ.get("GVM_USERNAME", "admin")
@@ -99,7 +114,13 @@ class GVMScanner:
         self.scan_config_name = scan_config or get_setting('SCAN_CONFIG', 'Full and fast')
         self.task_timeout = task_timeout if task_timeout is not None else get_setting('TASK_TIMEOUT', 14400)
         self.poll_interval = poll_interval if poll_interval is not None else get_setting('POLL_INTERVAL', 30)
-        self.no_progress_timeout = get_setting('NO_PROGRESS_TIMEOUT', 1800)
+        self.port_list_name = (get_setting('PORT_LIST', DEFAULT_PORT_LIST_FALLBACKS[0])
+                               or DEFAULT_PORT_LIST_FALLBACKS[0])
+        # Opt-in only (0 = off). Liveness is proven by VERIFY_SCANNER inside the
+        # poll loop, so no time bound is needed to catch a dead stack. The old
+        # 30-minute default killed port sweeps that had not yet reached 1% (#177).
+        self.no_progress_timeout = get_setting('NO_PROGRESS_TIMEOUT', 0)
+        self.liveness_interval = get_setting('LIVENESS_INTERVAL', 300)
         
         # Connection state
         self._connection = None
@@ -287,20 +308,25 @@ class GVMScanner:
         self.xml_format_id = "a994b278-1f62-11e1-96ac-406186ea4fc5"
     
     def _cache_port_list_id(self):
-        """Get and cache port list ID (All IANA assigned TCP and UDP)."""
+        """Resolve the project's port list, falling back to cheaper ones.
+
+        The choice dominates how long a scan sits before its first reported
+        percent, so it is a project setting rather than a hardcoded constant.
+        """
         port_lists = self.gmp.get_port_lists()
-        # Prefer "All IANA assigned TCP and UDP" for comprehensive scanning
-        preferred_lists = [
-            "All IANA assigned TCP and UDP",
-            "All IANA assigned TCP",
-            "All TCP and Nmap top 1000 UDP",
+        preferred_lists = [self.port_list_name] + [
+            name for name in DEFAULT_PORT_LIST_FALLBACKS
+            if name != self.port_list_name
         ]
-        
+
         for preferred in preferred_lists:
             for pl in port_lists.findall('.//port_list'):
                 name = pl.find('name')
                 if name is not None and name.text == preferred:
                     self.port_list_id = pl.get('id')
+                    if preferred != self.port_list_name:
+                        print(f"    [i] Port list '{self.port_list_name}' is not "
+                              f"present in GVM; falling back")
                     print(f"    [+] Using port list: {preferred}")
                     return
         
@@ -312,8 +338,11 @@ class GVMScanner:
             print(f"    [+] Using port list: {name.text if name is not None else 'default'}")
             return
             
-        # Default UUID for "All IANA assigned TCP and UDP"
-        self.port_list_id = "33d0cd82-57c6-11e1-8ed1-406186ea4fc5"
+        # Last resort when gvmd returns no port lists at all. This UUID is
+        # "All TCP and Nmap top 100 UDP", matching the shipped default above.
+        # (The previous constant was labelled "All IANA assigned TCP and UDP"
+        # but 33d0cd82... is actually "All IANA assigned TCP".)
+        self.port_list_id = "730ef368-57e2-11e1-a90f-406186ea4fc5"
     
     def create_target(self, name: str, hosts: List[str], comment: str = "") -> str:
         """
@@ -407,58 +436,134 @@ class GVMScanner:
         print(f"    [+] Started task {task_id}")
         return report_id_str
     
+    # Observability only: it must never be able to fail a scan, so every path
+    # returns None instead of raising, and gvmd version differences in element
+    # names degrade to "no detail" rather than an error.
+    def _scan_activity(self, report_id: Optional[str]) -> Optional[str]:
+        """Evidence that the scan is doing work, independent of the percentage.
+
+        A percentage pinned at 0 is indistinguishable from a hung stack in the
+        logs, which is exactly why issue #177 was filed as a scanner failure.
+        Host and result counts move long before the first percent does.
+        """
+        if not report_id or not self.gmp:
+            return None
+        try:
+            report = self.gmp.get_report(report_id=report_id, details=False)
+        except Exception:
+            return None
+
+        def first_text(*paths):
+            for path in paths:
+                try:
+                    node = report.find(path)
+                except Exception:
+                    continue
+                if node is not None and node.text and node.text.strip():
+                    return node.text.strip()
+            return None
+
+        parts = []
+        hosts = first_text('.//hosts/count', './/host_count/full', './/host_count')
+        if hosts is not None:
+            parts.append(f"Hosts done: {hosts}")
+        results = first_text('.//result_count/full', './/result_count/page',
+                             './/result_count')
+        if results is not None:
+            parts.append(f"Results: {results}")
+        run_status = first_text('.//scan_run_status')
+        if run_status is not None:
+            parts.append(f"Scan: {run_status}")
+        return " | ".join(parts) if parts else None
+
+    @staticmethod
+    def _describe_progress(progress_text: str) -> str:
+        """Say what the percentage MEANS. -1 and 0 are different states.
+
+        The old log printed "Scanning..." for both, discarding the one signal
+        that separates "still port-scanning" from "tests are starting" (#177).
+        """
+        # gvmd sends <progress/> with no text for a task it has not scored yet,
+        # so progress.text is None. Rendering that as "None%" (and skipping the
+        # port-discovery hint) loses the signal in exactly the case the hint
+        # exists for.
+        text = (progress_text or "").strip()
+        if text in ("", "-1"):
+            return "discovery (no host progress reported yet)"
+        if text == "0":
+            return "0% (hosts registered, tests starting)"
+        if text.lstrip("-").isdigit():
+            return f"{text}%"
+        return f"unrecognised progress {text!r}"
+
     def wait_for_task(self, task_id: str) -> Tuple[str, str]:
         """
         Wait for task completion.
-        
+
+        Liveness is PROVEN, not inferred. VERIFY_SCANNER asks gvmd to actually
+        talk to ospd-openvas, so a dead stack surfaces within one liveness
+        interval whenever it dies, including mid-scan, which a progress-based
+        watchdog cannot see at all. Nothing here bounds a healthy scan's runtime:
+        issue #177 was a 30-minute stall watchdog killing a full IANA port sweep
+        that had not yet reported its first percent.
+
         Args:
             task_id: Task ID to wait for
-            
+
         Returns:
             Tuple of (status, report_id)
-            
+
         Raises:
             TimeoutError: If task exceeds timeout
-            RuntimeError: If task fails
+            RuntimeError: If task fails, or the scanner stops answering
         """
-        print(f"    [⏳] Waiting for task {task_id}...")
+        print(f"    [\u23f3] Waiting for task {task_id}...")
         start_time = time.time()
         progress_note_shown = False
-        # The watchdog measures time since the task last moved, not since it
-        # started, so a slow-but-advancing scan is never cut off.
+        # Opt-in stall bound (0 = off, the default). It measures time since the
+        # task last MOVED, not since it started.
         last_progress = -1
         last_progress_at = start_time
+        # None means "due now": the first poll refreshes immediately rather than
+        # running blind for a full interval.
+        last_health_at = None
+        liveness_note = "not yet verified"
+        activity = None
 
         while True:
-            elapsed = time.time() - start_time
-            
+            # One clock read per iteration: every downstream comparison is then
+            # against the same instant, which also keeps the loop testable.
+            now = time.time()
+            elapsed = now - start_time
+
             if self.task_timeout > 0 and elapsed > self.task_timeout:
                 raise TimeoutError(
                     f"Task {task_id} exceeded timeout of {self.task_timeout}s"
                 )
-            
+
             task = self.gmp.get_task(task_id)
             status = task.find('.//status')
-            status_text = status.text if status is not None else "Unknown"
-            
+            # An empty <status/> gives .text of None, and `"Error" in None` is a
+            # TypeError that kills the poll loop and fails an otherwise fine
+            # target. Normalise before any membership test touches it.
+            status_text = (status.text or "").strip() if status is not None else ""
+            status_text = status_text or "Unknown"
+
             progress = task.find('.//progress')
-            progress_text = progress.text if progress is not None else "0"
-            
+            # .text is None for an empty <progress/>, not the string "0".
+            progress_text = (progress.text or "").strip() if progress is not None else ""
+
             # Get report ID
             report = task.find('.//report')
             report_id = report.get('id') if report is not None else None
-            
-            if progress_text in ("0", "-1"):
-                print(f"        Status: {status_text} | Scanning... | "
-                      f"Elapsed: {int(elapsed)}s")
-            else:
-                print(f"        Status: {status_text} | Progress: {progress_text}% | "
-                      f"Elapsed: {int(elapsed)}s")
 
-            if not progress_note_shown and status_text == "Running" and progress_text in ("0", "-1") and elapsed > 60:
-                print("        [i] GVM is running thousands of vulnerability checks. "
-                      "This may take 15-45 minutes per target.")
-                progress_note_shown = True
+            # Terminal states return/raise below, so print their line here or the
+            # run ends on whatever the previous poll happened to say.
+            if (status_text in ("Done", "Stopped", "Stop Requested", "Interrupted")
+                    or "Error" in status_text):
+                print(f"        Status: {status_text} | "
+                      f"{self._describe_progress(progress_text)} | "
+                      f"Elapsed: {int(elapsed)}s")
 
             if status_text == "Done":
                 return status_text, report_id
@@ -472,21 +577,54 @@ class GVMScanner:
             elif "Error" in status_text:
                 raise RuntimeError(f"Task failed: {status_text}")
 
+            # Re-prove the scanner is answering, and refresh what the scan has
+            # actually produced. Only a definitive "service is down" verdict
+            # raises; anything inconclusive lets a healthy scan run on.
+            if self.liveness_interval > 0 and (
+                    last_health_at is None
+                    or now - last_health_at >= self.liveness_interval):
+                last_health_at = now
+                try:
+                    self._verify_scanner_alive()
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        f"Task {task_id} aborted after {int(elapsed)}s because the "
+                        f"scanner stopped answering. {e}"
+                    ) from e
+                liveness_note = "alive"
+                activity = self._scan_activity(report_id)
+
+            line = f"Status: {status_text} | {self._describe_progress(progress_text)}"
+            if activity:
+                line += f" | {activity}"
+            if liveness_note == "alive":
+                line += f" | Scanner: alive ({int(now - last_health_at)}s ago)"
+            else:
+                line += f" | Scanner: {liveness_note}"
+            print(f"        {line} | Elapsed: {int(elapsed)}s")
+
+            if (not progress_note_shown and status_text == "Running"
+                    and progress_text in ("", "0", "-1") and elapsed > 60):
+                print(f"        [i] Still in the port-discovery phase of the "
+                      f"'{self.port_list_name}' port list. gvmd reports no percent "
+                      f"until this finishes; the scanner is verified alive above.")
+                progress_note_shown = True
+
             current_progress = self._safe_int(progress_text, -1)
             if current_progress > last_progress:
                 last_progress = current_progress
-                last_progress_at = time.time()
+                last_progress_at = now
             elif self.no_progress_timeout > 0:
-                stalled = time.time() - last_progress_at
+                stalled = now - last_progress_at
                 if stalled > self.no_progress_timeout:
                     raise RuntimeError(
                         f"Task {task_id} made no progress for {int(stalled)}s "
-                        f"(status {status_text}, progress {progress_text}%). The scan "
-                        f"was accepted by gvmd but nothing is running it - check that "
-                        f"redamon-gvm-ospd is up and that its VT feed loader "
-                        f"(redamon-gvm-vt) completed. If this target is genuinely "
-                        f"just slow, raise it: GVM_NO_PROGRESS_TIMEOUT=3600 in .env, "
-                        f"then ./redamon.sh up."
+                        f"(status {status_text}, "
+                        f"{self._describe_progress(progress_text)}). The "
+                        f"scanner was still answering, so this is the opt-in "
+                        f"GVM_NO_PROGRESS_TIMEOUT bound firing, not a dead stack. "
+                        f"A large port list can legitimately sit here for hours: "
+                        f"raise or unset GVM_NO_PROGRESS_TIMEOUT (0 disables it)."
                     )
 
             time.sleep(self.poll_interval)

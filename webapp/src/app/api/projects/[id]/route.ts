@@ -145,6 +145,55 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       updateData.targetIps = updateData.targetIps.map((s: string) => s.trim()).filter(Boolean)
     }
 
+    // Domain batch: the derived groups are the project's SCOPE (the hard guardrail,
+    // the agent and the pipeline all read them), so they are recomputed here from
+    // the raw host list and a client-supplied domainBatchGroups is NEVER trusted.
+    //
+    // Keyed on the project actually BEING a batch, not on the key being present in
+    // the body: the project form PUTs the whole row, so `domainBatchHosts: []` is
+    // present on every single-domain and IP project too. Validating on presence
+    // rejected all of those with "Domain batch mode needs at least one hostname"
+    // and made every project edit fail.
+    const willBeBatch = 'domainBatchMode' in updateData
+      ? updateData.domainBatchMode === true
+      : (await prisma.project.findUnique({
+          where: { id }, select: { domainBatchMode: true },
+        }))?.domainBatchMode === true
+
+    // A client-supplied grouping is never trusted; it is always re-derived below.
+    if ('domainBatchGroups' in updateData) delete updateData.domainBatchGroups
+
+    // Re-derive the scope ONLY when this update actually changes the host list or
+    // flips the mode. A partial save - a single module toggle auto-saving
+    // `{ katanaEnabled: false }` - carries neither, so the stored groups are left
+    // untouched. Without this guard the absent domainBatchHosts read as empty and
+    // every field toggle on a batch project 400'd with "needs at least one hostname".
+    const touchesBatchScope = 'domainBatchHosts' in updateData || 'domainBatchMode' in updateData
+    if (willBeBatch && touchesBatchScope) {
+      const { validateDomainBatch } = await import('@/lib/domainBatch')
+      const raw = updateData.domainBatchHosts
+      const hosts: string[] = Array.isArray(raw)
+        ? raw.filter((h: unknown): h is string => typeof h === 'string')
+        : typeof raw === 'string' ? raw.split(',') : []
+      const batch = validateDomainBatch(hosts)
+      if (!batch.ok) {
+        return NextResponse.json({ error: batch.errors.join(' ') }, { status: 400 })
+      }
+      updateData.domainBatchHosts = batch.groups.flatMap(g => g.hosts)
+      updateData.domainBatchGroups = batch.groups
+    }
+
+    // Mutually exclusive modes, enforced on update as well as create: recon checks
+    // IP_MODE first, so a project flagged both ways silently never runs its batch.
+    const nextIpMode = 'ipMode' in updateData ? updateData.ipMode === true : undefined
+    const nextBatchMode = 'domainBatchMode' in updateData ? updateData.domainBatchMode === true : undefined
+    if (nextIpMode && nextBatchMode) {
+      return NextResponse.json(
+        { error: 'A project cannot be in both IP mode and Domain batch mode.' },
+        { status: 400 },
+      )
+    }
+
     // Supply-chain input: supplyChainRepoUrl becomes a `git clone` argument in
     // the scan container, so it is validated server-side. The Other Scans UI
     // validates too, but a direct PUT bypasses it.

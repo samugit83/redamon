@@ -18,9 +18,9 @@ Reference for testing legacy SOAP services and WS-Security envelopes. Pull this 
 | Raw envelope crafting | `execute_curl` | When `zeep` strict typing fights you (XSW, oversized fields). |
 | WS-Trust / SAML binding | `execute_code` | `python3-saml` for SAML construction. |
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled, a captured valid `<wsse:Security>` envelope is the raw material for several probes. UsernameToken replay is proxy_replay of that captured transaction unchanged (the origin host-pinning matches the real service, so it is not a limitation here). XSW, BST injection, and SOAPAction confusion are body/header mutations delivered through proxy_replay (swap the body, add or override the SOAPAction header), and proxy_grep reads the response to tell a SOAP-Fault from an executed action. Where the proxy stops: WSDL discovery and parsing, and building valid typed calls, still run through zeep and execute_curl.
+When HTTP Traffic Capture is enabled, a captured valid `<wsse:Security>` envelope is the raw material for several probes. UsernameToken replay is redamon.replay of that captured transaction unchanged (the origin host-pinning matches the real service, so it is not a limitation here). XSW, BST injection, and SOAPAction confusion are body/header mutations delivered through redamon.replay (swap the body, add or override the SOAPAction header), and redamon.grep reads the response to tell a SOAP-Fault from an executed action. Where the proxy stops: WSDL discovery and parsing, and building valid typed calls, still run through zeep and execute_curl.
 
 ## SOAP primer
 

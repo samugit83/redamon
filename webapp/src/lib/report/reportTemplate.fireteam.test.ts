@@ -26,7 +26,7 @@ function baseReportData(): any {
     remediations: [],
     generatedAt: '2026-04-18T00:00:00Z',
     graphOverview: {
-      totalNodes: 0, nodeCounts: [],
+      totalNodes: 0, nodeCounts: [], suppressedCount: 0,
       subdomainStats: { total: 0, resolved: 0, uniqueIps: 0 },
       endpointCoverage: { baseUrls: 0, endpoints: 0, parameters: 0 },
       certificateHealth: { total: 0, expired: 0, expiringSoon: 0 },

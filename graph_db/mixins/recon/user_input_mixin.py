@@ -317,24 +317,35 @@ class UserInputMixin:
             project_id: Tenant project ID
 
         Returns:
-            Dict with tool-specific inputs from the existing graph
+            Dict with tool-specific inputs from the existing graph.
+
+            `domains` lists EVERY Domain node in the project. A Domain-batch
+            project has one per group, and the old single-domain query took
+            whichever row Neo4j returned first, so a partial re-run silently
+            targeted an arbitrary domain of the batch. `domain` stays populated
+            only when there is exactly one, so a caller that cannot present a
+            choice fails closed instead of guessing.
         """
         with self.driver.session() as session:
             if tool_id == "SubdomainDiscovery":
-                # Get the domain and count existing subdomains
+                # Every domain, plus each one's existing subdomain count.
                 result = session.run(
                     """
-                    OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})
+                    MATCH (d:Domain {user_id: $uid, project_id: $pid})
                     OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
                     RETURN d.name AS domain, count(s) AS subdomain_count
+                    ORDER BY d.name
                     """,
                     uid=user_id, pid=project_id,
                 )
-                record = result.single()
+                rows = [r for r in result if r["domain"]]
+                domains = [r["domain"] for r in rows]
+                total_subdomains = sum(r["subdomain_count"] or 0 for r in rows)
                 return {
-                    "domain": record["domain"] if record["domain"] else None,
-                    "existing_subdomains_count": record["subdomain_count"] or 0,
-                    "source": "graph" if record["domain"] else "settings",
+                    "domain": domains[0] if len(domains) == 1 else None,
+                    "domains": domains,
+                    "existing_subdomains_count": total_subdomains,
+                    "source": "graph" if domains else "settings",
                 }
 
             elif tool_id in ("Naabu", "Masscan"):
@@ -696,6 +707,36 @@ class UserInputMixin:
                     "existing_ai_endpoints_count": (record["ai_endpoints"] if record else 0) or 0,
                     "existing_mcp_endpoints_count": (record["mcp_endpoints"] if record else 0) or 0,
                     "existing_vector_db_services_count": (record["vector_db_services"] if record else 0) or 0,
+                    "source": "graph" if (record and record["domain"]) else "settings",
+                }
+
+            elif tool_id == "OriginDiscovery":
+                # Origin Discovery needs CDN-FRONTED hosts (from a prior HTTP probe),
+                # not just any subdomain. Return the fronted-host count so the modal
+                # can block a run that has nothing to unmask (G7), plus subdomain
+                # names for the manual-entry dropdown. A host is "fronted" if it
+                # resolves to a CDN IP or its BaseURL is CDN-flagged / has a favicon.
+                result = session.run(
+                    """
+                    OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})
+                    OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+                    WITH d, collect(DISTINCT s.name) AS subdomains
+                    OPTIONAL MATCH (fs:Subdomain {user_id: $uid, project_id: $pid})
+                    WHERE EXISTS { (fs)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
+                       OR EXISTS { (fs)-[:HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
+                                   WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL }
+                    WITH d, subdomains, count(DISTINCT fs) AS fronted_count
+                    RETURN d.name AS domain, subdomains,
+                           size(subdomains) AS sub_count, fronted_count
+                    """,
+                    uid=user_id, pid=project_id,
+                )
+                record = result.single()
+                return {
+                    "domain": record["domain"] if record and record["domain"] else None,
+                    "existing_subdomains": (record["subdomains"] if record else []) or [],
+                    "existing_subdomains_count": (record["sub_count"] if record else 0) or 0,
+                    "fronted_count": (record["fronted_count"] if record else 0) or 0,
                     "source": "graph" if (record and record["domain"]) else "settings",
                 }
 

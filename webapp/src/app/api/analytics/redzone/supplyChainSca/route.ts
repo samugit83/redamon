@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 /**
  * Supply-Chain SCA: the Package / MalPackageFinding / Vulnerability model that
@@ -74,6 +75,7 @@ export async function GET(request: NextRequest) {
     // --- verdicts: MalPackageFinding joined to its package + anchors ---------
     const verdicts = await session.run(
       `MATCH (p:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
+       WHERE ${notMuted('f')}
        WITH p, f,${ANCHORS}
        RETURN f.finding_id      AS findingId,
               f.verdict         AS verdict,
@@ -117,8 +119,10 @@ export async function GET(request: NextRequest) {
     const packages = await session.run(
       `MATCH (p:Package {project_id: $pid})
        WITH p,${ANCHORS},
-            [(p)-[:FLAGGED_AS]->(f:MalPackageFinding) WHERE f.project_id = $pid | f] AS findings,
-            [(p)-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE v.project_id = $pid | v] AS vulns
+            [(p)-[:FLAGGED_AS]->(f:MalPackageFinding)
+              WHERE f.project_id = $pid AND ${notMuted('f')} | f] AS findings,
+            [(p)-[:HAS_VULNERABILITY]->(v:Vulnerability)
+              WHERE v.project_id = $pid AND ${notMuted('v')} | v] AS vulns
        RETURN p.purl        AS purl,
               p.name        AS name,
               p.version     AS version,
@@ -146,7 +150,7 @@ export async function GET(request: NextRequest) {
     // nuclei and the GraphQL scanner also write into.
     const advisories = await session.run(
       `MATCH (p:Package {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid})
-       WHERE v.source = 'osv'
+       WHERE v.source = 'osv' AND ${notMuted('v')}
        WITH p, v,${ANCHORS}
        RETURN v.id           AS advisoryId,
               v.severity     AS severity,
@@ -176,6 +180,7 @@ export async function GET(request: NextRequest) {
 
     const verdictTotals = await session.run(
       `MATCH (:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
+       WHERE ${notMuted('f')}
        RETURN f.verdict AS verdict, ${NOT_ANALYSED} AS notAnalysed, count(*) AS c`,
       { pid })
 

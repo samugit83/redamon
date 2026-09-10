@@ -103,10 +103,10 @@ _UNCLASSIFIED_SECTION = """### <descriptive_term>-unclassified
 
 _ACCESS_CONTROL_SECTION = """### access_control — Broken Access Control / Authorization Bypass
 - Defeating an authentication or authorization decision that has NO injection, inclusion, or template surface: reaching a resource, function, role, or object the request is not supposed to be allowed
-- Includes: authentication-logic bypass at a login / credential form (defeating the credential CHECK itself by the shape or TYPE of the submitted values — input-type confusion, loose / type-juggling comparisons, and client-trusted or default auth-state logic — rather than by discovering a valid password), forced browsing / function-level access to hidden or admin endpoints, vertical + horizontal privilege escalation, IDOR / BOLA (object-level authorization via numeric/UUID/filename/token references), HTTP verb / method tampering and method-override headers, 401/403 bypass via path normalization (trailing slash, `%2e`, `%2f`, double-encoding, `..;/`) and trust headers (X-Original-URL, X-Rewrite-URL, X-Forwarded-For, X-Custom-IP-Authorization), parameter / hidden-field / cookie role tampering, mass assignment, JWT attacks (alg:none, weak-secret cracking, claim tampering), CORS and GraphQL/API authorization flaws, and multi-step business-logic bypass
+- Includes: authentication-logic bypass at a login / credential form (defeating the credential CHECK itself by the shape or TYPE of the submitted values — input-type confusion, loose / type-juggling comparisons, and client-trusted or default auth-state logic — rather than by discovering a valid password), forced browsing / function-level access to hidden or admin endpoints, vertical + horizontal privilege escalation, IDOR / BOLA (object-level authorization via numeric/UUID/filename/token references), HTTP verb / method tampering and method-override headers, 401/403 bypass via path normalization (trailing slash, `%2e`, `%2f`, double-encoding, `..;/`) and trust headers (X-Original-URL, X-Rewrite-URL, X-Forwarded-For, X-Custom-IP-Authorization), parameter / hidden-field / cookie role tampering, mass assignment, JWT CLAIM tampering (trusting an unverified or forged claim when the signature is not properly checked - the CRYPTOGRAPHIC break of a JWT is crypto_attack), CORS and GraphQL/API authorization flaws, and multi-step business-logic bypass
 - Key distinction: the goal is to defeat an ACCESS DECISION by changing the request shape (method, path form, trusted header, client-supplied role/id, token claim, or the type/presence of a submitted credential field) — NOT to inject code/SQL/templates (rce / sql_injection), run JS in a browser (xss), read files outside the web root (path_traversal), forge server-side requests (ssrf), or GUESS a valid secret (brute_force_credential_guess — that is only for when a real credential must be discovered, not for a login defeated by malformed/mistyped inputs or a comparison flaw)
 - A plain login form, or an explicit "bypass the login / get in as admin" objective, belongs HERE first when the credential may not need to be guessed — test the authentication-logic bypass before assuming a password must be brute-forced
-- Keywords: access control, broken access control, authorization bypass, authentication bypass, auth bypass, login bypass, login form bypass, bypass the login, type juggling, loose comparison, input type confusion, magic hash, IDOR, BOLA, insecure direct object reference, privilege escalation, forced browsing, function-level authorization, method tampering, verb tampering, HTTP method bypass, 401 bypass, 403 bypass, X-Original-URL, X-Forwarded-For bypass, trust header, hidden field, isAdmin, role tampering, mass assignment, JWT alg none, JWT bypass, business logic, CORS misconfiguration, GraphQL authorization
+- Keywords: access control, broken access control, authorization bypass, authentication bypass, auth bypass, login bypass, login form bypass, bypass the login, type juggling, loose comparison, input type confusion, magic hash, IDOR, BOLA, insecure direct object reference, privilege escalation, forced browsing, function-level authorization, method tampering, verb tampering, HTTP method bypass, 401 bypass, 403 bypass, X-Original-URL, X-Forwarded-For bypass, trust header, hidden field, isAdmin, role tampering, mass assignment, JWT claim tampering, JWT bypass, business logic, CORS misconfiguration, GraphQL authorization
 """
 
 _XXE_SECTION = """### xxe - XML External Entity (XXE) Injection
@@ -114,6 +114,15 @@ _XXE_SECTION = """### xxe - XML External Entity (XXE) Injection
 - Includes: classic in-band file read (`file://`), base64 source read via a PHP stream filter, error-based exfiltration through an external OR a local system DTD (parameter entities), blind out-of-band (OOB) exfiltration via a hosted DTD + callback, SSRF / cloud-metadata via entity URLs, XInclude when the DOCTYPE is stripped, content-type switching (JSON / form to XML), and XXE inside uploads (SVG, DOCX / XLSX / OOXML, SAML)
 - Key distinction: the flaw is in how the server PARSES an attacker-supplied XML document (a DOCTYPE / ENTITY / DTD it processes), NOT a URL/host PARAMETER the app fetches (that is ssrf), NOT a PATH parameter file read (that is path_traversal), NOT code execution on the server (that is rce), and NOT a database query (that is sql_injection)
 - Keywords: XXE, XML external entity, XML injection, DOCTYPE, ENTITY, external entity, DTD, parameter entity, XInclude, blind XXE, out-of-band XXE, external DTD, SOAP XXE, wsdl, SVG upload XXE, OOXML XXE, docx XXE, SAML XXE
+"""
+
+_CRYPTO_ATTACK_SECTION = """### crypto_attack - Cryptographic Attacks
+- Break a cryptographic construction the app trusts: DECRYPT or FORGE an attacker-controllable ciphertext, cookie, token, signature, or MAC by exploiting HOW it is encrypted, signed, hashed, or generated - not by guessing a secret and not by trusting an unverified claim
+- Includes: CBC padding oracle (decrypt + forge), CBC / stream ciphertext malleability and bit-flipping, ECB block analysis (cut-and-paste, byte-at-a-time), IV / nonce misuse, stream-cipher keystream / nonce reuse (two-time pad), JWT signature attacks (alg:none, HS/RS algorithm confusion, weak-secret cracking, kid / jwk / jku key injection), hash length extension on `H(secret || message)`, HMAC / MAC forgery, RSA weaknesses (small e, shared / close primes, Wiener, Hastad, Bleichenbacher), predictable token / PRNG / seed reconstruction (LCG, Mersenne Twister, time-seeded), plus classical-cipher and multi-layer encoding breaks
+- Key distinction: the flaw is in the CRYPTO itself - a decrypt / verify oracle, ciphertext malleability, a weak or forgeable key / signature, or predictable randomness lets you recover or forge the trusted value. This is NOT trusting an unverified request claim or defeating an access decision by request shape (access_control), NOT a deserialization gadget that runs code (rce), NOT SQL / template / command injection, and NOT guessing a valid login password (brute_force_credential_guess)
+- If a secret is carried in an encrypted / signed / encoded token you control (a cookie, token, signature, or ciphertext parameter whose plaintext you cannot read directly), attack the token's cryptography HERE rather than trying to recover the secret indirectly (guessing or brute-forcing it, or deriving it from a side channel)
+- Decisive trigger: the MOMENT the objective is gated by such an opaque / encoded / encrypted value the server decrypts or verifies, treat it as a crypto target - `switch_skill` to crypto_attack and transition to exploitation to attack its construction, rather than staying in reconnaissance to enumerate or re-fingerprint it
+- Keywords: crypto, cryptography, cryptographic attack, padding oracle, CBC, ECB, block cipher, stream cipher, AES, DES, cipher, ciphertext, decrypt, encryption, IV, bit flipping, bit-flip, ciphertext malleability, keystream reuse, nonce reuse, two-time pad, XOR cipher, JWT signature, algorithm confusion, alg none, HS256, RS256, weak JWT secret, JWK injection, JKU injection, kid injection, hash length extension, length extension attack, MAC forgery, HMAC, RSA, modulus factoring, factordb, Wiener, Hastad, Fermat, Bleichenbacher, LCG, Mersenne Twister, predictable token, weak PRNG, seed prediction, weak encryption, weak cryptography
 """
 
 # Map of built-in skill ID -> (section text, classification priority letter)
@@ -130,6 +139,7 @@ _BUILTIN_SKILL_MAP = {
     'access_control': (_ACCESS_CONTROL_SECTION, 'j', 'access_control'),
     'http_request_smuggling': (_HTTP_SMUGGLING_SECTION, 'k', 'http_request_smuggling'),
     'xxe': (_XXE_SECTION, 'l', 'xxe'),
+    'crypto_attack': (_CRYPTO_ATTACK_SECTION, 'm', 'crypto_attack'),
 }
 
 # Classification instructions for built-in skills (no priority — best match wins)
@@ -180,12 +190,15 @@ _CLASSIFICATION_INSTRUCTIONS = {
     'access_control': """   - **access_control**:
       - Is there an authentication / authorization wall (login prompt, `401`/`403`, "admin only" gate, a resource or object you should not be able to reach) with NO injection / inclusion / template surface?
       - Is this a plain login form or a "bypass the login / log in as admin" objective? Classify it HERE first: the flaw is often in HOW the app compares or trusts the submitted values (input-type confusion, loose or type-juggling comparison, client-trusted or default auth-state logic), defeated by the SHAPE or TYPE of the request rather than by a guessed password. Test that authentication-logic bypass before assuming credentials must be brute-forced.
+      - PROXY-CHAIN CHECK: if the resource you cannot reach is an INTERNAL-ONLY virtual host, hostname, or backend whose name/authority the app itself discloses but a FRONT proxy rewrites or refuses, and recon shows a MULTI-TIER HTTP path (a reverse proxy / load balancer / cache in front of a distinct app server, betrayed by `Via` / `X-Upstream-Proxy` / differing `Server` or `X-*` headers), then the gate is enforced at the PROXY, not the app: this is a routing/desync problem — prefer `http_request_smuggling`. A login or admin panel in front of it is often a DECOY; do not sink the run into credential brute-forcing when the real wall is a proxy that rewrites the routing `Host`.
       - Would the bypass come from changing the REQUEST SHAPE — a different HTTP method/verb, a path/resource form, a trusted header, a client-supplied role/flag/id, a token claim, or the type/presence of a submitted credential field — rather than injecting a payload?
       - Does it mention access control, authorization/authentication bypass, IDOR/BOLA, privilege escalation, forced browsing, method/verb tampering, hidden fields, mass assignment, JWT tampering, CORS, or business-logic abuse?
       - Boundary: if the goal is specifically SQLi / XSS / SSRF / RCE / file read / credential guessing, use THAT skill instead — access_control is for defeating the access DECISION itself.""",
     'http_request_smuggling': """   - **http_request_smuggling**:
       - Does recon reveal a MULTI-TIER HTTP path — a reverse proxy, load balancer, CDN, or cache in FRONT of a distinct back-end app server (differing `Server`/`Via`/`X-Cache`/`X-*` proxy headers, hop-by-hop header differences, or a front tier that answers before the app)?
       - Is there a resource the FRONT tier blocks (401/403/redirect) that the back-end would serve if the request reached it directly — a front-enforced access control worth bypassing from behind?
+      - Is there an INTERNAL-ONLY virtual host, hostname, or backend the app itself references (in a response header, a link, an error, or verbose output) that a DIRECT request cannot reach because the front tier rewrites the `Host` / authority? Reaching it requires smuggling a request whose `Host` / authority survives the front tier untouched — a strong smuggling tell even when a login or admin panel is the visible surface.
+      - Is there a page (often reachable via weak or DEFAULT credentials) that REFLECTS the response of a SERVER-SIDE fetch the app makes to an internal host? That reflected fetch is your READ ORACLE for a response/desync: chain the default-credential foothold to reach it, then use smuggling to change what that internal fetch returns.
       - Do the two tiers appear to disagree on request framing — does the server react differently to a `Transfer-Encoding: chunked` + `Content-Length` combination, an obfuscated TE header, or trailing/pipelined bytes than a single server would?
       - Boundary: if there is only ONE HTTP server with no proxy/cache in front, or the goal is a single-parameter injection, use the matching skill instead. This skill defeats the request-boundary AGREEMENT between chained HTTP processors.""",
     'xxe': """   - **xxe**:
@@ -193,6 +206,12 @@ _CLASSIFICATION_INSTRUCTIONS = {
       - Does the target parse attacker-supplied XML — a SOAP / XML-RPC endpoint, a `.wsdl`, an XML request body, or an upload that accepts SVG / DOCX / XLSX / SAML?
       - Is the goal to read local files, reach internal services, or exfiltrate data THROUGH the XML parser (in-band reflection, error-based, or out-of-band via an external/local DTD)?
       - Boundary: if the file read is via a PATH parameter use path_traversal; if a URL/host PARAMETER is fetched use ssrf; if code executes on the server use rce. xxe is specifically the abuse of XML entity / DTD processing.""",
+    'crypto_attack': """   - **crypto_attack**:
+      - Is there an attacker-controllable ciphertext, cookie, token, signature, or MAC that the server DECRYPTS or VERIFIES, where the goal is to decrypt or FORGE it by breaking the crypto (not by guessing a password and not by trusting an unchecked claim)?
+      - Does the endpoint answer DIFFERENTLY for a malformed / bad-padding / bad-signature token than for a well-formed-but-wrong one (a padding or signature oracle)?
+      - Does the material look like a block cipher (length a multiple of 8 / 16), ECB (repeating 16-byte blocks), a JWT (three dot-separated parts), a keyed hash / MAC trailer, an RSA n / e / c triple, or a predictable / sequential generated token?
+      - Does it mention padding oracle, CBC / ECB, bit-flipping, keystream / nonce reuse, JWT alg:none / algorithm confusion / weak secret, hash length extension, RSA factoring, or predictable PRNG / token?
+      - Boundary: if the win is trusting an unverified claim or a request-shape auth bypass use access_control; a deserialization gadget that runs code is rce; guessing a real password is brute_force_credential_guess.""",
 }
 
 
@@ -212,7 +231,7 @@ def build_skill_menu(enabled_builtins: set[str], enabled_user_skills: list[dict]
     """Full per-skill selection text (step-1 sections + criteria) for every turn."""
     order = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit',
              'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control',
-             'http_request_smuggling', 'xxe']
+             'http_request_smuggling', 'xxe', 'crypto_attack']
     parts = [
         "## ATTACK SKILL SELECTION — re-evaluate EVERY turn\n"
         "Below is the full catalog of enabled attack classes, with the SAME description and "
@@ -293,7 +312,7 @@ def build_classification_prompt(objective: str) -> str:
     parts.append("## Attack Skill Types (ONLY for exploitation phase)\n")
 
     # Built-in skills (only enabled ones)
-    for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'xxe']:
+    for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'xxe', 'crypto_attack']:
         if skill_id in enabled_builtins:
             section_text, _, _ = _BUILTIN_SKILL_MAP[skill_id]
             parts.append(section_text)
@@ -324,7 +343,7 @@ def build_classification_prompt(objective: str) -> str:
                  "'brute force SSH' → brute_force_credential_guess). Pick the one whose criteria fit most closely:\n")
 
     # Built-in skill classification criteria
-    builtin_skill_ids = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'xxe']
+    builtin_skill_ids = ['phishing_social_engineering', 'brute_force_credential_guess', 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss', 'ssrf', 'rce', 'path_traversal', 'access_control', 'xxe', 'crypto_attack']
     for skill_id in builtin_skill_ids:
         if skill_id in enabled_builtins:
             parts.append(_CLASSIFICATION_INSTRUCTIONS[skill_id])

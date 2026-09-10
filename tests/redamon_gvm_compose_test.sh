@@ -75,6 +75,15 @@ elif mode == "loader-restarts":
     print(" ".join(out))
 elif mode == "loader-count":
     print(sum(1 for svc in services.values() if "GVM_DATA_MEM" in str(svc.get("mem_limit", ""))))
+elif mode == "ospd-mqtt-address":
+    # The value AFTER --mqtt-broker-address in gvm-ospd's command. An empty
+    # string is the "MQTT cleanly disabled" contract from issue #177.
+    cmd = [str(c) for c in ((services.get("gvm-ospd") or {}).get("command") or [])]
+    if "--mqtt-broker-address" not in cmd:
+        print("<absent>")
+    else:
+        value = cmd[cmd.index("--mqtt-broker-address") + 1]
+        print("EMPTY" if value == "" else value)
 elif mode == "ospd-gate":
     dep = (services.get("gvm-ospd") or {}).get("depends_on") or {}
     print(dep.get("gvm-vt", {}).get("condition", "<none>"))
@@ -166,6 +175,38 @@ if grep -qE '^GVM_NO_PROGRESS_TIMEOUT=$' "$REPO_ROOT/.env.example"; then
     ok ".env.example documents the knob as an empty placeholder"
 else
     bad ".env.example documents the knob" "missing" "a bare GVM_NO_PROGRESS_TIMEOUT="
+fi
+
+echo "== ospd is not left retrying an MQTT broker that does not exist =="
+
+# Issue #177: ospd-openvas defaults its broker address to "localhost", where
+# nothing listens in this stack, so it warned every 10s forever and buried the
+# real logs. An explicit empty address makes it take its "MQTT disabled" path.
+if grep -qE '^\s+"--mqtt-broker-address",' "$COMPOSE_FILE"; then
+    ok "gvm-ospd is given an explicit MQTT broker address"
+else
+    bad "gvm-ospd sets --mqtt-broker-address" "absent" "an explicit flag"
+fi
+
+ospd_cmd="$(run_py ospd-mqtt-address 2>/dev/null || true)"
+if [[ "$ospd_cmd" == "EMPTY" ]]; then
+    ok "the MQTT broker address is empty (MQTT cleanly disabled, no retry loop)"
+else
+    bad "gvm-ospd MQTT broker address" "${ospd_cmd:-<unreadable>}" "an empty string"
+fi
+
+echo "== the liveness-probe cadence reaches the orchestrator =="
+
+if grep -qE '^\s+GVM_LIVENESS_INTERVAL: \$\{GVM_LIVENESS_INTERVAL:-\}' "$COMPOSE_FILE"; then
+    ok "recon-orchestrator receives GVM_LIVENESS_INTERVAL with an empty default"
+else
+    bad "recon-orchestrator receives GVM_LIVENESS_INTERVAL" "absent or non-empty default" "\${GVM_LIVENESS_INTERVAL:-}"
+fi
+
+if grep -qE '^GVM_LIVENESS_INTERVAL=$' "$REPO_ROOT/.env.example"; then
+    ok ".env.example documents the liveness knob as an empty placeholder"
+else
+    bad ".env.example documents the liveness knob" "missing" "a bare GVM_LIVENESS_INTERVAL="
 fi
 
 echo "== the governor's loader count matches the compose file =="

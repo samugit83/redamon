@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 import { corroborateAttackFindings, type RawAttackRow } from '@/lib/report/aiAttackFindings'
 
 function toNum(val: unknown): number | null {
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
     // --- MCP tool-poisoning / exfiltration / annotation findings ---
     const findings = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid, source: 'ai_surface_recon'})
+       WHERE ${notMuted('v')}
        OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v)
        RETURN v.severity AS severity, v.type AS type, v.name AS name,
               v.ai_owasp_llm_id AS owasp, v.ai_atlas_technique AS atlas,
@@ -81,6 +83,7 @@ export async function GET(request: NextRequest) {
     const tested = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
        WHERE v.source IN ['garak', 'pyrit', 'giskard', 'promptfoo']
+         AND ${notMuted('v')}
        OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
        // One row per finding even when it has several parents (Endpoint + IP);
        // prefer the most specific parent so corroboration isn't double-counted.

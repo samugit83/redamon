@@ -50,7 +50,7 @@ QuestionFormat = Literal["text", "single_choice", "multi_choice"]
 # Unclassified types: "<descriptive_term>-unclassified" (e.g., "file_upload-unclassified", "xxe-unclassified")
 AttackPathType = str  # Validated by AttackPathClassification.attack_path_type validator
 
-KNOWN_ATTACK_PATHS = {"cve_exploit", "brute_force_credential_guess", "phishing_social_engineering", "denial_of_service", "sql_injection", "xss", "ssrf", "rce", "path_traversal", "access_control", "xxe"}
+KNOWN_ATTACK_PATHS = {"cve_exploit", "brute_force_credential_guess", "phishing_social_engineering", "denial_of_service", "sql_injection", "xss", "ssrf", "rce", "path_traversal", "access_control", "xxe", "crypto_attack"}
 _UNCLASSIFIED_RE = re.compile(r'^[a-z][a-z0-9_]*-unclassified$')
 
 

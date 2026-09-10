@@ -10,6 +10,27 @@ from urllib.parse import urlparse, parse_qs
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
 
+
+def stable_vuln_id(finding_type: str, url: str, ip_or_host: str = "",
+                   user_id: str = "", project_id: str = "") -> str:
+    """Deterministic, TENANT-SCOPED Vulnerability node id.
+
+    One (type, url, ip/host) exposure within one tenant hashes to a single id
+    regardless of which producer emits it (security_check or origin_discovery) or
+    the run order, so the Vulnerability MERGE converges instead of duplicating on
+    re-run. sha1 is used because builtin hash() is per-process randomized
+    (PYTHONHASHSEED), which spawned a fresh node on every re-run.
+
+    The tenant (user_id, project_id) MUST be part of the key: the Vulnerability
+    node carries a GLOBAL uniqueness constraint on `id` (schema.py) and the MERGE
+    keys on `{id}` alone. Without the tenant salt, two projects that discover the
+    same (type, url, ip) would collide into one node and the second writer's
+    `SET v += {user_id, project_id}` would silently steal the first tenant's node.
+    """
+    unique_key = f"{finding_type or ''}|{url or ''}|{ip_or_host or ''}|{user_id or ''}|{project_id or ''}"
+    return hashlib.sha1(unique_key.encode("utf-8", "replace")).hexdigest()[:12]
+
+
 class VulnMixin:
     def _find_cwes_with_capec(self, cwe_node: dict, results: list):
         """
@@ -730,8 +751,10 @@ class VulnMixin:
                         status_code = check.get("status_code")
                         content_length = check.get("content_length")
 
-                        # Generate unique vulnerability ID
-                        vuln_id = f"sec_{check_type}_{ip_address}_{hash(url) % 10000}"
+                        # Deterministic, tenant-scoped id: converges with
+                        # origin_discovery on the same (type, url, ip) exposure
+                        # within this tenant and survives re-runs.
+                        vuln_id = stable_vuln_id(check_type, url, ip_address, user_id, project_id)
 
                         # Human-readable names for check types
                         check_names = {
@@ -852,9 +875,10 @@ class VulnMixin:
                     missing_header = finding.get("missing_header")
                     port = finding.get("port")
 
-                    # Generate unique vulnerability ID
-                    unique_key = f"{finding_type}_{url}_{matched_ip or hostname or ''}"
-                    vuln_id = f"seccheck_{finding_type}_{hash(unique_key) % 100000}"
+                    # Deterministic, tenant-scoped id: converges with
+                    # origin_discovery on the same (type, url, ip/host) exposure
+                    # within this tenant and survives re-runs.
+                    vuln_id = stable_vuln_id(finding_type, url, matched_ip or hostname or "", user_id, project_id)
 
                     # Create Vulnerability node
                     vuln_props = {

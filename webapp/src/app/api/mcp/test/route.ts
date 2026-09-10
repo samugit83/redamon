@@ -9,10 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireUserAccess } from '@/lib/session'
-import { internalKeyHeaders } from '@/lib/agentAuth'
+import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { MASK_PREFIX, type MCPServer } from '@/lib/mcp/schema'
-
-const AGENT_API_URL = process.env.AGENT_API_URL || 'http://agent:8080'
 
 export async function POST(request: NextRequest) {
   try {
@@ -62,15 +60,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const upstream = await fetch(`${AGENT_API_URL}/mcp/test`, {
-      method: 'POST',
-      headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(35_000),
-    })
+    const upstream = await agentFetch(
+      '/mcp/test',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      { timeoutMs: 35_000 },
+    )
     const data = await upstream.json().catch(() => ({}))
     return NextResponse.json(data, { status: upstream.status })
   } catch (error) {
+    // Same reasoning as the LLM-provider test route (issue #184): an agent
+    // outage must not be reported as a fault in the server the user just
+    // configured. 503, because the dependency is unavailable.
+    if (error instanceof AgentUnreachableError) {
+      console.error('MCP test: agent unreachable:', error.message, error.cause_)
+      return NextResponse.json(
+        { ok: false, error: error.message, discovered_tools: [], warnings: [], elapsed_ms: 0 },
+        { status: 503 },
+      )
+    }
     console.error('Failed to proxy /mcp/test:', error)
     const message = error instanceof Error ? error.message : 'unknown error'
     return NextResponse.json(

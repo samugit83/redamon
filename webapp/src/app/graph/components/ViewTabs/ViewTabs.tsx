@@ -2,7 +2,7 @@
 
 import { memo, useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { CalendarClock, GitCompare, Waypoints, Table2, Terminal, Shield, Search, Download, Loader2, SquareTerminal, Filter, Plus, Trash2, X, ChevronDown, Code, Target, Zap, Flag, Key, Server, Boxes, LockKeyhole, Bug, Network, Mail, ShieldAlert, Package, PackageSearch, History, Layers, Bot, Radiation, Swords, Droplets } from 'lucide-react'
+import { CalendarClock, GitCompare, Waypoints, Table2, Terminal, Shield, Search, Download, Loader2, SquareTerminal, Filter, Plus, Trash2, X, ChevronDown, Code, Target, Zap, Flag, Key, Server, Boxes, LockKeyhole, Bug, Network, Mail, ShieldAlert, Package, PackageSearch, History, Layers, Bot, Radiation, Swords, Droplets, ListOrdered } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import { AUTO_2D_THRESHOLD } from '../GraphCanvas'
 import styles from './ViewTabs.module.css'
@@ -32,6 +32,7 @@ export type TableViewMode =
   | 'webCachePoison'
   | 'reconDelta'
   | 'scanSchedule'
+  | 'triage'
 
 const TABLE_MODE_LABELS: Record<TableViewMode, string> = {
   nodeDetails: 'Node Inspector',
@@ -56,6 +57,20 @@ const TABLE_MODE_LABELS: Record<TableViewMode, string> = {
   webCachePoison: 'Web Cache Poisoning',
   reconDelta: 'Recon Delta',
   scanSchedule: 'Scans',
+  triage: 'Priority Board',
+}
+
+/**
+ * Modes that have their own top-level tab, so the table dropdown must NOT also
+ * advertise them - it would render a second, identical-looking tab beside the
+ * real one. Kept as one list because the icon and the label used to compute this
+ * separately and drifted apart the moment a tab was added.
+ */
+const OWN_TAB_MODES: readonly TableViewMode[] = ['reconDelta', 'scanSchedule', 'triage']
+
+/** The mode the table dropdown should present itself as. */
+export function dropdownMode(mode: TableViewMode | null | undefined): TableViewMode {
+  return !mode || OWN_TAB_MODES.includes(mode) ? 'all' : mode
 }
 
 const TABLE_VIEW_MODES = new Set<string>(Object.keys(TABLE_MODE_LABELS))
@@ -163,6 +178,9 @@ interface ViewTabsProps {
   showLabels?: boolean
   onToggle3D?: (value: boolean) => void
   onToggleLabels?: (value: boolean) => void
+  /** False when the graph map is deliberately not fetched or drawn. */
+  renderEnabled?: boolean
+  onToggleRender?: (value: boolean) => void
   nodeCount?: number
 }
 
@@ -198,6 +216,8 @@ export const ViewTabs = memo(function ViewTabs({
   showLabels,
   onToggle3D,
   onToggleLabels,
+  renderEnabled = true,
+  onToggleRender,
   nodeCount = 0,
 }: ViewTabsProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -353,19 +373,27 @@ export const ViewTabs = memo(function ViewTabs({
           <CalendarClock size={14} />
           <span>Scans</span>
         </button>
+        {/* Triage lives beside the graph it suppresses findings from, rather
+            than as a separate top-level page. */}
+        <button
+          role="tab"
+          aria-selected={activeView === 'table' && tableViewMode === 'triage'}
+          className={`${styles.tab} ${activeView === 'table' && tableViewMode === 'triage' ? styles.tabActive : ''}`}
+          onClick={() => { onTableViewModeChange?.('triage'); onViewChange('table') }}
+        >
+          <ListOrdered size={14} />
+          <span>Priority Board</span>
+        </button>
 
         <div ref={tableMenuRef} className={styles.tableMenuContainer}>
           <button
             role="tab"
-            aria-selected={activeView === 'table' && tableViewMode !== 'reconDelta' && tableViewMode !== 'scanSchedule'}
-            className={`${styles.tab} ${activeView === 'table' && tableViewMode !== 'reconDelta' && tableViewMode !== 'scanSchedule' ? styles.tabActive : ''}`}
+            aria-selected={activeView === 'table' && tableViewMode !== 'reconDelta' && tableViewMode !== 'scanSchedule' && tableViewMode !== 'triage'}
+            className={`${styles.tab} ${activeView === 'table' && tableViewMode !== 'reconDelta' && tableViewMode !== 'scanSchedule' && tableViewMode !== 'triage' ? styles.tabActive : ''}`}
             onClick={() => onViewChange('table')}
           >
             {(() => {
-              // Recon Delta / Scans are their own tabs now, so the table
-              // dropdown never advertises them - fall back to its default label.
-              const mode = (tableViewMode === 'reconDelta' || tableViewMode === 'scanSchedule')
-                ? 'all' : (tableViewMode ?? 'all')
+              const mode = dropdownMode(tableViewMode)
               const Icon =
                 mode === 'nodeDetails' ? Layers
                 : mode === 'jsRecon' ? Code
@@ -389,7 +417,7 @@ export const ViewTabs = memo(function ViewTabs({
                 : Table2
               return <Icon size={14} />
             })()}
-            <span>{TABLE_MODE_LABELS[(tableViewMode === 'reconDelta' || tableViewMode === 'scanSchedule') ? 'all' : (tableViewMode ?? 'all')]}</span>
+            <span>{TABLE_MODE_LABELS[dropdownMode(tableViewMode)]}</span>
             <UnseenBadge count={unseenTotal} />
             <ChevronDown
               size={18}
@@ -583,13 +611,25 @@ export const ViewTabs = memo(function ViewTabs({
       <div className={styles.rightSection}>
       {activeView === 'graph' && onToggle3D && onToggleLabels && (
         <div className={styles.viewToggles}>
-          <div title={nodeCount > AUTO_2D_THRESHOLD ? `3D disabled: graph has ${nodeCount.toLocaleString()} nodes (max ${AUTO_2D_THRESHOLD.toLocaleString()} for 3D)` : undefined}>
+          {onToggleRender && (
+            <div title={renderEnabled ? 'Stop fetching and drawing the graph (the tables keep working)' : 'Graph rendering is off - nothing is fetched or drawn'}>
+              <Toggle
+                checked={renderEnabled}
+                onChange={onToggleRender}
+                labelOn="Render"
+                aria-label="Toggle graph rendering"
+              />
+            </div>
+          )}
+          {/* With rendering off there is no layout to switch or label, so both
+              stay visible (no jumping toolbar) but inert. */}
+          <div title={!renderEnabled ? 'Graph rendering is off' : nodeCount > AUTO_2D_THRESHOLD ? `3D disabled: graph has ${nodeCount.toLocaleString()} nodes (max ${AUTO_2D_THRESHOLD.toLocaleString()} for 3D)` : undefined}>
             <Toggle
               checked={nodeCount > AUTO_2D_THRESHOLD ? false : (is3D ?? false)}
               onChange={onToggle3D}
               labelOff="2D"
               labelOn="3D"
-              disabled={nodeCount > AUTO_2D_THRESHOLD}
+              disabled={!renderEnabled || nodeCount > AUTO_2D_THRESHOLD}
               aria-label="Toggle 2D/3D view"
             />
           </div>
@@ -597,6 +637,7 @@ export const ViewTabs = memo(function ViewTabs({
             checked={showLabels ?? false}
             onChange={onToggleLabels}
             labelOn="Labels"
+            disabled={!renderEnabled}
             aria-label="Toggle labels"
           />
         </div>

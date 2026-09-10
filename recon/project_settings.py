@@ -7,6 +7,7 @@ Otherwise, falls back to DEFAULT_SETTINGS for CLI usage.
 """
 import os
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'SUBDOMAIN_LIST': [],
     'IP_MODE': False,
     'TARGET_IPS': [],
+    # Domain batch: the third targeting mode. DOMAIN_BATCH_GROUPS is the derived,
+    # operator-approved run order: [{'rootDomain': str, 'prefixes': [str], 'hosts': [str]}].
+    # The webapp derives it; the pipeline never re-derives, so both agree on scope.
+    'DOMAIN_BATCH_MODE': False,
+    'DOMAIN_BATCH_GROUPS': [],
     'VERIFY_DOMAIN_OWNERSHIP': False,
     'OWNERSHIP_TOKEN': 'your-secret-token-here',
     'OWNERSHIP_TXT_PREFIX': '_redamon-verify',
@@ -603,6 +609,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'SECURITY_CHECK_TIMEOUT': 10,
     'SECURITY_CHECK_MAX_WORKERS': 10,
 
+    # Origin-IP Discovery (unmask the real server behind a CDN/WAF). Passive
+    # source queries + active weighted-similarity validation probes (badge: both).
+    'ORIGIN_DISCOVERY_ENABLED': False,
+    'ORIGIN_DISCOVERY_KEYLESS': True,        # subdomain probe + SPF/MX + crt.sh + favicon (no key needed)
+    'ORIGIN_DISCOVERY_SCANNERS': True,       # Shodan/Censys/FOFA/ZoomEye/OTX/VT (each still needs its own key)
+    'ORIGIN_DISCOVERY_PASSIVE_DNS': True,    # SecurityTrails + ViewDNS history
+    'ORIGIN_DISCOVERY_MAX_CANDIDATES': 25,   # cap probed candidate IPs per host
+    'ORIGIN_DISCOVERY_MAX_SEARCH_CALLS': 50, # per-scan budget of genuine keyed search calls
+    'ORIGIN_DISCOVERY_THRESHOLD': 60,        # weighted-similarity confirm threshold (0-100)
+    'ORIGIN_DISCOVERY_TIMEOUT': 10,          # per-probe HTTP timeout (seconds)
+    'ORIGIN_DISCOVERY_WORKERS': 10,          # bounded fan-out per host
+    'ORIGIN_DISCOVERY_RATE': 0,              # active-probe rps ceiling (0 = unlimited); capped by ROE_GLOBAL_MAX_RPS
+    'SECURITYTRAILS_API_KEY': '',
+    'VIEWDNS_API_KEY': '',
+
     # Shodan Pipeline Enrichment
     'SHODAN_ENABLED': True,
     'SHODAN_HOST_LOOKUP': True,
@@ -876,6 +897,48 @@ def _fetch_urlscan_api_key(user_id: str, webapp_url: str) -> str:
     return _fetch_user_api_key(user_id, webapp_url, 'urlscanApiKey')
 
 
+_BATCH_HOST_CHARSET = re.compile(r'^[a-z0-9.-]+$')
+
+
+def _parse_domain_batch_groups(raw: Any) -> list[dict[str, Any]]:
+    """Parse and RE-VALIDATE the webapp's derived domain-batch groups.
+
+    The webapp already validates the operator's hostname list, but these strings
+    end up as scan targets and as a component of an output filename, so they cross
+    a trust boundary a second time here. Re-checking the charset is what stops a
+    row edited directly in the database (the PUT route does not lock target fields)
+    from reaching a path or a tool argument.
+
+    Malformed entries are DROPPED rather than repaired: a repaired hostname would
+    scan something the operator never approved in the preview. A group that loses
+    every prefix is dropped whole.
+    """
+    if not isinstance(raw, list):
+        return []
+
+    groups: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        root = str(entry.get('rootDomain') or '').strip().lower()
+        if not root or not _BATCH_HOST_CHARSET.match(root) or '..' in root:
+            continue
+        prefixes = [
+            p.strip().lower() for p in (entry.get('prefixes') or [])
+            if isinstance(p, str) and p.strip()
+        ]
+        # '.' is the sentinel for "the root domain itself" (see parse_target).
+        prefixes = [
+            p for p in prefixes
+            if p == '.' or (_BATCH_HOST_CHARSET.match(p) and '..' not in p)
+        ]
+        if not prefixes:
+            continue
+        groups.append({'rootDomain': root, 'prefixes': prefixes})
+
+    return groups
+
+
 def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     """
     Fetch project settings from webapp API.
@@ -911,6 +974,10 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['IP_MODE'] = project.get('ipMode', DEFAULT_SETTINGS['IP_MODE'])
     raw_ips = project.get('targetIps', DEFAULT_SETTINGS['TARGET_IPS'])
     settings['TARGET_IPS'] = [ip.strip() for ip in raw_ips if ip.strip()]
+    settings['DOMAIN_BATCH_MODE'] = project.get(
+        'domainBatchMode', DEFAULT_SETTINGS['DOMAIN_BATCH_MODE'])
+    settings['DOMAIN_BATCH_GROUPS'] = _parse_domain_batch_groups(
+        project.get('domainBatchGroups'))
     settings['VERIFY_DOMAIN_OWNERSHIP'] = project.get('verifyDomainOwnership', DEFAULT_SETTINGS['VERIFY_DOMAIN_OWNERSHIP'])
     settings['OWNERSHIP_TOKEN'] = project.get('ownershipToken', DEFAULT_SETTINGS['OWNERSHIP_TOKEN'])
     settings['OWNERSHIP_TXT_PREFIX'] = project.get('ownershipTxtPrefix', DEFAULT_SETTINGS['OWNERSHIP_TXT_PREFIX'])
@@ -1361,6 +1428,17 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['SECURITY_CHECK_TIMEOUT'] = project.get('securityCheckTimeout', DEFAULT_SETTINGS['SECURITY_CHECK_TIMEOUT'])
     settings['SECURITY_CHECK_MAX_WORKERS'] = project.get('securityCheckMaxWorkers', DEFAULT_SETTINGS['SECURITY_CHECK_MAX_WORKERS'])
 
+    # Origin-IP Discovery (ORIGIN_DISCOVERY_RATE is internal — no camelCase mapping)
+    settings['ORIGIN_DISCOVERY_ENABLED'] = project.get('originDiscoveryEnabled', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_ENABLED'])
+    settings['ORIGIN_DISCOVERY_KEYLESS'] = project.get('originDiscoveryKeyless', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_KEYLESS'])
+    settings['ORIGIN_DISCOVERY_SCANNERS'] = project.get('originDiscoveryScanners', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_SCANNERS'])
+    settings['ORIGIN_DISCOVERY_PASSIVE_DNS'] = project.get('originDiscoveryPassiveDns', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_PASSIVE_DNS'])
+    settings['ORIGIN_DISCOVERY_MAX_CANDIDATES'] = project.get('originDiscoveryMaxCandidates', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_MAX_CANDIDATES'])
+    settings['ORIGIN_DISCOVERY_MAX_SEARCH_CALLS'] = project.get('originDiscoveryMaxSearchCalls', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_MAX_SEARCH_CALLS'])
+    settings['ORIGIN_DISCOVERY_THRESHOLD'] = project.get('originDiscoveryThreshold', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_THRESHOLD'])
+    settings['ORIGIN_DISCOVERY_TIMEOUT'] = project.get('originDiscoveryTimeout', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_TIMEOUT'])
+    settings['ORIGIN_DISCOVERY_WORKERS'] = project.get('originDiscoveryWorkers', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_WORKERS'])
+
     # Shodan Pipeline Enrichment
     settings['SHODAN_ENABLED'] = project.get('shodanEnabled', DEFAULT_SETTINGS['SHODAN_ENABLED'])
     settings['SHODAN_HOST_LOOKUP'] = project.get('shodanHostLookup', DEFAULT_SETTINGS['SHODAN_HOST_LOOKUP'])
@@ -1397,6 +1475,14 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # Subdomain Discovery Tool Toggles
     settings['SUBDOMAIN_DISCOVERY_ENABLED'] = project.get('subdomainDiscoveryEnabled', DEFAULT_SETTINGS['SUBDOMAIN_DISCOVERY_ENABLED'])
+    if settings['DOMAIN_BATCH_MODE'] and settings['DOMAIN_BATCH_GROUPS']:
+        # Domain batch scans EXACTLY the uploaded hostnames. This is not a nicety:
+        # a group made of one bare root domain yields prefixes ['.'], and
+        # parse_target() treats a '.'-only list as NOT filtered mode, which would
+        # silently start full subdomain enumeration for that domain. Forcing the
+        # toggle off here (rather than in main.py) keeps every reader agreeing,
+        # including modules that call get_settings() again mid-run.
+        settings['SUBDOMAIN_DISCOVERY_ENABLED'] = False
     settings['DOMAIN_RECON_AI_TXT_HINT_ENABLED'] = project.get('domainReconAiTxtHintEnabled', DEFAULT_SETTINGS['DOMAIN_RECON_AI_TXT_HINT_ENABLED'])
     settings['DOMAIN_RECON_AI_NS_HINT_ENABLED'] = project.get('domainReconAiNsHintEnabled', DEFAULT_SETTINGS['DOMAIN_RECON_AI_NS_HINT_ENABLED'])
     settings['CRTSH_ENABLED'] = project.get('crtshEnabled', DEFAULT_SETTINGS['CRTSH_ENABLED'])
@@ -1439,12 +1525,20 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
         rotate_n = cfg.get('rotateEveryN', 10)
         return KeyRotator([main_key] + extra, rotate_n)
 
+    # Origin-IP Discovery reuses the scanner keys (Shodan/Censys/FOFA/ZoomEye/OTX/
+    # VT) for its favicon/cert pivots. Those keys are otherwise only fetched when
+    # each scanner's OWN tool is on, so without this the pivots silently no-op when
+    # only OriginDiscovery is enabled (G10). Widen each gate below to also fire here.
+    origin_scanners = bool(
+        settings.get('ORIGIN_DISCOVERY_ENABLED') and settings.get('ORIGIN_DISCOVERY_SCANNERS')
+    )
+
     # Shodan
     shodan_any = any([
         settings['SHODAN_HOST_LOOKUP'], settings['SHODAN_REVERSE_DNS'],
         settings['SHODAN_DOMAIN_DNS'], settings['SHODAN_PASSIVE_CVES'],
     ])
-    if shodan_any:
+    if shodan_any or origin_scanners:
         shodan_key = user_global.get('shodanApiKey', '')
         settings['SHODAN_API_KEY'] = shodan_key
         settings['SHODAN_KEY_ROTATOR'] = _build_rotator(shodan_key, 'shodan')
@@ -1470,16 +1564,16 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
         settings['VULNERS_KEY_ROTATOR'] = _build_rotator(vulners_key, 'vulners')
 
     # OSINT & Threat Intelligence keys
-    if settings.get('CENSYS_ENABLED'):
+    if settings.get('CENSYS_ENABLED') or origin_scanners:
         settings['CENSYS_API_TOKEN'] = user_global.get('censysApiToken', '')
         settings['CENSYS_ORG_ID'] = user_global.get('censysOrgId', '')
 
-    if settings.get('FOFA_ENABLED'):
+    if settings.get('FOFA_ENABLED') or origin_scanners:
         fofa_key = user_global.get('fofaApiKey', '')
         settings['FOFA_API_KEY'] = fofa_key
         settings['FOFA_KEY_ROTATOR'] = _build_rotator(fofa_key, 'fofa')
 
-    if settings.get('OTX_ENABLED'):
+    if settings.get('OTX_ENABLED') or origin_scanners:
         otx_key = user_global.get('otxApiKey', '')
         settings['OTX_API_KEY'] = otx_key
         settings['OTX_KEY_ROTATOR'] = _build_rotator(otx_key, 'otx')
@@ -1489,12 +1583,12 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
         settings['NETLAS_API_KEY'] = netlas_key
         settings['NETLAS_KEY_ROTATOR'] = _build_rotator(netlas_key, 'netlas')
 
-    if settings.get('VIRUSTOTAL_ENABLED'):
+    if settings.get('VIRUSTOTAL_ENABLED') or origin_scanners:
         vt_key = user_global.get('virusTotalApiKey', '')
         settings['VIRUSTOTAL_API_KEY'] = vt_key
         settings['VIRUSTOTAL_KEY_ROTATOR'] = _build_rotator(vt_key, 'virustotal')
 
-    if settings.get('ZOOMEYE_ENABLED'):
+    if settings.get('ZOOMEYE_ENABLED') or origin_scanners:
         ze_key = user_global.get('zoomEyeApiKey', '')
         settings['ZOOMEYE_API_KEY'] = ze_key
         settings['ZOOMEYE_KEY_ROTATOR'] = _build_rotator(ze_key, 'zoomeye')
@@ -1503,6 +1597,17 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
         cip_key = user_global.get('criminalIpApiKey', '')
         settings['CRIMINALIP_API_KEY'] = cip_key
         settings['CRIMINALIP_KEY_ROTATOR'] = _build_rotator(cip_key, 'criminalip')
+
+    # Origin-IP Discovery passive-DNS keys (SecurityTrails + ViewDNS). Net-new
+    # UserSettings credentials; only fetched when OriginDiscovery + its passive-DNS
+    # group are on. Keep them RUNTIME_ONLY (never in /defaults).
+    if settings.get('ORIGIN_DISCOVERY_ENABLED') and settings.get('ORIGIN_DISCOVERY_PASSIVE_DNS'):
+        st_key = user_global.get('securitytrailsApiKey', '')
+        settings['SECURITYTRAILS_API_KEY'] = st_key
+        settings['SECURITYTRAILS_KEY_ROTATOR'] = _build_rotator(st_key, 'securitytrails')
+        vd_key = user_global.get('viewdnsApiKey', '')
+        settings['VIEWDNS_API_KEY'] = vd_key
+        settings['VIEWDNS_KEY_ROTATOR'] = _build_rotator(vd_key, 'viewdns')
 
     # Uncover keys — always load shared OSINT keys so uncover can use
     # engines even when the per-tool enrichment toggles are off.
@@ -1606,12 +1711,13 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
             'PUREDNS_RATE_LIMIT',
             'HAKRAWLER_THREADS',
             'GRAPHQL_RATE_LIMIT',
+            'ORIGIN_DISCOVERY_RATE',
         ]
         for key in RATE_LIMIT_KEYS:
             if key not in settings:
                 continue
-            # FFUF_RATE and ARJUN_RATE_LIMIT use 0 to mean "unlimited" — must be capped under RoE
-            if settings[key] == 0 and key in ('FFUF_RATE', 'ARJUN_RATE_LIMIT'):
+            # These use 0 to mean "unlimited" — must be capped under RoE
+            if settings[key] == 0 and key in ('FFUF_RATE', 'ARJUN_RATE_LIMIT', 'ORIGIN_DISCOVERY_RATE'):
                 logger.info(f"RoE: capping {key} from unlimited (0) to {roe_max_rps} rps")
                 settings[key] = roe_max_rps
             elif settings[key] > roe_max_rps:
@@ -1871,6 +1977,14 @@ def apply_stealth_overrides(settings: dict[str, Any]) -> dict[str, Any]:
     # build a custom preset (see red-team-operator) with graph-only candidates,
     # L7-only, low concurrency. ---
     settings['VHOST_SNI_ENABLED'] = False
+
+    # --- Origin Discovery: keep it (unmasking is the point of a stealth engagement)
+    # but throttle its active validation probes hard — 1 worker, ~1 rps — and drop
+    # the keyed internet-wide scanner searches (passive but credit-/fingerprint-heavy).
+    # The keyless + passive-DNS sources stay on; only the direct-IP probing is loud. ---
+    settings['ORIGIN_DISCOVERY_WORKERS'] = 1
+    settings['ORIGIN_DISCOVERY_RATE'] = 1
+    settings['ORIGIN_DISCOVERY_SCANNERS'] = False
 
     # --- Web Cache Poisoning: disable entirely. Active poisoning probes (header
     # mutation + repeated baseline/poison/clean fetches) are loud and send many

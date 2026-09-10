@@ -238,3 +238,48 @@ describe('buildDeltaOverlay', () => {
     expect(overlay.nodes.map(n => n.id)).toEqual(overlay.nodes.map(n => identityKey(n)))
   })
 })
+
+describe('a muted finding is not reported as fixed', () => {
+  // Recon Delta lists what disappeared between two scans. A finding that
+  // vanished because an operator MUTED it was not remediated, and reporting it
+  // under `resolvedVulnerabilities` would overstate the remediation numbers.
+  //
+  // Both sides of the diff are produced by snapshotToGraphPayload (the "current"
+  // side via captureGraphSnapshot, the stored side via loadSnapshot), and that
+  // function filters muted nodes out. So by the time the diff runs, a muted
+  // finding is absent from BOTH inputs -- which is what makes it appear in
+  // neither list. These assert that end state.
+  const vuln = (id: string) =>
+    node(id, 'Vulnerability', { name: 'SQLi', matched_at: 'https://x.tld/a' })
+
+  test('absent from both sides: neither added nor resolved', () => {
+    const before = graph([vuln('1')])
+    const after = graph([vuln('2')])
+    const delta = computeReconDelta(before, after)
+
+    expect(delta.lenses.resolvedVulnerabilities).toEqual([])
+    expect(delta.lenses.newVulnerabilities).toEqual([])
+  })
+
+  test('a finding filtered out of the SECOND side only would read as resolved', () => {
+    // The failure mode this guards, stated as its opposite: if the payload
+    // conversion filtered the stored side but not the live side (or vice versa),
+    // the diff would report a mute as a fix. Asserting the asymmetric case
+    // produces `resolved` proves the symmetric filtering above is load-bearing.
+    const before = graph([vuln('1')])
+    const after = graph([])
+    const delta = computeReconDelta(before, after)
+
+    expect(delta.lenses.resolvedVulnerabilities).toHaveLength(1)
+  })
+
+  test('a genuinely fixed finding is still reported as resolved', () => {
+    // Muting must not blunt the feature: a finding that really went away still
+    // shows up.
+    const before = graph([vuln('1'), node('9', 'IP', { address: '10.0.0.1' })])
+    const after = graph([node('9', 'IP', { address: '10.0.0.1' })])
+    const delta = computeReconDelta(before, after)
+
+    expect(delta.lenses.resolvedVulnerabilities).toHaveLength(1)
+  })
+})

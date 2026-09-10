@@ -19,6 +19,8 @@ interface ReconConfirmModalProps {
   targetDomain: string
   ipMode?: boolean
   targetIps?: string[]
+  /** Domain batch: the derived group roots, in run order. */
+  batchDomains?: string[]
   stats: GraphStats | null
   isLoading: boolean
   /** Label of the version the current graph would be saved as (Scan Timeline). */
@@ -33,13 +35,20 @@ export function ReconConfirmModal({
   targetDomain,
   ipMode,
   targetIps,
+  batchDomains,
   stats,
   isLoading,
   currentVersionLabel,
 }: ReconConfirmModalProps) {
+  // This dialog guards a destructive action, so it must never show a blank
+  // target. A Domain-batch project has no targetDomain: name its groups instead.
   const targetDisplay = ipMode && targetIps?.length
     ? targetIps.slice(0, 5).join(', ') + (targetIps.length > 5 ? ` (+${targetIps.length - 5} more)` : '')
-    : targetDomain
+    : batchDomains?.length
+      ? `${batchDomains.length} domain${batchDomains.length === 1 ? '' : 's'}: `
+        + batchDomains.slice(0, 5).join(', ')
+        + (batchDomains.length > 5 ? ` (+${batchDomains.length - 5} more)` : '')
+      : targetDomain
   const hasExistingData = stats && stats.totalNodes > 0
 
   // Scan Timeline (Section 3.2): a second-or-later scan asks what to do with the

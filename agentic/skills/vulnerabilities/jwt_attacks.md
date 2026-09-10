@@ -40,17 +40,17 @@ execute_curl url: "https://target.tld/.well-known/jwks.json"
 
 Inventory every consumer of the token. Many backends only verify the signature and skip `aud` / `typ` / `iss`; finding such a service is the cheapest win.
 
-## Captured-traffic workflow (proxy_* tools)
+## Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive token testing from the recorded history instead of rebuilding requests by hand. proxy_* tools only see traffic that went through the capture proxy.
+If HTTP Traffic Capture is enabled, source and drive token testing from the recorded history instead of rebuilding requests by hand. proxy_brain tools only see traffic that went through the capture proxy.
 
-- Harvest tokens: `proxy_search({"hasAuth":true})` lists every captured request carrying an Authorization header, and `proxy_grep("eyJ")` / `proxy_grep("Bearer ")` pull Bearer JWTs out of response bodies and JS bundles. This replaces the `query_graph` token pull.
-- `proxy_get(<txn_id>, "both")` gives the full request/response of a token-bearing transaction, so you can lift the exact header shape and the endpoint that consumes it.
-- Replay forged / mutated tokens against the endpoint they came from: forge the variant with `jwt_tool` or the Python recipes below, then `proxy_replay(<captured_txn>, {"headers":{"Authorization":"Bearer <forged>"}})`. Test alg=none, RS256->HS256, and claim-inflated tokens this way, one per replay.
-- Cross-audience acceptance is an auth-swap: `proxy_replay(<service_B_txn>, {"headers":{"Authorization":"Bearer <token_minted_for_service_A>"}})` proves a token for `aud=billing` is accepted by `aud=admin`. For the gateway-trusts-header gap, `proxy_replay(id, {"dropHeaders":["Authorization"],"headers":{"X-User-Id":"1"}})`.
-- `proxy_diff(<owner_token_txn>, <forged_token_txn>)` is the two-request PoC the validation section wants: owner-equivalent data returned to the forged token is the finding. `proxy_to_curl(id)` renders it for the report.
+- Harvest tokens: `redamon.search({"hasAuth":true})` lists every captured request carrying an Authorization header, and `redamon.grep("eyJ")` / `redamon.grep("Bearer ")` pull Bearer JWTs out of response bodies and JS bundles. This replaces the `query_graph` token pull.
+- `redamon.get(<txn_id>, "both")` gives the full request/response of a token-bearing transaction, so you can lift the exact header shape and the endpoint that consumes it.
+- Replay forged / mutated tokens against the endpoint they came from: forge the variant with `jwt_tool` or the Python recipes below, then `redamon.replay(<captured_txn>, {"headers":{"Authorization":"Bearer <forged>"}})`. Test alg=none, RS256->HS256, and claim-inflated tokens this way, one per replay.
+- Cross-audience acceptance is an auth-swap: `redamon.replay(<service_B_txn>, {"headers":{"Authorization":"Bearer <token_minted_for_service_A>"}})` proves a token for `aud=billing` is accepted by `aud=admin`. For the gateway-trusts-header gap, `redamon.replay(id, {"dropHeaders":["Authorization"],"headers":{"X-User-Id":"1"}})`.
+- `redamon.diff(<owner_token_txn>, <forged_token_txn>)` is the two-request PoC the validation section wants: owner-equivalent data returned to the forged token is the finding. `redamon.to_curl(id)` renders it for the report.
 
-Caveat: proxy_replay pins host/scheme/port to the origin transaction, so it cannot replay a token against a different host, gRPC port, or WebSocket consumer (use execute_curl / execute_code for those). Browser-side proof (localStorage exfil via XSS) still needs execute_playwright.
+Caveat: redamon.replay pins host/scheme/port to the origin transaction, so it cannot replay a token against a different host, gRPC port, or WebSocket consumer (use execute_curl / execute_code for those). Browser-side proof (localStorage exfil via XSS) still needs execute_playwright.
 
 ## Anatomy of a token
 

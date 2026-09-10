@@ -5525,3 +5525,75 @@ class TestRunAiSurfaceRecon(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestRunOriginDiscovery(unittest.TestCase):
+    """Tests for run_origin_discovery (partial-recon entry for Origin Discovery)."""
+
+    def _run(self, config, fronted=True, neo4j_connected=True, resolve=None):
+        from recon.partial_recon_modules import origin_enrichment as oe
+
+        recon_data = {"http_probe": {"by_url": {}}, "metadata": {}}
+        if fronted:
+            recon_data["http_probe"]["by_url"]["https://www.example.com"] = {
+                "host": "www.example.com", "ip": "104.16.1.1", "is_cdn": True,
+            }
+
+        captured = {}
+
+        def _fake_enrich(rd, settings):
+            captured["settings"] = settings
+            captured["recon_data"] = rd
+            rd["origin_discovery"] = {
+                "confirmed": [{"subdomain": "www.example.com", "matched_ip": "8.8.8.8",
+                               "type": "waf_bypass", "source": "origin_discovery"}],
+                "candidates_meta": {},
+            }
+            return rd
+
+        mock_client = MagicMock()
+        mock_client.verify_connection.return_value = neo4j_connected
+        mock_cls = MagicMock()
+        mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+        mock_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        os.environ["USER_ID"] = "u1"
+        os.environ["PROJECT_ID"] = "p1"
+
+        with patch.object(oe, "_build_vuln_scan_data_from_graph", return_value=recon_data), \
+             patch.object(oe, "_resolve_hostname", return_value=(resolve or {"ipv4": [], "ipv6": []})), \
+             patch("recon.project_settings.get_settings", return_value={"ORIGIN_DISCOVERY_ENABLED": False}), \
+             patch("recon.main_recon_modules.origin_discovery.run_origin_discovery_enrichment", side_effect=_fake_enrich), \
+             patch("graph_db.Neo4jClient", mock_cls):
+            oe.run_origin_discovery(config)
+
+        return captured, mock_client
+
+    def test_forces_enabled_and_writes_graph(self):
+        captured, client = self._run({"domain": "example.com"})
+        # The user explicitly ran the tool, so it force-enables regardless of the stored default.
+        self.assertTrue(captured["settings"]["ORIGIN_DISCOVERY_ENABLED"])
+        client.update_graph_from_origin_discovery.assert_called_once()
+
+    def test_neo4j_unavailable_skips_update(self):
+        _, client = self._run({"domain": "example.com"}, neo4j_connected=False)
+        client.update_graph_from_origin_discovery.assert_not_called()
+
+    def test_user_subdomain_injected_as_fronted(self):
+        captured, _ = self._run(
+            {"domain": "example.com", "user_targets": {"subdomains": ["api.example.com"]}},
+            fronted=False, resolve={"ipv4": ["45.33.32.10"], "ipv6": []},
+        )
+        by_url = captured["recon_data"]["http_probe"]["by_url"]
+        self.assertIn("https://api.example.com", by_url)
+        self.assertTrue(by_url["https://api.example.com"]["is_cdn"])
+        self.assertEqual(by_url["https://api.example.com"]["ip"], "45.33.32.10")
+
+    def test_manual_ips_ignored(self):
+        # IP is a discovery OUTPUT, never a manual input — must be dropped.
+        captured, _ = self._run(
+            {"domain": "example.com", "user_targets": {"subdomains": [], "ips": ["8.8.8.8"]}},
+            fronted=True,
+        )
+        by_url = captured["recon_data"]["http_probe"]["by_url"]
+        # only the graph-sourced fronted host is present; no IP became a fronted entry
+        self.assertNotIn("https://8.8.8.8", by_url)

@@ -588,6 +588,64 @@ describe('useGraphViewPrefs', () => {
     })
   })
 
+  test('renderEnabled defaults to on, and a saved false is honoured', async () => {
+    installFetchMock(async () =>
+      jsonResponse({
+        graphView: {
+          'proj-1': { is3D: false },              // renderEnabled missing
+          'proj-2': { renderEnabled: false },
+        },
+      })
+    )
+    const { result, rerender } = renderHook(
+      ({ pid }: { pid: string }) => useGraphViewPrefs(pid),
+      { wrapper: makeWrapper(), initialProps: { pid: 'proj-1' } }
+    )
+    await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.renderEnabled).toBe(GRAPH_VIEW_DEFAULTS.renderEnabled)
+    expect(GRAPH_VIEW_DEFAULTS.renderEnabled).toBe(true)
+
+    rerender({ pid: 'proj-2' })
+    await vi.waitFor(() => expect(result.current.renderEnabled).toBe(false))
+  })
+
+  test('setRenderEnabled persists only that field, for only that project', async () => {
+    let lastPatchBody: { featureKey: string; value: unknown } | null = null
+    installFetchMock(async ({ url, init }) => {
+      if (url === '/api/user/preferences' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({
+          graphView: {
+            'proj-1': { is3D: true, showLabels: false },
+            'proj-2': { is3D: true, showLabels: true },
+          },
+        })
+      }
+      if (init?.method === 'PATCH') {
+        lastPatchBody = JSON.parse(init.body as string)
+        return jsonResponse({ graphView: lastPatchBody!.value })
+      }
+      return jsonResponse({})
+    })
+
+    const { result } = renderHook(() => useGraphViewPrefs('proj-1'), {
+      wrapper: makeWrapper(),
+    })
+    await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    act(() => {
+      result.current.setRenderEnabled(false)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(500)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(lastPatchBody!.value).toEqual({
+      'proj-1': { is3D: true, showLabels: false, renderEnabled: false },
+      'proj-2': { is3D: true, showLabels: true },
+    })
+  })
+
   test('setShowLabels persists only the showLabels field', async () => {
     let lastPatchBody: { featureKey: string; value: unknown } | null = null
     installFetchMock(async ({ url, init }) => {

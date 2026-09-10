@@ -35,6 +35,9 @@ export type TriagePhase =
   | 'collecting_attack_chains'
   | 'collecting_certificates'
   | 'collecting_security_checks'
+  // Between collection and correlation: a real/noise verdict per finding,
+  // written back onto the graph nodes.
+  | 'classifying'
   | 'correlating'
   | 'prioritizing'
   | 'generating_remediations'

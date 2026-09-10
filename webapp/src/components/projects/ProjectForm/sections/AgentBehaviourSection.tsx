@@ -7,15 +7,18 @@ import { useProject } from '@/providers/ProjectProvider'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { ModelPicker } from '@/components/shared/ModelPicker'
+import { REGEX_IPV4 } from '@/lib/validation'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
 interface AgentBehaviourSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  /** Docker host's LAN IP (from useDetectedHostIp), suggested as LHOST. Issue #180. */
+  detectedHostIp?: string
 }
 
-export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSectionProps) {
+export function AgentBehaviourSection({ data, updateField, detectedHostIp }: AgentBehaviourSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
 
@@ -155,9 +158,21 @@ export function AgentBehaviourSection({ data, updateField }: AgentBehaviourSecti
                     className="textInput"
                     value={data.agentLhost}
                     onChange={(e) => updateField('agentLhost', e.target.value)}
-                    placeholder="e.g. 172.28.0.2"
+                    placeholder="e.g. 192.168.1.50"
                   />
-                  <span className={styles.fieldHint}>Leave empty for bind mode</span>
+                  <span className={styles.fieldHint}>Your host machine&apos;s LAN IP that the target can reach (not the container&apos;s 172.x address). Leave empty for bind mode.</span>
+                  {detectedHostIp && REGEX_IPV4.test(detectedHostIp) && detectedHostIp !== data.agentLhost && (
+                    <span className={styles.suggestionRow}>
+                      Detected (default route): {detectedHostIp}
+                      <button
+                        type="button"
+                        className={styles.suggestionButton}
+                        onClick={() => updateField('agentLhost', detectedHostIp)}
+                      >
+                        Use this
+                      </button>
+                    </span>
+                  )}
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>LPORT</label>

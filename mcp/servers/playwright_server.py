@@ -15,6 +15,10 @@ import textwrap
 import re
 import os
 
+# Chromium launch constants live in browser_launch so this server and the
+# in-process `redamon` SDK cannot drift on the root/Docker flags.
+from browser_launch import BROWSER_ARGS, CHROME_UA
+
 # Strip ANSI escape codes (terminal colors) from output
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
@@ -67,21 +71,6 @@ def _run_playwright_script(script: str, timeout: int = 45) -> str:
                 os.unlink(script_path)
             except OSError:
                 pass
-
-
-# Common Playwright launch args for Docker/root environment
-BROWSER_ARGS = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-]
-
-CHROME_UA = (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/120.0.0.0 Safari/537.36'
-)
 
 
 @mcp.tool()

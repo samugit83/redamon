@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number | null {
   if (val == null) return null
@@ -24,6 +25,7 @@ export async function GET(request: NextRequest) {
   try {
     const result = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
+       WHERE ${notMuted('v')}
        OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v)
        OPTIONAL MATCH (bu:BaseURL)-[:HAS_VULNERABILITY]->(v)
        WITH v,

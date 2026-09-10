@@ -17,9 +17,8 @@ Provides methods to ingest OSINT enrichment data:
 
 import re
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse as _urlparse
-
 
 
 class OsintMixin:
@@ -431,6 +430,7 @@ class OsintMixin:
                                 ON CREATE SET s.discovered_by = 'urlscan', s.status = 'resolved',
                                               s.updated_at = datetime()
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+                                MERGE (s)-[:BELONGS_TO]->(d)
                                 """,
                                 domain=domain, subdomain=subdomain,
                                 uid=user_id, pid=project_id
@@ -2278,4 +2278,164 @@ class OsintMixin:
               f"{stats['urls_created']} URLs, "
               f"{stats['relationships_created']} relationships")
         print(f"[graph-db] update_graph_from_uncover complete")
+        return stats
+
+    def update_graph_from_origin_discovery(self, recon_data: dict, user_id: str, project_id: str) -> dict:
+        """Persist confirmed origin-IP discoveries (behind CDN/WAF).
+
+        Reuses the existing IP and Vulnerability labels (no new node type):
+        - MERGE the origin IP on the tenant key + origin provenance props.
+        - MERGE (Subdomain)-[:HAS_ORIGIN]->(IP) and the existing WAF_BYPASS_VIA edge.
+        - Emit the exposure as a Vulnerability(type='waf_bypass', source='origin_discovery')
+          whose id is the shared stable_vuln_id, so it MERGEs to the SAME node the
+          security-check producer writes for the same (type, url, ip) exposure (G1).
+        first_seen/last_seen/created_at are stamped like the sibling recon mixins so
+        Recon Delta (identity-key based) diffs it correctly (G8).
+        """
+        # Lazy import: tests that load this file with `graph_db` stubbed as a
+        # MagicMock (not a package) would fail a top-level graph_db.mixins.* import.
+        from graph_db.mixins.recon.vuln_mixin import stable_vuln_id
+
+        stats = {"ips": 0, "vulns": 0, "has_origin_rels": 0, "waf_bypass_rels": 0, "errors": []}
+        data = recon_data.get("origin_discovery") or {}
+        confirmed = data.get("confirmed") or []
+        if not confirmed:
+            print("[graph-db] update_graph_from_origin_discovery complete (no confirmed origins)")
+            return stats
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with self.driver.session() as session:
+            for finding in confirmed:
+                try:
+                    host = finding.get("subdomain")
+                    ip = finding.get("matched_ip")
+                    probe_url = finding.get("url") or (f"https://{ip}" if ip else "")
+                    if not ip or not host:
+                        continue
+                    # Canonical, port-less url for the Vulnerability identity so
+                    # this exposure MERGEs onto the SAME node the security-check
+                    # producer writes (check_waf_bypass uses https://{ip}); the
+                    # specific discovered port lives in v.port + v.probe_url. Without
+                    # this, url=https://{ip}:443 vs https://{ip} would double-count.
+                    # IPv6 is bracketed so the url is well-formed.
+                    url = f"https://[{ip}]" if ":" in ip else f"https://{ip}"
+
+                    method = finding.get("origin_discovery_method") or "unknown"
+                    origin_source = finding.get("origin_source") or "unknown"
+                    confidence = finding.get("confidence_score")
+                    cdn = finding.get("cdn_fronting")
+
+                    # --- origin IP node (+ provenance) ---
+                    ip_props = {
+                        "origin_discovery_enriched": True,
+                        "is_origin_candidate": True,
+                        "origin_confirmed": True,
+                        "origin_discovery_method": method,
+                        "origin_source": origin_source,
+                        "origin_for": host,
+                        "last_seen": now_iso,
+                    }
+                    if confidence is not None:
+                        ip_props["origin_confidence"] = confidence
+                    if cdn:
+                        ip_props["cdn_fronting"] = cdn
+                    session.run(
+                        """
+                        MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
+                        ON CREATE SET i.source = 'origin_discovery',
+                                      i.first_seen = $now, i.created_at = $now
+                        SET i += $props, i.updated_at = datetime()
+                        """,
+                        address=ip, user_id=user_id, project_id=project_id,
+                        now=now_iso, props=ip_props,
+                    )
+                    stats["ips"] += 1
+
+                    # --- Subdomain -[:HAS_ORIGIN]-> IP ---
+                    session.run(
+                        """
+                        MERGE (s:Subdomain {name: $host, user_id: $user_id, project_id: $project_id})
+                        ON CREATE SET s.source = 'origin_discovery', s.first_seen = $now
+                        SET s.updated_at = datetime()
+                        WITH s
+                        MATCH (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
+                        MERGE (s)-[r:HAS_ORIGIN]->(i)
+                        ON CREATE SET r.discovered_at = datetime(), r.method = $method
+                        SET r.confidence = $confidence, r.origin_source = $origin_source
+                        """,
+                        host=host, address=ip, user_id=user_id, project_id=project_id,
+                        now=now_iso, method=method, confidence=confidence, origin_source=origin_source,
+                    )
+                    stats["has_origin_rels"] += 1
+
+                    # --- Vulnerability (shared, tenant-scoped id → converges
+                    #     with security_check for this tenant, never across tenants) ---
+                    vuln_id = stable_vuln_id("waf_bypass", url, ip, user_id, project_id)
+                    vuln_props = {
+                        "id": vuln_id,
+                        "user_id": user_id,
+                        "project_id": project_id,
+                        "type": "waf_bypass",
+                        "severity": finding.get("severity", "high"),
+                        "name": finding.get("name", "Origin Server Exposed (CDN Bypass)"),
+                        "url": url,
+                        "matched_at": url,          # Recon Delta identity field (G8)
+                        "matched_ip": ip,
+                        "hostname": host,
+                        "origin_discovery_method": method,
+                        "origin_source": origin_source,
+                        "is_dast_finding": False,
+                        "probe_url": probe_url,     # the actual scheme://ip:port probed
+                        "last_seen": now_iso,
+                    }
+                    for k in ("confidence_score", "port", "match_method", "html_similarity",
+                              "cert_match", "header_match", "status_code", "evidence"):
+                        if finding.get(k) is not None:
+                            vuln_props[k] = finding[k]
+                    if cdn:
+                        vuln_props["cdn_fronting"] = cdn
+                    vuln_props = {k: v for k, v in vuln_props.items() if v is not None}
+
+                    session.run(
+                        """
+                        MERGE (v:Vulnerability {id: $id})
+                        ON CREATE SET v.source = 'origin_discovery',
+                                      v.first_seen = $now, v.created_at = $now
+                        SET v += $props, v.updated_at = datetime()
+                        """,
+                        id=vuln_id, props=vuln_props, now=now_iso,
+                    )
+                    stats["vulns"] += 1
+
+                    # IP -[:HAS_VULNERABILITY]-> Vulnerability
+                    session.run(
+                        """
+                        MATCH (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
+                        MATCH (v:Vulnerability {id: $id})
+                        MERGE (i)-[:HAS_VULNERABILITY]->(v)
+                        """,
+                        address=ip, id=vuln_id, user_id=user_id, project_id=project_id,
+                    )
+
+                    # Subdomain -[:WAF_BYPASS_VIA]-> IP (existing security-check edge)
+                    session.run(
+                        """
+                        MATCH (s:Subdomain {name: $host, user_id: $user_id, project_id: $project_id})
+                        MATCH (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
+                        MERGE (s)-[r:WAF_BYPASS_VIA]->(i)
+                        ON CREATE SET r.discovered_at = datetime()
+                        SET r.evidence = $evidence, r.source = 'origin_discovery'
+                        """,
+                        host=host, address=ip, user_id=user_id, project_id=project_id,
+                        evidence=finding.get("evidence") or "",
+                    )
+                    stats["waf_bypass_rels"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"origin_discovery finding {finding.get('matched_ip')}: {e}")
+
+        print(f"[+][graph-db] Origin Discovery Graph Update: {stats['ips']} IPs, "
+              f"{stats['vulns']} vulnerabilities, {stats['has_origin_rels']} HAS_ORIGIN, "
+              f"{stats['waf_bypass_rels']} WAF_BYPASS_VIA")
+        print("[graph-db] update_graph_from_origin_discovery complete")
         return stats

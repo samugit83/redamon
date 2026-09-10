@@ -589,6 +589,7 @@ function renderScope(data: ReportData, narrative?: string): string {
   const { project, graphOverview } = data
   const p = project as any
   const isIpMode = p.ipMode === true
+  const isBatchMode = p.domainBatchMode === true
 
   // Rules of Engagement
   let roeTable = ''
@@ -655,10 +656,19 @@ function renderScope(data: ReportData, narrative?: string): string {
     }
   }
 
-  // Target info row
+  // Target info row. A Domain-batch project has NO targetDomain: its scope is the
+  // derived group roots, so without this branch the client-facing deliverable
+  // would state its scope as "N/A".
+  const batchRoots: string[] = isBatchMode
+    ? ((project.domainBatchGroups as Array<{ rootDomain?: string }> | null) || [])
+        .map(g => String(g?.rootDomain || '')).filter(Boolean)
+    : []
+
   const targetRow = isIpMode
     ? `<tr><td>Target IPs / CIDRs</td><td>${esc((project.targetIps || []).join(', ') || 'N/A')}</td></tr>`
-    : `<tr><td>Target Domain</td><td>${esc(project.targetDomain || 'N/A')}</td></tr>`
+    : isBatchMode
+      ? `<tr><td>Target Domains (batch)</td><td>${esc(batchRoots.join(', ') || 'N/A')}</td></tr>`
+      : `<tr><td>Target Domain</td><td>${esc(project.targetDomain || 'N/A')}</td></tr>`
 
   return `
 <div class="page-break"></div>
@@ -667,7 +677,7 @@ function renderScope(data: ReportData, narrative?: string): string {
   ${narrative ? `<div class="narrative">${esc(narrative)}</div>` : ''}
 
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-    <div class="metric-card-sm"><div class="metric-value-sm">${isIpMode ? 'IP / CIDR' : 'Domain'}</div><div class="metric-label-sm">Scan Mode</div></div>
+    <div class="metric-card-sm"><div class="metric-value-sm">${isIpMode ? 'IP / CIDR' : isBatchMode ? 'Domain batch' : 'Domain'}</div><div class="metric-label-sm">Scan Mode</div></div>
     <div class="metric-card-sm"><div class="metric-value-sm">${graphOverview.subdomainStats.total}</div><div class="metric-label-sm">Subdomains</div></div>
     <div class="metric-card-sm"><div class="metric-value-sm">${graphOverview.infrastructureStats.totalIps}</div><div class="metric-label-sm">Unique IPs</div></div>
     <div class="metric-card-sm"><div class="metric-value-sm">${graphOverview.endpointCoverage.baseUrls}</div><div class="metric-label-sm">Base URLs</div></div>
@@ -692,6 +702,9 @@ function renderScope(data: ReportData, narrative?: string): string {
       <tr><td>Base URLs</td><td>${graphOverview.endpointCoverage.baseUrls}</td></tr>
       <tr><td>Endpoints</td><td>${graphOverview.endpointCoverage.endpoints}</td></tr>
       <tr><td>Parameters</td><td>${graphOverview.endpointCoverage.parameters}</td></tr>
+      ${graphOverview.suppressedCount
+        ? `<tr><td>Suppressed as noise</td><td>${graphOverview.suppressedCount} finding(s) reviewed and excluded from this report</td></tr>`
+        : ''}
     </tbody>
   </table>
   ${roeTable}

@@ -11,8 +11,17 @@ import httpx
 from prompt_safety import wrap_untrusted
 from .state import TriageState, TriageFinding, RemediationDraft
 from .tools import TriageNeo4jToolManager, TriageWebSearchManager, TRIAGE_TOOLS
-from .prompts.cypher_queries import TRIAGE_QUERIES
+from .prompts.cypher_queries import TRIAGE_QUERIES, SCORING_QUERIES
 from .prompts.system import TRIAGE_SYSTEM_PROMPT
+from . import scoring
+from .prompts.classify import (
+    CLUSTER_SYSTEM_PROMPT,
+    RATIONALE_SYSTEM_PROMPT,
+    LLM_FINDING_FIELDS,
+    FIELD_CHAR_CAP,
+    build_cluster_prompt,
+    build_rationale_prompt,
+)
 from .project_settings import load_cypherfix_settings
 
 logger = logging.getLogger(__name__)
@@ -62,17 +71,38 @@ class TriageOrchestrator:
             state["status"] = "complete"
             return state
 
+        # Phase 1b: PRIORITISE. Score every finding deterministically from graph
+        # signals (no LLM), write the rank back, then a reduced LLM pass adds
+        # clustering + a one-line rationale to the top findings only.
+        await self.callback.on_phase("prioritizing", "Scoring and ranking findings...", 68)
+        scored = await self._score_findings(state)
+        state["verdicts"] = scored
+
         # Fetch existing non-pending remediations to avoid duplicates on re-triage
         existing_remediations = await self._fetch_existing_remediations()
 
-        # Phase 2: ReAct Analysis
+        # Phase 2: ReAct Analysis. Feed the already-computed priority so the
+        # remediation model ranks by the same numbers; drop findings the graph
+        # settled as noise (patched / agent-failed) from remediation input.
         await self.callback.on_phase("correlating", "Analyzing collected data...", 70)
-        analysis = await self._analyze(state, raw_data, existing_remediations)
+        analysis = await self._analyze(
+            state, self._drop_scored_noise(raw_data, scored), existing_remediations)
         state["analysis_result"] = analysis
 
         # Phase 3: Save to database
         await self.callback.on_phase("saving", "Saving remediations...", 95)
         await self._save_remediations(analysis)
+
+        # Verdict counts, for the JSONL event stream. Reconstructing what a run
+        # concluded from the prose log is not practical.
+        try:
+            from session_log import log_event
+            proven = sum(1 for v in state.get("verdicts", []) if v.get("proven"))
+            log_event("triage_run", user_id=self.user_id, project_id=self.project_id,
+                      scored=len(state.get("verdicts", [])), proven=proven,
+                      remediations=len(analysis.findings))
+        except Exception:
+            pass
 
         # Complete
         await self.callback.on_complete(
@@ -106,6 +136,207 @@ class TriageOrchestrator:
                 raw_data[query_def["name"]] = []
 
         return raw_data
+
+    # ── Phase 1b: deterministic prioritisation + reduced LLM assist ───────────
+
+    async def _score_findings(self, state: TriageState) -> list:
+        """Score every finding from graph signals and write the rank back.
+
+        Deterministic and LLM-free: this is the ranking backbone. Runs the
+        SCORING_QUERIES (all 8 finding labels), scores each row with
+        `scoring.score_finding`, ranks them, and persists
+        `triage_priority_score` + `triage_signals` + the decisive auto-verdict
+        via the mixin. Then a best-effort LLM pass adds clustering + a one-line
+        rationale to the top findings.
+
+        Never raises: a scoring or write failure leaves findings visible and
+        (at worst) unranked, never hidden.
+        """
+        # No explicit connect(): run_static_query lazy-connects, and connect()
+        # unconditionally builds a NEW driver without closing the old one, so a
+        # second call here (after _collect_all already connected) would orphan a
+        # connection pool every run.
+        scored: list = []
+        for query_def in SCORING_QUERIES:
+            try:
+                rows = await self.neo4j.run_static_query(query_def["query"])
+            except Exception as e:
+                logger.error(f"Scoring query '{query_def['name']}' failed: {e}")
+                continue
+            for row in rows or []:
+                if not isinstance(row, dict) or not row.get("id"):
+                    continue
+                fs = scoring.score_finding(row, query_def.get("label", ""))
+                scored.append({
+                    "id": str(row["id"]),
+                    "label": query_def.get("label", ""),
+                    "name": row.get("name") or "",
+                    "severity": row.get("severity") or "",
+                    "source": row.get("source") or "",
+                    "host": row.get("host") or "",
+                    "score": fs.score,
+                    "signals": fs.signals,
+                    "proven": fs.proven,
+                    "status": fs.auto_verdict,
+                    "confidence": fs.auto_confidence,
+                })
+
+        if not scored:
+            logger.info("Scoring: no findings in scope")
+            return []
+
+        scoring.rank_findings(scored)   # stamps 1-based 'rank', worst first
+
+        # Persist the deterministic score for every finding (no verdict prose yet).
+        await self._save_scores(scored)
+
+        # Reduced LLM pass: cluster + rationale for the findings that matter.
+        try:
+            await self._cluster_and_explain(state, scored)
+        except Exception as e:
+            logger.error(f"Cluster/rationale step failed (ranking stands): {e}")
+
+        logger.info(f"Scored {len(scored)} findings; "
+                    f"{sum(1 for r in scored if r['proven'])} proven")
+        return scored
+
+    async def _save_scores(self, rows: list) -> None:
+        """Write scores/signals/auto-verdicts to the graph via the mixin."""
+        try:
+            from graph_db.neo4j_client import Neo4jClient
+            with Neo4jClient() as client:
+                result = client.apply_triage_scores(self.user_id, self.project_id, rows)
+            logger.info(f"Triage scores: {result['updated']} written, "
+                        f"{result['skipped_human']} human-owned, {result['rejected']} rejected")
+        except Exception as e:
+            logger.error(f"Failed to write triage scores: {e}")
+
+    async def _cluster_and_explain(self, state: TriageState, scored: list) -> None:
+        """LLM adds cluster_id + a one-line rationale to the top findings only.
+
+        Best-effort: the deterministic ranking already stands. `triageTopNForLlm`
+        (default 40) caps how many findings reach the model, so a 500-finding
+        project costs 1-2 calls, not 30.
+        """
+        settings = state.get("settings", {}) or {}
+        top_n = int(settings.get("triageTopNForLlm", 40) or 40)
+        # Highest-priority findings plus any the graph left ambiguous (no verdict).
+        top = scored[:top_n]
+        ambiguous = [r for r in scored[top_n:] if r["status"] is None][:top_n]
+        batch = top + ambiguous
+        if not batch:
+            return
+
+        compact = [{k: (str(r.get(k))[:FIELD_CHAR_CAP] if k not in ("signals",) else r.get(k))
+                    for k in LLM_FINDING_FIELDS}
+                   for r in batch]
+        payload = wrap_untrusted(json.dumps(compact, default=str), "FINDINGS")
+        asked = {r["id"] for r in batch}
+
+        # 1) Clustering
+        cluster_by_id = {}
+        try:
+            resp = await self._call_llm(CLUSTER_SYSTEM_PROMPT,
+                                        [{"role": "user", "content": build_cluster_prompt(payload)}])
+            for item in self._extract_json_array(self._response_text(resp)):
+                if isinstance(item, dict) and str(item.get("id", "")) in asked:
+                    cid = item.get("cluster_id")
+                    if cid:
+                        cluster_by_id[str(item["id"])] = str(cid)[:120]
+        except Exception as e:
+            logger.error(f"Clustering call failed: {e}")
+
+        # 2) Rationale
+        reason_by_id = {}
+        try:
+            resp = await self._call_llm(RATIONALE_SYSTEM_PROMPT,
+                                        [{"role": "user", "content": build_rationale_prompt(payload)}])
+            for item in self._extract_json_array(self._response_text(resp)):
+                if isinstance(item, dict) and str(item.get("id", "")) in asked:
+                    reason = item.get("reason")
+                    if reason:
+                        reason_by_id[str(item["id"])] = str(reason)[:500]
+        except Exception as e:
+            logger.error(f"Rationale call failed: {e}")
+
+        writeback = []
+        for r in batch:
+            fid = r["id"]
+            if fid in cluster_by_id or fid in reason_by_id:
+                writeback.append({
+                    "id": fid, "score": r["score"], "signals": r["signals"],
+                    "status": r["status"], "confidence": r["confidence"],
+                    "reason": reason_by_id.get(fid),
+                    "cluster_id": cluster_by_id.get(fid),
+                })
+                r["reason"] = reason_by_id.get(fid) or r.get("reason")
+                r["cluster_id"] = cluster_by_id.get(fid)
+        if writeback:
+            await self._save_scores(writeback)
+
+    @staticmethod
+    def _response_text(response) -> str:
+        """Flatten a _call_llm result into plain text.
+
+        The result carries a `content` LIST of {"type": "text", "text": ...}
+        blocks, never a top-level "text" key.
+        """
+        if isinstance(response, dict):
+            content = response.get("content", "")
+        else:
+            content = response
+        if isinstance(content, list):
+            out = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    out.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    out.append(block)
+            return "".join(out)
+        return str(content or "")
+
+    @staticmethod
+    def _extract_json_array(text: str) -> list:
+        """Pull the JSON array out of a fenced model response, or return []."""
+        if not text:
+            return []
+        match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+        raw = match.group(1) if match else None
+        if raw is None:
+            start, end = text.find("["), text.rfind("]")
+            raw = text[start:end + 1] if 0 <= start < end else None
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def _drop_scored_noise(self, raw_data: dict, scored: list) -> dict:
+        """Drop findings the graph settled as noise from the remediation input.
+
+        `likely_noise` here means patched (gvm_remediated) or agent-tried-and-
+        failed -- decided deterministically, not guessed. Those findings keep
+        their score, stay visible in the Priority Board table and in the graph; this
+        only stops the remediation model writing a work item for them. Nothing is
+        muted or deleted.
+        """
+        noise = {r["id"] for r in scored if r.get("status") == "likely_noise"}
+        if not noise:
+            return raw_data
+        filtered = {}
+        for query_name, rows in raw_data.items():
+            if not isinstance(rows, list):
+                filtered[query_name] = rows
+                continue
+            filtered[query_name] = [
+                row for row in rows
+                if not (isinstance(row, dict)
+                        and str(row.get("vuln_id") or row.get("id")
+                                or row.get("finding_id") or "") in noise)
+            ]
+        return filtered
 
     async def _analyze(self, state: TriageState, raw_data: dict, existing_remediations: list) -> RemediationDraft:
         """Phase 2: ReAct analysis using LLM."""

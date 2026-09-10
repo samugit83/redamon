@@ -485,6 +485,32 @@
   color: var(--status-error);
 }
 
+/* LHOST detected-host-IP suggestion (issue #180): a hint plus a compact inline
+   button that fills the field with the host's detected LAN IP. */
+.suggestionRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.suggestionButton {
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  color: var(--accent-primary, var(--text-secondary));
+  background: transparent;
+  border: 1px solid var(--border-secondary, var(--border-primary));
+  border-radius: var(--radius-1);
+  padding: 1px var(--space-1);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.suggestionButton:hover {
+  background: var(--bg-secondary);
+}
+
 .toggleRow {
   display: flex;
   align-items: center;

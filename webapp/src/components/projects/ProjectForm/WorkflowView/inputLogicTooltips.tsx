@@ -978,6 +978,31 @@ const Mitre = (
 // EXPORT MAP
 // ============================================================================
 
+const OriginDiscovery = (
+  <div style={wrapperStyle}>
+    <div style={firstSectionTitleStyle}>How input is generated</div>
+    <p style={paraStyle}>
+      The input is every <strong>CDN-fronted host</strong> already in the graph - a Subdomain or IP that a prior HTTP probe classified as sitting behind a CDN/WAF (it carries a CDN name or a favicon hash). Hosts that are not fronted are skipped: there is nothing to unmask.
+    </p>
+    <p style={paraStyle}>
+      For each fronted host, candidate origin IPs are gathered from non-CDN subdomains, SPF/MX email records, certificate transparency, the site&apos;s favicon hash (Shodan/FOFA/ZoomEye), certificate search (Censys), passive DNS (OTX/VirusTotal), and DNS history (SecurityTrails/ViewDNS). You can also enter a Subdomain in the partial recon modal; IPs are graph-sourced only, never entered by hand, because a discovered origin IP is an output of this tool.
+    </p>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Every candidate that points at a private, internal, or cloud-metadata address is dropped before it is ever contacted, and the engagement&apos;s excluded-hosts list is honored.
+    </p>
+
+    <div style={sectionTitleStyle}>How output transforms the graph</div>
+    <ul style={listStyle}>
+      <li>Each confirmed origin becomes an <strong>IP</strong> node marked as an origin (with the discovery method and confidence), reusing the existing IP node when one is already present.</li>
+      <li>A <span style={codeStyle}>HAS_ORIGIN</span> link is drawn from the fronted <strong>Subdomain</strong> to that IP.</li>
+      <li>The exposure is recorded as a <strong>Vulnerability</strong> (a WAF bypass) attached to the IP, plus a <span style={codeStyle}>WAF_BYPASS_VIA</span> link, so it flows into reports like any other finding.</li>
+    </ul>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Re-running reuses existing nodes; the same origin never duplicates.
+    </p>
+  </div>
+)
+
 export const INPUT_LOGIC_TOOLTIPS: Record<string, ReactNode> = {
   // Discovery
   SubdomainDiscovery,
@@ -1014,6 +1039,7 @@ export const INPUT_LOGIC_TOOLTIPS: Record<string, ReactNode> = {
   VhostSni,
   WebCachePoison,
   SecurityChecks,
+  OriginDiscovery,
   CveLookup,
   Mitre,
 }

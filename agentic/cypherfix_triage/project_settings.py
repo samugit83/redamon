@@ -25,6 +25,11 @@ async def load_cypherfix_settings(project_id: str) -> dict:
                 "branch_prefix": project.get("cypherfixBranchPrefix", "cypherfix/"),
                 "require_approval": project.get("cypherfixRequireApproval", True),
                 "llm_model": project.get("cypherfixLlmModel", "") or project.get("agentOpenaiModel", ""),
+                # Triage classification. Defaults mirror the Prisma @defaults so
+                # a project saved before these fields existed behaves the same.
+                "triageConfidenceThreshold": project.get("triageConfidenceThreshold", 0.7),
+                "triageAutoMute": project.get("triageAutoMute", False),
+                "triageTopNForLlm": project.get("triageTopNForLlm", 40),
             }
 
             # Fetch user LLM providers for key resolution

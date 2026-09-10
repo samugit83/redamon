@@ -239,7 +239,7 @@ class TestXxeToolRegistryAlignment(unittest.TestCase):
     def test_steers_to_key_tools(self):
         for tool in ("query_graph", "execute_curl", "execute_code", "kali_shell",
                      "execute_ffuf", "execute_httpx", "fs_write",
-                     "proxy_search", "proxy_replay", "execute_nuclei"):
+                     "redamon.", "execute_nuclei"):
             self.assertIn(tool, XXE_TOOLS, f"skill should reference {tool}")
 
     def test_oob_uses_house_oast_convention(self):

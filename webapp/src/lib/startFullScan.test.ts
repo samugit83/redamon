@@ -209,3 +209,62 @@ describe('history for every outcome', () => {
     expect(res.scanJobId).toBeNull()
   })
 })
+
+// Strategy row 1: a Domain-batch project must be able to start a scan.
+// Its scope lives in domainBatchGroups, not targetDomain (which is empty), so the
+// single-domain precondition would have refused every batch scan outright.
+describe('domain batch preconditions', () => {
+  const batchProject = (groups: unknown) => ({
+    id: 'p1', userId: 'owner', targetDomain: '', ipMode: false, targetIps: [],
+    domainBatchMode: true, domainBatchGroups: groups,
+  })
+
+  test('a batch with groups starts and reaches the orchestrator', async () => {
+    h.findProject.mockResolvedValue(batchProject([
+      { rootDomain: 'domain1.com', prefixes: ['sub1.'] },
+      { rootDomain: 'domain2.it', prefixes: ['sub2.'] },
+    ]))
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+
+    expect(r.ok).toBe(true)
+    expect(h.orchestratorFetch).toHaveBeenCalledOnce()
+    expect(orchestratorBody().project_id).toBe('p1')
+  })
+
+  test('an empty group list is refused with 400 and never starts a container', async () => {
+    h.findProject.mockResolvedValue(batchProject([]))
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+
+    expect(r.ok).toBe(false)
+    expect((r as { status: number }).status).toBe(400)
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('a null group list (never saved) is refused, not treated as no-op', async () => {
+    h.findProject.mockResolvedValue(batchProject(null))
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+
+    expect(r.ok).toBe(false)
+    expect((r as { status: number }).status).toBe(400)
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('a batch is not held to the single-domain targetDomain requirement', async () => {
+    h.findProject.mockResolvedValue(batchProject([{ rootDomain: 'a.com', prefixes: ['.'] }]))
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+
+    expect(r.ok).toBe(true)
+    if (!r.ok) expect(r.error).not.toContain('no target domain')
+  })
+
+  test('a non-batch project with no target still fails as before', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', targetDomain: '', ipMode: false, targetIps: [],
+      domainBatchMode: false, domainBatchGroups: null,
+    })
+    const r = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+
+    expect(r.ok).toBe(false)
+    expect((r as { error: string }).error).toContain('no target domain')
+  })
+})

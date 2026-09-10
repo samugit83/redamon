@@ -43,6 +43,8 @@ Pentesters and security engineers testing REST APIs, GraphQL endpoints, or micro
 7. Arjun discovers hidden parameters on all found endpoints across all HTTP methods
 8. jsluice extracts API URLs and secrets from JavaScript files
 9. Nuclei runs API-targeted templates in DAST mode with OOB detection`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: 5 phases. port_scan added to discover non-standard API ports
     // (4000=Apollo/graphql-yoga, 3000=Node dev, 8080=Spring Boot, 5000=Flask/Strawberry)

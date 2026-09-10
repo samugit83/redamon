@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { useToast, WikiInfoButton } from '@/components/ui'
 import { RECON_PRESETS, type ReconPreset } from '@/lib/recon-presets'
+import { matchesTargetFilter, type TargetFilter } from '@/lib/recon-presets/targeting'
 import { GeneratePresetModal } from './GeneratePresetModal'
 import styles from './ReconPresetModal.module.css'
 
@@ -26,6 +27,64 @@ interface ReconPresetDrawerProps {
   currentPresetId?: string
   userId: string | null | undefined
   model: string
+}
+
+const TARGET_FILTERS: Array<{ id: TargetFilter; label: string; hint: string }> = [
+  { id: 'all', label: 'All', hint: 'Every built-in preset' },
+  { id: 'domain', label: 'Domain', hint: 'Presets that scan a public domain / subdomains' },
+  { id: 'ip', label: 'External IP', hint: 'Presets that scan public IPs or CIDR ranges' },
+  { id: 'internal', label: 'Local network', hint: 'Presets for a private/internal network or Active Directory' },
+]
+
+// Small, theme-safe classification chips shown on every preset card so the target
+// type is visible at a glance without opening "Show more".
+function Chip({ text, tone }: { text: string; tone: 'blue' | 'purple' | 'amber' | 'gray' }) {
+  const palette: Record<string, { bg: string; fg: string; border: string }> = {
+    blue: { bg: 'rgba(96, 165, 250, 0.14)', fg: '#60a5fa', border: 'rgba(96, 165, 250, 0.4)' },
+    purple: { bg: 'rgba(167, 139, 250, 0.14)', fg: '#a78bfa', border: 'rgba(167, 139, 250, 0.4)' },
+    amber: { bg: 'rgba(251, 146, 60, 0.14)', fg: '#fb923c', border: 'rgba(251, 146, 60, 0.45)' },
+    gray: { bg: 'rgba(148, 163, 184, 0.14)', fg: '#94a3b8', border: 'rgba(148, 163, 184, 0.4)' },
+  }
+  const c = palette[tone]
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        fontSize: '10px',
+        fontWeight: 600,
+        lineHeight: 1.4,
+        padding: '1px 7px',
+        borderRadius: '999px',
+        background: c.bg,
+        color: c.fg,
+        border: `1px solid ${c.border}`,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {text}
+    </span>
+  )
+}
+
+function PresetChips({ preset }: { preset: ReconPreset }) {
+  const profileChip =
+    preset.targetProfile === 'ip'
+      ? { text: 'IP / network', tone: 'purple' as const }
+      : preset.targetProfile === 'both'
+        ? { text: 'Domain or IP', tone: 'gray' as const }
+        : { text: 'Domain', tone: 'blue' as const }
+  const envChip =
+    preset.environment === 'internal'
+      ? { text: 'Local network', tone: 'amber' as const }
+      : preset.environment === 'external'
+        ? { text: 'External', tone: 'gray' as const }
+        : null // 'either' adds no signal beyond the profile chip
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+      <Chip text={profileChip.text} tone={profileChip.tone} />
+      {envChip && <Chip text={envChip.text} tone={envChip.tone} />}
+    </div>
+  )
 }
 
 function PresetIcon({ name, size = 20 }: { name: string; size?: number }) {
@@ -73,6 +132,9 @@ export function ReconPresetModal({
   const toast = useToast()
   const [detailPreset, setDetailPreset] = useState<ReconPreset | null>(null)
   const [activeView, setActiveView] = useState<'builtin' | 'user'>('builtin')
+  // Filter built-in presets by the kind of target they suit. Answers the common
+  // "which preset do I pick for a local/IP test?" question that a flat list hides.
+  const [targetFilter, setTargetFilter] = useState<TargetFilter>('all')
 
   // --- My Presets state ---
   const [userPresets, setUserPresets] = useState<PresetListItem[]>([])
@@ -223,10 +285,47 @@ export function ReconPresetModal({
           </button>
         </div>
 
+        {/* Target-type filter: lets a user narrow to the presets that suit a
+            domain, a public IP range, or an internal/local network. */}
+        {activeView === 'builtin' && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '6px',
+              padding: '8px 16px 0',
+            }}
+          >
+            {TARGET_FILTERS.map((f) => {
+              const active = targetFilter === f.id
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  title={f.hint}
+                  onClick={() => setTargetFilter(f.id)}
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    padding: '4px 12px',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    border: `1px solid ${active ? 'rgba(96, 165, 250, 0.6)' : 'var(--border-subtle, #333)'}`,
+                    background: active ? 'rgba(96, 165, 250, 0.16)' : 'transparent',
+                    color: active ? '#60a5fa' : 'var(--text-secondary, #aaa)',
+                  }}
+                >
+                  {f.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {/* Built-in presets view */}
         {activeView === 'builtin' && (
           <div className={styles.drawerBody}>
-            {RECON_PRESETS.map((preset) => {
+            {RECON_PRESETS.filter((preset) => matchesTargetFilter(preset, targetFilter)).map((preset) => {
               const isApplied = preset.id === currentPresetId
 
               return (
@@ -243,6 +342,8 @@ export function ReconPresetModal({
                     </div>
                     <h3 className={styles.cardTitle}>{preset.name}</h3>
                   </div>
+
+                  <PresetChips preset={preset} />
 
                   <p className={styles.cardDescription}>{preset.shortDescription}</p>
 

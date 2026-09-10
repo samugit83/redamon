@@ -44,3 +44,6 @@ class TriageState(TypedDict):
     status: str  # initializing, collecting, analyzing, saving, complete, error
     current_phase: str
     error: Optional[str]
+    # Verdicts from the classify phase, kept on the state so the remediation
+    # step can drop the noise and on_complete can report the counts.
+    verdicts: list

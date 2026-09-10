@@ -10,6 +10,7 @@ Mirrors the pattern from recon/project_settings.py.
 import os
 import logging
 import contextvars
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,10 @@ DANGEROUS_TOOLS = frozenset({
     'execute_code', 'execute_hydra', 'execute_playwright', 'execute_wpscan',
     'execute_arjun', 'execute_ffuf', 'execute_amass', 'execute_gau',
     'execute_katana',
-    # Active captured-traffic tools emit live target traffic (§10.4/§15.5).
-    'proxy_replay', 'proxy_fuzz',
+    # proxy_brain runs agent-authored code that can emit live traffic (its
+    # redamon.replay/fuzz path). One confirmation authorizes a bounded campaign;
+    # the per-send budget + host-pin bound the blast radius (plan §10).
+    'proxy_brain',
     # Supply-chain L3: execute_guarddog downloads attacker-authored tarballs
     # (registry egress). execute_osv_scanner is passive/offline -> NOT dangerous.
     'execute_guarddog',
@@ -261,19 +264,11 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     # Tool Phase Restrictions
     'TOOL_PHASE_MAP': {
         'query_graph': ['informational', 'exploitation', 'post_exploitation'],
-        # Captured-traffic read/analyze tools (Phase 4 §10.4) — read-only over
-        # already-captured data, useful in every phase (like query_graph).
-        'proxy_search': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_get': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_sitemap': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_params': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_grep': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_diff': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_to_curl': ['informational', 'exploitation', 'post_exploitation'],
-        'proxy_query': ['informational', 'exploitation', 'post_exploitation'],
-        # Active traffic tools (dangerous — emit live traffic): exploitation+ only.
-        'proxy_replay': ['exploitation', 'post_exploitation'],
-        'proxy_fuzz': ['exploitation', 'post_exploitation'],
+        # proxy_brain is the single traffic tool (replaces proxy_search/get/
+        # sitemap/params/grep/diff/to_curl/query/replay/fuzz). Available in all
+        # phases so read/decode recon stays usable; active sends (redamon.replay/
+        # fuzz) are refused outside exploitation by /traffic/replay itself.
+        'proxy_brain': ['informational', 'exploitation', 'post_exploitation'],
         'execute_curl': ['informational', 'exploitation', 'post_exploitation'],
         'execute_naabu': ['informational', 'exploitation'],
         'execute_httpx': ['informational', 'exploitation'],
@@ -387,6 +382,7 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
             'access_control': True,
             'http_request_smuggling': True,
             'xxe': True,
+            'crypto_attack': True,
         },
         'user': {},
     },
@@ -569,6 +565,11 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['TARGET_DOMAIN'] = project.get('targetDomain', '')
     settings['IP_MODE'] = project.get('ipMode', False)
     settings['TARGET_IPS'] = project.get('targetIps', [])
+    # Domain batch has an EMPTY targetDomain: its scope is the derived group roots.
+    # Without these two the agent's guardrails see no target at all and skip
+    # themselves, which is the opposite of fail-closed. See target_scope_domains().
+    settings['DOMAIN_BATCH_MODE'] = project.get('domainBatchMode', False)
+    settings['DOMAIN_BATCH_GROUPS'] = project.get('domainBatchGroups') or []
 
     # Rules of Engagement
     settings['ROE_ENABLED'] = project.get('roeEnabled', DEFAULT_AGENT_SETTINGS['ROE_ENABLED'])
@@ -835,6 +836,43 @@ def get_setting(key: str, default: Any = None) -> Any:
         Setting value or default
     """
     return get_settings().get(key, default)
+
+
+_SCOPE_DOMAIN_CHARSET = re.compile(r'^[a-z0-9.-]+$')
+
+
+def target_scope_domains() -> list[str]:
+    """Every domain this project is authorized to touch, whatever its target mode.
+
+    Both agent guardrails used to read TARGET_DOMAIN alone. A Domain-batch project
+    leaves that empty and keeps its scope in DOMAIN_BATCH_GROUPS, so the soft
+    guardrail returned early ("nothing to check") and the hard guardrail's
+    `if not ip_mode and target_domain` was false: BOTH silently disarmed on exactly
+    the projects with the most targets. This is the single source of scope for them.
+
+    Returns [] only for a genuinely unconfigured project or IP mode. Callers must
+    treat an EMPTY list in batch mode as a refusal, never as "nothing to check".
+    """
+    if get_setting('IP_MODE', False):
+        return []
+
+    if get_setting('DOMAIN_BATCH_MODE', False):
+        groups = get_setting('DOMAIN_BATCH_GROUPS', []) or []
+        roots: list[str] = []
+        if isinstance(groups, list):
+            for entry in groups:
+                if not isinstance(entry, dict):
+                    continue
+                root = str(entry.get('rootDomain') or '').strip().lower()
+                # Same charset rule as the recon and orchestrator parsers: drop
+                # rather than repair, so a hand-edited row cannot smuggle a target.
+                if root and _SCOPE_DOMAIN_CHARSET.match(root) and '..' not in root:
+                    if root not in roots:
+                        roots.append(root)
+        return roots
+
+    domain = (get_setting('TARGET_DOMAIN', '') or '').strip()
+    return [domain] if domain else []
 
 
 def reload_settings(project_id: Optional[str] = None) -> dict[str, Any]:

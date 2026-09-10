@@ -1,0 +1,336 @@
+/* Triage tables. Mirrors ScanScheduleTable's slot handling: the graph page's
+   .content is position:relative, so anchor with inset:0 and scroll inside. */
+.wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.chip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.chipActive {
+  background: var(--accent-subtle, var(--bg-hover));
+  color: var(--text-primary);
+  border-color: var(--accent, var(--border-strong));
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.button:hover {
+  border-color: var(--border-strong);
+}
+
+/* A run in flight that the operator is not actively watching. Deliberately a
+   strip and not the blocking overlay: during a long background run the findings
+   table stays readable and the verdicts fill in underneath. */
+.runBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.runBannerText {
+  flex: 1;
+  min-width: 0;
+}
+
+.runBannerBtn {
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.runBannerBtn:hover {
+  border-color: var(--accent-primary);
+}
+
+.truncationNotice {
+  padding: var(--space-2);
+  border: 1px solid var(--severity-medium, #d29922);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--severity-medium, #d29922) 12%, transparent);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.tableScroll {
+  /* Wide tables scroll themselves; the page must never scroll sideways. */
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  text-align: left;
+  padding: var(--space-2);
+  color: var(--text-tertiary);
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  position: sticky;
+  top: 0;
+}
+
+.table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.name {
+  color: var(--text-primary);
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+
+.where,
+.reason {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full, 999px);
+  font-size: 10px;
+  white-space: nowrap;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+/* Rank number: the headline of the ranked list. */
+.rank {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The cell stays a normal table cell so its row border aligns with the others.
+   Making the <td> itself display:flex took it out of table layout and detached
+   the horizontal divider when the chips wrapped to a second line. */
+.signalsCell {
+  max-width: 260px;
+}
+
+.signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+/* One chip per fired scoring signal -- the transparent "why it ranked here". */
+.signalChip {
+  padding: 1px 6px;
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  color: var(--text-primary);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+/* Verdicts. Confirmed reads as a real problem, likely_noise as de-emphasised,
+   needs_verification as "your turn" rather than as an error. */
+.confirmed {
+  background: color-mix(in srgb, var(--severity-high, #e5534b) 18%, transparent);
+  color: var(--severity-high, #e5534b);
+}
+
+.likely_noise {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+
+.needs_verification {
+  background: color-mix(in srgb, var(--severity-medium, #d29922) 18%, transparent);
+  color: var(--severity-medium, #d29922);
+}
+
+.unreviewed {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+
+.confidence {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* A human verdict is never overwritten by an AI re-run, so it is worth seeing. */
+.humanTag {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid var(--border-subtle);
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+
+.sev {
+  text-transform: capitalize;
+}
+
+.critical { color: var(--severity-critical, #ff5c5c); }
+.high     { color: var(--severity-high, #e5534b); }
+.medium   { color: var(--severity-medium, #d29922); }
+.low      { color: var(--severity-low, #3fb950); }
+.info     { color: var(--text-tertiary); }
+
+.muteButton,
+.unmuteButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.muteButton:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.unmuteButton:hover:not(:disabled) {
+  color: var(--severity-low, #3fb950);
+  border-color: var(--severity-low, #3fb950);
+}
+
+.muteButton:disabled,
+.unmuteButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mutedSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.mutedHeading {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.mutedNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* Muted rows are visible but visibly out of the working set. */
+.mutedRow td {
+  opacity: 0.72;
+}
+
+.empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.error {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--severity-high, #e5534b);
+  font-size: var(--text-xs);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

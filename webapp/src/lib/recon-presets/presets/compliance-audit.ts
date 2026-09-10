@@ -40,6 +40,8 @@ Security teams running compliance audits, blue teamers validating hardening base
 5. The 27 security checks validate headers, TLS, DNS security records, cookie flags, and exposed services
 6. Nuclei runs misconfig and exposure templates to catch common server misconfigurations
 7. Results feed into the graph for a comprehensive compliance posture view`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: domain_discovery + http_probe + vuln_scan (nuclei misconfig)
     scanModules: ['domain_discovery', 'http_probe', 'vuln_scan'],

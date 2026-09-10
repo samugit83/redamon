@@ -80,6 +80,23 @@ export function GvmScanSection({ data, updateField, actions }: GvmScanSectionPro
                 <TimeEstimate estimate="&ldquo;Both&rdquo; doubles the number of targets vs single strategy" />
               </div>
             </div>
+
+            <div className={styles.fieldRow}>
+              <div className={styles.fieldGroup}>
+                <label className={styles.fieldLabel}>Port List</label>
+                <select
+                  className="select"
+                  value={data.gvmPortList}
+                  onChange={(e) => updateField('gvmPortList', e.target.value || 'All TCP and Nmap top 100 UDP')}
+                >
+                  <option value="All TCP and Nmap top 100 UDP">All TCP and Nmap top 100 UDP - Full TCP, sampled UDP (recommended)</option>
+                  <option value="All IANA assigned TCP">All IANA assigned TCP - TCP only, no UDP</option>
+                  <option value="All IANA assigned TCP and UDP">All IANA assigned TCP and UDP - Exhaustive, hours of UDP timeouts</option>
+                </select>
+                <span className={styles.fieldHint}>Which ports GVM probes on every target. The full IANA UDP range is the single biggest driver of scan time: closed UDP ports answer with silence and must each be timed out, and GVM reports no progress percentage until that finishes.</span>
+                <TimeEstimate estimate="Top 1000 UDP: minutes | All IANA TCP+UDP: hours per target" />
+              </div>
+            </div>
           </div>
 
           <div className={styles.subSection}>

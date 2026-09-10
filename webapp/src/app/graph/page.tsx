@@ -46,11 +46,13 @@ import { useUnseenCounts } from './hooks/useUnseenCounts'
 import { ActiveVersionOnlyNotice } from './components/VersionSwitch'
 import { VersionManager } from './components/VersionManager'
 import { ReconDeltaTable } from './components/ReconDelta'
+import { TriageTable } from './components/Triage/TriageTable'
 import { ScanScheduleTable } from './components/ScanSchedule'
 import { useStableGraphData } from './hooks/useStableGraphData'
 import { exportToCsv, exportToJson, exportToMarkdown } from './utils/exportCsv'
 import { clusterGraphData } from './utils/clusterNodes'
 import { isOverNodeCap } from './utils/nodeCap'
+import { isGraphRenderOff, shouldFetchGraph } from './utils/renderGate'
 import { useTheme, useSession, useReconStatus, useReconSSE, useGvmStatus, useGvmSSE, useGithubHuntStatus, useGithubHuntSSE, useTrufflehogRuns, useTrufflehogSSE, useSupplyChainStatus, useSupplyChainSSE, useActiveSessions, useMultiPartialReconStatus, useMultiPartialReconSSE } from '@/hooks'
 import { useProjectById } from '@/hooks/useProjects'
 import { useScanStartFailure } from '@/hooks/useScanStartFailure'
@@ -90,8 +92,11 @@ export default function GraphPage() {
   const {
     is3D,
     showLabels,
+    renderEnabled: graphRenderEnabled,
     setIs3D,
     setShowLabels,
+    setRenderEnabled: setGraphRenderEnabled,
+    isLoading: graphPrefsLoading,
   } = useGraphViewPrefs(projectId)
   const [isAIOpen, setIsAIOpen] = useState(false)
   const [isFileSystemOpen, setIsFileSystemOpen] = useState(false)
@@ -311,7 +316,17 @@ export default function GraphPage() {
   /** True while the screen shows a saved snapshot instead of the live graph. */
   const isViewingPastVersion = !!selectedVersionId
 
-  const { data, isLoading, error, refetch: refetchGraph, refetchFresh } = useGraphData(projectId, selectedVersionId)
+  // Render switch: while it is off the graph map is not fetched, queried or
+  // drawn. It only suppresses the fetch on the map itself - every other view
+  // (Node Inspector, All Nodes, the analytics panels) reads the same payload,
+  // and the whole point of the off state is that those stay usable. Prefs are
+  // loaded async, so nothing is fetched until the saved value is known:
+  // treating "not loaded yet" as on would fire the very query being avoided.
+  const graphGate = { prefsLoading: graphPrefsLoading, renderEnabled: graphRenderEnabled, activeView }
+  const graphRenderOff = isGraphRenderOff(graphGate)
+  const graphFetchEnabled = shouldFetchGraph(graphGate)
+
+  const { data, isLoading, error, refetch: refetchGraph, refetchFresh } = useGraphData(projectId, selectedVersionId, graphFetchEnabled)
 
   // Debounced refetch: SSE log events fire rapidly during a scan; we only need
   // to re-pull the graph at most once per ~1.5s to pick up newly written nodes.
@@ -355,6 +370,9 @@ export default function GraphPage() {
     logs: reconLogs,
     currentPhase,
     currentPhaseNumber,
+    currentGroup,
+    groupNumber,
+    totalGroups,
     clearLogs,
   } = useReconSSE({
     projectId,
@@ -1558,6 +1576,8 @@ export default function GraphPage() {
         showLabels={showLabels}
         onToggle3D={setIs3D}
         onToggleLabels={setShowLabels}
+        renderEnabled={!graphRenderOff}
+        onToggleRender={setGraphRenderEnabled}
         nodeCount={displayedNodeCount}
       />
 
@@ -1576,7 +1596,23 @@ export default function GraphPage() {
 
         <div ref={contentRef} className={styles.content}>
           {activeView === 'graph' ? (
-            overNodeCap ? (
+            graphRenderOff ? (
+              <div className={styles.nodeCap}>
+                <h2>Graph rendering is off</h2>
+                <p>
+                  Rendering is usually switched off once a graph has grown large enough that
+                  laying it out makes the tab sluggish.
+                </p>
+                <p>
+                  Your data is untouched: open the Node inspector section to browse every
+                  node and its properties, or turn rendering back on with the Render switch
+                  at the top right.
+                </p>
+                <button className="primaryButton" onClick={() => setGraphRenderEnabled(true)}>
+                  Turn rendering on
+                </button>
+              </div>
+            ) : overNodeCap ? (
               <div className={styles.nodeCap}>
                 <h2>Graph too large to render</h2>
                 <p>
@@ -1630,6 +1666,12 @@ export default function GraphPage() {
                   onOpenManager={() => setIsVersionManagerOpen(true)}
                 />
               </div>
+            ) : tableViewMode === 'triage' ? (
+              // Verdicts and mute state are LIVE, never version-scoped, so this
+              // sits BELOW the past-version guard: viewing an old snapshot shows
+              // the same "active version only" notice the RedZone panels show,
+              // rather than silently rendering current data under an old label.
+              <TriageTable projectId={projectId} />
             ) : tableViewMode === 'nodeDetails' ? (
               <NodeDetailsTable
                 data={filterGraphData ?? data}
@@ -1714,6 +1756,9 @@ export default function GraphPage() {
         logs={reconLogs}
         currentPhase={currentPhase}
         currentPhaseNumber={currentPhaseNumber}
+        currentGroup={currentGroup}
+        groupNumber={groupNumber}
+        totalGroups={totalGroups}
         status={reconState?.status || 'idle'}
         errorMessage={reconState?.error}
         onClearLogs={clearLogs}
@@ -1842,6 +1887,7 @@ export default function GraphPage() {
         targetDomain={currentProject?.targetDomain || 'Unknown'}
         ipMode={currentProject?.ipMode}
         targetIps={currentProject?.targetIps}
+        batchDomains={currentProject?.domainBatchDomains}
         stats={graphStats}
         isLoading={isReconLoading}
         currentVersionLabel={activeVersion?.label ?? null}

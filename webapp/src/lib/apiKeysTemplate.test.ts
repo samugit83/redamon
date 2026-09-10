@@ -40,7 +40,7 @@ describe('buildTemplate', () => {
     expect(keyFields).toContain('Secret Multiscanner GitHub Token')
     expect(keyFields.join(' ').toLowerCase()).not.toContain('trufflehog')
     // 28 general API keys + 19 Secret Multiscanner per-source credentials.
-    expect(keyFields.length).toBe(47)
+    expect(keyFields.length).toBe(49)
   })
 
   test('generates a template with all tunneling fields', () => {
@@ -57,7 +57,7 @@ describe('buildTemplate', () => {
     expect(tools).toContain('tavily')
     expect(tools).toContain('wpscan')
     expect(tools).toContain('pdcp')
-    expect(tools.length).toBe(20)
+    expect(tools.length).toBe(22)
   })
 
   test('uses current key values when provided', () => {
@@ -988,7 +988,7 @@ describe('buildTemplate — edge cases', () => {
     const t = buildTemplate({ shodanApiKey: 'val', unknownThing: 'ignored' }, {})
     expect(t.keys['Shodan API Key']).toBe('val')
     expect(t.keys).not.toHaveProperty('unknownThing')
-    expect(Object.keys(t.keys).length).toBe(47)
+    expect(Object.keys(t.keys).length).toBe(49)
   })
 
   test('ignores unknown fields in currentTunneling input', () => {
@@ -1001,12 +1001,12 @@ describe('buildTemplate — edge cases', () => {
   test('template rotation tools count matches TOOL_NAME_MAP', () => {
     const t = buildTemplate({}, {})
     const rotationTools = Object.keys(t.rotation).filter(k => !k.startsWith('_'))
-    expect(rotationTools.length).toBe(20)
+    expect(rotationTools.length).toBe(22)
   })
 
   test('template keys count matches UserSettings key fields', () => {
     const t = buildTemplate({}, {})
-    expect(Object.keys(t.keys).length).toBe(47)
+    expect(Object.keys(t.keys).length).toBe(49)
   })
 
   test('template tunneling count matches UserSettings tunnel fields', () => {

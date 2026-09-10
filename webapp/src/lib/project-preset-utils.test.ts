@@ -48,8 +48,9 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     expect(PRESET_EXCLUDED_FIELDS.has('openapiDiscoveryHeaders')).toBe(true)
   })
 
-  test('has exactly 13 excluded fields', () => {
-    expect(PRESET_EXCLUDED_FIELDS.size).toBe(13)
+  test('has exactly 16 excluded fields', () => {
+    expect(PRESET_EXCLUDED_FIELDS.size).toBe(16)
+
   })
 
   test('does NOT exclude recon settings fields', () => {
@@ -462,5 +463,83 @@ describe('preset roundtrip', () => {
     // field, e.g. vhostSniCustomWordlist).
     const excludedPresent = Object.keys(formData).filter(k => PRESET_EXCLUDED_FIELDS.has(k)).length
     expect(Object.keys(settings).length).toBe(Object.keys(formData).length - excludedPresent)
+  })
+})
+
+/**
+ * Domain batch F3: a preset must not carry one project's target scope into
+ * another.
+ *
+ * The regression: PRESET_EXCLUDED_FIELDS listed targetDomain / subdomainList /
+ * ipMode / targetIps but not the domainBatch* fields, so saving a preset from a
+ * Domain-batch project stored that project's hostname list in the preset. On
+ * apply, `Object.assign(next, preset.parameters)` wrote it into the target
+ * project and the restore loop (which only restores excluded fields) left it
+ * there - silently flipping an unrelated project into batch mode pointed at
+ * scope its owner never entered.
+ */
+describe('domain batch scope never travels through a preset', () => {
+  const batchProjectForm = {
+    // Recon config a preset legitimately owns.
+    naabuTopPorts: '1000',
+    nucleiSeverity: ['high'],
+    // Target identity it must never own.
+    targetDomain: 'single.example.com',
+    subdomainList: ['www.'],
+    ipMode: false,
+    targetIps: ['10.0.0.1'],
+    domainBatchMode: true,
+    domainBatchHosts: ['secret-a.client.com', 'secret-b.client.com'],
+    domainBatchGroups: [{ rootDomain: 'client.com', prefixes: ['secret-a.', 'secret-b.'], hosts: [] }],
+  }
+
+  test('saving a preset from a batch project stores no batch fields', () => {
+    const settings = extractPresetSettings(batchProjectForm)
+    expect(settings).not.toHaveProperty('domainBatchMode')
+    expect(settings).not.toHaveProperty('domainBatchHosts')
+    expect(settings).not.toHaveProperty('domainBatchGroups')
+  })
+
+  test('the stored preset contains none of the hostnames', () => {
+    const serialized = JSON.stringify(extractPresetSettings(batchProjectForm))
+    expect(serialized).not.toContain('secret-a.client.com')
+    expect(serialized).not.toContain('secret-b.client.com')
+    expect(serialized).not.toContain('client.com')
+  })
+
+  test('the preset still carries the recon config it is for', () => {
+    const settings = extractPresetSettings(batchProjectForm)
+    expect(settings.naabuTopPorts).toBe('1000')
+    expect(settings.nucleiSeverity).toEqual(['high'])
+  })
+
+  test('every target-identity field is excluded, batch included', () => {
+    for (const field of ['targetDomain', 'subdomainList', 'ipMode', 'targetIps',
+      'domainBatchMode', 'domainBatchHosts', 'domainBatchGroups']) {
+      expect(PRESET_EXCLUDED_FIELDS.has(field)).toBe(true)
+    }
+  })
+
+  test('applying such a preset cannot overwrite the receiving project scope', () => {
+    // Mirrors ProjectForm.applyPreset: preset settings first, then excluded
+    // fields restored from the CURRENT project.
+    const receiving = {
+      targetDomain: 'other.example.com',
+      domainBatchMode: false,
+      domainBatchHosts: [] as string[],
+      naabuTopPorts: '100',
+    }
+    const preset = extractPresetSettings(batchProjectForm)
+    const next: Record<string, unknown> = { ...receiving }
+    Object.assign(next, preset)
+    for (const key of PRESET_EXCLUDED_FIELDS) {
+      if (key in receiving) next[key] = (receiving as Record<string, unknown>)[key]
+    }
+
+    expect(next.domainBatchMode).toBe(false)
+    expect(next.domainBatchHosts).toEqual([])
+    expect(next.targetDomain).toBe('other.example.com')
+    // ...while the preset's actual purpose still applied.
+    expect(next.naabuTopPorts).toBe('1000')
   })
 })

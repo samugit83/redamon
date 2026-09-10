@@ -41,6 +41,8 @@ Security teams auditing email spoofing defenses (SPF, DMARC, DKIM), DNS administ
 3. WHOIS queries retrieve registrar, registrant, and expiry information
 4. Security checks test for missing SPF records (email spoofing risk), missing DMARC policies (no email authentication enforcement), missing DNSSEC (DNS spoofing risk), zone transfer misconfiguration (full zone disclosure), and SMTP open relay (spam/phishing relay)
 5. Shodan reverse DNS and domain DNS enrichment adds passive DNS intelligence and historical records`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: domain_discovery + vuln_scan (SPF/DMARC/DNSSEC/zone-transfer/SMTP
     // security checks all live inside vuln_scan). No port scanning, no web probing.

@@ -6,6 +6,7 @@ import { AgentBehaviourSection } from '@/components/projects/ProjectForm/section
 import { AttackSkillsSection } from '@/components/projects/ProjectForm/sections/AttackSkillsSection'
 import { ToolMatrixSection } from '@/components/projects/ProjectForm/sections/ToolMatrixSection'
 import type { ProjectFormData } from './hooks/useSettingsModal'
+import { useDetectedHostIp } from '@/hooks/useDetectedHostIp'
 import styles from './AIAssistantDrawer.module.css'
 
 interface SettingsModalProps {
@@ -21,6 +22,9 @@ export function SettingsModal({
   projectFormData,
   updateProjectField,
 }: SettingsModalProps) {
+  // Suggested LHOST for the Agent Behaviour form (issue #180). Fetch only while the
+  // agent modal is open; refetches each open so it tracks the last `redamon.sh up`.
+  const detectedHostIp = useDetectedHostIp(settingsModal === 'agent')
   if (!settingsModal) return null
 
   return (
@@ -37,7 +41,7 @@ export function SettingsModal({
         <div className={styles.settingsModalBody}>
           {projectFormData ? (
             settingsModal === 'agent' ? (
-              <AgentBehaviourSection data={projectFormData} updateField={updateProjectField} />
+              <AgentBehaviourSection data={projectFormData} updateField={updateProjectField} detectedHostIp={detectedHostIp} />
             ) : settingsModal === 'toolmatrix' ? (
               <ToolMatrixSection data={projectFormData} updateField={updateProjectField} />
             ) : (

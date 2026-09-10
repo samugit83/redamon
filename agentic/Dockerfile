@@ -146,7 +146,11 @@ RUN if [ "$SKIP_KB" != "true" ]; then \
 # upstream package is `cve_mcp`, exposed as the `cve-mcp` console script
 # (stdio by default) — the preset invokes that binary directly, no cwd needed.
 # Placed after the heavy KB layers so it never busts their (slow) build cache.
-RUN pip install --no-cache-dir "git+https://github.com/mukul975/cve-mcp-server.git@main"
+# The `git config` is not incidental: pip shells out to bookworm's git 2.39 for
+# this VCS install, and GitHub answers its HTTP/2 git-upload-pack POST with 401
+# (surfacing as a credential prompt in a TTY-less build).
+RUN git config --system http.version HTTP/1.1 && \
+    pip install --no-cache-dir "git+https://github.com/mukul975/cve-mcp-server.git@main"
 
 # Trivy vuln scanner + its MCP plugin, baked in so the "Trivy" preset works
 # out of the box (issue #165 audit). Two gotchas handled here: (1) Trivy is

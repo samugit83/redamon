@@ -57,10 +57,10 @@ Parameters / Forms already mapped (filter for XML / SOAP content-types or `.wsdl
 / `.xml` paths); `execute_ffuf` / `execute_katana` against a content-discovery
 wordlist to find unlinked service paths; `execute_httpx` to read each candidate's
 `Content-Type`. If HTTP capture is on, mine already-observed traffic with
-`proxy_search` / `proxy_sitemap` / `proxy_params` for XML requests, then
-replay-and-mutate a REAL captured request with `proxy_to_curl` -> `proxy_replay`
+`redamon.search` / `redamon.sitemap` / `redamon.params` for XML requests, then
+replay-and-mutate a REAL captured request with `redamon.to_curl` -> `redamon.replay`
 (inheriting its exact headers/auth beats hand-rebuilding the request), and pull a
-full captured request/response body with `proxy_get`. For a fast automated first
+full captured request/response body with `redamon.get`. For a fast automated first
 pass, `execute_nuclei` ships XXE detection templates.
 Send a minimal well-formed XML document with `Content-Type: application/xml` to
 each candidate via `execute_curl` (or `execute_code` for byte-exact bodies) and

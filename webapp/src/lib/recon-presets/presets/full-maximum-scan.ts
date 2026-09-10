@@ -51,6 +51,8 @@ Pentesters running a final comprehensive sweep on a target they have full author
 10. Nuclei runs all templates in DAST mode with headless browser and OOB detection
 11. All OSINT providers enrich IPs with threat intelligence
 12. CVE lookup + MITRE enrichment map everything to known vulnerabilities and attack patterns`,
+  targetProfile: 'both',
+  environment: 'either',
   parameters: {
     // All 6 scan modules
     scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan', 'js_recon'],

@@ -40,6 +40,8 @@ Bug bounty hunters triaging a new target. You want to know if there are quick wi
 4. jsluice extracts secrets and URLs from discovered JS files
 5. Nuclei runs critical+high templates in DAST mode against all discovered URLs
 6. Security checks flag missing headers, TLS issues, and exposed services`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: domain discovery + http probe + resource enum (katana only) + vuln scan
     // No port_scan (saves time), no js_recon (too slow)

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 import {
   extractSpfRecord,
   isSpfStrict,
@@ -41,7 +42,8 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(apex:Subdomain {name: d.name})
        OPTIONAL MATCH (apex)-[:HAS_DNS_RECORD]->(dns:DNSRecord)
        OPTIONAL MATCH (d)-[:HAS_VULNERABILITY]->(v:Vulnerability)
-         WHERE v.type IN $dnsTypes OR v.vulnerability_type IN $dnsTypes OR v.name IN $dnsTypes
+         WHERE (v.type IN $dnsTypes OR v.vulnerability_type IN $dnsTypes OR v.name IN $dnsTypes)
+           AND ${notMuted('v')}
        WITH d,
             collect(DISTINCT CASE WHEN dns.type = 'MX'  THEN dns.value END) AS mxVals,
             collect(DISTINCT CASE WHEN dns.type = 'NS'  THEN dns.value END) AS nsVals,

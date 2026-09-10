@@ -37,6 +37,8 @@ Bug bounty hunters and red teamers who want to maximize credential and secret di
 5. jsluice extracts secrets and URLs from discovered JS files
 6. JS Recon runs deep analysis: source maps, key validation, regex patterns, DOM sinks, and more
 7. Nuclei scans with exposure/token/secret/config templates to catch anything else`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Pipeline modules
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan', 'js_recon'],

@@ -57,6 +57,8 @@ Use \`API Security Audit\` if you also need heavy REST endpoint discovery via Ki
 - **Critical/High**: Alias overloading, array-based query batching, directive overloading, circular introspection DoS, sensitive-field exposure
 - **Medium**: GET-method CSRF, POST url-encoded CSRF, GET-based mutations, graphql introspection enabled (in production)
 - **Low/Info**: GraphiQL IDE exposed, field suggestions enabled, trace/debug mode, unhandled-error disclosure`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: 5 phases. port_scan included to discover non-standard API ports
     // (Apollo=4000, graphql-yoga=4000, Hasura=8080, Flask=5000, dev=3000/5013/etc.)

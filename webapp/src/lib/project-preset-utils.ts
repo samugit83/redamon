@@ -8,6 +8,13 @@ export const PRESET_EXCLUDED_FIELDS = new Set([
   'subdomainList',
   'ipMode',
   'targetIps',
+  // Domain batch is target identity too: without these a preset saved from a
+  // batch project carries that project's hostname list, and applying it silently
+  // flips another project into batch mode pointed at scope its owner never
+  // entered there.
+  'domainBatchMode',
+  'domainBatchHosts',
+  'domainBatchGroups',
   // Project identity
   'name',
   'description',

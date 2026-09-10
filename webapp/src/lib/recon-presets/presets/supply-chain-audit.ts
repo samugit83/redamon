@@ -38,6 +38,8 @@ Use \`Full Pipeline - Maximum\` if you want supply-chain findings as one signal 
 - **\`MAL-\` verdict = malicious**: the dependency itself is malware (typically a typosquat). Treat as critical.
 - **CVE / GHSA**: a known-vulnerable version - normal vulnerability triage.
 - A package with **no version** (harvested from a source-map path) is recorded for inventory but cannot be version-matched against an advisory.`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'js_recon'],
 

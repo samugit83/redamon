@@ -24,6 +24,10 @@ A built-in Agent Skill is wired through **9 layers**. Every new skill must touch
 
 Classification key = the snake_case string used EVERYWHERE: `cve_exploit`, `sql_injection`, `xss`, etc. Pick it once in Phase 1 and use that exact literal across all 9 layers.
 
+> **Two more sites that behave like silent layers (add them for first-class parity).** Neither errors if forgotten, but the skill is degraded without them:
+> - **`build_skill_menu()` `order` list** in [classification.py](../../../agentic/prompts/classification.py) — the per-turn "re-evaluate skill EVERY turn" menu that drives mid-run `switch_skill`. It has its OWN ordered list separate from the two in `build_classification_prompt()`; if your id is missing here, the agent sees the class name as switchable but never its section/criteria each turn, so it will not switch to it from live evidence.
+> - **`build_attack_path_behavior()`** in [base.py](../../../agentic/prompts/base.py) — a per-skill behavior blurb (informational vs exploitation). Miss it and the skill falls through to a generic one-line fallback instead of the specific steering every other first-class skill gets.
+
 A handful of files reference skill IDs only in stale doc-comments (e.g. [webapp/src/lib/websocket-types.ts](../../../webapp/src/lib/websocket-types.ts) line ~337's `attack_path_type` comment). These do NOT affect runtime, but updating them along with the new skill prevents future readers from being misled. `grep -rn "cve_exploit" webapp/src/` will surface every remaining reference.
 
 ---

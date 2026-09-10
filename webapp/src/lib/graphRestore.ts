@@ -17,6 +17,7 @@
  * from the payload), so a restore can only ever write into the target project.
  */
 import type { Session } from 'neo4j-driver'
+import { functionalLabel } from '@/lib/scanSnapshot'
 
 export interface RestorableNode {
   labels: string[]
@@ -143,9 +144,15 @@ export async function restoreGraph(
     },
   }))
 
+  // Bucket by the node's FUNCTIONAL label, not labels[0]. A suppressed finding
+  // is dual-labelled (`:Vulnerability:Muted`) and Neo4j does not order labels,
+  // so labels[0] can come back as `Muted`; uniqueKeyMap would then miss and the
+  // node would be recreated through apoc.create.node with NO uniqueness key,
+  // duplicating the finding on the next import. The full node.labels array is
+  // still what gets written, so `:Muted` itself round-trips intact.
   const byLabel = new Map<string, typeof prepared>()
   for (const node of prepared) {
-    const primaryLabel = node.labels[0] || '__no_label__'
+    const primaryLabel = node.labels.length ? functionalLabel(node.labels) : '__no_label__'
     if (!byLabel.has(primaryLabel)) byLabel.set(primaryLabel, [])
     byLabel.get(primaryLabel)!.push(node)
   }

@@ -47,6 +47,8 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
 7. Nuclei runs all templates in DAST mode using crawled URLs with OOB detection
 8. Security checks validate headers, TLS, cookies, and infrastructure exposure
 9. CVE lookup and MITRE enrichment map findings to known vulnerabilities`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: all except port_scan (web-focused) and js_recon handled via tool toggle
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan', 'js_recon'],
@@ -303,6 +305,11 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
     securityCheckMaxWorkers: 10,
 
     // --- DISABLE all OSINT ---
+    // --- Origin-IP Discovery: unmask the real origin behind the CDN/WAF ---
+    originDiscoveryEnabled: true,
+    originDiscoveryKeyless: true,
+    originDiscoveryScanners: true,
+    originDiscoveryPassiveDns: true,
     osintEnrichmentEnabled: false,
     shodanEnabled: false,
     urlscanEnabled: false,

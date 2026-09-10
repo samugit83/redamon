@@ -329,6 +329,22 @@ export const EXPLOITATION_GROUPS: SESubGroup[] = [
     ],
   },
   {
+    id: 'crypto_attack',
+    title: 'Cryptographic Attacks',
+    items: [
+      {
+        suggestions: [
+          { label: 'Inventory and fingerprint crypto tokens', prompt: 'Enumerate every attacker-controllable value the server decrypts or verifies (session/auth/remember cookies, hidden fields, token/sig/state params, Authorization headers). With execute_code, url-decode then base64/hex-decode each, record the raw byte length, and check whether it changes per issue. Fingerprint the construction: length a multiple of 8/16 (block cipher / CBC with prepended IV), repeating 16-byte blocks (ECB), three dot-separated parts (JWT), a fixed-length trailer (keyed MAC/HMAC), or an n/e/c triple (RSA).' },
+          { label: 'Detect and run a CBC padding oracle', prompt: 'Resend the ciphertext token with single bytes flipped (last byte of the last block, and IV bytes) and classify responses into buckets: padding/format error vs content/authz rejected vs accepted, comparing status, body, length and timing. If the padding-error bucket is distinguishable, script a CBC padding-oracle attack in execute_code (requests loop, no padbuster available) to DECRYPT the token block-by-block, then run it in reverse to FORGE a ciphertext that decrypts to a value that passes the check.' },
+          { label: 'CBC bit-flip / ECB cut-and-paste (no key)', prompt: 'If the token is unauthenticated CBC, use bit-flipping: to change plaintext byte j of block i, XOR byte j of the preceding ciphertext block (or the IV for block 0) by known_pt ^ desired_pt, targeting a block whose corruption the app ignores. If it is ECB, probe by encrypting a long run of one character to find repeated blocks, then cut-and-paste equal-size blocks (or do byte-at-a-time recovery of an appended secret). Script the byte math with execute_code + pwntools.' },
+          { label: 'Attack a JWT (alg:none / confusion / weak secret)', prompt: 'Decode the JWT header and payload. Try alg:none with the signature stripped; if HS*, crack the secret offline with hashcat -m 16500 or jwt_tool -C -d wordlist and re-sign forged claims; if RS256, fetch the public key (/.well-known/jwks.json or a cert endpoint) and forge an HS256 token signed with the public-key bytes as the HMAC secret (algorithm confusion). Also test kid path/injection, jwk, and jku header injection with jwt_tool.' },
+          { label: 'Hash length extension on H(secret||message)', prompt: 'If a signature is MAC = H(secret || message) with a Merkle-Damgard hash (MD5/SHA1/SHA256) rather than HMAC (recognise by digest length), forge a valid MAC for message||padding||appended-data without the secret: brute-force the secret length and script the Merkle-Damgard state-restore in execute_code (hashpump is not installed; pip install hashpumpy if the sandbox has network). The classic sink is a signed URL/query string like ?...&mac=.' },
+          { label: 'Keystream reuse, RSA, and predictable tokens', prompt: 'For stream/CTR/GCM ciphertexts, test nonce/keystream reuse: XOR two ciphertexts from the same key+nonce to cancel the keystream (two-time pad) and crib-drag or recover the keystream from a known plaintext. For RSA n/e/c, try small-e cube root, gcd of two moduli (shared prime), Fermat (close primes), and Wiener (small d) with Crypto.Util.number, querying factordb.com via requests. For generated tokens (session ids, reset tokens, OTPs), collect several samples and test LCG/Mersenne-Twister/time-seed predictability before assuming strong crypto. Always rule out classical ciphers and layered base64/hex/XOR encodings first.' },
+        ],
+      },
+    ],
+  },
+  {
     id: 'manual_exploit',
     title: 'Manual Exploitation',
     items: [

@@ -18,9 +18,9 @@ Reference for finding and exploiting JavaScript prototype pollution in browser a
 | Node.js gadget testing locally | `execute_code` (language: bash) -> `node -e '...'` | Try a gadget chain on a downloaded library copy. |
 | Decode bundled libraries | `kali_shell` | `grep -hE 'lodash|jquery|merge|extend|deepmerge'` over JS bundle. |
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled, the server-side pollute-then-observe loop maps onto two calls: proxy_replay POSTs the pollution body (`{"__proto__":{"polluted":"yes"}}`) to a captured JSON endpoint, then proxy_get or proxy_grep on a later, unrelated JSON response confirms the property leaked onto every object globally; proxy_diff can compare a pre-pollution and post-pollution response of the same route. Where the proxy stops: bundle/library fingerprinting, client-side gadget XSS (needs execute_playwright), and Node RCE gadget chains stay non-proxy, and proxy_fuzz does not fit here since it iterates a single query param, not a nested JSON body.
+When HTTP Traffic Capture is enabled, the server-side pollute-then-observe loop maps onto two calls: redamon.replay POSTs the pollution body (`{"__proto__":{"polluted":"yes"}}`) to a captured JSON endpoint, then redamon.get or redamon.grep on a later, unrelated JSON response confirms the property leaked onto every object globally; redamon.diff can compare a pre-pollution and post-pollution response of the same route. For a **client-side** gadget (pollution via URL/hash that a browser gadget turns into XSS), stay inside proxy_brain with redamon.browser: `b = redamon.browser(txn_id); b.goto("/app?__proto__[onerror]=alert(1)&x=<img src=x>"); b.alerts()` — a fired dialog confirms the gadget executed, host-pinned and re-captured (read `redamon.manual("browser")`). Where the proxy stops: bundle/library fingerprinting and Node RCE gadget chains stay non-proxy, and redamon.fuzz does not fit here since it iterates a single query param, not a nested JSON body.
 
 ## Anatomy
 

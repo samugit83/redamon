@@ -37,6 +37,14 @@ def test_full_pipeline_has_three_openapi_entrypoints_and_persists(tmp_path, monk
     assert 'fixture-private-error' not in str(failed)
 
 
+    batch_settings = {'OPENAPI_ENABLED': True, 'DOMAIN_BATCH_MODE': True,
+                      'TARGET_DOMAIN': '', 'SUBDOMAIN_LIST': [],
+                      'DOMAIN_BATCH_GROUPS': [{'rootDomain': 'example.com', 'prefixes': ['api.']}]}
+    namespace['_maybe_run_openapi']({'domain': 'example.com'}, batch_settings, tmp_path / 'batch.json')
+    assert runner.call_args.args[1]['TARGET_DOMAIN'] == 'example.com'
+    assert runner.call_args.args[1]['SUBDOMAIN_LIST'] == ['api.']
+    assert batch_settings['TARGET_DOMAIN'] == ''
+
 def test_partial_dispatch_calls_shared_runner():
     path = Path(__file__).parents[1] / 'partial_recon.py'
     assert 'run_openapi_partial(config)' in path.read_text()
@@ -76,3 +84,12 @@ def test_partial_uses_stored_scope_and_shared_graph_writer(monkeypatch):
     assert config['OPENAPI_SOURCES'] == settings['OPENAPI_SOURCES']
     assert 'OPENAPI_ENABLED' not in settings
     client.update_graph_from_openapi.assert_called_once_with(data, 'fixture-user', 'fixture-project')
+
+    captured.clear()
+    settings.update({'TARGET_DOMAIN': '', 'DOMAIN_BATCH_MODE': True, 'DOMAIN_BATCH_GROUPS': [
+        {'rootDomain': 'example.com', 'prefixes': ['api.']},
+        {'rootDomain': 'example.net', 'prefixes': ['.']},
+    ]})
+    run_openapi_partial({'include_graph_targets': False})
+    assert [(config['TARGET_DOMAIN'], config['SUBDOMAIN_LIST']) for _, config in captured] == [
+        ('example.com', ['api.']), ('example.net', ['.'])]

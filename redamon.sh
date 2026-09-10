@@ -35,13 +35,26 @@ DEV_COMPOSE="-f docker-compose.yml -f docker-compose.dev.yml"
 DISK_FULL_BUILD_GB=40
 DISK_PARTIAL_BUILD_GB=15
 
-# Tracked files that RedAmon REWRITES at runtime. A modified copy makes
+# Tracked paths that RedAmon REWRITES at runtime. A modified copy makes
 # `git pull --ff-only` refuse to fast-forward, which stranded users on an old
 # version behind a confusing "you may have local changes" error. They are
 # machine-local bookkeeping (never user edits), so `update` restores them before
-# pulling. Kept as a list because the same trap applies to any future marker
-# file that ships in git and is written by a container at runtime.
-RUNTIME_TRACKED_PATHS="recon/main_recon_modules/data/mitre_db/.last_update"
+# pulling, and a commit that touches ONLY these is safe to discard when the
+# branch has diverged (see _diverged_by_runtime_scribbles_only).
+#
+# recon/ is bind mounted rw into the spawned recon container, and two of its
+# TRACKED data directories are re-downloaded there on a cache miss:
+#   * mitre_db          - add_mitre.py, CVE/CAPEC/CWE, 15 files, 24h TTL
+#   * wappalyzer_cache  - http_probe.py, technologies.json, 24h TTL
+# Both drift whenever their upstream publishes. Directories are listed rather
+# than files so a new sibling is covered automatically; entries may be either
+# form, both are valid git pathspecs.
+RUNTIME_TRACKED_PATHS="recon/main_recon_modules/data/mitre_db recon/main_recon_modules/data/wappalyzer_cache"
+
+# Set by _update_pull ONLY when it self-heals a diverged checkout: the commit the
+# checkout was really on before the discarded local commits. cmd_update must diff
+# its changed-file -> service map from this, not from the commit it threw away.
+UPDATE_BASE_HEAD=""
 
 # Orchestrator-spawned containers that docker compose does NOT manage (they are
 # created at runtime via the Docker API, so `compose down` leaves them behind and
@@ -896,6 +909,51 @@ export_cpu_caps() {
     _export_cpu_cap DOCKER_BROKER_CPUS 2
 }
 
+# The Docker host's LAN IP, exported so the agent can SUGGEST it as the reverse-
+# shell LHOST (issue #180). The tools run inside kali-sandbox on a private 172.x
+# bridge that a real target cannot reach; the reachable address is the host's own
+# LAN IP, and port 4444 is forwarded host->container. A container cannot discover
+# this itself, so it is detected here on the host and passed in via env.
+#
+# IPv4 only: the webapp validates agentLhost against an IPv4 regex, so a v6/zoned
+# value would produce a suggestion the form then refuses to save. Best-effort:
+# on any failure it stays empty and the agent falls back to asking the operator.
+detect_host_lan_ip() {
+    local ip=""
+    # `ip route get` reveals the src address of the default route -- the interface
+    # that reaches off-box. `-4` forces IPv4. On a VPN/multi-homed host this may be
+    # the wrong NIC; the operator overrides with a HOST_LAN_IP pin (see export).
+    if command -v ip >/dev/null 2>&1; then
+        ip="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}' | head -n1)"
+    fi
+    # Fallback: first IPv4 that `hostname -I` lists (skips v6 tokens).
+    if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
+        ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
+    fi
+    # Reject anything that is not a bare IPv4 dotted quad.
+    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || ip=""
+    printf '%s' "$ip"
+}
+
+# Export HOST_LAN_IP for the agent container. Mirrors _export_cpu_cap's pin
+# precedence (shell env, then .env) with ONE deviation: a .env pin must carry a
+# NON-EMPTY value. `.env.example` ships a bare `HOST_LAN_IP=` placeholder, and a
+# plain `grep var=` (as _export_cpu_cap uses) would read that empty line as a pin
+# and suppress detection for anyone who seeds .env from the example. Never
+# persisted into the managed .env block: a saved IP becomes a stale pin the moment
+# the operator switches networks, so it is recomputed every run.
+export_host_lan_ip() {
+    [[ -n "${HOST_LAN_IP:-}" ]] && return 0        # shell/env override wins
+    [[ -r "$SCRIPT_DIR/.env" ]] && grep -qE "^[[:space:]]*HOST_LAN_IP=[^[:space:]]" "$SCRIPT_DIR/.env" && return 0
+    local detected
+    detected="$(detect_host_lan_ip)"
+    if [[ -z "$detected" ]]; then
+        warn "could not detect the host LAN IP -- the agent will ask for LHOST instead of suggesting it (set HOST_LAN_IP=<ip> to override)"
+        return 0
+    fi
+    export HOST_LAN_IP="$detected"
+}
+
 # Every var the allocator owns. Used by the migration and the managed block.
 _mem_managed_vars() {
     local spec name
@@ -1015,6 +1073,7 @@ export_resource_caps() {
     # CPU caps first: unlike the memory caps they do not depend on RAM
     # detection, so they must be applied before the undetectable-RAM bail-out.
     export_cpu_caps
+    export_host_lan_ip
     _mem_migrate_legacy_pins
     allocate_memory || true
     persist_memory_env
@@ -1479,13 +1538,259 @@ export_version() {
 # untracked release by release), so this is also the migration path for users
 # on an older version where they still are.
 _restore_runtime_tracked_files() {
-    local p
+    local p unrestorable=()
     for p in $RUNTIME_TRACKED_PATHS; do
         git -C "$SCRIPT_DIR" ls-files --error-unmatch -- "$p" &>/dev/null || continue
         git -C "$SCRIPT_DIR" diff --quiet -- "$p" 2>/dev/null && continue
         info "Restoring runtime-written file so the update can pull: $p"
-        git -C "$SCRIPT_DIR" checkout -- "$p" 2>/dev/null || true
+        git -C "$SCRIPT_DIR" checkout -- "$p" 2>/dev/null && continue
+        unrestorable+=("$p")
     done
+    [[ ${#unrestorable[@]} -eq 0 ]] && return 0
+
+    # Swallowing this (the old `|| true`) sent the user straight back to the pull
+    # error with nothing they could act on: a scan container creates these paths
+    # as root inside a user-owned checkout, so neither git nor the user can
+    # replace the file, and `git checkout --` fails silently.
+    error "Could not restore runtime-written path(s) - not writable by $(id -un):"
+    printf '    %s\n' "${unrestorable[@]}"
+    echo ""
+    echo "  A scan container created them as root inside your checkout. git cannot"
+    echo "  replace them either, so the pull would fail next. Fix:"
+    echo "    sudo chown -R \"\$(id -un):\$(id -gn)\" \"$SCRIPT_DIR\""
+    exit 1
+}
+
+# Tracked files under RUNTIME_TRACKED_PATHS that this user cannot write. They are
+# clean today only because the container happened to rewrite identical bytes; the
+# first release that changes one makes `git pull` fail with "unable to unlink".
+# Warn rather than abort - nothing is broken yet, and an update that would
+# otherwise succeed must not be blocked by a latent problem.
+_warn_root_owned_runtime_files() {
+    local p f offenders=()
+    for p in $RUNTIME_TRACKED_PATHS; do
+        while IFS= read -r f; do
+            [[ -n "$f" && -e "$SCRIPT_DIR/$f" && ! -w "$SCRIPT_DIR/$f" ]] && offenders+=("$f")
+        done < <(git -C "$SCRIPT_DIR" ls-files -- "$p" 2>/dev/null)
+    done
+    [[ ${#offenders[@]} -eq 0 ]] && return 0
+    warn "Runtime data file(s) in this checkout are owned by root, not $(id -un):"
+    printf '    %s\n' "${offenders[@]}"
+    warn "  A future release that changes one of them will fail to pull. Fix now with:"
+    warn "    sudo chown -R \"\$(id -un):\$(id -gn)\" \"$SCRIPT_DIR\""
+}
+
+# The ref `update` pulls from: the branch's own upstream when it has one, else
+# origin/master (what a plain `git clone` of RedAmon leaves you on). Empty output
+# + rc 1 when neither exists, which is a legitimate state for an archive install.
+_upstream_ref() {
+    local u
+    u="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || u=""
+    if [[ -n "$u" ]]; then echo "$u"; return 0; fi
+    if git -C "$SCRIPT_DIR" rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+        echo "origin/master"; return 0
+    fi
+    return 1
+}
+
+# Tracked files modified in the working tree (never untracked ones - a user's
+# stray notes.txt must not read as "you have edits blocking the update").
+_dirty_tracked_files() {
+    git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no 2>/dev/null
+}
+
+# True when this checkout has commits the upstream does not, which is the ONE
+# state `pull --ff-only` can never recover from on its own.
+_has_local_only_commits() {
+    local upstream="$1" n
+    n="$(git -C "$SCRIPT_DIR" rev-list --count "$upstream..HEAD" 2>/dev/null)" || return 1
+    [[ "${n:-0}" -gt 0 ]]
+}
+
+# Does one repo-relative path belong to a RUNTIME_TRACKED_PATH? This single
+# decision is what ultimately authorises `reset --hard`, so it lives on its own
+# and is asserted directly - a test that reimplements it proves nothing.
+#
+# The traversal rejection is unreachable through `git diff` output (git refuses
+# "." and ".." as tree entries) and is kept anyway: a destructive gate must not
+# depend on an invariant enforced somewhere else.
+_is_runtime_tracked_path() {
+    local f="$1" p
+    case "/$f/" in */../*|*/./*) return 1 ;; esac
+    for p in $RUNTIME_TRACKED_PATHS; do
+        [[ "$f" == "$p" || "$f" == "$p"/* ]] && return 0
+    done
+    return 1
+}
+
+# True when every file those local-only commits touch is a RUNTIME_TRACKED_PATH.
+#
+# Such commits are RedAmon's own runtime scribbles, committed because a previous
+# release's error message literally told users to `git commit -am 'local changes'`
+# (issue #185) - advice that converted a self-healing dirty tree into a permanent
+# fast-forward dead end. Discarding them loses nothing the next scan will not
+# rewrite. Anything else is a real edit and is NEVER reset automatically.
+_diverged_by_runtime_scribbles_only() {
+    local upstream="$1" files f
+    files="$(git -C "$SCRIPT_DIR" diff --name-only "${upstream}...HEAD" 2>/dev/null)" || return 1
+    [[ -n "$files" ]] || return 1
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        _is_runtime_tracked_path "$f" || return 1
+    done <<< "$files"
+    return 0
+}
+
+# Refuse to run a half-privileged update. `sudo ./redamon.sh install` (or the
+# `sudo git commit` the old error message provoked) leaves root-owned files in a
+# user-owned checkout; the next non-root run then fails PIECEMEAL - git cannot
+# rewrite .git/index, _gpu_export_env cannot write .torch-variant - and the user
+# is left on a partially applied update with three unrelated-looking errors.
+_assert_checkout_writable() {
+    local unwritable=() p
+    for p in "$SCRIPT_DIR" "$SCRIPT_DIR/.git" "$SCRIPT_DIR/.git/index" "$TORCH_VARIANT_MARKER"; do
+        [[ -e "$p" ]] || continue
+        [[ -w "$p" ]] || unwritable+=("$p")
+    done
+    [[ ${#unwritable[@]} -eq 0 ]] && return 0
+    error "This checkout has files the current user ($(id -un)) cannot write:"
+    printf '    %s\n' "${unwritable[@]}"
+    echo ""
+    echo "  They were almost certainly created by an earlier 'sudo ./redamon.sh ...'"
+    echo "  or 'sudo git ...'. RedAmon does not need root for its own files. Fix:"
+    echo "    sudo chown -R \"\$(id -un):\$(id -gn)\" \"$SCRIPT_DIR\""
+    echo "  then re-run WITHOUT sudo:  ./redamon.sh update"
+    exit 1
+}
+
+# Say so when `git status` itself failed. This matters twice over: it is why the
+# auto-heal refused, AND it means any `reset --hard` we suggest could destroy
+# uncommitted work sitting in a tree neither we nor the user can currently see.
+_warn_unreadable_tree() {
+    [[ "$1" == true ]] && return 0
+    echo ""
+    echo "  NOTE: 'git status' failed here, so your working tree could not be read."
+    echo "  A stale .git/index.lock from an interrupted git command is the usual cause;"
+    echo "  remove it only if no other git process is running. Until status works,"
+    echo "  do NOT run 'reset --hard' - it would discard uncommitted work you cannot see."
+    return 0
+}
+
+# Bring the checkout onto the newest upstream commit, or explain precisely why it
+# cannot be done - the two are not the same failure and the old handler conflated
+# them. `pull --ff-only` refuses for three unrelated reasons and every one of them
+# was reported as "the working tree has local changes", including the diverged
+# case where `git status` is provably empty and that sentence is simply false.
+#
+# Returns 0 with the checkout fast-forwarded. Exits 1 when only the user can
+# resolve it (never returns in that case).
+_update_pull() {
+    local out upstream dirty
+
+    if out="$(git -C "$SCRIPT_DIR" pull --ff-only 2>&1)"; then return 0; fi
+    if out="$(git -C "$SCRIPT_DIR" pull --ff-only origin master 2>&1)"; then return 0; fi
+
+    # Both attempts also FETCHED, so the remote-tracking ref is current here even
+    # though the merge was refused - the state checks below see the real gap.
+    if ! upstream="$(_upstream_ref)"; then
+        error "Could not pull updates: this checkout has no upstream to pull from."
+        echo ""
+        echo "  git said:"
+        printf '%s\n' "$out" | sed 's/^/    /'
+        echo ""
+        echo "  A RedAmon installed by downloading a zip has no git remote. Re-install"
+        echo "  from a clone instead:  git clone https://github.com/samugit83/redamon.git"
+        exit 1
+    fi
+
+    # A bare `dirty="$(_dirty_tracked_files)"` aborts this whole function under
+    # redamon.sh's own `set -euo pipefail` the moment git status fails - exit 128,
+    # no output at all, update dead before it says anything. And git status really
+    # does fail while refs still resolve: a corrupt index, or another git process
+    # holding .git/index.lock while status refreshes it. Capture the status
+    # separately, because "cannot tell" is NOT "clean" and must never authorise
+    # the destructive reset below.
+    local dirty_known=true
+    if ! dirty="$(_dirty_tracked_files)"; then
+        dirty=""
+        dirty_known=false
+    fi
+
+    if _has_local_only_commits "$upstream"; then
+        # Self-heal the case a previous release actively caused: commits that
+        # contain nothing but runtime-written files.
+        if [[ -n "${REDAMON_NO_AUTO_RESET:-}" ]] && _diverged_by_runtime_scribbles_only "$upstream"; then
+            warn "Diverged by runtime files only, but REDAMON_NO_AUTO_RESET is set."
+            warn "  Not touching your history. Recover by hand when you are ready:"
+            warn "    git -C \"$SCRIPT_DIR\" reset --hard $upstream"
+            exit 1
+        fi
+        if [[ "$dirty_known" == true && -z "$dirty" ]] && _diverged_by_runtime_scribbles_only "$upstream"; then
+            # cmd_update maps changed files -> services by diffing old_head..HEAD.
+            # old_head is about to become unreachable AND it contains the scribble,
+            # so that diff would list the reverted runtime paths, rebuild images the
+            # release never touched, and arm the 40 GB disk gate. Hand back the real
+            # pre-divergence base instead.
+            UPDATE_BASE_HEAD="$(git -C "$SCRIPT_DIR" merge-base HEAD "$upstream" 2>/dev/null || true)"
+            warn "This checkout has local commit(s) containing ONLY files RedAmon writes"
+            warn "  at runtime (the MITRE database refreshed by scans). An older version's"
+            warn "  error message told you to commit those; that is what blocked the update."
+            info "Discarding them and resetting to $upstream (no user edits are affected)."
+            if ! git -C "$SCRIPT_DIR" reset --hard "$upstream" >/dev/null 2>&1; then
+                error "Could not reset to $upstream. Run it yourself:"
+                echo "    git -C \"$SCRIPT_DIR\" reset --hard $upstream"
+                exit 1
+            fi
+            success "Recovered: the checkout is back on $upstream."
+            return 0
+        fi
+
+        error "Could not pull updates: this checkout has commits that $upstream does not."
+        echo ""
+        echo "  Local-only commits:"
+        git -C "$SCRIPT_DIR" log --oneline "$upstream..HEAD" 2>/dev/null | head -20 \
+            | while IFS= read -r line; do echo "    $line"; done
+        echo ""
+        echo "  A fast-forward can never resolve this. Choose one:"
+        echo ""
+        echo "  If those commits are NOT yours (RedAmon runtime files you were once"
+        echo "  told to commit), discard them:"
+        echo "    git -C \"$SCRIPT_DIR\" reset --hard $upstream   # destructive"
+        echo ""
+        echo "  If they ARE your work, keep it on a branch, then update:"
+        echo "    git -C \"$SCRIPT_DIR\" branch my-changes"
+        echo "    git -C \"$SCRIPT_DIR\" reset --hard $upstream"
+        echo "    ./redamon.sh update"
+        _warn_unreadable_tree "$dirty_known"
+        exit 1
+    fi
+
+    if [[ "$dirty_known" == true && -n "$dirty" ]]; then
+        error "Could not pull updates: the working tree has local changes."
+        echo ""
+        echo "  Modified files:"
+        printf '%s\n' "$dirty" | head -20 | while IFS= read -r line; do echo "    $line"; done
+        echo ""
+        echo "  If those are NOT your edits, discard them and re-run:"
+        echo "    git -C \"$SCRIPT_DIR\" checkout -- <file>     # one file"
+        echo "    git -C \"$SCRIPT_DIR\" checkout -- .          # all of them (destructive)"
+        echo ""
+        echo "  If they ARE your edits, set them aside first:"
+        echo "    git -C \"$SCRIPT_DIR\" stash && ./redamon.sh update && git -C \"$SCRIPT_DIR\" stash pop"
+        echo ""
+        echo "  Do NOT 'git commit' them: that diverges your copy from the project and"
+        echo "  no future update can fast-forward past it."
+        exit 1
+    fi
+
+    # Clean tree, no local commits, still refused: network, auth or a detached
+    # HEAD. Nothing to guess at - show what git actually said.
+    error "Could not pull updates."
+    _warn_unreadable_tree "$dirty_known"
+    echo ""
+    echo "  git said:"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    exit 1
 }
 
 # Repair data-volume ownership for the non-root webapp (uid 1001 nextjs).
@@ -1541,7 +1846,7 @@ ensure_sca_intel() {
     # on failure, and a bare `|| warn` cannot catch an exit - it would abort the
     # whole install/update. A missing catalog must degrade to "did not run",
     # never stop the stack coming up.
-    ( cmd_sca_intel_sync ) || warn "Incident catalog sync incomplete; supply-chain findings will carry no incident context until './redamon.sh sca-intel-sync' succeeds"
+    ( cmd_sca_intel_sync ) || warn "Incident catalog sync incomplete; supply-chain findings will carry no incident context until './redamon.sh sca-intel-sync' succeeds. This is not a problem: RedAmon runs normally with the sync off, you just won't see incident context on supply-chain findings."
 }
 
 ensure_osv_db() {
@@ -2369,8 +2674,9 @@ _gpu_export_env() {
     # cosmetic: a GPU build whose marker never landed would start with no device
     # grant and silently run its CUDA image on the CPU. Say so loudly.
     if ! printf '%s' "$variant" > "$TORCH_VARIANT_MARKER" 2>/dev/null; then
-        warn "Could not write $TORCH_VARIANT_MARKER (read-only checkout?)."
+        warn "Could not write $TORCH_VARIANT_MARKER (root-owned or read-only checkout?)."
         warn "  Built variant '$variant' will not be remembered; GPU device access may not be applied."
+        warn "  If an earlier run used sudo:  sudo chown -R \"\$(id -un):\$(id -gn)\" \"$SCRIPT_DIR\""
     fi
 }
 
@@ -2672,6 +2978,10 @@ cmd_install() {
 
     print_banner
     check_prerequisites
+    # A fresh install cannot pull, so this cannot block anything here - but a
+    # `sudo ./redamon.sh install` is exactly what creates the root-owned files
+    # that break the NEXT update. Say so at the point the mistake is made.
+    _warn_root_owned_runtime_files
 
     # Gate BEFORE any Docker work. `install` used to build 16 images (30-60 min)
     # and only then discover the host was too small, because the RAM gate lived
@@ -2865,6 +3175,11 @@ cmd_update() {
         touch "$GPU_DISABLED_FLAG_FILE"; rm -f "$GPU_ENABLED_FLAG_FILE"
     fi
 
+    # Before anything writes: a mixed root/user checkout fails halfway through
+    # otherwise, and the resulting errors point nowhere near the real cause.
+    _assert_checkout_writable
+    _warn_root_owned_runtime_files
+
     _migrate_reorg_layout
     _migrate_legacy_kbase_flag
     _kb_export_env
@@ -2895,27 +3210,16 @@ cmd_update() {
         # common reason this pull fails, and they are not the user's changes.
         _restore_runtime_tracked_files
 
-        # Pull latest (try upstream tracking branch first, then origin/master)
-        if ! git -C "$SCRIPT_DIR" pull --ff-only 2>/dev/null; then
-            if ! git -C "$SCRIPT_DIR" pull --ff-only origin master 2>/dev/null; then
-                error "Could not pull updates: the working tree has local changes."
-                local dirty
-                dirty="$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no 2>/dev/null | head -20)"
-                if [[ -n "$dirty" ]]; then
-                    echo ""
-                    echo "  Modified files:"
-                    printf '%s\n' "$dirty" | while IFS= read -r line; do echo "    $line"; done
-                fi
-                echo ""
-                echo "  If those are NOT your edits, discard them and re-run:"
-                echo "    git -C \"$SCRIPT_DIR\" checkout -- <file>     # one file"
-                echo "    git -C \"$SCRIPT_DIR\" reset --hard @{u}      # all of them (destructive)"
-                echo ""
-                echo "  If they ARE your edits, keep them first:"
-                echo "    git stash && ./redamon.sh update && git stash pop"
-                echo "    git commit -am 'local changes' && ./redamon.sh update"
-                exit 1
-            fi
+        # Pull latest (upstream tracking branch, then origin/master), diagnosing
+        # and self-healing the failure modes users actually hit.
+        _update_pull
+
+        # A heal moved HEAD by reset, not by fast-forward. Diff from the real
+        # pre-divergence base so the rebuild map, the up-to-date check and the
+        # REDAMON_UPDATE_FROM handed to the re-exec all see only what the RELEASE
+        # changed.
+        if [[ -n "$UPDATE_BASE_HEAD" ]]; then
+            old_head="$UPDATE_BASE_HEAD"
         fi
 
         new_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
@@ -3868,6 +4172,44 @@ _status_expected_mb() {
     done
 }
 
+# Report any CORE service that is not running. A container that exited or is
+# restart-looping still resolves to nothing in Docker's embedded DNS, so the
+# webapp's calls to it fail with ENOTFOUND and the operator sees an error next
+# to whatever form they were filling in (issue #184). Naming the dead service
+# here is the difference between a 30-second fix and a bug report.
+_status_core_service_report() {
+    local svc state down=() have_any=0
+    for svc in $CORE_SERVICES; do
+        # `ps -a --format` prints one line per container; empty means the
+        # service has no container at all (never created, or removed).
+        state="$(docker compose ps -a --format '{{.State}}' "$svc" 2>/dev/null | head -1)"
+        [[ -n "$state" ]] && have_any=1
+        [[ "$state" == "running" ]] && continue
+        down+=("${svc}: ${state:-not created}")
+    done
+
+    # No container for ANY core service: this is a clone that was never
+    # installed, not an outage. Calling it one would hand a new user the wrong
+    # command - `up` cannot start images that were never built.
+    if (( have_any == 0 )); then
+        echo ""
+        echo -e "  ${YELLOW}No RedAmon services are installed yet.${NC} Run: ./redamon.sh install"
+        return 0
+    fi
+
+    if (( ${#down[@]} > 0 )); then
+        echo ""
+        echo -e "  ${RED}Core services NOT running:${NC}"
+        for svc in "${down[@]}"; do
+            echo -e "    ${RED}x${NC} ${svc}"
+        done
+        echo -e "  ${YELLOW}The webapp reaches these by container name, so while one is down the UI"
+        echo -e "  fails with 'ENOTFOUND <name>'. Inspect with:${NC}"
+        echo "    docker compose logs --tail=100 <service>"
+        echo -e "  ${YELLOW}then bring it back with:${NC} ./redamon.sh up"
+    fi
+}
+
 cmd_status() {
     _migrate_reorg_layout
     _migrate_legacy_kbase_flag
@@ -3923,11 +4265,16 @@ cmd_status() {
 
     # Container list — filter to redamon containers only. Keeps the header
     # row and any container whose name starts with "redamon-".
-    docker compose ps | grep -E '^(NAME|redamon-)' || {
-        # grep returns non-zero if no lines match (no containers running).
+    # `-a`, not a bare `ps`: without it an EXITED core service is simply absent
+    # from the table, so a crashed agent looked like a clean stack while the UI
+    # failed with "getaddrinfo ENOTFOUND agent" (issue #184).
+    docker compose ps -a | grep -E '^(NAME|redamon-)' || {
+        # grep returns non-zero if no lines match (no containers at all).
         # Fall back to plain ps so the user still sees the "no services" message.
-        docker compose ps
+        docker compose ps -a
     }
+
+    _status_core_service_report
 
     _status_memory_report
 

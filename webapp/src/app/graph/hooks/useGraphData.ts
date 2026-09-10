@@ -65,8 +65,12 @@ async function fetchVersionGraphData(projectId: string, versionId: string): Prom
 /**
  * @param versionId when set (and not the current version), the graph is read from
  * that version's stored snapshot instead of the live graph.
+ * @param enabled when false the graph is never fetched - not on mount, not on an
+ * SSE-driven refetch, not via refetchFresh. This is what the "Render off" switch
+ * buys: on a huge project the /api/graph read is the expensive part, so it has
+ * to be suppressed at the source rather than merely left undrawn.
  */
-export function useGraphData(projectId: string | null, versionId?: string | null) {
+export function useGraphData(projectId: string | null, versionId?: string | null, enabled = true) {
   const queryClient = useQueryClient()
   const isPastVersion = !!versionId
 
@@ -77,7 +81,7 @@ export function useGraphData(projectId: string | null, versionId?: string | null
     queryFn: () => isPastVersion
       ? fetchVersionGraphData(projectId!, versionId!)
       : fetchGraphData(projectId!),
-    enabled: !!projectId,
+    enabled: !!projectId && enabled,
     refetchInterval: false,
     // A past version is immutable - never re-fetch it.
     staleTime: isPastVersion ? Infinity : 30000,
@@ -89,10 +93,19 @@ export function useGraphData(projectId: string | null, versionId?: string | null
   // update react-query cache directly. Used after pipeline completion.
   // A past version has nothing to refresh.
   const refetchFresh = useCallback(async () => {
-    if (!projectId || isPastVersion) return
+    if (!projectId || isPastVersion || !enabled) return
     const data = await fetchGraphData(projectId, true)
     queryClient.setQueryData(['graph', projectId], data)
-  }, [projectId, isPastVersion, queryClient])
+  }, [projectId, isPastVersion, enabled, queryClient])
 
-  return { ...query, refetchFresh }
+  // react-query still honours an explicit refetch() on a disabled query, so the
+  // event-driven refresh path (recon SSE, agent tool completion) needs the same
+  // guard as the initial fetch. Callers only fire and forget, so a no-op is enough.
+  const { refetch: queryRefetch } = query
+  const refetch = useCallback(async () => {
+    if (!enabled) return
+    await queryRefetch()
+  }, [enabled, queryRefetch])
+
+  return { ...query, refetch, refetchFresh }
 }

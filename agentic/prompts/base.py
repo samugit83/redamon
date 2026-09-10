@@ -530,6 +530,20 @@ def build_attack_path_behavior(attack_path_type):
             "exfiltration, and prefer in-band/error-based since OOB sends data off-target. Discover the "
             "endpoint, schema, and objective file from the live target; then action='complete' after proof."
         )
+    elif attack_path_type == "crypto_attack":
+        return (
+            "In informational phase: inventory every attacker-controllable value the server decrypts "
+            "or verifies (cookies, tokens, signatures, MACs, ciphertext params) with query_graph / "
+            "redamon.search, decode each, and fingerprint the construction (block size, ECB block "
+            "repeats, JWT alg, a MAC/hash trailer, an RSA n/e/c triple, or a predictable token), "
+            "then act.\n"
+            "In exploitation: follow the crypto workflow. Probe the decrypt/verify endpoint for an "
+            "ERROR DIFFERENTIAL (padding/format vs content vs success) and run the construction-specific "
+            "attack it implies (padding oracle, bit-flip/malleability, ECB cut-and-paste, keystream/nonce "
+            "reuse, JWT forge, hash length extension, RSA break, or token prediction) with execute_code. "
+            "Script byte-level attacks in Python, never hand-guess; then action='complete' after recovering "
+            "or forging the trusted value."
+        )
     elif attack_path_type.startswith("user_skill:"):
         return (
             "Follow the attack skill workflow guidance provided in the Available Tools section.\n"
@@ -768,10 +782,32 @@ Classify the user request by intent, then act:
 The URL you were given is **one service on one port** of a host that may expose others. Before committing your recon to that single port:
 
 1. `query_graph` for the target host's ports/services. If they are already recorded, use them and skip scanning -- and treat every service listed as in scope, not just your entry URL.
-2. Only if the graph has no ports for this host, run one fast `execute_naabu` top-ports sweep of the host, then `execute_nmap -sV` any additional open ports to fingerprint them, and record the results to the graph.
+2. Only if the graph has no ports for this host, port-scan it -- and scan it properly, not just the well-known ports. Objectives frequently sit behind a service on a high, non-standard port that a top-ports sweep never touches, so sweep the FULL range (`execute_naabu -p -`) rather than `-top-ports`. If the scanner reports no valid targets or cannot resolve the name -- opaque aliases and container-DNS hostnames often fail to resolve inside the scanner even when plain HTTP to that same name works -- do not treat that as "no extra ports": first resolve the host to its IP (it is already reachable over HTTP, so obtain the address with `dig +short`, `getent hosts`, or a scripted lookup via `execute_code`) and then scan that IP. Fingerprint every additional open port with `execute_nmap -sV` and record the results to the graph.
 3. Continue recon against the full set of services found. A service on a non-standard port (API, object store, admin panel, datastore, cache, ...) is a common place for the objective.
 
-If the sweep returns only the port you already had, you are done -- proceed with normal web recon. Do not repeat the sweep or let it stall the run.
+Conclude the host exposes only your entry port ONLY when a scan that actually ran -- one that resolved the target and completed -- returned just that port. A scan that errored, could not resolve the name, or came back empty has told you nothing: do not read it as "single port, move on"; fix the target reference (resolve to IP) and re-run a full-range scan first. Once a real full-range scan has confirmed the surface, proceed with normal web recon and do not repeat the sweep or let it stall the run.
+
+### Encrypted-token / cryptographic-oracle check
+
+Before concluding a gate is impassable, ask whether the value you must produce is an
+ENCRYPTED TOKEN you already hold, not a secret you must read or guess. If a value that
+gates access is an opaque blob handed to you and later submitted back -- a base64/hex
+string in a cookie, parameter, or header, especially one whose decoded length is a
+multiple of 8 or 16 (a block cipher), often a random-looking prefix followed by the body
+(an IV + ciphertext) -- the intended attack is usually on the token's CRYPTOGRAPHY, not
+on its plaintext:
+- **Padding oracle.** If the server returns DISTINGUISHABLE responses for a tampered token
+  -- one error/status/message for a malformed token (a padding or decryption error) versus
+  a different one for a well-formed-but-wrong token -- that differential is a padding
+  oracle: it lets you decrypt the token, or forge a chosen plaintext, byte by byte with no
+  key. Script it with `execute_code`.
+- **Related token attacks** on the same surface: CBC bit-flipping (tamper the previous
+  block to control the next block's plaintext), ECB cut-and-paste, keystream reuse, and
+  unsigned / `alg=none` signed-claim forgery.
+When the plaintext you must match is DELIBERATELY unreadable, partly hidden, or
+unguessable, treat that as a signal that the token itself -- not its plaintext -- is the
+intended attack surface. Do NOT sink the run into reading, OCR-ing, or brute-forcing a
+value the design has put out of reach; attack the cryptography that protects it.
 """
 
 
@@ -1478,6 +1514,15 @@ To search several labels at once, either use a label expression in the pattern
 (`MATCH (n:Package|MalPackageFinding)`) or write one MATCH per label and combine
 them with UNION. Never scan the whole graph with a bare `(n)`.
 
+## Suppressed findings are not yours to see
+An operator can suppress a finding as noise. Suppressed findings are removed from
+every query automatically -- you will never receive one, and their absence is
+intentional, not a gap in the scan. There is no way to list, count or reveal
+them, and any query mentioning the `Muted` label is REJECTED outright. Do not
+write `:Muted`, `NOT n:Muted`, or any filter on it: the exclusion is already
+applied for you. If the user asks about suppressed or muted findings, tell them
+to use the Triage page rather than trying to query for them.
+
 ## Node Types and Key Properties
 
 ### Infrastructure Nodes (Hierarchy: Domain -> Subdomain -> IP -> Port -> Service)
@@ -1700,7 +1745,7 @@ Common properties (all sources):
 - id (string): unique identifier
 - name (string): vulnerability name
 - severity (string): "critical", "high", "medium", "low", "info" (lowercase!)
-- source (string): **"nuclei"** (DAST/web), **"gvm"** (network/OpenVAS), **"security_check"**, **"netlas"** (passive NVD-based), **"graphql_scan"** (GraphQL security testing), **"takeover_scan"** (subdomain takeover via Subjack + Nuclei takeover templates), **"vhost_sni_enum"** (hidden virtual host / SNI routing anomalies via curl), **"cache_poisoning"** (web cache poisoning + web cache deception, confirmed by WCVS breadth + a native baseline→poison→clean persistence check; carries `cache_header`/`cache_param` (the unkeyed vector), `cache_impact` ("stored_xss"/"open_redirect"/"deception"/"dos"/"reflected"), `cache_technique`, `confidence` (0–1) + `confidence_tier` ("Confirmed"/"Strong"/"Tentative"), `cache_signals`, `poc_link`; linked to the affected `Endpoint`/`BaseURL` via `HAS_VULNERABILITY`), **"ai_surface_recon"** (MCP tool-poisoning / prompt-injection-via-tool-description / data-exfiltration found by static YARA over MCP manifests; carries `ai_owasp_llm_id`, `ai_atlas_technique`, `type` like "mcp_tool_poisoning"), or **"garak"** / **"pyrit"** / **"giskard"** / **"promptfoo"** (AI Attack Surface — deterministic offensive testing of discovered LLM endpoints; `type` like "ai_attack_jailbreak"/"ai_attack_prompt_injection", carries `ai_owasp_llm_id` (LLM01..LLM10, or "safety" for toxicity/harmful), `ai_asr` (attack success rate 0–1), `ai_trials`, `ai_oracle_kind`, `ai_payload_class` like "garak-dan"/"pyrit-crescendo"/"promptfoo-beavertails", `ai_transcript_ref` (path to the native report), linked to the attacked `Endpoint` via `HAS_VULNERABILITY`; promptfoo runs broad red-team dataset plugins and reports per-plugin ASR as corroboration)
+- source (string): **"nuclei"** (DAST/web), **"gvm"** (network/OpenVAS), **"security_check"**, **"origin_discovery"** (origin server exposed behind a CDN/WAF; `type: "waf_bypass"`, carries `origin_discovery_method`, `origin_source`, `confidence_score`, `cdn_fronting`, `matched_ip`, `port`, `probe_url`; `url`/`matched_at` are the canonical port-less `https://<ip>`; the IP is linked via `HAS_ORIGIN` from the fronted Subdomain), **"netlas"** (passive NVD-based), **"graphql_scan"** (GraphQL security testing), **"takeover_scan"** (subdomain takeover via Subjack + Nuclei takeover templates), **"vhost_sni_enum"** (hidden virtual host / SNI routing anomalies via curl), **"cache_poisoning"** (web cache poisoning + web cache deception, confirmed by WCVS breadth + a native baseline→poison→clean persistence check; carries `cache_header`/`cache_param` (the unkeyed vector), `cache_impact` ("stored_xss"/"open_redirect"/"deception"/"dos"/"reflected"), `cache_technique`, `confidence` (0–1) + `confidence_tier` ("Confirmed"/"Strong"/"Tentative"), `cache_signals`, `poc_link`; linked to the affected `Endpoint`/`BaseURL` via `HAS_VULNERABILITY`), **"ai_surface_recon"** (MCP tool-poisoning / prompt-injection-via-tool-description / data-exfiltration found by static YARA over MCP manifests; carries `ai_owasp_llm_id`, `ai_atlas_technique`, `type` like "mcp_tool_poisoning"), or **"garak"** / **"pyrit"** / **"giskard"** / **"promptfoo"** (AI Attack Surface — deterministic offensive testing of discovered LLM endpoints; `type` like "ai_attack_jailbreak"/"ai_attack_prompt_injection", carries `ai_owasp_llm_id` (LLM01..LLM10, or "safety" for toxicity/harmful), `ai_asr` (attack success rate 0–1), `ai_trials`, `ai_oracle_kind`, `ai_payload_class` like "garak-dan"/"pyrit-crescendo"/"promptfoo-beavertails", `ai_transcript_ref` (path to the native report), linked to the attacked `Endpoint` via `HAS_VULNERABILITY`; promptfoo runs broad red-team dataset plugins and reports per-plugin ASR as corroboration)
 - description (string): vulnerability description
 - cvss_score (float): 0.0 to 10.0
 
@@ -2221,8 +2266,10 @@ When user asks about "AI SDKs in JS", "leaked AI keys", "AnythingLLM/Open WebUI/
 - `(t:Technology)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - Technology has GVM vuln
 - `(p:Port)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - Port has GVM vuln (no tech detected)
 
-**WAF Bypass:**
+**WAF Bypass / Origin Discovery:**
 - `(s:Subdomain)-[:WAF_BYPASS_VIA]->(i:IP)` - Subdomain can bypass WAF via direct IP
+- `(s:Subdomain)-[:HAS_ORIGIN {method, confidence, origin_source}]->(i:IP)` - the real origin server behind the CDN/WAF fronting this Subdomain, discovered by origin_discovery. The IP carries `origin_confirmed: true`, `is_origin_candidate: true`, `origin_discovery_method` (subdomain/email_record/cert_san/favicon_hash/passive_dns), `origin_source` (shodan/censys/fofa/zoomeye/otx/virustotal/securitytrails/viewdns/crtsh/dns), `origin_confidence` (0-100), `origin_for` (the fronted host), `cdn_fronting` (the CDN name). The exposure is also a `Vulnerability {type: 'waf_bypass', source: 'origin_discovery'}` linked to the IP via `HAS_VULNERABILITY`.
+- Typical query: "show discovered origin IPs behind a CDN" → `MATCH (s:Subdomain)-[:HAS_ORIGIN]->(i:IP) RETURN s.name AS fronted_host, i.address AS origin_ip, i.origin_discovery_method, i.origin_confidence, i.cdn_fronting`
 
 **NOTE:** Vulnerability nodes store CVE IDs as properties (`cves` list for nuclei, `cve_ids` list for GVM), NOT as relationships to CVE nodes. To find CVEs for a vulnerability, use the property: `v.cves` or `v.cve_ids`.
 

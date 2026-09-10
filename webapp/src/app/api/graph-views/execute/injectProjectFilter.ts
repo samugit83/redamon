@@ -16,6 +16,48 @@ const GLOBAL_LABELS = new Set(['CVE', 'MitreData', 'Capec', 'ExploitGvm'])
 
 const FILTER_PROP = 'project_id: $projectId'
 
+// A finding an operator suppressed as noise keeps its own label and gains this
+// one. A saved view renders into the same graph screen as the live loader, so it
+// is an enforcement site in its own right: without the exclusion below, a view
+// would show findings the operator has already told the system to hide.
+const MUTED_LABEL = 'Muted'
+
+/**
+ * Rewrite a label expression so it ALSO excludes `:Muted`.
+ *
+ * Mirrors `_labels_excluding_muted` in `graph_db/tenant_filter.py`, with one
+ * deliberate difference: a union is distributed (`:A&!Muted|B&!Muted`) instead
+ * of parenthesised (`:(A|B)&!Muted`). Both mean the same thing, because `&`
+ * binds tighter than `|` -- but INTERIOR below cannot parse parentheses, and
+ * `findUnscopedNodePattern` re-scans this function's own output. A form it could
+ * not read would be reported as unscoped and the query refused.
+ *
+ * Legacy colon conjunction becomes `&` first: Neo4j 5 rejects `:A:B&!Muted`,
+ * which mixes the two syntaxes in one pattern.
+ */
+function excludeMuted(labelStr: string): string {
+  const raw = labelStr.trim()
+  const body = raw.startsWith(':') ? raw.slice(1) : raw
+  if (!body) return `:!${MUTED_LABEL}`
+  const conjunction = body.replace(/:/g, '&')
+  return ':' + conjunction.split('|').map(term => `${term}&!${MUTED_LABEL}`).join('|')
+}
+
+/**
+ * True when the query mentions the reserved `Muted` label.
+ *
+ * The exclusion is applied automatically, so naming the label can only be an
+ * attempt to inspect what was suppressed. Comments and string literals are
+ * stripped first, so an ordinary text comparison is not mistaken for one.
+ */
+export function namesMutedLabel(cypher: string): boolean {
+  const code = cypher
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/'(?:\\.|[^'\\])*'/g, ' ')
+    .replace(/"(?:\\.|[^"\\])*"/g, ' ')
+  return new RegExp(`\\b${MUTED_LABEL}\\b`).test(code)
+}
+
 // A node pattern is a `(...)` group with no nested parens that is NOT preceded
 // by a word char or `$` -> that excludes function calls like `count(n)` /
 // `id(x)` and parameter refs, matching only true node positions and groupings.
@@ -59,13 +101,13 @@ export function injectProjectFilter(cypher: string): string {
     if (node.labels.some(l => GLOBAL_LABELS.has(l))) return match // global reference data
     if (node.props && /\bproject_id\b/.test(node.props)) return match // already scoped
 
-    const head = `${node.varName}${node.labelStr}`
+    const head = `${node.varName}${excludeMuted(node.labelStr)}`
     if (node.props != null) {
       const inner = node.props.slice(1, -1).trim()
       const body = inner ? `${FILTER_PROP}, ${inner}` : FILTER_PROP
-      return head ? `(${head} {${body}})` : `({${body}})`
+      return `(${head} {${body}})`
     }
-    return head ? `(${head} {${FILTER_PROP}})` : `({${FILTER_PROP}})`
+    return `(${head} {${FILTER_PROP}})`
   })
 }
 

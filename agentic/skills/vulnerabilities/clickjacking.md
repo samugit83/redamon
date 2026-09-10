@@ -52,9 +52,9 @@ for r in ROUTES:
 
 Many apps set strict headers on `/admin/*` but forget `/account/email`, `/payment/method`, or `/api/*` GET-callable confirmation pages.
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled, proxy_query and proxy_grep sweep `X-Frame-Options` and `Content-Security-Policy: frame-ancestors` across every route already captured, flagging responses with missing, weak, or wildcard (`*`) framing headers in one pass instead of a manual per-route `curl -I` loop. Where the proxy stops: the exploit itself (the framing PoC page plus the click) is a browser artifact built with execute_code and execute_playwright; the proxy value is confined to header inventory and recon.
+When HTTP Traffic Capture is enabled, redamon.query and redamon.grep sweep `X-Frame-Options` and `Content-Security-Policy: frame-ancestors` across every route already captured, flagging responses with missing, weak, or wildcard (`*`) framing headers in one pass instead of a manual per-route `curl -I` loop. Where the proxy stops: the exploit itself (the framing PoC page plus the click) is a browser artifact built with execute_code and execute_playwright; the proxy value is confined to header inventory and recon.
 
 ### Find action targets
 

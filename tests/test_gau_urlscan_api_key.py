@@ -455,10 +455,15 @@ class TestSourceIntegrity(unittest.TestCase):
         self.assertIn("URLSCAN_API_KEY", block)
 
     def test_runtime_only_keys_includes_urlscan(self):
+        # Read the whole set literal rather than a fixed byte window: the
+        # assertion is about MEMBERSHIP, and a character count silently starts
+        # failing the moment any key is added ahead of this one.
         source = (REPO_ROOT / "recon_orchestrator" / "api.py").read_text()
         idx = source.find("RUNTIME_ONLY_KEYS")
         self.assertNotEqual(idx, -1)
-        block = source[idx:idx + 300]
+        end = source.find("}", idx)
+        self.assertNotEqual(end, -1, "RUNTIME_ONLY_KEYS set is not closed")
+        block = source[idx:end]
         self.assertIn("'URLSCAN_API_KEY'", block)
 
     def test_prisma_schema_has_urlscan_field(self):

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { SETTINGS_SKILLS_HREF } from '@/lib/settingsLinks'
-import { ChevronDown, Bug, KeyRound, Mail, Swords, Loader2, Settings, Zap, Database, Code2, Globe, Terminal, FolderTree, Download, ShieldAlert, FileCode2 } from 'lucide-react'
+import { ChevronDown, Bug, KeyRound, Mail, Swords, Loader2, Settings, Zap, Database, Code2, Globe, Terminal, FolderTree, Download, ShieldAlert, FileCode2, Binary } from 'lucide-react'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
 import { Toggle } from '@/components/ui/Toggle/Toggle'
@@ -89,6 +89,12 @@ const BUILT_IN_SKILLS: BuiltInSkillDef[] = [
     icon: <FileCode2 size={16} />,
   },
   {
+    id: 'crypto_attack',
+    name: 'Cryptographic Attacks',
+    description: 'Break trusted crypto: CBC padding oracles and bit-flipping, ECB analysis, stream/nonce reuse (two-time pad), JWT signature attacks (alg:none, HS/RS confusion, weak-secret cracking, kid/jwk/jku), hash length extension, RSA weaknesses, and predictable-token/PRNG reconstruction',
+    icon: <Binary size={16} />,
+  },
+  {
     id: 'brute_force_credential_guess',
     name: 'Credential Testing',
     description: 'Credential policy validation using Hydra against login services',
@@ -123,6 +129,7 @@ const DEFAULT_CONFIG: AttackSkillConfig = {
     path_traversal: true,
     access_control: true,
     xxe: true,
+    crypto_attack: true,
     brute_force_credential_guess: false,
     phishing_social_engineering: false,
     denial_of_service: false,

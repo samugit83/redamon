@@ -70,14 +70,14 @@ absolute redirects
 Set-Cookie Domain= attribute
 ```
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_* only see traffic that crossed the capture proxy).
+If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_brain only see traffic that crossed the capture proxy).
 
-- `proxy_replay id mutate:{headers:{"X-Forwarded-Host":"attacker.tld"}}` resends a captured request with a mutated `X-Forwarded-Host` / `X-Original-Host` / `Forwarded` and inspects the reflected host in the body, `Location`, and `Set-Cookie Domain=`. The raw `Host` is pinned to the origin, but `X-Forwarded-Host` (the more-trusted header) is fully mutable.
-- `proxy_diff id_canonical id_poisoned` pairs a clean replay against the poisoned one so the reflected host stands out.
-- `proxy_grep "attacker.tld"` confirms the injected host actually landed in a captured response body.
-- `proxy_search` / `proxy_sitemap` surface the password-reset, signup, and redirect endpoints worth replaying.
+- `redamon.replay id mutate:{headers:{"X-Forwarded-Host":"attacker.tld"}}` resends a captured request with a mutated `X-Forwarded-Host` / `X-Original-Host` / `Forwarded` and inspects the reflected host in the body, `Location`, and `Set-Cookie Domain=`. The raw `Host` is pinned to the origin, but `X-Forwarded-Host` (the more-trusted header) is fully mutable.
+- `redamon.diff id_canonical id_poisoned` pairs a clean replay against the poisoned one so the reflected host stands out.
+- `redamon.grep "attacker.tld"` confirms the injected host actually landed in a captured response body.
+- `redamon.search` / `redamon.sitemap` surface the password-reset, signup, and redirect endpoints worth replaying.
 
 ## Attack matrix
 

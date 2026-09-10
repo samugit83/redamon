@@ -73,7 +73,10 @@ export function envelopeForKind(kind: string): number {
 export const FINGERPRINT_FIELDS: Record<string, readonly string[]> = {
   full_recon: ['targetDomain', 'ipMode', 'targetIps', 'scanModules', 'targetGuardrailEnabled', 'stealthMode'],
   partial_recon: ['targetDomain', 'ipMode', 'targetIps', 'scanModules', 'targetGuardrailEnabled', 'stealthMode'],
-  gvm: ['targetDomain', 'ipMode', 'targetIps', 'gvmScanConfig', 'gvmScanTargets'],
+  // gvmPortList steers WHAT is scanned: swapping the top-1000 UDP list for the
+  // full IANA sweep turns a minutes-long scan into an hours-long one. Omitting it
+  // would let that change slip past the C-4 re-confirmation guard.
+  gvm: ['targetDomain', 'ipMode', 'targetIps', 'gvmScanConfig', 'gvmScanTargets', 'gvmPortList'],
   github_hunt: ['githubTargetOrg', 'githubTargetRepos', 'githubScanMembers', 'githubScanGists', 'githubScanCommits'],
   // Only the SHARED options still live on Project; the per-source targets moved
   // to TrufflehogScanProfile and are folded in by the caller through `extra`

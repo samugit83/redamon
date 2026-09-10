@@ -75,6 +75,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         virusTotalApiKey: '',
         zoomEyeApiKey: '',
         criminalIpApiKey: '',
+        securitytrailsApiKey: '',
+        viewdnsApiKey: '',
         quakeApiKey: '',
         hunterApiKey: '',
         publicWwwApiKey: '',
@@ -141,6 +143,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         virusTotalApiKey: maskSecret(settings.virusTotalApiKey),
         zoomEyeApiKey: maskSecret(settings.zoomEyeApiKey),
         criminalIpApiKey: maskSecret(settings.criminalIpApiKey),
+        securitytrailsApiKey: maskSecret(settings.securitytrailsApiKey),
+        viewdnsApiKey: maskSecret(settings.viewdnsApiKey),
         quakeApiKey: maskSecret(settings.quakeApiKey),
         hunterApiKey: maskSecret(settings.hunterApiKey),
         publicWwwApiKey: maskSecret(settings.publicWwwApiKey),
@@ -237,7 +241,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const data: Record<string, string> = {}
-    const fields = ['githubAccessToken', 'supplyChainGithubToken', 'githubEnterpriseHost', 'githubEnterpriseToken', 'tavilyApiKey', 'shodanApiKey', 'serpApiKey', 'nvdApiKey', 'vulnersApiKey', 'urlscanApiKey', 'censysApiToken', 'censysOrgId', 'fofaApiKey', 'otxApiKey', 'netlasApiKey', 'virusTotalApiKey', 'zoomEyeApiKey', 'criminalIpApiKey', 'quakeApiKey', 'hunterApiKey', 'publicWwwApiKey', 'hunterHowApiKey', 'googleApiKey', 'googleApiCx', 'onypheApiKey', 'driftnetApiKey', 'wpscanApiToken', 'pdcpApiKey', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth',
+    const fields = ['githubAccessToken', 'supplyChainGithubToken', 'githubEnterpriseHost', 'githubEnterpriseToken', 'tavilyApiKey', 'shodanApiKey', 'serpApiKey', 'nvdApiKey', 'vulnersApiKey', 'urlscanApiKey', 'censysApiToken', 'censysOrgId', 'fofaApiKey', 'otxApiKey', 'netlasApiKey', 'virusTotalApiKey', 'zoomEyeApiKey', 'criminalIpApiKey', 'securitytrailsApiKey', 'viewdnsApiKey', 'quakeApiKey', 'hunterApiKey', 'publicWwwApiKey', 'hunterHowApiKey', 'googleApiKey', 'googleApiCx', 'onypheApiKey', 'driftnetApiKey', 'wpscanApiToken', 'pdcpApiKey', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth',
       // TruffleHog per-source credentials. Absent from this list, a key is
       // accepted by the form and silently never persisted.
       'trufflehogGithubToken', 'trufflehogGitlabToken', 'trufflehogDockerToken', 'trufflehogHuggingfaceToken', 'trufflehogAwsAccessKeyId', 'trufflehogAwsSecretKey', 'trufflehogAwsSessionToken', 'trufflehogGcpServiceAccount', 'trufflehogPostmanToken', 'trufflehogJenkinsUsername', 'trufflehogJenkinsPassword', 'trufflehogElasticUsername', 'trufflehogElasticPassword', 'trufflehogElasticApiKey', 'trufflehogElasticServiceToken', 'trufflehogCircleciToken', 'trufflehogTravisciToken', 'trufflehogGitUsername', 'trufflehogGitToken'] as const
@@ -487,6 +491,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       virusTotalApiKey: maskSecret(settings.virusTotalApiKey),
       zoomEyeApiKey: maskSecret(settings.zoomEyeApiKey),
       criminalIpApiKey: maskSecret(settings.criminalIpApiKey),
+      securitytrailsApiKey: maskSecret(settings.securitytrailsApiKey),
+      viewdnsApiKey: maskSecret(settings.viewdnsApiKey),
       quakeApiKey: maskSecret(settings.quakeApiKey),
       hunterApiKey: maskSecret(settings.hunterApiKey),
       publicWwwApiKey: maskSecret(settings.publicWwwApiKey),

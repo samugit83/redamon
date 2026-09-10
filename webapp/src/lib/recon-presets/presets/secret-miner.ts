@@ -34,6 +34,8 @@ Bug bounty hunters and pentesters targeting modern web applications built with R
 3. Katana + Hakrawler + GAU aggressively crawl for JS files
 4. jsluice extracts secrets and URLs from discovered JS files
 5. JS Recon runs deep analysis: source maps, dependency confusion, DOM sinks, framework detection, regex patterns, and key validation`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Pipeline modules: skip port_scan and vuln_scan
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'js_recon'],

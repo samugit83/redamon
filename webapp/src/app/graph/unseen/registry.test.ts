@@ -103,6 +103,35 @@ describe('ALL_GRAPH_LABELS tracks the graph schema', () => {
       [...src.matchAll(/FOR \([a-zA-Z_]+:([A-Za-z][A-Za-z0-9_]*)\)/g)].map(m => m[1]),
     )
     indexed.delete('KBChunk')
+    // `Muted` is a marker ADDED to a finding that an operator suppressed, not a
+    // node type. It must never appear here: these labels drive the whole-graph
+    // tabs, and every read path strips muted nodes before rendering, so a tab
+    // for them would always be empty -- and listing it would make a
+    // dual-labelled node look like a first-class type.
+    indexed.delete('Muted')
     expect([...new Set(ALL_GRAPH_LABELS)].sort()).toEqual([...indexed].sort())
+  })
+})
+
+describe('regression: triage is guarded against past-version viewing', () => {
+  // Triage reads the LIVE graph -- verdicts and mute state are current, never
+  // version-scoped. It was originally branched ABOVE the past-version guard, so
+  // opening a saved snapshot rendered current triage data under an old version
+  // label with no notice. It must sit below the guard, like the RedZone panels.
+  const PAGE = readFileSync(join(__dirname, '..', 'page.tsx'), 'utf8')
+
+  test('the triage branch comes after the past-version guard', () => {
+    const guard = PAGE.indexOf('isViewingPastVersion && tableViewMode !== ')
+    const triage = PAGE.indexOf("tableViewMode === 'triage' ?")
+    expect(guard, 'past-version guard not found').toBeGreaterThan(-1)
+    expect(triage, 'triage branch not found').toBeGreaterThan(-1)
+    expect(triage).toBeGreaterThan(guard)
+  })
+
+  test('triage is not exempted from the guard the way nodeDetails and all are', () => {
+    // Those two render the SELECTED version's payload and are legitimately
+    // exempt. Triage is not: it has no version-scoped form.
+    const guardLine = PAGE.split('\n').find(l => l.includes('isViewingPastVersion && tableViewMode !=='))!
+    expect(guardLine).not.toContain("'triage'")
   })
 })

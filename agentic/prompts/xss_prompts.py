@@ -320,6 +320,8 @@ Mechanically: take the plain attribute-context payload you WOULD have used (the 
 
 Reflected/stored XSS lives in HTTP responses. DOM XSS lives entirely in the browser -- the server never sees the payload. Use Playwright script mode to install console+dialog handlers, then navigate with a source-tainted URL.
 
+(If you are already working the captured corpus in **proxy_brain**, the same DOM oracle is one code block away and stays host-pinned + re-captured: `b = redamon.browser(txn_id); b.goto("/page#<img src=x onerror=alert(1)>"); b.alerts()` -- a fired dialog is the proof. Read `redamon.manual("browser")`. Use standalone execute_playwright below for cross-origin proofs the host-pin forbids, or when you are not in proxy_brain.)
+
 Build the script as a Python string and pass via `script` arg. The runtime exposes pre-initialized `browser`, `context`, `page` variables. Pattern (use the dialog-handler proof from Step 6 -- DOM XSS fires the same `alert()` events):
 
 1. Wire `page.on("console", ...)` and `page.on("dialog", ...)` to capture firings.

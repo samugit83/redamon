@@ -17,6 +17,9 @@ CONTAINER_MANAGER = REPO_ROOT / "recon_orchestrator/container_manager.py"
 COMPOSE = REPO_ROOT / "docker-compose.yml"
 
 KNOB = "GVM_NO_PROGRESS_TIMEOUT"
+# Issue #177 replaced the stall bound with a liveness probe as the real dead-stack
+# detector, so its cadence knob needs the same three-layer plumbing.
+LIVENESS_KNOB = "GVM_LIVENESS_INTERVAL"
 
 
 def _gvm_spawn_env_block() -> str:
@@ -60,6 +63,32 @@ class GvmStallKnobPlumbingTest(unittest.TestCase):
         """An existing .env without the key must interpolate to empty, not fail."""
         compose = COMPOSE.read_text()
         self.assertRegex(compose, rf"{KNOB}: \$\{{{KNOB}:-\}}")
+
+
+class GvmLivenessKnobPlumbingTest(unittest.TestCase):
+    """The liveness cadence needs the same three layers as the stall bound."""
+
+    def test_the_orchestrator_forwards_it_to_the_scan(self):
+        self.assertIn(LIVENESS_KNOB, _gvm_spawn_env_block())
+
+    def test_it_is_forwarded_only_when_actually_set(self):
+        block = _gvm_spawn_env_block()
+        context = block[block.index(LIVENESS_KNOB):]
+        self.assertIn(".strip()", context)
+        self.assertIn("else {}", context)
+
+    def test_compose_names_it_for_the_orchestrator(self):
+        """The orchestrator has no env_file: unlisted vars never arrive."""
+        compose = COMPOSE.read_text()
+        start = compose.index("\n  recon-orchestrator:")
+        rest = compose[start + 1:]
+        end = re.search(r"\n  [a-z0-9_-]+:\n", rest)
+        block = rest[:end.start()] if end else rest
+        self.assertIn(LIVENESS_KNOB, block)
+
+    def test_the_default_is_empty_so_no_env_edit_is_required(self):
+        compose = COMPOSE.read_text()
+        self.assertRegex(compose, rf"{LIVENESS_KNOB}: \$\{{{LIVENESS_KNOB}:-\}}")
 
 
 if __name__ == "__main__":

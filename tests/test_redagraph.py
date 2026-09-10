@@ -61,7 +61,8 @@ class TestInjectTenantFilter(unittest.TestCase):
         out = tf.inject_tenant_filter("MATCH (d:Domain) RETURN d", "U", "P")
         self.assertEqual(
             out,
-            "MATCH (d:Domain {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN d",
+            "MATCH (d:Domain&!Muted {user_id: $tenant_user_id, "
+            "project_id: $tenant_project_id}) RETURN d",
         )
 
     def test_label_with_existing_props(self):
@@ -87,22 +88,23 @@ class TestInjectTenantFilter(unittest.TestCase):
         out = tf.inject_tenant_filter("MATCH (n) RETURN n", "U", "P")
         self.assertEqual(
             out,
-            "MATCH (n {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n",
+            "MATCH (n:!Muted {user_id: $tenant_user_id, "
+            "project_id: $tenant_project_id}) RETURN n",
         )
 
     def test_anonymous_with_label_only_is_scoped(self):
         out = tf.inject_tenant_filter("MATCH (:Subdomain) RETURN count(*)", "U", "P")
         self.assertEqual(
             out,
-            "MATCH (:Subdomain {user_id: $tenant_user_id, project_id: $tenant_project_id}) "
-            "RETURN count(*)",
+            "MATCH (:Subdomain&!Muted {user_id: $tenant_user_id, "
+            "project_id: $tenant_project_id}) RETURN count(*)",
         )
 
     def test_relationship_brackets_are_not_touched(self):
         q = "MATCH (d:Domain)-[r:HAS_PORT]->(p:Port) RETURN r"
         out = tf.inject_tenant_filter(q, "U", "P")
         self.assertNotIn("r:HAS_PORT {", out)
-        self.assertIn("(p:Port {user_id: $tenant_user_id", out)
+        self.assertIn("(p:Port&!Muted {user_id: $tenant_user_id", out)
 
     def test_already_scoped_pattern_is_not_doubled(self):
         once = tf.inject_tenant_filter("MATCH (p:Package) RETURN p", "U", "P")
@@ -154,14 +156,27 @@ class TestCrossTenantLeakRegression(unittest.TestCase):
         self.assertIsNone(tf.find_unscoped_node_pattern(out))
         # The driving MATCH is what leaked; it must carry the tenant keys.
         self.assertIn(
-            "MATCH (n {user_id: $tenant_user_id, project_id: $tenant_project_id})", out
+            "MATCH (n:!Muted {user_id: $tenant_user_id, project_id: $tenant_project_id})",
+            out,
         )
 
     def test_unscoped_query_is_refused_not_executed(self):
-        with self.assertRaises(tf.TenantScopeError) as ctx:
-            # A pattern the grammar cannot parse must fail closed.
-            tf.scope_query("MATCH (n:) RETURN n", "U", "P")
-        self.assertIn("could not be scoped", str(ctx.exception))
+        for malformed in ("MATCH (n:) RETURN n", "MATCH (n:A&) RETURN n",
+                          "MATCH (n:A::B) RETURN n"):
+            with self.subTest(query=malformed):
+                with self.assertRaises(tf.TenantScopeError) as ctx:
+                    # A pattern the grammar cannot parse must fail closed. A
+                    # half-written label expression must NOT be silently
+                    # completed into `(n:!Muted {tenant})`, which would turn a
+                    # query Neo4j rejects into one returning the whole project.
+                    tf.scope_query(malformed, "U", "P")
+                self.assertIn("could not be scoped", str(ctx.exception))
+
+    def test_unbalanced_parentheses_are_refused(self):
+        # The scanner skips a pattern whose closing paren is missing, so such a
+        # query could otherwise reach Neo4j with nothing injected.
+        with self.assertRaises(tf.TenantScopeError):
+            tf.scope_query("MATCH (n:(A|B) RETURN n", "U", "P")
 
     def test_find_unscoped_reports_the_offending_pattern(self):
         self.assertIsNone(

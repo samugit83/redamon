@@ -46,6 +46,8 @@ Use \`Web App Pentester\` or \`Full Active Scan\` if you want WCP as one tool am
 - **Critical/High**: Stored XSS via poisoned cache, open redirect via unkeyed Host/scheme headers, cache-poisoned DoS (research profile only)
 - **High**: Web cache deception (private-page caching), persisted redirect poisoning
 - **Medium**: Reflected unkeyed-input poisoning without high-impact sink`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: discovery -> probe -> crawl -> vuln_scan (where the WCP module lives).
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan'],

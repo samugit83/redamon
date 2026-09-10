@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
-import { Loader2, CheckCircle, XCircle, Plus, Trash2, Eye, EyeOff, ExternalLink } from 'lucide-react'
+import { Loader2, CheckCircle, XCircle, Plus, Trash2, Eye, EyeOff, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/ui'
+import { useAgentHealth } from '@/hooks/useAgentHealth'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { PROVIDER_TYPES, OPENAI_COMPAT_PRESETS } from '@/lib/llmProviderPresets'
@@ -86,6 +87,10 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; text?: string; error?: string } | null>(null)
+  // The Test button proxies through the agent container, so a dead agent makes
+  // every provider look broken. Surface that here instead of letting the click
+  // fail with an error the operator will read as "my Base URL is wrong" (#184).
+  const agentHealth = useAgentHealth()
   const [showApiKey, setShowApiKey] = useState(false)
   const [headerKey, setHeaderKey] = useState('')
   const [headerValue, setHeaderValue] = useState('')
@@ -537,11 +542,27 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
       )}
 
       {/* Test connection */}
+      {agentHealth.status === 'offline' && (
+        <div className={styles.agentOfflineBanner} role="status">
+          <AlertTriangle size={14} />
+          <span>
+            {agentHealth.error
+              || 'The RedAmon agent service is offline, so connections cannot be tested right now.'}
+          </span>
+          <button className={styles.agentOfflineRetry} onClick={agentHealth.refresh} type="button">
+            <RefreshCw size={12} /> Re-check
+          </button>
+        </div>
+      )}
       <div className={styles.testSection}>
         <button
           className="secondaryButton"
           onClick={handleTest}
-          disabled={testing}
+          // Never gate on 'unknown': a slow probe must not block a working setup.
+          disabled={testing || agentHealth.status === 'offline'}
+          title={agentHealth.status === 'offline'
+            ? 'Unavailable while the RedAmon agent service is offline'
+            : undefined}
         >
           {testing ? <Loader2 size={14} className={styles.spin} /> : null}
           {testing ? 'Testing...' : 'Test Connection'}

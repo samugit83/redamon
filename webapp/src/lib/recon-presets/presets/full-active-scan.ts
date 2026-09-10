@@ -49,6 +49,8 @@ Pentesters with full authorization on an engagement where stealth is irrelevant.
 9. JS Recon crawls and downloads JS files, extracts endpoints, secrets, source maps, and DOM XSS sinks
 10. CVE lookup maps service versions to known vulnerabilities
 11. Security checks validate headers, TLS, DNS, and infrastructure exposure`,
+  targetProfile: 'both',
+  environment: 'either',
   parameters: {
     // All scan modules enabled including js_recon (actively crawls and downloads JS files)
     scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan', 'js_recon'],

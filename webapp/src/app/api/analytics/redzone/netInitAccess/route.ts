@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -47,7 +48,8 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (p)-[:HAS_TECHNOLOGY]->(t:Technology)
        OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
        OPTIONAL MATCH (ip)-[:HAS_VULNERABILITY]->(v:Vulnerability)
-         WHERE v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes
+         WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
+           AND ${notMuted('v')}
        RETURN 'port'                AS origin,
               ip.address            AS ipAddress,
               p.number              AS port,
@@ -71,7 +73,8 @@ export async function GET(request: NextRequest) {
     // Part B: IP-level security-check findings not already captured by port (e.g. waf_bypass)
     const vulnResult = await session.run(
       `MATCH (ip:IP {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability)
-       WHERE v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes
+       WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
+         AND ${notMuted('v')}
        OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
        RETURN 'vuln'                        AS origin,
               ip.address                    AS ipAddress,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -19,7 +20,8 @@ export async function GET(request: NextRequest) {
   try {
     // Q1: Node counts by label
     const nodeCountsResult = await session.run(
-      `MATCH (n {project_id: $pid}) RETURN labels(n)[0] AS label, count(n) AS count ORDER BY count DESC`,
+      `MATCH (n {project_id: $pid}) WHERE ${notMuted('n')}
+       RETURN labels(n)[0] AS label, count(n) AS count ORDER BY count DESC`,
       { pid: projectId }
     )
     const nodeCounts = nodeCountsResult.records.map(r => ({
@@ -30,7 +32,8 @@ export async function GET(request: NextRequest) {
 
     // Q2: Relationship counts by type
     const relCountsResult = await session.run(
-      `MATCH (n {project_id: $pid})-[r]->() RETURN type(r) AS type, count(r) AS count ORDER BY count DESC`,
+      `MATCH (n {project_id: $pid})-[r]->(m) WHERE ${notMuted('n')} AND ${notMuted('m')}
+       RETURN type(r) AS type, count(r) AS count ORDER BY count DESC`,
       { pid: projectId }
     )
     const relationshipCounts = relCountsResult.records.map(r => ({
@@ -90,6 +93,7 @@ export async function GET(request: NextRequest) {
     // Q6: Degree centrality (top 15)
     const degResult = await session.run(
       `MATCH (n {project_id: $pid})
+       WHERE ${notMuted('n')}
        WITH n, labels(n)[0] AS label,
             COALESCE(n.name, n.id, n.title, n.cve_id, n.address, n.url, n.subdomain, n.domain, n.capec_id, n.type, n.value, n.key, toString(n.number), labels(n)[0] + '#' + toString(elementId(n))) AS name,
             size([(n)-[]-() | 1]) AS degree

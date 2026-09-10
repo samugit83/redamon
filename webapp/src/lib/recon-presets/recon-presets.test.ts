@@ -3402,8 +3402,8 @@ describe('Preset merge logic', () => {
 // ============================================================
 
 describe('Preset system integrity', () => {
-  test('registry contains exactly 25 presets', () => {
-    expect(RECON_PRESETS).toHaveLength(25)
+  test('registry contains exactly 26 presets', () => {
+    expect(RECON_PRESETS).toHaveLength(26)
   })
 
   test('every preset has all required fields with correct types', () => {
@@ -3419,6 +3419,19 @@ describe('Preset system integrity', () => {
       expect(preset.fullDescription.length).toBeGreaterThan(0)
       expect(typeof preset.parameters).toBe('object')
       expect(Object.keys(preset.parameters).length).toBeGreaterThan(0)
+    }
+  })
+
+  test('every preset declares a valid targetProfile and environment', () => {
+    const validProfiles = ['domain', 'ip', 'both']
+    const validEnvironments = ['external', 'internal', 'either']
+    for (const preset of RECON_PRESETS) {
+      expect(validProfiles).toContain(preset.targetProfile)
+      expect(validEnvironments).toContain(preset.environment)
+      // An internal-network preset is IP-targeted by definition.
+      if (preset.environment === 'internal') {
+        expect(preset.targetProfile).toBe('ip')
+      }
     }
   })
 
@@ -3848,8 +3861,8 @@ describe('GraphQL Recon preset', () => {
     expect(uniqueIds.size).toBe(ids.length)
   })
 
-  test('is included in the registry (current count: 25)', () => {
-    expect(RECON_PRESETS.length).toBe(25)
+  test('is included in the registry (current count: 26)', () => {
+    expect(RECON_PRESETS.length).toBe(26)
   })
 })
 
@@ -3893,5 +3906,86 @@ describe('Web Cache Poisoning preset', () => {
     expect(preset.parameters.resourceEnumAiPathClassifierEnabled).toBe(false)
     expect(preset.parameters.httpProbeAiWappalyzerEnabled).toBe(false)
     expect(preset.parameters.jsReconEnabled).toBe(false)
+  })
+})
+
+describe('Internal Network & Active Directory preset', () => {
+  const preset = getPresetById('internal-network')!
+
+  test('exists and is classified for an internal/local IP target', () => {
+    expect(preset).toBeDefined()
+    expect(preset.id).toBe('internal-network')
+    expect(preset.targetProfile).toBe('ip')
+    expect(preset.environment).toBe('internal')
+  })
+
+  test('disables public-only discovery that cannot see a private network', () => {
+    const p = preset.parameters
+    expect(p.subdomainDiscoveryEnabled).toBe(false)
+    expect(p.crtshEnabled).toBe(false)
+    expect(p.hackerTargetEnabled).toBe(false)
+    expect(p.subfinderEnabled).toBe(false)
+    expect(p.amassEnabled).toBe(false)
+    expect(p.knockpyReconEnabled).toBe(false)
+    expect(p.purednsEnabled).toBe(false)
+    expect(p.whoisEnabled).toBe(false)
+  })
+
+  test('disables all OSINT providers (they only index the public internet)', () => {
+    const p = preset.parameters
+    expect(p.osintEnrichmentEnabled).toBe(false)
+    expect(p.shodanEnabled).toBe(false)
+    expect(p.censysEnabled).toBe(false)
+    expect(p.urlscanEnabled).toBe(false)
+    expect(p.fofaEnabled).toBe(false)
+    expect(p.netlasEnabled).toBe(false)
+  })
+
+  test('enables the port-scan + service-detection core for AD enumeration', () => {
+    const p = preset.parameters
+    expect(p.naabuEnabled).toBe(true)
+    expect(p.nmapEnabled).toBe(true)
+    expect(p.nmapVersionDetection).toBe(true)
+    expect(p.nmapScriptScan).toBe(true)
+    expect(p.masscanEnabled).toBe(true)
+    expect(p.bannerGrabEnabled).toBe(true)
+  })
+
+  test('targets the Active Directory / internal service ports', () => {
+    const ports = (preset.parameters.naabuCustomPorts as string).split(',')
+    // Kerberos, SMB, LDAP, LDAP-GC, RDP, WinRM
+    for (const adPort of ['88', '445', '389', '636', '3268', '3389', '5985']) {
+      expect(ports).toContain(adPort)
+    }
+  })
+
+  test('uses a LAN-safe masscan rate (not the external 10k default)', () => {
+    expect(preset.parameters.masscanRate as number).toBeLessThanOrEqual(2000)
+  })
+
+  test('keeps CVE lookup and the internal-exposure security checks on', () => {
+    const p = preset.parameters
+    expect(p.cveLookupEnabled).toBe(true)
+    expect(p.mitreEnabled).toBe(true)
+    expect(p.securityCheckEnabled).toBe(true)
+    expect(p.securityCheckDatabaseExposed).toBe(true)
+    expect(p.securityCheckRedisNoAuth).toBe(true)
+    expect(p.securityCheckAdminPortExposed).toBe(true)
+    // No public WAF in front of a LAN service.
+    expect(p.securityCheckWafBypass).toBe(false)
+  })
+
+  test('does not carry user-owned target-identity fields', () => {
+    const params = preset.parameters as Record<string, unknown>
+    expect(params.ipMode).toBeUndefined()
+    expect(params.targetIps).toBeUndefined()
+    expect(params.targetDomain).toBeUndefined()
+    expect(params.name).toBeUndefined()
+  })
+
+  test('fullDescription has the required section headers', () => {
+    for (const header of ['### Pipeline Goal', '### Who is this for?', '### What it enables', '### What it disables']) {
+      expect(preset.fullDescription).toContain(header)
+    }
   })
 })

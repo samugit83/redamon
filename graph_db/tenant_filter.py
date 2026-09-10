@@ -42,6 +42,17 @@ _WRITE_PROCEDURE_RE = re.compile(
 TENANT_PARAMS = {"tenant_user_id", "tenant_project_id"}
 TENANT_PROPS = "user_id: $tenant_user_id, project_id: $tenant_project_id"
 
+#: The label an operator adds to a finding to suppress it as noise. A muted node
+#: keeps its functional label and gains this one, so it is still MERGE-able by a
+#: re-scan and still un-mutable, but it must be invisible to every agent read.
+#:
+#: Invisibility is enforced here, at the same chokepoint as tenant isolation and
+#: for the same reason: injection touches EVERY node pattern, so there is no
+#: query shape - labelled, unlabelled, or a bare `MATCH (n)` - that can reach a
+#: muted node. The webapp's Muted-table endpoint is the only legitimate reader,
+#: and it does not go through this module.
+MUTED_LABEL = "Muted"
+
 #: Labels holding GLOBAL reference data - the public NVD/MITRE catalogue. Each
 #: is UNIQUE on its natural id, so there is exactly one node per CVE for the
 #: whole database and it carries no tenant property at all. Injecting a tenant
@@ -68,16 +79,30 @@ _SIMPLE_LABELS_RE = re.compile(r'^(?:\s*:\s*[A-Za-z_][A-Za-z0-9_]*)+$')
 # A Cypher identifier: bare, or backtick-quoted (which may contain spaces).
 _IDENT = r'(?:`[^`]*`|[A-Za-z_][A-Za-z0-9_]*)'
 
-# The inside of a node pattern: optional variable, optional label expression
-# (`:A`, `:A:B`, `:A|B`), optional inline property map.
+# The inside of a node pattern: optional variable, optional label expression,
+# optional inline property map.
+#
+# The label expression accepts the whole Neo4j 5 grammar - conjunction (`:A:B`,
+# `:A&B`), union (`:A|B`), negation (`:!A`) and grouping (`:(A|B)&C`) - rather
+# than one operator per label. It has to: mute injection rewrites a label into
+# `:X&!Muted`, and `scope_query` re-parses its OWN output through
+# `find_unscoped_node_pattern`, so a shape this regex cannot read is reported as
+# unscoped and the query is refused. Reading the rewritten form is therefore a
+# correctness requirement, not a convenience.
+#
+# `{` and `}` are deliberately outside the label character set, so the property
+# map is never swallowed by the label run.
+_LABEL_EXPR = r'(?:[:|&!()]|' + _IDENT + r'|\s)+'
 _NODE_INNER_RE = re.compile(
     r'^\s*(?P<var>' + _IDENT + r')?'
-    r'(?P<labels>(?:\s*[:|&!]\s*' + _IDENT + r')*)'
+    r'\s*(?P<labels>' + _LABEL_EXPR + r')?'
     r'\s*(?P<props>\{.*\})?\s*$',
     re.DOTALL,
 )
 
 _WORD_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+_MUTED_WORD_RE = re.compile(r'\b' + MUTED_LABEL + r'\b')
 
 # Clauses whose operand is a pattern, and the clauses that end one. Tracking
 # this is what tells a node pattern apart from a parenthesised expression:
@@ -88,6 +113,25 @@ _REGION_END = frozenset({
     'DELETE', 'DETACH', 'SET', 'REMOVE', 'FOREACH', 'UNION', 'YIELD', 'ON',
     'USING', 'AS',
 })
+
+
+def names_muted_label(cypher: str) -> bool:
+    """True when the query itself mentions the `Muted` label.
+
+    The injection below hides muted nodes, but an agent could still probe for
+    them - `MATCH (n) WHERE n:Muted`, or asking for `labels(n)` and filtering.
+    Refusing the word outright closes that, and keeps the enforcement honest:
+    the agent has no vocabulary for mute at all.
+
+    Only code positions count, so `WHERE n.note CONTAINS 'Muted'` is a string
+    literal and stays legal - it cannot leak anything, because the pattern that
+    bound `n` already excluded muted nodes. The check is case-sensitive so the
+    ordinary property name `muted` is unaffected.
+    """
+    is_code, _ = code_positions(cypher)
+    return any(
+        is_code[match.start()] for match in _MUTED_WORD_RE.finditer(cypher)
+    )
 
 
 def find_disallowed_write_operation(cypher: str) -> Optional[str]:
@@ -157,6 +201,29 @@ def code_positions(cypher: str) -> Tuple[List[bool], List[int]]:
     return is_code, depth
 
 
+def has_balanced_parens(cypher: str) -> bool:
+    """True when every `(` in executable code is closed, and none closes early.
+
+    An unbalanced query is malformed Cypher that Neo4j would reject anyway, but
+    it must not reach the scanner: a pattern whose closing paren is missing is
+    skipped by `_iter_node_patterns`, so the query can end up with NO patterns to
+    scope and sail past the backstop unfiltered. Refusing it keeps the "if it
+    cannot be proven scoped it does not run" rule intact.
+    """
+    is_code, _ = code_positions(cypher)
+    depth = 0
+    for i, char in enumerate(cypher):
+        if not is_code[i]:
+            continue
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
 def _matching_paren(cypher: str, open_idx: int, is_code: List[bool]) -> Optional[int]:
     """Index of the `)` closing the `(` at open_idx, or None if unbalanced."""
     depth = 0
@@ -185,6 +252,90 @@ def _is_function_call(cypher: str, open_idx: int) -> bool:
         return False
     prev = cypher[open_idx - 1]
     return prev.isalnum() or prev in '_`'
+
+
+_LABEL_GROUP_ONLY_RE = re.compile(r'^' + _LABEL_EXPR + r'$')
+
+_LABEL_TOKEN_RE = re.compile(
+    r'\s*(?:(?P<ident>' + _IDENT + r')|(?P<op>[:&|])|(?P<neg>!)'
+    r'|(?P<open>\()|(?P<close>\)))'
+)
+
+
+def _is_wellformed_label_expr(labels: str) -> bool:
+    """True when `labels` is a label expression Cypher would actually accept.
+
+    `_LABEL_EXPR` is a loose character run, which is right for finding where the
+    labels end but wrong for deciding a pattern is understood. It also matches
+    the malformed `(n:)`, and injection would then silently "repair" that into
+    `(n:!Muted {user_id: .., project_id: ..})` - turning a query Neo4j would have
+    rejected outright into one that quietly returns every node in the project.
+
+    So the loose match locates the expression and this validates it: operands and
+    operators must alternate, parentheses must balance, and there must be at
+    least one actual label. Anything else is reported unparseable and refused,
+    which is the fail-closed direction.
+    """
+    raw = (labels or '').strip()
+    if not raw:
+        return True
+    if not raw.startswith(':'):
+        return False
+
+    body = raw[1:]
+    pos, depth = 0, 0
+    expect_operand = True
+    seen_label = False
+    while pos < len(body):
+        token = _LABEL_TOKEN_RE.match(body, pos)
+        if not token:
+            return False
+        pos = token.end()
+        if token.group('ident') is not None:
+            if not expect_operand:
+                return False
+            seen_label = True
+            expect_operand = False
+        elif token.group('op') is not None:
+            if expect_operand:
+                return False
+            expect_operand = True
+        elif token.group('neg') is not None:
+            if not expect_operand:  # '!' negates an operand, never follows one
+                return False
+        elif token.group('open') is not None:
+            if not expect_operand:
+                return False
+            depth += 1
+        else:
+            if expect_operand or depth == 0:
+                return False
+            depth -= 1
+            expect_operand = False
+
+    return depth == 0 and not expect_operand and seen_label
+
+
+def _is_label_expression_group(
+    cypher: str, open_idx: int, close_idx: int, is_code: List[bool]
+) -> bool:
+    """True when the `(` at open_idx opens a grouped LABEL expression.
+
+    `MATCH (n:(A|B)&!Muted {...})` contains a parenthesised group that is part of
+    the label expression, not a nested node pattern - but the scanner is inside a
+    MATCH region and would otherwise yield `(A|B)` as an unscoped pattern and
+    refuse the query. That query shape is produced by our own mute injection, so
+    without this every union-label query would be rejected.
+
+    Narrow on purpose, so it cannot become a way to smuggle an unscoped pattern
+    past the backstop: the group must follow a label operator AND contain nothing
+    but label-expression syntax. `{k: (1+2)}` follows a ':' but is not a label
+    expression, so it is still reported.
+    """
+    prev = _prev_code_char(cypher, open_idx, is_code)
+    if prev not in (':', '&', '|', '!'):
+        return False
+    return bool(_LABEL_GROUP_ONLY_RE.match(cypher[open_idx + 1:close_idx]))
 
 
 def _prev_code_char(cypher: str, before: int, is_code: List[bool]) -> Optional[str]:
@@ -238,6 +389,9 @@ def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
             if close is None:
                 i += 1
                 continue
+            if _is_label_expression_group(cypher, i, close, is_code):
+                i = close + 1
+                continue
             prev = _prev_code_char(cypher, i, is_code)
             is_call = _is_function_call(cypher, i)
             following = _next_code_char(cypher, close + 1, is_code)
@@ -247,7 +401,11 @@ def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
             )
             if not is_call and (in_pattern_region or arrow_adjacent):
                 inner = cypher[i + 1:close]
-                yield (i, close + 1, inner, bool(_NODE_INNER_RE.match(inner)))
+                parsed = _NODE_INNER_RE.match(inner)
+                parseable = bool(parsed) and _is_wellformed_label_expr(
+                    parsed.group('labels') or ''
+                )
+                yield (i, close + 1, inner, parseable)
             # Keep scanning INSIDE the group: patterns nest in predicates such
             # as `size((n)-->())`.
             i += 1
@@ -276,6 +434,54 @@ def _is_global_reference_pattern(inner: str) -> bool:
     return bool(labels) and all(label in GLOBAL_REFERENCE_LABELS for label in labels)
 
 
+def _labels_excluding_muted(labels: str) -> str:
+    """Return `labels` as a label expression that also excludes `:Muted`.
+
+    A muted finding keeps its functional label and gains `:Muted`, so excluding
+    it is a label-expression term rather than a property filter - there is no
+    inline-property way to say "not". This is what makes a muted node
+    unmatchable by ANY pattern the agent emits, including a bare `MATCH (n)`.
+
+    Two Cypher rules drive the shape of the output:
+      - Neo4j 5 refuses to mix the legacy colon conjunction with the `&|!`
+        operators in one pattern, so `:A:B` is re-spelled `:A&B` before the
+        `&!Muted` term is appended. `:A:B&!Muted` would be a syntax error.
+      - `&` binds tighter than `|`, so a union is parenthesised first:
+        `:A|B` becomes `:(A|B)&!Muted`, never `:A|B&!Muted` (which would read as
+        `A OR (B AND NOT Muted)` and happily return a muted A).
+
+    A backticked label may itself contain ':' or '|', so it is copied verbatim
+    rather than scanned for operators.
+    """
+    raw = (labels or '').strip()
+    body = raw[1:].strip() if raw.startswith(':') else raw
+    if not body:
+        return f":!{MUTED_LABEL}"
+
+    rewritten = []
+    has_union = False
+    i, end = 0, len(body)
+    while i < end:
+        char = body[i]
+        if char == '`':
+            close = body.find('`', i + 1)
+            close = end - 1 if close == -1 else close
+            rewritten.append(body[i:close + 1])
+            i = close + 1
+            continue
+        if char == ':':
+            rewritten.append('&')
+        else:
+            has_union = has_union or char == '|'
+            rewritten.append(char)
+        i += 1
+
+    expr = ''.join(rewritten).strip()
+    if has_union:
+        expr = f"({expr})"
+    return f":{expr}&!{MUTED_LABEL}"
+
+
 def _with_tenant_props(inner: str) -> str:
     match = _NODE_INNER_RE.match(inner)
     var = (match.group('var') or '').strip()
@@ -288,8 +494,10 @@ def _with_tenant_props(inner: str) -> str:
     else:
         new_props = f"{{{TENANT_PROPS}}}"
 
-    head = f"{var}{labels}"
-    return f"({head} {new_props})" if head else f"({new_props})"
+    # The label expression always survives as at least `:!Muted`, so the head is
+    # never empty - an anonymous `()` endpoint becomes `(:!Muted {...})`.
+    head = f"{var}{_labels_excluding_muted(labels)}"
+    return f"({head} {new_props})"
 
 
 def inject_tenant_filter(cypher: str, user_id: str, project_id: str) -> str:
@@ -390,8 +598,24 @@ def scope_query(cypher: str, user_id: str, project_id: str) -> str:
     LLM-generated or worker-supplied Cypher.
 
     Raises:
-        TenantScopeError: the query cannot be proven scoped to one project.
+        TenantScopeError: the query cannot be proven scoped to one project, or
+            it references the reserved `Muted` label.
     """
+    # Checked BEFORE injection: afterwards every pattern carries our own
+    # `!Muted` term, so the query would always look like it names the label.
+    if not has_balanced_parens(cypher):
+        raise TenantScopeError(
+            "Query rejected: unbalanced parentheses, so its node patterns could "
+            "not be scoped to this project."
+        )
+
+    if names_muted_label(cypher):
+        raise TenantScopeError(
+            f"Query rejected: the '{MUTED_LABEL}' label is reserved and cannot be "
+            f"referenced. Findings an operator has suppressed as noise are not "
+            f"visible to the agent and cannot be queried."
+        )
+
     filtered = inject_tenant_filter(cypher, user_id, project_id)
     unscoped = find_unscoped_node_pattern(filtered)
     if unscoped:

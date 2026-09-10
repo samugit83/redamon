@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.14.1] - 2026-09-09
+
+### Fixed
+
+- **`./redamon.sh update` no longer refuses to pull after a scan, and its error no longer makes the problem permanent** ([#185](https://github.com/samugit83/redamon/issues/185)). RedAmon was dirtying its own checkout: `recon/` is bind-mounted read-write into the spawned recon container, and two **git-tracked** data directories are re-downloaded there on a 24h cache miss -- `recon/main_recon_modules/data/mitre_db/` (the MITRE CVE/CAPEC/CWE database, written by `add_mitre.py`) and `recon/main_recon_modules/data/wappalyzer_cache/` (the Wappalyzer fingerprints, written by `http_probe.py`). So a scan or two left tracked files modified and `git pull --ff-only` refused. `update` was supposed to restore those before pulling, but `RUNTIME_TRACKED_PATHS` listed only the `.last_update` marker, which had since been gitignored and was therefore untracked -- the restore was dead code while the 16 files beside it drifted. It now covers both directories. Worse than the refusal was the advice: the error told users to run `git commit -am 'local changes'`, which is precisely what converts a self-healing dirty tree into a permanent dead end, because the checkout then holds a commit the project does not and no fast-forward can ever pass it again. At that point the message was also simply false, still claiming "the working tree has local changes" while `git status` was provably empty. That suggestion is gone, and the dirty-tree branch now warns against it explicitly ([68d0d906]).
+- **`update` tells the four failure modes apart instead of blaming local changes for all of them.** A diverged branch, a genuinely dirty tree, a checkout with no git remote (a zip download rather than a clone) and a transport/auth failure each get their own diagnosis and their own runnable recovery command; the last of these now prints git's own message rather than guessing. A checkout diverged **only** by committed runtime files repairs itself and reports what it discarded, so the update completes instead of stranding the user. That reset is the single destructive step in `update` and is gated four ways -- the working tree must be clean, `git status` must be readable, every path in the diverging commits must sit under a RedAmon runtime data directory, and no path may contain a traversal -- with `REDAMON_NO_AUTO_RESET=1` to disable it outright. Anything touching real work stops the update with instructions that preserve it ([68d0d906]).
+- **A mixed root/user checkout now fails fast with the one command that fixes it.** An earlier `sudo ./redamon.sh install` (or the `sudo git commit` the old message provoked) leaves root-owned files in a user-owned clone, and the next non-root run failed piecemeal: git could not rewrite `.git/index`, `_gpu_export_env` could not write `.torch-variant`, and none of the errors pointed at the cause. `update` now checks up front and stops with the `chown`, `install` warns at the point the mistake is made, and a runtime data file that is clean but root-owned is flagged **before** a release that changes it makes `git pull` fail with `unable to unlink ... Permission denied`. A restore that cannot write its target no longer swallows the failure ([68d0d906]).
+
+### Note
+
+A checkout that has **already** diverged still needs one manual recovery, because the fix ships inside `redamon.sh` -- the very file such a checkout cannot pull:
+
+```bash
+cd ~/redamon
+sudo chown -R "$(id -un):$(id -gn)" .   # only if an earlier run used sudo
+git fetch origin
+git reset --hard origin/master
+./redamon.sh update
+```
+
+From this release on it is automatic. See [docs/readmes/TROUBLESHOOTING.md](docs/readmes/TROUBLESHOOTING.md) for the symptom table.
+
+## [6.14.0] - 2026-09-08
+
+### Added
+
+- **Priority Board: a ranked list of every finding, with muting that actually hides.** A new page under the graph that pulls all eight finding types (network + DAST vulnerabilities, secrets, JS-recon, multiscanner, supply-chain packages, GitHub secrets and sensitive files) into one table and orders them by how much they matter, worst first. A deterministic Python scorer does the ranking off signals it reads straight from the graph -- a confirmed exploit or a successful attack-chain step outranks a CISA-KEV CVE, which outranks a live DAST hit with a stored proof-of-concept, which outranks an injectable parameter, and header-hygiene facts (a missing DMARC record, say) sink to the bottom instead of being flagged "needs verification". Each row shows the exact signals that fired as chips (`KEV`, `exploited`, `DAST`, `injectable`, `agent-failed`), so the position is transparent, and a finding the agent actually broke into is marked proven from the graph, never from a guess. Muting a finding adds a `:Muted` label that removes it everywhere it counts -- the graph view, the agent's own queries, analytics, RedZone, reports and export -- while a re-scan still matches the same node so nothing duplicates and unmute is lossless; enforcement lives at the single tenant-isolation chokepoint so no read path can leak a muted node. Runs in the background and survives you leaving the page: re-open the tab and it re-attaches to the run in flight, and only an explicit Stop cancels it. A large language model, when a key is configured, is used only to cluster cross-tool duplicates and write a one-line "why it matters" for the top findings; with no key the ranking is still complete and correct.
+
+- **Origin-IP Discovery: unmask the real server behind a CDN/WAF.** A new GROUP 6 Phase A recon module (parallel with Nuclei, GraphQL, Subdomain Takeover, VHost & SNI, Web Cache Poisoning) that gathers candidate origin IPs from many fingerprints (non-CDN subdomains, SPF/MX records, crt.sh SANs, the favicon hash, the internet-wide scanners Shodan/Censys/FOFA/ZoomEye/OTX/VirusTotal, and SecurityTrails/ViewDNS passive DNS), then confirms each by fetching it directly and Host-header-forged and scoring HTML + TLS cert + headers against the fronted site. Fail-closed SSRF / CDN-range / RoE filters before any probe, a per-scan search budget, and a confirmed origin written as a `HAS_ORIGIN` edge and a `waf_bypass` Vulnerability node (converging with the WAF-bypass security check via a tenant-scoped id). Runs in the full pipeline and as a standalone partial recon; disabled by default.
+
+## [6.13.1] - 2026-09-07
+
+### Fixed
+
+- **"Test Connection" no longer blames your LLM endpoint when the agent is down** ([#184](https://github.com/samugit83/redamon/issues/184)). Adding an OpenAI-compatible provider and pressing Test surfaced `TypeError: fetch failed` directly under the Base URL field, so an agent-container outage read as "your endpoint is wrong". The webapp does not dial your model itself; it proxies to the `agent` container, which does, so a missing agent failed with `getaddrinfo ENOTFOUND agent` before your endpoint was ever contacted. Every webapp→agent call now goes through one wrapper that classifies transport failures and returns a 503 naming the real cause ("the agent container is not running... `docker compose ps -a agent`... this is not a problem with the endpoint you configured"), logged verbatim server-side too. The LLM Providers form preflights the agent and, when it is down, shows a banner with a Re-check button and disables Test before you can click. Also fixed on this path: a wrong `localhost:8090` fallback (nothing listens there from inside the container), a missing request timeout so a hung agent no longer hangs the route, and a per-request budget derived from the provider's own Timeout setting so a slow first-token model is not cut short and then misreported as an agent timeout.
+- **Kali sandbox no longer crash-loops on start after an upgrade** ([#181](https://github.com/samugit83/redamon/issues/181)). Every MCP tool server (network_recon, nuclei, metasploit, nmap, playwright) died on import with `ImportError: FastMCP server support is not installed` / `No module named 'mcp.server.request_state'`, so the RedAmon Terminal could never connect ("WebSocket connection failed. Is the kali-sandbox running?"). Root cause: `fastmcp` and `mcp` were unpinned, so on the `kali-rolling:latest` base (now Python 3.14) `fastmcp` resolved to the 4.x `fastmcp-slim` split, whose server code imports `mcp.server.request_state` (only in `mcp>=2.0`), while a later `pip install semgrep` in the same shared venv hard-pins `mcp==1.29.0` and silently downgraded it, with the build still exiting 0. Pinned the matched pair `fastmcp==3.2.4` + `mcp==1.29.0` (3.2.4 is the newest fastmcp still compatible with `mcp<2.0`, so it coexists with semgrep and does not import `request_state`).
+
+### Changed
+
+- **`redamon.sh status` no longer hides a stopped core service** ([#184](https://github.com/samugit83/redamon/issues/184)). It used a bare `docker compose ps`, which omits exited containers, so a crashed `agent` simply vanished from the table and the stack looked healthy while the UI failed with `ENOTFOUND agent`. It now uses `docker compose ps -a` and prints an explicit "Core services NOT running" section naming each stopped service with the command to inspect it; on a clone that was never installed it points the user at `./redamon.sh install` rather than mislabelling a fresh checkout as an outage.
+- **The kali-sandbox build now guards against this class of dependency skew** ([#181](https://github.com/samugit83/redamon/issues/181)). A global pip constraints file (`mcp/kali-sandbox/pip-constraints.txt`, wired via `PIP_CONSTRAINT`) binds *every* `pip install` in the image, so a later isolated install can no longer silently downgrade a pinned library without failing the build; and a build-time smoke test imports `FastMCP` plus all five MCP server modules as the last step, turning any future skew into a hard build failure instead of a runtime crash-loop.
+
+## [6.13.0] - 2026-09-01
+
+### Added
+
+- **The agent auto-detects and suggests the reverse-shell LHOST** ([#180](https://github.com/samugit83/redamon/issues/180)). `redamon.sh` detects the Docker host's LAN IP on every `install`/`update`/`up` and passes it to the agent, which now proposes it when LHOST is unset -- in chat, and as a **"Detected (default route) -- Use this"** one-click fill in the Agent Behaviour settings (project form and the in-graph settings drawer) -- instead of guessing the unreachable `172.x` sandbox address. The value is IPv4-only, never persisted (so it re-detects on a network change), and overridable with `HOST_LAN_IP=<ip>` in `.env` for VPN / multi-homed hosts. Served by a new read-only agent endpoint `GET /host-ip` behind the JWT-gated webapp proxy ([b8e11cbf]).
+
+### Fixed
+
+- **Reverse-shell LHOST guidance no longer points at the wrong address** ([#180](https://github.com/samugit83/redamon/issues/180)). The agent's tools run inside `kali-sandbox` on a private `172.x` bridge a target cannot reach; the reachable address is the host's LAN IP, with port `4444` forwarded host->container. The settings hint, the agent's own prompt, and the docs now say so (previously a hint suggested a `172.x` container address), and `iproute2` is installed in the sandbox so the agent's `ip addr` probe no longer fails with "command not found" ([b8e11cbf]).
+
+## [6.12.0] - 2026-08-29
+
+### Added
+
+- **`proxy_brain`: the agent's Burp Suite in code.** A single code-as-action tool replaces the ten former `proxy_*` traffic tools. Instead of a fixed menu of narrow commands, the agent writes Python against a pre-imported `redamon` SDK and composes the attack itself (loops, conditionals, crypto, oracles), so anything Burp does (Repeater, Intruder, Comparer, Sequencer, Decoder, JWT Editor, Autorize, Turbo Intruder) is a few lines over the captured [TrafficMind](docs/readmes/README.TRAFFIC.md) corpus. It runs in the kali-sandbox but holds **no database credential**: it reaches the corpus only through the agent's `/traffic/exec` (read) and `/traffic/replay` (active PREPARE) endpoints, the same broker pattern the graph terminal uses, so a foothold in the sandbox cannot touch the store directly ([8096c72a], [2420322d]).
+- **The `redamon` SDK.** Read ops (`search`, `get`, `sitemap`, `params`, `grep`, `diff`, `to_curl`, `query`) in any phase, pure crypto (`decode`, `jwt(tok).forge(...)`), and active ops (`replay`, `batch(parallel=True)`, `fuzz`) gated to the exploitation phases. `batch(parallel=True)` fires prepared sends concurrently over a real thread pool, a genuine race-condition window (limit overrun, double-spend, coupon reuse) ([4c844d93]).
+- **An on-demand operator's manual the agent reads from its own code** via `redamon.manual()` (core map, under 8k) and `redamon.manual("<technique>")` (one deep section), so the cookbook never bloats the prompt. Twenty technique sections ship: recon, intruder, sqli, authz, jwt, race, smuggling, cache, injection, decode, sequencer, flows, report, nosql, graphql, lfi, cmdi, cors, xxe, auth ([4c844d93], [90f232fc]).
+- **A deliberately vulnerable practice target, `testing/guinea_pigs/proxy_brain_target/`** (`pbtarget`), with one endpoint per technique (IDOR, SQLi, reflected XSS, a JWT weak-secret flag, a single-use coupon race, open redirect, CORS, command injection) for end-to-end validation ([ab2708f0]).
+- **Explicit domain-vs-IP targeting in the project form** ([#179](https://github.com/samugit83/redamon/issues/179)). Target mode is now a two-card selector (Domain / Hostname vs IP / CIDR) that separates how a target is named from where it lives, with private/RFC1918 detection warnings and an in-form note on which recon steps are domain-only and skipped in IP mode ([96e3a51a]).
+- **An "Internal Network & Active Directory" recon preset:** IP mode, AD / internal-service ports, Nmap NSE, LAN-safe masscan rate, and public-only tools (OSINT, subdomain enumeration, WHOIS) turned off. Every preset is now tagged with a `targetProfile` + `environment`, the preset picker gains a target-type filter (All / Domain / External IP / Local network) with classification chips, and applying a preset drives the `ipMode` toggle from its profile (create mode only, non-destructive) ([96e3a51a]).
+
+### Changed
+
+- **Security invariants on active sends are enforced in code on the agent side**, so a compromised sandbox cannot bypass them by editing its own script: replays are host-pinned to the origin transaction (`_origin_url` forces a rooted path and asserts the rebuilt netloc matches, else refuses), the `/traffic/replay` endpoint gates sends to the exploitation phases from the verified tag, a per-session send budget (`TRAFFIC_REPLAY_BUDGET`, default 1000) caps one confirmed run, and stealth mode holds back fuzz / batch / rapid replay ([902bef59]).
+- **Tenant isolation travels as an HMAC-signed tag** the agent mints and the endpoint verifies against `INTERNAL_API_KEY` (which the kali worker does not hold), failing closed on a missing key or claim; every read still hard-injects the project + user filter and the `query` op remains a constrained builder with no raw-SQL surface ([8096c72a], [902bef59]).
+- **The agent tool registry, phase map, dangerous-tools set, prompts, and all built-in and community skills** now reference the single `proxy_brain` tool and its SDK instead of the removed `proxy_*` names ([0b41c9d4]). The README, `README.TRAFFIC.md` (section 13 rewritten to the broker architecture), `README.AGENTIC_SYSTEM.md`, and the wiki are updated to match, with a new dedicated Proxy Brain wiki page.
+
+### Fixed
+
+- **`proxy_brain` now pre-imports the `redamon` SDK into the child interpreter**, fixing a live-session `NameError: name 'redamon' is not defined` when agent code used the SDK without importing it; a source-AST regression test guards the wrapper contract ([533285e5], [b9822170]).
+- **Manual recipes corrected after a deep review:** the authz recipe compared against a replay baseline (not formatted `get()` text that never matches), the request-smuggling recipe was rewritten as find-candidates plus a `kali_shell` confirm (curl and the proxy normalise CL/TE framing), JWT forging uses the public `jwt().forge()` rather than a private helper, and GraphQL alias payloads use `json.dumps` ([be19c83b]).
+- **`redamon.search` accepts both a filters dict and keyword arguments**, so `search({...})` and `search(host=...)` both work ([0b41c9d4]).
+
+### Removed
+
+- **The ten `proxy_*` agent tools** (`proxy_search`, `proxy_get`, `proxy_sitemap`, `proxy_params`, `proxy_grep`, `proxy_diff`, `proxy_to_curl`, `proxy_query`, `proxy_replay`, `proxy_fuzz`) and their in-process dispatch (`_run_active_proxy` and the executor intercepts), fully superseded by `proxy_brain` ([2420322d]).
+
+## [6.11.6] - 2026-08-27
+
+### Added
+
+- **New built-in agent skill: Cryptographic Attacks (`crypto_attack`).** A first-class attack class for breaking a cryptographic construction the target trusts -- decrypting or forging a cookie / token / signature / MAC via CBC padding oracles and bit-flipping, ECB analysis, stream / nonce reuse (two-time pad), JWT signature attacks (`alg:none`, HS/RS confusion, weak-secret cracking, `kid` / `jwk` / `jku`), hash length extension, RSA weaknesses, and predictable-token / PRNG reconstruction. Classified by the Intent Router, injected into the exploitation-phase prompt, toggleable per project, and badged **CRYPT**. Attacks are scripted in `execute_code` (PyCryptodome / pwntools / PyJWT) backed by `openssl` / `jwt_tool` / `hashcat` in kali-sandbox. Content is fairness-clean (generic crypto tradecraft only) and covered by a 41-test suite.
+
 ## [6.11.5] - 2026-08-23
 
 ### Added

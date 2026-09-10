@@ -115,6 +115,7 @@ from .http_smuggling_prompts import HTTP_SMUGGLING_TOOLS
 
 # Re-export from XML External Entity (XXE) injection prompts
 from .xxe_prompts import XXE_TOOLS
+from .crypto_attack_prompts import CRYPTO_ATTACK_TOOLS
 
 # Re-export from unclassified attack path prompts
 from .unclassified_prompts import UNCLASSIFIED_EXPLOIT_TOOLS
@@ -376,6 +377,11 @@ def build_builtin_skill_workflow(
             and "xxe" in enabled_builtins
             and "execute_curl" in allowed_tools):
         parts.append(XXE_TOOLS)
+        return parts
+    elif (attack_path_type == "crypto_attack"
+            and "crypto_attack" in enabled_builtins
+            and "execute_code" in allowed_tools):
+        parts.append(CRYPTO_ATTACK_TOOLS)
         return parts
     return parts
 
@@ -648,6 +654,7 @@ __all__ = [
     "HTTP_SMUGGLING_TOOLS",
     # XML External Entity (XXE) injection
     "XXE_TOOLS",
+    "CRYPTO_ATTACK_TOOLS",
     # Post-exploitation
     "POST_EXPLOITATION_TOOLS_STATEFULL",
     "POST_EXPLOITATION_TOOLS_STATELESS",

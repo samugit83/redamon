@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -25,6 +26,7 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (sd:Subdomain)-[:HAS_BASE_URL]->(bu)
        OPTIONAL MATCH (ep)-[:HAS_VULNERABILITY]->(v:Vulnerability)
          WHERE v.source IN ['graphql_scan','graphql_cop']
+           AND ${notMuted('v')}
        RETURN ep.full_url                             AS endpointUrl,
               ep.path                                 AS path,
               bu.url                                  AS baseUrl,

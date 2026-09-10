@@ -159,6 +159,16 @@ export const LIVE_GRAPH_QUERY = `
         MATCH (d:ChainDecision {project_id: $projectId})-[r19]->(target)
         RETURN d as n, r19 as r, target as m
       }
+      // Mute enforcement, applied ONCE to the union rather than inside each
+      // branch: a branch added later is covered without being remembered. It
+      // sits before the LIMIT so suppressed findings do not eat the row budget.
+      //
+      // This is also what keeps labels[0] honest downstream. A muted node is
+      // dual-labelled (Vulnerability + Muted) and Neo4j does not order labels,
+      // so if one reached formatGraphRecords it could render as type "Muted".
+      // Excluding it here is a correctness guarantee, not only a visibility one.
+      WITH n, r, m
+      WHERE NOT n:Muted AND NOT m:Muted
       RETURN n, r, m
       LIMIT $maxRecords
       `

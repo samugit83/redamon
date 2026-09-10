@@ -39,6 +39,7 @@ function makeReportData(overrides: Partial<ReportData> = {}): ReportData {
     generatedAt: '2026-04-03T00:00:00.000Z',
     graphOverview: {
       totalNodes: 0,
+      suppressedCount: 0,
       nodeCounts: [],
       subdomainStats: { total: 0, resolved: 0, uniqueIps: 0 },
       endpointCoverage: { baseUrls: 0, endpoints: 0, parameters: 0 },
@@ -631,5 +632,65 @@ describe('Appendix Tools Table', () => {
     expect(html).toContain('jsluice')
     expect(html).toContain('JS Recon')
     expect(html).toContain('AlienVault OTX')
+  })
+})
+
+// Strategy row 4: the Scope section of a Domain-batch report.
+// A batch project has NO targetDomain: its scope is the derived group roots. The
+// template read targetDomain directly, so the client-facing deliverable stated
+// its scope as "N/A" and its mode as plain "Domain".
+describe('Scope section: Domain batch', () => {
+  const batchData = (groups: unknown) => makeReportData({
+    project: {
+      id: 'p1', name: 'Batch Project', targetDomain: '', userId: 'u1',
+      createdAt: new Date(), updatedAt: new Date(),
+      domainBatchMode: true, domainBatchGroups: groups,
+    } as never,
+  })
+
+  const GROUPS = [
+    { rootDomain: 'domain1.com', prefixes: ['sub1.'] },
+    { rootDomain: 'domain2.it', prefixes: ['sub2.'] },
+    { rootDomain: 'domain3.com', prefixes: ['sub3.', 'suba.sub3.'] },
+  ]
+
+  test('every group root is named in the scope', () => {
+    const html = generateReportHtml(batchData(GROUPS))
+    for (const root of ['domain1.com', 'domain2.it', 'domain3.com']) {
+      expect(html).toContain(root)
+    }
+  })
+
+  test('the scope row is not N/A', () => {
+    const html = generateReportHtml(batchData(GROUPS))
+    expect(html).toContain('Target Domains (batch)')
+    expect(html).not.toContain('<td>Target Domains (batch)</td><td>N/A</td>')
+  })
+
+  test('the scan mode reads Domain batch', () => {
+    expect(generateReportHtml(batchData(GROUPS))).toContain('Domain batch')
+  })
+
+  test('a batch with no groups degrades to N/A rather than throwing', () => {
+    const html = generateReportHtml(batchData([]))
+    expect(html).toContain('Target Domains (batch)')
+    expect(html).toContain('N/A')
+  })
+
+  test('a null group list does not throw', () => {
+    expect(() => generateReportHtml(batchData(null))).not.toThrow()
+  })
+
+  test('a single-domain report is unchanged', () => {
+    const html = generateReportHtml(makeReportData())
+    expect(html).toContain('Target Domain')
+    expect(html).toContain('example.com')
+    expect(html).not.toContain('Domain batch')
+  })
+
+  test('group roots are HTML-escaped like every other target field', () => {
+    const html = generateReportHtml(batchData([{ rootDomain: '<img src=x>.com' }]))
+    expect(html).not.toContain('<img src=x>.com')
+    expect(html).toContain('&lt;img')
   })
 })

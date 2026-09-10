@@ -4,6 +4,7 @@ import { createHash } from 'crypto'
 
 // Reuse the graph API's Neo4j driver
 import { getGraphSession } from '../../../graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 const PROJECT_ID_RE = /^[a-zA-Z0-9_-]+$/
 
@@ -77,6 +78,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const findingsResult = await session.run(
       `
       MATCH (jf:JsReconFinding {project_id: $pid})
+      WHERE ${notMuted('jf')}
       RETURN jf.finding_type AS findingType,
              jf.severity AS severity,
              jf.confidence AS confidence,
@@ -100,6 +102,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const secretsResult = await session.run(
       `
       MATCH (s:Secret {project_id: $pid, source: 'js_recon'})
+      WHERE ${notMuted('s')}
       RETURN s.id AS id,
              s.secret_type AS name,
              s.severity AS severity,
@@ -123,6 +126,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       MATCH (e:Endpoint {project_id: $pid})
       WHERE e.source = 'js_recon' OR e.js_recon_source = true
       OPTIONAL MATCH (jf:JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(e)
+        WHERE ${notMuted('jf')}
       RETURN e.path AS path,
              e.method AS method,
              e.full_url AS full_url,
@@ -360,7 +364,8 @@ export async function HEAD(_request: NextRequest, { params }: RouteParams) {
   const session = getGraphSession()
   try {
     const result = await session.run(
-      `MATCH (jf:JsReconFinding {project_id: $pid}) RETURN count(jf) AS cnt LIMIT 1`,
+      `MATCH (jf:JsReconFinding {project_id: $pid}) WHERE ${notMuted('jf')}
+       RETURN count(jf) AS cnt LIMIT 1`,
       { pid: projectId }
     )
     const count = result.records[0]?.get('cnt')?.low ?? 0

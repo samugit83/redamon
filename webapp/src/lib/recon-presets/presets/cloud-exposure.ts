@@ -42,6 +42,8 @@ Cloud security engineers, red teams targeting cloud-hosted organizations, and se
 7. CVE lookup maps service versions to known cloud-related vulnerabilities
 8. MITRE enrichment classifies findings by CWE weakness type and CAPEC attack pattern
 9. Security checks flag Kubernetes API exposure, open databases, admin panels, and cloud misconfigs`,
+  targetProfile: 'both',
+  environment: 'external',
   parameters: {
     // Modules: domain_discovery + port_scan + http_probe + vuln_scan
     // No resource_enum, no js_recon
@@ -226,6 +228,11 @@ Cloud security engineers, red teams targeting cloud-hosted organizations, and se
     securityCheckMaxWorkers: 15,
 
     // --- OSINT: ALL providers enabled ---
+    // --- Origin-IP Discovery: unmask the real origin behind the CDN/WAF ---
+    originDiscoveryEnabled: true,
+    originDiscoveryKeyless: true,
+    originDiscoveryScanners: true,
+    originDiscoveryPassiveDns: true,
     osintEnrichmentEnabled: true,
     shodanEnabled: true,
     shodanHostLookup: true,

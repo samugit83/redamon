@@ -78,6 +78,28 @@ describe('useGraphData', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test('disabled fetches nothing, and neither refetch path can sneak one through', async () => {
+    const { result } = renderHook(() => useGraphData('p1', null, false), { wrapper })
+    expect(fetchMock).not.toHaveBeenCalled()
+    // react-query still honours an explicit refetch() on a disabled query, and
+    // the graph page fires one from every recon SSE event - so the guard has to
+    // live on the refetch paths too, not only on `enabled`.
+    await result.current.refetch()
+    await result.current.refetchFresh()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('re-enabling fetches the graph it had been holding back', async () => {
+    const { result, rerender } = renderHook(
+      ({ on }: { on: boolean }) => useGraphData('p1', null, on),
+      { wrapper, initialProps: { on: false } }
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    rerender({ on: true })
+    await waitFor(() => expect(result.current.data).toBeTruthy())
+    expect(urls()).toEqual(['/api/graph?projectId=p1'])
+  })
+
   test('live and version reads are cached under different keys', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const shared = ({ children }: { children: React.ReactNode }) =>

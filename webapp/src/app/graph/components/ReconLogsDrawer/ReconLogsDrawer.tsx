@@ -22,6 +22,11 @@ interface ReconLogsDrawerProps {
   totalPhases?: number
   errorMessage?: string | null
   hidePhaseProgress?: boolean
+  /** Domain batch: the OUTER progress. Phases restart at 1 for every group, so
+   *  "Phase 3/6" alone reads as the scan going backwards when group 2 starts. */
+  currentGroup?: string | null
+  groupNumber?: number | null
+  totalGroups?: number | null
 }
 
 export function ReconLogsDrawer({
@@ -40,7 +45,15 @@ export function ReconLogsDrawer({
   totalPhases = 7,
   errorMessage,
   hidePhaseProgress = false,
+  currentGroup = null,
+  groupNumber = null,
+  totalGroups = null,
 }: ReconLogsDrawerProps) {
+  // Prefix every status line with the batch group, so a phase counter restarting
+  // reads as "next domain" rather than "the scan went backwards".
+  const groupPrefix = groupNumber && totalGroups
+    ? `Group ${groupNumber}/${totalGroups}${currentGroup ? ` (${currentGroup})` : ''} - `
+    : ''
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -84,15 +97,15 @@ export function ReconLogsDrawer({
       case 'starting':
         return 'Starting...'
       case 'running':
-        if (!currentPhase) return 'Running...'
+        if (!currentPhase) return `${groupPrefix}Running...`
         return hidePhaseProgress
-          ? `Scanning: ${currentPhase}`
-          : `Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
+          ? `${groupPrefix}Scanning: ${currentPhase}`
+          : `${groupPrefix}Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
       case 'paused':
-        if (!currentPhase) return 'Paused'
+        if (!currentPhase) return `${groupPrefix}Paused`
         return hidePhaseProgress
-          ? `Paused: ${currentPhase}`
-          : `Paused - Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
+          ? `${groupPrefix}Paused: ${currentPhase}`
+          : `${groupPrefix}Paused - Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
       case 'completed':
         return 'Completed'
       case 'error':

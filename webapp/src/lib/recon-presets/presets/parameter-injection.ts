@@ -41,6 +41,8 @@ Pentesters and bug bounty hunters focused on injection vulnerabilities. Ideal fo
 6. Arjun brute-forces hidden parameters on all endpoints across 5 HTTP methods
 7. jsluice extracts parameterized URLs from JavaScript files
 8. Nuclei runs injection-targeted templates in DAST mode with OOB detection`,
+  targetProfile: 'domain',
+  environment: 'external',
   parameters: {
     // Modules: domain discovery + http probe + resource enum + vuln scan
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum', 'vuln_scan'],

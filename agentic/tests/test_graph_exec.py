@@ -83,10 +83,29 @@ def main():
     with mock.patch.object(api, "_graph_exec_get_driver", return_value=_FakeDriver(cap)):
         run(api.graph_exec(req(op="types", user_id="U", project_id="P")))
     check("types query is tenant-scoped", "$tenant_user_id" in cap.get("q", ""))
+    # op=types never reaches scope_query, so the mute exclusion every agent
+    # query gets for free has to be written into the fixed query by hand. Without
+    # it the worker sees suppressed findings in the node-type counts, and `Muted`
+    # itself is reported as a node type.
+    check("types query excludes muted findings", "NOT n:Muted" in cap.get("q", ""))
     cap = {}
     with mock.patch.object(api, "_graph_exec_get_driver", return_value=_FakeDriver(cap)):
         run(api.graph_exec(req(op="schema", user_id="U", project_id="P")))
     check("schema runs the fixed visualization call", "db.schema.visualization" in cap.get("q", ""))
+
+    print("=== op=cypher: the worker cannot ask about suppressed findings ===")
+    # Mute must be invisible to the sandbox exactly as it is to the agent: the
+    # label is refused by scope_query, not scoped, so there is no probe for it.
+    for probe in ["MATCH (n:Muted) RETURN n",
+                  "MATCH (v:Vulnerability) WHERE v:Muted RETURN v",
+                  "MATCH (v:Vulnerability) WHERE NOT v:Muted RETURN v"]:
+        resp = run(api.graph_exec(req(op="cypher", cypher=probe, user_id="U", project_id="P")))
+        check(f"muted probe refused 400: {probe[:34]}", resp.status_code == 400)
+
+    cap = {}
+    with mock.patch.object(api, "_graph_exec_get_driver", return_value=_FakeDriver(cap)):
+        run(api.graph_exec(req(op="cypher", cypher="MATCH (v:Vulnerability) RETURN v", user_id="U", project_id="P")))
+    check("worker read excludes muted findings", "!Muted" in cap.get("q", ""))
 
     print("=== the BYPASS attempt: no raw/unscoped op exists ===")
     # A compromised worker cannot ask for an arbitrary unscoped query: there is no
@@ -138,6 +157,39 @@ def main():
     ok_count = sum(1 for _ in range(200) if run(_call_auth_only("scoped-xyz")))
     check("auth-only allows 200 consecutive authed calls (no rate limit)", ok_count == 200)
     check("auth-only rejects a bad key (401)", run(_call_auth_only("wrong")) is False)
+    os.environ.pop("SCANNER_API_KEY", None)
+
+    print("=== /graph/triage is MASTER-key only (the sandbox must not reach it) ===")
+    # The kali-sandbox holds SCANNER_API_KEY by design and NOT INTERNAL_API_KEY
+    # (docker-compose.yml). require_internal_auth_only accepts both, which is
+    # right for the read-only fixed-op /graph/exec and wrong for an endpoint
+    # that WRITES suppression state: a compromised worker could hide findings
+    # from the operator and the agent, or stamp triage_source='human' so a later
+    # AI pass would refuse to correct it.
+    from llm_guard import require_master_internal_auth
+    tri_deps = _route_deps("/graph/triage")
+    check("/graph/triage exists", tri_deps is not None)
+    check("/graph/triage requires the MASTER key", require_master_internal_auth in (tri_deps or []))
+    check("/graph/triage does NOT accept the scoped scanner key",
+          require_internal_auth_only not in (tri_deps or []))
+    check("/graph/exec still accepts the scanner key (the worker needs reads)",
+          require_internal_auth_only in (ge_deps or []))
+
+    os.environ["INTERNAL_API_KEY"] = "master-key"
+    os.environ["SCANNER_API_KEY"] = "scanner-key"
+
+    async def _call_master(hdr):
+        scope = {"type": "http", "headers": [(b"x-internal-key", hdr.encode())] if hdr else [], "client": ("1.2.3.4", 9)}
+        try:
+            await require_master_internal_auth(_Req(scope))
+            return True
+        except Exception:
+            return False
+
+    check("master key accepted", run(_call_master("master-key")) is True)
+    check("SCANNER key REJECTED on the triage endpoint", run(_call_master("scanner-key")) is False)
+    check("no key rejected", run(_call_master("")) is False)
+    os.environ.pop("INTERNAL_API_KEY", None)
     os.environ.pop("SCANNER_API_KEY", None)
 
     print()

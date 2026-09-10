@@ -42,7 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git gcc make libpcap-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     # T17: pinned to a specific commit (was --depth 1 of moving master HEAD).
-    && git clone https://github.com/robertdavidgraham/masscan.git /masscan \
+    # HTTP/1.1: bookworm's git 2.39 + GitHub's edge answer the HTTP/2
+    # git-upload-pack POST with 401, which git reports as a credential prompt.
+    && git -c http.version=HTTP/1.1 clone https://github.com/robertdavidgraham/masscan.git /masscan \
     && cd /masscan \
     && git -c advice.detachedHead=false checkout 94e118ccd26c2fb263fb2fe731043f7b3240723c \
     && make -j$(nproc)
@@ -129,8 +131,12 @@ RUN mkdir -p /app/recon/output \
 # Copy requirements first (for better Docker layer caching)
 COPY recon/requirements.txt /app/recon/requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
+# Install Python dependencies. The `git config` is not incidental: two
+# requirements are `git+https://` VCS installs, and pip shells out to
+# bookworm's git 2.39, whose HTTP/2 git-upload-pack POST GitHub answers with
+# 401 (surfacing as a credential prompt in a TTY-less build).
+RUN git config --system http.version HTTP/1.1 && \
+    pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /app/recon/requirements.txt
 
 # Copy Go binaries from build stages

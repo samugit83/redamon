@@ -32,84 +32,47 @@ _registry_lock = threading.RLock()
 
 
 TOOL_REGISTRY = {
-    # ===== Captured HTTP traffic (Phase 4 §10.4) — the "Burp history" =====
-    "proxy_search": {
-        "purpose": "Search captured HTTP traffic (request history)",
-        "when_to_use": "See what requests/responses have been captured; filter by host/status/tool/flags",
-        "args_format": '"filters": "optional JSON e.g. {\\"host\\":\\"x\\",\\"only5xx\\":true,\\"hasAuth\\":true,\\"limit\\":50}"',
+    # ===== Captured HTTP traffic — the in-platform HTTP history (one code tool) =====
+    "proxy_brain": {
+        "purpose": "Write Python to hunt + exploit over the captured HTTP corpus — your in-platform web-hacking toolkit (DANGEROUS)",
+        "when_to_use": "Whenever HTTP traffic has been captured and you need to inspect, correlate, replay, fuzz, or confirm a web vuln. It is a code sandbox, not a fixed command: compose the `redamon` SDK into ANY web-proxy capability — blind-SQLi bisection, IDOR/BOLA sweeps, JWT forging, race conditions, request smuggling, cache poisoning, param mining, multi-step token flows — anything a shaped tool cannot express.",
+        "args_format": '"code": "Python. `redamon` is pre-imported. Read redamon.manual() FIRST for anything non-trivial, then write your attack."',
         "description": (
-            '**proxy_search** — the captured HTTP request history (Burp-style)\n'
-            '   - Returns transaction SUMMARIES (id, method, status, host, path, size, tool, flags); NEVER bodies\n'
-            '   - Filters: host, method, status, statusClass(2xx..5xx), tool, source, sessionId, runId, hasAuth, reflected, only5xx, q(url), bodyq(body), limit\n'
-            '   - Use the ids it returns with proxy_get / proxy_diff / proxy_to_curl'
-        ),
-    },
-    "proxy_get": {
-        "purpose": "Fetch one captured request/response in full",
-        "when_to_use": "Pull a specific transaction's headers + body into context on demand",
-        "args_format": '"id": "<transaction id>", "part": "response|request|both"',
-        "description": '**proxy_get** — full headers + body of ONE captured transaction by id (bodies are never in summaries; fetch only what you need).',
-    },
-    "proxy_sitemap": {
-        "purpose": "Aggregated observed attack surface",
-        "when_to_use": "What endpoints (host+path+method) actually exist, with hit counts + status classes",
-        "args_format": "(no args)",
-        "description": '**proxy_sitemap** — distinct endpoints observed in captured traffic; "what exists", not every request.',
-    },
-    "proxy_params": {
-        "purpose": "Distinct parameters + injectability heuristics",
-        "when_to_use": "Find params for IDOR/injection (sequential-id / uuid / jwt / base64 leads)",
-        "args_format": "(no args)",
-        "description": '**proxy_params** — distinct request params observed, with sample values + a type heuristic (IDOR/injection leads).',
-    },
-    "proxy_grep": {
-        "purpose": "Substring search across response bodies",
-        "when_to_use": "Find reflected input, leaked secrets/keys, stack traces, hardcoded endpoints",
-        "args_format": '"pattern": "text to find", "limit": 50',
-        "description": '**proxy_grep** — case-insensitive substring search across captured response bodies; returns matches + a snippet.',
-    },
-    "proxy_diff": {
-        "purpose": "Structural diff of two responses",
-        "when_to_use": "Boolean-blind SQLi / IDOR / auth-bypass: compare a baseline vs a variant response",
-        "args_format": '"id_a": "<id>", "id_b": "<id>"',
-        "description": '**proxy_diff** — diff two captured responses (status, length, headers, body).',
-    },
-    "proxy_to_curl": {
-        "purpose": "Render a captured request as curl",
-        "when_to_use": "Produce a reproducible PoC / report evidence / handoff to kali_shell",
-        "args_format": '"id": "<transaction id>"',
-        "description": '**proxy_to_curl** — render a captured request as a runnable `curl` command (read-only; sends nothing).',
-    },
-    "proxy_query": {
-        "purpose": "Ad-hoc analytical query over the traffic table",
-        "when_to_use": "Questions the shaped proxy_* tools do not cover (counts, group-bys, correlations)",
-        "args_format": '"spec": "JSON: {select:[{agg:\\"count\\"}], where:[{col,op,val}], group_by:[..], order_by:[..], limit:N}"',
-        "description": (
-            '**proxy_query** — ad-hoc analytical query over captured traffic (escape hatch)\n'
-            '   - JSON spec from an ALLOWLIST (no raw SQL); select columns/aggregations, where(op: = != > >= < <= like is_null not_null), group_by, order_by, limit\n'
-            '   - Your project + user scope is always enforced automatically'
-        ),
-    },
-    "proxy_replay": {
-        "purpose": "Resend a captured request with fields changed (DANGEROUS)",
-        "when_to_use": "IDOR/BOLA/priv-esc/auth-bypass: replay with a mutated param or a swapped auth context",
-        "args_format": '"id": "<origin transaction id>", "mutate": "JSON e.g. {\\"param\\":{\\"id\\":\\"99\\"}} or {\\"dropHeaders\\":[\\"Cookie\\"]}"',
-        "description": (
-            '**proxy_replay** (DANGEROUS — emits live traffic)\n'
-            '   - Resend a captured request with fields changed, through the capture proxy\n'
-            '   - mutate: method, path, query, param{k:v}, headers{k:v}, dropHeaders[], cookie, body\n'
-            '   - AUTH-CONTEXT SWAP: dropHeaders:["Cookie","Authorization"] or a new cookie -> IDOR/BOLA/privesc\n'
-            '   - ALWAYS sent to the ORIGIN host (cannot target a different host); recorded with isReplay'
-        ),
-    },
-    "proxy_fuzz": {
-        "purpose": "Burp-Intruder over one captured request (DANGEROUS)",
-        "when_to_use": "Iterate a payload set over one parameter and diff the responses",
-        "args_format": '"id": "<origin id>", "insertion_point": "<query param name>", "payloads": "JSON array of strings"',
-        "description": (
-            '**proxy_fuzz** (DANGEROUS — emits live traffic, noisy)\n'
-            '   - Replay one captured request iterating payloads over a query param; per-payload status/size summary\n'
-            '   - Payload count is capped; sent to the ORIGIN host only; FORBIDDEN in stealth mode'
+            '**proxy_brain** (DANGEROUS — can emit live traffic) — your web-hacking toolkit inside RedAmon.\n'
+            'You write Python; `redamon` is pre-imported and is your ONLY I/O to the captured\n'
+            'traffic and the live replay path. There is no fixed menu — it is a language: if\n'
+            'a web proxy can do it, you code it here by composing these primitives.\n'
+            '\n'
+            '  READ (no traffic, any phase): redamon.search({..}|**f) · get(id, part) · sitemap() ·\n'
+            '     params() · grep(pat) · diff(a,b) · query(spec) · to_curl(id)   (search rows have .id/.raw)\n'
+            '  DECODE (no traffic): redamon.decode(v) · redamon.jwt(tok).forge(alg_none=True|secret=..|claims=..)\n'
+            '  ACTIVE (LIVE, exploitation phase only): redamon.replay(id, mutate={..}) ·\n'
+            '     redamon.batch(id, muts, parallel=True) · redamon.fuzz(id, param, payloads)\n'
+            '  BROWSER (LIVE, exploitation only — for signals only visible AFTER JS runs, e.g. DOM XSS):\n'
+            '     redamon.browser(id) → .goto/.click/.fill/.eval (host-pinned, action-budgeted) then read\n'
+            '     .dom()/.alerts()/.console() as the oracle. See manual("browser").\n'
+            '  RESULT: redamon.finding(kind, txn_id, evidence, severity) · print(...)\n'
+            '  mutate keys: method,path,query,param,headers,dropHeaders,cookie,body — HOST IS PINNED\n'
+            '     (a replay can only ever hit the origin txn\'s host). Response: .status .headers .body .length\n'
+            '\n'
+            '  THE ORACLE PATTERN: send a variant, read ONE fact from the Response (.status / .length /\n'
+            '     a regex over .body / timing), compare to a baseline — that fact confirms the bug.\n'
+            '\n'
+            '  >>> READ THE MANUAL FIRST for anything beyond a basic search/replay. From your code:\n'
+            '        print(redamon.manual())          # core: full SDK + the capability map + section index\n'
+            '        print(redamon.manual("jwt"))     # one deep technique section, with copy-paste recipes\n'
+            '     Sections: recon, intruder, sqli, authz, jwt, race, smuggling, cache, injection,\n'
+            '     decode, sequencer, flows, browser, report. Read the section RIGHT BEFORE the code that uses it.\n'
+            '\n'
+            '  LIMITS (enforced): host-pinned · per-session send budget (~1000) · 180s/run · output\n'
+            '     truncated (print DISTILLED lines, never raw bodies) · every send is re-captured.\n'
+            '  NOT available: OAST/Collaborator (no out-of-band callbacks) — confirm blind bugs via\n'
+            '     in-band signals (reflection, diff, timing, errors) or report the sink.\n'
+            '\n'
+            '  Example — confirm reflected XSS in 3 lines:\n'
+            '     t = redamon.search(reflected=True)[0]\n'
+            '     r = redamon.replay(t.id, {"param": {"q": "rdmn<svg/onload=1>"}})\n'
+            '     if "rdmn<svg/onload=1>" in r.body: redamon.finding("xss", t.id, evidence=r, severity="high")'
         ),
     },
     "query_graph": {

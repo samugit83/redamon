@@ -84,6 +84,31 @@ from recon.main_recon_modules.add_mitre import run_mitre_enrichment
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 # ---------------------------------------------------------------------------
+# Domain batch helpers
+# ---------------------------------------------------------------------------
+from helpers.output_paths import (  # noqa: E402 - after the sys.path setup above
+    recon_output_file,
+    clear_batch_outputs,
+    merge_batch_outputs,
+    initialize_batch_canonical,
+)
+
+DOMAIN_BATCH_MODE = _settings.get('DOMAIN_BATCH_MODE', False)
+
+
+def _batch_groups() -> list:
+    """The operator-approved groups, in run order, or [] outside batch mode.
+
+    Read through a function rather than a module constant so a test can point the
+    settings dict at a different project without re-importing this module.
+    """
+    if not _settings.get('DOMAIN_BATCH_MODE', False):
+        return []
+    groups = _settings.get('DOMAIN_BATCH_GROUPS') or []
+    return groups if isinstance(groups, list) else []
+
+
+# ---------------------------------------------------------------------------
 # Background Graph DB update helper
 # ---------------------------------------------------------------------------
 # Serialized via max_workers=1 so Neo4j never gets concurrent writes,
@@ -141,52 +166,10 @@ def _graph_wait_all():
     _graph_executor = None
 
 
-def _is_roe_excluded(host: str, excluded_list: list) -> bool:
-    """Check if a host (IP or domain) matches any RoE exclusion entry.
-
-    Supports:
-    - Exact IP/domain match: "10.0.0.5" matches "10.0.0.5"
-    - CIDR match: "10.0.0.5" matches "10.0.0.0/24"
-    - Subdomain match: "payments.example.com" matches "payments.example.com"
-    """
-    import ipaddress as _ipaddress
-
-    for entry in excluded_list:
-        entry = entry.strip()
-        if not entry:
-            continue
-        # Exact string match (works for both IPs and domains)
-        if host == entry:
-            return True
-        # CIDR match: check if host IP falls within an excluded network
-        if '/' in entry:
-            try:
-                network = _ipaddress.ip_network(entry, strict=False)
-                try:
-                    if _ipaddress.ip_address(host) in network:
-                        return True
-                except ValueError:
-                    pass  # host is a domain, not an IP — skip CIDR check
-            except ValueError:
-                pass  # invalid CIDR in exclusion list
-        # Domain suffix match: "payments.example.com" should be excluded
-        # if the exclusion is a parent domain pattern
-        elif host.endswith('.' + entry):
-            return True
-    return False
-
-
-def _filter_roe_excluded(hosts: list, settings: dict, label: str = "host") -> list:
-    """Filter a list of hosts/IPs against ROE_EXCLUDED_HOSTS. Returns the filtered list."""
-    roe_excluded = settings.get('ROE_EXCLUDED_HOSTS', [])
-    if not settings.get('ROE_ENABLED', False) or not roe_excluded:
-        return hosts
-    before_count = len(hosts)
-    filtered = [h for h in hosts if not _is_roe_excluded(h, roe_excluded)]
-    removed = before_count - len(filtered)
-    if removed:
-        print(f"[RoE] Excluded {removed} {label}(s) per Rules of Engagement")
-    return filtered
+# RoE excluded-host matching lives in recon.helpers.roe_scope so active scanners
+# (origin_discovery) can enforce it without importing this module. Re-exported
+# here so `from main import _is_roe_excluded/_filter_roe_excluded` still resolves.
+from recon.helpers.roe_scope import _is_roe_excluded, _filter_roe_excluded
 
 
 def _check_roe_time_window(settings: dict, _now=None) -> tuple[bool, str]:
@@ -392,6 +375,13 @@ def _maybe_run_openapi(result: dict, settings: dict, output_file: Path) -> dict:
         return result
     try:
         from recon.main_recon_modules.openapi_recon import run_openapi_recon
+        if settings.get('DOMAIN_BATCH_MODE'):
+            group = next((group for group in settings.get('DOMAIN_BATCH_GROUPS', [])
+                          if group.get('rootDomain') == result.get('domain')), None)
+            if group is None:
+                raise ValueError('OpenAPI batch target is not in the approved groups')
+            settings = {**settings, 'TARGET_DOMAIN': group['rootDomain'],
+                        'SUBDOMAIN_LIST': list(group.get('prefixes') or [])}
         result = run_openapi_recon(result, settings)
         modules = result.setdefault('metadata', {}).setdefault('modules_executed', [])
         if 'openapi' not in modules:
@@ -602,7 +592,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     _graph_reset()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_file = OUTPUT_DIR / f"recon_{PROJECT_ID}.json"
+    output_file = recon_output_file(OUTPUT_DIR, PROJECT_ID)
 
     mock_domain = f"ip-targets.{PROJECT_ID}"
 
@@ -1032,6 +1022,9 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         if settings.get('WEB_CACHE_POISON_ENABLED', False):
             from recon.cache_scan import run_cache_scan_isolated
             ip_phase_a['cache_scan'] = run_cache_scan_isolated
+        if settings.get('ORIGIN_DISCOVERY_ENABLED', False):
+            from recon.main_recon_modules.origin_discovery import run_origin_discovery_enrichment_isolated
+            ip_phase_a['origin_discovery'] = run_origin_discovery_enrichment_isolated
 
         if ip_phase_a:
             print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(ip_phase_a.keys())})")
@@ -1092,7 +1085,9 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     Returns:
         Complete reconnaissance data including WHOIS and subdomains
     """
-    # Parse target if not provided
+    # Parse target if not provided. The module-level SUBDOMAIN_LIST is only a
+    # fallback for the single-domain path; a Domain-batch group always passes its
+    # own target_info, because its prefixes differ per group.
     if target_info is None:
         target_info = parse_target(target, SUBDOMAIN_LIST)
 
@@ -1121,10 +1116,13 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     else:
         print(f"[*][Pipeline] Mode: FULL DISCOVERY (all subdomains)")
 
-    # Setup output file and background graph executor
+    # Setup output file and background graph executor. In a Domain batch each
+    # group writes its OWN file; sharing the canonical one would make every group
+    # overwrite the last, leaving a "whole batch" file describing one domain.
     _graph_reset()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_file = OUTPUT_DIR / f"recon_{PROJECT_ID}.json"
+    output_file = recon_output_file(
+        OUTPUT_DIR, PROJECT_ID, target_info["root_domain"] if _batch_groups() else None)
 
     # Initialize result structure with dynamic scan_type and empty modules_executed
     combined_result = {
@@ -1310,7 +1308,11 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             uncover_data = run_uncover_expansion(combined_result, _settings)
             if uncover_data:
                 combined_result["uncover"] = uncover_data
-                merge_uncover_into_pipeline(combined_result, uncover_data, TARGET_DOMAIN)
+                # THIS group's root, not the module-level TARGET_DOMAIN: in a
+                # Domain batch the global is empty, so every group's expansion
+                # would be merged against the wrong (or no) domain.
+                merge_uncover_into_pipeline(
+                    combined_result, uncover_data, target_info["root_domain"])
                 combined_result["metadata"]["modules_executed"].append("uncover_expansion")
                 save_recon_file(combined_result, output_file)
                 _graph_update_bg("update_graph_from_uncover", combined_result, USER_ID, PROJECT_ID)
@@ -1561,6 +1563,9 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         if _settings.get('WEB_CACHE_POISON_ENABLED', False):
             from recon.cache_scan import run_cache_scan_isolated
             phase_a_tools['cache_scan'] = run_cache_scan_isolated
+        if _settings.get('ORIGIN_DISCOVERY_ENABLED', False):
+            from recon.main_recon_modules.origin_discovery import run_origin_discovery_enrichment_isolated
+            phase_a_tools['origin_discovery'] = run_origin_discovery_enrichment_isolated
 
         if phase_a_tools:
             print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(phase_a_tools.keys())})")
@@ -1695,11 +1700,112 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     return combined_result
 
 
+def _clear_recon_graph():
+    """Wipe this project's previous recon nodes. Runs ONCE per pipeline run.
+
+    Domain batch depends on that: the groups accumulate into a single graph, so
+    clearing per group would leave only the last domain standing.
+    """
+    if not UPDATE_GRAPH_DB:
+        return
+    print("[*][graph-db] Clearing previous graph data for this project...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                clear_stats = graph_client.clear_recon_data(USER_ID, PROJECT_ID)
+                print(f"[+][graph-db] Previous recon data cleared: {clear_stats['nodes_deleted']} nodes removed\n")
+            else:
+                print("[!][graph-db] Could not connect to Neo4j - skipping clear\n")
+    except Exception as e:
+        print(f"[!][graph-db] Failed to clear previous graph data: {e}\n")
+
+
+def run_domain_batch(groups: list, start_time) -> int:
+    """Walk the operator-approved domain groups, one after another.
+
+    The whole batch is ONE scan: one queue entry, one container, one version, one
+    graph clear (already done by the caller). Each group runs the identical
+    pipeline a single-domain project runs and writes its results to the graph
+    before the next group starts, so the graph fills in progressively.
+
+    A failing group does NOT abort the batch. One unresolvable domain must not
+    cost the operator the other nineteen, so failures are collected and reported
+    at the end; the run only fails outright if EVERY group failed.
+    """
+    total = len(groups)
+    print("═" * 63)
+    print(f"[*][Batch] DOMAIN BATCH: {total} domain group(s), sequential")
+    for idx, group in enumerate(groups, 1):
+        print(f"  [*][Batch] {idx}. {group.get('rootDomain')} "
+              f"({len(group.get('prefixes') or [])} host(s))")
+    print("═" * 63)
+    print()
+
+    # Stale per-group files from a PREVIOUS run would be merged back into the
+    # canonical output, resurrecting a domain the operator has since removed.
+    removed = clear_batch_outputs(OUTPUT_DIR, PROJECT_ID)
+    if removed:
+        print(f"[*][Batch] Removed {removed} stale group output file(s) from a previous run")
+    # Replace the canonical file NOW. Until the first group finishes and the merge
+    # runs, it would otherwise still describe the PREVIOUS run while the graph has
+    # already been cleared, so anything reading it in that window (a GVM start only
+    # checks the file exists) would scan the last run's targets.
+    initialize_batch_canonical(
+        OUTPUT_DIR, PROJECT_ID, [str(g.get('rootDomain') or '') for g in groups])
+    print()
+
+    failed = []
+    for idx, group in enumerate(groups, 1):
+        root = str(group.get('rootDomain') or '').strip()
+        prefixes = [p for p in (group.get('prefixes') or []) if isinstance(p, str)]
+        if not root or not prefixes:
+            print(f"[!][Batch] Group {idx}/{total} skipped: no usable target")
+            failed.append(root or f"group {idx}")
+            continue
+
+        # The marker the orchestrator parses into live "Group 2/3" progress.
+        print(f"\n[Batch] Group {idx}/{total}: {root}")
+        try:
+            rc = run_domain_group(root, prefixes, start_time=datetime.now())
+        except Exception as e:  # noqa: BLE001 - one bad domain must not end the batch
+            print(f"[!][Batch] Group {idx}/{total} ({root}) failed: {e}")
+            rc = 1
+        if rc != 0:
+            failed.append(root)
+
+        # Refresh the canonical file after EVERY group, so a batch stopped part
+        # way still leaves GVM, the export and the report a file that describes
+        # the groups that did finish.
+        try:
+            merge_batch_outputs(OUTPUT_DIR, PROJECT_ID)
+        except Exception as e:  # noqa: BLE001 - results are already safe per group
+            print(f"[!][Batch] Could not refresh the merged recon file: {e}")
+
+    duration = datetime.now() - start_time
+    print("\n" + "═" * 63)
+    if failed:
+        print(f"[!][Batch] DOMAIN BATCH COMPLETE with {len(failed)}/{total} failed group(s): "
+              f"{', '.join(failed)}")
+    else:
+        print(f"[✓][Batch] DOMAIN BATCH COMPLETE: {total}/{total} group(s) succeeded")
+    print(f"[*][Batch] Total time: {duration}")
+    print("═" * 63)
+
+    # Only a batch where nothing succeeded is a failed run.
+    return 1 if len(failed) == total else 0
+
+
 def main():
     """
     Main entry point - runs the complete recon pipeline.
 
     Pipeline: domain_discovery -> port_scan -> http_probe -> resource_enum -> vuln_scan
+
+    Three targeting modes, all running the SAME pipeline:
+    - IP mode:       run_ip_recon over the configured IPs/CIDRs.
+    - Single domain: one run_domain_group call.
+    - Domain batch:  one run_domain_group call per derived group, in order.
 
     Scan modes based on SUBDOMAIN_LIST:
     - Empty list []: Full subdomain discovery (discover and scan all subdomains)
@@ -1717,19 +1823,7 @@ def main():
         print(f"  [*][Pipeline] PROJECT_ID:        {PROJECT_ID}")
         print("═" * 63)
 
-        # Clear previous graph data
-        if UPDATE_GRAPH_DB:
-            print("[*][graph-db] Clearing previous graph data for this project...")
-            try:
-                from graph_db import Neo4jClient
-                with Neo4jClient() as graph_client:
-                    if graph_client.verify_connection():
-                        clear_stats = graph_client.clear_recon_data(USER_ID, PROJECT_ID)
-                        print(f"[+][graph-db] Previous recon data cleared: {clear_stats['nodes_deleted']} nodes removed\n")
-                    else:
-                        print("[!][graph-db] Could not connect to Neo4j - skipping clear\n")
-            except Exception as e:
-                print(f"[!][graph-db] Failed to clear previous graph data: {e}\n")
+        _clear_recon_graph()
 
         run_ip_recon(TARGET_IPS, _settings)
 
@@ -1738,12 +1832,52 @@ def main():
         print(f"\n[✓][Pipeline] Total time: {duration}")
         return 0
 
+    # RoE: check the time window ONCE, before any target is touched. A batch that
+    # starts inside the window runs to completion; re-checking per group would
+    # abandon a run half way through and leave the graph partially rebuilt.
+    allowed, reason = _check_roe_time_window(_settings)
+    if not allowed:
+        print(f"\n[RoE] BLOCKED: {reason}")
+        print(f"[RoE] Reconnaissance aborted: outside Rules of Engagement time window.")
+        return 1
+
+    # ONCE per run, before any group: this is what lets a batch's groups
+    # accumulate into a single graph instead of each wiping the last.
+    _clear_recon_graph()
+
+    groups = _batch_groups()
+    if groups:
+        return run_domain_batch(groups, start_time)
+
+    return run_domain_group(TARGET_DOMAIN, SUBDOMAIN_LIST, start_time=start_time)
+
+
+def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) -> int:
+    """Run the whole domain pipeline for ONE target: a single-domain project, or
+    one group of a Domain batch.
+
+    Everything that is per-TARGET lives here (ownership verification, target
+    parsing, RoE host exclusion, the pipeline itself, the summary). Everything
+    that is per-RUN stays in main(): the RoE time window, and above all the
+    graph clear, which must happen ONCE so a batch's groups accumulate into one
+    graph instead of each wiping the last.
+
+    The target arrives as ARGUMENTS, never through the module globals: a batch
+    group's domain is not TARGET_DOMAIN (which is empty in batch mode), and
+    downstream modules re-read settings from the API, so a mutated global would
+    not reach them anyway.
+
+    Returns 0 on success, 1 if this target was aborted.
+    """
+    if start_time is None:
+        start_time = datetime.now()
+
     # Domain Ownership Verification (if enabled)
     # This MUST be the first check before any scanning to ensure we only
     # scan domains the user controls.
     if VERIFY_DOMAIN_OWNERSHIP:
         ownership_result = verify_domain_ownership(
-            TARGET_DOMAIN,
+            target_domain,
             OWNERSHIP_TOKEN,
             OWNERSHIP_TXT_PREFIX
         )
@@ -1754,16 +1888,16 @@ def main():
             print(f"[!][Pipeline] Set VERIFY_DOMAIN_OWNERSHIP = False in params.py to disable\n")
             return 1
 
-    # Parse target with SUBDOMAIN_LIST filter
-    target_info = parse_target(TARGET_DOMAIN, SUBDOMAIN_LIST)
+    # Parse target with this target's subdomain prefixes
+    target_info = parse_target(target_domain, subdomain_list)
     filtered_mode = target_info["filtered_mode"]
     root_domain = target_info["root_domain"]
     full_subdomains = target_info["full_subdomains"]
 
     # RoE: check if root domain itself is excluded
     if _settings.get('ROE_ENABLED') and _settings.get('ROE_EXCLUDED_HOSTS'):
-        if _is_roe_excluded(TARGET_DOMAIN, _settings['ROE_EXCLUDED_HOSTS']):
-            print(f"\n[RoE] BLOCKED: Root domain '{TARGET_DOMAIN}' is in ROE excluded hosts list.")
+        if _is_roe_excluded(target_domain, _settings['ROE_EXCLUDED_HOSTS']):
+            print(f"\n[RoE] BLOCKED: Root domain '{target_domain}' is in ROE excluded hosts list.")
             print(f"[RoE] Reconnaissance aborted — target domain excluded by Rules of Engagement.")
             return 1
 
@@ -1774,8 +1908,8 @@ def main():
     # Display full configuration (values loaded from DB/API)
     print("═" * 63)
     print("[*][Pipeline] Configuration:")
-    print(f"  [*][Pipeline] TARGET_DOMAIN:     {TARGET_DOMAIN}")
-    print(f"  [*][Pipeline] SUBDOMAIN_LIST:    {SUBDOMAIN_LIST if SUBDOMAIN_LIST else '[] (full discovery)'}")
+    print(f"  [*][Pipeline] TARGET_DOMAIN:     {target_domain}")
+    print(f"  [*][Pipeline] SUBDOMAIN_LIST:    {subdomain_list if subdomain_list else '[] (full discovery)'}")
     print(f"  [*][Pipeline] SCAN_MODULES:      {','.join(SCAN_MODULES) if isinstance(SCAN_MODULES, list) else SCAN_MODULES}")
     print(f"  [*][Pipeline] STEALTH_MODE:      {_settings.get('STEALTH_MODE', False)}")
     print(f"  [*][Pipeline] UPDATE_GRAPH_DB:   {UPDATE_GRAPH_DB}")
@@ -1798,33 +1932,15 @@ def main():
 
     print()
 
-    # RoE: check time window before starting any scanning
-    allowed, reason = _check_roe_time_window(_settings)
-    if not allowed:
-        print(f"\n[RoE] BLOCKED: {reason}")
-        print(f"[RoE] Reconnaissance aborted — outside Rules of Engagement time window.")
-        return 1
-
-    # Clear previous graph data for this project before starting new scan
-    if UPDATE_GRAPH_DB:
-        print("[*][graph-db] Clearing previous graph data for this project...")
-        try:
-            from graph_db import Neo4jClient
-            with Neo4jClient() as graph_client:
-                if graph_client.verify_connection():
-                    clear_stats = graph_client.clear_recon_data(USER_ID, PROJECT_ID)
-                    print(f"[+][graph-db] Previous recon data cleared: {clear_stats['nodes_deleted']} nodes removed\n")
-                else:
-                    print("[!][graph-db] Could not connect to Neo4j - skipping clear\n")
-        except Exception as e:
-            print(f"[!][graph-db] Failed to clear previous graph data: {e}\n")
-
-    # Phase 1 & 2: Domain recon (WHOIS + Subdomains + DNS) - Combined JSON
-    output_file = Path(__file__).parent / "output" / f"recon_{PROJECT_ID}.json"
+    # Phase 1 & 2: Domain recon (WHOIS + Subdomains + DNS) - Combined JSON.
+    # In a batch this is the GROUP's own file; merge_batch_outputs() rebuilds the
+    # canonical recon_<project>.json that everything downstream reads.
+    output_file = recon_output_file(
+        OUTPUT_DIR, PROJECT_ID, root_domain if _batch_groups() else None)
 
     if "domain_discovery" in SCAN_MODULES:
         domain_result = run_domain_recon(
-            TARGET_DOMAIN,
+            target_domain,
             bruteforce=USE_BRUTEFORCE_FOR_SUBDOMAINS,
             target_info=target_info
         )

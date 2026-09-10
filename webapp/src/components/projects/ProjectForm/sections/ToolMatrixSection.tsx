@@ -214,16 +214,7 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
             </div>
             {[
               { id: 'query_graph', label: 'query_graph' },
-              { id: 'proxy_search', label: 'proxy_search' },
-              { id: 'proxy_get', label: 'proxy_get' },
-              { id: 'proxy_sitemap', label: 'proxy_sitemap' },
-              { id: 'proxy_params', label: 'proxy_params' },
-              { id: 'proxy_grep', label: 'proxy_grep' },
-              { id: 'proxy_diff', label: 'proxy_diff' },
-              { id: 'proxy_to_curl', label: 'proxy_to_curl' },
-              { id: 'proxy_query', label: 'proxy_query' },
-              { id: 'proxy_replay', label: 'proxy_replay ⚠' },
-              { id: 'proxy_fuzz', label: 'proxy_fuzz ⚠' },
+              { id: 'proxy_brain', label: 'proxy_brain ⚠' },
               { id: 'web_search', label: 'web_search' },
               { id: 'cve_intel', label: 'cve_intel' },
               { id: 'shodan', label: 'shodan' },

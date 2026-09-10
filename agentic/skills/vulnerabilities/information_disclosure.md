@@ -20,14 +20,14 @@ Reference for hunting and triaging information leaks. Pull this in when you need
 | Secrets scan on a cloned repo | `kali_shell betterleaks` / `semgrep p/secrets` | After `git clone`. |
 | Diff harness across principals | `execute_curl` x N + `kali_shell diff/jq` | Same path, different tokens. |
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive this from the recorded history first (proxy_* only see traffic that crossed the capture proxy; blind artifact-path fuzzing for `/.git`, `/.env` and friends stays with `execute_ffuf`, since those were never requested).
+If HTTP Traffic Capture is enabled, source and drive this from the recorded history first (proxy_brain only see traffic that crossed the capture proxy; blind artifact-path fuzzing for `/.git`, `/.env` and friends stays with `execute_ffuf`, since those were never requested).
 
-- `proxy_grep` across all captured response bodies for secret patterns, tokens, API keys, and version strings (`AKIA`, `BEGIN PRIVATE KEY`, `password`, framework version markers).
-- `proxy_query` / `proxy_search` to inventory disclosure headers already observed (`Server`, `X-Powered-By`, `Server-Timing`, `Via`, `X-Cache`, and the other cache headers).
-- `proxy_sitemap` measures observed-endpoint coverage so the differential oracle runs against real captured paths.
-- Differential oracle: `proxy_replay id mutate:{dropHeaders:["Authorization"], headers:{"Authorization":"Bearer $B"}}` re-requests one path as token A, token B, and anon, then `proxy_diff` the pair to expose cross-principal leakage (status / body length / ETag).
+- `redamon.grep` across all captured response bodies for secret patterns, tokens, API keys, and version strings (`AKIA`, `BEGIN PRIVATE KEY`, `password`, framework version markers).
+- `redamon.query` / `redamon.search` to inventory disclosure headers already observed (`Server`, `X-Powered-By`, `Server-Timing`, `Via`, `X-Cache`, and the other cache headers).
+- `redamon.sitemap` measures observed-endpoint coverage so the differential oracle runs against real captured paths.
+- Differential oracle: `redamon.replay id mutate:{dropHeaders:["Authorization"], headers:{"Authorization":"Bearer $B"}}` re-requests one path as token A, token B, and anon, then `redamon.diff` the pair to expose cross-principal leakage (status / body length / ETag).
 
 ## Artifact path inventory
 

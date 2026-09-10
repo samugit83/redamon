@@ -669,7 +669,7 @@ def run_ai_surface_recon(combined_result: dict, output_file: Path = None,
     candidates = _gather_candidates(combined_result, settings)
     # RoE host exclusion
     try:
-        from recon.main import _filter_roe_excluded
+        from recon.helpers.roe_scope import _filter_roe_excluded
         hosts = list(candidates.keys())
         kept = set(_filter_roe_excluded(hosts, settings, label="ai-surface url"))
         candidates = {k: v for k, v in candidates.items() if k in kept}

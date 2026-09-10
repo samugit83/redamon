@@ -42,6 +42,8 @@ const ALLOWED_KEY_FIELDS = [
   'virusTotalApiKey',
   'zoomEyeApiKey',
   'criminalIpApiKey',
+  'securitytrailsApiKey',
+  'viewdnsApiKey',
   'quakeApiKey',
   'hunterApiKey',
   'publicWwwApiKey',
@@ -83,6 +85,7 @@ const ALLOWED_TUNNEL_FIELDS = [
 const ALLOWED_ROTATION_TOOLS = [
   'tavily', 'shodan', 'serp', 'nvd', 'vulners', 'urlscan',
   'fofa', 'otx', 'netlas', 'virustotal', 'zoomeye', 'criminalip',
+  'securitytrails', 'viewdns',
   'quake', 'hunter', 'publicwww', 'hunterhow', 'onyphe', 'driftnet', 'wpscan',
   'pdcp',
 ] as const
@@ -109,6 +112,8 @@ const INLINE_KEY_LABELS: Record<string, string> = {
   virusTotalApiKey: 'VirusTotal API Key',
   zoomEyeApiKey: 'ZoomEye API Key',
   criminalIpApiKey: 'Criminal IP API Key',
+  securitytrailsApiKey: 'SecurityTrails API Key',
+  viewdnsApiKey: 'ViewDNS API Key',
   quakeApiKey: 'Quake API Key',
   hunterApiKey: 'Hunter API Key',
   publicWwwApiKey: 'PublicWWW API Key',

@@ -66,3 +66,57 @@ Useful checks:
 docker logs redamon-neo4j --tail 50 | grep -i abort    # Bolt connection aborts
 docker inspect redamon-webapp --format '{{.RestartCount}} {{.State.OOMKilled}}'
 ```
+
+---
+
+## `./redamon.sh update` refuses to pull
+
+RedAmon's own scans used to dirty the git checkout. `recon/` is bind mounted
+read-write into the spawned recon container, and two of its **git-tracked** data
+directories are re-downloaded there whenever their 24h cache expires:
+
+| Path | Written by | Contents |
+|------|-----------|----------|
+| `recon/main_recon_modules/data/mitre_db/` | `add_mitre.py` | MITRE CVE/CAPEC/CWE database, 15 files |
+| `recon/main_recon_modules/data/wappalyzer_cache/` | `http_probe.py` | Wappalyzer fingerprints, `technologies.json` |
+
+So after a scan or two `git pull --ff-only` refused, and the error advised
+`git commit -am 'local changes'`, which converts a self-healing dirty tree into
+a **permanent** dead end: the checkout then has a commit the project does not
+and a fast-forward can never happen again (issue #185).
+
+`update` now restores both directories before pulling. Never commit files under
+them; they are machine-local caches that every scan may rewrite.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Could not pull updates: the working tree has local changes` with **no** file list under it, and `git status` is clean | Not local changes at all: the branch has diverged. `git log --oneline origin/master..HEAD` shows a `local changes` commit | Update once from a version that has this fixed. If you are already stuck, see the one-time recovery below |
+| Same error, **with** a list of modified files under `recon/main_recon_modules/data/` | **Fixed in this release.** `update` restored only a `.last_update` marker that had since been gitignored, so it was doing nothing while the database directories beside it were what actually drifted | Update. Never commit those files — they are re-downloaded on every scan |
+| `Permission denied` writing `.torch-variant`, `.git/index`, or similar | An earlier `sudo ./redamon.sh …` or `sudo git …` left root-owned files in a user-owned checkout | `sudo chown -R "$(id -un):$(id -gn)" .`, then re-run **without** sudo. `update` now checks this up front rather than failing halfway |
+| `Could not pull updates.` plus a `NOTE: 'git status' failed here` block | Another git process (an IDE, a hook, an interrupted command) holds `.git/index.lock`, or the index is corrupt. `update` deliberately refuses to auto-recover while it cannot read your working tree | Wait for the other git process to finish, or remove a stale `.git/index.lock` **only** if none is running. Do not `reset --hard` until `git status` works — it would discard uncommitted work nobody can see |
+| `error: unable to unlink … Permission denied` on a file under `recon/main_recon_modules/data/` | The scan container creates those cache directories as **root** inside a user-owned checkout, so neither git nor you can replace the file | Same `chown`. `update` now warns about root-owned runtime files *before* a release that changes one makes the pull fail |
+
+**One-time recovery if your checkout has already diverged.** The fix ships
+inside `redamon.sh`, which is the file you cannot pull, so a checkout that is
+already in this state needs one manual reset. It discards the bogus
+`local changes` commit only; run `git log --oneline origin/master..HEAD` first
+and copy anything of your own onto a branch if that list contains real work.
+
+```bash
+cd ~/redamon
+sudo chown -R "$(id -un):$(id -gn)" .   # only if an earlier run used sudo
+git fetch origin
+git reset --hard origin/master
+./redamon.sh update
+```
+
+From that release on, `update` recovers by itself: a diverging commit whose
+files are **all** RedAmon runtime files is reset automatically and reported,
+while a commit touching anything else stops the update with instructions that
+keep your work.
+
+The automatic reset is the only destructive step in `update`, and it is gated
+four ways: the working tree must be clean, `git status` must be readable, every
+file in the diverging commits must sit under a RedAmon runtime data directory,
+and no path may contain a traversal. To disable it entirely and always recover
+by hand, set `REDAMON_NO_AUTO_RESET=1`.

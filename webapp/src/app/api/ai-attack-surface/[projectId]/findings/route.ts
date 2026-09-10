@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 interface RouteParams {
   params: Promise<{ projectId: string }>
@@ -25,7 +26,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   try {
     const res = await session.run(
       `MATCH (v:Vulnerability {project_id: $pid})
-       WHERE v.source IN $sources
+       WHERE v.source IN $sources AND ${notMuted('v')}
        OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
        // A finding can have several parents (e.g. Endpoint + IP). Collapse to ONE
        // row per finding, preferring the most specific parent (Endpoint), so it

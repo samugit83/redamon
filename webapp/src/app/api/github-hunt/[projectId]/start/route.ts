@@ -31,7 +31,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Verify project exists
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true, userId: true, name: true, targetDomain: true, ipMode: true, targetIps: true }
+      select: {
+        id: true, userId: true, name: true, targetDomain: true, ipMode: true, targetIps: true,
+        domainBatchMode: true, domainBatchHosts: true,
+      }
     })
 
     if (!project) {
@@ -45,6 +48,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       if (!project.targetIps || project.targetIps.length === 0) {
         return NextResponse.json(
           { error: 'Project has no target IPs configured' },
+          { status: 400 }
+        )
+      }
+    } else if (project.domainBatchMode) {
+      // A batch project has no single targetDomain; the hunt scopes itself from
+      // its own org/repo settings and the merged recon file checked below.
+      if (!project.domainBatchHosts || project.domainBatchHosts.length === 0) {
+        return NextResponse.json(
+          { error: 'Project has no domain batch hostnames configured' },
           { status: 400 }
         )
       }

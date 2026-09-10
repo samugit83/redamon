@@ -730,8 +730,9 @@ def _build_graphql_data_from_graph(domain: str, user_id: str, project_id: str) -
             result = session.run(
                 """
                 MATCH (jr:JsReconFinding {user_id: $uid, project_id: $pid})
-                WHERE jr.finding_type IN ['graphql', 'graphql_introspection']
-                   OR (jr.finding_type = 'rest' AND toLower(coalesce(jr.path, '')) CONTAINS 'graphql')
+                WHERE (jr.finding_type IN ['graphql', 'graphql_introspection']
+                   OR (jr.finding_type = 'rest' AND toLower(coalesce(jr.path, '')) CONTAINS 'graphql'))
+                  AND NOT jr:Muted
                 RETURN jr.finding_type AS type,
                        jr.path AS path,
                        coalesce(jr.method, 'POST') AS method

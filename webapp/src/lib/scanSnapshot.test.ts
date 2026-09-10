@@ -37,6 +37,8 @@ import {
   serializeSnapshot,
   deserializeSnapshot,
   snapshotToGraphPayload,
+  functionalLabel,
+  snapshotNodeIsMuted,
   summarizeGraphPayload,
   defaultVersionLabel,
   ensureCurrentVersion,
@@ -58,6 +60,84 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.SCAN_SNAPSHOT_MAX_BYTES
+})
+
+describe('suppressed findings in a snapshot', () => {
+  // The two halves pull in opposite directions and both matter:
+  // the STORED snapshot must keep `:Muted` (or export/import/version-activate
+  // silently unmutes everything), while the RENDERED payload must drop it (the
+  // graph screen and Recon Delta must never show a suppressed finding).
+  const muted = () => rec({
+    labels: ['Vulnerability', 'Muted'],
+    props: { id: 'v-muted', project_id: 'p1', muted: true },
+    eid: 'em',
+  })
+  const plain = () => rec({
+    labels: ['Vulnerability'],
+    props: { id: 'v-real', project_id: 'p1' },
+    eid: 'ev',
+  })
+
+  test('capture KEEPS the Muted label so mute survives export and import', async () => {
+    mockRun
+      .mockResolvedValueOnce({ records: [muted(), plain()] })
+      .mockResolvedValueOnce({ records: [] })
+
+    const snap = await captureGraphSnapshot('p1')
+
+    const stored = snap.nodes.find(n => n.properties.id === 'v-muted')!
+    expect(stored.labels).toContain('Muted')
+    expect(stored.labels).toContain('Vulnerability')
+    expect(snap.nodeCount).toBe(2)
+  })
+
+  test('capture counts a muted node under its real type, never "Muted"', async () => {
+    // labels[0] is not ordered by Neo4j, so a naive summary can report "Muted"
+    // as if it were a node type.
+    mockRun
+      .mockResolvedValueOnce({ records: [muted(), plain()] })
+      .mockResolvedValueOnce({ records: [] })
+
+    const snap = await captureGraphSnapshot('p1')
+
+    expect(snap.summary).toEqual({ Vulnerability: 2 })
+    expect(snap.summary.Muted).toBeUndefined()
+  })
+
+  test('the rendered payload drops muted nodes and types the rest functionally', async () => {
+    const payload = snapshotToGraphPayload({
+      nodes: [
+        { labels: ['Muted', 'Vulnerability'], properties: { id: 'v-muted' }, _exportId: 'x1' },
+        { labels: ['Vulnerability'], properties: { id: 'v-real' }, _exportId: 'x2' },
+      ],
+      relationships: [],
+    } as never)
+
+    expect(payload.nodes.map(n => n.properties.id)).toEqual(['v-real'])
+    expect(payload.nodes[0].type).toBe('Vulnerability')
+  })
+
+  test('a link to a muted node is dropped with it, leaving no dangling edge', async () => {
+    const payload = snapshotToGraphPayload({
+      nodes: [
+        { labels: ['IP'], properties: { address: '10.0.0.1' }, _exportId: 'ip' },
+        { labels: ['Vulnerability', 'Muted'], properties: { id: 'v' }, _exportId: 'vm' },
+      ],
+      relationships: [
+        { startExportId: 'ip', endExportId: 'vm', type: 'HAS_VULNERABILITY', properties: {} },
+      ],
+    } as never)
+
+    expect(payload.nodes).toHaveLength(1)
+    expect(payload.links).toEqual([])
+  })
+
+  test('functionalLabel ignores Muted wherever it sits in the array', () => {
+    expect(functionalLabel(['Vulnerability', 'Muted'])).toBe('Vulnerability')
+    expect(functionalLabel(['Muted', 'Vulnerability'])).toBe('Vulnerability')
+    expect(snapshotNodeIsMuted(['Muted', 'Secret'])).toBe(true)
+    expect(snapshotNodeIsMuted(['Secret'])).toBe(false)
+  })
 })
 
 describe('captureGraphSnapshot', () => {

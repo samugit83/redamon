@@ -50,7 +50,7 @@ in the root [AGENTS.md](../../AGENTS.md) CRITICAL RULES; this skill is everythin
   it `@pytest.mark.xfail(strict=True, reason=...)` and say so. Tests must not enshrine bugs.
 - **NEVER put a recon test in the root [tests/](../../tests/) folder.** Root
   `tests/` runs in the **agent** image; recon files there must be listed in
-  `_ROOT_RECON_TESTS` at [redamon.sh:3483](../../redamon.sh#L3483) or they run
+  `_ROOT_RECON_TESTS` at [redamon.sh:4476](../../redamon.sh#L4476) or they run
   against the wrong image and fail on imports. New recon tests go in [recon/tests/](../../recon/tests/).
 - **NEVER add a third-party import to a test without checking it is in the section
   image.** Only `pytest`, `pytest-cov`, `pytest-xdist`, `pytest-asyncio`
@@ -122,5 +122,5 @@ trusting "all green".
 
 - [docs/readmes/README.TESTING.md](../../docs/readmes/README.TESTING.md) - full testing guide + coverage ratchet
 - [tooling/scripts/pytest_isolated.py](../../tooling/scripts/pytest_isolated.py) - the per-file isolation gate
-- [redamon.sh:3486](../../redamon.sh#L3486) - `_TEST_SECTIONS`, section/image map, shell + webapp hooks
+- [redamon.sh:4479](../../redamon.sh#L4479) - `_TEST_SECTIONS`, section/image map, shell + webapp hooks
 - Related: root [AGENTS.md](../../AGENTS.md) for the host-pytest / Docker-gate rule

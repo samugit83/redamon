@@ -125,8 +125,10 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
       {isOpen && (
         <div className={styles.sectionContent}>
           <p className={styles.sectionDescription}>
-            Configure automated code remediation. CypherFix analyzes your Neo4j graph for vulnerabilities,
-            then generates code fixes via pull requests to your GitHub repository.
+            Configure finding prioritisation and automated code remediation. CypherFix analyzes your
+            Neo4j graph, ranks each finding by exploitability and exposure (the Priority Board), then
+            generates code fixes via pull requests to your GitHub repository. The model chosen below
+            runs the Priority Board ranking as well as the fixes.
           </p>
 
           {/* GitHub Token */}
@@ -205,7 +207,7 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
 
           {/* LLM Model Override - searchable dropdown */}
           <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>LLM Model Override</label>
+            <label className={styles.fieldLabel}>CypherFix &amp; Priority Board LLM Model</label>
             <div className={styles.modelSelector} ref={dropdownRef}>
               <div
                 className={`${styles.modelSelectorInput} ${dropdownOpen ? styles.modelSelectorInputFocused : ''}`}
@@ -314,7 +316,68 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
               )}
             </div>
             <span className={styles.fieldHint}>
-              Override the LLM model for CypherFix agents. Leave empty to use the model selected in Agent Behaviour.
+              Override the LLM model for CypherFix agents, including the Priority Board pass that
+              explains and groups the top-ranked findings. Leave empty to use the model selected in
+              Agent Behaviour.
+            </span>
+          </div>
+
+          {/* Priority Board confidence threshold */}
+          <div className={styles.fieldGroup}>
+            <label className={styles.fieldLabel}>Priority Board Confidence Threshold</label>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              className={styles.input}
+              value={data.triageConfidenceThreshold ?? 0.7}
+              onChange={(e) =>
+                updateField('triageConfidenceThreshold', parseFloat(e.target.value) || 0.7)
+              }
+            />
+            <span className={styles.fieldHint}>
+              The confidence floor for the optional AI verdict on a finding: below it, the finding
+              keeps only its deterministic rank and no real/noise verdict is stored. Higher means
+              fewer AI-set verdicts.
+            </span>
+          </div>
+
+          {/* Auto-mute */}
+          <div className={styles.toggleRow}>
+            <div>
+              <span className={styles.toggleLabel}>Auto-mute high-confidence noise</span>
+              <p className={styles.toggleDescription}>
+                Off by default, and worth leaving off. Muting hides a finding from the AI agent
+                entirely, so it is normally a human decision. Enabling this lets the Priority Board
+                suppress findings it is highly confident are noise, without asking. Muted findings
+                can always be restored from the Priority Board tab.
+              </p>
+            </div>
+            <Toggle
+              checked={data.triageAutoMute ?? false}
+              onChange={(checked) => updateField('triageAutoMute', checked)}
+            />
+          </div>
+
+          {/* Priority Board: LLM rationale cap */}
+          <div className={styles.fieldGroup}>
+            <label className={styles.fieldLabel}>Priority Board: findings sent to the LLM</label>
+            <input
+              type="number"
+              min={0}
+              max={500}
+              step={5}
+              className={styles.input}
+              value={data.triageTopNForLlm ?? 40}
+              onChange={(e) =>
+                updateField('triageTopNForLlm', parseInt(e.target.value, 10) || 40)
+              }
+            />
+            <span className={styles.fieldHint}>
+              The Priority Board ranks every finding in code. This caps how many of the top and
+              still-ambiguous findings get an AI-written &quot;why it matters&quot; sentence and
+              cross-tool grouping. Higher means more findings explained, at more LLM cost.
             </span>
           </div>
         </div>

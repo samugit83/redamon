@@ -63,6 +63,7 @@ _CHANGEME = "changeme"
 # Auth
 # ---------------------------------------------------------------------------
 _warned_failopen = False
+_warned_failopen_master = False
 
 
 def _valid_keys() -> list[str]:
@@ -197,6 +198,40 @@ async def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     if not _daily_cap.allow(user_id):
         raise HTTPException(status_code=429, detail="Daily LLM call cap exceeded")
+
+
+async def require_master_internal_auth(request: Request) -> None:
+    """FastAPI dependency: the MASTER key only. Rejects the scanner token.
+
+    `require_internal_auth_only` accepts SCANNER_API_KEY as well, which is
+    correct for the read-only, fixed-op `/graph/exec`: the kali-sandbox holds
+    that token by design and needs graph reads.
+
+    It is NOT correct for an endpoint that MUTATES triage state. The worker is
+    the least-trusted, target-facing component and deliberately does not hold
+    INTERNAL_API_KEY (see docker-compose.yml). Without this stricter dependency
+    a compromised worker could suppress findings so neither the operator nor the
+    agent ever sees them, or stamp `triage_source='human'` so a later AI pass
+    would refuse to correct it -- an integrity attack on the product's own
+    output, mounted with a token we hand the worker on purpose.
+
+    Fail-open when no master key exists mirrors `_key_ok`, so a dev install with
+    no secrets behaves as documented rather than bricking.
+    """
+    master = os.environ.get("INTERNAL_API_KEY", "")
+    if not master or master == _CHANGEME:
+        global _warned_failopen_master
+        if not _warned_failopen_master:
+            logger.warning(
+                "llm_guard: INTERNAL_API_KEY is not set; master-only endpoints "
+                "(/graph/triage) are FAIL-OPEN (dev only). Generate the secret "
+                "via redamon.sh to enforce auth."
+            )
+            _warned_failopen_master = True
+        return
+    provided = request.headers.get("x-internal-key", "")
+    if not hmac.compare_digest(provided.encode(), master.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 async def require_internal_auth_only(request: Request) -> None:

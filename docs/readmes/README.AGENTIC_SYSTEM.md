@@ -1032,13 +1032,12 @@ flowchart TB
         NMAP_T[execute_nmap<br/>Deep scanning & NSE scripts]
         NUCLEI_T[execute_nuclei<br/>CVE verification + custom templates]
         KALI[kali_shell<br/>General Kali shell]
-        PROXYR[proxy_search / proxy_get<br/>proxy_sitemap / proxy_params<br/>proxy_grep / proxy_diff<br/>proxy_to_curl / proxy_query<br/>captured-traffic analysis]
+        PROXYBRAIN[proxy_brain<br/>writes Python over the redamon SDK<br/>reads any phase, active sends gated to exploitation]
     end
 
     subgraph ExplTools["Exploitation Tools"]
         MSF[metasploit_console<br/>msfconsole commands]
         CODE[execute_code<br/>Code execution, no escaping]
-        PROXYA[proxy_replay / proxy_fuzz<br/>replay + fuzz captured requests]
     end
 
     subgraph PostTools["Post-Exploitation Tools"]
@@ -1468,8 +1467,7 @@ The following tools require manual confirmation when `REQUIRE_TOOL_CONFIRMATION`
 | `execute_code` | Python/shell code execution |
 | `execute_hydra` | Credential testing via THC Hydra |
 | `execute_wpscan` | WordPress vulnerability scanning (plugins, themes, users, misconfigurations) |
-| `proxy_replay` | Resend a captured HTTP request with mutated fields (host pinned to origin) |
-| `proxy_fuzz` | Burp-Intruder replay of a captured request across a payload set |
+| `proxy_brain` | Write Python over the pre-imported `redamon` SDK to work the captured HTTP corpus; active `replay` / `batch` / `fuzz` sends are host-pinned to the origin, phase-gated, and budgeted |
 
 The dangerous tools list is defined in `project_settings.py` as `DANGEROUS_TOOLS` (a `frozenset`).
 
@@ -4997,7 +4995,7 @@ flowchart LR
 | `REQUIRE_TOOL_CONFIRMATION` | `true` | Require user confirmation before executing dangerous tools (nmap, nuclei, metasploit, hydra, kali_shell, etc.) |
 | `ACTIVATE_POST_EXPL_PHASE` | `true` | Enable post-exploitation phase |
 | `POST_EXPL_PHASE_TYPE` | `"statefull"` | `"stateless"` or `"statefull"` session mode |
-| `LHOST` | `""` | Attacker IP for reverse payloads (empty = bind mode) |
+| `LHOST` | `""` | Attacker IP for reverse payloads: the **host machine's LAN IP** the target can reach (not the sandbox container's `172.x`); empty = bind mode |
 | `LPORT` | `null` | Attacker port for reverse payloads |
 | `BIND_PORT_ON_TARGET` | `4444` | Port opened on target for bind payloads |
 | `PAYLOAD_USE_HTTPS` | `false` | Use HTTPS for staged payloads |
@@ -5125,16 +5123,7 @@ flowchart LR
   "msf_restart": ["exploitation", "post_exploitation"],
   "web_search": ["informational", "exploitation", "post_exploitation"],
   "cve_intel": ["informational", "exploitation", "post_exploitation"],
-  "proxy_search": ["informational", "exploitation", "post_exploitation"],
-  "proxy_get": ["informational", "exploitation", "post_exploitation"],
-  "proxy_sitemap": ["informational", "exploitation", "post_exploitation"],
-  "proxy_params": ["informational", "exploitation", "post_exploitation"],
-  "proxy_grep": ["informational", "exploitation", "post_exploitation"],
-  "proxy_diff": ["informational", "exploitation", "post_exploitation"],
-  "proxy_to_curl": ["informational", "exploitation", "post_exploitation"],
-  "proxy_query": ["informational", "exploitation", "post_exploitation"],
-  "proxy_replay": ["exploitation", "post_exploitation"],
-  "proxy_fuzz": ["exploitation", "post_exploitation"]
+  "proxy_brain": ["informational", "exploitation", "post_exploitation"]
 }
 ```
 

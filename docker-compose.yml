@@ -264,6 +264,13 @@ services:
         "-f",
         "--config",
         "/etc/gvm/ospd-openvas.conf",
+        # No MQTT broker ships in this stack. ospd defaults this to "localhost",
+        # where nothing listens, so it retried every 10s forever and buried the
+        # real logs (issue #177). Empty makes ospd take its "MQTT disabled" path:
+        # one honest line at startup instead of endless warnings. The cost is
+        # Notus package-level results, which need a broker either way.
+        "--mqtt-broker-address",
+        "",
         "--notus-feed-dir",
         "/var/lib/notus/advisories",
         "-m",
@@ -505,6 +512,8 @@ services:
       # unless it is named here, and it is forwarded to the scan container only
       # when actually set.
       GVM_NO_PROGRESS_TIMEOUT: ${GVM_NO_PROGRESS_TIMEOUT:-}
+      # Seconds between mid-scan scanner liveness re-checks (0 disables).
+      GVM_LIVENESS_INTERVAL: ${GVM_LIVENESS_INTERVAL:-}
       # Inbound API auth: the orchestrator validates this on every request (except
       # /health). Shared ONLY with the webapp — deliberately NOT forwarded to the
       # spawned recon/scan containers, so a compromised recon container (which does
@@ -848,6 +857,11 @@ services:
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
       # Webapp API (internal docker network)
       WEBAPP_API_URL: http://webapp:3000
+      # Docker host's LAN IP, detected by redamon.sh (export_host_lan_ip). The
+      # agent suggests it as the reverse-shell LHOST since it cannot discover the
+      # host's routable address from inside the 172.x sandbox (issue #180). Empty
+      # when detection fails -> the agent asks the operator instead.
+      HOST_LAN_IP: ${HOST_LAN_IP:-}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-changeme}
       SCANNER_API_KEY: ${SCANNER_API_KEY:-changeme}  # S3/E6 scoped scanner token
       # Knowledge Base

@@ -48,6 +48,11 @@ const BUILT_IN_SKILLS = [
     description: 'XXE testing against XML parsers: in-band file read, php-filter source read, error-based and out-of-band exfiltration via external/local DTD, SSRF via entities, XInclude, content-type switching, and XXE in SVG/DOCX/SAML uploads',
   },
   {
+    id: 'crypto_attack',
+    name: 'Cryptographic Attacks',
+    description: 'Break trusted crypto: CBC padding oracles and bit-flipping, ECB analysis, stream/nonce reuse (two-time pad), JWT signature attacks (alg:none, HS/RS confusion, weak-secret cracking, kid/jwk/jku), hash length extension, RSA weaknesses, and predictable-token/PRNG reconstruction',
+  },
+  {
     id: 'brute_force_credential_guess',
     name: 'Credential Testing',
     description: 'Credential policy validation using Hydra against login services',

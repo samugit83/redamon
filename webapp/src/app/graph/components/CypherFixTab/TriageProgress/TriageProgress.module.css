@@ -247,7 +247,9 @@
 .viewBtn {
   padding: var(--space-2) var(--space-5);
   background: var(--accent-primary);
-  color: var(--bg-primary);
+  /* Not --bg-primary: that is the page background, which in dark mode is nearly
+     black and rendered this label unreadable on the accent fill. */
+  color: var(--text-on-accent);
   border: none;
   border-radius: var(--radius-md);
   font-size: var(--text-sm);

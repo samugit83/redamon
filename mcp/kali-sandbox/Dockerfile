@@ -43,8 +43,12 @@ RUN apt-get update && apt-get install -y --fix-missing \
     nmap \
     # Metasploit framework
     metasploit-framework \
-    # Network utilities
+    # Network utilities. iproute2 supplies `ip` (net-tools only ships the
+    # deprecated ifconfig/route); the agent reaches for `ip addr` to read its
+    # own interfaces during exploitation, so its absence surfaced as a hard
+    # "ip: command not found" (issue #180).
     net-tools \
+    iproute2 \
     iputils-ping \
     dnsutils \
     netcat-traditional \
@@ -203,6 +207,13 @@ RUN nuclei -update-templates || true
 # Create virtual environment for Python dependencies
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# Global pip constraints bind every `pip install` below (issue #181): a later
+# isolated install (e.g. semgrep) can otherwise silently downgrade a pinned dep
+# in this shared venv and the build still exits 0. With PIP_CONSTRAINT set, such
+# a version skew becomes a hard build failure instead of a runtime crash-loop.
+COPY kali-sandbox/pip-constraints.txt /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 
 # Install Python MCP dependencies
 COPY requirements.txt /tmp/requirements.txt
@@ -464,6 +475,18 @@ COPY kali-sandbox/entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
 
 WORKDIR /opt/mcp_servers
+
+# Build-time smoke test (issue #181): fail the build if the MCP server libraries
+# are skewed instead of shipping an image whose servers crash-loop at startup.
+# Runs after every pip install, so it sees the mcp/fastmcp that actually survived
+# (semgrep's later install included). `from fastmcp import FastMCP` is what
+# triggered the original ImportError; importing each server module is stricter.
+RUN python3 -c "from fastmcp import FastMCP" \
+    && for s in network_recon_server nuclei_server metasploit_server nmap_server playwright_server; do \
+         echo "[smoke] importing $s" ; \
+         python3 -c "import importlib; importlib.import_module('$s')" || exit 1 ; \
+       done \
+    && echo "[smoke] all MCP server modules import cleanly"
 
 # Install ngrok (for optional single-port TCP tunneling of reverse shells)
 RUN ARCH=$(dpkg --print-architecture) && \

@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useMemo, useEffect } from 'react'
-import { ChevronDown, Target, ShieldAlert, AlertTriangle } from 'lucide-react'
+import { ChevronDown, Target, ShieldAlert, AlertTriangle, Globe, Network, Layers, Check, Lock } from 'lucide-react'
 import { AiToggleLabel } from '../AiToggleLabel'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { isHardBlockedDomain } from '@/lib/hard-guardrail'
+import { classifyIpTargets } from '@/lib/ip-target-utils'
+import { validateDomainBatch, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS } from '@/lib/domainBatch'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
 import { useProject } from '@/providers/ProjectProvider'
@@ -50,12 +52,49 @@ function parseIpList(text: string): string[] {
     .filter(Boolean)
 }
 
+/** Domain batch accepts one host per line as well as comma/semicolon/space
+ *  separated, because operators paste from spreadsheets and scope documents. */
+function parseHostList(text: string): string[] {
+  return text
+    .split(/[,;\s\n]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+type TargetMode = 'domain' | 'ip' | 'batch'
+
 export function TargetSection({ data, updateField, mode = 'create' }: TargetSectionProps) {
   const isLocked = mode === 'edit'
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
 
   const ipMode = data.ipMode || false
+  const batchMode = data.domainBatchMode || false
+  const targetMode: TargetMode = ipMode ? 'ip' : batchMode ? 'batch' : 'domain'
+
+  // Domain batch: group the pasted hostnames with the SAME helper the server uses
+  // to persist them, so the preview cannot promise a grouping the scan won't run.
+  const batchHosts = useMemo(() => data.domainBatchHosts || [], [data.domainBatchHosts])
+  // The textarea keeps the operator's RAW text while they type. Deriving its value
+  // from the parsed array instead re-rendered "a.com\n" back as "a.com", so every
+  // separator was stripped the instant it was typed and a second host could never
+  // be entered by hand. The parsed array stays authoritative for the preview, the
+  // validation and what is saved; this only preserves the keystrokes in between.
+  const [batchHostDraft, setBatchHostDraft] = useState<string | null>(null)
+  const displayBatchHosts = batchHostDraft ?? batchHosts.join('\n')
+  const batchResult = useMemo(
+    () => (batchMode ? validateDomainBatch(batchHosts) : null),
+    [batchMode, batchHosts]
+  )
+  // Every group root gets the same non-disableable check the single domain gets.
+  const batchBlocked = useMemo(() => {
+    if (!batchResult) return null
+    for (const g of batchResult.groups) {
+      const check = isHardBlockedDomain(g.rootDomain)
+      if (check.blocked) return { domain: g.rootDomain, reason: check.reason }
+    }
+    return null
+  }, [batchResult])
 
   // Check if root domain is included in the list
   const includesRootDomain = useMemo(() => data.subdomainList.includes('.'), [data.subdomainList])
@@ -65,6 +104,15 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
 
   // Display value for IP textarea
   const displayIps = useMemo(() => (data.targetIps || []).join('\n'), [data.targetIps])
+
+  // Classify the entered IPs so the form can warn when targets are on a
+  // private/local network, where public OSINT + subdomain enumeration return
+  // nothing. Only meaningful in IP mode.
+  const ipTargetClass = useMemo(
+    () => (ipMode ? classifyIpTargets(data.targetIps) : 'empty'),
+    [ipMode, data.targetIps]
+  )
+  const hasLocalIps = ipTargetClass === 'private' || ipTargetClass === 'mixed'
 
   // Hard guardrail: deterministic check for government/public domains (non-disableable)
   const hardBlockResult = useMemo(
@@ -86,7 +134,10 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
   // so the pipeline cannot be started with zero targets (which would silently
   // produce empty results). Runs in edit mode too - it's a system-driven
   // safety net, not user editing of scope.
-  const forceIncludeRootDomain = !ipMode
+  // Single-domain only: a batch derives its prefixes per group and never uses
+  // subdomainList, so nudging these fields there would write settings the batch
+  // pipeline ignores.
+  const forceIncludeRootDomain = targetMode === 'domain'
     && !data.subdomainDiscoveryEnabled
     && displayPrefixes.trim().length === 0
 
@@ -94,7 +145,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
   // FILTERED mode and the entire Subdomain Discovery group (Subfinder, Amass,
   // crt.sh, HackerTarget, Knockpy, puredns) is silently skipped. Force the
   // master toggle OFF so the UI matches what the backend actually does.
-  const prefixesPresent = !ipMode && !isLocked && displayPrefixes.trim().length > 0
+  const prefixesPresent = targetMode === 'domain' && !isLocked && displayPrefixes.trim().length > 0
 
   useEffect(() => {
     if (forceIncludeRootDomain && !includesRootDomain) {
@@ -110,18 +161,29 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefixesPresent, data.subdomainDiscoveryEnabled])
 
-  const handleIpModeToggle = (checked: boolean) => {
-    updateField('ipMode', checked)
-    if (checked) {
+  // One switch for three mutually exclusive modes. Each clears the fields the
+  // other modes own, so a project can never carry two contradictory targets.
+  const handleTargetModeChange = (next: TargetMode) => {
+    updateField('ipMode', next === 'ip')
+    updateField('domainBatchMode', next === 'batch')
+    if (next !== 'domain') {
       updateField('targetDomain', '')
       updateField('subdomainList', [])
-    } else {
-      updateField('targetIps', [])
+    }
+    if (next !== 'ip') updateField('targetIps', [])
+    if (next !== 'batch') {
+      setBatchHostDraft(null)
+      updateField('domainBatchHosts', [])
     }
   }
 
   const handleIpsChange = (text: string) => {
     updateField('targetIps', parseIpList(text))
+  }
+
+  const handleBatchHostsChange = (text: string) => {
+    setBatchHostDraft(text)
+    updateField('domainBatchHosts', parseHostList(text))
   }
 
   return (
@@ -145,20 +207,119 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
             or IP-based targeting mode.
           </p>
 
-          {/* IP Mode Toggle - locked in edit mode */}
-          <div className={styles.toggleRow}>
-            <div>
-              <span className={styles.toggleLabel}>Start from IP</span>
-              <p className={styles.toggleDescription}>
-                Target IP addresses or CIDR ranges instead of a domain. The pipeline will
-                attempt reverse DNS to discover hostnames.
-              </p>
+          {/* Targeting mode: a full-width, two-card segmented selector. This is
+              the first and most consequential decision on the form (it decides
+              which half of the pipeline runs), so it reads as a pair of distinct
+              coloured modes rather than a small on/off toggle. Blue = Domain,
+              purple = IP/Local, mirroring the recon-preset classification chips.
+              Locked after creation - ipMode cannot change on an existing project. */}
+          <div className={styles.fieldGroup}>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              {([
+                {
+                  mode: 'domain' as TargetMode,
+                  accent: '#60a5fa',
+                  accentBg: 'rgba(96, 165, 250, 0.12)',
+                  icon: <Globe size={20} />,
+                  title: 'Single Domain',
+                  subtitle: 'One domain or hostname, public or internal (incl. AD)',
+                },
+                {
+                  mode: 'ip' as TargetMode,
+                  accent: '#a78bfa',
+                  accentBg: 'rgba(167, 139, 250, 0.12)',
+                  icon: <Network size={20} />,
+                  title: 'IP / CIDR',
+                  subtitle: 'IP addresses or ranges, public or internal',
+                },
+                {
+                  mode: 'batch' as TargetMode,
+                  accent: '#34d399',
+                  accentBg: 'rgba(52, 211, 153, 0.12)',
+                  icon: <Layers size={20} />,
+                  title: 'Domain batch',
+                  subtitle: 'A list of hostnames, grouped by domain and scanned in turn',
+                },
+              ]).map((opt) => {
+                const active = opt.mode === targetMode
+                return (
+                  <button
+                    key={opt.title}
+                    type="button"
+                    disabled={isLocked}
+                    aria-pressed={active}
+                    onClick={() => !isLocked && handleTargetModeChange(opt.mode)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: 'left',
+                      padding: '14px 16px',
+                      borderRadius: '10px',
+                      cursor: isLocked ? 'not-allowed' : 'pointer',
+                      opacity: isLocked && !active ? 0.45 : 1,
+                      border: `2px solid ${active ? opt.accent : 'var(--border-subtle, #333)'}`,
+                      background: active ? opt.accentBg : 'transparent',
+                      color: active ? opt.accent : 'var(--text-secondary, #9ca3af)',
+                      transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                      {opt.icon}
+                      <span style={{ fontSize: '15px', fontWeight: 700 }}>{opt.title}</span>
+                      {active && !isLocked && <Check size={16} style={{ marginLeft: 'auto' }} />}
+                      {isLocked && active && <Lock size={14} style={{ marginLeft: 'auto', opacity: 0.7 }} />}
+                    </div>
+                    <span
+                      style={{
+                        display: 'block',
+                        fontSize: '12px',
+                        lineHeight: 1.4,
+                        color: active ? opt.accent : 'var(--text-tertiary, #6b7280)',
+                        opacity: active ? 0.9 : 1,
+                      }}
+                    >
+                      {opt.subtitle}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
-            <Toggle
-              checked={ipMode}
-              onChange={handleIpModeToggle}
-              disabled={isLocked}
-            />
+
+            <p className={styles.toggleDescription} style={{ marginTop: 'var(--space-3)' }}>
+              {batchMode ? (
+                <>
+                  Paste or upload a list of hostnames. They are grouped by domain
+                  (<strong>the last two labels</strong>, so a.b.example.com belongs to
+                  example.com) and each group is scanned in turn by a <strong>single</strong>{' '}
+                  recon run, writing to the graph as it finishes each one. Only the hostnames
+                  you list are scanned; no subdomain discovery is run.
+                </>
+              ) : ipMode ? (
+                <>
+                  Targets are IP addresses or CIDR ranges, <strong>public or private</strong>.
+                  The pipeline runs reverse DNS to recover hostnames. For a private/internal
+                  range or Active Directory, pick the{' '}
+                  <strong>Internal Network &amp; Active Directory</strong> recon preset, which
+                  turns off the public-only tools (OSINT, subdomain enumeration, WHOIS) that
+                  cannot see a LAN.
+                </>
+              ) : (
+                <>
+                  Targets are a domain or hostname, <strong>public or internal</strong>. A
+                  public domain gets full OSINT and subdomain discovery; for an internal
+                  hostname (e.g. myinternal.com) turn Subdomain Discovery off and
+                  make sure this host can resolve the name. Choose <strong>IP / CIDR</strong>{' '}
+                  instead when you only have addresses.
+                </>
+              )}
+              {isLocked && (
+                <>
+                  {' '}
+                  <strong>The targeting mode is locked after project creation.</strong> Create
+                  a new project to change it.
+                </>
+              )}
+            </p>
           </div>
 
           <div className={styles.fieldRow}>
@@ -175,7 +336,7 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
               />
             </div>
 
-            {!ipMode && (
+            {targetMode === 'domain' && (
               <div className={styles.fieldGroup}>
                 <label className={`${styles.fieldLabel} ${styles.fieldLabelRequired}`}>
                   Target Domain
@@ -202,6 +363,93 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                 organization websites (.gov, .mil, .edu, .int, etc.) are always blocked and cannot be used as targets,
                 regardless of guardrail settings. This restriction cannot be disabled.
               </span>
+            </div>
+          )}
+
+          {/* Domain batch: the hostname list plus a live preview of the groups it
+              produces. The preview is the ONLY place the grouping rule is visible,
+              and it is generated by the same helper the server persists with, so
+              what the operator approves here is what the pipeline runs. */}
+          {batchMode && (
+            <div className={styles.fieldGroup}>
+              <label className={`${styles.fieldLabel} ${styles.fieldLabelRequired}`}>
+                Hostnames
+              </label>
+              <div className={styles.fileImportWrap}>
+                <textarea
+                  className="textarea"
+                  rows={6}
+                  value={displayBatchHosts}
+                  onChange={(e) => handleBatchHostsChange(e.target.value)}
+                  placeholder={'sub1.domain1.com\nsub2.domain2.it\nsub3.domain3.com\nsuba.sub3.domain3.com'}
+                  disabled={isLocked}
+                  title={isLocked ? 'The hostname list cannot be changed after creation. Create a new project instead.' : undefined}
+                />
+                {!isLocked && (
+                  <FileImportButton
+                    onImport={(values) => { setBatchHostDraft(null); updateField('domainBatchHosts', values) }}
+                    variant="textarea"
+                    fieldName="hostnames"
+                  />
+                )}
+              </div>
+              <p className={styles.fieldHint}>
+                One per line, or comma separated. {batchHosts.length} hostname
+                {batchHosts.length === 1 ? '' : 's'} (max {MAX_BATCH_HOSTS}), grouped into{' '}
+                {batchResult?.groups.length ?? 0} domain
+                {(batchResult?.groups.length ?? 0) === 1 ? '' : 's'} (max {MAX_BATCH_GROUPS}).
+              </p>
+
+              {batchResult && batchResult.groups.length > 0 && (
+                <div style={{ overflowX: 'auto', marginTop: 'var(--space-3)' }}>
+                  <table className={styles.previewTable ?? undefined} style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: 'var(--text-tertiary, #6b7280)' }}>
+                        <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>#</th>
+                        <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Domain</th>
+                        <th style={{ padding: '6px 8px' }}>Hosts</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchResult.groups.map((g, i) => (
+                        <tr key={g.rootDomain} style={{ borderTop: '1px solid var(--border-subtle, #333)' }}>
+                          <td style={{ padding: '6px 8px', color: 'var(--text-tertiary, #6b7280)' }}>{i + 1}</td>
+                          <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{g.rootDomain}</td>
+                          <td style={{ padding: '6px 8px', color: 'var(--text-secondary, #9ca3af)' }}>
+                            {g.hosts.join(', ')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className={styles.fieldHint} style={{ marginTop: 'var(--space-2)' }}>
+                    Groups run top to bottom, one at a time, in a single scan.
+                  </p>
+                </div>
+              )}
+
+              {batchResult && batchResult.invalid.length > 0 && (
+                <div className={styles.shodanWarning} style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.08)' }}>
+                  <AlertTriangle size={14} style={{ color: '#ef4444' }} />
+                  <span>
+                    <strong>Not valid hostnames:</strong> {batchResult.invalid.join(', ')}. Each
+                    entry needs at least two labels (example.com) and may only
+                    contain letters, digits, dots and hyphens. Remove or correct them to continue.
+                  </span>
+                </div>
+              )}
+
+              {batchBlocked && (
+                <div className={styles.shodanWarning} style={{ borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.08)' }}>
+                  <ShieldAlert size={14} style={{ color: '#ef4444' }} />
+                  <span>
+                    <strong>Target permanently blocked: {batchBlocked.domain}.</strong> Government,
+                    military, educational and international organization domains are always
+                    blocked and cannot be scanned, regardless of guardrail settings. Remove that
+                    hostname to continue.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -234,6 +482,63 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                   ? 'Target IPs are locked after project creation. Create a new project to change them.'
                   : 'Enter one IP or CIDR per line, or comma-separated. IPv4, IPv6, and CIDR ranges supported. Max /24 (256 hosts).'}
               </span>
+
+              {/* Private/local target detected: public OSINT + subdomain enumeration
+                  cannot see RFC1918 space, so warn and point at the internal preset. */}
+              {hasLocalIps && (
+                <div
+                  className={styles.shodanWarning}
+                  style={{
+                    marginTop: 'var(--space-2)',
+                    marginBottom: 0,
+                    padding: 'var(--space-3) var(--space-4)',
+                    fontSize: 'var(--text-sm)',
+                    borderWidth: '2px',
+                    borderColor: 'rgba(251, 146, 60, 0.5)',
+                    background: 'rgba(251, 146, 60, 0.12)',
+                    alignItems: 'center',
+                  }}
+                >
+                  <AlertTriangle size={22} style={{ color: '#fb923c' }} />
+                  <span>
+                    <strong>
+                      {ipTargetClass === 'mixed'
+                        ? 'Some targets are on a private / local network.'
+                        : 'These targets are on a private / local network.'}
+                    </strong>{' '}
+                    Public lookups (Shodan, Censys, crt.sh, WHOIS, subdomain enumeration)
+                    return nothing for private / RFC1918 addresses, so leaving them on just
+                    wastes time. For local network or Active Directory testing, select the
+                    {' '}<strong>Internal Network &amp; Active Directory</strong> recon preset,
+                    which turns those off and focuses the scan on internal services
+                    (SMB, LDAP, Kerberos, RDP, WinRM, databases).
+                  </span>
+                </div>
+              )}
+
+              {/* Always-on note for IP mode: the domain-only phases don't apply. */}
+              <div
+                className={styles.shodanWarning}
+                style={{
+                  marginTop: 'var(--space-2)',
+                  marginBottom: 0,
+                  padding: 'var(--space-3) var(--space-4)',
+                  fontSize: 'var(--text-sm)',
+                  borderWidth: '1px',
+                  borderColor: 'rgba(96, 165, 250, 0.4)',
+                  background: 'rgba(96, 165, 250, 0.10)',
+                  alignItems: 'center',
+                }}
+              >
+                <AlertTriangle size={20} style={{ color: '#60a5fa' }} />
+                <span>
+                  <strong>IP mode:</strong> domain-only steps are skipped. Subdomain
+                  discovery, WHOIS, DNS/email security and subdomain-takeover checks need a
+                  registered domain and do not run against bare IPs. Port scanning, service
+                  and version detection, HTTP probing, CVE lookup and the security checks
+                  work normally.
+                </span>
+              </div>
             </div>
           )}
 
@@ -249,7 +554,11 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
           </div>
 
           {/* Domain-mode only fields */}
-          {!ipMode && (
+          {/* Domain and batch modes share the AI + ownership settings below, but
+              Subdomain Prefixes and Include Root Domain belong to a SINGLE target:
+              a batch derives per-group prefixes from its host list, and subdomain
+              discovery is forced off for it, so showing these would be a lie. */}
+          {targetMode === 'domain' && (
             <>
               <div className={styles.fieldGroup}>
                 <label className={styles.fieldLabel}>Subdomain Prefixes</label>
@@ -343,7 +652,11 @@ export function TargetSection({ data, updateField, mode = 'create' }: TargetSect
                   disabled={isLocked || forceIncludeRootDomain}
                 />
               </div>
+            </>
+          )}
 
+          {!ipMode && (
+            <>
               {/* AI in Pipeline (master toggle, model picker, per-tool toggles) */}
               <div className={styles.subSection}>
                 <div className={styles.toggleRow} style={{ gap: 'var(--space-4)', alignItems: 'center' }}>

@@ -34,6 +34,14 @@ DEFAULT_GVM_SETTINGS: dict[str, Any] = {
     # - "hostnames_only" - Only scan hostnames/subdomains
     'SCAN_TARGETS': 'both',
 
+    # Port list used for every target. This choice dominates how long a scan sits
+    # before gvmd reports its first percent: "All IANA assigned TCP and UDP"
+    # sweeps the entire UDP range, whose closed ports answer with silence and must
+    # each be timed out, so discovery alone can run for hours (issue #177). The
+    # top-1000 UDP list finds nearly as much for a fraction of the time; the full
+    # sweep stays available as an explicit choice.
+    'PORT_LIST': 'All TCP and Nmap top 100 UDP',
+
     # Maximum time to wait for a single scan task (seconds, 0 = unlimited)
     # Note: "Full and fast" scans can take 1-2+ hours per target
     'TASK_TIMEOUT': 14400,  # 4 hours
@@ -41,16 +49,20 @@ DEFAULT_GVM_SETTINGS: dict[str, Any] = {
     # Poll interval for checking scan status (seconds)
     'POLL_INTERVAL': 30,
 
-    # Give up on a task that reports NO progress at all for this long (seconds).
-    # A task whose scanner is not actually running is accepted by gvmd and sits at
-    # 0%/-1% until TASK_TIMEOUT, so without this a scannerless stack burns the full
-    # 4h on every target in turn (issue #174: ospd-openvas was never started
-    # because its VT-feed loader had been killed). Not mapped from the webapp API -
-    # a diagnostic bound, not a user-facing scan option. 0 disables the watchdog.
-    # A genuinely slow target CAN sit at 0% for a long time (a full IANA port
-    # sweep against a filtered host), so it is tunable via GVM_NO_PROGRESS_TIMEOUT
-    # rather than only in code - see _ENV_OVERRIDES.
-    'NO_PROGRESS_TIMEOUT': 1800,  # 30 min
+    # How often to re-prove, mid-scan, that gvmd can still talk to ospd-openvas
+    # (seconds). This is what catches the issue #174 scannerless stack, and unlike
+    # a progress bound it also catches a scanner that dies PART WAY through, which
+    # a stall watchdog cannot see. 0 disables the probe.
+    'LIVENESS_INTERVAL': 300,  # 5 min
+
+    # Opt-in upper bound on time spent at an unchanged progress percentage.
+    # DISABLED BY DEFAULT (0). It used to be 1800 and was the direct cause of
+    # issue #177: a full IANA TCP+UDP sweep legitimately reports no percent for
+    # hours, and the watchdog killed the task at 30 minutes while the scanner was
+    # healthy and working. LIVENESS_INTERVAL replaces it as the dead-stack
+    # detector, so this is now only for operators who want a hard ceiling.
+    # Not mapped from the webapp API - a diagnostic bound, not a scan option.
+    'NO_PROGRESS_TIMEOUT': 0,
 
     # Readiness wait before a scan gives up on gvmd. A gvmd (re)start re-imports
     # ALL feeds; the scan configs ("Full and fast", ...) come from the Data Objects
@@ -72,6 +84,7 @@ DEFAULT_GVM_SETTINGS: dict[str, Any] = {
 # protection by accident.
 _ENV_OVERRIDES = {
     'NO_PROGRESS_TIMEOUT': 'GVM_NO_PROGRESS_TIMEOUT',
+    'LIVENESS_INTERVAL': 'GVM_LIVENESS_INTERVAL',
 }
 
 
@@ -118,6 +131,9 @@ def fetch_gvm_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     # Map camelCase API fields to SCREAMING_SNAKE_CASE
     settings['SCAN_CONFIG'] = project.get('gvmScanConfig', DEFAULT_GVM_SETTINGS['SCAN_CONFIG'])
     settings['SCAN_TARGETS'] = project.get('gvmScanTargets', DEFAULT_GVM_SETTINGS['SCAN_TARGETS'])
+    # `or`, not a .get default: a project row carrying an explicit null or "" for
+    # a column added after it was saved would otherwise disable the port list.
+    settings['PORT_LIST'] = project.get('gvmPortList') or DEFAULT_GVM_SETTINGS['PORT_LIST']
     settings['TASK_TIMEOUT'] = project.get('gvmTaskTimeout', DEFAULT_GVM_SETTINGS['TASK_TIMEOUT'])
     settings['POLL_INTERVAL'] = project.get('gvmPollInterval', DEFAULT_GVM_SETTINGS['POLL_INTERVAL'])
     settings['CLEANUP_AFTER_SCAN'] = project.get('gvmCleanupAfterScan', DEFAULT_GVM_SETTINGS['CLEANUP_AFTER_SCAN'])

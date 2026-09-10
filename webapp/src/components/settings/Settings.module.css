@@ -394,14 +394,23 @@
 
 .testResult {
   display: flex;
-  align-items: center;
+  /* flex-start, not center: a diagnostic message can be several lines and the
+     icon must stay on the first one. */
+  align-items: flex-start;
   gap: var(--space-1-5);
   font-size: var(--text-xs);
+  line-height: 1.5;
   padding: var(--space-1-5) var(--space-2);
   border-radius: var(--radius-default);
   max-width: 500px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrap rather than clip: the agent-unreachable message names the command to
+     run, so truncating it would defeat the point (issue #184). */
+  overflow-wrap: anywhere;
+}
+
+.testResult svg {
+  flex-shrink: 0;
+  margin-top: 0.15em;
 }
 
 .testSuccess {
@@ -479,4 +488,44 @@
 .segmentedOptionActive {
   color: var(--text-primary);
   background: var(--bg-secondary);
+}
+
+/* Agent-offline preflight (issue #184). Shown above the Test button when the
+   agent container is unreachable, so an infrastructure outage is not read as a
+   fault in the endpoint the operator just configured. */
+.agentOfflineBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--status-warning-text);
+  background: var(--status-warning-bg);
+  border: 1px solid var(--status-warning);
+}
+
+.agentOfflineBanner svg {
+  flex-shrink: 0;
+}
+
+.agentOfflineRetry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-default);
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.agentOfflineRetry:hover {
+  background: var(--bg-hover);
 }

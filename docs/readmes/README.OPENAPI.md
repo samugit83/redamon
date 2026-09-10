@@ -53,7 +53,8 @@ The resolved API server controls graph placement, not the specification's host.
 A specification on `docs.example.com` can declare operations on
 `api.example.com`. Each imported operation connects through the appropriate
 Domain/Subdomain and BaseURL. Servers outside scope are reported and skipped.
-Specifications never expand project scope.
+Specifications never expand project scope. Domain-batch runs use each stored,
+approved group and its subdomain prefixes independently in full and partial recon.
 
 OpenAPI 3 operation/path/root server precedence, relative servers and variable
 defaults are supported. Swagger 2 uses schemes, host and basePath. The optional

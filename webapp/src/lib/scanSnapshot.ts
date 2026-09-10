@@ -22,6 +22,7 @@ import { randomUUID } from 'crypto'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { serializeGraphProperties } from '@/lib/graphSerialize'
+import { MUTED_LABEL } from '@/lib/graphMute'
 import { getNodeName, type FormattedGraphData, type Neo4jNode } from '@/app/api/graph/format'
 
 /** Agent-run (session) labels that are never part of a recon version. */
@@ -128,7 +129,7 @@ export async function captureGraphSnapshot(projectId: string): Promise<CapturedS
         const exportId = randomUUID()
         elementIdToExportId.set(eid, exportId)
         const labels = record.get('labels') as string[]
-        const primary = labels[0] || 'Unknown'
+        const primary = functionalLabel(labels)
         summary[primary] = (summary[primary] || 0) + 1
         return {
           labels,
@@ -241,13 +242,41 @@ export async function loadSnapshot(scanVersionId: string): Promise<SnapshotPaylo
  * Node ids are the snapshot's stable `_exportId`s (the live path uses Neo4j
  * internal ids); links reference the same ids, so the payload is self-consistent.
  */
+/** True when a snapshot node carries the suppressed-finding marker. */
+export function snapshotNodeIsMuted(labels: string[]): boolean {
+  return labels.includes(MUTED_LABEL)
+}
+
+/**
+ * A node's real type, ignoring the `Muted` marker.
+ *
+ * A muted finding is dual-labelled and Neo4j does not order labels, so
+ * `labels[0]` can be `Muted` and would mis-type the node. Anything asking "what
+ * kind of thing is this" has to go through here.
+ */
+export function functionalLabel(labels: string[]): string {
+  return labels.find(l => l !== MUTED_LABEL) || 'Unknown'
+}
+
+/**
+ * Render a snapshot as a `{nodes, links}` payload.
+ *
+ * Muted findings are dropped HERE and not in `captureGraphSnapshot`, and the
+ * distinction matters in both directions. This feeds the graph view and the
+ * Recon Delta, neither of which may show a suppressed finding -- and in the
+ * delta a finding that vanished because somebody muted it would otherwise be
+ * reported under `resolvedVulnerabilities`, i.e. as fixed. The STORED snapshot
+ * keeps them, so mute still survives export, import and version-activate.
+ */
 export function snapshotToGraphPayload(snapshot: SnapshotPayload): FormattedGraphData {
-  const nodes = snapshot.nodes.map(n => ({
-    id: n._exportId,
-    name: getNodeName({ labels: n.labels, properties: n.properties } as Neo4jNode),
-    type: n.labels[0] || 'Unknown',
-    properties: n.properties,
-  }))
+  const nodes = snapshot.nodes
+    .filter(n => !snapshotNodeIsMuted(n.labels))
+    .map(n => ({
+      id: n._exportId,
+      name: getNodeName({ labels: n.labels, properties: n.properties } as Neo4jNode),
+      type: functionalLabel(n.labels),
+      properties: n.properties,
+    }))
   const known = new Set(nodes.map(n => n.id))
   const links = snapshot.relationships
     .filter(r => known.has(r.startExportId) && known.has(r.endExportId))

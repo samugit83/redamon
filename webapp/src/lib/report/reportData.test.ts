@@ -6,6 +6,8 @@
  */
 
 import { describe, test, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 
 // We can't import gatherReportData directly (it depends on prisma + neo4j),
 // so we test the computation logic by replicating the metrics calculation
@@ -275,5 +277,72 @@ describe('CVE Severity Classification', () => {
   test('low < 4.0', () => {
     expect(classifyCveSeverity(3.9)).toBe('low')
     expect(classifyCveSeverity(0)).toBe('low')
+  })
+})
+
+// ── Muted findings must not reach a client report ──────────────────────────
+
+describe('every finding query in reportData excludes muted findings', () => {
+  // muteEnforcement.test.ts checks each FILE mentions notMuted somewhere. That
+  // is too coarse for this file: reportData.ts has ~32 separate finding queries
+  // and a single one of them carrying the filter would satisfy a file-level
+  // grep while the other 31 leaked. This asserts per QUERY.
+  const SRC = readFileSync(join(__dirname, 'reportData.ts'), 'utf8')
+
+  const MUTEABLE = [
+    'Vulnerability', 'JsReconFinding', 'Secret', 'MultiscannerFinding',
+    'GithubSecret', 'GithubSensitiveFile', 'MalPackageFinding', 'ExploitGvm',
+  ]
+
+  /** Every backtick template literal in the file that runs a MATCH. */
+  function cypherLiterals(): string[] {
+    return [...SRC.matchAll(/`([^`]*\bMATCH\b[^`]*)`/g)].map(m => m[1])
+  }
+
+  /** Those that bind a label an operator can mute. */
+  function findingQueries(): string[] {
+    const label = new RegExp(`:(${MUTEABLE.join('|')})\\b`)
+    return cypherLiterals().filter(q => label.test(q))
+  }
+
+  test('the extractor still finds the queries (guards the test itself)', () => {
+    // A regex that silently matched nothing would make every assertion below
+    // vacuously true and retire the whole check.
+    expect(findingQueries().length).toBeGreaterThan(20)
+  })
+
+  test('each one carries the mute exclusion', () => {
+    const offenders = findingQueries()
+      .filter(q => !q.includes('notMuted'))
+      .map(q => q.trim().split('\n')[0].slice(0, 90))
+
+    expect(offenders, `finding queries with no :Muted exclusion:\n${offenders.join('\n')}`)
+      .toEqual([])
+  })
+
+  test('the bare node-count scan is filtered too', () => {
+    // labels(n)[0] on an unfiltered bare scan is both a leak and a correctness
+    // bug: a dual-labelled muted node can be counted under the label "Muted",
+    // so the overview would not reconcile with the tables below it.
+    const bare = cypherLiterals().find(q => q.includes('labels(n)[0]'))
+    expect(bare).toBeDefined()
+    expect(bare).toContain('notMuted')
+  })
+
+  test('remediations of dismissed findings are excluded', () => {
+    expect(SRC).toContain("status: { not: 'dismissed' }")
+  })
+
+  test('the suppressed count is gathered and returned', () => {
+    // Reports exclude muted findings entirely, so without this line the report
+    // would misrepresent the assessment's scope by silent omission.
+    expect(SRC).toContain('MATCH (n:Muted {project_id: $pid})')
+    expect(SRC).toMatch(/suppressedCount,/)
+  })
+
+  test('ChainFinding queries are deliberately left alone', () => {
+    // EvoGraph attack-chain memory is out of triage scope and not muteable.
+    const chain = cypherLiterals().filter(q => /:ChainFinding\b/.test(q))
+    expect(chain.length).toBeGreaterThan(0)
   })
 })

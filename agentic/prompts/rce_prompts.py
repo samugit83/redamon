@@ -813,6 +813,51 @@ print(base64.b64encode(payload.encode()).decode())
 
 Inject as cookie or POST body. Confirm via OOB.
 
+**When no framework gadget fits -- look for the app's OWN gadget class.** If the
+target does not autoload a known framework's vulnerable classes, a `phpggc` /
+framework chain will never fit -- but that does NOT mean the sink is unexploitable,
+and it is NOT evidence that "only built-in objects are reachable". Applications very
+commonly define their own class with a dangerous magic method, and an unserialize
+sink very often type-checks its result: an `instanceof SomeClass` gate, or an error
+like "invalid object type", NAMES the exact class the sink expects -- and any class
+the sink checks for is loaded server-side and IS your gadget target. Do not conclude
+"no usable gadget" until you have recovered the application's own source.
+- **Recover the app's classes + magic methods.** Hunt for source-code or backup-artifact disclosure to
+  learn the app's class names and their magic methods (`__wakeup` / `__destruct` /
+  `__toString` / `__call`, or any method the sink itself then invokes on the object):
+  exposed backup or editor artifacts (`.bak` / `~` / `.old` / `.orig` / `.swp` files,
+  backup directories), an exposed `.git`, config/include leaks, and verbose errors or
+  stack traces that name files or classes. This is the step most often missed when a
+  deserialization sink is CONFIRMED yet "no gadget" seems to apply.
+- **When you FIND a disclosure surface, EXTRACT the raw source -- do not blind-guess
+  class names.** A source-, backup-, or config-disclosure endpoint that returns rendered HTML, a wrapper
+  page, a redirect, or a `404` for your first guess is NOT exhausted. Pull the RAW file:
+  append the script names you already know exist to the disclosure path, request a
+  directory index, and above all read the source of the VERY sink/script you are already
+  attacking plus whatever it `include`s / `require`s -- try each with and without common
+  backup suffixes. The sink's own source is the jackpot: it literally spells out the class
+  the object-type check expects, that class's properties, and the exact method that fires
+  the payload -- everything the gadget needs. Reading one retrievable source file beats any
+  amount of class-name guessing; treat blind/combinatorial class-name brute-forcing as a
+  LAST resort only after raw-source retrieval has genuinely failed, never as a substitute
+  for reading a disclosure surface you have already located.
+  When you fetch through a disclosure surface, read the RAW BYTES, not a rendered view: a
+  `200` that shows only a page shell, a formatted/highlighted listing, or no code at all
+  means you got the RENDERED output, not the source. Re-request it as raw -- a `.bak` /
+  `.txt` / `~` suffix, a `?raw` / view-source-style parameter the endpoint accepts, a
+  `phar://` / `file://` / `php://filter` wrapper, or the file one directory level up -- and
+  judge success ONLY by grepping the bytes you received for structural tokens (`<?php`,
+  `class `, `function `, `instanceof`, `require` / `include`), never by whether the browser
+  view superficially looks like source. A disclosure attempt that returned none of those
+  tokens has NOT been tried properly and must not be marked exhausted.
+- **Confirm a class is loaded with the deserialize oracle.** Unserializing a class name
+  the server knows yields a full object; an unknown name yields `__PHP_Incomplete_Class`.
+  Use that differential to verify a candidate class is actually loaded before investing
+  in the full payload.
+- **Then build it:** serialize an instance of THAT class with attacker-controlled
+  properties that reach its dangerous method, deliver it through the same sink (for a
+  `phar://` sink, as the archive's serialized metadata/manifest), and trigger it.
+
 ### Python pickle
 
 If the target accepts a pickle (e.g. legacy `pickle.loads(request.cookies['data'])`),

@@ -82,16 +82,16 @@ Match against an allowlist for `trusted.tld`:
 | IP variants | `http://2130706433/`, `http://0177.0.0.1/`, `http://0x7f.1/`, `http://[::ffff:127.0.0.1]/` | SSRF-friendly |
 | User-controlled path base | `/out?url=/\evil.tld` | Server returns relative redirect; browser resolves to host |
 
-### Captured-traffic workflow (proxy_* tools)
+### Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_* only see traffic that crossed the capture proxy).
+If HTTP Traffic Capture is enabled, source and drive this from the recorded history (proxy_brain only see traffic that crossed the capture proxy).
 
-- `proxy_params` surfaces captured redirect params (`next`, `url`, `redirect_uri`, `return_to`) and flags the injectable ones.
-- `proxy_fuzz id "next" [...]` runs the allowlist-evasion matrix above over one captured redirect QUERY param, reading per-payload status and `Location` to spot the payloads that redirect off-host.
-- `proxy_replay id mutate:{param:{"next":"https://trusted.tld@attacker.tld/cb"}}` mutates a single candidate and reads the resulting `Location`.
-- `proxy_grep "attacker.tld"` confirms the input was reflected into a captured `Location`.
+- `redamon.params` surfaces captured redirect params (`next`, `url`, `redirect_uri`, `return_to`) and flags the injectable ones.
+- `redamon.fuzz id "next" [...]` runs the allowlist-evasion matrix above over one captured redirect QUERY param, reading per-payload status and `Location` to spot the payloads that redirect off-host.
+- `redamon.replay id mutate:{param:{"next":"https://trusted.tld@attacker.tld/cb"}}` mutates a single candidate and reads the resulting `Location`.
+- `redamon.grep "attacker.tld"` confirms the input was reflected into a captured `Location`.
 
-Caveat: proxy_* prove the server emitted the redirect only. Address-bar confirmation (where the browser actually navigates) still needs `execute_playwright`.
+Caveat: proxy_brain prove the server emitted the redirect only. Address-bar confirmation (where the browser actually navigates) still needs `execute_playwright`.
 
 ## Probe templates
 

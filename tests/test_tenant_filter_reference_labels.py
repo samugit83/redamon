@@ -49,7 +49,7 @@ class TestReferenceLabelsAreReachable(unittest.TestCase):
 
     def test_a_traversal_from_tenant_data_reaches_the_cve(self):
         out = scoped("MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id")
-        self.assertIn("(t:Technology {user_id: $tenant_user_id", out)
+        self.assertIn("(t:Technology&!Muted {user_id: $tenant_user_id", out)
         # The whole point: no filter lands on the CVE, because it has no tenant
         # property to filter on.
         self.assertIn("(c:CVE)", out)
@@ -61,7 +61,7 @@ class TestReferenceLabelsAreReachable(unittest.TestCase):
         )
         for untouched in ("(c:CVE)", "(m:MitreData)", "(k:Capec)"):
             self.assertIn(untouched, out)
-        for filtered in ("(d:Domain {", "(v:Vulnerability {"):
+        for filtered in ("(d:Domain&!Muted {", "(v:Vulnerability&!Muted {"):
             self.assertIn(filtered, out)
 
     def test_a_reference_pattern_with_its_own_props_is_left_alone(self):
@@ -81,9 +81,16 @@ class TestTheExemptionIsNotAHole(unittest.TestCase):
 
     def test_a_negated_label_is_never_exempt(self):
         # `(n:!CVE)` is every node that is NOT a CVE. Exempting it would hand
-        # back the entire database.
-        self.assertTrue(refused("MATCH (n:!CVE) RETURN n"))
-        self.assertTrue(refused("MATCH (d:Domain), (n:!CVE) RETURN n"))
+        # back the entire database, so it must be scoped like any other pattern.
+        # (It used to be REFUSED, because the pattern regex could not read a
+        # negated label at all. Mute injection made that regex read the full
+        # label-expression grammar, so the shape now parses - and being scoped is
+        # the property that was ever load-bearing here, not being rejected.)
+        for query in ("MATCH (n:!CVE) RETURN n", "MATCH (d:Domain), (n:!CVE) RETURN n"):
+            with self.subTest(query=query):
+                out = scoped(query)
+                self.assertIn("(n:!CVE&!Muted {user_id: $tenant_user_id", out)
+                self.assertIsNone(find_unscoped_node_pattern(out))
 
     def test_a_label_union_is_never_exempt(self):
         # `(n:CVE|Domain)` matches Domains too.
@@ -110,7 +117,7 @@ class TestTheExemptionIsNotAHole(unittest.TestCase):
     def test_a_label_tested_in_the_where_clause_is_not_exempt(self):
         # The classic bypass: no label in the pattern, label asserted later.
         out = scoped("MATCH (d:Domain), (n) WHERE n:CVE RETURN n")
-        self.assertIn("(n {user_id: $tenant_user_id", out)
+        self.assertIn("(n:!Muted {user_id: $tenant_user_id", out)
 
     def test_every_non_reference_label_still_gets_scoped(self):
         for label in ("Domain", "Package", "GithubSecret", "MultiscannerFinding",

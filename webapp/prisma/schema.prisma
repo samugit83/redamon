@@ -199,6 +199,8 @@ model UserSettings {
   driftnetApiKey   String  @default("") @map("driftnet_api_key")
   wpscanApiToken   String  @default("") @map("wpscan_api_token")
   pdcpApiKey       String  @default("") @map("pdcp_api_key")
+  securitytrailsApiKey String @default("") @map("securitytrails_api_key")
+  viewdnsApiKey    String  @default("") @map("viewdns_api_key")
 
   // Tunneling & Infrastructure
   // STRIDE I19: tunnels must be explicitly enabled by the operator; a saved
@@ -360,6 +362,16 @@ model Project {
   subdomainList               String[] @default([]) @map("subdomain_list")
   ipMode                      Boolean  @default(false) @map("ip_mode")
   targetIps                   String[] @default([]) @map("target_ips")
+  /// Domain batch: the third targeting mode. Mutually exclusive with ipMode.
+  /// One full recon walks the derived groups in order, appending to one graph.
+  domainBatchMode             Boolean  @default(false) @map("domain_batch_mode")
+  /// Raw hostname list as entered or uploaded. What the operator edits.
+  domainBatchHosts            String[] @default([]) @map("domain_batch_hosts")
+  /// Groups derived from the list at save time: [{ rootDomain, prefixes[], hosts[] }].
+  /// Persisted rather than re-derived so the grouping rule has exactly ONE
+  /// implementation, and so what the operator approved in the preview is literally
+  /// what the pipeline runs. Always recomputed server-side; never trusted from a body.
+  domainBatchGroups           Json?    @map("domain_batch_groups")
   verifyDomainOwnership       Boolean  @default(false) @map("verify_domain_ownership")
   ownershipToken              String   @default("your-secret-token-here") @map("ownership_token")
   ownershipTxtPrefix          String   @default("_redamon-verify") @map("ownership_txt_prefix")
@@ -944,9 +956,21 @@ model Project {
   securityCheckTimeout              Int     @default(10) @map("security_check_timeout")
   securityCheckMaxWorkers           Int     @default(10) @map("security_check_max_workers")
 
+  // ========== ORIGIN-IP DISCOVERY (CDN/WAF unmasking) ==========
+  originDiscoveryEnabled            Boolean @default(false) @map("origin_discovery_enabled")
+  originDiscoveryKeyless            Boolean @default(true)  @map("origin_discovery_keyless")
+  originDiscoveryScanners           Boolean @default(true)  @map("origin_discovery_scanners")
+  originDiscoveryPassiveDns         Boolean @default(true)  @map("origin_discovery_passive_dns")
+  originDiscoveryMaxCandidates      Int     @default(25)    @map("origin_discovery_max_candidates")
+  originDiscoveryMaxSearchCalls     Int     @default(50)    @map("origin_discovery_max_search_calls")
+  originDiscoveryThreshold          Int     @default(60)    @map("origin_discovery_threshold")
+  originDiscoveryTimeout            Int     @default(10)    @map("origin_discovery_timeout")
+  originDiscoveryWorkers            Int     @default(10)    @map("origin_discovery_workers")
+
   // ========== GVM VULNERABILITY SCAN ==========
   gvmScanConfig                     String  @default("Full and fast") @map("gvm_scan_config")
   gvmScanTargets                    String  @default("both") @map("gvm_scan_targets")
+  gvmPortList                       String  @default("All TCP and Nmap top 100 UDP") @map("gvm_port_list")
   gvmTaskTimeout                    Int     @default(14400) @map("gvm_task_timeout")
   gvmPollInterval                   Int     @default(30) @map("gvm_poll_interval")
   gvmCleanupAfterScan               Boolean @default(true) @map("gvm_cleanup_after_scan")
@@ -976,7 +1000,7 @@ model Project {
   agentCreateGraphImageOnInit           Boolean  @default(false) @map("agent_create_graph_image_on_init")
   agentLogMaxMb                         Int      @default(10) @map("agent_log_max_mb")
   agentLogBackupCount                   Int      @default(5) @map("agent_log_backup_count")
-  agentToolPhaseMap                     Json     @default("{\"query_graph\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_search\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_get\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_sitemap\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_params\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_grep\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_diff\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_to_curl\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_query\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_replay\":[\"exploitation\",\"post_exploitation\"],\"proxy_fuzz\":[\"exploitation\",\"post_exploitation\"],\"web_search\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"cve_intel\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"shodan\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"google_dork\":[\"informational\"],\"execute_curl\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_naabu\":[\"informational\",\"exploitation\"],\"execute_httpx\":[\"informational\",\"exploitation\"],\"execute_subfinder\":[\"informational\",\"exploitation\"],\"execute_wpscan\":[\"informational\",\"exploitation\"],\"execute_jsluice\":[\"informational\",\"exploitation\"],\"execute_amass\":[\"informational\",\"exploitation\"],\"execute_katana\":[\"informational\",\"exploitation\"],\"execute_arjun\":[\"informational\",\"exploitation\"],\"execute_ffuf\":[\"informational\",\"exploitation\"],\"execute_gau\":[\"informational\",\"exploitation\"],\"execute_nmap\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_nuclei\":[\"informational\",\"exploitation\"],\"kali_shell\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_code\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_playwright\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_hydra\":[\"exploitation\",\"post_exploitation\"],\"metasploit_console\":[\"exploitation\",\"post_exploitation\"],\"msf_restart\":[\"exploitation\",\"post_exploitation\"],\"tradecraft_lookup\":[\"exploitation\",\"post_exploitation\"],\"execute_osv_scanner\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_guarddog\":[\"informational\",\"exploitation\"]}") @map("agent_tool_phase_map")
+  agentToolPhaseMap                     Json     @default("{\"query_graph\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"proxy_brain\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"web_search\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"cve_intel\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"shodan\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"google_dork\":[\"informational\"],\"execute_curl\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_naabu\":[\"informational\",\"exploitation\"],\"execute_httpx\":[\"informational\",\"exploitation\"],\"execute_subfinder\":[\"informational\",\"exploitation\"],\"execute_wpscan\":[\"informational\",\"exploitation\"],\"execute_jsluice\":[\"informational\",\"exploitation\"],\"execute_amass\":[\"informational\",\"exploitation\"],\"execute_katana\":[\"informational\",\"exploitation\"],\"execute_arjun\":[\"informational\",\"exploitation\"],\"execute_ffuf\":[\"informational\",\"exploitation\"],\"execute_gau\":[\"informational\",\"exploitation\"],\"execute_nmap\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_nuclei\":[\"informational\",\"exploitation\"],\"kali_shell\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_code\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_playwright\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_hydra\":[\"exploitation\",\"post_exploitation\"],\"metasploit_console\":[\"exploitation\",\"post_exploitation\"],\"msf_restart\":[\"exploitation\",\"post_exploitation\"],\"tradecraft_lookup\":[\"exploitation\",\"post_exploitation\"],\"execute_osv_scanner\":[\"informational\",\"exploitation\",\"post_exploitation\"],\"execute_guarddog\":[\"informational\",\"exploitation\"]}") @map("agent_tool_phase_map")
   agentKaliInstallEnabled               Boolean  @default(false) @map("agent_kali_install_enabled")
   agentKaliInstallAllowedPackages       String   @default("") @map("agent_kali_install_allowed_packages")
   agentKaliInstallForbiddenPackages     String   @default("") @map("agent_kali_install_forbidden_packages")
@@ -1133,7 +1157,7 @@ model Project {
   pathTraversalOobProvider              String   @default("oast.fun") @map("path_traversal_oob_provider")
 
   // ========== ATTACK SKILL CONFIG ==========
-  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"path_traversal\":true,\"access_control\":true,\"xxe\":true},\"user\":{}}") @map("attack_skill_config")
+  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"path_traversal\":true,\"access_control\":true,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 
   // ========== CYPHERFIX SETTINGS ==========
   cypherfixGithubToken              String   @default("") @map("cypherfix_github_token")
@@ -1142,6 +1166,18 @@ model Project {
   cypherfixBranchPrefix             String   @default("cypherfix/") @map("cypherfix_branch_prefix")
   cypherfixRequireApproval          Boolean  @default(true) @map("cypherfix_require_approval")
   cypherfixLlmModel                 String   @default("") @map("cypherfix_llm_model")
+
+  // ========== FINDING TRIAGE ==========
+  // Below this confidence the classifier must return `needs_verification`
+  // instead of a real/noise call, so a guess is never recorded as a decision.
+  triageConfidenceThreshold         Float    @default(0.7)   @map("triage_confidence_threshold")
+  // Ships OFF and should stay off without a deliberate decision: muting is what
+  // hides a finding from the agent, so it stays a human action. Turning this on
+  // lets high-confidence `likely_noise` be suppressed automatically.
+  triageAutoMute                    Boolean  @default(false) @map("triage_auto_mute")
+  // How many top / ambiguous findings get an LLM rationale per run. The
+  // deterministic scorer ranks everything; this only caps the assist calls.
+  triageTopNForLlm                  Int      @default(40)    @map("triage_top_n_for_llm")
 
   // ========== RULES OF ENGAGEMENT ==========
   // --- Document & Metadata ---

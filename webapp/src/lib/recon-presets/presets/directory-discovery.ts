@@ -39,6 +39,8 @@ Pentesters and bug bounty hunters in the early recon phase who want a complete m
 5. jsluice extracts hidden endpoints and secrets from JavaScript files
 6. ffuf fuzzes directories recursively (depth 3) with backup, config, and archive extensions
 7. Kiterunner brute-forces API routes with method detection across POST/PUT/DELETE/PATCH`,
+  targetProfile: 'both',
+  environment: 'either',
   parameters: {
     // Modules: discovery + probing + resource enum, no vuln_scan or js_recon
     scanModules: ['domain_discovery', 'http_probe', 'resource_enum'],

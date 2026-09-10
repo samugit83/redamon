@@ -65,6 +65,7 @@ export const WORKFLOW_TOOLS: WorkflowToolDef[] = [
 
   // Group 8 - Security Checks
   { id: 'SecurityChecks', label: 'Security Checks', enabledField: 'securityCheckEnabled', group: 8, badge: 'active' },
+  { id: 'OriginDiscovery', label: 'Origin Discovery', enabledField: 'originDiscoveryEnabled', group: 8, badge: 'both' },
 ]
 
 // ---- Data node definitions ----

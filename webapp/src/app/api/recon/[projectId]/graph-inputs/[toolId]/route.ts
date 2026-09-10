@@ -986,6 +986,49 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    else if (toolId === 'OriginDiscovery') {
+      // Origin Discovery needs CDN-FRONTED hosts (from a prior HTTP probe), not
+      // just any subdomain. Return frontedCount so the modal can block a run with
+      // nothing to unmask (G7). Fronted = resolves to a CDN IP, or its BaseURL is
+      // CDN-flagged / carries a favicon hash.
+      try {
+        const session = getGraphSession()
+        try {
+          const result = await session.run(
+            `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})
+             OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)
+             WITH d, collect(DISTINCT s.name) AS subdomains
+             OPTIONAL MATCH (fs:Subdomain {user_id: $uid, project_id: $pid})
+             WHERE EXISTS { (fs)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
+                OR EXISTS { (fs)-[:HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
+                            WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL }
+             WITH d, subdomains, count(DISTINCT fs) AS frontedCount
+             RETURN d.name AS domain, subdomains, size(subdomains) AS subCount, frontedCount`,
+            { uid: project.userId, pid: projectId }
+          )
+          const record = result.records[0]
+          const domain = record?.get('domain') || null
+          const subdomains: string[] = record?.get('subdomains') || []
+          const subCount = record?.get('subCount')?.toNumber?.() ?? record?.get('subCount') ?? 0
+          const frontedCount = record?.get('frontedCount')?.toNumber?.() ?? record?.get('frontedCount') ?? 0
+
+          if (domain) {
+            return NextResponse.json({
+              domain,
+              existing_subdomains: subdomains,
+              existing_subdomains_count: subCount,
+              fronted_count: frontedCount,
+              source: 'graph',
+            })
+          }
+        } finally {
+          await session.close()
+        }
+      } catch (err) {
+        console.warn('Neo4j query failed for OriginDiscovery graph-inputs, falling back to settings:', err)
+      }
+    }
+
     // Fallback: return domain from project settings
     return NextResponse.json({
       domain: project.targetDomain || null,

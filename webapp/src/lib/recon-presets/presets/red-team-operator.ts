@@ -55,6 +55,8 @@ Red team operators running authorized engagements where some active probing is a
 11. CVE lookup maps discovered services to known vulnerabilities (up to 20 CVEs per service)
 12. MITRE enrichment adds ATT&CK context to findings
 13. Shodan, URLScan, OTX, and Censys enrich all discovered assets through third-party APIs`,
+  targetProfile: 'both',
+  environment: 'either',
   parameters: {
     // Modules: vuln_scan included for critical-only Nuclei
     scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan'],
@@ -218,6 +220,11 @@ Red team operators running authorized engagements where some active probing is a
     securityCheckEnabled: false,
 
     // --- OSINT: selective providers ---
+    // --- Origin-IP Discovery: unmask the real origin behind the CDN/WAF ---
+    originDiscoveryEnabled: true,
+    originDiscoveryKeyless: true,
+    originDiscoveryScanners: true,
+    originDiscoveryPassiveDns: true,
     osintEnrichmentEnabled: true,
 
     shodanEnabled: true,

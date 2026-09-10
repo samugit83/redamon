@@ -407,7 +407,7 @@ export interface PlanCompletePayload {
 export interface PhaseUpdatePayload {
   current_phase: string
   iteration_count: number
-  attack_path_type?: string  // "cve_exploit" | "sql_injection" | "xss" | "ssrf" | "rce" | "path_traversal" | "access_control" | "brute_force_credential_guess" | "phishing_social_engineering" | "denial_of_service" | "user_skill:<id>" | "<term>-unclassified"
+  attack_path_type?: string  // "cve_exploit" | "sql_injection" | "xss" | "ssrf" | "rce" | "path_traversal" | "access_control" | "xxe" | "crypto_attack" | "http_request_smuggling" | "brute_force_credential_guess" | "phishing_social_engineering" | "denial_of_service" | "user_skill:<id>" | "<term>-unclassified"
 }
 
 export interface TodoItem {

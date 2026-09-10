@@ -76,6 +76,10 @@ describe('PARTIAL_RECON_SUPPORTED_TOOLS', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('SecurityChecks')).toBe(true)
   })
 
+  test('contains OriginDiscovery', () => {
+    expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('OriginDiscovery')).toBe(true)
+  })
+
   test('contains Urlscan', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Urlscan')).toBe(true)
   })
@@ -132,6 +136,11 @@ describe('PARTIAL_RECON_PHASE_MAP', () => {
   test('has Naabu phases', () => {
     expect(PARTIAL_RECON_PHASE_MAP['Naabu']).toHaveLength(1)
     expect(PARTIAL_RECON_PHASE_MAP['Naabu'][0]).toBe('Port Scanning')
+  })
+
+  test('maps OriginDiscovery to Origin Discovery', () => {
+    expect(PARTIAL_RECON_PHASE_MAP['OriginDiscovery']).toHaveLength(1)
+    expect(PARTIAL_RECON_PHASE_MAP['OriginDiscovery'][0]).toBe('Origin Discovery')
   })
 
   test('has Masscan phases', () => {

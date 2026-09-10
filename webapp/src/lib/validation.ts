@@ -78,9 +78,25 @@ export interface ValidationError { field: string; message: string }
 export function validateProjectForm(data: Record<string, unknown>): ValidationError[] {
   const errors: ValidationError[] = []
   const ipMode = data.ipMode as boolean
+  const domainBatchMode = data.domainBatchMode as boolean
+
+  // Domain batch carries its targets in a host list, not targetDomain, so the
+  // single-domain checks below would pass an empty batch as valid.
+  if (domainBatchMode) {
+    const hosts = (data.domainBatchHosts as string[]) || []
+    const nonEmpty = hosts.filter(h => typeof h === 'string' && h.trim())
+    if (nonEmpty.length === 0) {
+      errors.push({ field: 'domainBatchHosts', message: 'At least one hostname is required in Domain batch mode' })
+    }
+    for (const host of nonEmpty) {
+      if (!isValidDomain(host.trim())) {
+        errors.push({ field: 'domainBatchHosts', message: `Invalid hostname: ${host.trim()}` })
+      }
+    }
+  }
 
   // Target domain (required when not IP mode)
-  if (!ipMode) {
+  if (!ipMode && !domainBatchMode) {
     const domain = (data.targetDomain as string || '').trim()
     if (domain && !isValidDomain(domain)) {
       errors.push({ field: 'targetDomain', message: 'Invalid domain format (e.g., example.com)' })

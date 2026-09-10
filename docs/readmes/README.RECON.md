@@ -11,6 +11,7 @@ An automated OSINT reconnaissance and vulnerability scanning framework combining
 - [Quick Start](#-docker-quick-start-recommended)
 - [Architecture](#-docker-in-docker-architecture)
 - [Pipeline Overview](#-scanning-pipeline-overview)
+- [Targeting Modes](#-targeting-modes)
 - [Scan Modules](#-scan-modules-explained)
 - [Tool Comparison](#-complete-tool-comparison)
 - [Configuration](#-key-configuration-parameters)
@@ -656,6 +657,72 @@ Each parallelized tool function is thread-safe:
 - Discovery tools (`query_crtsh`, `query_hackertarget`, etc.) create their own `requests.Session` instances
 - Module `_isolated` variants (e.g., `run_port_scan_isolated`, `run_shodan_enrichment_isolated`) accept a read-only snapshot of `combined_result` and return only their data section
 - The main thread handles all merging — no shared mutable state between workers
+
+---
+
+## 🎯 Targeting Modes
+
+A project picks one of three targeting modes at creation. The mode is locked
+afterwards, and all three run the **same** pipeline.
+
+| Mode | Target | What differs |
+| --- | --- | --- |
+| **Single Domain** | one root domain plus optional subdomain prefixes | the default; full OSINT and subdomain discovery are available |
+| **IP / CIDR** | a list of addresses or ranges | skips domain ownership, subdomain enumeration and domain WHOIS; runs reverse DNS and IP WHOIS instead |
+| **Domain batch** | a list of hostnames spanning several domains | groups them by domain and scans each group in turn, in one run |
+
+### Domain batch
+
+Paste or upload a flat hostname list. RedAmon groups it and scans the groups one
+after another.
+
+**The grouping rule is the last two labels.** `suba.sub3.domain3.com` belongs to
+`domain3.com`, with the prefix `suba.sub3`. This is deliberately not a public
+suffix list: it is exactly what an operator does by hand when filling the
+single-domain form (target = the domain, everything else = subdomain prefixes),
+so a batch and a hand-built project scan identically. The consequence worth
+knowing is that `foo.example.co.uk` groups under `co.uk`. The project form shows
+the computed groups before you save, so the grouping is never a surprise.
+
+```
+sub1.domain1.com          Group 1  domain1.com      sub1
+sub2.domain2.it      ->   Group 2  domain2.it       sub2
+sub3.domain3.com          Group 3  domain3.com      sub3, suba.sub3
+suba.sub3.domain3.com
+```
+
+**A batch is ONE scan, not many.** It takes a single slot in the scan queue, one
+memory reservation, one container and one run id. It is not a new scan kind:
+it is what a full recon does when the project is in batch mode, so the queue,
+the scheduler, the stop button, run history and the traffic view all treat it
+exactly like any other full recon.
+
+**The graph fills progressively.** Previous recon data is cleared **once**, before
+the first group. Each group then completes its whole pipeline and writes its
+results before the next one starts, so all groups accumulate into a single graph
+and the run produces **one** new version covering every domain. Re-running works
+the same way it does in the other two modes.
+
+**Only the hostnames you list are scanned.** Subdomain discovery is forced off for
+a batch, including for a group that is just a bare root domain.
+
+**A failing group does not stop the batch.** One unresolvable domain should not
+cost you the other nineteen: failures are reported at the end, and the run only
+fails outright if every group failed.
+
+**Output.** Each group writes `recon_<project_id>__<domain>.json`, and the
+canonical `recon_<project_id>.json` is rebuilt as the union of them after every
+group. Everything downstream (GVM, the project export, the report) reads the
+canonical file and sees the whole batch, and a batch stopped part way still
+leaves a file that parses.
+
+**Limits.** 500 hostnames and 50 domain groups per project. A batch holds the
+project's single scan slot for as long as it runs, so a very long list is a very
+long scan.
+
+Implementation: `_batch_groups()` / `run_domain_batch()` / `run_domain_group()` in
+`recon/main.py`, grouping in `webapp/src/lib/domainBatch.ts`, output handling in
+`recon/helpers/output_paths.py`.
 
 ---
 

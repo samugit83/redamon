@@ -57,6 +57,8 @@ OSINT analysts, threat intelligence teams, or red team operators building a targ
 7. All 10 OSINT providers enrich discovered IPs and domains with threat intelligence, services, geolocation, reputation, and passive CVEs
 8. CVE lookup maps found service versions to known vulnerabilities
 9. MITRE enrichment classifies findings by CWE weakness and CAPEC attack patterns`,
+  targetProfile: 'both',
+  environment: 'external',
   parameters: {
     // Modules: domain_discovery + port_scan (passive) + resource_enum (GAU/ParamSpider/Arjun passive)
     //        + vuln_scan (needed for CVE lookup + MITRE enrichment -- Nuclei itself is

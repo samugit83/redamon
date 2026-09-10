@@ -59,6 +59,38 @@ describe('settingsFingerprint', () => {
     expect(settingsFingerprint('gvm', base)).not.toBe(settingsFingerprint('full_recon', base))
   })
 
+  // Regression, issue #177 follow-up: gvmPortList was added as a project setting
+  // that steers WHAT a GVM job scans, but was left out of the gvm subset. A user
+  // could queue a top-1000-UDP scan, switch the project to the full IANA sweep,
+  // and the C-4 dispatch guard would not re-confirm — the job would silently run
+  // an hours-long scan nobody approved.
+  test('a gvmPortList change between enqueue and dispatch invalidates the hash', () => {
+    const gvmBase = {
+      targetDomain: 'example.com',
+      ipMode: false,
+      targetIps: ['1.1.1.1'],
+      gvmScanConfig: 'Full and fast',
+      gvmScanTargets: 'both',
+      gvmPortList: 'All TCP and Nmap top 100 UDP',
+    }
+    const queued = settingsFingerprint('gvm', gvmBase)
+    const afterEdit = settingsFingerprint('gvm', {
+      ...gvmBase, gvmPortList: 'All IANA assigned TCP and UDP',
+    })
+    expect(afterEdit).not.toBe(queued)
+  })
+
+  test('every field steering a GVM scan is in the gvm subset', () => {
+    for (const f of ['gvmScanConfig', 'gvmScanTargets', 'gvmPortList']) {
+      expect(FINGERPRINT_FIELDS.gvm).toContain(f)
+    }
+  })
+
+  test('an old row without gvmPortList still hashes (undefined is skipped)', () => {
+    const legacy = { targetDomain: 'example.com', gvmScanConfig: 'Full and fast' }
+    expect(() => settingsFingerprint('gvm', legacy)).not.toThrow()
+  })
+
   test('a missing (not-yet-added) column does not throw and is omitted', () => {
     // supplyChainRepoScope may not exist on older rows.
     expect(() => settingsFingerprint('supply_chain', { supplyChainInputMode: 'upload' })).not.toThrow()

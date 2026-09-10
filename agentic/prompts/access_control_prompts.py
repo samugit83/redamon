@@ -64,14 +64,14 @@ The strongest oracle is **two accounts** owning distinct objects (if credentials
 or self-registration exist): what User A may see vs what User A can reach of User
 B's is the ground truth for horizontal escalation.
 
-**Prefer the captured-traffic (`proxy_*`) tools as your native oracle when HTTP
+**Prefer the captured-traffic (`proxy_brain`) tools as your native oracle when HTTP
 capture is on** (they are the built-in Burp-equivalent and remove hand-rolled
-diffing): `proxy_search` / `proxy_sitemap` / `proxy_params` to mine what has
-already been observed; **`proxy_replay`** to resend a real captured request with
+diffing): `redamon.search` / `redamon.sitemap` / `redamon.params` to mine what has
+already been observed; **`redamon.replay`** to resend a real captured request with
 ONE field changed (session cookie, object id, role field, method, header) - the
-core access-control primitive; **`proxy_diff`** to structurally compare the
+core access-control primitive; **`redamon.diff`** to structurally compare the
 replayed response against its baseline (the differential, computed for you);
-**`proxy_fuzz`** to run a Burp-Intruder sweep over one captured request (id
+**`redamon.fuzz`** to run a Burp-Intruder sweep over one captured request (id
 enumeration, header/verb sets). When capture is OFF, fall back to `execute_curl`
 / `execute_httpx` / `execute_ffuf` / `execute_code` for the same steps.
 
@@ -106,13 +106,34 @@ enumeration, header/verb sets). When capture is OFF, fall back to `execute_curl`
   that ignore the header.
 - **Do not rat-hole on external CVE/PoC hunts** before the local differential
   sweep is on the record.
+- **A valid token that STILL gets redirected is a cookie-gated session, not a dead
+  end - do NOT abandon it.** When you hold a token the auth API accepts (login
+  returned it, or it verifies) but a protected page keeps answering a 3xx redirect
+  to a login/landing route, you are presenting the token the WRONG WAY, you are not
+  failing. Page / server-rendered auth almost always reads its session from a
+  COOKIE that the login front-end sets - never from the query param or
+  `Authorization` header you used against the API. So the moment you see
+  "valid-token-but-redirect-loop", you may NOT conclude the page is unreachable or
+  the account is wrong until you have: (1) inspected the login page's own
+  client-side JS and any `Set-Cookie` response for the cookie NAME it stores the
+  session under; (2) resent the IDENTICAL request with the token placed in that
+  cookie; (3) seen it STILL redirect. Forging a token, re-cracking, or chasing a
+  framework auth-bypass CVE are detours here - the fix is simply WHERE you put the
+  token you already hold.
+- **Commit to a logic/race vector; do not scatter into scanners.** Once evidence
+  points to a business-logic, mass-assignment, or TOCTOU/race authorization bug (a
+  concurrency/race theme, a check that sets state then re-reads it, a
+  client-controlled trust field), concentrate on THAT vector with `execute_curl` /
+  `execute_code`. Content-discovery fuzzers, credential brute-forcers, and
+  CVE/version scanners do not solve logic or race bugs - running them here burns the
+  budget the actual exploit needs.
 
 --------------------------------------------------------------------------------
 ## MANDATORY WORKFLOW
 
 ### Step 1: Inventory the surface (reuse recon; do not re-scan blindly)
 - `query_graph` for already-discovered endpoints, params, and auth state, and
-  `proxy_search` / `proxy_sitemap` / `proxy_params` to mine any already-captured
+  `redamon.search` / `redamon.sitemap` / `redamon.params` to mine any already-captured
   traffic for authed endpoints, hidden routes, and tamperable parameters.
 - Crawl for hidden endpoints and admin functionality: `execute_katana` (or
   `execute_gau`) to collect URLs; `execute_jsluice` to pull endpoints, routes, and
@@ -161,11 +182,32 @@ menu and reading the differential, never a value you already know.
   CLASS of inputs - so "find the right password" is the wrong frame: enumerate the
   menu and the class member that satisfies the check falls out of the diff. Build the
   requests with `execute_code` (python `requests`) or `execute_curl` (fragile shell
-  quoting silently mangles typed/array params); with capture on, `proxy_replay` the
-  failed login changing one field/row at a time and let `proxy_diff` score it.
+  quoting silently mangles typed/array params); with capture on, `redamon.replay` the
+  failed login changing one field/row at a time and let `redamon.diff` score it.
 - Only once this full matrix is on record WITHOUT a success differential does the
   credential genuinely need to be discovered - then, and only then, hand off to
   credential guessing / brute force.
+- **Loot a readable disclosure BEFORE you brute-force.** If the engagement has
+  surfaced ANY readable store - files, a database or backup dump, config, or
+  object-store keys - recover credentials and secrets from it FIRST. A readable
+  store almost always contains the exact secret you would otherwise try to guess, so
+  spraying a login while a readable dump sits unopened is wasted budget. Credential
+  brute force is the LAST resort, reached only after BOTH the auth-logic matrix above
+  AND every readable disclosure already in hand are exhausted.
+- **When you brute-force a login, define SUCCESS positively and treat EVERY distinct
+  rejection as failure.** A login endpoint frequently has more than one failure mode -
+  e.g. an input-validation / WAF rejection for malformed input AND a separate
+  wrong-credential rejection - each with a DIFFERENT response body. A brute-force
+  oracle keyed on the ABSENCE of one specific failure string (the classic
+  `hydra ... F=<one message>`) then FALSE-POSITIVES on the other rejection path and
+  buries the real hit in noise. Before trusting any tool's "found" line: enumerate
+  ALL of the login's failure responses (submit a known-bad credential AND a
+  known-malformed input, record every distinct body/length/status), mark them ALL as
+  failure, and key success on a POSITIVE signal instead - a redirect to an authed
+  area, a `Set-Cookie` / issued token, or the authenticated content itself. Then
+  re-verify each candidate "hit" by hand against that positive oracle; the intended
+  weak credential is usually already in a standard common-password list and is only
+  missed because the failure oracle was ambiguous.
 
 ### Step 3: Forced browsing / function-level access (WSTG 4.5.2 + 4.5.3 vertical)
 - The app decides your role somewhere; test whether privileged FUNCTIONS are
@@ -237,8 +279,8 @@ falsely read as "no bypass." Diff every response against the baseline:
   semicolon path parameters, matrix/`;` suffixes, single and double URL-encoding of
   `.` and `/`, and overlong/unicode encodings. Proxy-vs-back-end normalization
   mismatches are exactly what these exercise.
-- **Tooling.** With capture on, `proxy_replay` a denied request while changing
-  one axis at a time and let `proxy_diff` score each against the baseline. If
+- **Tooling.** With capture on, `redamon.replay` a denied request while changing
+  one axis at a time and let `redamon.diff` score each against the baseline. If
   `kali_shell` is available and a 403/401-bypass tool is installed (e.g. nomore403
   / gobypass403), run it: these operationalize the whole verb+header+path matrix
   with built-in baseline capture and false-positive calibration. Otherwise drive
@@ -254,14 +296,14 @@ falsely read as "no bypass." Diff every response against the baseline:
   request User B's object as User A. The oracle: a `200 OK` returning another
   principal's object (vs the `403/401` a secure app returns) confirms IDOR/BOLA.
 - Enumerate predictable refs with `execute_ffuf` (increment/decrement across
-  encodings: decimal, hex, timestamps), or `proxy_fuzz` a captured object request
+  encodings: decimal, hex, timestamps), or `redamon.fuzz` a captured object request
   over the id set; `job_spawn` large ranges. Discover unpredictable GUIDs via
   cross-references elsewhere in the app (listings, messages, exports), not blind
   guessing.
 - Cover ALL operations, not just read: create / update / delete / export / and
   admin variants of the same object route. Script the two-principal differential
-  with `execute_code` (python), or with capture on `proxy_replay` an authorized
-  request under the other principal's session and `proxy_diff` the result.
+  with `execute_code` (python), or with capture on `redamon.replay` an authorized
+  request under the other principal's session and `redamon.diff` the result.
 
 ### Step 6: Parameter / client-side / hidden-field / mass-assignment escalation
 - When the role or entitlement is stored somewhere the client controls (hidden
@@ -272,6 +314,68 @@ falsely read as "no bypass." Diff every response against the baseline:
   price) to an update/create body and check whether the server binds them.
 - Client-side-only enforcement: if `execute_playwright` shows the UI hides an
   action by JS but the underlying endpoint still exists, call the endpoint directly.
+- **A privilege tamper still needs a valid session.** If flipping the
+  role/entitlement field returns an AUTHENTICATION failure (a bad-login response)
+  rather than an authorization denial, the blocking gate is auth, not authz - the
+  tamper is likely correct but is firing without a logged-in principal. Do NOT
+  abandon it: obtain ANY valid low-privilege credential first (Step 2A), then replay
+  the exact tamper inside that authenticated request. To source a low-priv login
+  cheaply, derive candidate usernames from role names, on-page labels, and endpoint
+  paths (and their common short forms), and try trivial/derived passwords - vendor
+  defaults, the username itself, and a short weak-password list - before escalating
+  to heavier credential attacks.
+- **A "no differential" bypass matrix does NOT close the class when a
+  client-trusted privilege field exists.** When Step 2A/Step 6 have surfaced a
+  role/privilege/entitlement parameter the client controls but the pure auth-bypass
+  matrix returned no success differential, the winning shape is very often
+  `valid-low-priv-session + tamper`, NOT a pure bypass - so the missing ingredient is
+  a real logged-in principal, not a cleverer bypass or a different vuln class. Do NOT
+  defect to SQLi / template / session-forge leads (a disclosed filter or debugger
+  string is a tempting but usually dead detour here); STAY on access control and
+  SOURCE the credential mechanically: run the known/derived username against a REAL
+  common-password wordlist (the standard top-N weak-password list - hand off to the
+  brute-force skill / `hydra` / an `execute_code` loop over a common-password list),
+  not a hand-picked handful of guesses. The most common real-world passwords (simple
+  word+digit and keyboard-sequence forms) are frequently the intended low-priv
+  secret; an ad-hoc list of five or six guesses that omits them is the usual reason
+  this path is wrongly abandoned. Once ANY valid session is obtained, replay the
+  privilege tamper and force-browse the protected resource directly.
+- **When you have EXFILTRATED a credential store, the credential is already in
+  hand - complete the chain, do not pivot to forging.** A recovered dump / backup /
+  leaked DB with user rows means you do NOT need to forge a token, crack a signing
+  secret, or chase a framework auth-bypass CVE - those are the classic detours that
+  strand a run one step from the goal. Instead: (1) DECODE the stored secret to a
+  usable form - a stored password/secret column is frequently just encoded
+  (base64 / hex / url-escaped), reversible in one step, not an irreversible hash;
+  try decoding before assuming you must crack it. (2) Identify the PRIVILEGED row
+  FROM THE DUMP ITSELF - the account whose role / admin / level / group /
+  entitlement column marks it as elevated - and target THAT principal, not an
+  arbitrary user. (3) AUTHENTICATE as that principal through the normal login to
+  mint a legitimate session/token. (4) Then load the PRIVILEGED UI ROUTE with that
+  session and read the rendered page: the objective is frequently emitted only in
+  the server-rendered HTML of the authenticated page, NOT by the JSON/status API you
+  used to confirm the role - so confirming `elevated == true` on an API is a
+  checkpoint, never the finish line; fetch the actual protected page before
+  concluding the access did not yield the goal. Two execution details decide this
+  last step and are the usual reason a run holds a valid token yet never sees the goal:
+  - **Present the token the way the PAGE reads it, not the way the API took it.** The
+    endpoint that ISSUED a token (query param, JSON body, or `Authorization` header)
+    is often NOT where the protected page looks for it. Page/server-rendered auth
+    commonly reads the token from a COOKIE that the app's client-side login code sets
+    - so recover the exact cookie NAME from the login front-end (its `Set-Cookie`, a
+    `cookie`-setting call in the login JS, or `document.cookie` writes) and REPLAY the
+    token in that cookie. Signature to watch for: you hold a token the API validates,
+    but the protected route keeps answering a 3xx redirect (to a login/landing page)
+    when you pass the token as a query param or header - that redirect loop IS the
+    tell that the session is cookie-gated; move the same token into the discovered
+    cookie and the redirect resolves to the page.
+  - **Authenticate as the FLAGGED row, not any row.** When privilege is a per-row
+    column, logging in as an arbitrary recovered account yields a VALID but
+    unprivileged session that reaches the page yet leaves the goal hidden behind the
+    privilege check (a "this needs a higher-privilege account" placeholder in place of
+    the content). Select the row whose privilege column is actually SET and
+    authenticate as THAT principal before loading the page; a 200 that shows the
+    placeholder means right-page/wrong-principal, not a dead end.
 
 ### Step 7: Token / session authorization (JWT, cookies)
 - Decode any JWT / bearer / session token (`execute_code`). Inspect claims for
@@ -304,6 +408,25 @@ falsely read as "no bypass." Diff every response against the baseline:
   reordering, or replaying steps, and forcing state transitions out of order.
 - Diff the resulting state against the intended path; a reachable end-state without
   the gating step is the flaw.
+- **Step-up / second-factor is often not re-enforced at the resource.** When access
+  is multi-step (login -> OTP/2FA/email-verify/approval -> protected page), test
+  whether the protected page independently re-checks EACH step or only trusts
+  first-step state (e.g. a session role/flag set at login). Reach the protected
+  resource carrying ONLY the first-step state and see if it serves the goal - a
+  second factor gated on the login path alone is frequently never re-validated on the
+  target page. A guessable or static second-factor value is a secondary finding;
+  test the "not re-checked at all" case first.
+- **TOCTOU / race-condition authorization (check-then-use).** When a handler
+  VALIDATES state and then RE-READS or RE-USES that state later (same handler or a
+  sibling), or when server-side state is shared across concurrent requests by a
+  cookie/session id, there is a race window. Exploit it generically: (1) pin the
+  exact check-then-use gap; (2) drive it with high parallelism aimed at same-instant
+  arrival (a burst of simultaneous requests / an HTTP-pipelined batch), NOT
+  sequential retries; (3) interleave the two operations that must race - the request
+  that PASSES the check against the one that MUTATES the checked state - on the SAME
+  shared session/context; (4) use any state-echo/observability view the app exposes
+  (a debug/status/echo endpoint) to CONFIRM the intended change actually lands, and
+  keep raising concurrency until it does.
 
 --------------------------------------------------------------------------------
 ## CONFIDENCE SCORING + REPORTING

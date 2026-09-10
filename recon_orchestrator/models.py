@@ -69,6 +69,12 @@ class ReconState(BaseModel):
     current_phase: Optional[str] = None
     phase_number: Optional[Union[int, float]] = None
     total_phases: int = 6
+    # Domain batch: the phases above cycle 1..6 once PER GROUP, so a UI showing
+    # only "Phase 3 of 6" looks like it is going backwards. These carry the outer
+    # progress so it can read "Group 2/3, Phase 3/6". None outside batch mode.
+    current_group: Optional[str] = None
+    group_number: Optional[int] = None
+    total_groups: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
@@ -84,6 +90,11 @@ class ReconLogEvent(BaseModel):
     is_phase_start: bool = False
     is_phase_end: bool = False
     level: str = "info"  # info, warning, error, success, action
+    # Set only on the line that starts a new Domain-batch group.
+    group_number: Optional[int] = None
+    total_groups: Optional[int] = None
+    current_group: Optional[str] = None
+    is_group_start: bool = False
 
 
 class HealthResponse(BaseModel):

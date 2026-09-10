@@ -6,6 +6,7 @@ Orchestrator-specific helpers are in orchestrator_helpers/.
 """
 
 import logging
+import os
 from textwrap import dedent
 
 from project_settings import get_setting
@@ -341,6 +342,34 @@ def get_session_config_prompt() -> str:
 
             2. **BIND** (you connect to target):
                - Requires: Bind port on target (e.g. 4444)""")
+
+        # The reverse-shell LHOST is the HOST's LAN IP, never the container's
+        # 172.x address. redamon.sh detects it on the host and passes it in via
+        # HOST_LAN_IP; suggest it here. Suppressed when a tunnel is configured —
+        # in that case the ask-branch is a tunnel-is-broken state (an active
+        # tunnel makes mode="reverse", not "ask"), and its remedy above is "fix
+        # the tunnel", which a LAN-IP suggestion would contradict.
+        host_lan_ip = os.getenv("HOST_LAN_IP", "").strip()
+        tunnel_configured = NGROK_TUNNEL_ENABLED or CHISEL_TUNNEL_ENABLED
+        if host_lan_ip and not tunnel_configured:
+            suggest = (
+                f"The host's detected LAN IP (default route) is `{host_lan_ip}` "
+                "— suggest this as LHOST and confirm with the user. If they are "
+                "on a VPN to reach the target, the VPN interface's IP is the "
+                "right one instead."
+            )
+        else:
+            suggest = "ASK THE USER for it, do not run a command to find it."
+        lines += _section(f"""\
+            **⚠️ WHICH IP IS LHOST — DO NOT GUESS OR AUTO-DETECT IT.**
+            Your tools run inside the kali-sandbox container, whose own address
+            is a private `172.x` Docker IP that the target CANNOT reach. Reading
+            it (`ip addr` / `ifconfig` / `hostname -I`) gives the WRONG LHOST.
+            The correct LHOST is the **host machine's LAN IP** (e.g. your Kali
+            VM's `192.168.x.x`); the reverse handler's port 4444 is forwarded
+            from the host into the container, so the target connects to
+            `host-LAN-IP:LPORT`. You cannot discover the host's LAN IP from
+            inside the container — {suggest}""")
 
     lines += _section("Replace `<os>/<arch>` with target OS (e.g., `linux/x64`, `windows/x64`).")
 

@@ -451,9 +451,10 @@ export function PartialReconModal({
   const isSubdomainTakeover = toolId === 'SubdomainTakeover'
   const isVhostSni = toolId === 'VhostSni'
   const isWebCachePoison = toolId === 'WebCachePoison'
-  const hasUserInputs = isPortScanner || isNmap || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison
+  const isOriginDiscovery = toolId === 'OriginDiscovery'
+  const hasUserInputs = isPortScanner || isNmap || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isOriginDiscovery
   const hasIpInput = isPortScanner || isNmap || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
-  const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni
+  const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
   const hasPortInput = isNmap || isHttpx
   // GraphqlScan / WebCachePoison SECTION_INPUT_MAP = [BaseURL, Endpoint]. Per
   // PROMPT.ADD_PARTIAL_RECON.md, BaseURL-accepting tools get a URL textarea;
@@ -621,6 +622,7 @@ export function PartialReconModal({
   const securityChecksNoUrls = isSecurityChecks && !includeGraphTargets && !customUrls.trim() && !customSubdomains.trim() && !customIps.trim()
   const shodanNoIps = isShodan && !includeGraphTargets && !customIps.trim()
   const osintNoIps = isOsintEnrichment && !includeGraphTargets && !customIps.trim()
+  const originDiscoveryNoFronted = isOriginDiscovery && !loadingInputs && !customSubdomains.trim() && (!includeGraphTargets || (graphInputs?.fronted_count ?? 0) === 0)
 
   return (
     <Modal
@@ -887,6 +889,14 @@ export function PartialReconModal({
             backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
           }}>
             OSINT Enrichment requires IPs to enrich. Provide custom IPs below or enable graph targets (which include existing IPs from Subdomain Discovery).
+          </div>
+        )}
+        {originDiscoveryNoFronted && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Origin Discovery needs CDN-fronted hosts from a prior HTTP-probe scan, or a fronted subdomain entered below. This project has no fronted hosts in the graph yet.
           </div>
         )}
 
@@ -1204,14 +1214,14 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps}
+            disabled={!domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',
-              cursor: !domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps ? 'not-allowed' : 'pointer',
+              cursor: !domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 'not-allowed' : 'pointer',
               fontSize: '13px',
               display: 'flex', alignItems: 'center', gap: '6px',
-              opacity: !domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps ? 0.5 : 1,
+              opacity: !domain || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted ? 0.5 : 1,
             }}
           >
             {isStarting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}

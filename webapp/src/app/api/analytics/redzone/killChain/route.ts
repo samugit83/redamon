@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -32,6 +33,7 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (c)-[:HAS_CWE]->(m:MitreData)
        OPTIONAL MATCH (m)-[:HAS_CAPEC]->(cap:Capec)
        OPTIONAL MATCH (ex:ExploitGvm {project_id: $pid})-[:EXPLOITED_CVE]->(c)
+         WHERE ${notMuted('ex')}
        WITH s, ip, p, svc, tech, c, m, cap,
             CASE WHEN ex IS NOT NULL THEN true ELSE false END AS isKev
        RETURN s.name            AS subdomain,

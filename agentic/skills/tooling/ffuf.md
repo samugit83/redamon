@@ -108,9 +108,9 @@ execute_ffuf args: "-w users.txt:USER -w /usr/share/wordlists/rockyou.txt:PASS -
 execute_ffuf args: "-w /usr/share/seclists/Discovery/Web-Content/common.txt -u https://target.tld/FUZZ -x http://127.0.0.1:48080 -mc 200,301,302,403 -ac -noninteractive"
 ```
 
-### Captured traffic (proxy_* tools)
+### Captured traffic (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled, an ffuf run routed through the capture proxy folds every request/response into captured history, queryable afterward via proxy_grep (substring over response bodies) and proxy_query, with no re-run needed. Seed and scope the fuzz to real endpoints with proxy_sitemap (observed paths), proxy_search (matching txns), and proxy_params (params flagged injectable). For single-parameter value fuzzing there is an in-platform analog: proxy_fuzz(id, insertion_point, payloads) replays one captured request across a query param (the Burp-Intruder move, capped at 50, origin host only), and proxy_replay reproduces a single request with mutations.
+When HTTP Traffic Capture is enabled, an ffuf run routed through the capture proxy folds every request/response into captured history, queryable afterward via redamon.grep (substring over response bodies) and redamon.query, with no re-run needed. Seed and scope the fuzz to real endpoints with redamon.sitemap (observed paths), redamon.search (matching txns), and redamon.params (params flagged injectable). For single-parameter value fuzzing there is an in-platform analog: redamon.fuzz(id, insertion_point, payloads) replays one captured request across a query param (the Burp-Intruder move, capped at 50, origin host only), and redamon.replay reproduces a single request with mutations.
 
 ## Calibration discipline
 

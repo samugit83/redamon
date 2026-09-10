@@ -185,8 +185,9 @@ class TestDangerousTools(unittest.TestCase):
             'execute_hydra', 'execute_playwright', 'execute_wpscan',
             'execute_ffuf', 'execute_arjun', 'execute_amass', 'execute_httpx',
             'execute_gau', 'execute_katana',
-            # Active captured-traffic tools (emit live target traffic).
-            'proxy_replay', 'proxy_fuzz',
+            # proxy_brain runs agent code that can emit live traffic (the single
+            # traffic tool; replaced proxy_replay/proxy_fuzz).
+            'proxy_brain',
             # Supply-chain L3: downloads attacker-authored tarballs.
             'execute_guarddog',
         }

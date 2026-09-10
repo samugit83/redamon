@@ -57,6 +57,14 @@ Target domain: {target}
 
 Should this target be allowed or blocked? Remember: block well-known/public/government/major-company domains. Allow obscure/custom/small-org domains."""
 
+GUARDRAIL_DOMAINS_PROMPT = """Evaluate these target domains for a penetration testing scan:
+
+Target domains: {targets}
+
+These are ALL in scope for the same engagement. Block the WHOLE set if ANY ONE of
+them is a well-known/public/government/major-company domain, and say which one.
+Allow only if every domain is obscure/custom/small-org."""
+
 GUARDRAIL_IP_RESOLVED_PROMPT = """Evaluate these target IPs and their resolved hostnames for a penetration testing scan:
 
 Target IPs: {ips}
@@ -101,19 +109,33 @@ async def check_target_allowed(
     llm: Any,
     target_domain: str = "",
     target_ips: list[str] | None = None,
+    target_domains: list[str] | None = None,
 ) -> dict[str, Any]:
     """Check if a target domain or IP list is allowed for scanning.
 
     Args:
         llm: LangChain LLM instance.
-        target_domain: Domain string (for domain mode).
+        target_domain: Domain string (for single-domain mode).
         target_ips: List of IPs/CIDRs (for IP mode).
+        target_domains: Several domains in scope at once (Domain batch). Takes
+            precedence over target_domain. Passing a joined string as
+            `target_domain` instead would put a comma-separated list into a
+            SINGULAR prompt ("Target domain: {target}", "Should this target be
+            allowed") and invite one aggregate verdict, so one blocked domain
+            among twenty could be waved through.
 
     Returns:
         {"allowed": bool, "reason": str}
     """
     if target_ips is None:
         target_ips = []
+
+    # --- Multi-domain mode (Domain batch) ---
+    domains = [d.strip() for d in (target_domains or []) if isinstance(d, str) and d.strip()]
+    if domains:
+        if len(domains) == 1:
+            return await _check_domain(llm, domains[0])
+        return await _check_domains(llm, domains)
 
     # --- Domain mode ---
     if target_domain:
@@ -144,6 +166,13 @@ async def check_target_allowed(
 async def _check_domain(llm: Any, domain: str) -> dict[str, Any]:
     """Ask LLM whether a domain is allowed."""
     prompt = GUARDRAIL_DOMAIN_PROMPT.format(target=domain)
+    return await _invoke_guardrail(llm, prompt)
+
+
+async def _check_domains(llm: Any, domains: list[str]) -> dict[str, Any]:
+    """Ask the LLM about several in-scope domains in one call, with an explicit
+    block-if-any instruction (mirrors the IP prompt's semantics)."""
+    prompt = GUARDRAIL_DOMAINS_PROMPT.format(targets=", ".join(domains))
     return await _invoke_guardrail(llm, prompt)
 
 

@@ -10,6 +10,7 @@ and a README mapping every endpoint to the exact pipeline step it exercises.
 |---|---|---|
 | [`web-cache-poisoning/`](web-cache-poisoning/) | `recon/cache_scan` (WCP module): cache oracle, cache-buster isolation, reflected + differential confirmation, framework packs, scoring, negative controls | `cd web-cache-poisoning && docker compose up -d --build` |
 | [`supply_chain_target/`](supply_chain_target/) | Supply-Chain recon (L2): both harvest paths (technologies + source-map mining), scoped/nested/hostile package names, version-preferring dedup, `source_files[:100]` cap, offline OSV verdicts (MAL vs CVE), `Package`/`MalPackageFinding` MERGE + `DEPENDS_ON` anchoring | `cd supply_chain_target && docker compose up -d --build` |
+| [`proxy_brain_target/`](proxy_brain_target/) | Agent `proxy_brain` / `redamon.*`: IDOR/BOLA, SQLi (boolean/error/UNION), reflected XSS, JWT weak-secret role-forge (flag), race/limit-overrun, open redirect, CORS, command injection — one endpoint per manual technique, on `pentest-net` as `pbtarget:5000` | `cd proxy_brain_target && docker compose up -d --build` |
 
 > `supply_chain_target` binds `192.88.99.10` on its own bridge rather than
 > `127.0.0.1`: L2's JS fetch is Python and enforces an SSRF guard that rejects

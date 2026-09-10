@@ -1,0 +1,17 @@
+services:
+  pbtarget:
+    build: .
+    container_name: pbtarget
+    # Join the pentest network so the kali-sandbox (agent tools) and the
+    # capture proxy can both reach it by name at http://pbtarget:5000/.
+    # Also published on host loopback for manual curling.
+    ports:
+      - "127.0.0.1:9009:5000"
+    networks:
+      - pentest
+    restart: unless-stopped
+
+networks:
+  pentest:
+    external: true
+    name: redamon_pentest-net

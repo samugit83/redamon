@@ -5,7 +5,7 @@ import { Loader2, CheckCircle, AlertCircle, X, Brain } from 'lucide-react'
 import type { TriagePhase, TriageFindingPayload } from '@/lib/cypherfix-types'
 import styles from './TriageProgress.module.css'
 
-const PHASE_LABELS: Record<TriagePhase, string> = {
+export const PHASE_LABELS: Record<TriagePhase, string> = {
   collecting_vulnerabilities: 'Collecting vulnerabilities',
   collecting_cve_chains: 'Mapping CVE chains',
   collecting_secrets: 'Scanning for secrets',
@@ -15,8 +15,9 @@ const PHASE_LABELS: Record<TriagePhase, string> = {
   collecting_attack_chains: 'Loading chain summaries',
   collecting_certificates: 'Checking certificates',
   collecting_security_checks: 'Reviewing security checks',
+  classifying: 'AI classifying real vs noise',
   correlating: 'AI correlating findings',
-  prioritizing: 'AI prioritizing threats',
+  prioritizing: 'Scoring & ranking findings',
   generating_remediations: 'Generating remediations',
   saving: 'Saving results',
 }
@@ -29,6 +30,9 @@ interface TriageProgressProps {
   thinking: string
   error: string | null
   status: string
+  /** Feature name for the header, e.g. "Priority Board". Defaults to the CypherFix
+   *  wording so the CypherFix page is unchanged. */
+  title?: string
   onClose: () => void
   onStop: () => void
 }
@@ -41,6 +45,7 @@ export const TriageProgress = memo(function TriageProgress({
   thinking,
   error,
   status,
+  title = 'Vulnerability Triage',
   onClose,
   onStop,
 }: TriageProgressProps) {
@@ -61,7 +66,7 @@ export const TriageProgress = memo(function TriageProgress({
             {isCompleted && <CheckCircle size={16} className={styles.successIcon} />}
             {isError && <AlertCircle size={16} className={styles.errorIcon} />}
             <span className={styles.headerTitle}>
-              {isCompleted ? 'Triage Complete' : isError ? 'Triage Failed' : 'Vulnerability Triage'}
+              {isCompleted ? `${title} complete` : isError ? `${title} failed` : title}
             </span>
           </div>
           <div className={styles.headerRight}>

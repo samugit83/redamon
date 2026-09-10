@@ -46,6 +46,8 @@ Network security teams and pentesters who need to map large external perimeters 
 8. CVE lookup maps detected service versions to known vulnerabilities
 9. MITRE enrichment classifies findings by CWE and attack patterns
 10. Security checks flag exposed admin ports, databases, open relays, and misconfigurations`,
+  targetProfile: 'ip',
+  environment: 'either',
   parameters: {
     // Modules: domain_discovery + port_scan + http_probe + vuln_scan
     // vuln_scan is required for CVE lookup, MITRE enrichment, and security checks

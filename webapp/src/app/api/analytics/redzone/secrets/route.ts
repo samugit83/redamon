@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { notMuted } from '@/lib/graphMute'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -66,6 +67,7 @@ export async function GET(request: NextRequest) {
     // Union both traversals and keep each Secret once.
     const result = await session.run(
       `MATCH (s:Secret {project_id: $pid})
+       WHERE ${notMuted('s')}
        OPTIONAL MATCH (buDirect:BaseURL)-[:HAS_SECRET]->(s)
        OPTIONAL MATCH (j:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s)
        OPTIONAL MATCH (buJs:BaseURL)-[:HAS_JS_FILE]->(j)
@@ -104,6 +106,7 @@ export async function GET(request: NextRequest) {
     // labels and naming one would drop every non-git source.
     const thResult = await session.run(
       `MATCH (tf:MultiscannerFinding {project_id: $pid})
+       WHERE ${notMuted('tf')}
        OPTIONAL MATCH (a)-[:HAS_FINDING]->(tf)
        RETURN tf.id                AS id,
               tf.detector_name     AS secretType,
@@ -128,6 +131,7 @@ export async function GET(request: NextRequest) {
     // only a fallback for older nodes written before those were denormalised.
     const ghResult = await session.run(
       `MATCH (gs:GithubSecret {project_id: $pid})
+       WHERE ${notMuted('gs')}
        OPTIONAL MATCH (gp:GithubPath)-[:CONTAINS_SECRET]->(gs)
        OPTIONAL MATCH (gr:GithubRepository)-[:HAS_PATH]->(gp)
        RETURN gs.id                              AS id,
@@ -147,6 +151,7 @@ export async function GET(request: NextRequest) {
     // and the triage scorer already weighs them as SECRET_EXPOSED.
     const ghFileResult = await session.run(
       `MATCH (gsf:GithubSensitiveFile {project_id: $pid})
+       WHERE ${notMuted('gsf')}
        OPTIONAL MATCH (gp:GithubPath)-[:CONTAINS_SENSITIVE_FILE]->(gsf)
        OPTIONAL MATCH (gr:GithubRepository)-[:HAS_PATH]->(gp)
        RETURN gsf.id                              AS id,

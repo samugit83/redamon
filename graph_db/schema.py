@@ -212,6 +212,11 @@ ADDITIONAL_INDEXES = [
     # without the index those queries scan the full Chain subgraph.
     "CREATE INDEX idx_chainstep_by_fireteam IF NOT EXISTS FOR (s:ChainStep) ON (s.fireteam_id)",
     "CREATE INDEX idx_chainfinding_by_fireteam IF NOT EXISTS FOR (f:ChainFinding) ON (f.fireteam_id)",
+    # Suppressed findings. `Muted` is added ALONGSIDE a finding's own label
+    # rather than replacing it (see GRAPH.SCHEMA.md), so this is the only index
+    # that can serve the Triage page's Muted table without knowing which kind of
+    # finding it is about to list.
+    "CREATE INDEX idx_muted_tenant IF NOT EXISTS FOR (n:Muted) ON (n.project_id)",
 ]
 
 

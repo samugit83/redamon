@@ -43,6 +43,8 @@ interface UserSettings {
   virusTotalApiKey: string
   zoomEyeApiKey: string
   criminalIpApiKey: string
+  securitytrailsApiKey: string
+  viewdnsApiKey: string
   quakeApiKey: string
   hunterApiKey: string
   publicWwwApiKey: string
@@ -101,6 +103,8 @@ const EMPTY_SETTINGS: UserSettings = {
   virusTotalApiKey: '',
   zoomEyeApiKey: '',
   criminalIpApiKey: '',
+  securitytrailsApiKey: '',
+  viewdnsApiKey: '',
   quakeApiKey: '',
   hunterApiKey: '',
   publicWwwApiKey: '',
@@ -160,6 +164,8 @@ const TOOL_NAME_MAP: Record<string, string> = {
   virusTotalApiKey: 'virustotal',
   zoomEyeApiKey: 'zoomeye',
   criminalIpApiKey: 'criminalip',
+  securitytrailsApiKey: 'securitytrails',
+  viewdnsApiKey: 'viewdns',
   quakeApiKey: 'quake',
   hunterApiKey: 'hunter',
   publicWwwApiKey: 'publicwww',
@@ -592,6 +598,8 @@ export default function SettingsPage() {
           virusTotalApiKey: data.virusTotalApiKey || '',
           zoomEyeApiKey: data.zoomEyeApiKey || '',
           criminalIpApiKey: data.criminalIpApiKey || '',
+          securitytrailsApiKey: data.securitytrailsApiKey || '',
+          viewdnsApiKey: data.viewdnsApiKey || '',
           quakeApiKey: data.quakeApiKey || '',
           hunterApiKey: data.hunterApiKey || '',
           publicWwwApiKey: data.publicWwwApiKey || '',
@@ -716,6 +724,8 @@ export default function SettingsPage() {
           virusTotalApiKey: data.virusTotalApiKey || '',
           zoomEyeApiKey: data.zoomEyeApiKey || '',
           criminalIpApiKey: data.criminalIpApiKey || '',
+          securitytrailsApiKey: data.securitytrailsApiKey || '',
+          viewdnsApiKey: data.viewdnsApiKey || '',
           quakeApiKey: data.quakeApiKey || '',
           hunterApiKey: data.hunterApiKey || '',
           publicWwwApiKey: data.publicWwwApiKey || '',
@@ -1571,6 +1581,30 @@ export default function SettingsPage() {
               onChange={v => updateSetting('criminalIpApiKey', v)}
               onConfigureRotation={() => openRotationModal('criminalIpApiKey')}
               rotationInfo={rotationConfigs.criminalip || null}
+            />
+            <SecretField
+              label="SecurityTrails API Key"
+              hint="SecurityTrails DNS history - reveals a domain's pre-CDN origin IPs. Used by Origin Discovery. Free tier available"
+              signupUrl="https://securitytrails.com/corp/api"
+              badges={['Recon Pipeline']}
+              value={settings.securitytrailsApiKey}
+              visible={!!visibleFields.securitytrailsApiKey}
+              onToggle={() => toggleFieldVisibility('securitytrailsApiKey')}
+              onChange={v => updateSetting('securitytrailsApiKey', v)}
+              onConfigureRotation={() => openRotationModal('securitytrailsApiKey')}
+              rotationInfo={rotationConfigs.securitytrails || null}
+            />
+            <SecretField
+              label="ViewDNS API Key"
+              hint="ViewDNS.info IP history - historical A records exposing the origin behind a CDN. Used by Origin Discovery"
+              signupUrl="https://viewdns.info/api/"
+              badges={['Recon Pipeline']}
+              value={settings.viewdnsApiKey}
+              visible={!!visibleFields.viewdnsApiKey}
+              onToggle={() => toggleFieldVisibility('viewdnsApiKey')}
+              onChange={v => updateSetting('viewdnsApiKey', v)}
+              onConfigureRotation={() => openRotationModal('viewdnsApiKey')}
+              rotationInfo={rotationConfigs.viewdns || null}
             />
 
             {/* Uncover group */}

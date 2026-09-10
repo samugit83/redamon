@@ -216,6 +216,36 @@ the interactsh setup that doubles as an RFI oracle.
 You MUST reach Level 1 proof on ONE primitive before moving on. Do not chain
 primitives in parallel -- the WAF will fingerprint and block you.
 
+#### 4A-zero. MANDATORY when the payload sits in the URL PATH (not a query value): defeat YOUR OWN client's normalisation first
+
+Traversal payloads fall into two positions, and they fail for OPPOSITE reasons:
+- **Query / parameter position** (`?file=../../etc/hosts`, `?path=...`): the `../`
+  travels inside a parameter VALUE. Your HTTP client transmits it verbatim, so a
+  failure here means the SERVER filtered or bound it -- move to encodings / 4A-ter.
+- **URL-path position** (`/<prefix>/../etc/hosts`, `/<prefix>..%2f...`, a raw-path
+  or `..;` parser form): the `../`, `//` and `.` live in the request-line PATH.
+  Every ordinary HTTP client REWRITES this before it leaves your process -- `curl`
+  folds `../` and merges `//`, and `requests` / `httpx` / browsers re-encode and
+  resolve dot-segments -- so the server NEVER receives the sequence you typed. A
+  path-position payload that "does nothing" has almost always been eaten by YOUR
+  OWN tooling, not the target.
+
+So for ANY path-position payload you MUST send the request line byte-for-byte,
+un-normalised, before concluding it failed:
+- `curl --path-as-is 'http://HOST/<the exact raw path>'` (disables curl's
+  dot-segment folding), or
+- a raw socket that writes the literal request line verbatim
+  (`GET <raw path> HTTP/1.1` + `Host:` header via Python `socket`) -- the only
+  fully faithful channel for encoded dots, mixed separators, `..;`, and NUL /
+  overlong forms.
+
+Re-fire EVERY path-position form (from 4A and 4A-ter) through one of these raw
+channels against a known OUT-OF-BASE proof file before deciding the sink is not
+traversable. A payload that returns the normalised root/baseline through a normal
+client but was never re-sent raw is UNTESTED, not negative. Skipping this is the
+single most common reason a genuinely-vulnerable path-position sink is wrongly
+declared dead.
+
 #### 4A. Plain path traversal (most common, try first)
 
 Start with the simplest payload, escalate only if filtered. The agent's first
@@ -248,7 +278,55 @@ Server-mismatch variants (when nginx / a reverse proxy fronts the app):
 /static/.%252e/etc/hosts
 ```
 
+Web-server **alias off-by-slash** (a `location /<prefix>` whose `alias` / `Alias`
+maps the prefix to a filesystem directory, but the LOCATION is written WITHOUT a
+trailing slash): the prefix immediately followed by `../` with NO separating slash
+escapes into the PARENT of the mapped directory. `/<prefix>../<name>` reads one
+level above the served root, `/<prefix>../../<name>` two levels, and so on.
+Enumerate this against ANY path prefix that behaves like a mapped static root
+(serves raw files, exposes an autoindex, or returns file bodies), not only ones
+literally named for assets. This is a PATH-position payload, so it ONLY works when
+sent raw (see 4A-zero) -- a client that normalises `/<prefix>../` down to `/`
+before sending will silently hide a live off-by-slash escape.
+
+**MANDATORY off-by-slash gate.** Whenever a location prefix `/P` and `/P/` return
+DIFFERENT responses (status / length / body differ), OR any error, header, or
+autoindex discloses a filesystem or alias/docroot path bound to `/P`, that prefix
+is alias-mapped -- you MUST fire the RAW off-by-slash escape
+`GET /P../<known-out-of-base proof>` (NO slash between the prefix and `..`, sent
+un-normalised per 4A-zero) and, if it returns a body, `GET /P../` to autoindex the
+PARENT directory, BEFORE spending further budget fuzzing files *under* `/P`.
+Enumerating the children of an alias-mapped prefix while never escaping ABOVE it is
+a recurring run-loser: on this bug the sink is the directory boundary itself, not
+the files inside it. A prefix that reads like an application route (`app` / `panel` /
+`portal` / `console` / `dashboard`, or any authoritative-sounding word) is NOT
+exempt -- classify it by the `/P`-vs-`/P/` behaviour and any disclosed path, never
+by its name, and try the escape before declaring the prefix a dead app route.
+
 Capture the first oracle hit, record the exact payload form, and move on.
+
+#### 4A-proxy. Server-side FETCH proxies: the fixed path/URL prefix is itself an escape target
+
+Distinct from a local filesystem read: when a handler takes your input and FETCHES
+an internal resource whose location it builds as `<fixed-prefix>/<your-input>` -- an
+image / file / object / download proxy that server-side does
+`fetch("scheme://host/<container>/" + input)` or `open(BASE_DIR + "/" + input)` -- the
+hardcoded prefix in FRONT of your input is a boundary you can climb OUT of, exactly
+like a directory root. The app only ever references ONE container/prefix in its UI,
+but the backend it proxies to almost always exposes SIBLINGS the UI never links.
+- Inject `../` and its encodings (`%2e%2e%2f`, `..%2f`, double-encoded
+  `%252e%252e%252f`, backslash `..\`, and mixed) INSIDE your segment to step above
+  the fixed prefix and reach sibling containers / directories on the backend.
+- Beware handlers that keep only the LAST path segment of your input (a `split('/')`
+  or `basename` on the request path): a plain `/../sibling/name` collapses to `name`.
+  Smuggle the traversal INSIDE the final segment with encoded separators
+  (`..%2f..%2fsibling%2fname`) so it survives the split and only decodes backend-side.
+- Do NOT treat the one container the UI references as the whole surface. Once you can
+  reach siblings, ENUMERATE sibling container / directory / object names with a
+  content-discovery wordlist -- a readable secondary store (backups, dumps, config,
+  internal data) sitting beside the public one is the usual prize. The app-referenced
+  container is a STARTING point, not the boundary; do not declare the surface
+  exhausted from it alone.
 
 #### 4A-ter. Identical failures across encodings = a STRIPPING SANITIZER, not a whitelist
 
@@ -272,6 +350,18 @@ form can succeed where the plain families all failed. Do not try to reason out
 - Diff the responses and keep any token whose response DIFFERS from the baseline;
   that survivor is your working escape. Treat a size/status change from the
   soft-negative as a HIT to confirm, not noise.
+- **A single-pass stripper that removes MORE THAN ONE token needs DEEPER nesting,
+  not one fixed double.** When the filter deletes several sequences (e.g. both
+  `../` and `./`, or their backslash forms), the shallow `....//` fold can be
+  over-eaten -- one rule reconstitutes the step and a second rule immediately
+  consumes it again, so the residue is NOT `../`. Do not conclude the doubling
+  trick "does not work"; ESCALATE it: sweep a LADDER of nesting depths and
+  interleavings (more dots, more separators, and the other stripped token wrapped
+  around the target one) as its own oracle wave, so that after exactly one removal
+  of every rule the surviving residue collapses to `../`. Enumerate the ladder
+  (shallow -> deeper) against the /etc/passwd proof file and READ the winning depth
+  from the diff -- the correct nesting is DISCOVERED per filter, never assumed to
+  be the first double you tried.
 Only once the whole corpus is on record and every form returned the identical
 soft-negative may you entertain "whitelist / basename" as the explanation.
 
