@@ -1,4 +1,5 @@
 import type { Project } from '@prisma/client'
+import { DEFAULT_OPENAPI_DISCOVERY_PATHS } from '@/lib/openapi-defaults'
 
 /**
  * Minimal fallback defaults - only required fields. Full defaults are fetched
@@ -15,4 +16,11 @@ export const MINIMAL_DEFAULTS: Partial<Project> = {
   domainBatchMode: false,
   domainBatchHosts: [],
   scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan'],
+  openapiEnabled: true,
+  openapiAutoDiscover: true,
+  openapiDiscoveryPaths: [...DEFAULT_OPENAPI_DISCOVERY_PATHS],
+  openapiSources: [],
+  openapiDiscoveryHeaders: [],
+  openapiTimeout: 10,
+  openapiMaxDocuments: 50,
 }

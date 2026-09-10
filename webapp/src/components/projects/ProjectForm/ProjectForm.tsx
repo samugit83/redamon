@@ -43,6 +43,7 @@ import { TlsxSection } from './sections/TlsxSection'
 import { HttpxSection } from './sections/HttpxSection'
 import { NucleiSection } from './sections/NucleiSection'
 import { KatanaSection } from './sections/KatanaSection'
+import { OpenApiSection } from './sections/OpenApiSection'
 import { ZapAjaxSpiderSection } from './sections/ZapAjaxSpiderSection'
 import { HakrawlerSection } from './sections/HakrawlerSection'
 import { ResourceEnumAiSection } from './sections/ResourceEnumAiSection'
@@ -1211,6 +1212,7 @@ export function ProjectForm({
         {activeTab === 'resource' && viewMode === 'tabs' && (
           <>
             <KatanaSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Katana') : undefined} />
+            <OpenApiSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('OpenAPI') : undefined} />
             <ZapAjaxSpiderSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('ZapAjaxSpider') : undefined} />
             <HakrawlerSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Hakrawler') : undefined} />
             <JsluiceSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Jsluice') : undefined} />
