@@ -320,6 +320,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'KATANA_PARALLELISM': 8,
     'KATANA_CONCURRENCY': 15,
 
+    'OPENAPI_ENABLED': True,
+    'OPENAPI_AUTO_DISCOVER': True,
+    'OPENAPI_DISCOVERY_PATHS': ["/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml", "/v3/api-docs", "/v2/api-docs", "/swagger/v1/swagger.json", "/swagger-ui/index.html", "/swagger-ui.html", "/docs", "/api-docs", "/api-docs/"],
+    'OPENAPI_SOURCES': [],
+    'OPENAPI_DISCOVERY_HEADERS': [],
+    'OPENAPI_TIMEOUT': 10,
+    'OPENAPI_MAX_DOCUMENTS': 50,
+
     # HTTP Traffic Capture (mitmproxy integration, Phase 0+)
     # Off by default: when off, recon does not retain httpx bodies and posts
     # nothing to the /traffic store. Turning it on makes recon persist probed
@@ -1112,6 +1120,14 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['KATANA_CUSTOM_HEADERS'] = project.get('katanaCustomHeaders', DEFAULT_SETTINGS['KATANA_CUSTOM_HEADERS'])
     settings['KATANA_PARALLELISM'] = project.get('katanaParallelism', DEFAULT_SETTINGS['KATANA_PARALLELISM'])
     settings['KATANA_CONCURRENCY'] = project.get('katanaConcurrency', DEFAULT_SETTINGS['KATANA_CONCURRENCY'])
+
+    settings['OPENAPI_ENABLED'] = project.get('openapiEnabled', DEFAULT_SETTINGS['OPENAPI_ENABLED'])
+    settings['OPENAPI_DISCOVERY_PATHS'] = project.get('openapiDiscoveryPaths', DEFAULT_SETTINGS['OPENAPI_DISCOVERY_PATHS'])
+    settings['OPENAPI_AUTO_DISCOVER'] = project.get('openapiAutoDiscover', DEFAULT_SETTINGS['OPENAPI_AUTO_DISCOVER'])
+    settings['OPENAPI_SOURCES'] = project.get('openapiSources', DEFAULT_SETTINGS['OPENAPI_SOURCES'])
+    settings['OPENAPI_DISCOVERY_HEADERS'] = project.get('openapiDiscoveryHeaders', DEFAULT_SETTINGS['OPENAPI_DISCOVERY_HEADERS'])
+    settings['OPENAPI_TIMEOUT'] = project.get('openapiTimeout', DEFAULT_SETTINGS['OPENAPI_TIMEOUT'])
+    settings['OPENAPI_MAX_DOCUMENTS'] = project.get('openapiMaxDocuments', DEFAULT_SETTINGS['OPENAPI_MAX_DOCUMENTS'])
 
     # HTTP Traffic Capture (mitmproxy integration, Phase 0+)
     settings['CAPTURE_PROXY_ENABLED'] = project.get('captureProxyEnabled', DEFAULT_SETTINGS['CAPTURE_PROXY_ENABLED'])

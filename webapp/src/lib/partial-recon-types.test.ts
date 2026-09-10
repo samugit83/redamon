@@ -3,6 +3,7 @@ import {
   PARTIAL_RECON_SUPPORTED_TOOLS,
   PARTIAL_RECON_PHASES,
   PARTIAL_RECON_PHASE_MAP,
+  RECON_PHASES,
 } from './recon-types'
 import type {
   PartialReconStatus,
@@ -37,6 +38,10 @@ describe('PARTIAL_RECON_SUPPORTED_TOOLS', () => {
 
   test('contains Katana', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Katana')).toBe(true)
+  })
+
+  test('contains OpenAPI', () => {
+    expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('OpenAPI')).toBe(true)
   })
 
   test('contains Hakrawler', () => {
@@ -147,6 +152,11 @@ describe('PARTIAL_RECON_PHASE_MAP', () => {
   test('has Katana phases', () => {
     expect(PARTIAL_RECON_PHASE_MAP['Katana']).toHaveLength(1)
     expect(PARTIAL_RECON_PHASE_MAP['Katana'][0]).toBe('Resource Enumeration')
+  })
+
+  test('uses the OpenAPI ingestion phase for full and partial logs', () => {
+    expect(PARTIAL_RECON_PHASE_MAP.OpenAPI).toEqual(['OpenAPI Ingestion'])
+    expect(RECON_PHASES).toContain('OpenAPI Ingestion')
   })
 
   test('has Hakrawler phases', () => {

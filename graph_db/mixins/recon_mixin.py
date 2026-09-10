@@ -11,6 +11,7 @@ by per-topic sub-mixins in the graph_db.mixins.recon package:
     ResourceMixin  -> resource enumeration (Endpoint, Parameter)
     JsReconMixin   -> JS recon (JsReconFinding, Secret)
     UserInputMixin -> user input nodes + partial discovery + tool input gathering
+    OpenApiMixin   -> target-scoped OpenAPI operation declarations
 
 The public surface is unchanged: Neo4jClient(... ReconMixin ...) resolves
 every original method via MRO.
@@ -26,6 +27,7 @@ from graph_db.mixins.recon.user_input_mixin import UserInputMixin
 from graph_db.mixins.recon.takeover_mixin import TakeoverMixin
 from graph_db.mixins.recon.vhost_sni_mixin import VhostSniMixin
 from graph_db.mixins.recon.ai_surface_recon_mixin import AiSurfaceReconMixin
+from graph_db.mixins.recon.openapi_mixin import OpenApiMixin
 
 
 class ReconMixin(
@@ -39,5 +41,6 @@ class ReconMixin(
     TakeoverMixin,
     VhostSniMixin,
     AiSurfaceReconMixin,
+    OpenApiMixin,
 ):
     pass

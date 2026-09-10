@@ -42,6 +42,9 @@ export const WORKFLOW_TOOLS: WorkflowToolDef[] = [
   { id: 'EndpointAiClassifier', label: 'Endpoint AI Classifier',
     enabledField: 'resourceEnumAiClassifierEnabled', group: 5, badge: 'passive' },
 
+  // Group 5.25 - OpenAPI Ingestion
+  { id: 'OpenAPI', label: 'OpenAPI', enabledField: 'openapiEnabled', group: 5.25, badge: 'active' },
+
   // Group 5.5 - JS Recon
   { id: 'JsRecon', label: 'JS Recon', enabledField: 'jsReconEnabled', group: 5.5, badge: 'both' },
   { id: 'AiSurfaceRecon', label: 'AI Surface Recon', enabledField: 'aiSurfaceReconEnabled', group: 5.5, badge: 'active' },
@@ -128,6 +131,7 @@ export const WORKFLOW_GROUPS: { group: number; label: string; color: string }[] 
   { group: 3,   label: 'Port Scanning',  color: '#06b6d4' },
   { group: 4,   label: 'HTTP Probing',   color: '#22c55e' },
   { group: 5,   label: 'Resource Enum',  color: '#f59e0b' },
+  { group: 5.25, label: 'OpenAPI',       color: '#f59e0b' },
   { group: 5.5, label: 'JS Recon',       color: '#f59e0b' },
   { group: 6,   label: 'Vuln Scanning',  color: '#ef4444' },
   { group: 7,   label: 'CVE & MITRE',    color: '#f97316' },

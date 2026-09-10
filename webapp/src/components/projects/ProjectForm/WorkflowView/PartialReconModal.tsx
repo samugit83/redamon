@@ -97,6 +97,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     'Targets are loaded from the graph (BaseURLs from prior HTTP probing). ' +
     'You can also provide custom URLs below. ' +
     'Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  OpenAPI:
+    'Imports endpoint declarations from configured or discovered Swagger 2.0 and OpenAPI 3.0/3.1 documents without invoking declared operations. ' +
+    'Targets are loaded from graph BaseURLs and remain constrained to the project scope. You can also provide custom BaseURLs below. ' +
+    'Endpoint declarations are merged into the existing graph with their HTTP method and source provenance.',
   ZapAjaxSpider:
     'Browser-driven crawling with OWASP ZAP Ajax Spider. Executes JavaScript and SPA interactions to discover API endpoints that static crawlers can miss. ' +
     'Targets are loaded from graph BaseURLs, with optional endpoint seeding from settings. You can also provide custom URLs below. ' +
@@ -438,7 +442,7 @@ export function PartialReconModal({
   const isNuclei = toolId === 'Nuclei'
   const isGraphql = toolId === 'GraphqlScan'
   const isSecurityChecks = toolId === 'SecurityChecks'
-  const isResourceEnum = toolId === 'Katana' || toolId === 'ZapAjaxSpider' || toolId === 'Hakrawler' || toolId === 'Jsluice' || toolId === 'Ffuf' || toolId === 'Kiterunner' || toolId === 'JsRecon' || toolId === 'SupplyChainRecon' || isNuclei
+  const isResourceEnum = toolId === 'Katana' || toolId === 'OpenAPI' || toolId === 'ZapAjaxSpider' || toolId === 'Hakrawler' || toolId === 'Jsluice' || toolId === 'Ffuf' || toolId === 'Kiterunner' || toolId === 'JsRecon' || toolId === 'SupplyChainRecon' || isNuclei
   const isArjun = toolId === 'Arjun'
   const isGau = toolId === 'Gau'
   const isParamSpider = toolId === 'ParamSpider'

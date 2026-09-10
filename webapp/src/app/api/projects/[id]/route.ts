@@ -9,6 +9,7 @@ import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 
 // Path to output directories (fallback for local deletion)
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/recon/output'
@@ -124,6 +125,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Remove fields that shouldn't be updated directly
     const { userId, createdAt, updatedAt, user, ...updateData } = body
+
+    const openapiError = validateOpenApiSettings(updateData)
+    if (openapiError) {
+      return NextResponse.json({ error: openapiError }, { status: 400 })
+    }
+    if ('openapiSources' in updateData) {
+      updateData.openapiSources = normalizeOpenApiSourceIds(updateData.openapiSources)
+    }
 
     // Sanitize string inputs that are used as hostnames/IPs (trailing spaces break DNS)
     if (typeof updateData.targetDomain === 'string') {
