@@ -102,5 +102,5 @@ isolation). Focused coverage lives in `recon/tests/test_openapi_recon.py`,
 `recon/tests/test_openapi_pipeline.py`, `recon/tests/test_openapi_settings.py`,
 and `tests/test_openapi_graph.py`. Webapp configuration has adjacent Vitest tests.
 
-Real HTTP streaming and Neo4j integration tests: 
+Real HTTP streaming and Neo4j integration tests:
 recon/tests/test_openapi_fetch_integration.py and tests/test_openapi_graph_integration.py.
