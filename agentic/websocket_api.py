@@ -8,7 +8,7 @@ Supports streaming of LLM thoughts, tool executions, and interactive approval/qu
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Callable
 from enum import Enum
 
@@ -207,8 +207,8 @@ class WebSocketConnection:
         self.session_id: Optional[str] = None
         self.graph_view_cypher: Optional[str] = None
         self.authenticated = False
-        self.connected_at = datetime.utcnow()
-        self.last_ping = datetime.utcnow()
+        self.connected_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.last_ping = datetime.now(timezone.utc).replace(tzinfo=None)
         self.guidance_queue: asyncio.Queue = asyncio.Queue()
         self._active_task: Optional[Any] = None
         self._is_stopped: bool = False
@@ -221,7 +221,7 @@ class WebSocketConnection:
             message = {
                 "type": message_type.value,
                 "payload": serialized_payload,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
             }
             await self.websocket.send_json(message)
             logger.debug(f"Sent {message_type.value} message to {self.session_id}")
@@ -1244,7 +1244,7 @@ class WebSocketHandler:
             await connection.send_message(MessageType.CONNECTED, {
                 "session_id": session_id,
                 "message": "WebSocket connection established",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 "protocol_version": 2,
                 "features": _features,
             })
@@ -1816,7 +1816,7 @@ class WebSocketHandler:
 
     async def handle_ping(self, connection: WebSocketConnection, payload: dict):
         """Handle ping for keep-alive"""
-        connection.last_ping = datetime.utcnow()
+        connection.last_ping = datetime.now(timezone.utc).replace(tzinfo=None)
         await connection.send_message(MessageType.PONG, {})
         logger.debug(f"Pong sent to session {connection.session_id}")
 
