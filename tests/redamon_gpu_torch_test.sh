@@ -181,7 +181,9 @@ assert_contains "GPU marker -> overlay in compose args" "$GPU_COMPOSE_ARGS" "doc
 assert_contains "GPU marker -> base compose file kept"  "${COMPOSE_FILE:-}" "docker-compose.yml"
 
 # REGRESSION (B4): relative paths break any call site that runs from another cwd.
-assert_contains "regression: overlay uses an absolute path" "${COMPOSE_FILE:-}" "$REPO_ROOT/docker-compose.gpu.yml"
+expected_overlay="$REPO_ROOT/docker-compose.gpu.yml"
+case "$OSTYPE" in msys*|cygwin*) expected_overlay=$(cygpath -m "$expected_overlay") ;; esac
+assert_contains "regression: overlay uses an absolute path" "${COMPOSE_FILE:-}" "$expected_overlay"
 
 # REGRESSION (B5): cmd_install calls the overlay, then _kb_bootstrap calls it
 # again in the SAME process. A non-idempotent append duplicates the file entry.

@@ -9,6 +9,7 @@ import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
 import { callGraphTriage } from '@/lib/triageClient'
 
@@ -136,6 +137,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // the whole-row PUT the form sends; it is a relation written only by its own
     // route, and passing it here would make Prisma reject the update.
     const { userId, createdAt, updatedAt, user, authProfile: _authProfile, ...updateData } = body
+
+    const openapiError = validateOpenApiSettings(updateData)
+    if (openapiError) {
+      return NextResponse.json({ error: openapiError }, { status: 400 })
+    }
+    if ('openapiSources' in updateData) {
+      updateData.openapiSources = normalizeOpenApiSourceIds(updateData.openapiSources)
+    }
 
     // Sanitize string inputs that are used as hostnames/IPs (trailing spaces break DNS)
     if (typeof updateData.targetDomain === 'string') {

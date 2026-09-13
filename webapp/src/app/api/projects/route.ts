@@ -5,7 +5,9 @@ import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { validateDomainBatch } from '@/lib/domainBatch'
+
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 
@@ -81,8 +83,17 @@ export async function POST(request: NextRequest) {
       body = await request.json()
     }
 
+    const openapiError = validateOpenApiSettings(body)
+    if (openapiError) {
+      return NextResponse.json({ error: openapiError }, { status: 400 })
+    }
+    if ('openapiSources' in body) {
+      body.openapiSources = normalizeOpenApiSourceIds(body.openapiSources)
+    }
+
     const { userId: _bodyUserId, name, targetDomain, ipMode, domainBatchMode,
       id: clientId, ...optionalParams } = body as {
+
       userId: string
       name: string
       targetDomain?: string
