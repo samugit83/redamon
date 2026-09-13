@@ -407,6 +407,7 @@ export const reconPresetSchema = z.object({
   takeoverConfidenceThreshold: int,
   takeoverRateLimit: int,
   takeoverManualReviewAutoPublish: bool,
+  takeoverCertValidationEnabled: bool,
   takeoverAiClassifier: bool,
   baddnsEnabled: bool,
   baddnsDockerImage: str,
@@ -426,6 +427,25 @@ export const reconPresetSchema = z.object({
   vhostSniUseGraphCandidates: bool,
   vhostSniMaxCandidatesPerIp: int,
   vhostSniCustomWordlist: str,
+
+  // -- tlsx TLS Certificate Grab --
+  tlsxEnabled: bool,
+  tlsxScanMode: str,
+  tlsxConcurrency: int,
+  tlsxTimeout: int,
+  tlsxRunTimeout: int,
+  tlsxRetries: int,
+  tlsxMaxInjectedHostnames: int,
+  tlsxDelay: str,
+  tlsxIncludeHttpPorts: bool,
+  tlsxInjectHostnames: bool,
+  tlsxRevPtrSni: bool,
+  tlsxMaxHostnamesPerIp: int,
+  tlsxProbeJarm: bool,
+  tlsxVersionEnum: bool,
+  tlsxCipherEnum: bool,
+  tlsxCipherConcurrency: int,
+  tlsxMaxTargets: int,
 
   webCachePoisonEnabled: bool,
   webCachePoisonDockerImage: str,
@@ -471,6 +491,12 @@ export const reconPresetSchema = z.object({
   wafAiClassifier: bool,
   securityCheckTlsExpiringSoon: bool,
   securityCheckTlsExpiryDays: int,
+  securityCheckTlsExpired: bool,
+  securityCheckTlsSelfSigned: bool,
+  securityCheckTlsHostnameMismatch: bool,
+  securityCheckTlsWeakVersion: bool,
+  securityCheckTlsWeakCipher: bool,
+  securityCheckTlsWildcardOverbroad: bool,
   securityCheckMissingReferrerPolicy: bool,
   securityCheckMissingPermissionsPolicy: bool,
   securityCheckMissingCoop: bool,
@@ -934,6 +960,7 @@ Source URLs and fetch headers are project-specific and may contain credentials, 
 - takeoverConfidenceThreshold: integer - 0..100. Findings >= threshold+10 are confirmed, >= threshold are likely, otherwise manual_review
 - takeoverRateLimit: integer - Nuclei requests/second for the takeover pass (default 50)
 - takeoverManualReviewAutoPublish: boolean - Publish manual_review findings into the main Vulnerability stream (default false)
+- takeoverCertValidationEnabled: boolean - Use certificate evidence (issuer/SAN/name-match) to score takeovers, incl. hosts with no CNAME. Reads httpx 443 certs (tlsx off) or more (tlsx on). Default true.
 - takeoverAiClassifier: boolean - Use AI to disambiguate takeover findings from WAF "no host" block pages that match the same static fingerprint (requires aiInPipeline=true). For each finding the scanner probes the host, short-circuits on third-party vendor tokens, and otherwise asks the LLM to classify the body. AI-flagged collisions get score -40 (lands in manual_review). Default false.
 - baddnsEnabled: boolean - Run the BadDNS sidecar (AGPL-3.0, isolated Docker container). Requires "docker compose --profile tools build baddns-scanner". Default false.
 - baddnsDockerImage: string - BadDNS image name. Default "redamon-baddns:latest" (built locally from baddns_scan/Dockerfile)
@@ -953,6 +980,23 @@ Source URLs and fetch headers are project-specific and may contain credentials, 
 - vhostSniUseGraphCandidates: boolean - Pull hostnames from existing Subdomain, ExternalDomain, TLS SAN list, CNAME targets and reverse-DNS PTR records resolving to each target IP. Highest signal source. Default true.
 - vhostSniMaxCandidatesPerIp: integer - Hard cap on candidates per IP to bound run time. Default 2000.
 - vhostSniCustomWordlist: string - Optional newline-separated custom prefixes/hostnames (per-project file/text). Bare prefixes expand as {prefix}.{target_apex}; full hostnames are used as-is. Default "".
+- tlsxEnabled: boolean - Master switch for the tlsx TLS certificate grab (GROUP 3.6). One TLS handshake per open non-HTTP port. Active but quiet; net-zero on the 5 SSL ports httpx already dials. Default TRUE. Passive/zero-packet presets MUST set this false.
+- tlsxScanMode: string - TLS stack: ctls|ztls|openssl|auto. Default auto.
+- tlsxConcurrency: integer - Concurrent TLS connections. Default 50 (tlsx's own default is 300).
+- tlsxTimeout: integer - Per-handshake connect timeout in seconds. Default 5.
+- tlsxRunTimeout: integer - Whole-container ceiling in seconds. Default 900.
+- tlsxRetries: integer - Handshake retries. Default 1.
+- tlsxMaxInjectedHostnames: integer - Cap on in-scope certificate SAN hostnames merged back into dns.subdomains as scan targets. Default 200.
+- tlsxDelay: string - Optional -delay between connections (e.g. "200ms"); stealth only. Default "".
+- tlsxIncludeHttpPorts: boolean - Also grab certs on HTTP/HTTPS ports httpx already covers (duplicate handshakes). Default false.
+- tlsxInjectHostnames: boolean - Merge in-scope certificate SAN hostnames into dns.subdomains as new probe targets. Default true.
+- tlsxRevPtrSni: boolean - Reverse-PTR to derive an SNI for bare IPs (extra DNS lookups). Default false.
+- tlsxMaxHostnamesPerIp: integer - When one IP serves several known hostnames, how many to scan (each may present a different cert). Default 1.
+- tlsxProbeJarm: boolean - Compute JARM + JA3 fingerprints (~10 extra handshakes per target, loud). Default false.
+- tlsxVersionEnum: boolean - Enumerate every supported TLS version (extra connections per target). Default false.
+- tlsxCipherEnum: boolean - Enumerate weak supported ciphers (extra connections per target). Default false.
+- tlsxCipherConcurrency: integer - Per-target cipher-enum concurrency, only used when cipher enum is on. Default 10.
+- tlsxMaxTargets: integer - Hard cap on ip:port pairs tlsx scans. Default 2000.
 
 ## Web Cache Poisoning (WCVS breadth engine + native 5-phase confirmation)
 - webCachePoisonEnabled: boolean - Master switch. Active scan: detects web cache poisoning + web cache deception on live BaseURLs/Endpoints. Sends header/param mutation probes plus repeated baseline/poison/clean fetches per URL. Default false.
@@ -999,6 +1043,12 @@ Source URLs and fetch headers are project-specific and may contain credentials, 
 - wafAiClassifier: boolean - Use AI to classify WAF/CDN presence from response headers/body/latency when the static check misses (requires aiInPipeline=true). Augments _has_cdn_markers and check_waf_bypass; AI-detected bypasses are tagged detection_method=ai_classifier. Default false.
 - securityCheckTlsExpiringSoon: boolean
 - securityCheckTlsExpiryDays: integer - Days threshold
+- securityCheckTlsExpired: boolean - Flag already-expired certificates (high). Derived from cert data, zero network cost. Default true.
+- securityCheckTlsSelfSigned: boolean - Flag self-signed certificates (medium). Default true.
+- securityCheckTlsHostnameMismatch: boolean - Flag certificates whose name does not match the served host (medium). Default true.
+- securityCheckTlsWeakVersion: boolean - Flag negotiated/supported ssl30/tls10/tls11 (medium). Default true.
+- securityCheckTlsWeakCipher: boolean - Flag weak negotiated/supported ciphers RC4/3DES/NULL/EXPORT (medium). Default true.
+- securityCheckTlsWildcardOverbroad: boolean - Flag wildcard certs naming an excessive number of SAN entries (low). Default true.
 - securityCheckMissingReferrerPolicy: boolean
 - securityCheckMissingPermissionsPolicy: boolean
 - securityCheckMissingCoop: boolean

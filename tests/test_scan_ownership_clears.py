@@ -173,10 +173,23 @@ class TestReconClearLeavesOtherScannersAlone(unittest.TestCase):
         for label in GLOBAL_REFERENCE_LABELS:
             self.assertIn(f"n:`{label}`", self.wipe)
 
-    def test_recon_still_deletes_its_own_labels(self):
+    def test_recon_still_deletes_its_own_assets(self):
         # The exclusion list must not have grown into "delete nothing".
-        for label in ("Domain", "Subdomain", "Endpoint", "Secret", "JsReconFinding"):
+        for label in ("Domain", "Subdomain", "Endpoint"):
             self.assertNotIn(f"n:`{label}`", self.wipe, f"{label} is recon's own")
+
+    def test_it_no_longer_deletes_its_own_FINDINGS(self):
+        # X7. `Secret` and `JsReconFinding` ARE recon's own, and used to be
+        # deleted here. Deleting them deleted the operator's work with them:
+        # the mute they applied, the verdict they recorded, the AI's cached
+        # review, and the link from a fix item back to the finding.
+        #
+        # They are pruned AFTER a successful ingest instead
+        # (`prune_unseen_findings`), which keeps anything a person touched and
+        # stamps it stale rather than removing it.
+        for label in ("Secret", "JsReconFinding", "Vulnerability"):
+            self.assertIn(f"n:`{label}`", self.wipe,
+                          f"{label} is a finding and must not be cleared here")
 
 
 if __name__ == "__main__":

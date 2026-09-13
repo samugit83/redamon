@@ -216,6 +216,11 @@ def run_vulnerability_scan(
         print("[*] Clearing previous GVM graph data...")
         try:
             from graph_db import Neo4jClient
+            from graph_db.mixins.base_mixin import run_timestamp
+            # X7: taken BEFORE the ingest, so everything this scan writes has a
+            # later `updated_at` and survives the prune at the end.
+            global _GVM_RUN_STARTED_AT
+            _GVM_RUN_STARTED_AT = run_timestamp()
             with Neo4jClient() as graph_client:
                 if graph_client.verify_connection():
                     clear_stats = graph_client.clear_gvm_data(USER_ID, project_id)
@@ -391,8 +396,39 @@ def run_vulnerability_scan(
     graph_stats = update_graph_from_gvm_results(results)
     if "error" not in graph_stats:
         results["graph_update"] = graph_stats
+        _prune_gvm_findings(graph_stats, project_id)
 
     return results
+
+
+#: When this GVM run started, for the prune. Set by the clear, and absent when
+#: the clear never ran, which is what stops a failed run pruning anything.
+_GVM_RUN_STARTED_AT = None
+
+
+def _prune_gvm_findings(graph_stats, project_id):
+    """Remove the GVM findings this scan stopped reporting (X7).
+
+    Only after an ingest that actually wrote something: a GVM run that produced
+    no vulnerabilities is far more often a scan that failed than a target that
+    became clean, and pruning on it would empty the project's GVM findings.
+
+    Findings an operator muted or judged are kept and stamped stale rather than
+    deleted, so their decision survives.
+    """
+    if not _GVM_RUN_STARTED_AT or not project_id or not USER_ID:
+        return
+    if not graph_stats.get("vulnerabilities_created"):
+        return
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                graph_client.prune_unseen_findings(
+                    USER_ID, project_id, ["gvm"], _GVM_RUN_STARTED_AT)
+    except Exception as e:
+        # Housekeeping must never fail a completed scan.
+        print(f"    [!] Could not prune stale GVM findings: {e}")
 
 
 def main():

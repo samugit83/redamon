@@ -175,6 +175,17 @@ export function getNodeName(node: Neo4jNode): string {
     }
   }
 
+  // Certificate nodes - show subject CN (issuer as a second line), never the
+  // literal label "Certificate". A SAN-only cert has an empty CN, so fall back
+  // to its first SAN and then cert_key.
+  if (label === 'Certificate') {
+    const cn = (props.subject_cn as string) || ''
+    const san = Array.isArray(props.san) ? (props.san as string[]) : []
+    const issuer = (props.issuer as string) || (props.issuer_cn as string) || ''
+    const primary = cn || san[0] || (props.cert_key as string) || 'Certificate'
+    return issuer ? `${primary}\n${issuer}` : primary
+  }
+
   // Special handling for Header nodes - show header name
   if (label === 'Header') {
     const headerName = props.name as string || ''

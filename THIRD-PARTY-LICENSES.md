@@ -17,6 +17,7 @@ These tools are either installed in Docker images or pulled as Docker containers
 | **Nuclei Templates** | Community vulnerability detection templates | MIT | https://github.com/projectdiscovery/nuclei-templates | Downloaded via `nuclei -update-templates` in `mcp/kali-sandbox/entrypoint.sh` |
 | **Katana** | Web crawling and endpoint discovery | AGPL-3.0 | https://github.com/projectdiscovery/katana | Pulled as Docker image `projectdiscovery/katana:latest` at runtime |
 | **HTTPx** | HTTP probing and technology detection | AGPL-3.0 | https://github.com/projectdiscovery/httpx | Installed via `go install` in `mcp/kali-sandbox/Dockerfile`; also pulled as Docker image `projectdiscovery/httpx:latest` at runtime |
+| **tlsx** | TLS certificate grabbing and posture on open non-HTTP ports (TLS Certificate Grab, recon GROUP 3.6); complements HTTPx, which only grabs certificates on the HTTPS ports it dials | MIT | https://github.com/projectdiscovery/tlsx | Pulled as Docker image `projectdiscovery/tlsx:latest` at runtime (`recon/entrypoint.sh`, `recon/main_recon_modules/tls_scan.py`); the image is on the docker-broker allowlist (`services/docker_broker/broker.py`) and the configured value is pinned back to an allowlisted image before use |
 | **Subfinder** | Subdomain enumeration via passive sources | AGPL-3.0 | https://github.com/projectdiscovery/subfinder | Pulled as Docker image `projectdiscovery/subfinder:latest` at runtime |
 | **DNSx** | Fast DNS toolkit (resolution, bruteforce, wildcard filtering) | AGPL-3.0 | https://github.com/projectdiscovery/dnsx | Pulled as Docker image `projectdiscovery/dnsx:latest` at runtime |
 | **uncover** | Exposed-host discovery via search-engine APIs (Shodan, Censys, FOFA, Quake, Hunter, etc.) for target expansion | MIT | https://github.com/projectdiscovery/uncover | Pulled as Docker image `projectdiscovery/uncover:latest` at runtime (`recon/main_recon_modules/uncover_enrich.py`, `recon/entrypoint.sh`); provider API keys injected at call time |
@@ -437,4 +438,4 @@ AGPL-3.0 extends the GPL-3.0 copyleft to users who interact with the software **
 
 ---
 
-*Last updated: August 2026*
+*Last updated: September 2026*

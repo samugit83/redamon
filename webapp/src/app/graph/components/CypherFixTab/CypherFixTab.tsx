@@ -98,7 +98,7 @@ export function CypherFixTab({
 
   const renderContent = () => {
     if (showEmpty) {
-      return <EmptyState onStartTriage={onStartTriage} />
+      return <EmptyState onStartTriage={onStartTriage} projectId={projectId || null} />
     }
     if (subView === 'diffviewer' && selectedRemediation) {
       return (

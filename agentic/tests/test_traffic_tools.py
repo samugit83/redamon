@@ -159,6 +159,35 @@ class TestReplayBuilder(unittest.TestCase):
         self.assertNotIn("; rm -rf /", args.replace("'1; rm -rf /'", ""))
 
 
+class TestReplayAuthBase(unittest.TestCase):
+    """AuthProfile precedence: mutate > origin header > profile (auth_base)."""
+
+    def test_auth_base_seeded_when_origin_lacks_header(self):
+        origin = {**ORIGIN, "req_headers": {"User-Agent": "x"}}
+        args = tt.build_replay_curl(origin, {}, auth_base={"Cookie": "sid=profile"})
+        self.assertIn("sid=profile", args)
+
+    def test_origin_header_wins_over_profile(self):
+        args = tt.build_replay_curl(ORIGIN, {}, auth_base={"Cookie": "sid=profile"})
+        self.assertIn("sid=alice", args)
+        self.assertNotIn("sid=profile", args)
+
+    def test_explicit_mutate_cookie_wins_over_profile(self):
+        args = tt.build_replay_curl(ORIGIN, {"cookie": "sid=bob"}, auth_base={"Cookie": "sid=profile"})
+        self.assertIn("sid=bob", args)
+        self.assertNotIn("sid=profile", args)
+
+    def test_drop_headers_removes_profile_cookie(self):
+        origin = {**ORIGIN, "req_headers": {"User-Agent": "x"}}
+        args = tt.build_replay_curl(origin, {"dropHeaders": ["Cookie"]}, auth_base={"Cookie": "sid=profile"})
+        self.assertNotIn("sid=profile", args)
+
+    def test_fuzz_carries_auth_base(self):
+        origin = {**ORIGIN, "req_headers": {"User-Agent": "x"}}
+        variants = list(tt.build_fuzz_curls(origin, "id", ["1"], auth_base={"Cookie": "sid=profile"}))
+        self.assertIn("sid=profile", variants[0][1])
+
+
 class TestFuzzBuilder(unittest.TestCase):
     def test_iterates_payloads_over_param(self):
         variants = list(tt.build_fuzz_curls(ORIGIN, "id", ["1", "2", "' OR 1=1"]))

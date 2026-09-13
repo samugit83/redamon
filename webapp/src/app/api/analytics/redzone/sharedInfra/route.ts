@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
             reduce(acc = [], x IN allHostsRaw | CASE WHEN x IN acc THEN acc ELSE acc + [x] END) AS allHosts
        WHERE size(allHosts) >= 2
        RETURN 'certificate'                  AS clusterType,
-              coalesce(cert.subject_cn, toString(id(cert))) AS clusterKey,
+              coalesce(cert.cert_key, toString(id(cert))) AS clusterKey,
               cert.subject_cn                AS certCn,
               cert.issuer                    AS certIssuer,
               cert.not_after                 AS certNotAfter,

@@ -147,6 +147,43 @@ describe('getNodeName', () => {
   test('fallback to label when no props match', () => {
     expect(getNodeName(makeNode('CustomType', {}))).toBe('CustomType')
   })
+
+  // -- Certificate (Phase 0.7) ---------------------------------------------
+  // Before the Certificate branch existed, every certificate fell through to
+  // the generic `props.name || props.address || ... || label` chain. A
+  // Certificate has none of those properties, so EVERY certificate in the
+  // project rendered as the literal string "Certificate" -- indistinguishable
+  // from every other one in /graph.
+  test('Certificate shows subject CN with the issuer on a second line', () => {
+    expect(getNodeName(makeNode('Certificate', {
+      subject_cn: 'mail.acme.com',
+      issuer: "CN=R3, O=Let's Encrypt",
+    }))).toBe("mail.acme.com\nCN=R3, O=Let's Encrypt")
+  })
+
+  test('Certificate with no issuer shows just the subject CN', () => {
+    expect(getNodeName(makeNode('Certificate', { subject_cn: 'mail.acme.com' })))
+      .toBe('mail.acme.com')
+  })
+
+  test('SAN-only certificate (empty CN) falls back to its first SAN', () => {
+    // Modern certs increasingly ship an empty Subject CN; these are exactly the
+    // ones tlsx surfaces, so they must not render as "Certificate".
+    expect(getNodeName(makeNode('Certificate', {
+      subject_cn: '',
+      san: ['mail.acme.com', 'imap.acme.com'],
+    }))).toBe('mail.acme.com')
+  })
+
+  test('certificate with neither CN nor SAN falls back to cert_key, never the label', () => {
+    expect(getNodeName(makeNode('Certificate', { cert_key: 'sha256:aabbcc' })))
+      .toBe('sha256:aabbcc')
+  })
+
+  test('a certificate never renders as the bare label "Certificate"', () => {
+    const name = getNodeName(makeNode('Certificate', { subject_cn: 'a.com', issuer: 'X' }))
+    expect(name).not.toBe('Certificate')
+  })
 })
 
 // ---------------------------------------------------------------------------

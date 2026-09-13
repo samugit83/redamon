@@ -563,6 +563,15 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         # scan_urls is the union for reporting/metadata
         scan_urls = sorted(set(target_urls + (dast_urls if do_dast_pass else [])))
 
+        # Authenticated-session profile: attach the operator's auth headers to
+        # nuclei when every scanned host is in scope (no-op otherwise). Nuclei
+        # has no header support of its own, so these flow via the new
+        # build_nuclei_command auth_headers arg.
+        from urllib.parse import urlparse as _urlparse
+        from recon.helpers.auth_profile import merge_auth_headers as _merge_auth
+        _nuclei_hosts = sorted({_urlparse(u).hostname for u in scan_urls if _urlparse(u).hostname})
+        _nuclei_auth = _merge_auth([], settings, _nuclei_hosts)
+
         try:
             findings = []
             false_positives_filtered = []
@@ -597,6 +606,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     follow_redirects=NUCLEI_FOLLOW_REDIRECTS,
                     max_redirects=NUCLEI_MAX_REDIRECTS,
                     interactsh=NUCLEI_INTERACTSH,
+                    auth_headers=_nuclei_auth,
                 )
                 d_findings, d_fps, d_duration, _ = _execute_nuclei_pass(
                     detection_cmd, detection_output_file, label="DETECTION"
@@ -623,6 +633,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     max_redirects=NUCLEI_MAX_REDIRECTS,
                     interactsh=NUCLEI_INTERACTSH,
                     force_dast_pass=True,
+                    auth_headers=_nuclei_auth,
                 )
                 b_findings, b_fps, b_duration, _ = _execute_nuclei_pass(
                     dast_cmd, dast_output_file, label="DAST"
@@ -902,8 +913,15 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             "direct_ip_https": SECURITY_CHECK_DIRECT_IP_HTTPS,
             "ip_api_exposed": SECURITY_CHECK_IP_API_EXPOSED,
             "waf_bypass": SECURITY_CHECK_WAF_BYPASS,
-            # TLS/SSL checks (only expiring soon - others covered by Nuclei)
+            # TLS/SSL checks
             "tls_expiring_soon": SECURITY_CHECK_TLS_EXPIRING_SOON,
+            # TLS-hygiene checks derived from tlsx/httpx certificate data
+            "tls_expired": settings.get('SECURITY_CHECK_TLS_EXPIRED', True),
+            "tls_self_signed": settings.get('SECURITY_CHECK_TLS_SELF_SIGNED', True),
+            "tls_hostname_mismatch": settings.get('SECURITY_CHECK_TLS_HOSTNAME_MISMATCH', True),
+            "tls_weak_version": settings.get('SECURITY_CHECK_TLS_WEAK_VERSION', True),
+            "tls_weak_cipher": settings.get('SECURITY_CHECK_TLS_WEAK_CIPHER', True),
+            "tls_wildcard_overbroad": settings.get('SECURITY_CHECK_TLS_WILDCARD_OVERBROAD', True),
             # Security Headers checks (only headers not covered by Nuclei)
             "missing_referrer_policy": SECURITY_CHECK_MISSING_REFERRER_POLICY,
             "missing_permissions_policy": SECURITY_CHECK_MISSING_PERMISSIONS_POLICY,

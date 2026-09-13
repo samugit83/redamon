@@ -28,10 +28,18 @@ class TriageFinding(BaseModel):
 
 
 class RemediationDraft(BaseModel):
+    #: Legacy shape, kept so an older caller still type-checks. Step D fills
+    #: `computed` instead: those rows are built field by field in
+    #: `cypherfix_triage/remediation.py` and only their prose comes from a model.
     findings: list[TriageFinding] = []
+    computed: list[dict] = []
     summary: str = ""
     by_severity: dict[str, int] = {}
     by_type: dict[str, int] = {}
+
+    @property
+    def count(self) -> int:
+        return len(self.computed) or len(self.findings)
 
 
 class TriageState(TypedDict):

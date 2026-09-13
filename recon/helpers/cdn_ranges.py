@@ -35,6 +35,45 @@ CDN_ASNS: dict[int, str] = {
     209242: "cloudflare",
 }
 
+# Certificate-issuer fragments that RELIABLY identify a CDN edge (Phase 2.3).
+#
+# A TLS handshake attributes a CDN where naabu cannot: it needs no HTTP
+# response, so it works on a non-HTTP TLS port, which is exactly where
+# response_is_cdn_edge() cannot help (it takes a requests.Response).
+#
+# Deliberately NOT here: "amazon"/"aws". ACM issues certificates for bare ALB
+# and EC2 origins that DO serve the application directly, so treating an Amazon
+# issuer as CDN edge would suppress genuine Direct-IP findings -- the same
+# reason RELIABLE_EDGE_CDN_NAMES below excludes those names. Only issuers whose
+# presence means "this is an edge, not the origin" belong here.
+CDN_CERT_ISSUER_MARKERS: dict[str, str] = {
+    "cloudflare": "cloudflare",
+    "akamai": "akamai",
+    "fastly": "fastly",
+    "sucuri": "sucuri",
+    "incapsula": "incapsula",
+    "imperva": "imperva",
+}
+
+
+def cdn_from_certificate(issuer) -> Optional[str]:
+    """Return a CDN name from a certificate issuer, or None.
+
+    JARM would be a second signal here, but a JARM->CDN table is only as good as
+    the hashes in it and there is no verified offline source to build one from;
+    inventing fingerprints would be worse than attributing nothing.
+    """
+    if not issuer:
+        return None
+    if isinstance(issuer, (list, tuple)):
+        issuer = ", ".join(str(x) for x in issuer if x)
+    lowered = str(issuer).lower()
+    for marker, name in CDN_CERT_ISSUER_MARKERS.items():
+        if marker in lowered:
+            return name
+    return None
+
+
 # CDN names that httpx / naabu emit which RELIABLY indicate the IP is an
 # edge node and does NOT serve the origin application directly. Suppressing
 # Direct-IP findings on these is safe.

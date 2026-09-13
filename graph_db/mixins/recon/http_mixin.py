@@ -20,6 +20,8 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
+from graph_db.cert_key import build_cert_key
+from graph_db.schema import NON_RECON_SOURCES
 
 
 #: Every relationship type a Technology node can carry, and which way it points
@@ -297,52 +299,92 @@ class HttpMixin:
                     )
                     stats["relationships_created"] += 1
 
-                    # Create Certificate node from TLS data if available
+                    # Certificate from TLS data. Keyed on cert_key (not subject_cn),
+                    # so empty-CN / SAN-only certs are stored and two scanners
+                    # observing the same cert converge on one node.
                     if tls_data and tls_data.get("certificate"):
                         cert_data = tls_data.get("certificate", {})
-                        subject_cn = cert_data.get("subject_cn", "")
-                        
+                        subject_cn = cert_data.get("subject_cn") or ""
+                        issuer_raw = cert_data.get("issuer")
+                        issuer_str = ", ".join(issuer_raw) if isinstance(issuer_raw, list) else issuer_raw
+                        not_before = cert_data.get("not_before")
+                        not_after = cert_data.get("not_after")
+                        fingerprint = cert_data.get("fingerprint_sha256") or cert_data.get("fingerprint")
+                        cert_key = build_cert_key(
+                            fingerprint_sha256=fingerprint, subject_cn=subject_cn,
+                            issuer=issuer_str, not_before=not_before, not_after=not_after,
+                        )
+
+                        cert_props = {
+                            "subject_cn": subject_cn or None,
+                            "issuer": issuer_str,
+                            "not_before": not_before,
+                            "not_after": not_after,
+                            "san": cert_data.get("san", []),  # full SAN list as presented
+                            "cipher": tls_data.get("cipher"),
+                            "tls_version": tls_data.get("version"),
+                            # Phase 0.6: httpx already pays ~10 TLS handshakes for
+                            # -jarm (default on) and writes it at the URL level,
+                            # NOT inside tls.certificate -- so reading it from the
+                            # cert dict found nothing and the fingerprint was
+                            # thrown away every scan.
+                            "jarm": (cert_data.get("jarm") or tls_data.get("jarm")
+                                     or url_info.get("jarm")),
+                        }
+                        if fingerprint:
+                            cert_props["fingerprint_sha256"] = fingerprint
+                        # Empty is "this scanner saw nothing", not "the cert has
+                        # nothing". Since re-keying on cert_key makes sources
+                        # converge on ONE node, a `SET c += {san: []}` here would
+                        # erase a SAN list another source already stored.
+                        cert_props = {k: v for k, v in cert_props.items()
+                                      if v is not None and v != "" and v != []}
+
+                        # source is first-writer provenance (ON CREATE); observed_by
+                        # accumulates so a cross-source clear can tell sole vs shared.
+                        session.run(
+                            """
+                            MERGE (c:Certificate {cert_key: $cert_key, user_id: $user_id, project_id: $project_id})
+                            ON CREATE SET c.source = 'http_probe'
+                            SET c += $props,
+                                c.observed_by = CASE WHEN 'http_probe' IN coalesce(c.observed_by, [])
+                                                     THEN c.observed_by
+                                                     ELSE coalesce(c.observed_by, []) + 'http_probe' END,
+                                c.updated_at = datetime()
+                            """,
+                            cert_key=cert_key, user_id=user_id, project_id=project_id, props=cert_props
+                        )
+                        stats["certificates_created"] += 1
+
+                        # Reconcile a pre-migration 'legacy:'-keyed duplicate of THIS
+                        # cert. Scoped to recon-owned rows: matching on subject_cn
+                        # alone deleted a GVM certificate that merely shared a
+                        # common name, which is the cross-source data loss Phase
+                        # 0.3 exists to prevent.
                         if subject_cn:
-                            # Build certificate properties
-                            cert_props = {
-                                "subject_cn": subject_cn,
-                                "user_id": user_id,
-                                "project_id": project_id,
-                                "issuer": ", ".join(cert_data.get("issuer", [])) if isinstance(cert_data.get("issuer"), list) else cert_data.get("issuer"),
-                                "not_before": cert_data.get("not_before"),
-                                "not_after": cert_data.get("not_after"),
-                                "san": cert_data.get("san", []),  # Subject Alternative Names as list
-                                "cipher": tls_data.get("cipher"),
-                                "tls_version": tls_data.get("version"),
-                                "source": "http_probe"
-                            }
-                            
-                            # Remove None values
-                            cert_props = {k: v for k, v in cert_props.items() if v is not None}
-                            
-                            # Create Certificate node (unique by subject_cn + project_id)
                             session.run(
                                 """
-                                MERGE (c:Certificate {subject_cn: $subject_cn, user_id: $user_id, project_id: $project_id})
-                                SET c += $props,
-                                    c.updated_at = datetime()
+                                MATCH (old:Certificate {subject_cn: $subject_cn, user_id: $user_id, project_id: $project_id})
+                                WHERE old.cert_key STARTS WITH 'legacy:'
+                                  AND NOT coalesce(old.source, '') IN $non_recon
+                                DETACH DELETE old
                                 """,
-                                subject_cn=subject_cn, user_id=user_id, project_id=project_id, props=cert_props
+                                subject_cn=subject_cn, user_id=user_id, project_id=project_id,
+                                non_recon=list(NON_RECON_SOURCES)
                             )
-                            stats["certificates_created"] += 1
-                            
-                            # Create relationship: Endpoint -[:HAS_CERTIFICATE]-> Certificate
-                            # (Patch D: certificates are observed per-path-response, attach to Endpoint)
-                            session.run(
-                                """
-                                MATCH (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url, user_id: $user_id, project_id: $project_id})
-                                MATCH (c:Certificate {subject_cn: $subject_cn, user_id: $user_id, project_id: $project_id})
-                                MERGE (e)-[:HAS_CERTIFICATE]->(c)
-                                """,
-                                path=path, base_url=base_url, subject_cn=subject_cn,
-                                project_id=project_id, user_id=user_id
-                            )
-                            stats["relationships_created"] += 1
+
+                        # BaseURL -[:HAS_CERTIFICATE]-> Certificate: the documented
+                        # anchor (a cert is presented per host:port, not per path).
+                        session.run(
+                            """
+                            MATCH (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
+                            MATCH (c:Certificate {cert_key: $cert_key, user_id: $user_id, project_id: $project_id})
+                            MERGE (u)-[:HAS_CERTIFICATE]->(c)
+                            """,
+                            base_url=base_url, cert_key=cert_key,
+                            project_id=project_id, user_id=user_id
+                        )
+                        stats["relationships_created"] += 1
 
                     # Create relationship: Service -[:SERVES_URL]-> BaseURL
                     # BaseURLs are served by HTTP/HTTPS services running on ports

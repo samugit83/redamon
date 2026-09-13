@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   resolve: vi.fn(),
   capture: vi.fn(),
   load: vi.fn(),
+  describeWriters: vi.fn(),
 }))
 
 vi.mock('@/lib/access', () => ({
@@ -39,6 +40,9 @@ vi.mock('@/lib/scanSnapshot', async orig => ({
   captureGraphSnapshot: (...a: unknown[]) => h.capture(...a),
   loadSnapshot: (...a: unknown[]) => h.load(...a),
 }))
+vi.mock('@/lib/graphWriters', () => ({
+  describeLiveGraphWriters: (...a: unknown[]) => h.describeWriters(...a),
+}))
 
 import { GET } from './route'
 
@@ -58,6 +62,7 @@ const snap = (address: string) => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  h.describeWriters.mockResolvedValue(null)
   h.requireEff.mockResolvedValue({ userId: 'owner' })
   h.requireProjectAccess.mockResolvedValue({ project: { id: 'p1', userId: 'owner' } })
   h.resolve.mockImplementation(async (_pid: string, sel: string | null) =>
@@ -141,5 +146,26 @@ describe('payload sourcing', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.totals).toMatchObject({ added: 0, removed: 0, changed: 0 })
+  })
+})
+
+describe('capturing the live graph waits for whoever is writing it', () => {
+  // This route had no guard at all (X15). Capturing the live graph while
+  // something is rewriting it produces a comparison against a state that never
+  // existed, which is worse than refusing: the operator believes the diff.
+  test('a live triage run refuses the capture rather than diffing mid-write', async () => {
+    h.describeWriters.mockResolvedValue('a triage run is in progress')
+    const res = await GET(req(''), params('p1'))
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ graphBusy: true })
+    expect(h.capture).not.toHaveBeenCalled()
+  })
+
+  test('comparing two stored snapshots does not need the live graph at all', async () => {
+    h.describeWriters.mockResolvedValue('a full recon scan is running')
+    h.resolve.mockResolvedValue(PAST)
+    h.load.mockResolvedValue(snap('10.0.0.1'))
+    const res = await GET(req('from=v1&to=v1'), params('p1'))
+    expect(res.status).toBe(200)
   })
 })

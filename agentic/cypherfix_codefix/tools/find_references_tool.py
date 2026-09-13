@@ -1,6 +1,7 @@
 """FindReferences tool: find all usages of a symbol."""
 
 import logging
+from .repo_paths import RepoPathError, resolve_in_repo
 from .symbols_tool import EXT_TO_LANG, _get_parser, DEFINITION_TYPES
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,10 @@ SKIP_DIRS = {'.git', 'node_modules', 'vendor', '__pycache__', '.tox', 'venv', '.
 async def github_find_references(state, symbol: str, file_path: str = None) -> str:
     """Find all usages of a symbol."""
     if file_path:
-        files = [state.repo_path / file_path]
+        try:
+            files = [resolve_in_repo(state.repo_path, file_path, allow_root=False)]
+        except RepoPathError as exc:
+            return f"Error: {exc}"
     else:
         files = []
         for ext in EXT_TO_LANG:

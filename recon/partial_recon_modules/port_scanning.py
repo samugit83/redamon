@@ -332,7 +332,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                             for ip_addr in user_ip_addrs:
                                 session.run(
                                     """
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(i)
                                     """,
@@ -669,7 +669,7 @@ def run_nmap(config: dict) -> None:
                             for ip_addr in user_ip_addrs:
                                 session.run(
                                     """
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(i)
                                     """,

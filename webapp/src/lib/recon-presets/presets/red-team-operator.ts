@@ -120,6 +120,7 @@ Red team operators running authorized engagements where some active probing is a
     httpxProbeTlsGrab: false,
     httpxProbeFavicon: false,
     httpxProbeJarm: false,
+    tlsxProbeJarm: false,       // OPSEC: JAR/JA3 add ~10 handshakes/target
     httpxProbeAsn: false,
     httpxProbeCdn: false,
     httpxProbeHash: '',

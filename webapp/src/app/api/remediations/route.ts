@@ -3,6 +3,8 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 
+const SORTABLE_FIELDS = new Set(['priority', 'severity', 'createdAt', 'updatedAt'])
+
 // GET /api/remediations?projectId=X - List remediations for project.
 // Cypherfix reads/writes remediations with X-Internal-Key (carve-out); browser
 // callers may only reach a project they (effectively) own.
@@ -27,8 +29,17 @@ export async function GET(request: NextRequest) {
 
     const status = searchParams.get('status')
     const severity = searchParams.get('severity')
-    const sort = searchParams.get('sort') || 'priority'
-    const order = (searchParams.get('order') || 'asc') as 'asc' | 'desc'
+    // `sort` went straight into orderBy, so any column name in the query string
+    // became an ordering key - including ones a caller can use to probe values.
+    const requestedSort = searchParams.get('sort') || 'priority'
+    if (!SORTABLE_FIELDS.has(requestedSort)) {
+      return NextResponse.json(
+        { error: `Cannot sort by: ${requestedSort}` },
+        { status: 400 }
+      )
+    }
+    const sort = requestedSort
+    const order = (searchParams.get('order') === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc'
 
     const where: Record<string, unknown> = { projectId }
     if (status) where.status = status

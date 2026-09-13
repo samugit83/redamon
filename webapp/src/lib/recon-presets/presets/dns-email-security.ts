@@ -81,6 +81,7 @@ Security teams auditing email spoofing defenses (SPF, DMARC, DKIM), DNS administ
 
     // --- httpx: disabled ---
     httpxEnabled: false,
+    tlsxEnabled: false,       // no active probing in this preset (tlsx defaults on)
 
     // --- Wappalyzer: disabled ---
     wappalyzerEnabled: false,

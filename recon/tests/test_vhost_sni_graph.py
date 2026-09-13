@@ -279,7 +279,7 @@ class TestVhostSniGraphMixin(unittest.TestCase):
         with self.client.driver.session() as session:
             rec = session.run(
                 """
-                MATCH (s:Subdomain {name: 'hidden.example.com', user_id: $uid, project_id: $pid})-[:HAS_BASEURL]->(b:BaseURL)
+                MATCH (s:Subdomain {name: 'hidden.example.com', user_id: $uid, project_id: $pid})-[:HAS_BASE_URL]->(b:BaseURL)
                 RETURN b
                 """,
                 uid=self.uid, pid=self.pid,

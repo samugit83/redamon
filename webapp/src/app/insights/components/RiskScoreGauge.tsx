@@ -5,6 +5,7 @@ import { RadialBarChart, RadialBar, ResponsiveContainer, PolarAngleAxis } from '
 import { useTheme } from '@/hooks/useTheme'
 import { ChartCard } from './ChartCard'
 import type { VulnerabilityData, AttackSurfaceData, GraphOverviewData } from '../types'
+import { projectRisk, type RiskFinding } from '@/lib/projectRisk'
 
 interface RiskScoreGaugeProps {
   vulnData: VulnerabilityData | undefined
@@ -12,6 +13,8 @@ interface RiskScoreGaugeProps {
   graphData: GraphOverviewData | undefined
   exploitSuccessCount: number
   chainFindingsBySeverity: { severity: string; count: number }[] | undefined
+  /** Per-finding risks from the last triage run. Empty until one has run. */
+  triageRisks: RiskFinding[] | undefined
   isLoading: boolean
 }
 
@@ -41,10 +44,25 @@ function scoreLabel(score: number): string {
   return 'Minimal'
 }
 
-export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSuccessCount, chainFindingsBySeverity, isLoading }: RiskScoreGaugeProps) {
+export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSuccessCount, chainFindingsBySeverity, triageRisks, isLoading }: RiskScoreGaugeProps) {
   useTheme()
 
   const { score, color, label } = useMemo(() => {
+    // K15: when a triage run has produced per-finding risks, the project's
+    // risk is the chance at least one of its worst findings gets exploited.
+    // The weighted sum below is kept ONLY as the fallback for a project nobody
+    // has triaged: it adds a term per finding, so it grew with the SIZE of a
+    // project as much as with its exposure, and scanning more hosts raised it
+    // even when every new finding was a missing header.
+    const measured = projectRisk(triageRisks ?? [])
+    if (!measured.unmeasured) {
+      return {
+        score: measured.score,
+        color: scoreColor(measured.score),
+        label: measured.label,
+      }
+    }
+
     if (!vulnData) return { score: 0, color: '#22c55e', label: 'N/A' }
 
     const vulnScore = (vulnData.severityDistribution || []).reduce(
@@ -97,7 +115,7 @@ export function RiskScoreGauge({ vulnData, surfaceData, graphData, exploitSucces
       color: scoreColor(normalized),
       label: scoreLabel(normalized),
     }
-  }, [vulnData, surfaceData, graphData, exploitSuccessCount, chainFindingsBySeverity])
+  }, [vulnData, surfaceData, graphData, exploitSuccessCount, chainFindingsBySeverity, triageRisks])
 
   const isEmpty = !vulnData
 

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireProjectOwner, callGraphTriage } from '@/lib/triageClient'
 
-const VALID = ['confirmed', 'likely_noise', 'needs_verification', 'unreviewed']
+// `needs_verification` is gone: the old classifier answered it for almost
+// everything, so it meant nothing. The review's `unclear` replaced it, and that
+// is an AI verdict rather than a status a person sets.
+const VALID = ['confirmed', 'likely_noise', 'unreviewed']
 
 /**
  * POST /api/triage/verdict - record the operator's own judgement on a finding.

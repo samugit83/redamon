@@ -195,6 +195,17 @@ describe('/api/analytics/redzone/sharedInfra', () => {
     expect(runCalls[2].cypher).toMatch(/MATCH \(ip:IP \{project_id: \$pid\}\)/)
   })
 
+  // Two different certificates can carry the same subject_cn (a re-issue, or two
+  // wildcard certs from different CAs). Keying the cluster on subject_cn collapses
+  // them into one row and hides the second one's issuer/expiry.
+  test('cert cluster keys on cert_key, never on subject_cn', async () => {
+    runReturn = []
+    await sharedInfraRoute.GET(makeRequest('p1'))
+    const certCypher = runCalls[0].cypher
+    expect(certCypher).toMatch(/coalesce\(cert\.cert_key, toString\(id\(cert\)\)\) AS clusterKey/)
+    expect(certCypher).not.toMatch(/cert\.subject_cn[^\n]*AS clusterKey/)
+  })
+
   test('each cluster query enforces hostCount >= 2', async () => {
     await sharedInfraRoute.GET(makeRequest('p1'))
     for (const call of runCalls) {

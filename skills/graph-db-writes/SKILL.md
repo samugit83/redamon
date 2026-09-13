@@ -47,6 +47,22 @@ graph-write rules it depends on.
 - **NEVER collect a field in a tool and not write it to the graph.** Every field
   in the tool's output dict must land on a node property or relationship, or it is
   silent data loss. If it fits no node, map it to the closest property or say why it is dropped.
+- **NEVER delete a finding a person has touched, and NEVER clear findings up
+  front.** A scan MERGEs its findings (which refreshes `updated_at`) and
+  afterwards prunes the ones it did not touch - ingest-then-prune, never
+  clear-then-ingest. A half-failed scan that reported nothing would otherwise
+  empty the project, so the CALLER decides whether to prune and only does so
+  after an ingest that actually produced findings. Muted nodes and ones carrying
+  `triage_source = 'human'` are never deleted, only stamped `stale_since`: they
+  hold an operator's mute, verdict and the fix items written against them.
+  Reference: `prune_unseen_findings` in
+  [graph_db/mixins/base_mixin.py](../../graph_db/mixins/base_mixin.py), and the
+  four clears that spare them.
+- **NEVER write an unscoped `MATCH` for an entity node.** Uniqueness is the
+  `(id, user_id, project_id)` triple, so a natural id is NOT unique across the
+  database and `MATCH (n {id: $id})` can read or write another project's node.
+  Every read and write carries `user_id`/`project_id`; agent-facing queries go
+  through `scope_query`, never `inject_tenant_filter` alone.
 - **ALWAYS reuse an existing node label before inventing one.** Discovered
   hostnames are `Subdomain`, not a new label. Check [docs/readmes/GRAPH.SCHEMA.md](../../docs/readmes/GRAPH.SCHEMA.md) first.
 - **ALWAYS sync the schema when you add a label / relationship / property.** Update

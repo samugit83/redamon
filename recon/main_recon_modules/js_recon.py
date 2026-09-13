@@ -1041,14 +1041,16 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         if new_subs:
             print(f"[+][JsRecon] Discovered {len(new_subs)} new in-scope subdomains from JS")
-            # Merge back into combined_result (Uncover pattern)
-            dns_data = combined_result.setdefault('dns', {})
-            existing_subs = dns_data.setdefault('subdomains', [])
-            for sub in new_subs:
-                existing_subs.append({
-                    'subdomain': sub,
-                    'source': 'js_recon',
-                })
+            # dns.subdomains is a DICT in a full domain run; the old bare
+            # `.append()` raised AttributeError inside run_js_recon, so the whole
+            # call aborted and EVERY js_recon finding (secrets included) was
+            # silently discarded whenever it found a new subdomain. Route through
+            # the scope-safe dict merge instead.
+            from recon.helpers.target_helpers import merge_discovered_hostnames
+            merge_discovered_hostnames(
+                combined_result, new_subs, source='js_recon',
+                root_domain=root_domain, settings=settings,
+            )
 
         # 6. Keep matched_text in output for copy-to-clipboard in the UI
         # The redacted_value is still used for display; matched_text holds the full secret

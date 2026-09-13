@@ -41,10 +41,30 @@ from recon.helpers import (
     normalize_subjack_result,
     parse_nuclei_finding,
     provider_from_cname,
+    provider_from_cert,
     pull_nuclei_docker_image,
     resolve_cname_target,
     score_finding,
 )
+
+
+def _cert_names_host(host: str, subject_cn, sans) -> bool:
+    """True if the certificate names `host` (CN or SAN, one wildcard level)."""
+    if not host:
+        return False
+    host = host.strip().lower().rstrip(".")
+    names = ([subject_cn] if subject_cn else []) + list(sans or [])
+    for raw in names:
+        if not isinstance(raw, str) or not raw:
+            continue
+        name = raw.strip().lower().rstrip(".")
+        if name == host:
+            return True
+        if name.startswith("*."):
+            suffix = name[1:]  # ".example.com"
+            if host.endswith(suffix) and host[: -len(suffix)].count(".") == 0:
+                return True
+    return False
 
 
 # =============================================================================
@@ -240,6 +260,53 @@ def run_subdomain_takeover(
                     print(f"[!][Takeover] CNAME probe failed for {cname}: {e}")
 
         # --------------------------------------------------------------
+        # 3a2. Certificate-derived signals (Phase 3)
+        # --------------------------------------------------------------
+        # Gated on TAKEOVER_CERT_VALIDATION_ENABLED (mirrors the CNAME toggle
+        # above). Reads whatever get_cert_for returns: the 443 cert httpx
+        # captured with tlsx off, plus non-HTTP-port / bare-IP certs with tlsx
+        # on. A certificate answers directly two facts the module otherwise
+        # reconstructs from weak signals -- and works with NO CNAME at all.
+        cert_validation = bool(settings.get("TAKEOVER_CERT_VALIDATION_ENABLED", True))
+        if cert_validation:
+            from recon.helpers.cert_access import get_cert_for
+            for n in normalized:
+                host = n.get("hostname")
+                if not host:
+                    continue
+                cert = get_cert_for(recon_data, host, 443)
+                if cert is None:
+                    # No certificate data collected for this host: unknown, NOT
+                    # evidence of a dangling target. Leave every cert signal unset
+                    # so an unprobed host is not falsely promoted.
+                    continue
+                if cert.get("probe_status") is False:
+                    # A 443 handshake that was attempted and FAILED entirely is
+                    # consistent with a dangling target (positive signal).
+                    n["cert_absent"] = True
+                    continue
+                sans = [s for s in (cert.get("san") or []) if isinstance(s, str)]
+                n["cert_issuer"] = cert.get("issuer")
+                n["cert_subject_cn"] = cert.get("subject_cn")
+                n["cert_sans"] = sans
+                n["cert_expired"] = bool(cert.get("expired"))
+                n["cert_self_signed"] = bool(cert.get("self_signed"))
+                n["cert_mismatched"] = bool(cert.get("mismatched"))
+                n["cert_name_match"] = _cert_names_host(host, cert.get("subject_cn"), sans)
+                cert_prov = provider_from_cert(cert.get("issuer"), sans)
+                if cert_prov:
+                    n["cert_provider"] = cert_prov
+                    current = (n.get("takeover_provider") or "").lower()
+                    if current in ("", "unknown", "none"):
+                        n["takeover_provider"] = cert_prov
+                    elif cert_prov != current:
+                        n["cert_provider_mismatch"] = True
+                    # The edge presents its own default cert (identifies a
+                    # provider) but does NOT name this host -> claimable.
+                    if not n["cert_name_match"]:
+                        n["cert_provider_default"] = True
+
+        # --------------------------------------------------------------
         # 3b. AI cascade: WAF-block disambiguation
         # --------------------------------------------------------------
         # Subjack/Nuclei body fingerprints collide with WAF "no host" pages.
@@ -249,11 +316,22 @@ def run_subdomain_takeover(
         # ai_waf_likely back into score_finding() which subtracts 40 points
         # so AI-flagged collisions land in manual_review.
         if ai_classifier_enabled and ai_pipeline_model:
-            if normalized:
-                print(f"[*][Takeover-AI] Disambiguating {len(normalized)} candidate(s) via LLM cascade")
+            # Skip the LLM for findings the certificate already settles: a clean
+            # cert naming this host proves the SaaS edge serves the legit
+            # customer, so the WAF-collision question is moot. A handshake is
+            # cheaper and deterministic than an LLM call.
+            to_disambiguate = [
+                n for n in normalized
+                if not (n.get("cert_name_match") and not (n.get("cert_expired")
+                        or n.get("cert_self_signed") or n.get("cert_mismatched")))
+            ]
+            if to_disambiguate:
+                settled = len(normalized) - len(to_disambiguate)
+                print(f"[*][Takeover-AI] Disambiguating {len(to_disambiguate)} candidate(s) via LLM cascade"
+                      + (f" ({settled} settled by certificate)" if settled else ""))
                 try:
                     _apply_ai_waf_disambiguation(
-                        findings=normalized,
+                        findings=to_disambiguate,
                         model=ai_pipeline_model,
                         user_id=os.environ.get("USER_ID", ""),
                         project_id=os.environ.get("PROJECT_ID", ""),
@@ -262,6 +340,12 @@ def run_subdomain_takeover(
                     # Never let AI failure abort the takeover scan -- emit warning
                     # and continue with the static findings.
                     print(f"[!][Takeover-AI] Cascade pass failed: {e}")
+            elif normalized:
+                # Candidates exist but a clean certificate already settled every
+                # one of them. Saying "no candidates" here would misreport a
+                # working cost optimisation as an empty scan.
+                print(f"[*][Takeover-AI] All {len(normalized)} candidate(s) settled by "
+                      "certificate evidence -- no LLM calls needed")
             else:
                 # Cascade is on but Subjack/Nuclei produced zero candidates,
                 # so there's nothing for the LLM to classify. Log explicitly

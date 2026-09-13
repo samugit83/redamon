@@ -62,7 +62,9 @@ export async function requireProjectOwner(
   return { userId: project.userId, projectId: project.id }
 }
 
-export type TriageOp = 'mute' | 'unmute' | 'list_muted' | 'list_findings' | 'human_verdict'
+export type TriageOp =
+  | 'mute' | 'unmute' | 'list_muted' | 'list_findings' | 'human_verdict'
+  | 'preflight' | 'stop_run'
 
 /** Call the agent's internal `/graph/triage`, where the graph writes live. */
 export async function callGraphTriage(

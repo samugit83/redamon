@@ -686,6 +686,17 @@ def run_ai_surface_recon(combined_result: dict, output_file: Path = None,
     def _analyze(base_url: str, cand: dict) -> tuple:
         session = requests.Session()
         session.headers.update({"User-Agent": ua})
+        # Authenticated-session profile: attach the operator's auth headers when
+        # this base_url is in scope (no-op otherwise). AI endpoints frequently sit
+        # behind login; without this they answer 401 and look absent.
+        try:
+            from recon.helpers.auth_profile import auth_header_lines as _auth_lines
+            _host = urlparse(base_url).hostname or ""
+            for _line in _auth_lines(settings.get("AUTH_PROFILE"), _host, settings):
+                _name, _val = _line.split(":", 1)
+                session.headers[_name.strip()] = _val.strip()
+        except Exception:
+            pass
         rec: dict = {}
         local_findings: list = []
         try:

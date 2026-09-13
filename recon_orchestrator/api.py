@@ -816,6 +816,9 @@ async def get_defaults():
             # Origin-IP Discovery passive-DNS credentials (per-user, never a default)
             'SECURITYTRAILS_API_KEY',
             'VIEWDNS_API_KEY',
+            # Authenticated-session profile: a per-project secret, never a
+            # default and never in the frontend defaults payload.
+            'AUTH_PROFILE',
         }
 
         # Convert snake_case keys to camelCase for frontend

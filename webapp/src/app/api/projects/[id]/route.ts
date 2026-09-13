@@ -10,6 +10,8 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
+import { toAuthProfileMetadata } from '@/lib/authProfile'
+import { callGraphTriage } from '@/lib/triageClient'
 
 // Path to output directories (fallback for local deletion)
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/recon/output'
@@ -33,7 +35,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // every browser caller may only read a project owned by their effective user
     // (admin only while simulating that user). Closes the BOLA where any
     // logged-in user could read another user's project by id (S15/E15).
-    if (!isInternalRequest(request) && !isScannerRequest(request)) {
+    const isServiceCaller = isInternalRequest(request) || isScannerRequest(request)
+    if (!isServiceCaller) {
       const eff = await requireEffectiveUser()
       if (eff instanceof NextResponse) return eff
       const access = await requireProjectAccess(eff, id)
@@ -49,7 +52,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             name: true,
             email: true
           }
-        }
+        },
+        authProfile: true,
       }
     })
 
@@ -60,8 +64,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    // Exclude binary document data from regular responses (use /roe/download instead)
-    const { roeDocumentData: _binary, ...projectWithoutBinary } = project
+    // Exclude binary document data from regular responses (use /roe/download instead).
+    // The auth profile carries the recorded/entered session: recon and the agent
+    // get it whole, a browser only ever gets metadata + hasValue (write-only UI).
+    const { roeDocumentData: _binary, authProfile, ...rest } = project
+    const projectWithoutBinary = {
+      ...rest,
+      authProfile: isServiceCaller ? authProfile : toAuthProfileMetadata(authProfile),
+    }
 
     // If ?includeSkillContent=true, fetch enabled user skill contents for agent consumption
     // Skills default to ON when not present in config.user (matching frontend behaviour).
@@ -123,8 +133,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const body = await request.json()
 
-    // Remove fields that shouldn't be updated directly
-    const { userId, createdAt, updatedAt, user, ...updateData } = body
+    // Remove fields that shouldn't be updated directly. authProfile comes back in
+    // the whole-row PUT the form sends; it is a relation written only by its own
+    // route, and passing it here would make Prisma reject the update.
+    const { userId, createdAt, updatedAt, user, authProfile: _authProfile, ...updateData } = body
 
     const openapiError = validateOpenApiSettings(updateData)
     if (openapiError) {
@@ -345,6 +357,17 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       })
     } catch (e) {
       console.warn('Could not cancel queued jobs before project delete:', e)
+    }
+
+    // A triage run lives in the agent's memory. Deleting the project without
+    // telling it leaves the run working against a project that no longer
+    // exists, for as long as it takes the next heartbeat to fail (X12).
+    // Best-effort: an unreachable agent must not block the delete, because the
+    // run's publish and heartbeat both fail closed on the missing project.
+    try {
+      await callGraphTriage('stop_run', { userId: eff.userId, projectId: id })
+    } catch (e) {
+      console.warn('Could not stop a triage run before project delete:', e)
     }
     // Best-effort stop of each PROJECT-LEVEL scan container. Run-based scans
     // (partial_recon, ai_attack) are keyed by run-id, not project, so they are not

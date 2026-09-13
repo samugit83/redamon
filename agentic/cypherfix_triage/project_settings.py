@@ -27,9 +27,9 @@ async def load_cypherfix_settings(project_id: str) -> dict:
                 "llm_model": project.get("cypherfixLlmModel", "") or project.get("agentOpenaiModel", ""),
                 # Triage classification. Defaults mirror the Prisma @defaults so
                 # a project saved before these fields existed behaves the same.
-                "triageConfidenceThreshold": project.get("triageConfidenceThreshold", 0.7),
-                "triageAutoMute": project.get("triageAutoMute", False),
-                "triageTopNForLlm": project.get("triageTopNForLlm", 40),
+                # How many findings the AI review may look at. 0 means no
+                # review at all, and the board is still fully ranked.
+                "triageReviewBudget": project.get("triageReviewBudget", 150),
             }
 
             # Fetch user LLM providers for key resolution

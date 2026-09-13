@@ -135,7 +135,10 @@ class AiSurfaceReconMixin:
                                    user_id: $uid, project_id: $pid})
                 SET e.user_id = $uid, e.project_id = $pid,
                     e.source = COALESCE(e.source, 'ai_surface_recon'),
-                    e.ai_interface_type        = COALESCE('mcp', e.ai_interface_type),
+                    // K17: the arguments were the wrong way round. COALESCE's
+                    // first argument is a literal, so it always won and the
+                    // existing value was never kept.
+                    e.ai_interface_type        = COALESCE(e.ai_interface_type, 'mcp'),
                     e.ai_mcp_server_name       = COALESCE($name, e.ai_mcp_server_name),
                     e.ai_mcp_server_version    = COALESCE($ver, e.ai_mcp_server_version),
                     e.ai_mcp_protocol_version  = COALESCE($proto, e.ai_mcp_protocol_version),
@@ -229,10 +232,16 @@ class AiSurfaceReconMixin:
             "ai_atlas_technique": finding.get("atlas_technique"),
             "ai_payload_class": "mcp_static",
         }
+        # K17: `SET v += $props` writes every key, and a None value REMOVES that
+        # property in Cypher. A rescan that could not read, say, the evidence
+        # therefore deleted the evidence a previous scan had captured. Dropping
+        # the Nones turns "I did not see it" back into "leave it alone".
+        props = {k: v for k, v in props.items() if v is not None}
         # Create the Vulnerability, then attach to the most-specific existing node.
         session.run(
             """
-            MERGE (v:Vulnerability {id: $id})
+            MERGE (v:Vulnerability {id: $id, user_id: $props.user_id,
+                                    project_id: $props.project_id})
             ON CREATE SET v.first_seen = datetime()
             SET v += $props, v.updated_at = datetime()
             """,
@@ -247,7 +256,7 @@ class AiSurfaceReconMixin:
         # Try Endpoint (POST then GET), then BaseURL, then Subdomain, then Domain
         linked = session.run(
             """
-            MATCH (v:Vulnerability {id: $id})
+            MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
             OPTIONAL MATCH (e:Endpoint {baseurl: $baseurl, user_id: $uid, project_id: $pid})
               WHERE e.path = $path
             // Prefer the typed endpoint (e.g. POST /mcp with ai_interface_type)
@@ -263,7 +272,7 @@ class AiSurfaceReconMixin:
         if not (linked and linked.get("linked")):
             session.run(
                 """
-                MATCH (v:Vulnerability {id: $id})
+                MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                 OPTIONAL MATCH (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
                 OPTIONAL MATCH (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
                 OPTIONAL MATCH (d:Domain {name: $host, user_id: $uid, project_id: $pid})

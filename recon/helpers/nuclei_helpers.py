@@ -63,6 +63,7 @@ def build_nuclei_command(
     max_redirects: int = 0,
     interactsh: bool = True,
     force_dast_pass: bool = False,
+    auth_headers: List[str] = None,
 ) -> List[str]:
     """
     Build nuclei Docker command with all configured parameters.
@@ -224,15 +225,38 @@ def build_nuclei_command(
     if system_resolvers:
         cmd.append("-system-resolvers")
     
+    # Nuclei applies -H headers to EVERY request it makes, and two of its
+    # features send requests to hosts that are not in the target list, so
+    # merge_auth_headers' scope check never sees them. Carrying a session into
+    # either one hands the operator's credentials to a third party.
+    _has_auth = bool(auth_headers)
+
     # Follow redirects
     if follow_redirects:
-        cmd.extend(["-follow-redirects"])
+        # A cross-host redirect (an SSO hop, an attacker-controlled Location)
+        # re-sends the -H session to whatever host it names. -follow-host-redirects
+        # keeps redirect coverage but confines it to the host we scope-checked.
+        cmd.extend(["-follow-host-redirects" if _has_auth else "-follow-redirects"])
         if max_redirects > 0:
             cmd.extend(["-max-redirects", str(max_redirects)])
-    
+
     # Interactsh (OOB testing)
     if not interactsh:
         cmd.append("-no-interactsh")
+    elif _has_auth:
+        # OAST callbacks go to a public third-party collector (interact.sh /
+        # oast.fun and friends) that can never be in a project's scope, and the
+        # session rides along on the polling requests. Losing blind-OOB coverage
+        # beats disclosing the session, so OAST is dropped for authenticated runs.
+        cmd.append("-no-interactsh")
+        print("[!][Nuclei] OAST disabled: an authenticated session is attached and "
+              "interactsh callbacks would carry it to a third-party host.")
+
+    # Authenticated-session profile: real target headers on the tool's own header
+    # path, kept entirely separate from the X-Redamon-Ctx branch below. Already
+    # scope-checked and sanitized by the caller (merge_auth_headers).
+    for header in (auth_headers or []):
+        cmd.extend(["-H", header])
 
     # HTTP traffic capture (Phase 1): route through the capture proxy when
     # enabled + reachable; tag added ONLY in this branch (§20.2 no-leak).

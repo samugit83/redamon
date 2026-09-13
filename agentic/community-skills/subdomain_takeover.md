@@ -68,9 +68,9 @@ The goal of Phase 1 is to land in Phase 2 with a small, high-confidence list of 
    WHERE d.project_id = $project_id
    OPTIONAL MATCH (s)-[:HAS_DNS_RECORD]->(r:DNSRecord)
    OPTIONAL MATCH (s)-[:HAS_BASE_URL]->(b:BaseURL)
-   OPTIONAL MATCH (s)-[:HAS_CERTIFICATE]->(c:Certificate)
+   OPTIONAL MATCH (b)-[:HAS_CERTIFICATE]->(c:Certificate)
    RETURN s.name, s.ip, collect(DISTINCT r.type + ':' + r.value) AS records,
-          collect(DISTINCT b.url) AS urls, collect(DISTINCT c.subject_alt_names) AS sans
+          collect(DISTINCT b.url) AS urls, collect(DISTINCT c.san) AS sans
    ```
    If the graph already has `DNSRecord` nodes, jump directly to step 4. If it does not, run step 3 first.
 

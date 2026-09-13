@@ -42,6 +42,14 @@ class TestRoundTrip(unittest.TestCase):
         token = ctx.sign_tag(payload, INTERNAL)
         self.assertEqual(ctx.verify_tag(token, KEYS), payload)
 
+    def test_operator_sign_verify(self):
+        # Operator-recording tags are minted by the webapp with INTERNAL_API_KEY.
+        payload = {"source": "operator", "project_id": "p1", "user_id": "u1", "session_id": "rec-1"}
+        token = ctx.sign_tag(payload, INTERNAL)
+        keys = {"recon": SCANNER, "agent": INTERNAL, "operator": INTERNAL}
+        self.assertEqual(ctx.verify_tag(token, keys), payload)
+        self.assertIn("operator", ctx.VALID_SOURCES)
+
     def test_none_fields_are_dropped(self):
         payload = dict(RECON_PAYLOAD, session_id=None, member_id=None)
         out = ctx.verify_tag(ctx.sign_tag(payload, SCANNER), KEYS)

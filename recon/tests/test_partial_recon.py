@@ -5597,3 +5597,73 @@ class TestRunOriginDiscovery(unittest.TestCase):
         by_url = captured["recon_data"]["http_probe"]["by_url"]
         # only the graph-sourced fronted host is present; no IP became a fronted entry
         self.assertNotIn("https://8.8.8.8", by_url)
+
+
+class TestRunTlsx(unittest.TestCase):
+    """Partial recon for the TLS Certificate Grab.
+
+    The grab reads its targets out of the GRAPH rather than from DNS, which is
+    the difference that broke it in production: IP mode leaves a Subdomain named
+    after the dashed IP for a host with no PTR record, the graph query hands that
+    name back, and tlsx cannot resolve it. Every handshake failed with "no
+    address found for host" and the run then stamped tls_probe_failed over the
+    enrichment a full scan had written correctly.
+    """
+
+    IP = "192.88.98.10"
+    MOCK_HOST = "192-88-98-10"
+
+    def _run(self, hostnames, ports=(993, 636)):
+        """Run run_tlsx against a graph whose IP carries `hostnames`."""
+        import recon.partial_recon_modules.tlsx_scanning as mod
+
+        captured = {}
+
+        def fake_enrich(combined_result, settings=None):
+            from recon.main_recon_modules.tls_scan import _build_tlsx_targets
+            lines, _meta = _build_tlsx_targets(combined_result, settings or {})
+            captured["targets"] = lines
+            combined_result["tlsx"] = {"by_target": {}, "discovered_hostnames": []}
+            return combined_result
+
+        graph_data = {
+            "domain": "acme.test",
+            "port_scan": {"by_ip": {self.IP: {
+                "ip": self.IP, "hostnames": list(hostnames), "ports": list(ports),
+            }}, "by_host": {}, "ip_to_hostnames": {}, "all_ports": list(ports),
+                "scan_metadata": {}, "summary": {}},
+            "dns": {"domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
+                    "subdomains": {}},
+        }
+
+        mock_client = MagicMock()
+        mock_client.verify_connection.return_value = True
+        mock_client.update_graph_from_tlsx.return_value = {
+            "certificates_created": 0, "relationships_created": 0,
+            "services_enriched": 0, "covers_host_edges": 0, "errors": [],
+        }
+
+        # get_settings and run_tlsx_enrichment are imported INSIDE run_tlsx, so
+        # they are not attributes of this module; patch them at their source.
+        with patch("recon.project_settings.get_settings",
+                   return_value={"TLSX_ENABLED": True}), \
+             patch.object(mod, "_build_port_scan_data_from_graph", return_value=graph_data), \
+             patch("recon.main_recon_modules.tls_scan.run_tlsx_enrichment", fake_enrich), \
+             patch("graph_db.Neo4jClient", return_value=mock_client, create=True):
+            mod.run_tlsx({"domain": "acme.test", "include_graph_targets": True})
+        return captured.get("targets", [])
+
+    def test_the_reverse_dns_placeholder_is_not_sent_as_a_target(self):
+        targets = self._run([self.MOCK_HOST])
+        self.assertNotIn(f"{self.MOCK_HOST}:993", targets,
+                         "tlsx was handed a name that cannot resolve")
+        self.assertIn(f"{self.IP}:993", targets, "the IP itself must be scanned instead")
+
+    def test_a_real_hostname_from_the_graph_is_used_for_sni(self):
+        targets = self._run(["mail.acme.test"])
+        self.assertIn("mail.acme.test:993", targets)
+
+    def test_https_ports_are_excluded_by_default(self):
+        targets = self._run([], ports=(443, 993))
+        self.assertNotIn(f"{self.IP}:443", targets)
+        self.assertIn(f"{self.IP}:993", targets)

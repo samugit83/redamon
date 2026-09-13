@@ -129,6 +129,13 @@ scanners/ai_attack_surface_scan/output/
 *.xml
 *.gnmap
 
+# Stray scan/recon artifacts the MCP servers write into their own dir at runtime
+# (cookie jars, saved response bodies, DNS/fuzz output). Never commit target data.
+mcp/servers/results/
+mcp/servers/notes/
+mcp/servers/interactsh_payload.txt
+mcp/servers/cves.txt
+
 # Log files
 *.log
 /logs/

@@ -27,6 +27,11 @@ _REDACT_PATTERNS = [
     re.compile(r"(?i)(authorization|api[-_]?key|x-api-key|token)\s*[:=]\s*[^\s,;]{6,}"),  # header/kv value
     re.compile(r"https?://[^/\s:@]+:[^/\s@]+@"),                  # user:pass@ in URLs (x-access-token:...@)
     re.compile(r"AKIA[0-9A-Z]{16}"),                             # AWS access key id
+    re.compile(r"tvly-[A-Za-z0-9_\-]{16,}"),                     # Tavily search key
+    re.compile(r"AIza[A-Za-z0-9_\-]{30,}"),                      # Google / Gemini key
+    re.compile(r"xai-[A-Za-z0-9]{20,}"),                         # xAI (Grok) key
+    # ProjectDiscovery Cloud key: what vulnx sends upstream, opaque and long.
+    re.compile(r"(?i)\bpdcp[-_]?(?:api[-_]?)?key\s*[:=]\s*[^\s,;\"']{8,}"),
 ]
 _REDACTED = "[REDACTED]"
 
@@ -44,6 +49,11 @@ def redact_text(text: str) -> str:
     return _redact_text(text)
 
 
+def _format_exc_info(exc_info) -> str:
+    import traceback
+    return "".join(traceback.format_exception(*exc_info)).rstrip("\n")
+
+
 class RedactingFilter(logging.Filter):
     """Rewrite token-shaped substrings in the formatted message + args to
     ``[REDACTED]``. Attached to every handler this module creates."""
@@ -59,6 +69,17 @@ class RedactingFilter(logging.Filter):
                 else:
                     record.args = tuple(_redact_text(a) if isinstance(a, str) else a
                                         for a in record.args)
+            # `logger.exception(...)` puts the provider's own message and the
+            # frames in exc_info, which the formatter appends AFTER msg/args.
+            # Redacting only the message left the traceback in cleartext, which
+            # is exactly where an SDK puts the key it was called with.
+            if record.exc_info:
+                record.exc_text = _redact_text(
+                    record.exc_text or _format_exc_info(record.exc_info)
+                )
+                record.exc_info = None
+            if getattr(record, "stack_info", None):
+                record.stack_info = _redact_text(record.stack_info)
         except Exception:
             # Redaction must never break logging.
             pass

@@ -6,6 +6,7 @@ import logging
 import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 
+from cypherfix_errors import safe_error
 from .orchestrator import CodeFixOrchestrator
 from .state import CodeFixState
 
@@ -57,7 +58,7 @@ class CodeFixStreamingCallback:
             "remediation_id": remediation_id, "status": status, "pr_url": pr_url,
         })
 
-    async def on_error(self, message: str, recoverable: bool = True):
+    async def on_error(self, message: str, recoverable: bool = True, code: str = ""):
         await self._send("error", {"message": message, "recoverable": recoverable})
 
     async def _send(self, msg_type: str, payload: dict):
@@ -134,7 +135,11 @@ async def handle_codefix_websocket(websocket: WebSocket):
                         await orchestrator.run(remediation_id)
                     except Exception as e:
                         logger.exception("CodeFix failed")
-                        await callback.on_error(str(e), recoverable=False)
+                        await callback.on_error(
+                            safe_error("internal_error", codefix=True),
+                            recoverable=False,
+                            code="internal_error",
+                        )
 
                 codefix_task = asyncio.create_task(run_codefix())
 

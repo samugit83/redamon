@@ -7,6 +7,26 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
+// The only fields a client (the CodeFix agent, or the dashboard's Dismiss
+// button) may write. Everything else on a remediation is server-owned: it is
+// produced by a triage run and rewritten by the next one, so accepting it here
+// would let any caller with access to one remediation rewrite its severity,
+// priority, CVE list or target repository - the last of which steers where the
+// CodeFix agent pushes.
+const WRITABLE_FIELDS = new Set([
+  'status',
+  'agentSessionId',
+  'agentNotes',
+  'fileChanges',
+  'fixBranch',
+  'prUrl',
+  'prStatus',
+])
+
+const ALLOWED_STATUS = new Set([
+  'pending', 'in_progress', 'pr_created', 'resolved', 'dismissed', 'no_fix', 'failed',
+])
+
 // A remediation is owned via its parent project. Cypherfix uses X-Internal-Key
 // (carve-out); browser callers must own the remediation's project.
 async function guardRemediation(request: NextRequest, id: string): Promise<NextResponse | null> {
@@ -59,7 +79,29 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const body = await request.json()
 
-    const { projectId, createdAt, updatedAt, project, ...updateData } = body
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Body must be an object' }, { status: 400 })
+    }
+
+    const rejected = Object.keys(body).filter((k) => !WRITABLE_FIELDS.has(k))
+    if (rejected.length > 0) {
+      return NextResponse.json(
+        { error: `Fields not writable: ${rejected.sort().join(', ')}` },
+        { status: 400 }
+      )
+    }
+
+    const updateData = body as Record<string, unknown>
+    if ('status' in updateData && !ALLOWED_STATUS.has(String(updateData.status))) {
+      return NextResponse.json(
+        { error: `Unknown status: ${String(updateData.status)}` },
+        { status: 400 }
+      )
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: 'No fields to update' }, { status: 400 })
+    }
 
     const remediation = await prisma.remediation.update({
       where: { id },

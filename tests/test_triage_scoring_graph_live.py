@@ -95,41 +95,57 @@ class LiveScoreCase(unittest.TestCase):
 
     def test_scores_are_written_and_ranked_worst_first(self):
         self.client.apply_triage_scores(self.uid, self.pid, [
-            {"id": "top", "score": 1850.0, "signals": ["cisa_kev", "dast_confirmed"],
+            {"id": "top", "score": 85.0, "signals": ["cisa_kev", "dast_confirmed"],
              "status": "confirmed", "confidence": 1.0},
             {"id": "mid", "score": 40.0, "signals": ["severity_critical"]},
-        ])
+        ], guard_updated_at=False)
         ordered = [r["id"] for r in self.client.list_triage_findings(self.uid, self.pid)]
         # 'top' has a far higher score than the plain critical 'mid', so a
         # KEV+DAST medium leads a bare critical -- the whole point.
         self.assertEqual(ordered[0], "top")
         self.assertLess(ordered.index("top"), ordered.index("mid"))
         rows = self._scores()
-        self.assertEqual(rows["top"]["triage_priority_score"], 1850.0)
+        self.assertEqual(rows["top"]["triage_priority_score"], 85.0)
         self.assertEqual(rows["top"]["triage_signals"], ["cisa_kev", "dast_confirmed"])
 
     def test_a_human_owned_finding_is_never_overwritten(self):
         result = self.client.apply_triage_scores(self.uid, self.pid, [
-            {"id": "hum", "score": 9999.0, "signals": ["should_not_apply"],
+            {"id": "hum", "score": 99.0, "signals": ["applies_to_measurements"],
              "status": "likely_noise", "confidence": 0.1},
-        ])
+        ], guard_updated_at=False)
+        # Score model v3 (C14): the measurements (score, signals) are facts and
+        # are written even on a human-owned row; the VERDICT is what a person
+        # owns, and that is what must not move.
         self.assertEqual(result["skipped_human"], 1)
-        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["updated"], 1)
         row = self._scores()["hum"]
-        self.assertEqual(row["triage_priority_score"], 1.0)      # unchanged
-        self.assertEqual(row["triage_status"], "confirmed")      # unchanged
+        self.assertEqual(row["triage_priority_score"], 99.0)     # measurement: updated
+        self.assertEqual(row["triage_status"], "confirmed")      # verdict: unchanged
         self.assertEqual(row["triage_source"], "human")
 
     def test_an_ambiguous_rerun_preserves_a_prior_verdict(self):
         # First a decisive write, then a score-only re-run (status omitted).
         self.client.apply_triage_scores(self.uid, self.pid, [
-            {"id": "top", "score": 900.0, "signals": ["cisa_kev"],
-             "status": "confirmed", "confidence": 1.0}])
+            {"id": "top", "score": 90.0, "signals": ["cisa_kev"],
+             "status": "confirmed", "confidence": 1.0}], guard_updated_at=False)
         self.client.apply_triage_scores(self.uid, self.pid, [
-            {"id": "top", "score": 950.0, "signals": ["cisa_kev"]}])  # no status
+            {"id": "top", "score": 95.0, "signals": ["cisa_kev"]}],  # no status
+            guard_updated_at=False)
         row = self._scores()["top"]
-        self.assertEqual(row["triage_priority_score"], 950.0)   # score updated
+        self.assertEqual(row["triage_priority_score"], 95.0)    # score updated
         self.assertEqual(row["triage_status"], "confirmed")     # verdict preserved
+
+    def test_a_never_triaged_finding_gets_its_first_ai_verdict(self):
+        """Regression. `isHuman` was `n.triage_source = 'human'`, which is NULL
+        on a node no run has touched; `NOT NULL` is NULL, so the verdict FOREACH
+        never fired and a fresh project's first run wrote no AI verdicts at all.
+        'mid' has no triage_source in the fixture on purpose."""
+        self.client.apply_triage_scores(self.uid, self.pid, [
+            {"id": "mid", "score": 40.0, "status": "likely_noise", "confidence": 0.8}],
+            guard_updated_at=False)
+        row = self._scores()["mid"]
+        self.assertEqual(row["triage_status"], "likely_noise")
+        self.assertEqual(row["triage_source"], "ai")
 
     def test_another_tenants_id_is_never_written(self):
         with self.driver.session() as s:

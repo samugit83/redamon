@@ -351,3 +351,199 @@ def build_target_urls(
 
     return sorted(url_set)
 
+
+
+# =============================================================================
+# Discovered-hostname feedback (certificate SANs, JS-recon subdomains, ...)
+# =============================================================================
+
+def _is_valid_injected_hostname(hostname: str) -> bool:
+    """Mirror of ``vhost_sni_enum._is_valid_hostname``.
+
+    The ``\\Z`` anchor is load-bearing: Python's ``$`` also matches *before* a
+    trailing newline, and the nuclei / subjack target files are newline
+    delimited, so a newline embedded in a SAN would split one entry into two.
+    """
+    if not hostname or len(hostname) > 253:
+        return False
+    if hostname[-1] == ".":
+        hostname = hostname[:-1]
+    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)\Z", re.IGNORECASE)
+    return all(allowed.match(label) for label in hostname.split("."))
+
+
+def _resolves_to_routable(hostname: str) -> bool:
+    """Resolve-and-check for a SAN-derived name.
+
+    Returns False ONLY when the name resolves to at least one non-routable
+    address (the SSRF / scope-escape case we must drop). An unresolvable name
+    returns True: it is in scope and cannot be an internal pivot; it simply will
+    not be probed if nothing answers.
+    """
+    import socket
+    from recon.main_recon_modules.ip_filter import is_non_routable_ip
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return True
+    for info in infos:
+        try:
+            addr = info[4][0]
+        except (IndexError, TypeError):
+            continue
+        if is_non_routable_ip(addr):
+            return False
+    return True
+
+
+def merge_discovered_hostnames(
+    combined_result: dict,
+    hostnames: list,
+    source: str,
+    root_domain: Optional[str] = None,
+    settings: Optional[dict] = None,
+    max_injected: Optional[int] = None,
+) -> dict:
+    """Merge discovered hostnames into ``dns.subdomains`` (the DICT shape read by
+    ``extract_targets_from_recon``) + ``discovered_external_domains``, mirroring
+    ``domain_recon``'s in-scope / out-of-scope split.
+
+    SECURITY — a certificate SAN list is chosen by the scanned target, so every
+    name here is attacker-influenced. Containment, in order:
+
+      1. Apex-suffix allow-list: keep a name only if it equals ``root_domain`` or
+         ends with ``"." + root_domain``. Every other name is recorded in
+         ``discovered_external_domains`` and never becomes an active-scan target.
+      2. RoE narrowing (``_filter_roe_excluded``) — additive, never sufficient
+         on its own (it is off by default).
+      3. Hostname syntax validation (``\\Z``-anchored; blocks newline injection
+         into the newline-delimited target files).
+      4. Resolve-and-check: drop any name resolving to a non-routable IP.
+      5. Cap the injected count (``max_injected``).
+
+    Fails closed: without ``root_domain`` nothing is injected (names are still
+    recorded as external), because there is no apex to test against — e.g. batch
+    mode, where ``metadata['root_domain']`` is deliberately empty (a joined
+    string once became a literal scan target).
+    """
+    settings = settings or {}
+    result = combined_result
+
+    candidates = []
+    seen = set()
+    for h in hostnames or []:
+        if not isinstance(h, str):
+            continue
+        name = h.strip().lower().lstrip("*.")
+        if name and name not in seen:
+            seen.add(name)
+            candidates.append(name)
+
+    external = result.setdefault("discovered_external_domains", [])
+    existing_external = {e.get("domain") for e in external if isinstance(e, dict)}
+
+    def _record_external(name):
+        if name not in existing_external:
+            external.append({"domain": name, "source": source})
+            existing_external.add(name)
+
+    # Fail closed without an apex to test against.
+    if not root_domain:
+        for name in candidates:
+            _record_external(name)
+        return result
+
+    root_domain = root_domain.strip().lower()
+
+    # 1. Apex-suffix split.
+    in_scope = []
+    for name in candidates:
+        if name == root_domain or name.endswith("." + root_domain):
+            in_scope.append(name)
+        else:
+            _record_external(name)
+
+    # 2. RoE narrowing pass.
+    from recon.helpers.roe_scope import _filter_roe_excluded
+    in_scope = _filter_roe_excluded(in_scope, settings, label="SAN hostname")
+
+    # 3. Syntax validation.
+    in_scope = [n for n in in_scope if _is_valid_injected_hostname(n)]
+
+    # Deterministic order so the cap truncates reproducibly.
+    in_scope = sorted(set(in_scope))
+
+    # 4. Cap BEFORE resolving. Each resolve is a blocking getaddrinfo, and this
+    # runs in GROUP 3.6, ahead of the HTTP probe: resolving every SAN a scan
+    # collected (one multi-SAN cert per host, unbounded) would put an unbounded
+    # number of sequential DNS timeouts on the pipeline's critical path. Capping
+    # first bounds that work to max_injected lookups. The cost is that a name
+    # dropped in step 5 does not free a slot for the next candidate; bounding
+    # the stall is worth more than filling the quota exactly.
+    if max_injected is not None and max_injected >= 0 and len(in_scope) > max_injected:
+        dropped = len(in_scope) - max_injected
+        print(f"[*][{source}] injected-hostname cap: kept {max_injected}, dropped {dropped}")
+        in_scope = in_scope[:max_injected]
+
+    # 5. Resolve-and-check (SAN-derived names only, never the port-scan list).
+    in_scope = [n for n in in_scope if _resolves_to_routable(n)]
+
+    # Merge in-scope names into dns.subdomains (the DICT shape). Only in-scope
+    # names reach here, so the eventual HAS_SUBDOMAIN edge cannot promote a
+    # foreign host to a permanent target (Phase 0.5 rule 5).
+    dns = result.setdefault("dns", {})
+    subs = dns.get("subdomains")
+    if not isinstance(subs, dict):
+        subs = {}
+        dns["subdomains"] = subs
+    injected = 0
+    for name in in_scope:
+        entry = subs.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+            subs[name] = entry
+        entry["has_records"] = True
+        entry.setdefault("source", source)
+        injected += 1
+    if injected:
+        print(f"[*][{source}] merged {injected} in-scope hostname(s) into dns.subdomains")
+    return result
+
+
+def collect_certificate_sans(combined_result: dict) -> list:
+    """Every hostname named by a certificate already captured in memory.
+
+    Phase 0.6: httpx grabs the full SAN list on every HTTPS port it probes and
+    the pipeline never looked at it again, so names the target itself advertised
+    were thrown away. Reads BOTH sources so the feedback path does not depend on
+    tlsx being enabled (the Phase 1.0 rule):
+
+      - http_probe.by_url[*].tls.certificate.san
+      - tlsx.by_target[*].san
+
+    Returns raw names (wildcards included); scoping, validation and the cap are
+    ``merge_discovered_hostnames``'s job, not this one's.
+    """
+    names: set = set()
+
+    by_url = ((combined_result.get("http_probe") or {}).get("by_url")) or {}
+    for info in by_url.values():
+        if not isinstance(info, dict):
+            continue
+        cert = ((info.get("tls") or {}).get("certificate")) or {}
+        for san in cert.get("san") or []:
+            if isinstance(san, str) and san.strip():
+                names.add(san.strip().lower())
+        cn = cert.get("subject_cn")
+        if isinstance(cn, str) and cn.strip():
+            names.add(cn.strip().lower())
+
+    by_target = ((combined_result.get("tlsx") or {}).get("by_target")) or {}
+    for entry in by_target.values():
+        if not isinstance(entry, dict):
+            continue
+        for san in entry.get("san") or []:
+            if isinstance(san, str) and san.strip():
+                names.add(san.strip().lower())
+
+    return sorted(names)

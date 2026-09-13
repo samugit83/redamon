@@ -84,6 +84,30 @@ def test_browser_open_returns_pinned_host_and_tag():
     assert claims["project_id"] == "p1" and claims["user_id"] == "u1"
 
 
+def test_browser_open_returns_profile_auth_headers():
+    # The chromium context must load logged-in: open() carries the project's
+    # session headers, resolved server-side for the pinned host, so the LLM never
+    # sees the value. Absent a profile the field is just {}.
+    import api
+    with mock.patch("traffic_tools.fetch_transaction",
+                    new=mock.AsyncMock(return_value=_txn(host="app.target.test"))), \
+         mock.patch("api._profile_auth_base",
+                    new=mock.AsyncMock(return_value={"Cookie": "sid=live-secret"})):
+        resp = _run(api.traffic_browser(_req(api, ctx=_tag(), action="open", origin_id="t1")))
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["auth_headers"] == {"Cookie": "sid=live-secret"}
+
+
+def test_browser_open_no_profile_yields_empty_auth_headers():
+    import api
+    with mock.patch("traffic_tools.fetch_transaction",
+                    new=mock.AsyncMock(return_value=_txn())), \
+         mock.patch("api._profile_auth_base", new=mock.AsyncMock(return_value={})):
+        resp = _run(api.traffic_browser(_req(api, ctx=_tag(), action="open", origin_id="t1")))
+    assert json.loads(resp.body)["auth_headers"] == {}
+
+
 def test_browser_open_unknown_origin_404():
     import api
     with mock.patch("traffic_tools.fetch_transaction",

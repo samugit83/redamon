@@ -11,6 +11,7 @@ from recon.partial_recon_modules.helpers import _is_valid_url, _is_valid_hostnam
 from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
 from recon.partial_recon_modules.user_inputs import _create_user_subdomains_in_graph
 from recon.helpers import build_target_urls, extract_targets_from_recon
+from recon.helpers.auth_profile import merge_auth_headers
 
 
 def run_paramspider(config: dict) -> None:
@@ -313,7 +314,7 @@ def run_kiterunner(config: dict) -> None:
     KITERUNNER_IGNORE_STATUS = settings.get('KITERUNNER_IGNORE_STATUS', ['404', '429', '503'])
     KITERUNNER_MATCH_STATUS = settings.get('KITERUNNER_MATCH_STATUS', [])
     KITERUNNER_MIN_CONTENT_LENGTH = settings.get('KITERUNNER_MIN_CONTENT_LENGTH', 0)
-    KITERUNNER_HEADERS = settings.get('KITERUNNER_HEADERS', [])
+    KITERUNNER_HEADERS = merge_auth_headers(settings.get('KITERUNNER_HEADERS', []), settings, sorted(target_domains))
     KITERUNNER_DETECT_METHODS = settings.get('KITERUNNER_DETECT_METHODS', True)
     KITERUNNER_METHOD_DETECTION_MODE = settings.get('KITERUNNER_METHOD_DETECTION_MODE', 'options')
     KITERUNNER_BRUTEFORCE_METHODS = settings.get('KITERUNNER_BRUTEFORCE_METHODS', ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
@@ -472,7 +473,7 @@ def run_kiterunner(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,
@@ -647,7 +648,7 @@ def run_arjun(config: dict) -> None:
     ARJUN_STABLE = settings.get('ARJUN_STABLE', False)
     ARJUN_PASSIVE = settings.get('ARJUN_PASSIVE', False)
     ARJUN_DISABLE_REDIRECTS = settings.get('ARJUN_DISABLE_REDIRECTS', False)
-    ARJUN_CUSTOM_HEADERS = settings.get('ARJUN_CUSTOM_HEADERS', [])
+    ARJUN_CUSTOM_HEADERS = merge_auth_headers(settings.get('ARJUN_CUSTOM_HEADERS', []), settings, sorted(target_domains))
 
     # Run Arjun parameter discovery
     print(f"[*][Partial Recon] Running Arjun parameter discovery on {len(arjun_target_urls)} URLs...")
@@ -800,7 +801,7 @@ def run_arjun(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,

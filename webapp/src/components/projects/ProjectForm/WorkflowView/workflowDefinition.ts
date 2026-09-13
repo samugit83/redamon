@@ -25,6 +25,7 @@ export const WORKFLOW_TOOLS: WorkflowToolDef[] = [
   { id: 'Naabu',   label: 'Naabu',   enabledField: 'naabuEnabled',   group: 3, badge: 'active' },
   { id: 'Masscan', label: 'Masscan', enabledField: 'masscanEnabled', group: 3, badge: 'active' },
   { id: 'Nmap',    label: 'Nmap',    enabledField: 'nmapEnabled',    group: 3, badge: 'active' },
+  { id: 'Tlsx',    label: 'TLS Grab', enabledField: 'tlsxEnabled',   group: 3, badge: 'active' },
 
   // Group 4 - HTTP Probing
   { id: 'Httpx', label: 'Httpx', enabledField: 'httpxEnabled', group: 4, badge: 'active' },

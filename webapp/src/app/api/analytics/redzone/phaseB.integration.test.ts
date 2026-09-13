@@ -233,9 +233,23 @@ async function seedGraph() {
         cert.not_after = '2026-09-01T00:00:00Z',
         cert.san = ['*.example.com', 'a.example.com', 'b.example.com', 'c.example.com'],
         cert.tls_version = 'TLS 1.3',
-        cert.cipher = 'TLS_AES_256_GCM_SHA384'
+        cert.cipher = 'TLS_AES_256_GCM_SHA384',
+        cert.cert_key = 'sha256:certone'
     MERGE (buA)-[:HAS_CERTIFICATE]->(cert)
     MERGE (buB)-[:HAS_CERTIFICATE]->(cert)
+
+    // CF1: a SECOND, DIFFERENT certificate that happens to share the common
+    // name. Legal only since the re-key (subject_cn is not an identity), and
+    // the reason sharedInfra had to stop clustering on subject_cn -- these two
+    // rendered as ONE row carrying one cert's issuer and the other's hosts.
+    MERGE (certTwin:Certificate {cert_key: 'sha256:certtwo', user_id: $uid, project_id: $pid})
+      ON CREATE SET
+        certTwin.subject_cn = '*.example.com',
+        certTwin.issuer = 'DigiCert Global G2',
+        certTwin.not_after = '2027-01-01T00:00:00Z',
+        certTwin.san = ['legacy1.example.com', 'legacy2.example.com'],
+        certTwin.tls_version = 'TLS 1.2'
+    MERGE (buC)-[:HAS_CERTIFICATE]->(certTwin)
 
     MERGE (ipShared:IP {address: '198.51.100.5', user_id: $uid, project_id: $pid})
       ON CREATE SET ipShared.asn = 'AS13335', ipShared.country = 'US', ipShared.organization = 'Cloudflare'
@@ -348,6 +362,22 @@ describe.skipIf(skipSuite)('Phase B Red Zone integration: live Neo4j + HTTP', ()
     expect(certCluster.hosts).toEqual(expect.arrayContaining(['a.example.com', 'b.example.com', 'c.example.com']))
     expect(certCluster.tlsVersion).toBe('TLS 1.3')
     expect(certCluster.certIssuer).toContain("Let's Encrypt")
+  })
+
+  test('sharedInfra: two DIFFERENT certificates sharing a CN are two rows (CF1)', async () => {
+    // Re-keying Certificate on cert_key made a shared subject_cn legal, so a
+    // clusterKey of subject_cn collapsed two distinct certificates into one
+    // row -- one cert's issuer next to the other's hosts. The key must be
+    // cert_key; subject_cn stays a display label only.
+    const body = await fetchRedZone('sharedInfra')
+    const certRows = body.rows.filter(
+      (r: any) => r.clusterType === 'certificate' && r.certCn === '*.example.com')
+    expect(certRows.length).toBe(2)
+    expect(new Set(certRows.map((r: any) => r.clusterKey)).size).toBe(2)
+    // and each row keeps its OWN issuer rather than borrowing the other's
+    const issuers = certRows.map((r: any) => r.certIssuer).sort()
+    expect(issuers[0]).toContain('DigiCert')
+    expect(issuers[1]).toContain("Let's Encrypt")
   })
 
   test('sharedInfra: ASN cluster groups subdomains sharing AS13335', async () => {

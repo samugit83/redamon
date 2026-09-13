@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
+import { activeRecordingBlock } from '@/lib/recordingConfig'
 
 export const runtime = 'nodejs'
 
@@ -61,10 +62,19 @@ export async function GET(request: NextRequest) {
       // invariant sourced ONLY from env in the proxy; it is deliberately NOT here.
     }
 
+    // Operator-recording window (Phase 2). Derived live from the newest
+    // unexpired RecordingSession whose project still exists and has capture on,
+    // and only while the GLOBAL proxy is enabled. Omitted otherwise, so the
+    // reconciler drops the injected tag within one poll of stop/expiry (fail
+    // closed — no manual clearing). The pre-signed operator tag is minted here.
+    const globalEnabled = b(s?.captureProxyEnabled)
+    const active_recording = globalEnabled ? await activeRecordingBlock() : null
+
     return NextResponse.json({
       egress,
       body,
-      enabled: b(s?.captureProxyEnabled),
+      enabled: globalEnabled,
+      ...(active_recording ? { active_recording } : {}),
       // A1: the ignore list for the supply-chain incident match. The Python
       // ingest worker cannot SELECT it (its role is INSERT-only on one table),
       // so it rides this config the way the egress policy already does. Empty

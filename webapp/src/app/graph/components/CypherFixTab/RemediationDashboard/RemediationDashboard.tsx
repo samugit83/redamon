@@ -1,13 +1,14 @@
 'use client'
 
-import { Fragment, useMemo } from 'react'
-import { RefreshCw, Scan, Trash2, XCircle, ChevronRight } from 'lucide-react'
+import { Fragment, useCallback, useMemo, useState } from 'react'
+import { RefreshCw, Trash2, XCircle, ChevronRight } from 'lucide-react'
 import { ExternalLink } from '@/components/ui'
 import { cveToUrl } from '@/lib/url-utils'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
 import { RemediationTypeIcon } from './RemediationTypeIcon'
 import { RemediationFilters } from './RemediationFilters'
+import { TriageRunButton } from '@/components/triage/TriageRunButton'
 import type {
   Remediation,
   RemediationSeverity,
@@ -61,17 +62,29 @@ export function RemediationDashboard({
     return { total: remediations.length, bySeverity, byStatus }
   }, [remediations])
 
-  // Sort: by priority (ascending), then severity
+  // THE RANK IS THE DEFAULT ORDER, and `priority` ascending IS the rank: 1 is
+  // most urgent. It comes from the same triage run that ordered the Priority
+  // Board, so the two pages agree unless the operator asks for something else.
+  // Re-sorting by updatedAt by default silently disagreed with the board.
   const { sortDir, toggleSort } = useUpdatedAtSortDir()
+  // `Updated` is an OPT-IN column sort, not the default: the hook always has a
+  // direction, so without this flag every list silently came back in updatedAt
+  // order and disagreed with the board.
+  const [sortByUpdated, setSortByUpdated] = useState(false)
+  const toggleUpdatedSort = useCallback(() => {
+    if (!sortByUpdated) setSortByUpdated(true)
+    else toggleSort()
+  }, [sortByUpdated, toggleSort])
+
   const sorted = useMemo(() => {
-    // Priority/severity stays the tie-break: `sortByUpdatedAt` is stable, so
-    // two items written in the same second keep the triage ranking below.
     const byPriority = [...remediations].sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority
-      return (SEVERITY_ORDER[a.severity] || 4) - (SEVERITY_ORDER[b.severity] || 4)
+      // `??`, not `||`: SEVERITY_ORDER.critical is 0, and `||` turned the most
+      // severe value into the least, so critical sorted last among ties.
+      return (SEVERITY_ORDER[a.severity] ?? 4) - (SEVERITY_ORDER[b.severity] ?? 4)
     })
-    return sortByUpdatedAt(byPriority, sortDir)
-  }, [remediations, sortDir])
+    return sortByUpdated ? sortByUpdatedAt(byPriority, sortDir) : byPriority
+  }, [remediations, sortDir, sortByUpdated])
 
   if (error) {
     return (
@@ -101,10 +114,13 @@ export function RemediationDashboard({
           <button className={styles.iconBtn} onClick={onRefresh} title="Refresh">
             <RefreshCw size={14} className={isLoading ? styles.spinning : ''} />
           </button>
-          <button className={styles.triageBtn} onClick={onStartTriage}>
-            <Scan size={14} />
-            Re-triage
-          </button>
+          <TriageRunButton
+            projectId={projectId ?? null}
+            onConfirm={onStartTriage}
+            // This dashboard only renders when fix items exist, and fix items
+            // are only ever produced by a triage run.
+            hasPreviousRun={remediations.length > 0}
+          />
         </div>
       </div>
 
@@ -130,7 +146,7 @@ export function RemediationDashboard({
                 <th className={styles.thType}>Type</th>
                 <th className={styles.thStatus}>Status</th>
                 <th className={styles.thCve}>CVEs</th>
-                <UpdatedAtTh dir={sortDir} onToggle={toggleSort} />
+                <UpdatedAtTh dir={sortDir} onToggle={toggleUpdatedSort} />
                 <th className={styles.thActions}></th>
               </tr>
             </thead>

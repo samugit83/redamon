@@ -200,6 +200,18 @@ async def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Daily LLM call cap exceeded")
 
 
+def master_key_is_weak() -> bool:
+    """True when INTERNAL_API_KEY is absent or still the compose default.
+
+    `require_master_internal_auth` fails OPEN in that case so a dev install with
+    no secrets keeps working, which is right for the endpoints that existed when
+    it was written. An endpoint that must not be reachable unauthenticated calls
+    this and refuses for itself, without changing that global behaviour.
+    """
+    master = os.environ.get("INTERNAL_API_KEY", "")
+    return not master or master == _CHANGEME
+
+
 async def require_master_internal_auth(request: Request) -> None:
     """FastAPI dependency: the MASTER key only. Rejects the scanner token.
 

@@ -23,6 +23,10 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   // Global TrafficMind capture config, polled by the orchestrator to materialise
   // the DB settings to the proxy's config file (DB = single source of truth).
   { method: 'GET', pattern: /^\/api\/internal\/capture-config$/ },
+  // Operator-recording session extraction: the ingest worker POSTs the login
+  // material it pulled (pre-redaction) from operator-source traffic. The route
+  // resolves the tenant from the recording session, never the body (G6).
+  { method: 'POST', pattern: /^\/api\/internal\/auth-profile\/[^/]+\/observe$/ },
   { method: 'ANY', pattern: /^\/api\/conversations\/by-session\// },
   { method: 'ANY', pattern: /^\/api\/remediations(\/|$)/ },
   { method: 'GET', pattern: /^\/api\/global\/tunnel-config$/ },
@@ -41,6 +45,15 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/api\/internal\/job-queue\/candidates$/ },
   { method: 'POST', pattern: /^\/api\/internal\/job-queue\/[^/]+\/dispatch$/ },
   { method: 'POST', pattern: /^\/api\/internal\/job-queue\/reconcile$/ },
+  // Triage runs: the agent authorises a run, heartbeats it, claims the right to
+  // publish, upserts the remediations and records how it ended. Exact paths, and
+  // each route re-checks isInternalRequest plus the run's own project, because
+  // the internal key is global and is therefore not a tenant boundary.
+  { method: 'POST', pattern: /^\/api\/internal\/triage-runs$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/triage-runs\/[^/]+\/heartbeat$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/triage-runs\/[^/]+\/publish$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/triage-runs\/[^/]+\/remediations$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/triage-runs\/[^/]+\/finish$/ },
 ]
 
 // Fail-open rollout: default log-only (never blocks), so an omitted route shows

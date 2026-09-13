@@ -1,6 +1,7 @@
 """FindDefinition tool: locate where a symbol is defined."""
 
 import logging
+from .repo_paths import RepoPathError, resolve_in_repo
 from .symbols_tool import EXT_TO_LANG, _get_parser, DEFINITION_TYPES, _extract_name
 
 logger = logging.getLogger(__name__)
@@ -10,7 +11,11 @@ SKIP_DIRS = {'.git', 'node_modules', 'vendor', '__pycache__', '.tox', 'venv', '.
 
 async def github_find_definition(state, symbol: str, scope: str = None) -> str:
     """Find where a symbol is defined across the repo."""
-    base = state.repo_path / scope if scope else state.repo_path
+    try:
+        base = resolve_in_repo(state.repo_path, scope)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
+
     if not base.exists():
         return f"Error: Directory not found: {scope or '.'}"
 

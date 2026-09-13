@@ -133,9 +133,10 @@ async def proxy_search(filters: str = "") -> str:
     """Search captured HTTP traffic — the Burp-style request history. Returns
     transaction SUMMARIES only (id, method, status, host, path, size, tool, flags),
     never bodies (use proxy_get for a body). `filters` is an optional JSON object:
-    {host, method, status, statusClass(2xx|3xx|4xx|5xx), tool, source(recon|agent),
+    {host, method, status, statusClass(2xx|3xx|4xx|5xx), tool, source(recon|agent|operator),
     sessionId, runId, hasAuth, reflected, only5xx, q(url substring),
-    bodyq(body substring), limit}."""
+    bodyq(body substring), limit}. source=operator rows are login traffic the
+    operator recorded through the proxy (read-corpus context; not auto-replayed)."""
     u, p = _tenant()
     if not u or not p:
         return "Error: missing tenant context"
@@ -516,9 +517,42 @@ async def fetch_transaction(txn_id: str) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
-def _apply_header_mutations(headers: Dict[str, Any], mutate: Dict[str, Any]) -> Dict[str, str]:
-    # Work case-insensitively; the target host is NEVER mutable (scope safety).
-    out = {str(k): (v if isinstance(v, str) else json.dumps(v)) for k, v in (headers or {}).items()}
+def _ci_set(out: Dict[str, str], key: str, value: str) -> Dict[str, str]:
+    """Set a header, replacing any existing same-name (case-insensitive) entry."""
+    out = {kk: vv for kk, vv in out.items() if kk.lower() != key.lower()}
+    out[key] = value
+    return out
+
+
+_REDACTED_RE = re.compile(r"^\[redacted:[0-9a-f]+\]$")
+
+
+def _is_redacted(value: Any) -> bool:
+    """True for the ingest worker's at-rest mask (`_mask` in ingest_worker.py)."""
+    return isinstance(value, str) and bool(_REDACTED_RE.match(value.strip()))
+
+
+def _apply_header_mutations(headers: Dict[str, Any], mutate: Dict[str, Any],
+                            base_headers: Dict[str, str] = None) -> Dict[str, str]:
+    # Precedence: explicit mutate > origin transaction header > profile (base).
+    # The AuthProfile seeds the lowest layer so an in-scope authenticated identity
+    # rides along, but the origin request's own auth (and any agent mutate for
+    # IDOR/BOLA) still wins. The target host is NEVER mutable (scope safety).
+    #
+    # A redacted origin header is the one exception. The ingest worker masks
+    # Cookie/Authorization at rest, so the stored value is `[redacted:<digest>]`,
+    # a placeholder that authenticates nothing. Letting it outrank the profile
+    # meant every replay of a captured authenticated request went out with a dead
+    # cookie and came back logged out, which is precisely the case replay exists
+    # for. Treat it as absent so the profile (or an explicit mutate) supplies the
+    # live value; a genuinely stored header still wins as before.
+    out: Dict[str, str] = {}
+    for k, v in (base_headers or {}).items():
+        out = _ci_set(out, str(k), v if isinstance(v, str) else json.dumps(v))
+    for k, v in (headers or {}).items():
+        if _is_redacted(v):
+            continue
+        out = _ci_set(out, str(k), v if isinstance(v, str) else json.dumps(v))
     drop = {str(h).lower() for h in mutate.get("dropHeaders", [])}
     if "cookie" in mutate and not mutate["cookie"]:
         drop.add("cookie")
@@ -559,9 +593,11 @@ def _origin_url(txn: Dict[str, Any], path: str, query: str) -> str:
     return url
 
 
-def build_replay_curl(txn: Dict[str, Any], mutate: Dict[str, Any]) -> str:
+def build_replay_curl(txn: Dict[str, Any], mutate: Dict[str, Any],
+                      auth_base: Dict[str, str] = None) -> str:
     """Build a curl arg string for a replay. Host/scheme/port are pinned to the
-    origin; method/path/query/params/headers/cookie/body are mutable."""
+    origin; method/path/query/params/headers/cookie/body are mutable.
+    ``auth_base`` are AuthProfile headers seeded UNDER the origin + mutate."""
     method = str(mutate.get("method") or txn.get("method") or "GET").upper()
     path = str(mutate.get("path", txn.get("path") or "/"))
     q = str(mutate.get("query", txn.get("query") or "") or "").lstrip("?")
@@ -570,7 +606,7 @@ def build_replay_curl(txn: Dict[str, Any], mutate: Dict[str, Any]) -> str:
         pairs.update({str(k): str(v) for k, v in mutate["param"].items()})
         q = urlencode(pairs)
     url = _origin_url(txn, path, q)
-    headers = _apply_header_mutations(txn.get("req_headers") or {}, mutate)
+    headers = _apply_header_mutations(txn.get("req_headers") or {}, mutate, base_headers=auth_base)
     body = mutate.get("body", txn.get("req_body"))
     parts = ["-s", "-i", "-X", method]
     for k, v in headers.items():
@@ -581,12 +617,13 @@ def build_replay_curl(txn: Dict[str, Any], mutate: Dict[str, Any]) -> str:
     return " ".join(shlex.quote(x) for x in parts)
 
 
-def build_fuzz_curls(txn: Dict[str, Any], insertion_point: str, payloads: List[str]):
+def build_fuzz_curls(txn: Dict[str, Any], insertion_point: str, payloads: List[str],
+                     auth_base: Dict[str, str] = None):
     """Yield (payload, curl_args) for each payload substituted into the query
     param `insertion_point`. Capped at _FUZZ_MAX_PAYLOADS."""
     capped = list(payloads)[:_FUZZ_MAX_PAYLOADS]
     for pl in capped:
-        args = build_replay_curl(txn, {"param": {insertion_point: pl}})
+        args = build_replay_curl(txn, {"param": {insertion_point: pl}}, auth_base=auth_base)
         yield str(pl), args
     return
 

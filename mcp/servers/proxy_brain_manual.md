@@ -43,6 +43,12 @@ ACTIVE (LIVE TRAFFIC — see LIMITS below):
   fields changed. mutate keys: method, path, query, param:{k:v}, headers:{k:v},
   dropHeaders:[..], cookie, body. **host/scheme/port are PINNED to the origin and
   CANNOT be changed** — a replay can only ever hit the origin host.
+  AUTHENTICATED IDENTITY: if the project has an auth profile and the origin host
+  is in scope, the profile's session (cookie/bearer/headers) is attached
+  automatically UNDER the origin request's own headers and your `mutate`. So a
+  plain `replay` already carries the logged-in identity, while an explicit
+  `mutate` (a different `cookie`, `dropHeaders:["Cookie","Authorization"]`, or a
+  swapped `headers`) still wins — IDOR/BOLA/priv-esc testing is unaffected.
 - `redamon.batch(id, mutations, parallel=False) -> [Response]` — replay once per
   mutation. `parallel=True` fires them CONCURRENTLY (real race window).
 - `redamon.fuzz(id, insertion_point, payloads) -> [Response]` — iterate payloads
@@ -54,6 +60,9 @@ ACTIVE (LIVE TRAFFIC — see LIMITS below):
   `.submit(sel)` `.eval(js)` (budgeted actions); read `.dom()` `.text(sel)`
   `.alerts()` `.console()` `.url()` (free — the oracle). Always `.close()`.
   Read `manual("browser")` first. Do NOT drive it from a parallel `batch`.
+  AUTHENTICATED IDENTITY: if the project has an auth profile and the pinned host
+  is in scope, the browser context loads logged-in automatically (the session is
+  attached server-side; you never see it). So `.goto()` lands on post-login pages.
 
 RESULT:
 - `redamon.finding(kind, txn_id, evidence=None, severity="medium")` — record a finding.

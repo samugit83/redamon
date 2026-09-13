@@ -52,6 +52,10 @@ class CodeFixState:
         self.diff_blocks: list = []
         self.pending_approval: bool = False
         self.pending_block_id: Optional[str] = None
+        # block_id -> (file_path, content before the edit, was the file already
+        # in files_modified). A rejected block has to be undone on disk: only
+        # approved changes may reach the commit in _finalize.
+        self.block_backups: dict = {}
         self.settings: CodeFixSettings = CodeFixSettings()
         self.streaming_callback = None
         self.iteration: int = 0

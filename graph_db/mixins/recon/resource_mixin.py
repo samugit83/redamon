@@ -188,7 +188,7 @@ class ResourceMixin:
                                     p.type = $param_type,
                                     p.category = $category,
                                     p.sample_values = $sample_values,
-                                    p.is_injectable = false,
+                                    p.is_injectable = coalesce(p.is_injectable, false),
                                     p.source = 'resource_enum',
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
@@ -240,7 +240,7 @@ class ResourceMixin:
                                     p.category = $category,
                                     p.input_type = $input_type,
                                     p.required = $required,
-                                    p.is_injectable = false,
+                                    p.is_injectable = coalesce(p.is_injectable, false),
                                     p.source = 'resource_enum',
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
@@ -384,7 +384,8 @@ class ResourceMixin:
 
                     session.run(
                         """
-                        MERGE (s:Secret {id: $id})
+                        MERGE (s:Secret {id: $id, user_id: $user_id,
+                                         project_id: $project_id})
                         SET s.user_id = $user_id,
                             s.project_id = $project_id,
                             s.secret_type = $secret_type,

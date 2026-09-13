@@ -1,0 +1,61 @@
+# RedAmon tlsx / TLS Certificate Grab guinea pig
+#
+# Bring up:   docker compose up -d --build
+# Bring down: docker compose down
+# Target:     192.88.98.10  (IMAPS 993, LDAPS 636 -- NO HTTP on purpose)
+#
+# WHY ONLY NON-HTTP PORTS:
+#
+#   tlsx exists because httpx only grabs certificates on the five HTTPS ports
+#   it dials. A host whose TLS lives on 993/636 was found "open", labelled from
+#   a static IANA table, and never inspected. Serving no HTTP at all is the
+#   honest reproduction of that gap: http_probe finds nothing here, so every
+#   certificate in the graph after a run came from tlsx.
+#
+# WHY NOT 127.0.0.1 (same reason as supply_chain_target, different guard):
+#
+#   _build_tlsx_targets filters every candidate through is_non_routable_ip()
+#   before a packet is sent, and merge_discovered_hostnames resolve-checks each
+#   SAN name the same way. Loopback, RFC1918 and every TEST-NET range are
+#   rejected, so a lab on 127.0.0.1 yields ZERO tlsx targets and proves nothing.
+#
+#   192.88.98.0/24 sits in the deprecated 6to4 relay block (RFC 7526); Python's
+#   ipaddress reports it global, so the SSRF control stays ARMED and the run
+#   exercises the real production path. Nothing leaves the host.
+#
+#   A distinct /24 from supply_chain_target's 192.88.99.0/24 so both labs can
+#   be up at once -- Docker refuses overlapping subnets.
+
+services:
+
+  tls-target:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: redamon-tls-target:latest
+    container_name: redamon-tls-target
+    restart: unless-stopped
+    # Its own caps: this is a separate compose PROJECT, so redamon.sh's
+    # export_resource_caps never reaches it and the memory governor does not
+    # know it exists. It shares the host with Neo4j and Postgres.
+    mem_limit: ${TLS_TARGET_MEM:-128m}
+    pids_limit: ${TLS_TARGET_PIDS:-128}
+    cpus: ${TLS_TARGET_CPUS:-0.5}
+    networks:
+      tls_lab:
+        ipv4_address: 192.88.98.10
+    healthcheck:
+      test: ["CMD-SHELL", "openssl s_client -connect 127.0.0.1:993 -verify_return_error </dev/null 2>/dev/null | grep -q 'CN *= *mail.tlslab.test' || openssl s_client -connect 127.0.0.1:993 </dev/null 2>/dev/null | grep -q BEGIN"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  tls_lab:
+    name: redamon_tls_lab
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.88.98.0/24
+          gateway: 192.88.98.1

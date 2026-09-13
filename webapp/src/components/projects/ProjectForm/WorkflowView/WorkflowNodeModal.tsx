@@ -15,6 +15,7 @@ import { OsintEnrichmentSection } from '../sections/OsintEnrichmentSection'
 import { NaabuSection } from '../sections/NaabuSection'
 import { MasscanSection } from '../sections/MasscanSection'
 import { NmapSection } from '../sections/NmapSection'
+import { TlsxSection } from '../sections/TlsxSection'
 import { HttpxSection } from '../sections/HttpxSection'
 import { KatanaSection } from '../sections/KatanaSection'
 import { OpenApiSection } from '../sections/OpenApiSection'
@@ -39,6 +40,7 @@ import { CveLookupSection } from '../sections/CveLookupSection'
 import { MitreSection } from '../sections/MitreSection'
 import { SecurityChecksSection } from '../sections/SecurityChecksSection'
 import { TargetSection } from '../sections/TargetSection'
+import { AuthenticationSection } from '../sections/AuthenticationSection'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -102,6 +104,7 @@ export function WorkflowNodeModal({
       case 'Naabu':             return <NaabuSection {...baseProps} />
       case 'Masscan':           return <MasscanSection {...baseProps} />
       case 'Nmap':              return <NmapSection {...baseProps} />
+      case 'Tlsx':              return <TlsxSection {...baseProps} />
       case 'Httpx':             return <HttpxSection {...baseProps} />
       case 'Katana':            return <KatanaSection {...baseProps} />
       case 'OpenAPI':           return <OpenApiSection {...baseProps} />
@@ -126,7 +129,12 @@ export function WorkflowNodeModal({
       case 'Mitre':             return <MitreSection {...baseProps} />
       case 'SecurityChecks':    return <SecurityChecksSection {...baseProps} />
       case 'Uncover':           return <OsintEnrichmentSection {...baseProps} />
-      case 'input':             return <TargetSection {...extendedProps} />
+      case 'input':             return (
+        <>
+          <TargetSection {...extendedProps} />
+          <AuthenticationSection {...extendedProps} />
+        </>
+      )
       default:                  return <p>No settings available for this module.</p>
     }
   }

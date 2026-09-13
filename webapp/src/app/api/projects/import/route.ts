@@ -475,12 +475,17 @@ export async function POST(request: NextRequest) {
           // Clear any existing data for the new project ID (safety)
           await clearProjectGraph(session, newProject.id)
 
-          // Also clear the original project's Neo4j data to prevent duplicates.
-          // With global unique constraints, nodes from the old project would conflict
-          // or create stale relationships pointing to orphaned unconstrained nodes.
-          if (_oldProjectId && _oldProjectId !== newProject.id) {
-            await clearProjectGraph(session, _oldProjectId)
-          }
+          // X3: the source project's graph is NOT touched.
+          //
+          // This used to delete it, because the finding labels were unique on
+          // `id` alone: importing an export of a project that still existed
+          // would have collided with it, so the source was wiped to make room.
+          // That is an operator importing a backup and silently losing the
+          // project they took it from.
+          //
+          // Those constraints are now (id, user_id, project_id), so the same id
+          // can exist in both projects and there is nothing to make room for.
+          // `_oldProjectId` is kept only for the `_exportId` remapping below.
 
           // Shared with Scan Timeline version activation (lib/graphRestore.ts):
           // same MERGE-vs-CREATE-by-constraint, batching and _exportId wiring.

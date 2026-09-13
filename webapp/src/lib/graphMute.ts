@@ -22,9 +22,24 @@
 /** Added to a finding an operator suppressed; never a node's own type. */
 export const MUTED_LABEL = 'Muted'
 
-/** A WHERE fragment excluding suppressed findings bound to `variable`. */
+/**
+ * A WHERE fragment excluding findings that should not be counted or shown.
+ *
+ * Two things, because they mean the same thing to a reader: a finding an
+ * operator suppressed, and one a scanner has stopped reporting.
+ *
+ * The second is new with ingest-then-prune (X7). A muted or human-judged
+ * finding is no longer DELETED when its scanner stops finding it - deleting it
+ * took the operator's own verdict with it - so it is kept and stamped
+ * `stale_since` instead. Without this clause every one of the ~97 read sites
+ * would start counting resolved findings as live, which is the exact opposite
+ * of what a prune is for.
+ */
 export function notMuted(variable: string): string {
-  return `NONE(l IN labels(${variable}) WHERE l = '${MUTED_LABEL}')`
+  return (
+    `NONE(l IN labels(${variable}) WHERE l = '${MUTED_LABEL}') ` +
+    `AND ${variable}.stale_since IS NULL`
+  )
 }
 
 /** `notMuted` for several variables at once, ANDed together. */

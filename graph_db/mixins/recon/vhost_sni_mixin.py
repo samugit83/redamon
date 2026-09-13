@@ -155,12 +155,14 @@ class VhostSniMixin:
 
                     session.run(
                         """
-                        MERGE (v:Vulnerability {id: $id})
+                        MERGE (v:Vulnerability {id: $id, user_id: $uid,
+                                                project_id: $pid})
                         ON CREATE SET v.first_seen = $detected_at
                         SET v += $props,
                             v.updated_at = datetime()
                         """,
                         id=vuln_id, props=vuln_props, detected_at=detected_at,
+                        uid=user_id, pid=project_id,
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -184,7 +186,7 @@ class VhostSniMixin:
                         SET s += $sprops,
                             s.updated_at = datetime()
                         WITH s
-                        MATCH (v:Vulnerability {id: $id})
+                        MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                         MERGE (s)-[:HAS_VULNERABILITY]->(v)
                         """,
                         hostname=hostname, uid=user_id, pid=project_id,
@@ -235,7 +237,7 @@ class VhostSniMixin:
                         session.run(
                             """
                             MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                            MATCH (v:Vulnerability {id: $id})
+                            MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                             MERGE (i)-[:HAS_VULNERABILITY]->(v)
                             """,
                             addr=ip_addr, uid=user_id, pid=project_id, id=vuln_id,
@@ -247,7 +249,7 @@ class VhostSniMixin:
                         session.run(
                             """
                             MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
-                            MATCH (v:Vulnerability {id: $id})
+                            MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                             MERGE (d)-[:HAS_VULNERABILITY]->(v)
                             """,
                             domain=target_domain, uid=user_id, pid=project_id, id=vuln_id,
@@ -278,7 +280,7 @@ class VhostSniMixin:
                         ON CREATE SET s.source = 'vhost_sni_enum',
                                       s.created_at = datetime()
                         SET s.updated_at = datetime()
-                        MERGE (s)-[:HAS_BASEURL]->(b)
+                        MERGE (s)-[:HAS_BASE_URL]->(b)
                         RETURN count(b) AS created
                         """,
                         url=url, uid=user_id, pid=project_id,

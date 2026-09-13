@@ -169,7 +169,11 @@ def _censys_extract_tls(svc: dict) -> dict | None:
     return {
         "subject_cn": subject_cn,
         "issuer": issuer_str,
-        "san": [n for n in names if n != subject_cn],
+        # Full SAN list exactly as presented, CN included. Excluding the CN made
+        # `san` mean N-1 hosts from Censys but N from httpx for the same cert,
+        # and sharedInfra clusters on it (0.55). Wildcard entries stay raw; the
+        # consumer strips '*.' (vhost_sni_enum already does).
+        "san": list(names),
         "not_before": validity.get("start") if isinstance(validity, dict) else None,
         "not_after": validity.get("end") if isinstance(validity, dict) else None,
         "fingerprint": fingerprint,

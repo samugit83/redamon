@@ -1,0 +1,182 @@
+# Ground truth for the triage ranking, per guinea pig.
+#
+# WHAT THIS IS FOR
+# The Priority Board's order is only as good as the last change to the score
+# model, and "it looks about right" is not a gate. `tooling/scripts/triage_eval.py`
+# reads this file, reads the findings a real triage run produced, and prints
+# NDCG@25, precision@10/25, and the false-positive rates. Phase 6 of the unified
+# triage plan will not ship a model that scores worse than the recorded baseline.
+#
+# HOW ENTRIES ARE KEYED
+# NEVER by hostname, URL or IP: those are environment-specific and would put
+# target data in the repository. Keys are properties of the FINDING:
+#   template: a nuclei template id          (matched against template_id)
+#   cve:      a CVE id                      (matched against cve_ids / the name)
+#   advisory: a GHSA / PYSEC / MAL id       (matched against the finding id)
+#   type:     a security_check type         (matched against name / type)
+#   oid:      a GVM OID                     (matched against the finding id)
+#   detector: a secret detector name        (matched against name / detector)
+# A finding matches an entry when the key's value appears in the matched field.
+#
+# GRADES (used as the NDCG gain, 2^grade - 1)
+#   3  must be at the very top: proven, or a KEV-listed remotely exploitable CVE
+#   2  a real, exploitable finding
+#   1  real but low value on its own (hardening, information disclosure)
+#   0  real but not actionable, or a fingerprint
+#  -1  a FALSE POSITIVE: this must not be ranked, and the AI should flag it
+#
+# Every guinea pig below is one project. Findings not listed are ignored by
+# precision/NDCG so an incomplete truth file never fails a run - it only makes
+# the numbers less informative. `coverage` in the report says how much was known.
+
+apache_2.4.49:
+  description: >
+    Apache 2.4.49 with mod_cgi and the path traversal that became
+    CVE-2021-41773. Both a traversal read and an RCE are reachable, and both
+    are in CISA KEV, so this is the case where the board must put a proven,
+    KEV-listed RCE first and nothing else near it.
+  findings:
+    - cve: CVE-2021-41773
+      grade: 3
+      note: KEV, path traversal to source disclosure, reachable unauthenticated
+    - cve: CVE-2021-42013
+      grade: 3
+      note: KEV, the incomplete-fix RCE on the same surface
+    - template: apache-detect
+      grade: 0
+      note: a fingerprint, not a finding; must never outrank the CVEs
+    - type: missing_hsts
+      grade: 1
+    - type: missing_csp
+      grade: 1
+    - type: missing_x_frame_options
+      grade: 1
+
+apache_2.4.25:
+  description: >
+    The patched sibling of apache_2.4.49. Its job in the harness is negative:
+    a scanner that reports the traversal CVEs here is producing false
+    positives, and the board must not rank a version-guessed CVE above the
+    real hardening findings on a host where nothing is exploitable.
+  findings:
+    - cve: CVE-2021-41773
+      grade: -1
+      note: not present on 2.4.25; any report is a version-match false positive
+    - cve: CVE-2021-42013
+      grade: -1
+    - template: apache-detect
+      grade: 0
+    - type: missing_hsts
+      grade: 1
+
+dvws-node:
+  description: >
+    Damn Vulnerable Web Services (node). Injection and access-control classes
+    with real request/response evidence, which is the material the evidence
+    review is meant to judge.
+  findings:
+    - template: sqli-error-based
+      grade: 2
+    - template: xss-reflected
+      grade: 2
+    - type: cors_misconfiguration
+      grade: 2
+    - type: missing_hsts
+      grade: 1
+    - type: missing_csp
+      grade: 1
+
+supply_chain_target:
+  description: >
+    The supply-chain harness: one genuinely malicious package plus a large
+    body of OSV advisories, most of them ungraded PYSEC entries. This is the
+    shape of the real dev graph (94% OSV), so it is the case that decides
+    whether the model can tell a malicious package from advisory noise.
+  findings:
+    - advisory: MAL-2022-1122
+      grade: 3
+      note: a malicious package, proven by the offline OSV database
+    - advisory: GHSA-
+      match: prefix
+      grade: 1
+      note: >
+        graded advisories on versioned packages; real, but only worth acting on
+        when the package is actually served
+    - advisory: PYSEC-
+      match: prefix
+      grade: 0
+      note: >
+        ungraded advisories. Not false positives - the old formula scored them
+        at ~0 because OSV writes severity "info" for "not graded", which is the
+        bug the unknown-impact default fixes.
+
+web-cache-poisoning:
+  description: >
+    The cache-poisoning harness. It ships its own negative controls, so it is
+    the best available check that a Tentative cache verdict does not rank with
+    a Confirmed one.
+  findings:
+    - type: cache_poisoning
+      grade: 2
+    - type: cache_control_missing
+      grade: 1
+
+ai_surface_target:
+  description: >
+    The LLM/MCP attack surface. An unauthenticated MCP endpoint exposing tools
+    is the finding that must rank; a detected model name is a fingerprint.
+  findings:
+    - type: mcp_no_auth
+      grade: 3
+      note: an unauthenticated MCP server with callable tools
+    - type: prompt_injection
+      grade: 2
+    - type: model_detected
+      grade: 0
+
+# A synthetic project that mirrors the SHAPE of the live dev graph rather than
+# any single guinea pig: overwhelmingly OSV, plus a large block of GitHub
+# "secrets" that are private IP addresses. Under the old points formula every
+# one of those private IPs scored ~500 and sat at the top of the board, which is
+# the single most visible symptom this plan fixes.
+synthetic_dev_shape:
+  description: >
+    Fixture-only (no container). Built by
+    tooling/scripts/triage_eval.py --synthetic, which generates the finding rows
+    directly. Nothing here touches a network.
+  findings:
+    - detector: "IP Address (Private)"
+      grade: -1
+      note: >
+        119 of 284 GitHub-hunt "secrets" in the dev graph are private IPs. They
+        are not secrets, and they are not even findings.
+    - detector: "AWS"
+      grade: 2
+      note: a real cloud credential shape; grade 3 only once validated
+    - advisory: MAL-
+      match: prefix
+      grade: 3
+      note: a malicious package, which is the one OSV verdict that is proof
+    - type: "Malicious code in"
+      grade: 3
+      note: >
+        The same thing by its title. Not every writer stores the MAL- advisory
+        id as the node id, and OSV's own title for these is literally
+        "Malicious code in <package>", so this catches them either way. It names
+        no target: the package is a public dependency, not the customer.
+    - type: missing_hsts
+      grade: 1
+
+  # DELIBERATELY NOT GRADED HERE: plain GHSA- and PYSEC- advisories.
+  #
+  # The first draft graded GHSA 1 and PYSEC 0, which asserts that a graded
+  # advisory matters more than an ungraded one. That is precisely the claim the
+  # score model rejects: OSV writes `severity: info` to mean "nobody graded
+  # this", and reading that as "this is harmless" is the bug that buried real
+  # advisories at the bottom of the board.
+  #
+  # NDCG has no way to say "unknown", so grading them at all makes the metric
+  # punish the behaviour the model is supposed to have. They are excluded, and
+  # `coverage` in the report says how much of the board that leaves unmeasured.
+  # Where an advisory CAN be judged, it is judged with real context, in the
+  # supply_chain_target section above.

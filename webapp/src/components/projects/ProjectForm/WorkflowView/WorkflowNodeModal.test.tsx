@@ -18,6 +18,11 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { WorkflowNodeModal } from './WorkflowNodeModal'
 
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
+// The Target & Modules modal now also renders the Authenticated Session section;
+// it needs the app's AlertProvider (present in production) and fetches its
+// profile on mount. This test pins the save-close contract via the Target
+// field, so the auth section is orthogonal — stub it out.
+vi.mock('../sections/AuthenticationSection', () => ({ AuthenticationSection: () => null }))
 vi.mock('@/providers/ProjectProvider', async orig => ({
   ...(await orig<typeof import('@/providers/ProjectProvider')>()),
   useProject: () => ({ userId: 'u1' }),

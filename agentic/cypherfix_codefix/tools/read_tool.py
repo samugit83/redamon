@@ -1,12 +1,16 @@
 """Read tool: file reading with line numbers."""
 
+from .repo_paths import RepoPathError, resolve_in_repo
+
 
 async def github_read(state, file_path: str, offset: int = None, limit: int = None) -> str:
     """Read a file with line numbers (cat -n format)."""
-    repo_path = state.repo_path
-    full_path = repo_path / file_path
+    try:
+        full_path = resolve_in_repo(state.repo_path, file_path, allow_root=False)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
 
-    if not full_path.exists():
+    if not full_path.exists() or not full_path.is_file():
         return f"Error: File not found: {file_path}. Use github_glob to find the correct path."
 
     try:

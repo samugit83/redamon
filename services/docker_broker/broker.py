@@ -57,6 +57,7 @@ _DEFAULT_ALLOWED_IMAGES = [
     "projectdiscovery/nuclei:latest",
     "projectdiscovery/uncover:latest",
     "projectdiscovery/subfinder:latest",
+    "projectdiscovery/tlsx:latest",
     "caffix/amass:latest",
     "frost19k/puredns:latest",
     "sxcurity/gau:latest",

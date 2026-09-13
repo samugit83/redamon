@@ -451,11 +451,24 @@ CypherFix bridges the gap between discovering vulnerabilities and fixing them in
 
 **Triage Agent** (`cypherfix_triage/`):
 
-Uses a hybrid architecture — deterministic data collection followed by LLM-powered analysis:
+Five steps, of which only the last one writes:
 
-1. **Static Collection** (no LLM) — Runs 9 hardcoded Cypher queries against Neo4j to collect the full attack surface: vulnerabilities, CVE chains, secrets, exploits, assets, attack chain findings, certificates, and security checks. Progress: 5%–70%.
-2. **ReAct Analysis** (LLM) — A single ReAct loop (max 10 iterations) correlates findings across data sources, deduplicates them, applies a weighted priority scoring algorithm (exploit success = 1200 pts, confirmed exploit = 1000 pts, CISA KEV = 800 pts, etc.), and outputs structured remediation entries. The LLM can also run follow-up Cypher queries or web searches if it needs more context.
-3. **Persistence** — Batch-saves remediations to PostgreSQL via `POST /api/remediations/batch`.
+1. **Authorize** (no LLM) - `POST /api/internal/triage-runs`, BEFORE reading
+   anything. Strict ownership, no activation in progress, no other live run.
+2. **Score** (no LLM) - reads the project's fact sets once, then one row per
+   finding, and scores each with `score_model.py`: real x exploit x impact x
+   reach, into one of four tiers, as a 0-100 number.
+3. **Group** (no LLM) - findings that share a fix become one group, by
+   deterministic key. The same CVE on three hosts is one group.
+4. **Review + remediate** (LLM) - the model corrects the four FACTORS against
+   quoted evidence (never a score), and writes the prose for one fix item per
+   group. Both calls bind no tools.
+5. **Publish** - claims the write with a conditional transition, writes the
+   graph in batches guarded by each node's `updated_at`, then upserts the fix
+   list by `(projectId, groupKey)` in one transaction.
+
+Steps 2 to 4 are entirely in memory, so a run that is stopped or refused leaves
+the previous ranking exactly as it was.
 
 **CodeFix Agent** (`cypherfix_codefix/`):
 

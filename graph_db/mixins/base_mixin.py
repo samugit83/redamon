@@ -11,6 +11,8 @@ Provides:
 import os
 from pathlib import Path
 
+from datetime import datetime, timezone
+
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
@@ -37,6 +39,29 @@ _REFERENCE_CHAIN_DEPTH = 3
 #: the global reference nodes.
 _PRESERVED_LABEL_PREDICATE = " OR ".join(
     f"n:`{label}`" for label in tuple(NON_RECON_LABELS) + tuple(GLOBAL_REFERENCE_LABELS))
+
+#: Labels an operator can mute, judge, or have a fix item written for. These
+#: carry state a PERSON put there, so they are the ones ingest-then-prune
+#: protects. Kept in step with MUTEABLE_LABELS in the triage mixin.
+FINDING_LABELS = (
+    "Vulnerability", "JsReconFinding", "Secret", "MultiscannerFinding",
+    "GithubSecret", "GithubSensitiveFile", "MalPackageFinding", "ExploitGvm",
+)
+
+_FINDING_LABEL_PREDICATE = " OR ".join(f"n:`{label}`" for label in FINDING_LABELS)
+
+
+def run_timestamp() -> str:
+    """The moment a scan started, for `prune_unseen_findings`.
+
+    Taken BEFORE the ingest, never after: everything the ingest writes then has
+    a later `updated_at` and survives the prune. Taken after, the prune would
+    delete the results the scan had just produced.
+
+    Module level rather than a method: it needs no state, and a caller that
+    mixes in only one mixin still has to be able to reach it.
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 
 class BaseMixin:
@@ -145,6 +170,91 @@ class BaseMixin:
 
         return stats
 
+    def prune_unseen_findings(self, user_id: str, project_id: str,
+                              sources, run_started_at: str) -> dict:
+        """Ingest-then-prune: remove a source's findings it stopped reporting.
+
+        WHY THIS REPLACED CLEAR-THEN-INGEST
+        Every scanner used to DELETE its findings up front and re-create them.
+        That deleted the operator's work with them: the mute they applied, the
+        verdict they recorded, the AI's cached review, the link from a fix item
+        back to the finding. Re-muting the same noise after every scan was the
+        visible symptom; the invisible one was a fix item pointing at a finding
+        id that no longer existed.
+
+        So a scan now MERGEs its findings (which refreshes `updated_at`), and
+        afterwards this removes the ones it did not touch. `updated_at` is
+        already stamped by every node write and is already tested as universal,
+        so "not seen in this run" is just "older than the run started".
+
+        TWO RULES THAT MAKE IT SAFE
+        1. A finding a PERSON touched is never deleted. Muted and human-judged
+           findings are kept and stamped `stale_since` instead, so the board can
+           show them as resolved and an operator can see that the scanner
+           stopped reporting something they had suppressed.
+        2. CALL THIS ONLY AFTER A SUCCESSFUL INGEST. A scan that failed halfway
+           reported nothing, and pruning on that would delete the entire
+           project's findings. The caller owns that decision; this method
+           cannot tell.
+        """
+        sources = [s for s in (sources or []) if s]
+        if not sources or not run_started_at:
+            return {"pruned": 0, "stale": 0}
+
+        query = f"""
+        MATCH (n)
+        WHERE n.user_id = $uid AND n.project_id = $pid
+          AND ({_FINDING_LABEL_PREDICATE})
+          AND coalesce(n.source, '') IN $sources
+          AND (n.updated_at IS NULL OR n.updated_at < datetime($since))
+        WITH n,
+             (n:Muted OR coalesce(n.triage_source, '') = 'human') AS keep
+        // Kept: stamped rather than deleted, so it shows as resolved and the
+        // person who judged it can see what happened to it.
+        FOREACH (_ IN CASE WHEN keep THEN [1] ELSE [] END |
+          SET n.stale_since = coalesce(n.stale_since, datetime()))
+        WITH collect(CASE WHEN keep THEN NULL ELSE n END) AS candidates,
+             count(CASE WHEN keep THEN 1 END) AS stale
+        WITH [c IN candidates WHERE c IS NOT NULL] AS doomed, stale
+        FOREACH (d IN doomed | DETACH DELETE d)
+        RETURN size(doomed) AS pruned, stale
+        """
+
+        # A kept finding the scanner reports AGAIN is alive again. Nothing else
+        # ever clears `stale_since` (the ingest MERGE only refreshes
+        # `updated_at`), so without this a human-confirmed finding that came
+        # back would stay "Resolved" on the board for ever.
+        revive = f"""
+        MATCH (n)
+        WHERE n.user_id = $uid AND n.project_id = $pid
+          AND ({_FINDING_LABEL_PREDICATE})
+          AND coalesce(n.source, '') IN $sources
+          AND n.stale_since IS NOT NULL
+          AND n.updated_at >= datetime($since)
+        REMOVE n.stale_since
+        RETURN count(n) AS revived
+        """
+
+        with self.driver.session() as session:
+            revived = session.run(
+                revive, uid=user_id, pid=project_id, sources=sources,
+                since=run_started_at,
+            ).single()
+            record = session.run(
+                query, uid=user_id, pid=project_id, sources=sources,
+                since=run_started_at,
+            ).single()
+
+        stats = {
+            "pruned": int((record["pruned"] if record else 0) or 0),
+            "stale": int((record["stale"] if record else 0) or 0),
+            "revived": int((revived["revived"] if revived else 0) or 0),
+        }
+        print(f"[*][graph-db] Pruned {stats['pruned']} findings no longer "
+              f"reported by {', '.join(sources)}; kept {stats['stale']} muted "
+              f"or human-judged as stale; revived {stats['revived']}")
+        return stats
+
     def clear_recon_data(self, user_id: str, project_id: str) -> dict:
         """Delete the RECON pipeline's own nodes for a project, and nothing else.
 
@@ -176,9 +286,14 @@ class BaseMixin:
                 MATCH (n)
                 WHERE n.user_id = $uid AND n.project_id = $pid
                   AND NOT ({_PRESERVED_LABEL_PREDICATE})
+                  // X7: findings are pruned AFTER a successful ingest, not
+                  // deleted before one. Deleting them here took the operator's
+                  // mutes and verdicts with them, every scan.
+                  AND NOT ({_FINDING_LABEL_PREDICATE})
                   AND NOT coalesce(n.source, '') IN $keep_sources
                   AND coalesce(n.ai_attack_synthetic, false) = false
                   AND NOT (n:Technology AND coalesce(n.detected_by, '') CONTAINS 'gvm')
+                  AND NOT (n:Certificate AND any(o IN coalesce(n.observed_by, []) WHERE o IN $keep_sources))
                 DETACH DELETE n
                 RETURN count(n) AS deleted
                 """,
@@ -227,11 +342,18 @@ class BaseMixin:
         }
 
         with self.driver.session() as session:
-            # 1. Delete GVM Vulnerability nodes (and all their relationships)
+            # 1. GVM's Vulnerability findings are NO LONGER deleted here (X7).
+            # Deleting them deleted the operator's mutes and verdicts with them,
+            # every scan. They are pruned after a successful ingest instead.
+            # Only ones a previous run left with no host attached are swept,
+            # because nothing will ever re-MERGE those.
             result = session.run(
                 """
                 MATCH (v:Vulnerability {user_id: $uid, project_id: $pid})
                 WHERE v.source = 'gvm'
+                  AND NOT (v)<-[:HAS_VULNERABILITY]-()
+                  AND NOT v:Muted
+                  AND coalesce(v.triage_source, '') <> 'human'
                 DETACH DELETE v
                 RETURN count(v) as deleted
                 """,
@@ -254,11 +376,15 @@ class BaseMixin:
             if record:
                 stats["traceroutes_deleted"] = record["deleted"]
 
-            # 1c. Delete GVM-sourced Certificate nodes (preserve recon/httpx certificates)
+            # 1c. Delete Certificate nodes observed ONLY by GVM. A certificate
+            # httpx/tlsx/OSINT also observed carries their name in observed_by and
+            # is preserved — source alone is whoever wrote last and cannot answer
+            # "does another scanner still need this".
             result = session.run(
                 """
                 MATCH (c:Certificate {user_id: $uid, project_id: $pid})
-                WHERE c.source = 'gvm'
+                WHERE coalesce(c.observed_by, []) = ['gvm']
+                   OR (coalesce(c.observed_by, []) = [] AND c.source = 'gvm')
                 DETACH DELETE c
                 RETURN count(c) as deleted
                 """,
@@ -268,10 +394,14 @@ class BaseMixin:
             if record:
                 stats["certificates_deleted"] = record["deleted"]
 
-            # 1d. Delete ExploitGvm nodes
+            # 1d. ExploitGvm is a FINDING too, and the strongest one the
+            # product has: it is what makes something "proven" on the board.
+            # Same rule (X7): a person's decision on one survives.
             result = session.run(
                 """
                 MATCH (e:ExploitGvm {user_id: $uid, project_id: $pid})
+                WHERE NOT e:Muted
+                  AND coalesce(e.triage_source, '') <> 'human'
                 DETACH DELETE e
                 RETURN count(e) as deleted
                 """,

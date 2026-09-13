@@ -1168,5 +1168,26 @@ class MemberInlineWritesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(finding_calls), 0)
 
 
+class ChainFindingExtractCompatibilityTests(unittest.TestCase):
+    """Strategy row 9. The deploy node rebuilds findings into
+    ChainFindingExtract from dicts a MEMBER produced, and a member running an
+    older prompt emits no related_finding_ids. That must rebuild, not raise, and
+    must not confirm anything."""
+
+    def test_a_legacy_finding_dict_rebuilds_with_no_confirmations(self):
+        from state import ChainFindingExtract
+        legacy = {"finding_type": "vulnerability_confirmed", "severity": "high",
+                  "title": "t", "evidence": "e", "related_cves": [],
+                  "related_ips": [], "confidence": 80, "step_iteration": 2}
+        rebuilt = ChainFindingExtract(**legacy)
+        self.assertEqual(rebuilt.related_finding_ids, [])
+        self.assertEqual(rebuilt.step_iteration, 2)
+
+    def test_a_reported_id_round_trips(self):
+        from state import ChainFindingExtract
+        item = ChainFindingExtract(title="t", related_finding_ids=["v1"])
+        self.assertEqual(ChainFindingExtract(**item.model_dump()).related_finding_ids, ["v1"])
+
+
 if __name__ == "__main__":
     unittest.main()

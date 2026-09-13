@@ -315,6 +315,36 @@ const Nmap = (
   </div>
 )
 
+const Tlsx = (
+  <div style={wrapperStyle}>
+    <div style={firstSectionTitleStyle}>How input is generated</div>
+    <p style={paraStyle}>
+      tlsx grabs the TLS certificate on each open port. Targets come from the graph:
+    </p>
+    <ul style={listStyle}>
+      <li><strong>IPs</strong> - read from IP nodes that already have Port relationships (output of Naabu/Masscan).</li>
+      <li><strong>Ports</strong> - the open ports on each IP, minus the HTTP/HTTPS ports the HTTP probe already grabs certs on. What remains is the gap: SMTPS, IMAPS, POP3S, LDAPS, FTPS and any other TLS port.</li>
+    </ul>
+    <p style={paraStyle}>
+      When an IP has a known hostname, tlsx sends it as the SNI so a shared frontend returns the right certificate instead of its default one. Custom IPs and ports from the partial recon modal merge with the graph data.
+    </p>
+
+    <div style={sectionTitleStyle}>How output transforms the graph</div>
+    <p style={paraStyle}>
+      Each grabbed certificate becomes a <strong>Certificate</strong> node carrying issuer, SAN list, validity dates and posture flags (expired, self-signed, hostname mismatch, wildcard):
+    </p>
+    <ul style={listStyle}>
+      <li>The Certificate is linked to its IP via <span style={codeStyle}>HAS_CERTIFICATE</span>.</li>
+      <li>For each in-scope SAN hostname the certificate names, a <span style={codeStyle}>COVERS_HOST</span> edge is created to that Subdomain, making the SAN list traversable.</li>
+      <li>The Service on that port is enriched with the negotiated TLS version, cipher and a service hint. Its name is never changed.</li>
+      <li>In-scope SAN hostnames are also fed back into the scan as new probe targets. Foreign names are recorded but never scanned.</li>
+    </ul>
+    <p style={{ ...paraStyle, margin: 0 }}>
+      Runs before the HTTP probe so the hostnames it discovers become probe targets in the same scan. Certificate posture also feeds the TLS hygiene findings and the subdomain-takeover scoring.
+    </p>
+  </div>
+)
+
 // ============================================================================
 // HTTP PROBING
 // ============================================================================
@@ -846,7 +876,7 @@ const VhostSni = (
       <li>The Vulnerability is attached to the discovered <strong>Subdomain</strong> via <span style={codeStyle}>HAS_VULNERABILITY</span>. For host-header-bypass findings the <strong>IP</strong> also gets the same Vulnerability so it surfaces in IP-level dashboards.</li>
       <li>Every probed Subdomain is enriched in place with <em>vhost_tested</em>, <em>vhost_hidden</em>, <em>vhost_routing_layer</em>, <em>vhost_status_code</em>, <em>vhost_size_delta</em>, and <em>sni_routed</em>.</li>
       <li>Every probed IP is enriched with <em>vhost_baseline_status</em>, <em>vhost_baseline_size</em>, <em>hosts_hidden_vhosts</em>, <em>hidden_vhost_count</em>, and <em>is_reverse_proxy</em>.</li>
-      <li>For every confirmed hidden vhost, a <strong>BaseURL</strong> is created (with <em>discovery_source = vhost_sni_enum</em>) and linked to the Subdomain via <span style={codeStyle}>HAS_BASEURL</span>, so a follow-up partial recon can route the new URL through Katana and Nuclei.</li>
+      <li>For every confirmed hidden vhost, a <strong>BaseURL</strong> is created (with <em>discovery_source = vhost_sni_enum</em>) and linked to the Subdomain via <span style={codeStyle}>HAS_BASE_URL</span>, so a follow-up partial recon can route the new URL through Katana and Nuclei.</li>
     </ul>
     <p style={{ ...paraStyle, margin: 0 }}>
       Findings are deduplicated per <em>(hostname + IP + port + layer)</em>. Re-running refreshes <em>last_seen</em> rather than creating duplicates.
@@ -1018,6 +1048,7 @@ export const INPUT_LOGIC_TOOLTIPS: Record<string, ReactNode> = {
   Naabu,
   Masscan,
   Nmap,
+  Tlsx,
   // HTTP probing
   Httpx,
   // Resource enumeration

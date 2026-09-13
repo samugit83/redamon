@@ -145,6 +145,43 @@ def provider_from_cname(cname: Optional[str]) -> Optional[str]:
     return best_match[1]
 
 
+# Issuer-string fragments that identify the SaaS edge that issued the cert. A
+# THIRD independent provider signal (alongside CNAME and tool fingerprint) that
+# works even when the host has NO CNAME at all.
+_ISSUER_PROVIDER_MARKERS: dict[str, str] = {
+    "cloudflare": "cloudflare",
+    "amazon": "aws-s3",
+    "google trust services": "google",
+    "github": "github-pages",
+    "fastly": "fastly",
+    "heroku": "heroku",
+    "shopify": "shopify",
+    "zendesk": "zendesk",
+    "netlify": "netlify",
+}
+
+
+def provider_from_cert(issuer: Optional[str], sans: Optional[list]) -> Optional[str]:
+    """Provider identity from a certificate's issuer + SAN list.
+
+    Works with NO CNAME. First tries the SAN entries against the same
+    PROVIDER_FROM_SIGNAL suffix table provider_from_cname uses (a provider's
+    default cert names its own edge domain in the SAN), then falls back to
+    issuer-string markers. Returns a canonical provider slug or None.
+    """
+    for san in sans or []:
+        if not isinstance(san, str):
+            continue
+        prov = provider_from_cname(san)
+        if prov:
+            return prov
+    lowered = (issuer or "").lower()
+    for marker, provider in _ISSUER_PROVIDER_MARKERS.items():
+        if marker in lowered:
+            return provider
+    return None
+
+
 # =============================================================================
 # Live-CNAME validation (false-positive suppression for non-dangling targets)
 # =============================================================================
@@ -671,6 +708,18 @@ def score_finding(
         -40  ai_waf_likely (the AI classifier identified the response as a
              WAF block page disguised as a third-party SaaS unclaimed page —
              strong signal of a fingerprint collision)
+        -25  cert_provider_mismatch (cert issuer/SAN identifies a provider that
+             disagrees with the CNAME-derived one — independent fingerprint
+             evidence, no CNAME needed)
+        -35  cert_name_match AND cert clean (not expired/self_signed/mismatched):
+             a valid cert naming THIS host proves the SaaS edge serves the legit
+             customer. Stronger than the DNS-only cname_alive -30, and unlike it
+             this ALSO applies to AUTO_EXPLOITABLE_PROVIDERS (they wildcard-
+             resolve and defeat the DNS check by design)
+        +20  cert_provider_default (the edge presents its own default/unclaimed
+             cert rather than the customer's — positive evidence of a claim)
+        +10  cert_absent (the 443 TLS handshake fails entirely — consistent with
+             a dangling target)
 
     verdict:
         confirmed      if score >= threshold + 10
@@ -711,6 +760,19 @@ def score_finding(
         score -= 30
     if finding.get("ai_waf_likely"):
         score -= 40
+
+    # Certificate-derived signals (Phase 3). Independent of DNS/CNAME.
+    if finding.get("cert_provider_mismatch"):
+        score -= 25
+    cert_clean = not (finding.get("cert_expired") or finding.get("cert_self_signed")
+                      or finding.get("cert_mismatched"))
+    if finding.get("cert_name_match") and cert_clean:
+        # Applies even to auto-exploitable providers, unlike cname_alive.
+        score -= 35
+    if finding.get("cert_provider_default"):
+        score += 20
+    if finding.get("cert_absent"):
+        score += 10
 
     score = max(0, min(100, score))
 

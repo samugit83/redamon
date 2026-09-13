@@ -151,6 +151,7 @@ OSINT analysts, threat intelligence teams, or red team operators building a targ
 
     // --- VHost & SNI: explicitly disabled - preset's identity is "no active scanning" ---
     vhostSniEnabled: false,
+    tlsxEnabled: false,        // zero-packets preset: do not open TLS handshakes (tlsx defaults on)
 
     // --- CVE Lookup: high max ---
     cveLookupEnabled: true,

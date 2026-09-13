@@ -394,6 +394,11 @@ class ChainFindingExtract(BaseModel):
     evidence: str = ""
     related_cves: List[str] = Field(default_factory=list)
     related_ips: List[str] = Field(default_factory=list)
+    # K1: the recon finding(s) this step proved, by node id. The agent sees the
+    # ids in the evidence it was given, so it can report which one it confirmed;
+    # a CONFIRMS edge from here is what makes the Priority Board treat the
+    # finding as proven.
+    related_finding_ids: List[str] = Field(default_factory=list)
     confidence: int = 80
     # Member think node stamps this with the producing ReAct iteration so the
     # parent's format_chain_context renders "(step N)" after fireteam roll-up.

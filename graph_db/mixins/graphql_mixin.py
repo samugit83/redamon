@@ -5,6 +5,7 @@ Contains methods for updating Neo4j graph with GraphQL security scan results.
 Separated from recon_mixin.py for better organization.
 """
 
+from urllib.parse import urlparse
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
 
@@ -124,7 +125,6 @@ class GraphQLMixin:
 
                 try:
                     # Parse endpoint URL to get path and baseurl
-                    from urllib.parse import urlparse
                     parsed = urlparse(endpoint_url)
                     path = parsed.path or "/"
                     baseurl = f"{parsed.scheme}://{parsed.netloc}"

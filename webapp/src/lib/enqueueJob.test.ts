@@ -11,12 +11,14 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 const h = vi.hoisted(() => ({
   projectFindUnique: vi.fn(),
   jqCreate: vi.fn(),
+  authProfileFindUnique: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
   default: {
     project: { findUnique: (...a: unknown[]) => h.projectFindUnique(...a) },
     jobQueue: { create: (...a: unknown[]) => h.jqCreate(...a) },
+    projectAuthProfile: { findUnique: (...a: unknown[]) => h.authProfileFindUnique(...a) },
   },
 }))
 
@@ -32,6 +34,41 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.projectFindUnique.mockResolvedValue(PROJECT)
   h.jqCreate.mockResolvedValue({ id: 'jq1' })
+  // clearAllMocks clears CALLS, not implementations, so without an explicit
+  // default a profile set by one test leaks into the fingerprint of the next.
+  h.authProfileFindUnique.mockResolvedValue(null)
+})
+
+// The auth profile is a RELATION, so settingsFingerprint (Project-row fields
+// only) cannot see it. Without folding it in, editing the recorded session
+// between enqueue and dispatch left the queued scan running the old identity
+// with no drift detected.
+const AUTH_PROFILE = {
+  authType: 'cookie', authHeaderName: '', authValue: 'sid=one',
+  extraHeaders: {}, scopeHosts: ['example.com'],
+}
+
+test('settingsHash changes when the auth profile value changes', async () => {
+  h.authProfileFindUnique.mockResolvedValue(AUTH_PROFILE)
+  await enqueueJob({ projectId: 'p1', userId: 'u1', kind: 'full_recon' })
+  const first = h.jqCreate.mock.calls[0][0].data.settingsHash
+
+  h.jqCreate.mockClear()
+  h.authProfileFindUnique.mockResolvedValue({ ...AUTH_PROFILE, authValue: 'sid=two' })
+  await enqueueJob({ projectId: 'p1', userId: 'u1', kind: 'full_recon' })
+  const second = h.jqCreate.mock.calls[0][0].data.settingsHash
+
+  expect(first).not.toBe(second)
+  expect(first).not.toContain('sid=')   // the secret never enters the hash input
+})
+
+test('settingsHash is stable when the profile is unchanged', async () => {
+  h.authProfileFindUnique.mockResolvedValue(AUTH_PROFILE)
+  await enqueueJob({ projectId: 'p1', userId: 'u1', kind: 'full_recon' })
+  const a = h.jqCreate.mock.calls[0][0].data.settingsHash
+  h.jqCreate.mockClear()
+  await enqueueJob({ projectId: 'p1', userId: 'u1', kind: 'full_recon' })
+  expect(h.jqCreate.mock.calls[0][0].data.settingsHash).toBe(a)
 })
 
 test('an unknown kind is refused with 400 and writes nothing', async () => {
@@ -62,7 +99,10 @@ test('a valid enqueue stores the fingerprint + envelope + queued status', async 
   expect(r).toMatchObject({ ok: true, status: 201, id: 'jq1' })
   const arg = h.jqCreate.mock.calls[0][0]
   expect(arg.data.status).toBe('queued')
-  expect(arg.data.settingsHash).toBe(settingsFingerprint('full_recon', PROJECT as unknown as Record<string, unknown>))
+  // full_recon is auth-aware, so the fingerprint folds in the auth-profile
+  // contribution ('none' when the project has no profile).
+  expect(arg.data.settingsHash).toBe(
+    settingsFingerprint('full_recon', PROJECT as unknown as Record<string, unknown>, { authProfileFp: 'none' }))
   expect(arg.data.envelopeBytes).toBe(BigInt(2147483648))
   expect(arg.data.priority).toBe(10)
 })

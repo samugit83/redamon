@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { TrendingUp } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
@@ -64,7 +64,33 @@ import { AttackFlowSankey } from './components/AttackFlowSankey'
 import { AttackChainSankey } from './components/AttackChainSankey'
 import { VulnAccumulationArea } from './components/VulnAccumulationArea'
 import { formatNumber } from './utils/formatters'
+import { type RiskFinding } from '@/lib/projectRisk'
 import styles from './page.module.css'
+
+/**
+ * The per-finding risks the last triage run produced, for the Risk Score gauge.
+ *
+ * Read through the Priority Board's own endpoint rather than a new one: it is
+ * already owner-guarded, already excludes muted findings, and already returns
+ * exactly these rows. A failure leaves the list empty, and the gauge falls back
+ * to the legacy formula rather than showing a project as risk-free.
+ */
+function useTriageRisks(projectId: string | null): RiskFinding[] | undefined {
+  const [risks, setRisks] = useState<RiskFinding[] | undefined>(undefined)
+  useEffect(() => {
+    if (!projectId) {
+      setRisks(undefined)
+      return
+    }
+    let cancelled = false
+    fetch(`/api/triage/findings?projectId=${encodeURIComponent(projectId)}`)
+      .then(res => (res.ok ? res.json() : { findings: [] }))
+      .then(body => { if (!cancelled) setRisks(body.findings ?? []) })
+      .catch(() => { if (!cancelled) setRisks([]) })
+    return () => { cancelled = true }
+  }, [projectId])
+  return risks
+}
 
 export default function InsightsPage() {
   const { projectId, currentProject, isLoading: projectLoading } = useProject()
@@ -78,6 +104,7 @@ export default function InsightsPage() {
   const attackChains = useAttackChains(projectId)
   const pipeline = usePipelineStatus(projectId)
   const sessions = useActiveSessions()
+  const triageRisks = useTriageRisks(projectId)
 
   const isAnyLoading = graphOverview.isLoading || vulns.isLoading || surface.isLoading || activity.isLoading
 
@@ -139,7 +166,7 @@ export default function InsightsPage() {
         <div className={styles.sectionTitle}>Executive Summary</div>
         <div className={styles.grid3}>
           <SecurityPostureRadar graphData={graphOverview.data} vulnData={vulns.data} surfaceData={surface.data} exploitSuccessCount={attackChains.data?.exploitSuccesses?.length || 0} chainFindingsCount={attackChains.data?.findingsByType?.reduce((s: number, d: { count: number }) => s + d.count, 0) || 0} isLoading={graphOverview.isLoading || vulns.isLoading || surface.isLoading || attackChains.isLoading} />
-          <RiskScoreGauge vulnData={vulns.data} surfaceData={surface.data} graphData={graphOverview.data} exploitSuccessCount={attackChains.data?.exploitSuccesses?.length || 0} chainFindingsBySeverity={attackChains.data?.findingsBySeverity} isLoading={vulns.isLoading || surface.isLoading || graphOverview.isLoading || attackChains.isLoading} />
+          <RiskScoreGauge vulnData={vulns.data} surfaceData={surface.data} graphData={graphOverview.data} exploitSuccessCount={attackChains.data?.exploitSuccesses?.length || 0} chainFindingsBySeverity={attackChains.data?.findingsBySeverity} triageRisks={triageRisks} isLoading={vulns.isLoading || surface.isLoading || graphOverview.isLoading || attackChains.isLoading} />
           <AttackKillChainFunnel data={attackChains.data?.phaseProgression} isLoading={attackChains.isLoading} />
         </div>
       </div>

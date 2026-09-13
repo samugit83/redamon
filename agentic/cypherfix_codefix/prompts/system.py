@@ -4,9 +4,17 @@ from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 
 
 def build_codefix_system_prompt(remediation: dict, repo_structure: str, settings) -> str:
+    # Every field below is triage-LLM prose derived from scanner output, so it
+    # is untrusted input to this prompt, not instructions for this agent.
     cve_ids = ', '.join(remediation.get('cveIds', [])) if remediation.get('cveIds') else 'N/A'
     affected = remediation.get('affectedAssets', [])
     affected_text = '\n'.join(f"  - {a}" for a in affected) if affected else 'N/A'
+    title = wrap_untrusted(remediation.get('title', 'Unknown'), "FINDING_TITLE")
+    cve_ids = wrap_untrusted(cve_ids, "CVE_IDS")
+    affected_text = wrap_untrusted(affected_text, "AFFECTED_ASSETS")
+    solution = wrap_untrusted(
+        remediation.get('solution', 'No solution provided.'), "SUGGESTED_SOLUTION"
+    )
 
     return f"""You are CodeFix, an automated vulnerability remediation agent. You fix security
 vulnerabilities in code repositories by reading, understanding, and editing source code.
@@ -42,7 +50,7 @@ Do NOT plan everything upfront. Instead, explore iteratively:
 
 # Task: Fix This Vulnerability
 
-Title: {remediation.get('title', 'Unknown')}
+Title: {title}
 Type: {remediation.get('remediationType', 'code_fix')}
 Severity: {remediation.get('severity', 'medium')}
 Description:
@@ -54,7 +62,7 @@ Affected Assets:
 {affected_text}
 
 AI-Suggested Solution:
-{remediation.get('solution', 'No solution provided.')}
+{solution}
 
 Evidence:
 {wrap_untrusted(remediation.get('evidence', 'No evidence provided.'), "EVIDENCE")}

@@ -266,6 +266,22 @@ bodies (otherwise discarded after fingerprinting) before the proxy existed. It
 mints no `X-Redamon-Ctx` tag. So there are two ingest routes into the same table:
 the proxy/spool path and this direct-POST path.
 
+### The `operator` source (authenticated-session recording)
+
+A third source, `operator`, is the operator's own browser driven through the proxy
+to record a login. While a `RecordingSession` is active, the webapp emits an
+`active_recording` block (`{tag, scope_hosts, expires_at}`) in the capture-config;
+the proxy stamps that **pre-signed** operator tag onto *untagged, in-scope*
+requests (`capture_addon.py`, guarded so it never overrides a real tag and never
+tags out-of-scope hosts). The ingest worker verifies the tag with
+`INTERNAL_API_KEY`, extracts the session (cookie / bearer / CSRF) **before**
+redaction via [`session_extract.py`](../../scanners/capture_proxy/session_extract.py),
+and POSTs it to `POST /api/internal/auth-profile/{projectId}/observe`. The corpus
+row is still stored redacted; the raw secret lands only in the project's
+`ProjectAuthProfile` (write-only, never returned to a browser). Every recon tool
+and the agent then attach that profile to in-scope requests. Full feature docs:
+the wiki page **Authenticated-Session-Recording**.
+
 ---
 
 ## 5. Stage 2: The capture proxy

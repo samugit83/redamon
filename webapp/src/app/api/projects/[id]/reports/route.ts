@@ -295,6 +295,26 @@ function condenseForAgent(data: ReturnType<typeof gatherReportData> extends Prom
         internalPatternMatch: f.internalPatternMatch,
       })),
     },
+    tlsx: {
+      totalCertificates: data.tlsx.totalCertificates,
+      expired: data.tlsx.expired,
+      expiringSoon: data.tlsx.expiringSoon,
+      selfSigned: data.tlsx.selfSigned,
+      mismatched: data.tlsx.mismatched,
+      wildcard: data.tlsx.wildcard,
+      topIssuers: data.tlsx.topIssuers.slice(0, 10),
+      notableCerts: data.tlsx.findings
+        .filter(f => f.expired || f.selfSigned || f.mismatched)
+        .slice(0, 15)
+        .map(f => ({
+          subjectCn: f.subjectCn,
+          issuer: f.issuer,
+          expired: f.expired,
+          selfSigned: f.selfSigned,
+          mismatched: f.mismatched,
+          source: f.source,
+        })),
+    },
     webCachePoison: {
       totalFindings: data.webCachePoison.totalFindings,
       confirmed: data.webCachePoison.confirmed,

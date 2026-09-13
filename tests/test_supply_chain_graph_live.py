@@ -198,7 +198,10 @@ class TestSupplyChainGraphLive(unittest.TestCase):
                          RETURN v.id AS id, v.cvss_metrics AS cvss,
                                 v.severity AS severity, v.source AS source""")
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["id"], "GHSA-live-cve")
+        # One node per (package, advisory): the id carries both, so the same
+        # advisory on two packages is two findings with their own facts.
+        self.assertTrue(rows[0]["id"].startswith("osv:pkg:npm/axios@1.14.1:"), rows[0]["id"])
+        self.assertTrue(rows[0]["id"].endswith(":GHSA-live-cve"), rows[0]["id"])
         self.assertTrue(rows[0]["cvss"].startswith("CVSS:3.1/"))
         self.assertEqual(rows[0]["severity"], "high")
         # The SCA advisories sheet filters on this; without it the sheet would

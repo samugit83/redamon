@@ -2,12 +2,15 @@
  * "Is anything writing this project's live graph right now?" (Section 4A.3).
  *
  * Activation deletes and rebuilds the live graph, so it must be mutually
- * exclusive with the three things that write it:
+ * exclusive with the four things that write it:
  *   - a full recon scan          (orchestrator recon status)
  *   - a partial recon run        (orchestrator partial-run list)
  *   - an agent / LATS session    (Conversation.agentRunning - the agent writes
  *                                 AttackChain-family nodes and reasons over the
  *                                 graph; swapping it mid-run changes its world)
+ *   - a triage run               (TriageRun.status running|publishing with a
+ *                                 fresh heartbeat - it reads the whole graph,
+ *                                 then writes the ranking back at the end)
  *
  * FAIL CLOSED: if the orchestrator cannot be reached we report "busy" rather than
  * assume idle, because guessing wrong here means swapping the graph under a
@@ -15,6 +18,7 @@
  */
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { findLiveTriageRun } from '@/lib/triageRun'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
@@ -31,7 +35,20 @@ const ACTIVE_SECONDARY_STATUSES = new Set(['running', 'starting', 'paused', 'sto
  * Used by ACTIVATION, which is exclusive with all three writers.
  */
 export async function describeLiveGraphWriters(projectId: string): Promise<string | null> {
-  // Agent sessions first: a plain DB read, no network.
+  // A triage run is the fourth writer. It reads the whole graph in memory and
+  // publishes at the end, so swapping the graph mid-run makes it write a
+  // ranking of findings that no longer exist. Checked first: it is a plain DB
+  // read, and a stale heartbeat is swept here so a crashed agent does not lock
+  // the project.
+  try {
+    const triage = await findLiveTriageRun(projectId)
+    if (triage) return 'a triage run is in progress'
+  } catch (err) {
+    console.error('[graphWriters] triage-run check failed (treating as busy):', err)
+    return 'the triage run state could not be verified'
+  }
+
+  // Agent sessions next: also a plain DB read, no network.
   try {
     const agent = await prisma.conversation.findFirst({
       where: { projectId, agentRunning: true },

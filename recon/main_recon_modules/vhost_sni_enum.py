@@ -784,12 +784,15 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
         if host_ip == ip:
             out.add(host_key.strip().lower())
 
-    # 3. TLS SAN list captured per-URL by http_probe
+    # 3. TLS SAN list captured per-URL by http_probe. The real path is
+    # info["tls"]["certificate"]["san"]; the old code read tls_subject_alt_names
+    # / tls_sans, which NOTHING writes, so this source was dead in production.
     for url, info in (http_probe.get("by_url") or {}).items():
         if not isinstance(info, dict):
             continue
         if (info.get("host") or "") == ip or info.get("ip") == ip:
-            for san in (info.get("tls_subject_alt_names") or info.get("tls_sans") or []):
+            cert = ((info.get("tls") or {}).get("certificate") or {})
+            for san in (cert.get("san") or []):
                 if isinstance(san, str) and san.strip():
                     out.add(san.strip().lower().lstrip("*."))
 
@@ -815,6 +818,17 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
     ptr = (ip_recon.get(ip) or {}).get("reverse_dns")
     if isinstance(ptr, str) and ptr.strip():
         out.add(ptr.strip().lower().rstrip("."))
+
+    # 8. tlsx SAN list, matched on the scanned IP. Covers non-HTTP TLS ports and
+    # bare IPs httpx never dialled; empty when tlsx is off (harmless).
+    tlsx = combined_result.get("tlsx") or {}
+    for _key, entry in (tlsx.get("by_target") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("scanned_ip") == ip or entry.get("ip") == ip:
+            for san in (entry.get("san") or []):
+                if isinstance(san, str) and san.strip():
+                    out.add(san.strip().lower().lstrip("*."))
 
     return [h for h in out if h and "." in h]
 

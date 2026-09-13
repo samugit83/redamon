@@ -3,15 +3,18 @@
 from pathlib import Path
 from uuid import uuid4
 from ..state import DiffBlock
+from .repo_paths import RepoPathError, resolve_in_repo
 
 
 async def github_edit(state, file_path: str, old_string: str,
                       new_string: str, replace_all: bool = False) -> str:
     """Exact string replacement in a file. Mirrors Claude Code's Edit tool."""
-    repo_path = state.repo_path
-    full_path = repo_path / file_path
+    try:
+        full_path = resolve_in_repo(state.repo_path, file_path, allow_root=False)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
 
-    if not full_path.exists():
+    if not full_path.exists() or not full_path.is_file():
         return f"Error: File not found: {file_path}. Use github_glob to find the correct path."
 
     if file_path not in state.files_read:
@@ -43,6 +46,7 @@ async def github_edit(state, file_path: str, old_string: str,
     # Perform replacement
     new_content = content.replace(old_string, new_string, -1 if replace_all else 1)
     full_path.write_text(new_content, encoding='utf-8')
+    was_modified = file_path in state.files_modified
     state.files_modified.add(file_path)
 
     # Generate diff block
@@ -50,6 +54,7 @@ async def github_edit(state, file_path: str, old_string: str,
         file_path, old_string, new_string, content, new_content, state,
     )
     state.diff_blocks.append(diff_block)
+    state.block_backups[diff_block.block_id] = (file_path, content, was_modified)
 
     # Stream diff block to frontend
     if state.streaming_callback:

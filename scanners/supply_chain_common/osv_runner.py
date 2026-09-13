@@ -223,6 +223,42 @@ def cvss_vector_for_vuln(vuln):
     return None
 
 
+def fixed_version_for_vuln(vuln, package_name=None):
+    """The version that fixes this advisory, or "". Never raises.
+
+    Without it a fix item can only say "upgrade this package"; with it, it says
+    "upgrade to 4.17.21", which is the difference between a ticket somebody has
+    to research and one they can act on.
+
+    OSV puts it in `affected[].ranges[].events[].fixed`. An advisory can carry
+    several affected packages and several ranges, so the LOWEST fixed version
+    that appears is taken: it is the smallest upgrade that resolves it.
+    """
+    if not isinstance(vuln, dict):
+        return ""
+    candidates = []
+    for affected in vuln.get("affected") or []:
+        if not isinstance(affected, dict):
+            continue
+        if package_name:
+            pkg = affected.get("package") or {}
+            name = pkg.get("name") if isinstance(pkg, dict) else None
+            if name and name != package_name:
+                continue
+        for rng in affected.get("ranges") or []:
+            if not isinstance(rng, dict):
+                continue
+            for event in rng.get("events") or []:
+                if isinstance(event, dict) and event.get("fixed"):
+                    candidates.append(str(event["fixed"])[:64])
+    if not candidates:
+        return ""
+    # Sorted as strings rather than parsed as semver: this is display text, and
+    # a wrong-but-plausible parse of an odd version scheme would be worse than
+    # an occasionally suboptimal pick.
+    return sorted(set(candidates))[0]
+
+
 def parse_osv_json(raw):
     """Split an osv-scanner JSON document into packages / malicious / vulnerable.
 
@@ -277,6 +313,8 @@ def parse_osv_json(raw):
                     "summary": vuln.get("summary") or "",
                     "severity": severity_for_vuln(vuln),
                     "cvss_vector": cvss_vector_for_vuln(vuln),
+                    "fixed_version": fixed_version_for_vuln(vuln, name),
+                    "summary_detail": vuln.get("details") or "",
                 }
                 if vid.startswith("MAL-"):
                     out["malicious"].append(finding)

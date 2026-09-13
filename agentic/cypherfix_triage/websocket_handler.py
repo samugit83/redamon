@@ -6,6 +6,7 @@ import logging
 import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 
+from cypherfix_errors import safe_error
 from .orchestrator import TriageOrchestrator
 from .state import TriageState
 
@@ -53,8 +54,10 @@ class TriageStreamingCallback:
             "summary": summary,
         })
 
-    async def on_error(self, message: str, recoverable: bool = True):
-        await self._send("error", {"message": message, "recoverable": recoverable})
+    async def on_error(self, message: str, recoverable: bool = True, code: str = ""):
+        await self._send("error", {
+            "message": message, "recoverable": recoverable, "code": code,
+        })
 
     async def _send(self, msg_type: str, payload: dict):
         try:
@@ -188,8 +191,10 @@ class TriageRunCallback:
             "summary": summary,
         })
 
-    async def on_error(self, message: str, recoverable: bool = True):
-        await self._send("error", {"message": message, "recoverable": recoverable})
+    async def on_error(self, message: str, recoverable: bool = True, code: str = ""):
+        await self._send("error", {
+            "message": message, "recoverable": recoverable, "code": code,
+        })
 
     async def _send(self, msg_type: str, payload: dict):
         self.run.record(msg_type, payload)
@@ -227,6 +232,26 @@ def _claim_triage_slot(project_id: str) -> bool:
 def _release_triage_slot(project_id: str) -> None:
     """Free the slot. Safe to call twice."""
     _TRIAGE_IN_FLIGHT.discard(project_id)
+
+
+def stop_project_run(project_id: str) -> dict:
+    """Cancel the in-flight run for a project, from outside the socket.
+
+    Called by `/graph/triage` op `stop_run` when the webapp is about to delete
+    the project (X12). Without it the run would keep working against a project
+    that is being deleted, and only notice at its next heartbeat.
+
+    Cancelling is enough: the run's own `finally` releases the slot and reports
+    the outcome, and its publish and heartbeat calls fail closed once the
+    project row is gone.
+    """
+    run = _RUNS.get(project_id)
+    if run is None or not run.is_active:
+        return {"stopped": False, "reason": "no run in progress"}
+    run.status = "stopped"
+    if run.task is not None:
+        run.task.cancel()
+    return {"stopped": True}
 
 
 async def handle_triage_websocket(websocket: WebSocket):
@@ -351,7 +376,11 @@ async def handle_triage_websocket(websocket: WebSocket):
                     except Exception as e:
                         logger.exception("Triage failed")
                         run.status = "error"
-                        await TriageRunCallback(run).on_error(str(e), recoverable=False)
+                        await TriageRunCallback(run).on_error(
+                            safe_error("internal_error"),
+                            recoverable=False,
+                            code="internal_error",
+                        )
                     finally:
                         # The run owns its own teardown now that it outlives the
                         # socket: nothing else is guaranteed to still be around

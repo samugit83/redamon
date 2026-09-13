@@ -368,11 +368,25 @@ def parse_naabu_output(output_file: str, settings: dict = None) -> Dict:
             if port:
                 all_ports.add(port)
 
+            # naabu omits "host" entirely when the target was a bare IP with no
+            # reverse DNS, and by_host is the ONLY source of Port/Service nodes
+            # (port_mixin reads by_ip for CDN fields alone). So an IP-mode scan of
+            # a PTR-less target used to produce an IP node with no ports at all,
+            # and every port-keyed consumer downstream -- Service enrichment,
+            # tlsx's tls_service_hint, the partial-recon input list -- had
+            # nothing to attach to. Key it by the IP, which is what the
+            # partial-recon path already does for user-supplied IPs.
+            #
+            # Deliberately a separate name: `host` stays empty so the IP is not
+            # appended to by_ip[...]["hostnames"], which callers read as real
+            # hostnames (SNI, cert subject matching, httpx vhosts).
+            host_key = host or ip
+
             # Organize by host
-            if host:
-                if host not in by_host:
-                    by_host[host] = {
-                        "host": host,
+            if host_key:
+                if host_key not in by_host:
+                    by_host[host_key] = {
+                        "host": host_key,
                         "ip": ip,
                         "ports": [],
                         "port_details": [],
@@ -380,12 +394,12 @@ def parse_naabu_output(output_file: str, settings: dict = None) -> Dict:
                         "is_cdn": bool(cdn or cdn_name)
                     }
 
-                if port and port not in by_host[host]["ports"]:
-                    by_host[host]["ports"].append(port)
+                if port and port not in by_host[host_key]["ports"]:
+                    by_host[host_key]["ports"].append(port)
 
                     # Determine service based on common port mappings
                     service = get_service_name(port)
-                    by_host[host]["port_details"].append({
+                    by_host[host_key]["port_details"].append({
                         "port": port,
                         "protocol": "tcp",
                         "service": service

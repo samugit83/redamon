@@ -1220,6 +1220,53 @@ def test_imports_resolve():
 # Runner
 # ===========================================================================
 
+def test_auth_header_stays_separate_from_ctx_tag_in_hakrawler_join():
+    """Row 1: hakrawler packs ALL headers into ONE -h argument joined by ';;',
+    and the internal X-Redamon-Ctx tag is appended to that same list. An auth
+    value carrying ';;' (or ordered after the tag) could split or spoof the tag.
+    The profile's lines must lead and stay their own element."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    captured_cmd = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd['cmd'] = cmd
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.return_value = ""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen), \
+         mock.patch("helpers.proxy_routing.get_capture_routing",
+                    return_value=("http://proxy:8888", "signed-ctx-token")):
+        run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=1,
+            threads=1,
+            timeout=5,
+            max_urls=10,
+            include_subs=False,
+            insecure=True,
+            allowed_hosts={"example.com"},
+            custom_headers=["Cookie: sid=abc123"],
+            exclude_patterns=[],
+            parallelism=1,
+        )
+
+    cmd = captured_cmd['cmd']
+    assert "-h" in cmd, cmd
+    joined = cmd[cmd.index("-h") + 1]
+    parts = joined.split(";;")
+    assert parts[0] == "Cookie: sid=abc123", parts
+    assert "X-Redamon-Ctx: signed-ctx-token" in parts, parts
+    # The auth element must not itself contain the delimiter or the tag.
+    assert ";;" not in parts[0]
+    assert "X-Redamon-Ctx" not in parts[0]
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     passed = 0

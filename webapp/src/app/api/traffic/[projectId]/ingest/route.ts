@@ -20,7 +20,7 @@ import type { Prisma } from '@prisma/client'
 const MAX_INLINE_BODY_BYTES = (parseInt(process.env.CAPTURE_PROXY_MAX_BODY_KB || '64', 10) || 64) * 1024
 const MAX_TXNS_PER_REQUEST = 2000
 
-const VALID_SOURCES = new Set(['recon', 'agent'])
+const VALID_SOURCES = new Set(['recon', 'agent', 'operator'])
 
 // Postgres text AND jsonb reject NUL (0x00) with error 22021: a single such byte
 // in any captured (attacker-controlled) field makes the whole createMany batch fail

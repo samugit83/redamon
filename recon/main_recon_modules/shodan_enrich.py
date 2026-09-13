@@ -52,6 +52,38 @@ SHODAN_API_BASE = "https://api.shodan.io"
 INTERNETDB_BASE = "https://internetdb.shodan.io"
 
 
+def _normalize_shodan_ssl(ssl_block) -> dict:
+    """Normalise Shodan's per-service ``ssl`` block to RedAmon's cert shape.
+
+    Phase 0.6: this block was parsed by Shodan and thrown away, despite
+    carrying CN, issuer, serial, expiry, JARM and JA3S for free -- data the
+    pipeline otherwise pays TLS handshakes to obtain.
+    """
+    if not isinstance(ssl_block, dict):
+        return {}
+    cert = ssl_block.get("cert") or {}
+    subject = cert.get("subject") or {}
+    issuer = cert.get("issuer") or {}
+    fingerprint = (cert.get("fingerprint") or {}) if isinstance(cert.get("fingerprint"), dict) else {}
+    issuer_parts = [issuer.get("CN"), issuer.get("O")]
+    cipher = ssl_block.get("cipher") or {}
+    out = {
+        "subject_cn": subject.get("CN") or "",
+        "issuer": ", ".join([x for x in issuer_parts if x]),
+        "issuer_cn": issuer.get("CN") or "",
+        "serial": str(cert.get("serial") or "") or None,
+        "expired": bool(cert.get("expired")) if cert.get("expired") is not None else None,
+        "not_before": cert.get("issued") or None,
+        "not_after": cert.get("expires") or None,
+        "fingerprint_sha256": fingerprint.get("sha256") or None,
+        "jarm": ssl_block.get("jarm") or None,
+        "ja3s": ssl_block.get("ja3s") or None,
+        "cipher": cipher.get("name") if isinstance(cipher, dict) else None,
+        "versions": [v for v in (ssl_block.get("versions") or []) if isinstance(v, str)],
+    }
+    return {k: v for k, v in out.items() if v not in (None, "", [])}
+
+
 def _extract_ips_from_recon(combined_result: dict) -> list[str]:
     """Extract unique IPv4 addresses from domain discovery results."""
     ips: set[str] = set()
@@ -166,6 +198,7 @@ def _lookup_single_ip(ip: str, use_internetdb: bool, api_key: str, key_rotator, 
                     "version": svc.get("version", ""),
                     "banner": (svc.get("data", "") or "")[:500],
                     "module": svc.get("_shodan", {}).get("module", ""),
+                    "ssl": _normalize_shodan_ssl(svc.get("ssl")),
                 })
             logger.info(f"  Shodan host lookup: {ip} — {len(host_entry['ports'])} ports, "
                         f"{len(host_entry['vulns'])} vulns")

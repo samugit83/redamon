@@ -33,10 +33,12 @@ import styles from './ProjectForm.module.css'
 
 // Import sections
 import { TargetSection } from './sections/TargetSection'
+import { AuthenticationSection } from './sections/AuthenticationSection'
 import { ScanModulesSection } from './sections/ScanModulesSection'
 import { NaabuSection } from './sections/NaabuSection'
 import { MasscanSection } from './sections/MasscanSection'
 import { NmapSection } from './sections/NmapSection'
+import { TlsxSection } from './sections/TlsxSection'
 import { HttpxSection } from './sections/HttpxSection'
 import { NucleiSection } from './sections/NucleiSection'
 import { KatanaSection } from './sections/KatanaSection'
@@ -1055,6 +1057,7 @@ export function ProjectForm({
         {activeTab === 'target' && viewMode === 'tabs' && (
           <>
             <TargetSection data={formData} updateField={updateField} mode={mode} />
+            <AuthenticationSection data={formData} updateField={updateField} projectId={projectId} mode={mode} />
             <ScanModulesSection data={formData} updateField={updateField} />
           </>
         )}
@@ -1079,6 +1082,8 @@ export function ProjectForm({
             )}
             <NaabuSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Naabu') : undefined} />
             <NmapSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Nmap') : undefined} />
+
+            <TlsxSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Tlsx') : undefined} />
             <MasscanSection data={formData} updateField={updateField} onRun={mode === 'edit' && projectId ? () => setPartialReconToolId('Masscan') : undefined} />
           </>
         )}

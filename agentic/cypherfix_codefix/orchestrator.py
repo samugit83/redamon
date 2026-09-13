@@ -9,6 +9,7 @@ from typing import Optional
 
 import httpx
 
+from cypherfix_errors import safe_error
 from . import sandbox_client
 from .state import CodeFixState, CodeFixSettings
 from .tools import CODEFIX_TOOLS
@@ -89,6 +90,17 @@ class CodeFixOrchestrator:
             logger.error(f"Remediation {remediation_id} not found")
             await self.callback.on_error("Remediation not found", recoverable=False)
             return
+        # The internal API key bypasses the route's ownership guard, so the
+        # remediation id arriving over the socket is only as trustworthy as the
+        # ticket. Bind it to the ticket's project here, or any authenticated user
+        # could drive a fix against another tenant's remediation.
+        if str(remediation.get("projectId") or "") != str(self.state.project_id):
+            logger.error(
+                f"Remediation {remediation_id} belongs to another project - refused"
+            )
+            await self.callback.on_error("Remediation not found", recoverable=False)
+            return
+
         self.state.remediation_title = remediation.get("title", "")
         logger.info(f"[REMEDIATION] title: {self.state.remediation_title or 'N/A'}")
         logger.info(f"[REMEDIATION] type: {remediation.get('remediationType', 'N/A')}, "
@@ -106,12 +118,24 @@ class CodeFixOrchestrator:
         # it can never become a `..` path-traversal segment downstream.
         self.state.job_id = re.sub(r'[^a-zA-Z0-9_-]', '_', remediation_id) or "codefix"
 
-        # Clone repo
+        # Clone repo. The repository comes ONLY from project settings: the
+        # remediation's `targetRepo` is LLM output derived from scanner text, so
+        # honouring it would let an injected finding point the fix agent, its
+        # GitHub token and its push at a repository the operator never chose.
+        repo = (self.state.settings.github_repo or "").strip()
+        if not repo:
+            await self.callback.on_error(
+                "Set a default repository in the project's CypherFix settings "
+                "before starting a fix.",
+                recoverable=False,
+            )
+            return
+
         await self.callback.on_phase("cloning_repo", "Cloning repository...")
         try:
             self.repo_manager = GitHubRepoManager(
                 token=self.state.settings.github_token,
-                repo=self.state.settings.github_repo or remediation.get("targetRepo", ""),
+                repo=repo,
                 default_branch=self.state.settings.default_branch,
                 job_id=self.state.job_id,
                 branch_prefix=self.state.settings.branch_prefix,
@@ -128,8 +152,10 @@ class CodeFixOrchestrator:
             self.state.branch_name = branch_name
             logger.info(f"Fix branch created: {branch_name}")
         except Exception as e:
-            logger.error(f"Clone failed: {e}")
-            await self.callback.on_error(f"Clone failed: {e}", recoverable=False)
+            logger.exception("Clone failed")
+            await self.callback.on_error(
+                safe_error("clone_failed", codefix=True),
+                recoverable=False, code="clone_failed")
             return
 
         # Spawn the isolated build sandbox now that the worktree exists. Build
@@ -193,7 +219,9 @@ class CodeFixOrchestrator:
                 if iteration < 3:
                     await asyncio.sleep(min(2 ** iteration, 30))
                     continue
-                await self.callback.on_error(f"LLM error: {e}", recoverable=False)
+                await self.callback.on_error(
+                    safe_error("llm_error", codefix=True),
+                    recoverable=False, code="llm_error")
                 break
 
             # Append assistant message (include tool_uses so _call_llm can reconstruct properly)
@@ -280,6 +308,7 @@ class CodeFixOrchestrator:
                     if decision and decision.get("decision") == "reject":
                         reason = decision.get("reason", "No reason given")
                         logger.info(f"[APPROVAL] Block {block_id} REJECTED — reason: {reason}")
+                        self._revert_block(block_id)
                         tool_results[-1] = {
                             "type": "tool_result",
                             "tool_use_id": tu["id"],
@@ -293,6 +322,7 @@ class CodeFixOrchestrator:
                             await self.callback.on_block_status(block_id, "rejected")
                     else:
                         logger.info(f"[APPROVAL] Block {block_id} ACCEPTED")
+                        self.state.block_backups.pop(block_id, None)
                         if block_id:
                             await self.callback.on_block_status(block_id, "accepted")
                     self.state.pending_approval = False
@@ -364,6 +394,27 @@ class CodeFixOrchestrator:
             "content": str(result),
         }
 
+    def _revert_block(self, block_id: Optional[str]) -> None:
+        """Undo a rejected edit on disk so only approved changes get committed.
+
+        Edits are sequential and the decision is awaited immediately after the
+        write, so nothing else has touched the file in between.
+        """
+        backup = self.state.block_backups.pop(block_id, None)
+        if not backup:
+            return
+        file_path, previous, was_modified = backup
+        try:
+            (self.state.repo_path / file_path).write_text(previous, encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Could not revert rejected block {block_id}: {e}")
+            return
+        if not was_modified:
+            self.state.files_modified.discard(file_path)
+        for block in self.state.diff_blocks:
+            if block.block_id == block_id:
+                block.status = "rejected"
+
     async def _await_block_approval(self, timeout: float = 300) -> Optional[dict]:
         """Wait for user to accept/reject a diff block."""
         loop = asyncio.get_event_loop()
@@ -371,7 +422,12 @@ class CodeFixOrchestrator:
         try:
             return await asyncio.wait_for(self.approval_future, timeout=timeout)
         except asyncio.TimeoutError:
-            return {"decision": "accept"}  # Auto-accept on timeout
+            # Reject, never accept. An unattended tab must not be a way to land
+            # a change nobody looked at; the operator can rerun the fix.
+            logger.warning(
+                f"Diff block approval timed out after {timeout}s - rejecting"
+            )
+            return {"decision": "reject", "reason": "approval timed out"}
         finally:
             self.approval_future = None
 
@@ -419,13 +475,15 @@ class CodeFixOrchestrator:
                 self.state.status = "completed"
                 await self.callback.on_complete(remediation_id, "pr_created", pr_data["pr_url"])
             except Exception as e:
-                logger.error(f"PR creation failed: {e}")
+                logger.exception("PR creation failed")
                 await self._update_remediation(remediation_id, {
                     "status": "pending",
                     "agentSessionId": "",
                     "agentNotes": f"Push/PR failed: {e}",
                 })
-                await self.callback.on_error(f"PR creation failed: {e}", recoverable=False)
+                await self.callback.on_error(
+                    safe_error("pr_failed", codefix=True),
+                    recoverable=False, code="pr_failed")
                 self.state.status = "error"
                 await self.callback.on_complete(remediation_id, "error")
         else:

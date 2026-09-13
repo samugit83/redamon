@@ -877,6 +877,49 @@ def test_roe_caps_arjun_rate_limit():
 # Run all tests
 # ===========================================================================
 
+def test_auth_header_stays_separate_from_ctx_tag_in_arjun_headers():
+    """Row 2: arjun packs ALL headers into ONE --headers argument joined by
+    newlines, and the internal X-Redamon-Ctx tag is appended to that same list.
+    An auth value carrying a newline could split or spoof the tag, so the
+    profile's lines must lead and remain their own line."""
+    from recon.helpers.resource_enum.arjun_helpers import run_arjun_discovery
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured['cmd'] = cmd
+        proc = mock.MagicMock()
+        proc.communicate.return_value = ("", "")
+        proc.returncode = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen), \
+         mock.patch("helpers.proxy_routing.get_capture_routing",
+                    return_value=("http://proxy:8888", "signed-ctx-token")):
+        run_arjun_discovery(
+            target_urls=["https://example.com/api"],
+            methods=["GET"],
+            threads=1,
+            timeout=5,
+            scan_timeout=5,
+            chunk_size=10,
+            rate_limit=0,
+            stable=False,
+            passive=False,
+            disable_redirects=False,
+            custom_headers=["Cookie: sid=abc123"],
+            allowed_hosts={"example.com"},
+        )
+
+    cmd = captured['cmd']
+    assert '--headers' in cmd, cmd
+    joined = cmd[cmd.index('--headers') + 1]
+    lines = joined.split('\n')
+    assert lines[0] == 'Cookie: sid=abc123', lines
+    assert 'X-Redamon-Ctx: signed-ctx-token' in lines, lines
+    assert 'X-Redamon-Ctx' not in lines[0]
+
+
 if __name__ == '__main__':
     # Merge tests
     test_merge_enrich_existing_endpoint()

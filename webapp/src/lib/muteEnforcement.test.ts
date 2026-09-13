@@ -124,12 +124,23 @@ describe('the exclusion fragment itself', () => {
   test('reads correctly on an untyped variable', () => {
     // Several queries bind an untyped node (`OPTIONAL MATCH (a)-[:HAS_FINDING]->(tf)`),
     // where `NOT a:Muted` is fine but the NONE form is what we standardised on.
-    expect(notMuted('a')).toBe("NONE(l IN labels(a) WHERE l = 'Muted')")
+    expect(notMuted('a')).toBe(
+      "NONE(l IN labels(a) WHERE l = 'Muted') AND a.stale_since IS NULL"
+    )
+  })
+
+  test('it also excludes findings the scanner has stopped reporting', () => {
+    // X7: a muted or human-judged finding is no longer DELETED when its
+    // scanner stops finding it (deleting it took the operator's own verdict
+    // with it). It is kept and stamped `stale_since`, so every read site has to
+    // exclude it or a resolved finding starts being counted as live.
+    expect(notMuted('v')).toContain('v.stale_since IS NULL')
   })
 
   test('ANDs cleanly for a relationship with two endpoints', () => {
     expect(noneMuted('n', 'm')).toBe(
-      "NONE(l IN labels(n) WHERE l = 'Muted') AND NONE(l IN labels(m) WHERE l = 'Muted')"
+      "NONE(l IN labels(n) WHERE l = 'Muted') AND n.stale_since IS NULL" +
+      " AND NONE(l IN labels(m) WHERE l = 'Muted') AND m.stale_since IS NULL"
     )
   })
 })

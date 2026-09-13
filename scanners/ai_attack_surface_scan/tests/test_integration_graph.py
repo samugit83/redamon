@@ -164,7 +164,7 @@ class TestGraphIntegration(unittest.TestCase):
         chain = self._count(
             """
             MATCH (d:Domain {name:'example.com', project_id:$pid})-[:HAS_SUBDOMAIN]->
-                  (s:Subdomain {name:'newhost.example.com'})-[:HAS_BASEURL]->
+                  (s:Subdomain {name:'newhost.example.com'})-[:HAS_BASE_URL]->
                   (b:BaseURL {url:'http://newhost.example.com'})-[:HAS_ENDPOINT]->
                   (e:Endpoint {path:'/v1/chat/completions'})-[:HAS_VULNERABILITY]->(v:Vulnerability)
             RETURN count(v)

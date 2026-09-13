@@ -165,6 +165,44 @@ export function SecurityChecksSection({ data, updateField, onRun }: SecurityChec
                     />
                   </div>
                 )}
+                {/* Certificate-data hygiene checks (tlsx/httpx, zero extra network cost). */}
+                <div className={styles.toggleDescription} style={{ marginBottom: '6px' }}>
+                  Derived from certificates already captured, so they cost no extra
+                  requests. If you also enable the Nuclei <code>ssl</code> tag, expect
+                  some duplication: a Nuclei SSL finding and a security-check finding
+                  for the same weakness are stored as separate findings and are not
+                  merged.
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Expired Certificate</span>
+                  <Toggle checked={data.securityCheckTlsExpired}
+                    onChange={(checked) => updateField('securityCheckTlsExpired', checked)} />
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Self-Signed Certificate</span>
+                  <Toggle checked={data.securityCheckTlsSelfSigned}
+                    onChange={(checked) => updateField('securityCheckTlsSelfSigned', checked)} />
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Hostname Mismatch</span>
+                  <Toggle checked={data.securityCheckTlsHostnameMismatch}
+                    onChange={(checked) => updateField('securityCheckTlsHostnameMismatch', checked)} />
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Weak TLS Version (SSLv3/TLS 1.0/1.1)</span>
+                  <Toggle checked={data.securityCheckTlsWeakVersion}
+                    onChange={(checked) => updateField('securityCheckTlsWeakVersion', checked)} />
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Weak Cipher (RC4/3DES/NULL/EXPORT)</span>
+                  <Toggle checked={data.securityCheckTlsWeakCipher}
+                    onChange={(checked) => updateField('securityCheckTlsWeakCipher', checked)} />
+                </div>
+                <div className={styles.toggleRow}>
+                  <span className={styles.toggleLabel}>Overbroad Wildcard Certificate</span>
+                  <Toggle checked={data.securityCheckTlsWildcardOverbroad}
+                    onChange={(checked) => updateField('securityCheckTlsWildcardOverbroad', checked)} />
+                </div>
               </div>
 
               <div className={styles.subSection}>

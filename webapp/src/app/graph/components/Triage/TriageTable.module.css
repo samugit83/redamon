@@ -10,11 +10,13 @@
   overflow: auto;
 }
 
+/* One line for everything: the leading section's header on the left, the tier
+   filters and the run button together on the right. The board is mostly table,
+   so every row of chrome removed is a row of findings gained. */
 .toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -22,11 +24,16 @@
   display: flex;
   gap: var(--space-1);
   flex-wrap: wrap;
+  /* Right-aligns the filters + buttons whether or not a section header is
+     present on the left, so the toolbar looks the same on an empty board. */
+  margin-left: auto;
 }
 
 .actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .chip {
@@ -333,4 +340,168 @@
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+/* ── Board sections ───────────────────────────────────────────────────────
+   Four sections, always in the same order. Ranked findings first; everything
+   else is deliberately below it rather than mixed in, because "not triaged
+   yet" and "resolved" answer different questions from "what do I do next". */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 18px;
+}
+
+.section:first-of-type {
+  margin-top: 0;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+}
+
+.sectionCount {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--chip-bg, #1e293b);
+  color: var(--text-secondary, #94a3b8);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;        /* lets the blurb ellipsise rather than push the chips */
+}
+
+/* Only the headers that still sit above their own table need the gap. */
+.section > .sectionHead {
+  margin-bottom: 4px;
+}
+
+.sectionBlurb {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary, #94a3b8);
+}
+
+/* ── Score cell: the number, its tier, and the factors behind it ───────── */
+.scoreCell {
+  white-space: nowrap;
+  min-width: 200px;
+}
+
+.scoreValue {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+.tierChip,
+.verdictChip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid var(--border-color, #2a3441);
+  background: var(--chip-bg, #1e293b);
+  color: var(--text-secondary, #94a3b8);
+}
+
+.tierT1 { border-color: #b91c1c; color: #fca5a5; }
+.tierT2 { border-color: #c2410c; color: #fdba74; }
+.tierT3 { border-color: #a16207; color: #fde047; }
+.tierT4 { border-color: #334155; color: #94a3b8; }
+
+/* The one-line derivation, so the score is never just a number an operator
+   has to take on trust. */
+.factorLine {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-secondary, #94a3b8);
+  font-variant-numeric: tabular-nums;
+}
+
+.verdictCell {
+  min-width: 150px;
+}
+
+.verdictHuman {
+  border-color: #0e7490;
+  color: #67e8f9;
+}
+
+/* The exact text the AI quoted. Verified server-side as a substring of the
+   evidence we sent, which is what makes it worth showing at all. */
+.quote {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-secondary, #94a3b8);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fixLever {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--accent-fg, #7dd3fc);
+}
+
+.staleTag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--chip-bg, #1e293b);
+  color: var(--text-secondary, #94a3b8);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.rowActions {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.verdictButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color, #2a3441);
+  background: transparent;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+}
+
+.verdictButton:hover:not(:disabled) {
+  border-color: var(--accent-fg, #7dd3fc);
+  color: var(--accent-fg, #7dd3fc);
+}
+
+.verdictButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

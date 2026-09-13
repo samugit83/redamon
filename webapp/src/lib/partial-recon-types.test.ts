@@ -32,6 +32,13 @@ describe('PARTIAL_RECON_SUPPORTED_TOOLS', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Nmap')).toBe(true)
   })
 
+  test('contains Tlsx', () => {
+    // The absence of exactly this assertion is why the TLS grab shipped with a
+    // complete partial-recon backend and no way to start it: the play button is
+    // rendered off this set alone.
+    expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Tlsx')).toBe(true)
+  })
+
   test('contains Httpx', () => {
     expect(PARTIAL_RECON_SUPPORTED_TOOLS.has('Httpx')).toBe(true)
   })
@@ -123,6 +130,19 @@ describe('PARTIAL_RECON_SUPPORTED_TOOLS', () => {
 
 // === PARTIAL_RECON_PHASE_MAP ===
 describe('PARTIAL_RECON_PHASE_MAP', () => {
+  test('every supported tool has a phase list', () => {
+    // Per-tool assertions below only cover the tools someone remembered to add.
+    for (const id of PARTIAL_RECON_SUPPORTED_TOOLS) {
+      expect(PARTIAL_RECON_PHASE_MAP[id], `${id} has no phase list`).toBeDefined()
+      expect(PARTIAL_RECON_PHASE_MAP[id].length).toBeGreaterThan(0)
+    }
+  })
+
+  test('has Tlsx phases', () => {
+    expect(PARTIAL_RECON_PHASE_MAP['Tlsx']).toHaveLength(1)
+    expect(PARTIAL_RECON_PHASE_MAP['Tlsx'][0]).toBe('TLS Certificate Grab')
+  })
+
   test('has SubdomainDiscovery phases', () => {
     expect(PARTIAL_RECON_PHASE_MAP['SubdomainDiscovery']).toHaveLength(1)
     expect(PARTIAL_RECON_PHASE_MAP['SubdomainDiscovery'][0]).toBe('Subdomain Discovery')

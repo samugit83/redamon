@@ -427,21 +427,35 @@ class PortMixin:
                     # Determine severity from NSE state
                     severity = "high" if "VULNERABLE" in state.upper() else "medium"
 
+                    # K6: nmap_nse findings had NO `id`, so triage could never
+                    # address one: it could not be muted, given a verdict, or
+                    # linked to a remediation. The natural key is what the MERGE
+                    # already uses, hashed so the id is short and stable.
+                    nse_id = "nse-" + hashlib.sha1(
+                        f"{script_id}|{ip_addr}|{port_number}".encode()
+                    ).hexdigest()[:16]
+
                     # Create Vulnerability node
                     session.run(
                         """
                         MERGE (v:Vulnerability {name: $name, ip_address: $ip_addr, port_number: $port_number, user_id: $user_id, project_id: $project_id})
-                        SET v.severity = $severity,
+                        SET v.id = COALESCE(v.id, $nse_id),
+                            v.severity = $severity,
                             v.type = 'nmap_nse',
                             v.source = 'nmap_nse',
                             v.output = $output,
                             v.state = $state,
                             v.cve_id = $cve_id,
+                            // C2: the scorer reads `cve_ids`; nmap_nse stored
+                            // only `cve_id`, so its CVEs were invisible to it.
+                            v.cve_ids = CASE WHEN $cve_id IS NULL OR $cve_id = ''
+                                             THEN coalesce(v.cve_ids, [])
+                                             ELSE [$cve_id] END,
                             v.updated_at = datetime()
                         """,
                         name=script_id, ip_addr=ip_addr, port_number=port_number,
                         severity=severity, output=output[:2000], state=state,
-                        cve_id=cve_id,
+                        cve_id=cve_id, nse_id=nse_id,
                         user_id=user_id, project_id=project_id
                     )
                     stats["nse_vulns_created"] += 1

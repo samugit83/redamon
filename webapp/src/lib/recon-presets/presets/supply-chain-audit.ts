@@ -89,6 +89,7 @@ Use \`Full Pipeline - Maximum\` if you want supply-chain findings as one signal 
     paramspiderEnabled: false,
     graphqlSecurityEnabled: false,
     nucleiEnabled: false,
+    tlsxEnabled: false,       // preset promises no extra traffic; tlsx would break that
     securityCheckEnabled: false,
     cveLookupEnabled: false,
     mitreEnabled: false,

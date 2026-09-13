@@ -24,6 +24,7 @@ supply_chain_common.security.validate_artifact); this writer never sees raw
 tool bytes.
 """
 
+import re
 import hashlib
 
 
@@ -127,6 +128,28 @@ _GRAPH_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 def _vuln_severity(value):
     v = (value or "").strip().lower()
     return v if v in _GRAPH_SEVERITIES else "info"
+
+
+#: A CVE id, as OSV writes them in an advisory's `aliases`.
+_CVE_ALIAS_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.I)
+
+
+def _cve_aliases(vul: dict) -> list:
+    """The CVE ids an OSV advisory is also known by.
+
+    K3: OSV ids are GHSA or PYSEC, and the CVE aliases were not stored at all.
+    Nothing downstream could reach them, so the whole CVE intelligence layer
+    (CISA KEV, EPSS, public proof of concept) was unreachable for 94% of the
+    findings in a real graph. Only real CVE ids are kept, so a malformed alias
+    cannot end up being sent to an external lookup.
+    """
+    seen, out = set(), []
+    for candidate in (vul.get("aliases") or []) + [vul.get("cve_id")]:
+        text = str(candidate or "").strip().upper()
+        if _CVE_ALIAS_RE.match(text) and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return sorted(out)
 
 
 # Evidence strength per harvest source, used to stop a weaker sighting from
@@ -368,13 +391,35 @@ class SupplyChainMixin:
                 try:
                     session.run(
                         """
-                        MERGE (v:Vulnerability {id: $advisory, user_id: $uid, project_id: $pid})
+                        // ONE NODE PER PACKAGE AND ADVISORY, not one per advisory.
+                        //
+                        // Keyed on the advisory alone, a single advisory node
+                        // hung off up to ELEVEN packages in the dev graph. That
+                        // made it impossible to say anything true about it: its
+                        // reachability was whichever package was looked at
+                        // first, muting it muted the advisory on every package
+                        // at once, and one remediation stood for eleven
+                        // different upgrades. Grouping puts them back together
+                        // deliberately, under `pkg:<purl>`.
+                        MERGE (v:Vulnerability {id: $vuln_id, user_id: $uid,
+                                                project_id: $pid})
                         ON CREATE SET v.first_seen = datetime()
                         SET v.source = 'osv',
                             v.name = $name,
                             v.description = $description,
                             v.severity = $severity,
                             v.cvss_metrics = $cvss,
+                            v.advisory_id = $advisory,
+                            // K3: the CVE aliases, so CVE intelligence (KEV,
+                            // EPSS, public PoC) can reach an advisory at all.
+                            // A GHSA id matches nothing in NVD.
+                            v.cve_ids = $aliases,
+                            v.aliases = $aliases,
+                            // The version that fixes it, so the fix item can
+                            // say "upgrade to X" instead of "upgrade".
+                            v.fixed_version = $fixed_version,
+                            v.package_version = $package_version,
+                            v.purl = $purl,
                             v.updated_at = datetime()
                         WITH v
                         MERGE (p:Package {purl: $purl, user_id: $uid, project_id: $pid})
@@ -384,15 +429,25 @@ class SupplyChainMixin:
                         SET p.updated_at = datetime()
                         MERGE (p)-[:HAS_VULNERABILITY]->(v)
                         """,
+                        vuln_id=f"osv:{purl}:{advisory}",
                         advisory=advisory, uid=user_id, pid=project_id, purl=purl,
-                        name=vul.get("title") or advisory,
-                        description=vul.get("detail") or vul.get("title") or "",
+                        # The runner emits `summary` and `summary_detail`;
+                        # `title`/`detail` were read but never written, so every
+                        # advisory reached the graph named after its own id with
+                        # no description at all.
+                        name=(vul.get("summary") or vul.get("title")
+                              or advisory)[:300],
+                        description=(vul.get("summary_detail") or vul.get("detail")
+                                     or vul.get("summary") or "")[:4000],
                         # The graph enum has no "unknown"; an advisory we cannot
                         # grade lands at info so it stays out of the alert stream
                         # rather than inflating it (same convention the takeover
                         # module uses for manual_review).
                         severity=_vuln_severity(vul.get("severity")),
                         cvss=vul.get("cvss_vector"),
+                        aliases=_cve_aliases(vul),
+                        fixed_version=vul.get("fixed_version") or "",
+                        package_version=vul.get("version") or "",
                         pname=vul.get("name"), peco=vul.get("ecosystem"),
                     )
                     stats["vulnerabilities_merged"] += 1
@@ -452,7 +507,8 @@ class SupplyChainMixin:
         with self.driver.session() as session:
             session.run(
                 """
-                MERGE (gr:GithubRepository {id: $id})
+                MERGE (gr:GithubRepository {id: $id, user_id: $uid,
+                                            project_id: $pid})
                 ON CREATE SET gr.first_seen = datetime()
                 SET gr.name = $name, gr.user_id = $uid, gr.project_id = $pid,
                     gr.updated_at = datetime()
@@ -481,7 +537,8 @@ class SupplyChainMixin:
         with self.driver.session() as session:
             session.run(
                 """
-                MERGE (d:SbomDocument {id: $id})
+                MERGE (d:SbomDocument {id: $id, user_id: $uid,
+                                       project_id: $pid})
                 ON CREATE SET d.first_seen = datetime()
                 SET d.name = $name, d.user_id = $uid, d.project_id = $pid,
                     d.updated_at = datetime()

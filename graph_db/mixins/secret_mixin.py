@@ -8,6 +8,7 @@ Provides methods to ingest secret detection results:
 - update_graph_from_trufflehog: ingest one TruffleHog source's scan results
 """
 
+from graph_db.mixins.base_mixin import run_timestamp
 import hashlib
 from datetime import datetime
 from typing import Optional
@@ -62,10 +63,20 @@ class SecretMixin:
         }
 
         with self.driver.session() as session:
-            # 1. Delete leaf nodes first (GithubSecret)
+            # 1. Leaf FINDINGS are no longer deleted here (X7). Deleting them
+            # up front deleted the operator's mutes and verdicts with them, and
+            # orphaned any fix item linked to one. They are pruned after a
+            # SUCCESSFUL ingest instead, by `prune_unseen_findings`, which keeps
+            # anything a person touched and stamps it stale.
+            #
+            # Only nodes this scanner LOST TRACK OF are removed: a partial node
+            # from a crashed run with no path above it.
             result = session.run(
                 """
                 MATCH (gs:GithubSecret {user_id: $uid, project_id: $pid})
+                WHERE NOT EXISTS { (:GithubPath)-[:CONTAINS_SECRET]->(gs) }
+                  AND NOT gs:Muted
+                  AND coalesce(gs.triage_source, '') <> 'human'
                 DETACH DELETE gs
                 RETURN count(gs) as deleted
                 """,
@@ -75,10 +86,13 @@ class SecretMixin:
             if record:
                 stats["secrets_deleted"] = record["deleted"]
 
-            # 2. Delete leaf nodes (GithubSensitiveFile)
+            # 2. Same for the sensitive-file findings (X7).
             result = session.run(
                 """
                 MATCH (gsf:GithubSensitiveFile {user_id: $uid, project_id: $pid})
+                WHERE NOT EXISTS { (:GithubPath)-[:CONTAINS_SENSITIVE_FILE]->(gsf) }
+                  AND NOT gsf:Muted
+                  AND coalesce(gsf.triage_source, '') <> 'human'
                 DETACH DELETE gsf
                 RETURN count(gsf) as deleted
                 """,
@@ -94,10 +108,17 @@ class SecretMixin:
                 uid=user_id, pid=project_id
             )
 
-            # 4. Delete GithubPath nodes
+            # 4. Delete GithubPath nodes, EXCEPT any still holding a finding a
+            #    person touched. Deleting those would orphan the preserved
+            #    finding, and the sweep in step 1 would take it on the next run,
+            #    undoing the whole point of X7.
             result = session.run(
                 """
                 MATCH (gp:GithubPath {user_id: $uid, project_id: $pid})
+                WHERE NOT EXISTS {
+                  MATCH (gp)-[:CONTAINS_SECRET|CONTAINS_SENSITIVE_FILE]->(f)
+                  WHERE f:Muted OR coalesce(f.triage_source, '') = 'human'
+                }
                 DETACH DELETE gp
                 RETURN count(gp) as deleted
                 """,
@@ -201,9 +222,15 @@ class SecretMixin:
 
         scan_statistics = github_hunt_data.get("statistics", {})
 
+        # Taken BEFORE the ingest: everything it writes gets a later
+        # `updated_at` and therefore survives the prune at the end (X7).
+        run_started_at = run_timestamp()
+
         with self.driver.session() as session:
 
-            # Clear previous GitHub hunt data for this project
+            # Clear the hunt's CONTAINERS (paths, repos, the hunt node). The
+            # findings are no longer deleted here; they are pruned after a
+            # successful ingest, below.
             clear_stats = self.clear_github_hunt_data(user_id, project_id)
             print(f"[*][graph-db] Pre-cleared: {clear_stats}")
 
@@ -228,7 +255,8 @@ class SecretMixin:
             try:
                 session.run(
                     """
-                    MERGE (gh:GithubHunt {id: $id})
+                    MERGE (gh:GithubHunt {id: $id, user_id: $props.user_id,
+                                         project_id: $props.project_id})
                     SET gh += $props, gh.updated_at = datetime()
                     """,
                     id=hunt_id, props=hunt_props
@@ -244,7 +272,7 @@ class SecretMixin:
                 result = session.run(
                     """
                     MATCH (d:Domain {user_id: $uid, project_id: $pid})
-                    MATCH (gh:GithubHunt {id: $hunt_id})
+                    MATCH (gh:GithubHunt {id: $hunt_id, user_id: $uid, project_id: $pid})
                     MERGE (d)-[:HAS_GITHUB_HUNT]->(gh)
                     RETURN count(*) as linked
                     """,
@@ -305,7 +333,7 @@ class SecretMixin:
                     }
                     try:
                         session.run(
-                            "MERGE (gr:GithubRepository {id: $id}) SET gr += $props, gr.updated_at = datetime()",
+                            "MERGE (gr:GithubRepository {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET gr += $props, gr.updated_at = datetime()",
                             id=repo_id, props=repo_props
                         )
                         stats["repositories_created"] += 1
@@ -314,11 +342,14 @@ class SecretMixin:
                         # Link GithubHunt → GithubRepository
                         session.run(
                             """
-                            MATCH (gh:GithubHunt {id: $hunt_id})
-                            MATCH (gr:GithubRepository {id: $repo_id})
+                            MATCH (gh:GithubHunt {id: $hunt_id, user_id: $uid,
+                                                  project_id: $pid})
+                            MATCH (gr:GithubRepository {id: $repo_id, user_id: $uid,
+                                                        project_id: $pid})
                             MERGE (gh)-[:HAS_REPOSITORY]->(gr)
                             """,
-                            hunt_id=hunt_id, repo_id=repo_id
+                            hunt_id=hunt_id, repo_id=repo_id,
+                            uid=user_id, pid=project_id
                         )
                         stats["relationships_created"] += 1
                     except Exception as e:
@@ -337,7 +368,7 @@ class SecretMixin:
                     }
                     try:
                         session.run(
-                            "MERGE (gp:GithubPath {id: $id}) SET gp += $props, gp.updated_at = datetime()",
+                            "MERGE (gp:GithubPath {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET gp += $props, gp.updated_at = datetime()",
                             id=path_id, props=path_props
                         )
                         stats["paths_created"] += 1
@@ -346,11 +377,14 @@ class SecretMixin:
                         # Link GithubRepository → GithubPath
                         session.run(
                             """
-                            MATCH (gr:GithubRepository {id: $repo_id})
-                            MATCH (gp:GithubPath {id: $path_id})
+                            MATCH (gr:GithubRepository {id: $repo_id, user_id: $uid,
+                                                        project_id: $pid})
+                            MATCH (gp:GithubPath {id: $path_id, user_id: $uid,
+                                                  project_id: $pid})
                             MERGE (gr)-[:HAS_PATH]->(gp)
                             """,
-                            repo_id=repo_id, path_id=path_id
+                            repo_id=repo_id, path_id=path_id,
+                            uid=user_id, pid=project_id
                         )
                         stats["relationships_created"] += 1
                     except Exception as e:
@@ -367,6 +401,10 @@ class SecretMixin:
                         "id": node_id,
                         "user_id": user_id,
                         "project_id": project_id,
+                        # X7: the prune is scoped BY SOURCE, so a finding with
+                        # none can never be pruned, and a GitHub-hunt finding
+                        # would then never be cleaned up at all.
+                        "source": "github_hunt",
                         "secret_type": secret_type,
                         "repository": repository,
                         "path": clean_path,
@@ -379,7 +417,7 @@ class SecretMixin:
 
                     try:
                         session.run(
-                            "MERGE (gs:GithubSecret {id: $id}) SET gs += $props, gs.updated_at = datetime()",
+                            "MERGE (gs:GithubSecret {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET gs += $props, gs.updated_at = datetime()",
                             id=node_id, props=node_props
                         )
                         stats["secrets_created"] += 1
@@ -387,11 +425,14 @@ class SecretMixin:
                         # Link GithubPath → GithubSecret
                         session.run(
                             """
-                            MATCH (gp:GithubPath {id: $path_id})
-                            MATCH (gs:GithubSecret {id: $node_id})
+                            MATCH (gp:GithubPath {id: $path_id, user_id: $uid,
+                                                  project_id: $pid})
+                            MATCH (gs:GithubSecret {id: $node_id, user_id: $uid,
+                                                    project_id: $pid})
                             MERGE (gp)-[:CONTAINS_SECRET]->(gs)
                             """,
-                            path_id=path_id, node_id=node_id
+                            path_id=path_id, node_id=node_id,
+                            uid=user_id, pid=project_id
                         )
                         stats["relationships_created"] += 1
                     except Exception as e:
@@ -403,6 +444,10 @@ class SecretMixin:
                         "id": node_id,
                         "user_id": user_id,
                         "project_id": project_id,
+                        # X7: the prune is scoped BY SOURCE, so a finding with
+                        # none can never be pruned, and a GitHub-hunt finding
+                        # would then never be cleaned up at all.
+                        "source": "github_hunt",
                         "secret_type": secret_type,
                         "repository": repository,
                         "path": clean_path,
@@ -411,7 +456,7 @@ class SecretMixin:
 
                     try:
                         session.run(
-                            "MERGE (gsf:GithubSensitiveFile {id: $id}) SET gsf += $props, gsf.updated_at = datetime()",
+                            "MERGE (gsf:GithubSensitiveFile {id: $id, user_id: $props.user_id, project_id: $props.project_id}) SET gsf += $props, gsf.updated_at = datetime()",
                             id=node_id, props=node_props
                         )
                         stats["sensitive_files_created"] += 1
@@ -419,11 +464,14 @@ class SecretMixin:
                         # Link GithubPath → GithubSensitiveFile
                         session.run(
                             """
-                            MATCH (gp:GithubPath {id: $path_id})
-                            MATCH (gsf:GithubSensitiveFile {id: $node_id})
+                            MATCH (gp:GithubPath {id: $path_id, user_id: $uid,
+                                                  project_id: $pid})
+                            MATCH (gsf:GithubSensitiveFile {id: $node_id, user_id: $uid,
+                                                            project_id: $pid})
                             MERGE (gp)-[:CONTAINS_SENSITIVE_FILE]->(gsf)
                             """,
-                            path_id=path_id, node_id=node_id
+                            path_id=path_id, node_id=node_id,
+                            uid=user_id, pid=project_id
                         )
                         stats["relationships_created"] += 1
                     except Exception as e:
@@ -442,6 +490,14 @@ class SecretMixin:
 
             if stats["errors"]:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
+
+        # X7: remove the findings this scan stopped reporting, now that the
+        # ingest has actually produced some. A run that wrote NOTHING is not
+        # evidence the findings are gone - it is evidence the scan failed - so
+        # the prune is skipped rather than emptying the project.
+        if stats["secrets_created"] or stats["sensitive_files_created"]:
+            stats["pruned"] = self.prune_unseen_findings(
+                user_id, project_id, ["github_hunt"], run_started_at)
 
         return stats
 
@@ -538,10 +594,18 @@ class SecretMixin:
         with self.driver.session() as session:
             # Leaves first, so an interrupted clear cannot leave a finding
             # dangling off a deleted asset.
+            # X7: findings a person touched are NOT deleted. Deleting them
+            # deleted the mute they applied and the verdict they recorded with
+            # them, on every scan of this source. The rest are still cleared
+            # here rather than pruned afterwards, because this clear is already
+            # scoped to ONE source's previous run and the ingest that follows
+            # rebuilds it completely.
             result = session.run(
                 f"""
                 MATCH (n:MultiscannerFinding)
                 WHERE n.user_id = $uid AND n.project_id = $pid{where}
+                  AND NOT n:Muted
+                  AND coalesce(n.triage_source, '') <> 'human'
                 DETACH DELETE n
                 RETURN count(n) as deleted
                 """,
@@ -556,6 +620,13 @@ class SecretMixin:
                     f"""
                     MATCH (n:{label})
                     WHERE n.user_id = $uid AND n.project_id = $pid{where}
+                      // X7: an asset still holding a finding a person touched
+                      // survives, or that finding is orphaned and the board can
+                      // no longer say where it was found.
+                      AND NOT EXISTS {{
+                        MATCH (n)-[:HAS_FINDING]->(f:MultiscannerFinding)
+                        WHERE f:Muted OR coalesce(f.triage_source, '') = 'human'
+                      }}
                     DETACH DELETE n
                     RETURN count(n) as deleted
                     """,
@@ -627,6 +698,10 @@ class SecretMixin:
         asset_kind = trufflehog_data.get("asset_kind") or "endpoint"
         asset_label = self.TRUFFLEHOG_ASSET_LABELS.get(
             asset_kind, "MultiscannerEndpoint")
+
+        # X7: taken BEFORE the clear and the ingest, so everything this run
+        # writes has a later `updated_at` and survives the prune at the end.
+        run_started_at = run_timestamp()
 
         with self.driver.session() as session:
             # SCOPED clear, never the blanket one: this reaps only this source's
@@ -810,5 +885,14 @@ class SecretMixin:
 
             if stats["errors"]:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
+
+        # X7: the clear above spares the findings a person touched, so this is
+        # the only thing that ever marks one of them resolved when the secret is
+        # gone. Scoped to THIS source id (`MultiscannerFinding.source`), so a
+        # Docker run cannot touch HuggingFace findings. Only after an ingest
+        # that wrote something: a run that wrote nothing is a failed scan.
+        if stats["findings_created"]:
+            stats["pruned"] = self.prune_unseen_findings(
+                user_id, project_id, [source], run_started_at)
 
         return stats

@@ -249,7 +249,7 @@ def run_jsrecon(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,

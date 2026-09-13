@@ -291,7 +291,11 @@ def _write_attack_chain(
         MERGE (ac)-[:CHAIN_TARGETS]->(p))
     WITH ac
     UNWIND (CASE WHEN size($target_cves) > 0 THEN $target_cves ELSE [null] END) AS cve_id
-    OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $user_id, project_id: $project_id})
+    // K1: CVE is a shared reference node and carries NO tenant keys, so a
+    // tenant map here matched nothing, every time. That is why the dev graph
+    // had 0 FINDING_RELATES_CVE relationships and the board never saw a
+    // single proven finding.
+    OPTIONAL MATCH (c:CVE {id: cve_id})
     FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
         MERGE (ac)-[:CHAIN_TARGETS]->(c))
     // Fallback: Domain when no CHAIN_TARGETS was actually created
@@ -643,7 +647,7 @@ def _resolve_step_bridges(session, step_id, extracted_info, user_id, project_id)
             """
             UNWIND $vulns AS cve_id
             MATCH (s:ChainStep {step_id: $step_id})
-            OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $uid, project_id: $pid})
+            OPTIONAL MATCH (c:CVE {id: cve_id})   // K1: no tenant keys on CVE
             FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (s)-[:STEP_EXPLOITED]->(c))
             """,
@@ -691,6 +695,7 @@ def fire_record_finding(
     iteration: Optional[int] = None,
     related_cves: Optional[List[str]] = None,
     related_ips: Optional[List[str]] = None,
+    related_finding_ids: Optional[List[str]] = None,
     metadata: Optional[dict] = None,
     agent_id: str = "root",
     source_agent: str = "root",
@@ -716,6 +721,7 @@ def fire_record_finding(
         iteration=iteration,
         related_cves=related_cves or [],
         related_ips=related_ips or [],
+        related_finding_ids=related_finding_ids or [],
         agent_id=agent_id,
         source_agent=source_agent,
         fireteam_id=fireteam_id,
@@ -728,6 +734,7 @@ def _write_finding(
     finding_id, chain_id, step_id, user_id, project_id,
     finding_type, severity, title, description, evidence,
     confidence, phase, iteration, related_cves, related_ips,
+    related_finding_ids=None,
     agent_id="root", source_agent="root", fireteam_id=None,
 ):
     driver = _get_driver(uri, user, password)
@@ -784,10 +791,23 @@ def _write_finding(
         _resolve_finding_bridges(
             session, finding_id, related_cves, related_ips, finding_type,
             user_id, project_id, evidence=evidence or "",
+            related_finding_ids=related_finding_ids or [],
         )
 
     logger.debug("[%s/%s] ChainFinding created: %s (%s)", user_id, project_id, title[:60], finding_type)
 
+
+#: The finding labels a ChainFinding may CONFIRM. Kept in step with
+#: graph_db.mixins.recon.triage_mixin.MUTEABLE_LABELS: a CONFIRMS edge to
+#: anything else could not be read back as proof by the score model.
+_CONFIRMABLE_LABELS = (
+    "Vulnerability", "JsReconFinding", "Secret", "MultiscannerFinding",
+    "GithubSecret", "GithubSensitiveFile", "MalPackageFinding", "ExploitGvm",
+)
+#: One step proves a handful of findings, not hundreds. The list comes from the
+#: model, and each id costs a label scan of the project, so it is capped rather
+#: than trusted.
+_MAX_CONFIRMS_IDS = 25
 
 _CVE_REGEX = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 _URL_PATH_REGEX = re.compile(r"(?<![\w/])(/[A-Za-z0-9][A-Za-z0-9_\-./]{0,200})")
@@ -836,7 +856,7 @@ def _auto_extract_from_evidence(evidence: str) -> dict:
 
 def _resolve_finding_bridges(
     session, finding_id, related_cves, related_ips, finding_type, user_id, project_id,
-    *, evidence: str = "",
+    *, evidence: str = "", related_finding_ids=None,
 ):
     """Create bridge rels from ChainFinding to recon nodes.
 
@@ -853,6 +873,31 @@ def _resolve_finding_bridges(
     pid = project_id
 
     auto = _auto_extract_from_evidence(evidence)
+
+    # CONFIRMS -> the recon finding this step proved (K1). This is what makes a
+    # finding "proven" on the Priority Board, so it is deliberately NOT
+    # regex-guessed from evidence: only an id the agent explicitly reported is
+    # trusted. The MATCH is tenant-scoped and matches either key (findings use
+    # `id`, MalPackageFinding uses `finding_id`), and the edge is created only
+    # when the node exists, so a hallucinated id writes nothing.
+    finding_ids = [str(fid).strip() for fid in (related_finding_ids or [])
+                   if fid and str(fid).strip()][:_MAX_CONFIRMS_IDS]
+    if finding_ids:
+        # The labels are in the pattern, not in a WHERE on labels(): an
+        # unlabelled property match is a scan of every node in the database
+        # per id, and this runs inside the agent process.
+        session.run(
+            f"""
+            UNWIND $finding_ids AS target_id
+            MATCH (f:ChainFinding {{finding_id: $fid}})
+            OPTIONAL MATCH (target:{"|".join(_CONFIRMABLE_LABELS)}
+                            {{user_id: $uid, project_id: $pid}})
+            WHERE target.id = target_id OR target.finding_id = target_id
+            FOREACH (_ IN CASE WHEN target IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (f)-[:CONFIRMS]->(target))
+            """,
+            {"fid": finding_id, "finding_ids": finding_ids, "uid": uid, "pid": pid},
+        )
 
     # FOUND_ON -> IP or Subdomain (pre-sort by type, then batch each)
     ip_addrs = []
@@ -897,7 +942,7 @@ def _resolve_finding_bridges(
             """
             UNWIND $cves AS cve_id
             MATCH (f:ChainFinding {finding_id: $fid})
-            OPTIONAL MATCH (c:CVE {user_id: $uid, project_id: $pid})
+            OPTIONAL MATCH (c:CVE)   // K1: no tenant keys on CVE
             WHERE toUpper(coalesce(c.id, c.cve_id, '')) = cve_id
             FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (f)-[:FINDING_RELATES_CVE]->(c))
@@ -1301,7 +1346,7 @@ def _write_exploit_success(
                 """
                 UNWIND $cves AS cve_id
                 MATCH (f:ChainFinding {finding_id: $fid})
-                OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $uid, project_id: $pid})
+                OPTIONAL MATCH (c:CVE {id: cve_id})   // K1: no tenant keys on CVE
                 FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
                     MERGE (f)-[:FINDING_RELATES_CVE]->(c))
                 """,
@@ -1337,7 +1382,7 @@ def _write_exploit_success(
                 """
                 UNWIND $cves AS cve_id
                 MATCH (s:ChainStep {step_id: $step_id})
-                OPTIONAL MATCH (c:CVE {id: cve_id, user_id: $uid, project_id: $pid})
+                OPTIONAL MATCH (c:CVE {id: cve_id})   // K1: no tenant keys on CVE
                 FOREACH (_ IN CASE WHEN c IS NOT NULL THEN [1] ELSE [] END |
                     MERGE (s)-[:STEP_EXPLOITED]->(c))
                 """,

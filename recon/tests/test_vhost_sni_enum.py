@@ -524,12 +524,15 @@ class TestCollectGraphCandidates:
         assert "admin.example.com" in out
 
     def test_pulls_tls_sans(self):
+        # The shape http_probe ACTUALLY produces: tls.certificate.san. The old
+        # fixture encoded tls_subject_alt_names, a key nothing writes, which is
+        # why source 3 shipped dead (Phase 4).
         recon = {
             "http_probe": {
                 "by_url": {
                     "https://5.5.5.5": {
                         "host": "5.5.5.5",
-                        "tls_subject_alt_names": ["*.acme.com", "internal.acme.com"],
+                        "tls": {"certificate": {"san": ["*.acme.com", "internal.acme.com"]}},
                     },
                 },
                 "by_host": {},
@@ -538,6 +541,20 @@ class TestCollectGraphCandidates:
         out = _collect_graph_candidates(recon, "5.5.5.5")
         assert "acme.com" in out  # *. wildcard stripped
         assert "internal.acme.com" in out
+
+    def test_pulls_tlsx_sans(self):
+        # Source 8: tlsx by_target matched on the scanned IP.
+        recon = {
+            "tlsx": {
+                "by_target": {
+                    "5.5.5.5:993": {"scanned_ip": "5.5.5.5", "ip": "5.5.5.5",
+                                    "san": ["mail.acme.com", "acme.com"]},
+                },
+            },
+        }
+        out = _collect_graph_candidates(recon, "5.5.5.5")
+        assert "mail.acme.com" in out
+        assert "acme.com" in out
 
     def test_pulls_external_domains(self):
         recon = {

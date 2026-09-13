@@ -1123,6 +1123,7 @@ Use goal/outcome types when an attack objective is achieved: exploit_success, ac
     "evidence": "Raw evidence excerpt from output",
     "related_cves": ["CVE-XXXX-XXXXX"],
     "related_ips": ["1.2.3.4", "sub.example.com"],
+    "related_finding_ids": ["<id of a finding you PROVED, copied verbatim from the evidence you were given; omit if none>"],
     "confidence": 90
   }}
 ]
@@ -1168,6 +1169,7 @@ Your `output_analysis` should cover ALL tool outputs holistically. Use this EXAC
         "title": "Short finding description",
         "evidence": "Raw evidence excerpt from output",
         "related_cves": ["CVE-XXXX-XXXXX"],
+        "related_finding_ids": ["<id of a finding you PROVED, copied verbatim from the evidence; omit if none>"],
         "confidence": 90
       }}
     ],
@@ -1698,20 +1700,23 @@ to use the Triage page rather than trying to query for them.
 - value (string): header value
 
 **Certificate** - SSL/TLS certificates
+- cert_key (string): UNIQUE identity per tenant. "sha256:<fp>" when a fingerprint is
+  known (tlsx/Censys/GVM), else "surrogate:<sha1>" (httpx, FOFA). Query/dedupe on this, NOT subject_cn.
 - issuer, subject (string)
 - not_before, not_after (datetime)
 - is_expired (boolean)
-- source (string): "gvm", "censys", or "fofa"
-- subject_cn (string): certificate common name (Censys or FOFA certs_subject_cn)
+- source (string): FIRST writer only - "http_probe", "tlsx", "gvm", "censys", or "fofa"
+- observed_by (list[string]): ALL writers that observed this cert
+- subject_cn (string): certificate common name (nullable; empty on SAN-only certs)
 - subject_org (string): certificate subject organization (FOFA certs_subject_org)
-- tls_version (string): TLS version (FOFA tls_version)
+- tls_version (string): TLS version
 - is_valid (boolean): certificate validity flag (FOFA certs_valid)
 - issuer_cn (string): issuer common name (Censys)
 - issuer_org (string): issuer organization (Censys)
-- san (list[string]): Subject Alternative Names (Censys)
-- fingerprint (string): certificate fingerprint (Censys)
-- tls_version (string): TLS protocol version e.g. "TLSv1.3" (Censys)
-- cipher (string): cipher suite (Censys)
+- san (list[string]): Subject Alternative Names (full list, CN included)
+- fingerprint_sha256 (string): SHA-256 fingerprint (single canonical name across writers)
+- cipher (string): cipher suite
+- expired, self_signed, mismatched, revoked, untrusted, wildcard (boolean): tlsx verdicts
 
 **DNSRecord** - DNS records
 - record_type (string): "A", "AAAA", "CNAME", "MX", "TXT", "NS"
@@ -2209,7 +2214,7 @@ When user asks about "AI SDKs in JS", "leaked AI keys", "AnythingLLM/Open WebUI/
 - `(i:IP)-[:HAS_PORT]->(p:Port)` - IP has open Port
 - `(p:Port)-[:RUNS_SERVICE]->(svc:Service)` - Port runs Service
 - `(i:IP)-[:HAS_TRACEROUTE]->(tr:Traceroute)` - IP has network route data
-- `(i:IP)-[:HAS_CERTIFICATE]->(c:Certificate)` - IP has TLS certificate (GVM, Censys, or FOFA)
+- `(i:IP)-[:HAS_CERTIFICATE]->(c:Certificate)` - IP has TLS certificate (GVM, Censys, FOFA, or tlsx - incl. non-HTTP TLS ports)
 
 ### OTX Threat Intelligence Relationships
 - `(d:Domain)-[:HISTORICALLY_RESOLVED_TO {first_seen, last_seen, record_type}]->(i:IP)` - Domain has historically resolved to this IP (from OTX domain/passive_dns)
@@ -2243,7 +2248,8 @@ When user asks about "AI SDKs in JS", "leaked AI keys", "AnythingLLM/Open WebUI/
 
 ### Security Relationships
 - `(b:BaseURL)-[:HAS_HEADER]->(h:Header)` - BaseURL has Header
-- `(b:BaseURL)-[:HAS_CERTIFICATE]->(cert:Certificate)` - BaseURL has Certificate
+- `(b:BaseURL)-[:HAS_CERTIFICATE]->(cert:Certificate)` - BaseURL has Certificate (httpx)
+- `(cert:Certificate)-[:COVERS_HOST]->(s:Subdomain)` - Certificate covers a SAN hostname (tlsx)
 - `(b:BaseURL)-[:HAS_SECRET]->(s:Secret)` - BaseURL has discovered Secret
 - `(s:Subdomain)-[:HAS_DNS_RECORD]->(dns:DNSRecord)` - Subdomain has DNSRecord
 
@@ -2334,7 +2340,7 @@ Note: Bridge relationships are only created for tool-execution steps. Steps usin
 - `(f:ChainFinding)-[:FOUND_ON]->(i:IP)` - Finding relates to IP (when related_ips value is an IP)
 - `(f:ChainFinding)-[:FOUND_ON]->(sub:Subdomain)` - Finding relates to hostname (when related_ips value is a hostname)
 - `(f:ChainFinding)-[:FINDING_RELATES_CVE]->(c:CVE)` - Finding relates to CVE
-- `(f:ChainFinding)-[:CREDENTIAL_FOR]->(svc:Service)` - Credential found for service
+- `(f:ChainFinding)-[:CONFIRMS]->(v)` - the agent proved this recon finding (Vulnerability, Secret, MultiscannerFinding, GithubSecret, GithubSensitiveFile, JsReconFinding, MalPackageFinding or ExploitGvm); it is why that finding shows as proven on the Priority Board
 
 ## Common Query Patterns
 

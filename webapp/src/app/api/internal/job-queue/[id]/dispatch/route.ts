@@ -21,6 +21,7 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { settingsFingerprint, nextBackoff, CAPACITY_RECHECK_MS } from '@/lib/jobQueue'
 import { resolveTrufflehogFingerprintExtra } from '@/lib/trufflehogStart'
+import { authProfileFingerprintExtra } from '@/lib/authProfileFingerprint'
 import { classifyStartFailure, isCapacityWait } from '@/lib/scanStartOutcome'
 import { dispatchStart, stopScan } from '@/lib/startScan'
 
@@ -100,9 +101,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // operator changed where/what this job scans; never silently run the new config.
     const currentHash = settingsFingerprint(
       row.kind, project as unknown as Record<string, unknown>,
-      await resolveTrufflehogFingerprintExtra(
-        row.kind, row.projectId, (row.payload ?? {}) as Record<string, unknown>,
-      ),
+      {
+        ...(await resolveTrufflehogFingerprintExtra(
+          row.kind, row.projectId, (row.payload ?? {}) as Record<string, unknown>,
+        )),
+        ...(await authProfileFingerprintExtra(row.kind, row.projectId)),
+      },
     )
     if (currentHash !== row.settingsHash) {
       await prisma.jobQueue.updateMany({

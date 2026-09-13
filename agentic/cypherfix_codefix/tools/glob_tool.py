@@ -1,9 +1,15 @@
 """Glob tool: find files by pattern."""
 
+from .repo_paths import RepoPathError, resolve_in_repo
+
 
 async def github_glob(state, pattern: str, path: str = None) -> str:
     """Find files matching a glob pattern. Sorted by modification time."""
-    base = state.repo_path / path if path else state.repo_path
+    try:
+        base = resolve_in_repo(state.repo_path, path)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
+
     if not base.exists():
         return f"Error: Directory not found: {path or '.'}"
 

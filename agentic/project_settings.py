@@ -64,6 +64,11 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     # the agent's target-facing tools (same flag recon reads).
     'CAPTURE_PROXY_ENABLED': False,
 
+    # Unified authenticated-session profile (the whole ProjectAuthProfile row,
+    # or None). Fetched with the internal key, so it carries the plaintext
+    # authValue/extraHeaders; attached to in-scope replay/browser sends.
+    'AUTH_PROFILE': None,
+
     # Stealth Mode
     'STEALTH_MODE': False,
 
@@ -501,6 +506,7 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['HYDRA_MAX_WORDLIST_ATTEMPTS'] = project.get('hydraMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['HYDRA_MAX_WORDLIST_ATTEMPTS'])
     settings['SHODAN_ENABLED'] = project.get('shodanEnabled', DEFAULT_AGENT_SETTINGS['SHODAN_ENABLED'])
     settings['CAPTURE_PROXY_ENABLED'] = project.get('captureProxyEnabled', DEFAULT_AGENT_SETTINGS['CAPTURE_PROXY_ENABLED'])
+    settings['AUTH_PROFILE'] = project.get('authProfile', DEFAULT_AGENT_SETTINGS['AUTH_PROFILE'])
     settings['STEALTH_MODE'] = project.get('stealthMode', DEFAULT_AGENT_SETTINGS['STEALTH_MODE'])
     settings['AGENT_GUARDRAIL_ENABLED'] = project.get('agentGuardrailEnabled', DEFAULT_AGENT_SETTINGS['AGENT_GUARDRAIL_ENABLED'])
     # Fireteam (multi-agent)

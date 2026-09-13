@@ -15,10 +15,34 @@ Provides methods to ingest OSINT enrichment data:
 - update_graph_from_criminalip
 """
 
+import logging
 import re
 import json
 from datetime import datetime, timezone
+
+from graph_db.cert_key import build_cert_key
+from graph_db.cpe_resolver import _is_ip_address
 from urllib.parse import urlparse as _urlparse
+
+
+def _split_url(url: str) -> tuple[str, str]:
+    """(base_url, path), where base_url is scheme://netloc and path defaults to
+    '/'. Query and fragment are dropped.
+
+    Endpoint identity is (path, method, baseurl) everywhere in the graph. This
+    MUST stay byte-identical to `_split_url` in
+    graph_db/mixins/recon/http_mixin.py: the two producing different splits for
+    one URL would create a duplicate Endpoint (K23). It is copied rather than
+    imported because that module pulls a heavy dependency chain the hand-stubbed
+    osint tests do not load.
+    """
+    parsed = _urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}", (parsed.path or "/")
+
+# K19: one except block logs through `logger`, which was never defined here, so
+# the handler raised NameError while handling an error and took the whole
+# ExternalDomain batch with it.
+logger = logging.getLogger(__name__)
 
 
 class OsintMixin:
@@ -104,6 +128,53 @@ class OsintMixin:
                         stats["ports_created"] += 1
                         stats["relationships_created"] += 1
 
+                        # Certificate from Shodan's per-service ssl block
+                        # (Phase 0.6). Free data: Shodan already handshook.
+                        ssl_cert = svc.get("ssl") or {}
+                        if ssl_cert.get("subject_cn") or ssl_cert.get("fingerprint_sha256"):
+                            try:
+                                cert_key = build_cert_key(
+                                    fingerprint_sha256=ssl_cert.get("fingerprint_sha256"),
+                                    subject_cn=ssl_cert.get("subject_cn"),
+                                    issuer=ssl_cert.get("issuer"),
+                                    not_before=ssl_cert.get("not_before"),
+                                    not_after=ssl_cert.get("not_after"),
+                                )
+                                cert_props = {k: v for k, v in {
+                                    "subject_cn": ssl_cert.get("subject_cn") or None,
+                                    "issuer": ssl_cert.get("issuer"),
+                                    "issuer_cn": ssl_cert.get("issuer_cn"),
+                                    "serial": ssl_cert.get("serial"),
+                                    "not_before": ssl_cert.get("not_before"),
+                                    "not_after": ssl_cert.get("not_after"),
+                                    "fingerprint_sha256": ssl_cert.get("fingerprint_sha256"),
+                                    "expired": ssl_cert.get("expired"),
+                                    "jarm": ssl_cert.get("jarm"),
+                                    "ja3s": ssl_cert.get("ja3s"),
+                                    "cipher": ssl_cert.get("cipher"),
+                                    "tls_versions_supported": ssl_cert.get("versions") or None,
+                                }.items() if v is not None}
+                                session.run(
+                                    """
+                                    MERGE (c:Certificate {cert_key: $cert_key, user_id: $user_id,
+                                                          project_id: $project_id})
+                                    ON CREATE SET c.source = 'shodan'
+                                    SET c += $props,
+                                        c.observed_by = CASE WHEN 'shodan' IN coalesce(c.observed_by, [])
+                                                             THEN c.observed_by
+                                                             ELSE coalesce(c.observed_by, []) + 'shodan' END,
+                                        c.updated_at = datetime()
+                                    WITH c
+                                    MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
+                                    MERGE (i)-[:HAS_CERTIFICATE]->(c)
+                                    """,
+                                    cert_key=cert_key, user_id=user_id, project_id=project_id,
+                                    props=cert_props, ip=ip,
+                                )
+                                stats["relationships_created"] += 1
+                            except Exception as e:
+                                stats.setdefault("errors", []).append(f"Shodan cert {ip}: {e}")
+
                         # MERGE Service (if product is known)
                         product = svc.get("product", "").strip()
                         if product:
@@ -176,7 +247,9 @@ class OsintMixin:
                                               s.discovered_at = datetime(), s.updated_at = datetime()
                                 MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                 SET i.updated_at = datetime()
-                                MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
+                                MERGE (s)-[r:RESOLVES_TO {record_type: 'A'}]->(i)
+                                ON CREATE SET r.timestamp = datetime()
+                                SET r.last_seen_at = datetime()
                                 """,
                                 name=hostname, ip=ip, user_id=user_id, project_id=project_id
                             )
@@ -296,7 +369,9 @@ class OsintMixin:
                             MATCH (s:Subdomain {name: $subdomain, user_id: $user_id, project_id: $project_id})
                             MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                             SET i.updated_at = datetime()
-                            MERGE (s)-[:RESOLVES_TO {record_type: $type, timestamp: datetime()}]->(i)
+                            MERGE (s)-[r:RESOLVES_TO {record_type: $type}]->(i)
+                            ON CREATE SET r.timestamp = datetime()
+                            SET r.last_seen_at = datetime()
                             """,
                             subdomain=fqdn, ip=rec_value, type=rec_type,
                             user_id=user_id, project_id=project_id
@@ -317,7 +392,8 @@ class OsintMixin:
                 try:
                     session.run(
                         """
-                        MERGE (v:Vulnerability {id: $vuln_id})
+                        MERGE (v:Vulnerability {id: $vuln_id, user_id: $user_id,
+                                                project_id: $project_id})
                         ON CREATE SET v.source = $source, v.name = $cve_id,
                                       v.cves = [$cve_id], v.user_id = $user_id,
                                       v.project_id = $project_id, v.updated_at = datetime()
@@ -341,18 +417,20 @@ class OsintMixin:
 
                     session.run(
                         """
-                        MATCH (v:Vulnerability {id: $vuln_id})
+                        MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id,
+                                                project_id: $project_id})
                         MATCH (c:CVE {id: $cve_id})
                         MERGE (v)-[:INCLUDES_CVE]->(c)
                         """,
-                        vuln_id=vuln_id, cve_id=cve_id
+                        vuln_id=vuln_id, cve_id=cve_id,
+                        user_id=user_id, project_id=project_id
                     )
                     stats["relationships_created"] += 1
 
                     session.run(
                         """
                         MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
-                        MATCH (v:Vulnerability {id: $vuln_id})
+                        MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                         MERGE (i)-[:HAS_VULNERABILITY]->(v)
                         """,
                         ip=ip, vuln_id=vuln_id,
@@ -575,6 +653,13 @@ class OsintMixin:
                         "urlscan_server": data["server"] or None,
                         "urlscan_title": data["title"] or None,
                         "urlscan_enriched": True,
+                        # Phase 0.6: urlscan already parses these and they were
+                        # dropped on the floor. Certificate posture for free, on
+                        # a page we never had to fetch ourselves.
+                        "urlscan_tls_issuer": data.get("tls_issuer") or None,
+                        "urlscan_tls_valid_days": data.get("tls_valid_days"),
+                        "urlscan_tls_valid_from": data.get("tls_valid_from") or None,
+                        "urlscan_tls_age_days": data.get("tls_age_days"),
                     }.items() if v is not None}
 
                     if props:
@@ -871,29 +956,44 @@ class OsintMixin:
                                 tls_data = svc.get("tls")
                                 if isinstance(tls_data, dict):
                                     subject_cn = tls_data.get("subject_cn") or ""
-                                    if subject_cn:
+                                    issuer = tls_data.get("issuer")
+                                    not_before = tls_data.get("not_before")
+                                    not_after = tls_data.get("not_after")
+                                    fingerprint = tls_data.get("fingerprint")
+                                    if subject_cn or fingerprint:
+                                        issuer_str = (", ".join(issuer) if isinstance(issuer, list)
+                                                      else issuer)
+                                        cert_key = build_cert_key(
+                                            fingerprint_sha256=fingerprint, subject_cn=subject_cn,
+                                            issuer=issuer_str, not_before=not_before, not_after=not_after,
+                                        )
                                         cert_props = {k: v for k, v in {
-                                            "issuer":      tls_data.get("issuer"),
+                                            "subject_cn":  subject_cn or None,
+                                            "issuer":      issuer,
                                             "san":         tls_data.get("san"),
-                                            "not_before":  tls_data.get("not_before"),
-                                            "not_after":   tls_data.get("not_after"),
-                                            "fingerprint": tls_data.get("fingerprint"),
+                                            "not_before":  not_before,
+                                            "not_after":   not_after,
+                                            "fingerprint_sha256": fingerprint,
                                             "tls_version": tls_data.get("tls_version"),
                                             "cipher":      tls_data.get("cipher"),
-                                            "source":      "censys",
                                         }.items() if v is not None and v != "" and v != []}
                                         try:
                                             session.run(
                                                 """
-                                                MERGE (c:Certificate {subject_cn: $subject_cn,
+                                                MERGE (c:Certificate {cert_key: $cert_key,
                                                                        user_id: $user_id,
                                                                        project_id: $project_id})
-                                                SET c += $props, c.updated_at = datetime()
+                                                ON CREATE SET c.source = 'censys'
+                                                SET c += $props,
+                                                    c.observed_by = CASE WHEN 'censys' IN coalesce(c.observed_by, [])
+                                                                         THEN c.observed_by
+                                                                         ELSE coalesce(c.observed_by, []) + 'censys' END,
+                                                    c.updated_at = datetime()
                                                 WITH c
                                                 MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                                 MERGE (i)-[:HAS_CERTIFICATE]->(c)
                                                 """,
-                                                subject_cn=subject_cn, user_id=user_id,
+                                                cert_key=cert_key, user_id=user_id,
                                                 project_id=project_id, props=cert_props, ip=ip,
                                             )
                                             stats["certificates_merged"] += 1
@@ -916,7 +1016,9 @@ class OsintMixin:
                                             s.updated_at = datetime()
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         SET i.updated_at = datetime()
-                                        MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
+                                        MERGE (s)-[r:RESOLVES_TO {record_type: 'A'}]->(i)
+                                        ON CREATE SET r.timestamp = datetime()
+                                        SET r.last_seen_at = datetime()
                                         """,
                                         name=hostname, ip=ip, user_id=user_id, project_id=project_id,
                                     )
@@ -1053,21 +1155,28 @@ class OsintMixin:
                             # --- Certificate node ---
                             cert_cn = (row.get("certs_subject_cn") or "").strip()
                             if cert_cn:
+                                issuer_cn = row.get("certs_issuer_cn") or ""
+                                # FOFA carries no fingerprint: surrogate key over CN+issuer.
+                                cert_key = build_cert_key(subject_cn=cert_cn, issuer=issuer_cn)
                                 session.run(
                                     """
-                                    MERGE (c:Certificate {subject_cn: $cn, user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET c.source = 'fofa', c.updated_at = datetime()
-                                    SET c.issuer       = CASE WHEN $issuer_cn <> '' THEN $issuer_cn ELSE c.issuer END,
+                                    MERGE (c:Certificate {cert_key: $cert_key, user_id: $user_id, project_id: $project_id})
+                                    ON CREATE SET c.source = 'fofa'
+                                    SET c.subject_cn   = $cn,
+                                        c.issuer       = CASE WHEN $issuer_cn <> '' THEN $issuer_cn ELSE c.issuer END,
                                         c.subject_org  = CASE WHEN $subject_org <> '' THEN $subject_org ELSE c.subject_org END,
                                         c.tls_version  = CASE WHEN $tls_ver <> '' THEN $tls_ver ELSE c.tls_version END,
                                         c.is_valid     = CASE WHEN $cert_valid <> '' THEN ($cert_valid = 'true') ELSE c.is_valid END,
+                                        c.observed_by  = CASE WHEN 'fofa' IN coalesce(c.observed_by, [])
+                                                              THEN c.observed_by
+                                                              ELSE coalesce(c.observed_by, []) + 'fofa' END,
                                         c.updated_at   = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (i)-[:HAS_CERTIFICATE]->(c)
                                     """,
-                                    cn=cert_cn,
-                                    issuer_cn=row.get("certs_issuer_cn") or "",
+                                    cert_key=cert_key, cn=cert_cn,
+                                    issuer_cn=issuer_cn,
                                     subject_org=row.get("certs_subject_org") or "",
                                     tls_ver=row.get("tls_version") or "",
                                     cert_valid=str(row.get("certs_valid") or "").lower(),
@@ -1090,7 +1199,9 @@ class OsintMixin:
                                     SET s.source = 'fofa', s.updated_at = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
-                                    MERGE (s)-[:RESOLVES_TO {record_type: 'A', timestamp: datetime()}]->(i)
+                                    MERGE (s)-[r:RESOLVES_TO {record_type: 'A'}]->(i)
+                                    ON CREATE SET r.timestamp = datetime()
+                                    SET r.last_seen_at = datetime()
                                     """,
                                     name=host, ip=ip, user_id=user_id, project_id=project_id,
                                 )
@@ -1774,6 +1885,11 @@ class OsintMixin:
                                 ("isp",         "isp"),
                                 ("asn",         "asn"),
                                 ("update_time", "zoomeye_last_seen"),
+                                # Phase 0.6: ZoomEye hands us these TLS stack
+                                # fingerprints for free; they were parsed and
+                                # then discarded.
+                                ("ssl_jarm",    "jarm"),
+                                ("ssl_ja3s",    "ja3s"),
                             ):
                                 val = row.get(field)
                                 if val:
@@ -1878,8 +1994,9 @@ class OsintMixin:
                                         MERGE (i:IP {address: $ip, user_id: $user_id,
                                                      project_id: $project_id})
                                         SET i.updated_at = datetime()
-                                        MERGE (s)-[:RESOLVES_TO {record_type: 'A',
-                                                                  timestamp: datetime()}]->(i)
+                                        MERGE (s)-[r:RESOLVES_TO {record_type: 'A'}]->(i)
+                                        ON CREATE SET r.timestamp = datetime()
+                                        SET r.last_seen_at = datetime()
                                         """,
                                         name=hostname_val, ip=ip,
                                         user_id=user_id, project_id=project_id,
@@ -2075,7 +2192,9 @@ class OsintMixin:
                                     cvss = vuln.get("cvssv3_score") or vuln.get("cvssv2_score")
                                     session.run(
                                         """
-                                        MERGE (v:Vulnerability {id: $vuln_id})
+                                        MERGE (v:Vulnerability {id: $vuln_id,
+                                                                user_id: $user_id,
+                                                                project_id: $project_id})
                                         ON CREATE SET v.source = 'criminalip', v.name = $cve_id,
                                                       v.cves = [$cve_id], v.cvss = $cvss,
                                                       v.user_id = $user_id, v.project_id = $project_id,
@@ -2088,10 +2207,19 @@ class OsintMixin:
 
                                     session.run(
                                         """
-                                        // Global reference node: no tenant stamp.
+                                        // Global reference node: no tenant stamp,
+                                        // and therefore SHARED by every project.
+                                        // K22: an unconditional SET here let one
+                                        // project's CriminalIP reading overwrite the
+                                        // authoritative NVD score and description that
+                                        // another project's GVM scan had written. Fill
+                                        // in only what is missing.
                                         MERGE (c:CVE {id: $cve_id})
                                         ON CREATE SET c.source = 'criminalip'
-                                        SET c.cvss = $cvss, c.description = $description,
+                                        SET c.cvss = coalesce(c.cvss, $cvss),
+                                            c.description = CASE
+                                              WHEN coalesce(c.description, '') = ''
+                                              THEN $description ELSE c.description END,
                                             c.updated_at = datetime()
                                         """,
                                         cve_id=cve_id, cvss=cvss,
@@ -2101,16 +2229,19 @@ class OsintMixin:
 
                                     session.run(
                                         """
-                                        MATCH (v:Vulnerability {id: $vuln_id})
+                                        MATCH (v:Vulnerability {id: $vuln_id,
+                                                                user_id: $user_id,
+                                                                project_id: $project_id})
                                         MATCH (c:CVE {id: $cve_id})
                                         MERGE (v)-[:INCLUDES_CVE]->(c)
                                         """,
                                         vuln_id=vuln_id, cve_id=cve_id,
+                                        user_id=user_id, project_id=project_id,
                                     )
                                     session.run(
                                         """
                                         MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
-                                        MATCH (v:Vulnerability {id: $vuln_id})
+                                        MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                         MERGE (i)-[:HAS_VULNERABILITY]->(v)
                                         """,
                                         ip=ip, vuln_id=vuln_id,
@@ -2241,28 +2372,66 @@ class OsintMixin:
                     except Exception as e:
                         stats["errors"].append(f"Uncover IP {ip}: {e}")
 
+                # K23. These used to MERGE on `url` and hang off the Domain,
+                # which is the key nothing else in the graph uses. An uncover
+                # URL therefore became a SECOND Endpoint for a path http_probe
+                # had already written, outside the BaseURL tree, so it was
+                # invisible to every reachability read (which walks
+                # BaseURL -> HAS_ENDPOINT) and to the liveness facts the
+                # Priority Board scores R from.
                 for url in urls:
                     if not url:
                         continue
                     try:
+                        base_url, path = _split_url(url)
+                        if not base_url or base_url == "://":
+                            stats["errors"].append(f"Uncover URL {url}: no host")
+                            continue
                         session.run(
                             """
-                            MERGE (e:Endpoint {url: $url, user_id: $user_id, project_id: $project_id})
-                            ON CREATE SET e.discovered_at = datetime(), e.updated_at = datetime(),
-                                          e.source = 'uncover', e.method = 'GET'
+                            MERGE (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
+                            ON CREATE SET u.source = 'uncover', u.updated_at = datetime()
+                            MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url,
+                                               user_id: $user_id, project_id: $project_id})
+                            ON CREATE SET e.discovered_at = datetime(), e.source = 'uncover'
+                            SET e.url = $url, e.updated_at = datetime()
+                            MERGE (u)-[:HAS_ENDPOINT]->(e)
                             """,
-                            url=url, user_id=user_id, project_id=project_id,
+                            url=url, base_url=base_url, path=path,
+                            user_id=user_id, project_id=project_id,
                         )
                         stats["urls_created"] += 1
-                        # Link Endpoint to Domain
-                        if domain:
+                        stats["relationships_created"] += 1
+                        # The BaseURL, not the Endpoint, is what a host owns.
+                        # Subdomain first: uncover expands a target into hosts,
+                        # and hanging every URL off the apex Domain loses which
+                        # host it was actually found on. An IP literal is NOT a
+                        # Subdomain: IP mode mints a dashed placeholder name for
+                        # it ("1.2.3.4" -> "1-2-3-4", http_mixin), so a dotted
+                        # Subdomain would be a duplicate host nothing else
+                        # links to. Those fall through to the Domain.
+                        host = _urlparse(url).hostname or ""
+                        if host and not _is_ip_address(host):
                             session.run(
                                 """
-                                MATCH (e:Endpoint {url: $url, user_id: $user_id, project_id: $project_id})
-                                MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
-                                MERGE (d)-[:HAS_ENDPOINT]->(e)
+                                MATCH (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
+                                MERGE (s:Subdomain {name: $host, user_id: $user_id, project_id: $project_id})
+                                ON CREATE SET s.source = 'uncover', s.status = 'unverified',
+                                              s.updated_at = datetime()
+                                MERGE (s)-[:HAS_BASE_URL]->(u)
                                 """,
-                                url=url, domain=domain,
+                                base_url=base_url, host=host,
+                                user_id=user_id, project_id=project_id,
+                            )
+                            stats["relationships_created"] += 1
+                        elif domain:
+                            session.run(
+                                """
+                                MATCH (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
+                                MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
+                                MERGE (d)-[:HAS_BASE_URL]->(u)
+                                """,
+                                base_url=base_url, domain=domain,
                                 user_id=user_id, project_id=project_id,
                             )
                             stats["relationships_created"] += 1
@@ -2399,7 +2568,8 @@ class OsintMixin:
 
                     session.run(
                         """
-                        MERGE (v:Vulnerability {id: $id})
+                        MERGE (v:Vulnerability {id: $id, user_id: $props.user_id,
+                                                project_id: $props.project_id})
                         ON CREATE SET v.source = 'origin_discovery',
                                       v.first_seen = $now, v.created_at = $now
                         SET v += $props, v.updated_at = datetime()
@@ -2412,7 +2582,7 @@ class OsintMixin:
                     session.run(
                         """
                         MATCH (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                        MATCH (v:Vulnerability {id: $id})
+                        MATCH (v:Vulnerability {id: $id, user_id: $user_id, project_id: $project_id})
                         MERGE (i)-[:HAS_VULNERABILITY]->(v)
                         """,
                         address=ip, id=vuln_id, user_id=user_id, project_id=project_id,

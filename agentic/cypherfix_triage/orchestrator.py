@@ -1,5 +1,6 @@
 """Hybrid triage orchestrator: static Cypher collection + ReAct LLM analysis."""
 
+import asyncio
 import json
 import logging
 import os
@@ -8,20 +9,21 @@ from typing import Optional
 
 import httpx
 
+from cypherfix_errors import safe_error
 from prompt_safety import wrap_untrusted
 from .state import TriageState, TriageFinding, RemediationDraft
-from .tools import TriageNeo4jToolManager, TriageWebSearchManager, TRIAGE_TOOLS
-from .prompts.cypher_queries import TRIAGE_QUERIES, SCORING_QUERIES
-from .prompts.system import TRIAGE_SYSTEM_PROMPT
-from . import scoring
-from .prompts.classify import (
-    CLUSTER_SYSTEM_PROMPT,
-    RATIONALE_SYSTEM_PROMPT,
-    LLM_FINDING_FIELDS,
-    FIELD_CHAR_CAP,
-    build_cluster_prompt,
-    build_rationale_prompt,
+from .tools import TriageNeo4jToolManager
+from . import evidence, grouping, remediation, score_model
+from .prompts import remediation_prose, review
+from .prompts.review import validate_review
+from .fact_queries import (
+    FINDING_QUERIES,
+    PROJECT_FACT_QUERIES,
+    build_project_facts,
+    normalise_finding_row,
 )
+from .intel import CveIntel
+from .run_client import TriageRunAborted, TriageRunClient
 from .project_settings import load_cypherfix_settings
 
 logger = logging.getLogger(__name__)
@@ -29,250 +31,666 @@ logger = logging.getLogger(__name__)
 WEBAPP_API_URL = os.environ.get("WEBAPP_API_URL", "http://webapp:3000")
 INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
 
+#: Step C limits. The wall clock matters more than the batch sizes: a provider
+#: having a bad afternoon must cost detail, never the whole ranking, so findings
+#: the budget does not reach publish as "not reviewed" with their maths intact.
+REVIEW_BATCH_SIZE = 12
+REVIEW_BATCH_CHARS = 30000
+REVIEW_BUDGET_SECONDS = 20 * 60
+
 
 class TriageOrchestrator:
-    """
-    Hybrid triage orchestrator:
-    Phase 1: Static collection (9 hardcoded Cypher queries, no LLM)
-    Phase 2: ReAct analysis (LLM correlates, deduplicates, prioritizes)
+    """One triage run: score, group, review, remediate, publish.
+
+    THE SHAPE THAT MATTERS. Steps A to D happen entirely in memory; Step E is
+    the only thing that writes. That is what makes a run safe to stop, safe to
+    refuse and safe to run beside a scan: until the publish is claimed, the
+    previous ranking is still what an operator sees, and a run that is killed
+    halfway has changed nothing at all.
+
+      [R] authorize   ask the webapp for a run, before reading anything
+      [A] score       fact sets + one row per finding -> score_model (no LLM)
+      [B] group       findings that share a fix (deterministic keys)
+      [C] review      the LLM corrects factors against quoted evidence
+      [D] remediate   one remediation per group
+      [E] publish     claim, write the graph in batches, upsert, finish
     """
 
-    def __init__(self, user_id: str, project_id: str, callback):
+    def __init__(self, user_id: str, project_id: str, callback,
+                 real_actor_user_id: str | None = None):
         self.user_id = user_id
         self.project_id = project_id
         self.callback = callback
+        self.real_actor_user_id = real_actor_user_id
         self.neo4j = TriageNeo4jToolManager(user_id, project_id)
-        self.web_search = None  # Initialized after settings load
         self.llm_client = None
+        self.run_client: TriageRunClient | None = None
+        self.facts = None
+        self.groups: dict = {}
+        self.remediation_rows: list = []
+        self.intel: dict = {}
+        self.intel_date: str = ""
+        self._client = None         # one Neo4jClient per run (K26, X17)
 
     async def run(self, state: TriageState) -> TriageState:
-        """Main entry point: collect -> analyze -> save."""
-        # Load settings
+        """Authorise, work in memory, publish once, always record the outcome."""
+        summary: dict = {}
+        status = "failed"
+        error_class = ""
+
         settings = await load_cypherfix_settings(self.project_id)
         state["settings"] = settings
+        # `llm_model` is the key load_cypherfix_settings actually returns.
+        # Reading "model" silently yielded "" everywhere it was used: the
+        # run recorded no model, every reviewed finding recorded no model,
+        # and the review cache key omitted it, so switching models reused
+        # the previous one's verdicts.
+        model = str(settings.get("llm_model") or "")
 
-        # Initialize web search with Tavily key from user settings
-        user_settings = settings.get("user_settings", {})
-        tavily_key = user_settings.get("tavilyApiKey", "")
-        self.web_search = TriageWebSearchManager(tavily_api_key=tavily_key)
+        self.run_client = TriageRunClient(
+            self.project_id, self.user_id, self.real_actor_user_id)
 
-        # Initialize LLM
-        self.llm_client = await self._init_llm(settings)
+        try:
+            # [R] AUTHORIZE. Before any read: a run that is not allowed to
+            # publish must not spend minutes and LLM budget discovering that.
+            await self.callback.on_phase("authorizing", "Checking the project...", 2)
+            await self.run_client.authorize(model, score_model.SCORE_MODEL_VERSION)
+            self.run_client.start_heartbeat()
 
-        # Phase 1: Static Collection
-        await self.callback.on_phase("collecting_vulnerabilities", "Starting data collection...", 0)
-        raw_data = await self._collect_all(state)
-        state["raw_data"] = raw_data
+            # [A] SCORE. Deterministic, no LLM, nothing written.
+            await self.callback.on_phase("scoring", "Scoring findings...", 10)
+            scored = await self._score(state)
+            state["verdicts"] = scored
+            summary["scored"] = len(scored)
+            self.run_client.check_abort()
 
-        # Check if there's any data
-        total_records = sum(len(v) for v in raw_data.values())
-        if total_records == 0:
-            await self.callback.on_complete(0, {}, {}, "No security data found in the graph.")
+            if not scored:
+                await self._publish_nothing()
+                status = "completed"
+                await self.callback.on_complete(
+                    0, {}, {}, "No findings in scope for this project.")
+                state["status"] = "complete"
+                return state
+
+            # The LLM is set up only AFTER scoring, so a project with no
+            # provider key still gets a fully ranked board (C15). The old order
+            # raised here and left nothing scored at all.
+            self.llm_client = await self._init_llm_or_none(settings)
+            summary["llm_available"] = 1 if self.llm_client else 0
+
+            # [B] GROUP, [C] REVIEW, [D] REMEDIATE.
+            scored = await self._group(scored)
+            summary["groups"] = len({r.get("group_key") for r in scored
+                                     if r.get("group_key")})
+            self.run_client.check_abort()
+
+            review_summary = await self._review(state, scored)
+            summary.update(review_summary)
+            self.run_client.check_abort()
+
+            analysis = await self._remediate(state, scored)
+            state["analysis_result"] = analysis
+
+            # [E] PUBLISH. Claim first: a run that lost its claim writes nothing.
+            await self.callback.on_phase("publishing", "Publishing results...", 92)
+            await self.run_client.claim_publish()
+            written = await self._publish(scored, self.run_client.run_id or "")
+            summary["nodes_written"] = written["updated"]
+            summary["skipped_changed"] = written["skipped_changed"]
+
+            saved = await self._save_remediations(analysis, self.run_client.run_id or "")
+            summary.update(saved or {})
+
+            status = "completed_partial" if self.run_client.aborted else "completed"
+            await self.callback.on_complete(
+                total=analysis.count,
+                by_severity=analysis.by_severity,
+                by_type=analysis.by_type,
+                summary=analysis.summary,
+            )
             state["status"] = "complete"
             return state
 
-        # Phase 1b: PRIORITISE. Score every finding deterministically from graph
-        # signals (no LLM), write the rank back, then a reduced LLM pass adds
-        # clustering + a one-line rationale to the top findings only.
-        await self.callback.on_phase("prioritizing", "Scoring and ranking findings...", 68)
-        scored = await self._score_findings(state)
-        state["verdicts"] = scored
+        except TriageRunAborted as aborted:
+            status = "stopped" if aborted.error_class == "stopped" else "failed"
+            error_class = aborted.error_class
+            logger.warning(f"Triage run ended early: {aborted.reason}")
+            await self.callback.on_error(
+                safe_error(aborted.error_class), recoverable=True,
+                code=aborted.error_class)
+            state["status"] = "error"
+            state["error"] = aborted.error_class
+            return state
 
-        # Fetch existing non-pending remediations to avoid duplicates on re-triage
-        existing_remediations = await self._fetch_existing_remediations()
+        finally:
+            # Always, including after an exception: a run left `running` blocks
+            # activation until its heartbeat expires ten minutes later.
+            try:
+                if self.run_client is not None:
+                    await self.run_client.finish(status, summary, error_class,
+                                          self.intel_date)
+            finally:
+                self._close_graph_client()
+                try:
+                    await self.neo4j.close()
+                except Exception:                                 # noqa: BLE001
+                    pass
+                self._log_run_event(status, summary, error_class)
 
-        # Phase 2: ReAct Analysis. Feed the already-computed priority so the
-        # remediation model ranks by the same numbers; drop findings the graph
-        # settled as noise (patched / agent-failed) from remediation input.
-        await self.callback.on_phase("correlating", "Analyzing collected data...", 70)
-        analysis = await self._analyze(
-            state, self._drop_scored_noise(raw_data, scored), existing_remediations)
-        state["analysis_result"] = analysis
-
-        # Phase 3: Save to database
-        await self.callback.on_phase("saving", "Saving remediations...", 95)
-        await self._save_remediations(analysis)
-
-        # Verdict counts, for the JSONL event stream. Reconstructing what a run
-        # concluded from the prose log is not practical.
+    async def _publish_nothing(self) -> None:
+        """An empty project still finishes cleanly through the protocol."""
         try:
-            from session_log import log_event
-            proven = sum(1 for v in state.get("verdicts", []) if v.get("proven"))
-            log_event("triage_run", user_id=self.user_id, project_id=self.project_id,
-                      scored=len(state.get("verdicts", [])), proven=proven,
-                      remediations=len(analysis.findings))
-        except Exception:
+            await self.run_client.claim_publish()
+        except TriageRunAborted:
             pass
 
-        # Complete
-        await self.callback.on_complete(
-            total=len(analysis.findings),
-            by_severity=analysis.by_severity,
-            by_type=analysis.by_type,
-            summary=analysis.summary,
-        )
-        state["status"] = "complete"
-        return state
+    def _log_run_event(self, status: str, summary: dict, error_class: str) -> None:
+        """One telemetry line per run, on EVERY terminal state (D4).
 
-    async def _collect_all(self, state: TriageState) -> dict:
-        """Phase 1: Run all 9 static Cypher queries."""
-        await self.neo4j.connect()
-        raw_data = {}
-
-        for i, query_def in enumerate(TRIAGE_QUERIES):
-            phase = query_def["phase"]
-            description = query_def["description"]
-            progress = int((i / len(TRIAGE_QUERIES)) * 65) + 5  # 5-70%
-
-            await self.callback.on_phase(phase, f"Collecting: {description}", progress)
-            state["current_phase"] = phase
-
-            try:
-                records = await self.neo4j.run_static_query(query_def["query"])
-                raw_data[query_def["name"]] = records
-                logger.info(f"Triage query '{query_def['name']}': {len(records)} records")
-            except Exception as e:
-                logger.error(f"Triage query '{query_def['name']}' failed: {e}")
-                raw_data[query_def["name"]] = []
-
-        return raw_data
-
-    # ── Phase 1b: deterministic prioritisation + reduced LLM assist ───────────
-
-    async def _score_findings(self, state: TriageState) -> list:
-        """Score every finding from graph signals and write the rank back.
-
-        Deterministic and LLM-free: this is the ranking backbone. Runs the
-        SCORING_QUERIES (all 8 finding labels), scores each row with
-        `scoring.score_finding`, ranks them, and persists
-        `triage_priority_score` + `triage_signals` + the decisive auto-verdict
-        via the mixin. Then a best-effort LLM pass adds clustering + a one-line
-        rationale to the top findings.
-
-        Never raises: a scoring or write failure leaves findings visible and
-        (at worst) unranked, never hidden.
+        The old event fired after a successful save and also after a swallowed
+        failure, and never at all on the empty-graph return or on a raised
+        error, so the numbers could not be read as "what happened".
         """
-        # No explicit connect(): run_static_query lazy-connects, and connect()
-        # unconditionally builds a NEW driver without closing the old one, so a
-        # second call here (after _collect_all already connected) would orphan a
-        # connection pool every run.
-        scored: list = []
-        for query_def in SCORING_QUERIES:
-            try:
-                rows = await self.neo4j.run_static_query(query_def["query"])
-            except Exception as e:
-                logger.error(f"Scoring query '{query_def['name']}' failed: {e}")
+        try:
+            from session_log import log_event
+            log_event(
+                "triage_run",
+                user_id=self.user_id, project_id=self.project_id,
+                run_id=(self.run_client.run_id if self.run_client else "") or "",
+                status=status, error_class=error_class,
+                model_version=score_model.SCORE_MODEL_VERSION,
+                **{k: v for k, v in (summary or {}).items()
+                   if isinstance(v, (int, float))},
+            )
+        except Exception:                                         # noqa: BLE001
+            pass
+
+    async def _init_llm_or_none(self, settings: dict):
+        """The LLM, or None. Never raises.
+
+        A missing provider key used to raise BEFORE scoring, so a project with
+        no key got no ranking at all while the documentation promised the
+        opposite (C15). The ranking is deterministic and does not need a model;
+        only the review and the remediation prose do.
+        """
+        try:
+            return await self._init_llm(settings)
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                f"No usable LLM for this run ({e.__class__.__name__}); "
+                f"publishing the math-only ranking")
+            return None
+
+    # ── Step B: group by "what the fix is" ────────────────────────────────
+
+    async def _group(self, scored: list) -> list:
+        """Stamp a deterministic group key on every finding.
+
+        No LLM. The old cluster call produced `triage_cluster_id`, which the UI
+        never read, could not be verified in code, and grouped the same graph
+        differently on two runs.
+        """
+        await self.callback.on_phase("grouping", "Grouping findings by fix...", 30)
+        groups = grouping.assign_groups(scored)
+        self.groups = groups
+
+        # A group's score is shared by its members, so the board can collapse a
+        # group into one row without its rank changing.
+        for group in groups.values():
+            for member in group["members"]:
+                member["group_score"] = group["score"]
+                member["group_tier"] = group["tier"]
+                member["group_size"] = len(group["members"])
+                member["group_members"] = [
+                    {"id": m["id"], "name": m.get("name")} for m in group["members"]
+                ]
+
+        logger.info(f"Grouped {len(scored)} findings into {len(groups)} groups")
+        return scored
+
+    # ── Step C: the evidence review ───────────────────────────────────────
+
+    async def _review(self, state: TriageState, scored: list) -> dict:
+        """Let the model correct the factors, and verify every word of it.
+
+        Budgeted, cached and concurrent. Findings the budget or the clock does
+        not reach publish as "not reviewed" with their maths intact, which is
+        the difference between a slow provider costing detail and costing the
+        whole ranking.
+        """
+        summary = {"reviewed": 0, "cache_hits": 0, "not_reviewed": 0,
+                   "false_positives": 0, "llm_calls": 0}
+        settings = state.get("settings", {}) or {}
+        budget = int(settings.get("triageReviewBudget", 150) or 0)
+
+        candidates = [r for r in scored if evidence.should_review(r)]
+        for row in scored:
+            if row not in candidates:
+                row["ai_verdict"] = None
+
+        if not self.llm_client or budget <= 0 or not candidates:
+            for row in candidates:
+                row["ai_verdict"] = "not_reviewed"
+            summary["not_reviewed"] = len(candidates)
+            if candidates:
+                logger.info(f"Review skipped for {len(candidates)} findings "
+                            f"(no model or budget 0); the ranking still publishes")
+            return summary
+
+        # Highest group score first, so a budget that runs out runs out on the
+        # findings that matter least.
+        candidates.sort(key=lambda r: (-float(r.get("group_score") or r["score"]),
+                                       str(r["id"])))
+        candidates = candidates[:budget]
+        # `llm_model` is the key load_cypherfix_settings actually returns.
+        # Reading "model" silently yielded "" everywhere it was used: the
+        # run recorded no model, every reviewed finding recorded no model,
+        # and the review cache key omitted it, so switching models reused
+        # the previous one's verdicts.
+        model = str(settings.get("llm_model") or "")
+
+        pending = []
+        for row in candidates:
+            bundle = evidence.build_bundle(row.get("_row") or row)
+            row["_bundle"] = bundle
+            new_hash = evidence.evidence_hash(
+                bundle, review.REVIEW_PROMPT_VERSION, model)
+            if new_hash and new_hash == row.get("evidence_hash"):
+                # Nothing about this finding or this prompt has changed since
+                # the last run, so the stored verdict still answers the question.
+                summary["cache_hits"] += 1
+                row["ai_verdict"] = row.get("ai_verdict") or "unclear"
                 continue
-            for row in rows or []:
+            row["evidence_hash"] = new_hash
+            pending.append(row)
+
+        if not pending:
+            logger.info(f"Review: all {summary['cache_hits']} findings were cached")
+            return summary
+
+        await self.callback.on_phase(
+            "reviewing", f"Reviewing evidence (0/{len(pending)})...", 45)
+
+        batches = self._review_batches(pending)
+        semaphore = asyncio.Semaphore(3)
+        deadline = asyncio.get_event_loop().time() + REVIEW_BUDGET_SECONDS
+        reviewed_ids: set = set()
+
+        async def run_batch(batch, index):
+            if asyncio.get_event_loop().time() > deadline:
+                return {}
+            async with semaphore:
+                summary["llm_calls"] += 1
+                answers = await self._review_batch(batch, model)
+                done = min(len(pending), (index + 1) * REVIEW_BATCH_SIZE)
+                await self.callback.on_phase(
+                    "reviewing", f"Reviewing evidence ({done}/{len(pending)})...",
+                    45 + int(30 * done / max(1, len(pending))))
+                return answers
+
+        results = await asyncio.gather(
+            *[run_batch(batch, i) for i, batch in enumerate(batches)],
+            return_exceptions=True)
+
+        by_id = {}
+        for result in results:
+            if isinstance(result, dict):
+                by_id.update(result)
+
+        for row in pending:
+            answer = by_id.get(row["id"])
+            if not answer:
+                row["ai_verdict"] = "not_reviewed"
+                continue
+            reviewed_ids.add(row["id"])
+            self._apply_review(row, answer)
+            if row.get("ai_verdict") == "false_positive":
+                summary["false_positives"] += 1
+
+        summary["reviewed"] = len(reviewed_ids)
+        summary["not_reviewed"] = len(pending) - len(reviewed_ids)
+        logger.info(f"Review: {summary}")
+        return summary
+
+    @staticmethod
+    def _review_batches(rows: list) -> list:
+        """Batches of about 12 findings, capped by characters as well as count.
+
+        Grouped members stay together where they fit, so the model sees "this
+        CVE, on these three hosts" rather than three unrelated-looking findings.
+        """
+        batches, current, size = [], [], 0
+        for row in rows:
+            cost = len(row.get("_bundle") or "") + 600
+            if current and (len(current) >= REVIEW_BATCH_SIZE
+                            or size + cost > REVIEW_BATCH_CHARS):
+                batches.append(current)
+                current, size = [], 0
+            current.append(row)
+            size += cost
+        if current:
+            batches.append(current)
+        return batches
+
+    async def _review_batch(self, batch: list, model: str) -> dict:
+        """One call, with no tools bound. Returns {id: validated answer}."""
+        rendered = "\n".join(
+            review.render_finding(row, row.get("_bundle") or "") for row in batch)
+        payload = wrap_untrusted(rendered, "FINDINGS_AND_EVIDENCE")
+        asked = {row["id"]: row for row in batch}
+
+        try:
+            response = await self._call_llm(
+                review.REVIEW_SYSTEM_PROMPT,
+                [{"role": "user", "content": review.build_review_prompt(payload)}],
+            )
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(f"Review batch failed ({e.__class__.__name__}); "
+                           f"{len(batch)} findings stay math-only")
+            return {}
+
+        answers = {}
+        for item in self._extract_json_array(self._response_text(response)):
+            if not isinstance(item, dict):
+                continue
+            finding_id = str(item.get("id", ""))
+            row = asked.get(finding_id)
+            if row is None:
+                continue                # an id we did not ask about
+            validated = validate_review(item, row.get("_bundle") or "", row)
+            if validated:
+                validated["model"] = model
+                answers[finding_id] = validated
+        return answers
+
+    def _apply_review(self, row: dict, answer: dict) -> None:
+        """Re-run the rules with the AI's accepted corrections.
+
+        The AI moved factors; the tier and the score come from the same rules
+        that produced them in the first place, so it can never place a finding
+        somewhere the facts do not support.
+        """
+        factors = row.get("factors") or {}
+        c = float((factors.get("C") or {}).get("value") or 0.0)
+        l = float((factors.get("L") or {}).get("value") or 0.0)
+        i = float((factors.get("I") or {}).get("value") or 0.0)
+        r = float((factors.get("R") or {}).get("value") or 0.0)
+
+        verdict = answer["verdict"]
+        if verdict == "real":
+            c = max(c, 0.95)
+        elif verdict == "doubtful":
+            c = min(c, 0.25)
+
+        for dispute in answer["disputed_facts"]:
+            fact = dispute["fact"]
+            if fact == "reachable":
+                r = score_model.REACH_UNKNOWN
+            elif fact in ("tool_confirmed", "extracted_proof"):
+                c = min(c, 0.75)
+            elif fact in ("dast_confirmed", "exploitable_class"):
+                l = min(l, 0.3)
+            elif fact == "public_poc":
+                l = min(l, 0.3)
+            elif fact == "sensitive_asset":
+                i = i / 1.2
+            elif fact == "credential_in_response":
+                l = min(l, 0.3)
+
+        i = min(1.2, max(0.0, i * answer["impact_multiplier"]))
+
+        row["ai_verdict"] = verdict
+        row["ai_quote"] = answer["evidence_quote"]
+        row["ai_model"] = answer.get("model", "")
+        row["ai_corrections"] = {
+            "verdict": verdict,
+            "impact_multiplier": answer["impact_multiplier"],
+            "disputed_facts": answer["disputed_facts"],
+            "before": {"C": c, "L": l, "I": i, "R": r},
+        }
+        row["reason"] = answer["why"] or None
+        row["fix_lever"] = answer["fix_lever"] or None
+
+        if verdict == "false_positive":
+            # NEVER muted: it moves to its own section, one click from Real.
+            row["state"] = score_model.STATE_FALSE_POSITIVE
+            row["status"] = "likely_noise"
+            row["score"] = 0.0
+            row["risk"] = 0.0
+            return
+
+        factors["C"] = {"value": round(c, 4),
+                        "evidence": (factors.get("C") or {}).get("evidence", "")}
+        factors["L"] = {"value": round(l, 4),
+                        "evidence": (factors.get("L") or {}).get("evidence", "")}
+        factors["I"] = {"value": round(i, 4),
+                        "evidence": (factors.get("I") or {}).get("evidence", "")}
+        factors["R"] = {"value": round(r, 4),
+                        "evidence": (factors.get("R") or {}).get("evidence", "")}
+        row["factors"] = factors
+
+        source_row = row.get("_row") or {}
+        risk = min(1.0, c * l * i * r)
+        tier, tier_rule = score_model.tier_for(
+            source_row, self.facts or score_model.ProjectFacts(), self.intel,
+            c, l, i, r)
+        row["risk"] = round(risk, 6)
+        row["tier"] = tier
+        row["tier_rule"] = tier_rule
+        row["score"] = score_model.score_for(tier, risk)
+
+    # ── Step A: score every finding, in memory ────────────────────────────
+
+    async def _score(self, state: TriageState) -> list:
+        """Read the graph and score it. Writes NOTHING.
+
+        Two reads, in this order:
+
+        1. the project fact sets, once. Which hosts are live, which ports an
+           active scan found, which packages are actually served, what the agent
+           proved. Small, and shared by every finding.
+        2. one row per finding. `COUNT {}` / `EXISTS {}` subqueries rather than
+           OPTIONAL MATCH chains, so a GVM finding with three Technology parents
+           is one row and not five (C5), and one OSV advisory hanging off eleven
+           packages is one row and not eleven.
+
+        Then `score_model.score` joins them, purely. Nothing reaches the graph
+        until Step E, so a run that is stopped or refused halfway leaves the
+        previous ranking exactly as it was.
+
+        Never raises on a per-query failure: a fact set that fails to load stays
+        empty, which the model reads as "unknown", never as "false".
+        """
+        raw_facts = {}
+        for query_def in PROJECT_FACT_QUERIES:
+            try:
+                raw_facts[query_def["name"]] = await self.neo4j.run_static_query(
+                    query_def["query"])
+            except Exception as e:
+                logger.error(f"Fact query {query_def['name']!r} failed "
+                             f"(treated as unknown): {e}")
+                raw_facts[query_def["name"]] = []
+        facts = build_project_facts(raw_facts)
+        self.facts = facts
+        logger.info(
+            f"Facts: {len(facts.live_hosts)} live hosts, "
+            f"{len(facts.port_hosts)} hosts with open ports, "
+            f"{len(facts.package_exposure)} packages, "
+            f"{len(facts.proven_cve_ids)} proven CVEs, "
+            f"{len(facts.compromised_hosts)} compromised hosts")
+
+        rows: list = []
+        for query_def in FINDING_QUERIES:
+            try:
+                found = await self.neo4j.run_static_query(query_def["query"])
+            except Exception as e:
+                logger.error(f"Finding query {query_def['name']!r} failed: {e}")
+                continue
+            for row in found or []:
                 if not isinstance(row, dict) or not row.get("id"):
                     continue
-                fs = scoring.score_finding(row, query_def.get("label", ""))
-                scored.append({
-                    "id": str(row["id"]),
-                    "label": query_def.get("label", ""),
-                    "name": row.get("name") or "",
-                    "severity": row.get("severity") or "",
-                    "source": row.get("source") or "",
-                    "host": row.get("host") or "",
-                    "score": fs.score,
-                    "signals": fs.signals,
-                    "proven": fs.proven,
-                    "status": fs.auto_verdict,
-                    "confidence": fs.auto_confidence,
-                })
+                rows.append(normalise_finding_row(row))
 
-        if not scored:
+        if not rows:
             logger.info("Scoring: no findings in scope")
             return []
 
-        scoring.rank_findings(scored)   # stamps 1-based 'rank', worst first
+        await self._load_intel(rows, state)
+        intel = self.intel or {}
+        scored: list = []
+        unknown_sources = set()
+        for row in rows:
+            result = score_model.score(row, facts, intel)
+            for warning in result.warnings:
+                unknown_sources.add(warning)
+            scored.append({
+                "id": str(row["id"]),
+                "label": row.get("label") or "",
+                "name": row.get("name") or "",
+                "severity": row.get("severity") or "",
+                "source": row.get("source") or "",
+                # Phase 8a: the detector this operator's clicks are attached to.
+                "detector": score_model.detector_key(row),
+                "host": result.host,
+                "state": result.state,
+                "tier": result.tier,
+                "tier_rule": result.tier_rule,
+                "score": result.score,
+                "math_score": result.score,
+                "risk": result.risk,
+                "factors": result.as_factors_dict(),
+                "signals": result.signals,
+                "proven": result.proven,
+                "explanation": result.explanation,
+                "seen_updated_at": row.get("seen_updated_at"),
+                "evidence_hash": row.get("triage_evidence_hash"),
+                "triage_status": row.get("triage_status"),
+                "triage_source": row.get("triage_source"),
+                "proof": facts.proof_by_host.get(result.host) or None,
+                "model_version": score_model.SCORE_MODEL_VERSION,
+                "_row": row,
+            })
 
-        # Persist the deterministic score for every finding (no verdict prose yet).
-        await self._save_scores(scored)
+        for warning in sorted(unknown_sources):
+            logger.warning(f"Score model: {warning}")
 
-        # Reduced LLM pass: cluster + rationale for the findings that matter.
-        try:
-            await self._cluster_and_explain(state, scored)
-        except Exception as e:
-            logger.error(f"Cluster/rationale step failed (ranking stands): {e}")
+        scored.sort(key=lambda r: (-r["score"], str(r.get("severity")), r["id"]))
+        for index, row in enumerate(scored, start=1):
+            row["rank"] = index
 
-        logger.info(f"Scored {len(scored)} findings; "
-                    f"{sum(1 for r in scored if r['proven'])} proven")
+        by_tier = {}
+        for row in scored:
+            by_tier[row["tier"]] = by_tier.get(row["tier"], 0) + 1
+        logger.info(f"Scored {len(scored)} findings: {by_tier}")
         return scored
 
-    async def _save_scores(self, rows: list) -> None:
-        """Write scores/signals/auto-verdicts to the graph via the mixin."""
-        try:
-            from graph_db.neo4j_client import Neo4jClient
-            with Neo4jClient() as client:
-                result = client.apply_triage_scores(self.user_id, self.project_id, rows)
-            logger.info(f"Triage scores: {result['updated']} written, "
-                        f"{result['skipped_human']} human-owned, {result['rejected']} rejected")
-        except Exception as e:
-            logger.error(f"Failed to write triage scores: {e}")
+    async def _load_intel(self, rows: list, state: TriageState) -> None:
+        """KEV, EPSS and public-PoC status for the CVEs in scope.
 
-    async def _cluster_and_explain(self, state: TriageState, scored: list) -> None:
-        """LLM adds cluster_id + a one-line rationale to the top findings only.
+        Without it, "how likely is this to be exploited" falls back to a class
+        prior and the CVSS vector, which cannot tell a CVE being exploited in
+        the wild this week from one nobody has ever used.
 
-        Best-effort: the deterministic ranking already stands. `triageTopNForLlm`
-        (default 40) caps how many findings reach the model, so a 500-finding
-        project costs 1-2 calls, not 30.
+        Only CVE ids leave the machine, and only after a regex check. Failure is
+        not an error: the ranking degrades to the priors, which is the
+        documented behaviour.
         """
-        settings = state.get("settings", {}) or {}
-        top_n = int(settings.get("triageTopNForLlm", 40) or 40)
-        # Highest-priority findings plus any the graph left ambiguous (no verdict).
-        top = scored[:top_n]
-        ambiguous = [r for r in scored[top_n:] if r["status"] is None][:top_n]
-        batch = top + ambiguous
-        if not batch:
+        cve_ids = {c for row in rows for c in (row.get("cve_ids") or [])}
+        if not cve_ids:
             return
-
-        compact = [{k: (str(r.get(k))[:FIELD_CHAR_CAP] if k not in ("signals",) else r.get(k))
-                    for k in LLM_FINDING_FIELDS}
-                   for r in batch]
-        payload = wrap_untrusted(json.dumps(compact, default=str), "FINDINGS")
-        asked = {r["id"] for r in batch}
-
-        # 1) Clustering
-        cluster_by_id = {}
         try:
-            resp = await self._call_llm(CLUSTER_SYSTEM_PROMPT,
-                                        [{"role": "user", "content": build_cluster_prompt(payload)}])
-            for item in self._extract_json_array(self._response_text(resp)):
-                if isinstance(item, dict) and str(item.get("id", "")) in asked:
-                    cid = item.get("cluster_id")
-                    if cid:
-                        cluster_by_id[str(item["id"])] = str(cid)[:120]
-        except Exception as e:
-            logger.error(f"Clustering call failed: {e}")
+            settings = state.get("settings", {}) or {}
+            user_settings = settings.get("user_settings", {}) or {}
+            loader = CveIntel(pdcp_api_key=user_settings.get("pdcpApiKey", ""))
+            self.intel = await loader.load(cve_ids, self._graph_client())
+            self.intel_date = loader.intel_date
+            if loader.refreshed:
+                logger.info(f"CVE intelligence: {loader.refreshed} refreshed, "
+                            f"{len(self.intel)} known")
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(f"CVE intelligence unavailable ({e.__class__.__name__}); "
+                           f"the ranking uses class priors")
 
-        # 2) Rationale
-        reason_by_id = {}
-        try:
-            resp = await self._call_llm(RATIONALE_SYSTEM_PROMPT,
-                                        [{"role": "user", "content": build_rationale_prompt(payload)}])
-            for item in self._extract_json_array(self._response_text(resp)):
-                if isinstance(item, dict) and str(item.get("id", "")) in asked:
-                    reason = item.get("reason")
-                    if reason:
-                        reason_by_id[str(item["id"])] = str(reason)[:500]
-        except Exception as e:
-            logger.error(f"Rationale call failed: {e}")
+    # ── Step E: publish, the only step that writes ────────────────────────
 
-        writeback = []
-        for r in batch:
-            fid = r["id"]
-            if fid in cluster_by_id or fid in reason_by_id:
-                writeback.append({
-                    "id": fid, "score": r["score"], "signals": r["signals"],
-                    "status": r["status"], "confidence": r["confidence"],
-                    "reason": reason_by_id.get(fid),
-                    "cluster_id": cluster_by_id.get(fid),
-                })
-                r["reason"] = reason_by_id.get(fid) or r.get("reason")
-                r["cluster_id"] = cluster_by_id.get(fid)
-        if writeback:
-            await self._save_scores(writeback)
+    async def _publish(self, scored: list, run_id: str) -> dict:
+        """Write the ranking back, in batches, guarded by each node's updated_at.
+
+        A node a scan re-ingested while this run was working is skipped: its
+        facts are no longer the ones that were scored. It keeps its previous
+        triage state and the next run picks it up.
+        """
+        totals = {"updated": 0, "skipped_human": 0, "skipped_changed": 0,
+                  "rejected": 0}
+        if not scored:
+            return totals
+
+        rows = [{
+            "id": row["id"],
+            "score": row["score"],
+            "math_score": row.get("math_score", row["score"]),
+            "risk": row.get("risk"),
+            "signals": row.get("signals") or [],
+            "state": row.get("state"),
+            "tier": row.get("tier"),
+            "tier_rule": row.get("tier_rule"),
+            "factors": row.get("factors"),
+            "host": row.get("host"),
+            "group_key": row.get("group_key"),
+            "detector": row.get("detector"),
+            "run_id": run_id,
+            "model_version": row.get("model_version"),
+            "intel_date": self.intel_date,
+            "proof": row.get("proof"),
+            "evidence_hash": row.get("evidence_hash"),
+            "fix_lever": row.get("fix_lever"),
+            "status": row.get("status"),
+            "confidence": row.get("confidence"),
+            "reason": row.get("reason"),
+            "ai_verdict": row.get("ai_verdict"),
+            "ai_corrections": row.get("ai_corrections"),
+            "ai_quote": row.get("ai_quote"),
+            "ai_model": row.get("ai_model"),
+            "seen_updated_at": row.get("seen_updated_at"),
+        } for row in scored]
+
+        # Batches of 500: one 5,000-row UNWIND is a single long transaction that
+        # holds locks across the whole publish, and a Stop mid-way would then
+        # roll back everything rather than leaving a consistent prefix.
+        client = self._graph_client()
+        for start in range(0, len(rows), 500):
+            batch = rows[start:start + 500]
+            try:
+                result = await asyncio.to_thread(
+                    client.apply_triage_scores, self.user_id, self.project_id, batch)
+            except Exception as e:
+                logger.error(f"Publish batch at {start} failed: {e}")
+                continue
+            for key in totals:
+                totals[key] += int(result.get(key) or 0)
+
+        logger.info(f"Published: {totals}")
+        return totals
+
+    def _graph_client(self):
+        """One Neo4jClient per run.
+
+        `BaseMixin.__init__` re-runs the whole schema DDL, and triage used to
+        build a client per write: on a live stack that made each write build and
+        abandon a Bolt connection pool and re-issue every constraint (K26, X17).
+        """
+        if self._client is None:
+            from graph_db.neo4j_client import Neo4jClient
+            self._client = Neo4jClient()
+        return self._client
+
+    def _close_graph_client(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:                                # noqa: BLE001
+                logger.warning(f"Could not close the triage graph client: {e}")
 
     @staticmethod
     def _response_text(response) -> str:
@@ -313,208 +731,144 @@ class TriageOrchestrator:
             return []
         return parsed if isinstance(parsed, list) else []
 
-    def _drop_scored_noise(self, raw_data: dict, scored: list) -> dict:
-        """Drop findings the graph settled as noise from the remediation input.
+    # ── Step D: one remediation per group ─────────────────────────────────
 
-        `likely_noise` here means patched (gvm_remediated) or agent-tried-and-
-        failed -- decided deterministically, not guessed. Those findings keep
-        their score, stay visible in the Priority Board table and in the graph; this
-        only stops the remediation model writing a work item for them. Nothing is
-        muted or deleted.
+    async def _remediate(self, state: TriageState, scored: list) -> RemediationDraft:
+        """Build the fix list from the groups, in board order.
+
+        Every field that decides anything is computed in code; the model writes
+        only the words, in batches, with no tools bound. With no model the prose
+        is deterministic, so the fix list is never empty just because a provider
+        is down.
         """
-        noise = {r["id"] for r in scored if r.get("status") == "likely_noise"}
-        if not noise:
-            return raw_data
-        filtered = {}
-        for query_name, rows in raw_data.items():
-            if not isinstance(rows, list):
-                filtered[query_name] = rows
-                continue
-            filtered[query_name] = [
-                row for row in rows
-                if not (isinstance(row, dict)
-                        and str(row.get("vuln_id") or row.get("id")
-                                or row.get("finding_id") or "") in noise)
-            ]
-        return filtered
+        settings = state.get("settings", {}) or {}
+        ordered = grouping.ordered_groups(self.groups)
+        eligible = remediation.eligible_groups(ordered)
 
-    async def _analyze(self, state: TriageState, raw_data: dict, existing_remediations: list) -> RemediationDraft:
-        """Phase 2: ReAct analysis using LLM."""
-        data_text = wrap_untrusted(self._format_raw_data(raw_data), "GRAPH_DATA")
+        if not eligible:
+            self.remediation_rows = []
+            return RemediationDraft(summary="No findings need a fix item.")
 
-        existing_text = ""
-        if existing_remediations:
-            existing_text = (
-                "\n\n---\n\n## Existing Remediations (already tracked)\n\n"
-                "The following remediations already exist in the database with non-pending status "
-                "(in_progress, fixed, dismissed). Do NOT create new entries that duplicate these. "
-                "Only create remediations for NEW findings not covered below.\n\n"
-                f"```json\n{json.dumps(existing_remediations, default=str)[:20000]}\n```"
-            )
+        await self.callback.on_phase(
+            "writing_remediations",
+            f"Writing fix items (0/{len(eligible)})...", 78)
 
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the raw security reconnaissance data collected from the graph database "
-                    f"for project {self.project_id}:\n\n{data_text}"
-                    f"{existing_text}\n\n"
-                    "Analyze this data following the instructions in your system prompt. "
-                    "Correlate, deduplicate, prioritize, and generate remediation entries. "
-                    "Output the final remediations as a JSON array wrapped in ```json``` code fence."
-                ),
-            }
+        target_repo = str(settings.get("default_repo") or "")
+        target_branch = str(settings.get("default_branch") or "main")
+        run_id = (self.run_client.run_id if self.run_client else "") or ""
+
+        computed = [
+            remediation.build_remediation(group, rank, run_id,
+                                          target_repo, target_branch)
+            for rank, group in enumerate(eligible, start=1)
         ]
 
-        max_iterations = 10
-        iteration = 0
+        prose_by_key = await self._write_prose(eligible, computed)
+        for index, (row, group) in enumerate(zip(computed, eligible)):
+            prose = prose_by_key.get(row["groupKey"])
+            if prose:
+                computed[index] = remediation.build_remediation(
+                    group, row["priority"], run_id, target_repo, target_branch,
+                    prose=prose)
 
-        while iteration < max_iterations:
-            iteration += 1
+        self.remediation_rows = computed
 
-            try:
-                response = await self._call_llm(
-                    system=TRIAGE_SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=TRIAGE_TOOLS,
-                )
-            except Exception as e:
-                logger.error(f"LLM call failed: {e}")
-                await self.callback.on_error(f"LLM error: {e}", recoverable=False)
-                return RemediationDraft()
+        by_severity: dict = {}
+        by_type: dict = {}
+        for row in computed:
+            by_severity[row["severity"]] = by_severity.get(row["severity"], 0) + 1
+            by_type[row["category"]] = by_type.get(row["category"], 0) + 1
 
-            # Append assistant message (include tool_uses so _call_llm can reconstruct properly)
-            messages.append({
-                "role": "assistant",
-                "content": response["content"],
-                "tool_uses": response.get("tool_uses", []),
-            })
+        return RemediationDraft(
+            computed=computed, by_severity=by_severity, by_type=by_type,
+            summary=f"{len(computed)} fix items across "
+                    f"{sum(r['affectedAssetCount'] for r in computed)} assets.",
+        )
 
-            # Check if done (no tool calls)
-            if response.get("stop_reason") == "end_turn" or not response.get("tool_uses"):
-                return self._parse_findings(response["content"])
+    async def _write_prose(self, groups: list, computed: list) -> dict:
+        """The model's half of Step D: title, description, solution, enums."""
+        if not self.llm_client:
+            logger.info("No model: the fix items use the standard wording")
+            return {}
 
-            # Execute tool calls
-            tool_results = []
-            for tool_use in response.get("tool_uses", []):
-                tool_name = tool_use["name"]
-                tool_input = tool_use["input"]
+        by_key = {row["groupKey"]: row for row in computed}
+        size = remediation_prose.PROSE_BATCH_SIZE
+        batches = [groups[i:i + size] for i in range(0, len(groups), size)]
+        semaphore = asyncio.Semaphore(3)
 
-                await self.callback.on_tool_start(tool_name, tool_input)
-
+        async def run_batch(batch, index):
+            rendered = "\n".join(
+                remediation_prose.render_group(group, by_key[group["key"]])
+                for group in batch if group["key"] in by_key)
+            payload = wrap_untrusted(rendered, "FINDING_GROUPS")
+            async with semaphore:
                 try:
-                    if tool_name == "query_graph":
-                        result = await self.neo4j.run_query(tool_input["cypher"])
-                        result_str = json.dumps(result, default=str, indent=2)
-                    elif tool_name == "web_search":
-                        result_str = await self.web_search.search(tool_input["query"])
-                    else:
-                        result_str = f"Unknown tool: {tool_name}"
+                    response = await self._call_llm(
+                        remediation_prose.REMEDIATION_PROSE_SYSTEM_PROMPT,
+                        [{"role": "user",
+                          "content": remediation_prose.build_prose_prompt(payload)}],
+                    )
+                except Exception as e:                            # noqa: BLE001
+                    logger.warning(
+                        f"Fix-item wording failed for batch {index} "
+                        f"({e.__class__.__name__}); using the standard text")
+                    return {}
+            done = min(len(groups), (index + 1) * size)
+            await self.callback.on_phase(
+                "writing_remediations",
+                f"Writing fix items ({done}/{len(groups)})...",
+                78 + int(12 * done / max(1, len(groups))))
+            asked = {group["key"] for group in batch}
+            out = {}
+            for item in self._extract_json_array(self._response_text(response)):
+                validated = remediation_prose.validate_prose(item)
+                if validated and validated["groupKey"] in asked:
+                    out[validated["groupKey"]] = validated
+            return out
 
-                    await self.callback.on_tool_complete(tool_name, True, result_str[:500])
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use["id"],
-                        "content": result_str[:20000],
-                    })
-                except Exception as e:
-                    error_msg = f"Error: {e}"
-                    await self.callback.on_tool_complete(tool_name, False, error_msg)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use["id"],
-                        "content": error_msg,
-                        "is_error": True,
-                    })
+        results: dict = {}
+        for result in await asyncio.gather(
+                *[run_batch(batch, i) for i, batch in enumerate(batches)],
+                return_exceptions=True):
+            if isinstance(result, dict):
+                results.update(result)
+        return results
 
-            messages.append({"role": "user", "content": tool_results})
+    async def _save_remediations(self, analysis: RemediationDraft,
+                                 run_id: str) -> dict:
+        """Upsert the fix list by (project, group key), in one transaction.
 
-        return RemediationDraft()
-
-    async def _save_remediations(self, analysis: RemediationDraft):
-        """Save remediations to the webapp API."""
-        if not analysis.findings:
-            return
-
-        remediations = []
-        for f in analysis.findings:
-            rem = f.model_dump()
-            remediations.append({
-                "title": rem["title"],
-                "description": rem["description"],
-                "severity": rem["severity"],
-                "priority": rem["priority"],
-                "category": rem["category"],
-                "remediationType": rem["remediation_type"],
-                "affectedAssets": rem["affected_assets"],
-                "cvssScore": rem["cvss_score"],
-                "cveIds": rem["cve_ids"],
-                "cweIds": rem["cwe_ids"],
-                "capecIds": rem["capec_ids"],
-                "evidence": rem["evidence"],
-                "attackChainPath": rem["attack_chain_path"],
-                "exploitAvailable": rem["exploit_available"],
-                "cisaKev": rem["cisa_kev"],
-                "solution": rem["solution"],
-                "fixComplexity": rem["fix_complexity"],
-                "estimatedFiles": rem["estimated_files"],
-                "targetRepo": rem["target_repo"],
-                "targetBranch": rem["target_branch"],
-            })
+        The old path DELETED every pending remediation and then created the new
+        ones, outside a transaction: a failure in between left the project with
+        no fix list at all, and a row the CodeFix agent was working on could be
+        deleted underneath it.
+        """
+        rows = analysis.computed
+        if not rows:
+            return {}
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{WEBAPP_API_URL}/api/remediations/batch",
-                    json={"projectId": self.project_id, "remediations": remediations},
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{WEBAPP_API_URL}/api/internal/triage-runs/{run_id}/remediations",
+                    json={"projectId": self.project_id, "remediations": rows},
                     headers=INTERNAL_HEADERS,
                 )
-                resp.raise_for_status()
-                logger.info(f"Saved {len(remediations)} remediations")
-        except Exception as e:
-            logger.error(f"Failed to save remediations: {e}")
-            await self.callback.on_error(f"Failed to save: {e}", recoverable=False)
+                response.raise_for_status()
+                result = response.json()
+        except Exception:
+            logger.exception("Failed to save the fix list")
+            await self.callback.on_error(
+                safe_error("save_failed"), recoverable=True, code="save_failed")
+            return {}
 
-    async def _fetch_existing_remediations(self) -> list:
-        """Fetch existing non-pending remediations to pass to LLM for dedup."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{WEBAPP_API_URL}/api/remediations",
-                    params={"projectId": self.project_id},
-                    headers=INTERNAL_HEADERS,
-                )
-                resp.raise_for_status()
-                all_rems = resp.json()
-                # Keep only non-pending (in_progress, fixed, dismissed) — compact summary for LLM
-                existing = []
-                for r in all_rems:
-                    if r.get("status") != "pending":
-                        existing.append({
-                            "title": r.get("title"),
-                            "status": r.get("status"),
-                            "severity": r.get("severity"),
-                            "category": r.get("category"),
-                            "cveIds": r.get("cveIds", []),
-                        })
-                logger.info(f"Fetched {len(existing)} existing non-pending remediations")
-                return existing
-        except Exception as e:
-            logger.warning(f"Failed to fetch existing remediations: {e}")
-            return []
-
-    def _format_raw_data(self, raw_data: dict) -> str:
-        """Format raw data for LLM consumption."""
-        sections = []
-        for name, records in raw_data.items():
-            if records:
-                sections.append(
-                    f"## {name.replace('_', ' ').title()} ({len(records)} records)\n\n"
-                    f"```json\n{json.dumps(records, default=str, indent=2)[:20000]}\n```"
-                )
-            else:
-                sections.append(f"## {name.replace('_', ' ').title()}\n\nNo data found.")
-        return "\n\n".join(sections)
+        logger.info(f"Fix list: {result}")
+        return {
+            "remediations_created": int(result.get("created") or 0),
+            "remediations_updated": int(result.get("updated") or 0),
+            "remediations_deleted": int(result.get("deleted") or 0),
+            "remediations_skipped": int(result.get("skipped") or 0),
+        }
 
     def _parse_findings(self, content) -> RemediationDraft:
         """Parse LLM output to extract remediation findings."""

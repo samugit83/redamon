@@ -3,6 +3,8 @@
 import logging
 from pathlib import Path
 
+from .repo_paths import RepoPathError, resolve_in_repo
+
 logger = logging.getLogger(__name__)
 
 # Language detection from file extension
@@ -81,7 +83,11 @@ def _walk_definitions(node, lang, depth=0, parent_name=None):
 
 async def github_symbols(state, file_path: str) -> str:
     """List all definitions in a file using tree-sitter."""
-    full_path = state.repo_path / file_path
+    try:
+        full_path = resolve_in_repo(state.repo_path, file_path, allow_root=False)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
+
     if not full_path.exists():
         return f"Error: File not found: {file_path}. Use github_glob to find the correct path."
 

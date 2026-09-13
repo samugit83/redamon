@@ -2,13 +2,20 @@
 
 import subprocess
 
+from .repo_paths import RepoPathError, resolve_in_repo
+
 
 async def github_grep(state, pattern: str, path: str = ".", glob: str = None,
                       type: str = None, output_mode: str = "files_with_matches",
                       context: int = 0, case_insensitive: bool = False,
                       multiline: bool = False, head_limit: int = 50) -> str:
     """Search file contents using ripgrep."""
-    repo_path = state.repo_path
+    try:
+        target = resolve_in_repo(state.repo_path, path)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
+
+    repo_path = target.parent if target.is_file() else target
     cmd = ["rg", pattern]
 
     if output_mode == "files_with_matches":
@@ -30,7 +37,7 @@ async def github_grep(state, pattern: str, path: str = ".", glob: str = None,
         cmd.append("-n")
 
     cmd.extend(["--max-count", "1000"])
-    cmd.append(str(repo_path / path))
+    cmd.append(str(target))
 
     try:
         result = subprocess.run(

@@ -42,7 +42,7 @@ _ALLOWED_FIELDS = (
     "tool", "phase", "step", "member_id", "is_replay", "origin_id",
 )
 
-VALID_SOURCES = frozenset({"recon", "agent"})
+VALID_SOURCES = frozenset({"recon", "agent", "operator"})
 
 
 def _b64u_encode(raw: bytes) -> str:

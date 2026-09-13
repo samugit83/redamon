@@ -16,6 +16,7 @@ import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { resolveVersionSelector, isCurrentSelector } from '@/lib/scanVersionAccess'
 import { captureGraphSnapshot, loadSnapshot, snapshotToGraphPayload } from '@/lib/scanSnapshot'
 import { computeReconDelta, buildDeltaOverlay } from '@/lib/reconDelta'
+import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import type { FormattedGraphData } from '@/app/api/graph/format'
 
 interface RouteParams {
@@ -51,6 +52,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       sel: typeof fromSel
     ): Promise<{ data: FormattedGraphData; side: SideDescriptor } | NextResponse> => {
       if (isCurrentSelector(sel)) {
+        // Capturing the live graph while something is rewriting it produces a
+        // comparison against a state that never existed. This route had no
+        // guard at all (X15).
+        const busy = await describeLiveGraphWriters(id)
+        if (busy) {
+          return NextResponse.json(
+            {
+              error: `The live graph cannot be compared right now: ${busy}.`,
+              graphBusy: true,
+            },
+            { status: 409 }
+          )
+        }
         const captured = await captureGraphSnapshot(id)
         return {
           data: snapshotToGraphPayload(captured),

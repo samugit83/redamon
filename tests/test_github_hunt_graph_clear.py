@@ -25,6 +25,7 @@ if _REPO not in sys.path:
 sys.modules.setdefault("neo4j", MagicMock())
 sys.modules.setdefault("dotenv", MagicMock())
 
+from graph_db.mixins.base_mixin import BaseMixin
 from graph_db.mixins.secret_mixin import SecretMixin
 
 
@@ -67,7 +68,12 @@ class FakeDriver:
         return self._session
 
 
-class Client(SecretMixin):
+class Client(SecretMixin, BaseMixin):
+    """The real client mixes in both, and the hunt ingest now calls across:
+    it prunes through `BaseMixin.prune_unseen_findings` after a successful run.
+    `BaseMixin.__init__` is deliberately not called - it would open a real
+    Neo4j connection - and is not needed, since the driver is supplied here."""
+
     def __init__(self, session):
         self.driver = FakeDriver(session)
 

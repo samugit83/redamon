@@ -560,6 +560,20 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         print("[!][ResourceEnum] No target URLs found")
         return recon_data
 
+    # Authenticated-session profile: prepend the operator's in-scope auth headers
+    # to every crawl/fuzz tool's own custom-header list, so post-login surface is
+    # reachable. merge_auth_headers is a no-op unless a profile is set and EVERY
+    # target host is in scope (fail closed, never a cross-origin leak); the lines
+    # lead so they stay ahead of each tool's X-Redamon-Ctx tag.
+    from recon.helpers.auth_profile import merge_auth_headers as _merge_auth
+    _auth_hosts = sorted(target_domains)
+    KATANA_CUSTOM_HEADERS = _merge_auth(KATANA_CUSTOM_HEADERS, settings, _auth_hosts)
+    HAKRAWLER_CUSTOM_HEADERS = _merge_auth(HAKRAWLER_CUSTOM_HEADERS, settings, _auth_hosts)
+    FFUF_CUSTOM_HEADERS = _merge_auth(FFUF_CUSTOM_HEADERS, settings, _auth_hosts)
+    ZAP_AJAX_SPIDER_CUSTOM_HEADERS = _merge_auth(ZAP_AJAX_SPIDER_CUSTOM_HEADERS, settings, _auth_hosts)
+    ARJUN_CUSTOM_HEADERS = _merge_auth(ARJUN_CUSTOM_HEADERS, settings, _auth_hosts)
+    KITERUNNER_HEADERS = _merge_auth(KITERUNNER_HEADERS, settings, _auth_hosts)
+
     print(f"\n[*][ResourceEnum] Target URLs: {len(target_urls)}")
     print(f"[*][ResourceEnum] Target domains (for GAU): {len(target_domains)}")
     # Katana settings

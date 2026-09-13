@@ -1219,9 +1219,13 @@ services:
       CAPTURE_REDACT_SALT: "${CAPTURE_REDACT_SALT:-redamon-capture}"
       # Scoped INSERT-only role (scanners/capture_proxy/sql/001_traffic_ingest_role.sql).
       TRAFFIC_INGEST_DATABASE_URL: "${TRAFFIC_INGEST_DATABASE_URL:-postgresql://traffic_ingest:changeme@postgres:5432/${POSTGRES_DB:-redamon}}"
-      # Tag-verification keys: source=recon -> SCANNER_API_KEY, source=agent -> INTERNAL_API_KEY.
+      # Tag-verification keys: source=recon -> SCANNER_API_KEY,
+      # source=agent|operator -> INTERNAL_API_KEY.
       SCANNER_API_KEY: "${SCANNER_API_KEY:-}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-}"
+      # Operator-recording session extraction POSTs to the webapp observe endpoint
+      # (INTERNAL key). Trusted plane already reaches the webapp on the redamon net.
+      WEBAPP_API_URL: "${WEBAPP_API_URL:-http://webapp:3000}"
       # A1 (supply-chain incident match). PYTHONPATH so the bind-mounted
       # supply_chain_common is importable; the ignore list suppresses the
       # operator's own OAST callbacks; the kill switch is deliberately not in

@@ -131,9 +131,21 @@ export const LIVE_GRAPH_QUERY = `
 
         UNION
 
-        // Get TLS Certificates linked to BaseURLs
+        // Get TLS Certificates linked to BaseURLs (httpx)
         MATCH (u:BaseURL {project_id: $projectId})-[r12:HAS_CERTIFICATE]->(c:Certificate)
         RETURN u as n, r12 as r, c as m
+
+        UNION
+
+        // Get TLS Certificates linked to IPs (tlsx / OSINT / GVM, incl. non-HTTP TLS)
+        MATCH (ip:IP {project_id: $projectId})-[r12b:HAS_CERTIFICATE]->(c:Certificate)
+        RETURN ip as n, r12b as r, c as m
+
+        UNION
+
+        // Certificate -[:COVERS_HOST]-> Subdomain (tlsx SAN coverage)
+        MATCH (c:Certificate {project_id: $projectId})-[r12c:COVERS_HOST]->(s:Subdomain)
+        RETURN c as n, r12c as r, s as m
 
         UNION
 

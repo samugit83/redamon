@@ -209,6 +209,39 @@ class TestBuildNucleiCommandNormalMode(unittest.TestCase):
         self.assertIn("dos", cmd)
 
 
+class TestBuildNucleiCommandAuthHeaders(unittest.TestCase):
+    """The AuthProfile fan-out adds an auth_headers -H pass (nuclei had none)."""
+
+    def test_auth_headers_emitted_as_H(self):
+        cmd = build_nuclei_command(
+            targets_file="/tmp/t.txt", output_file="/tmp/o.jsonl", docker_image="x",
+            auth_headers=["Cookie: sid=abc", "X-CSRF-Token: c1"],
+        )
+        self.assertEqual(cmd.count("-H"), 2)
+        self.assertIn("Cookie: sid=abc", cmd)
+        self.assertIn("X-CSRF-Token: c1", cmd)
+
+    def test_no_auth_headers_no_H(self):
+        cmd = build_nuclei_command(
+            targets_file="/tmp/t.txt", output_file="/tmp/o.jsonl", docker_image="x",
+        )
+        self.assertNotIn("-H", cmd)
+
+    def test_auth_H_precedes_any_capture_tag(self):
+        # The capture tag is only appended in the proxy branch; force it on and
+        # assert the auth header still leads so it is never entangled with the tag.
+        with patch("helpers.proxy_routing.get_capture_routing",
+                   return_value=("http://proxy:8888", "signed-tag")):
+            cmd = build_nuclei_command(
+                targets_file="/tmp/t.txt", output_file="/tmp/o.jsonl", docker_image="x",
+                auth_headers=["Cookie: sid=abc"],
+            )
+        auth_idx = cmd.index("Cookie: sid=abc")
+        tag_idx = cmd.index("X-Redamon-Ctx: signed-tag")
+        self.assertLess(auth_idx, tag_idx)
+        self.assertIn("-proxy", cmd)
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: _execute_nuclei_pass helper
 # ---------------------------------------------------------------------------

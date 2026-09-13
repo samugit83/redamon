@@ -35,9 +35,9 @@ def _inject_graph_fronted_hosts(by_url: dict, domain: str, user_id: str, project
                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                       -[:HAS_SUBDOMAIN]->(s:Subdomain)
                 WHERE EXISTS { (s)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
-                   OR EXISTS { (s)-[:HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
+                   OR EXISTS { (s)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
                                WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL }
-                OPTIONAL MATCH (s)-[:HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint)
+                OPTIONAL MATCH (s)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint)
                 OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
                 RETURN s.name AS host,
                        head([x IN collect(DISTINCT e.favicon_hash) WHERE x IS NOT NULL]) AS favicon,

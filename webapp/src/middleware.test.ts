@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from 'next/server'
 vi.stubEnv('AUTH_SECRET', 'b'.repeat(64))
 vi.stubEnv('INTERNAL_API_KEY', 'internal-secret-abc')
 
-import { middleware } from './middleware'
+import { middleware, internalKeyRouteAllowed } from './middleware'
 import { SignJWT } from 'jose'
 
 /* ------------------------------------------------------------------ */
@@ -200,5 +200,19 @@ describe('middleware - authenticated', () => {
     const req = makeRequest('/api/projects', { cookie: token })
     const res = await middleware(req)
     expect(res.status).toBe(401)
+  })
+})
+
+describe('internal-key allowlist — auth-profile observe', () => {
+  // The ingest worker POSTs extracted login material here with X-Internal-Key.
+  // Omitted from the allowlist it is only logged today, but 401s the moment
+  // INTERNAL_KEY_ALLOWLIST_ENFORCE=true — and the recorded session vanishes.
+  test('observe route is allowlisted for POST', () => {
+    expect(internalKeyRouteAllowed('POST', '/api/internal/auth-profile/proj-1/observe')).toBe(true)
+  })
+
+  test('allowlist does not open the whole auth-profile namespace', () => {
+    expect(internalKeyRouteAllowed('GET', '/api/internal/auth-profile/proj-1/observe')).toBe(false)
+    expect(internalKeyRouteAllowed('POST', '/api/internal/auth-profile/proj-1')).toBe(false)
   })
 })

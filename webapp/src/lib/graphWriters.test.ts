@@ -9,7 +9,10 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 
-const prismaMock = vi.hoisted(() => ({ conversation: { findFirst: vi.fn() } }))
+const prismaMock = vi.hoisted(() => ({
+  conversation: { findFirst: vi.fn() },
+  triageRun: { findMany: vi.fn(), updateMany: vi.fn() },
+}))
 const fetchMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/lib/prisma', () => ({ default: prismaMock }))
@@ -22,6 +25,8 @@ const okJson = (body: unknown) => ({ ok: true, json: async () => body })
 beforeEach(() => {
   vi.clearAllMocks()
   prismaMock.conversation.findFirst.mockResolvedValue(null)
+  prismaMock.triageRun.findMany.mockResolvedValue([])
+  prismaMock.triageRun.updateMany.mockResolvedValue({ count: 0 })
   // Run-keyed endpoints answer with a run LIST; project-level ones with a status.
   fetchMock.mockImplementation(async (url: string) =>
     url.includes('/all') ? okJson({ runs: [] }) : okJson({ status: 'idle' }))
@@ -30,6 +35,31 @@ beforeEach(() => {
 describe('describeLiveGraphWriters', () => {
   test('idle project → null', async () => {
     expect(await describeLiveGraphWriters('p1')).toBeNull()
+  })
+
+  test('a live triage run blocks: it publishes onto the graph at the end', async () => {
+    prismaMock.triageRun.findMany.mockResolvedValue([
+      { id: 'r1', status: 'running', startedAt: new Date(), heartbeatAt: new Date(),
+        actorUserId: 'u1', model: 'm' },
+    ])
+    expect(await describeLiveGraphWriters('p1')).toBe('a triage run is in progress')
+  })
+
+  test('a run whose agent died does NOT block, and is marked failed', async () => {
+    const old = new Date(Date.now() - 60 * 60 * 1000)
+    prismaMock.triageRun.findMany.mockResolvedValue([
+      { id: 'r1', status: 'running', startedAt: old, heartbeatAt: old,
+        actorUserId: 'u1', model: 'm' },
+    ])
+    expect(await describeLiveGraphWriters('p1')).toBeNull()
+    expect(prismaMock.triageRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ errorClass: 'agent_lost' }) })
+    )
+  })
+
+  test('an unreadable triage-run state reads as busy, never as idle', async () => {
+    prismaMock.triageRun.findMany.mockRejectedValue(new Error('db down'))
+    expect(await describeLiveGraphWriters('p1')).toMatch(/triage run state could not be verified/)
   })
 
   test('a running agent session blocks, without even asking the orchestrator', async () => {

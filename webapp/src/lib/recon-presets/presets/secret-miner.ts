@@ -113,6 +113,7 @@ Bug bounty hunters and pentesters targeting modern web applications built with R
     cveLookupEnabled: false,
     securityCheckEnabled: false,
     nucleiEnabled: false,
+    tlsxEnabled: false,       // JS-analysis preset: no port scanning, so no TLS handshakes either
     mitreEnabled: false,
     osintEnrichmentEnabled: false,
   },

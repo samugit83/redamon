@@ -1,0 +1,91 @@
+/* The component owns its appearance. This button exists because triage used to
+   be three differently-named, differently-styled buttons; letting each call
+   site re-skin it with a local class recreated exactly that problem (the
+   Priority Board's looked like a plain secondary control while CypherFix's was
+   the accent one). Call sites pass layout only, never colour. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-2-5);
+  background: var(--accent-primary);
+  color: var(--text-on-accent);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--accent-primary-hover);
+  border-color: var(--accent-primary-hover);
+  color: var(--text-on-accent);
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: triage-spin 1s linear infinite;
+}
+
+@keyframes triage-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── The confirmation dialog's body ───────────────────────────────────── */
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  /* No cap of its own: the modal decides the width (this dialog asks for the
+     `large` size). A max-width here would hold the text narrow inside a wide
+     modal, which is the bug this replaced. */
+}
+
+.dialog p {
+  margin: 0;
+}
+
+.dialog ol,
+.dialog ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dialogHeading {
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+}
+
+.muted {
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12px;
+}
+
+.warn {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--warn-border, #8a6d3b);
+  background: var(--warn-bg, #2a2314);
+  color: var(--warn-fg, #f0c674);
+  font-size: 12px;
+}
+
+.blocked {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--danger-border, #7f1d1d);
+  background: var(--danger-bg, #2a1414);
+  color: var(--danger-fg, #fca5a5);
+  font-size: 12px;
+}

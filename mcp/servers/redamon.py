@@ -407,6 +407,10 @@ class Browser:
         self._scheme = data.get("scheme") or "http"
         self._port = data.get("port")
         cap_tag = data.get("ctx") or ""
+        # The project's authenticated session (cookie/bearer/headers), resolved
+        # server-side for the pinned host. The raw values never touched the LLM;
+        # they ride the chromium context so the page loads logged-in.
+        auth_headers = data.get("auth_headers") or {}
         if not self._host:
             _die("browser: origin transaction has no host to pin to")
         try:
@@ -415,6 +419,9 @@ class Browser:
             _die(f"browser: Playwright is unavailable in this sandbox: {e}")
         from browser_launch import BROWSER_ARGS, CHROME_UA, capture_kwargs
         proxy, headers = capture_kwargs(_ctx(), header_tag=cap_tag)
+        # Auth headers are the profile's; the capture tag (X-Redamon-Ctx) stays
+        # authoritative — build_auth_headers refuses that name, so no collision.
+        headers = {**auth_headers, **(headers or {})}
         self._alerts: List[str] = []
         self._console: List[str] = []
         self._pw = sync_playwright().start()

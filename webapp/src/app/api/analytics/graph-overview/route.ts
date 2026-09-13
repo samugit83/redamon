@@ -82,13 +82,16 @@ export async function GET(request: NextRequest) {
        RETURN count(c) AS total,
               count(CASE WHEN expiry IS NOT NULL AND expiry < datetime() THEN 1 END) AS expired,
               count(CASE WHEN expiry IS NOT NULL AND expiry >= datetime()
-                              AND expiry < datetime() + duration('P30D') THEN 1 END) AS expiringSoon`,
+                              AND expiry < datetime() + duration('P30D') THEN 1 END) AS expiringSoon,
+              count(CASE WHEN c.self_signed = true THEN 1 END) AS selfSigned,
+              count(CASE WHEN c.mismatched = true THEN 1 END) AS mismatched`,
       { pid: projectId }
     )
     const certRec = certResult.records[0]
     const certificateHealth = certRec
-      ? { total: toNum(certRec.get('total')), expired: toNum(certRec.get('expired')), expiringSoon: toNum(certRec.get('expiringSoon')) }
-      : { total: 0, expired: 0, expiringSoon: 0 }
+      ? { total: toNum(certRec.get('total')), expired: toNum(certRec.get('expired')), expiringSoon: toNum(certRec.get('expiringSoon')),
+          selfSigned: toNum(certRec.get('selfSigned')), mismatched: toNum(certRec.get('mismatched')) }
+      : { total: 0, expired: 0, expiringSoon: 0, selfSigned: 0, mismatched: 0 }
 
     // Q6: Degree centrality (top 15)
     const degResult = await session.run(

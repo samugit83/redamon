@@ -583,7 +583,12 @@ TOOL_REGISTRY = {
             '     send a unique canary in a parameter/header/cookie, then inspect the raw body to see\n'
             '     WHERE it reflects and WHICH characters survive the filter — the exact response text is\n'
             '     the oracle. execute_nuclei covers known-CVE templates only; use curl for bespoke,\n'
-            '     reflection-driven probing and payload iteration.'
+            '     reflection-driven probing and payload iteration.\n'
+            '   - **use_session** (bool, default false): set true to send the project\'s authenticated\n'
+            '     identity (the recorded/entered cookie/bearer/headers). RedAmon attaches it for you\n'
+            '     for IN-SCOPE hosts only; you never see or paste the value. Leave false (anonymous)\n'
+            '     when testing access control, IDOR/BOLA, or the logged-out surface. Pass a full\n'
+            '     http(s):// URL so the host can be scope-checked.'
         ),
     },
     "execute_httpx": {

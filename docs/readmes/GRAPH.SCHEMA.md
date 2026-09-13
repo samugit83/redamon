@@ -61,9 +61,10 @@ MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id, c.cvss   // ✅
 MATCH (c:CVE) RETURN c.id                                            // ❌ refused
 ```
 
-The `idx_cve_tenant` / `idx_mitredata_tenant` / `idx_capec_tenant` indexes are
-vestigial: they remain in existing databases but index a property these nodes no
-longer carry.
+The `idx_cve_tenant` / `idx_mitredata_tenant` / `idx_capec_tenant` indexes
+indexed a property these nodes no longer carry, so `init_schema` drops them:
+they are listed in `DROP_LEGACY_CONSTRAINTS` (`graph_db/schema.py`) and go on the
+next connection to any existing database.
 
 ---
 
@@ -96,7 +97,8 @@ Recon re-runs `MERGE (v:Vulnerability {id, user_id, project_id})`, which still
 matches a `:Vulnerability:Muted` node, refreshes its scan properties and leaves
 the mute intact. Had mute *replaced* the functional label, that MERGE would match
 nothing and create a second, un-muted duplicate of the same finding, because
-`vulnerability_unique` is on `:Vulnerability(id)`.
+`vulnerability_tenant_unique` is on `:Vulnerability(id, user_id, project_id)`
+and the duplicate would satisfy it.
 
 ### The single-label convention this bends, and its price
 
@@ -147,19 +149,79 @@ loader (`webapp/src/app/api/graph/liveRead.ts`), the fixed-op node-type query
 | `muted_by` | String | `user_id` of the operator who suppressed it |
 | `muted_reason` | String | Optional operator note |
 
-### Triage verdict properties (any finding node, independent of mute)
+### Triage properties (any finding node, independent of mute)
 
-Written by the AI triage pass; a verdict ranks a finding but never hides it, and
-mute stays a human action.
+Written by a triage run. They RANK a finding and never hide it; mute stays a
+human action, and there is no code path from a run to the `Muted` label.
+
+**The score and how it was reached.** All of it is stored, because an operator
+who cannot see WHY a finding ranked where it did has no way to disagree with it.
 
 | Property | Type | Meaning |
 | --- | --- | --- |
-| `triage_status` | String | `confirmed` \| `likely_noise` \| `needs_verification` \| `unreviewed` (absent = unreviewed) |
+| `triage_priority_score` | Float | 0-100, the sort key. Bigger is more urgent |
+| `triage_math_score` | Float | The score before any AI correction |
+| `triage_risk` | Float | C x L x I x R, 0-1, before the tier is folded into the score. The project-level risk roll-up combines these |
+| `triage_tier` | String | `T1` Act now \| `T2` Act soon \| `T3` Plan \| `T4` Track |
+| `triage_tier_rule` | String | Which rule placed it in that tier |
+| `triage_factors` | String (JSON) | `C`, `L`, `I`, `R`, each with the evidence it came from |
+| `triage_signals` | String[] | The readable fact chips: `KEV`, `EPSS 0.94`, `live endpoint` |
+| `triage_state` | String | `open` \| `fixed` \| `gone` \| `inactive` \| `false_positive`. Only `open` is ranked |
+| `triage_host` | String | The host the model resolved and scored against, deterministically |
+| `triage_group_key` | String | One problem, one fix. Replaces `triage_cluster_id` |
+| `triage_detector` | String | Which detector fired (`nuclei:<template>`, `gvm:<oid>`, `trufflehog:<detector>`). Real / False positive clicks are counted per detector, per user, and feed back into C |
+| `triage_run_id` | String | Which run produced this. Drives "new since the last triage" |
+| `triage_model_version` | String | `SCORE_MODEL_VERSION`; two runs are comparable only when it matches |
+| `triage_intel_date` | String | When the CVE intelligence behind it was fetched |
+| `triage_proof` | String (JSON) | The chain findings that proved it, so proof survives a lost edge |
+| `triaged_at` | datetime | When the run wrote this |
+
+**What the AI concluded.** It corrects factors and never produces a score.
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `triage_ai_verdict` | String | `real` \| `doubtful` \| `false_positive` \| `unclear` \| `not_reviewed` |
+| `triage_ai_corrections` | String (JSON) | What it changed, and the disputes it raised |
+| `triage_ai_quote` | String | The exact evidence text, VERIFIED as a substring of what was sent |
+| `triage_ai_model` | String | Which model reviewed it |
+| `triage_ai_at` | datetime | When |
+| `triage_evidence_hash` | String | The review cache key: evidence + prompt version + model |
+| `triage_fix_lever` | String | The short phrase describing what would fix it |
+
+**The verdict, which a person owns.**
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `triage_status` | String | `confirmed` \| `likely_noise` \| `unreviewed` (absent = unreviewed) |
 | `triage_confidence` | Float | 0.0 - 1.0 |
 | `triage_reason` | String | One line, why |
-| `triage_source` | String | `ai` \| `human`; a human verdict is never overwritten by a re-run |
-| `triage_cluster_id` | String | Cross-tool dedup group |
-| `triaged_at` | datetime | When the verdict was written |
+| `triage_source` | String | `ai` \| `human`. A human verdict is never overwritten |
+
+> **A human owns the verdict, not the measurements.** When `triage_source` is
+> `human`, later runs keep updating the facts, the factors and the score,
+> because those are measurements and a stale rank helps nobody. Only
+> `triage_status`, `triage_reason` and `triage_confidence` are left alone.
+
+**Retention: ingest-then-prune.** A scan no longer deletes its findings up front
+and re-creates them; that deleted the operator's mute, their verdict, the AI's
+cached review and the link from a fix item back to the finding. A scan now
+MERGEs what it still reports, which refreshes `updated_at`, and afterwards
+`prune_unseen_findings` removes what it did not touch.
+
+No new "last seen" property was needed: `updated_at` is already stamped by every
+node write, so "not seen in this run" is exactly "older than the run started".
+
+A finding carrying `:Muted` or `triage_source = 'human'` is never deleted by a
+prune. It is stamped `stale_since` instead, which triage reads as
+`state = fixed` and `notMuted()` excludes, so it leaves every count and every
+table at once. The prune runs ONLY after an ingest that actually produced
+findings: a scan that reported nothing is evidence the scan failed, not evidence
+the findings are gone.
+
+The stamp is lifted again the moment the owning scanner reports the finding: the
+same prune REMOVEs `stale_since` from anything of its sources the run touched
+(`updated_at` at or after the run started). Nothing else clears it, so without
+this a human-confirmed finding that came back would stay Resolved for ever.
 
 `Muted` carries no colour in `webapp/src/app/graph/config/colors.ts` on purpose:
 it is never rendered, because it never reaches the renderer.
@@ -231,7 +293,11 @@ Node.js API (EKS/ECS Fargate)
 
 > ⚠️ **IMPORTANT**: All node types below implicitly include `user_id` and `project_id` properties
 > for multi-tenant isolation, even if not shown in the examples. These are indexed with composite
-> indexes for optimal query performance. See [Tenant Composite Indexes](#tenant-composite-indexes-critical-for-multi-tenant-query-performance).
+> indexes for optimal query performance; the full list is `TENANT_INDEXES` in `graph_db/schema.py`.
+>
+> The exceptions are the three global reference labels (`CVE`, `MitreData`,
+> `Capec`) and `KBChunk`, which are shared across the whole database and carry
+> no tenant keys at all.
 
 ### 1. Domain (Root Node)
 The entry point for all queries. Contains project/user ownership.
@@ -327,7 +393,7 @@ The entry point for all queries. Contains project/user ownership.
 CREATE CONSTRAINT domain_unique IF NOT EXISTS
 FOR (d:Domain) REQUIRE (d.name, d.user_id, d.project_id) IS UNIQUE;
 
-CREATE INDEX domain_user_project IF NOT EXISTS
+CREATE INDEX idx_domain_tenant IF NOT EXISTS
 FOR (d:Domain) ON (d.user_id, d.project_id);
 ```
 
@@ -598,33 +664,44 @@ TLS/SSL certificates discovered during HTTP probing, GVM scanning, or Censys enr
 
 ```cypher
 (:Certificate {
-    subject_cn: "*.beta80group.it",          // Common Name (UNIQUE per tenant)
+    cert_key: "sha256:a1b2c3...",             // Certificate identity (UNIQUE per tenant).
+                                              //   "sha256:<fp>" when a fingerprint is known
+                                              //   (tlsx/Censys/GVM); "surrogate:<sha1>" over
+                                              //   subject_cn|issuer|not_before|not_after otherwise
+                                              //   (httpx, FOFA). NOT subject_cn: a CN is neither
+                                              //   unique nor always present (SAN-only certs).
+    subject_cn: "*.beta80group.it",          // Common Name (nullable; empty on SAN-only certs)
     user_id: "samgiam",                       // Owner/user identifier
     project_id: "project_2",                  // Project identifier
     issuer: "DigiCert Inc",                   // Certificate issuer (CN + org)
     not_before: "2025-09-02T00:00:00Z",       // Valid from date
     not_after: "2026-10-03T23:59:59Z",        // Expiration date
-    san: ["*.beta80group.it", "beta80group.it"],  // Subject Alternative Names
+    san: ["*.beta80group.it", "beta80group.it"],  // Subject Alternative Names (full list, CN included)
     cipher: "TLS_AES_128_GCM_SHA256",         // TLS cipher suite
     tls_version: "TLSv1.3",                   // TLS version (if detected)
     subject_org: "Example Org",               // Certificate subject organization (set by FOFA certs_subject_org)
     is_valid: true,                           // Certificate validity flag (set by FOFA certs_valid)
-    source: "http_probe",                     // Discovery source: "http_probe", "gvm", "censys", "fofa"
-
-    // Censys-specific properties (when source = "censys")
-    fingerprint: "sha256:A1B2C3...",          // Certificate fingerprint from Censys leaf_data
+    source: "http_probe",                     // FIRST writer (ON CREATE only): "http_probe","tlsx","gvm","censys","fofa"
+    observed_by: ["http_probe", "gvm"],       // ALL writers that observed this cert (append-only).
+                                              //   A cross-source clear preserves a cert with any
+                                              //   other scanner still in this list.
+    fingerprint_sha256: "a1b2c3...",          // SHA-256 fingerprint (single canonical name across writers)
 
     // GVM-specific properties (when source = "gvm")
     serial: "01:AB:CD:...",                   // Certificate serial number
-    sha256_fingerprint: "A1B2C3...",          // SHA-256 fingerprint
-    scan_timestamp: "2026-02-12T23:10:29Z"    // When GVM scan ran
+    scan_timestamp: "2026-02-12T23:10:29Z",   // When GVM scan ran
+
+    // tlsx verdict/posture booleans (also read by the TLS-hygiene security checks)
+    expired: false, self_signed: false, mismatched: false,
+    revoked: false, untrusted: false, wildcard: false,
+    jarm: "...", ja3: "...", ja3s: "..."      // fingerprints (flag-gated in tlsx)
 })
 ```
 
 **Constraints:**
 ```cypher
-CREATE CONSTRAINT certificate_unique IF NOT EXISTS
-FOR (c:Certificate) REQUIRE (c.subject_cn, c.user_id, c.project_id) IS UNIQUE;
+CREATE CONSTRAINT certificate_key_unique IF NOT EXISTS
+FOR (c:Certificate) REQUIRE (c.cert_key, c.user_id, c.project_id) IS UNIQUE;
 ```
 
 ---
@@ -703,7 +780,7 @@ FOR (e:Endpoint) REQUIRE (e.path, e.method, e.baseurl, e.user_id, e.project_id) 
 
 ---
 
-### 8. Parameter
+### 9. Parameter
 URL parameters that represent potential attack vectors. These are discovered through Katana crawling,
 Hakrawler crawling, ZAP Ajax Spider browser-driven crawling, ParamSpider passive parameter mining, jsluice JavaScript analysis, and marked as injectable when vulnerabilities are found through DAST scanning.
 
@@ -726,31 +803,27 @@ FOR (p:Parameter) REQUIRE (p.name, p.position, p.endpoint_path, p.baseurl, p.use
 
 ---
 
-### 9. Technology
+### 10. Technology
 Detected technologies, frameworks, and software.
 
 ```cypher
 (:Technology {
     name: "PHP",                            // Technology name
-    version: "5.6.40",                      // Primary version (if detected)
-    versions_all: ["5.6.40"],               // All versions detected (from wappalyzer)
-    name_version: "PHP:5.6.40",             // Combined identifier
+    version: "5.6.40",                      // Primary version, '' when undetected
     categories: ["Programming languages"],  // Technology categories
+    category: "ai-vector-db",               // Single-valued category (AI-surface writer)
     confidence: 100,                        // Detection confidence (0-100)
-    
+
     // Source tracking
-    detected_by: "httpx",                   // httpx, wappalyzer, banner_grab
-    
+    detected_by: "httpx",                   // httpx, wappalyzer, nmap, gvm,
+                                            // ai-surface-recon-probe
+    source: "ai-surface-recon",             // Producing module, where the writer sets it
+
     // For CVE lookup matching
-    product: "php",                         // Normalized product name for CVE lookup
+    product: "php",                         // Normalized product name (Nmap -sV)
+    cpe: "cpe:/a:php:php:5.6.40",           // Full CPE (GVM)
     cpe_vendor: "php",                      // CPE vendor (if known)
-    
-    // CVE Summary (denormalized for quick access)
-    known_cve_count: 17,
-    critical_cve_count: 2,
-    high_cve_count: 5,
-    medium_cve_count: 10,
-    low_cve_count: 0
+    cpe_product: "php"                      // CPE product (if known)
 })
 ```
 
@@ -761,10 +834,15 @@ FOR (t:Technology) REQUIRE (t.name, t.version, t.user_id, t.project_id) IS UNIQU
 ```
 
 > **Note:** `version` uses empty string `''` (not NULL) when no version is detected, because composite constraints require all fields to be present.
+>
+> There is no denormalised CVE-count property on `Technology` and no
+> `name_version` / `versions_all` property. `versions_all` exists only in the
+> recon JSON (`recon/main_recon_modules/http_probe.py`) and is not carried onto
+> the node. Count CVEs by traversing `-[:HAS_KNOWN_CVE]->(:CVE)` instead.
 
 ---
 
-### 10. Vulnerability
+### 11. Vulnerability
 Discovered vulnerabilities. Seven sources produce Vulnerability nodes, each with different property sets.
 
 **Common properties (all sources):**
@@ -1029,7 +1107,7 @@ Layered scanner: **Subjack** (DNS-first, Apache-2.0 Go binary baked into the rec
 })
 ```
 
-VHost/SNI also creates a **BaseURL** node for each newly discovered hidden vhost (so Katana / Nuclei can scan it via partial recon follow-up). Relationships used: `(:Subdomain)-[:HAS_VULNERABILITY]->(:Vulnerability)`, `(:IP)-[:HAS_VULNERABILITY]->(:Vulnerability)` (for `host_header_bypass` only), `(:Subdomain)-[:HAS_BASEURL]->(:BaseURL)`. No new node labels, no new relationship types.
+VHost/SNI also creates a **BaseURL** node for each newly discovered hidden vhost (so Katana / Nuclei can scan it via partial recon follow-up). Relationships used: `(:Subdomain)-[:HAS_VULNERABILITY]->(:Vulnerability)`, `(:IP)-[:HAS_VULNERABILITY]->(:Vulnerability)` (for `host_header_bypass` only), `(:Subdomain)-[:HAS_BASE_URL]->(:BaseURL)`. No new node labels, no new relationship types.
 
 **Web cache poisoning properties (source = "cache_poisoning"):**
 ```cypher
@@ -1071,7 +1149,7 @@ FOR (v:Vulnerability) ON (v.category);
 
 ---
 
-### 11. CVE
+### 12. CVE
 Known CVEs from technology-based lookup.
 
 ```cypher
@@ -1101,7 +1179,7 @@ FOR (c:CVE) ON (c.cvss);
 
 ---
 
-### 12. MitreData
+### 13. MitreData
 CWE (Common Weakness Enumeration) data from MITRE enrichment. Each CVE can have a hierarchical chain
 of CWE nodes representing the weakness hierarchy from root to leaf CWE.
 
@@ -1123,14 +1201,15 @@ of CWE nodes representing the weakness hierarchy from root to leaf CWE.
 ```cypher
 CREATE CONSTRAINT mitredata_unique IF NOT EXISTS
 FOR (m:MitreData) REQUIRE m.id IS UNIQUE;
-
-CREATE INDEX idx_mitredata_tenant IF NOT EXISTS
-FOR (m:MitreData) ON (m.user_id, m.project_id);
 ```
+
+A global reference node: no `user_id` / `project_id`. The old
+`idx_mitredata_tenant` indexed keys these nodes do not carry and is dropped by
+`init_schema`.
 
 ---
 
-### 13. Capec
+### 14. Capec
 CAPEC (Common Attack Pattern Enumeration and Classification) nodes linked to CWE weaknesses.
 Only created when a CWE has non-empty `related_capec` data.
 
@@ -1156,14 +1235,14 @@ FOR (cap:Capec) REQUIRE cap.capec_id IS UNIQUE;
 
 CREATE INDEX capec_id IF NOT EXISTS
 FOR (c:Capec) ON (c.capec_id);
-
-CREATE INDEX idx_capec_tenant IF NOT EXISTS
-FOR (c:Capec) ON (c.user_id, c.project_id);
 ```
+
+A global reference node: no `user_id` / `project_id`. The old `idx_capec_tenant`
+indexed keys these nodes do not carry and is dropped by `init_schema`.
 
 ---
 
-### 14. DNSRecord
+### 15. DNSRecord
 DNS records for subdomains.
 
 ```cypher
@@ -1182,7 +1261,7 @@ FOR (dns:DNSRecord) REQUIRE (dns.type, dns.value, dns.subdomain, dns.user_id, dn
 
 ---
 
-### 15. Header
+### 16. Header
 HTTP response headers (all captured headers).
 
 ```cypher
@@ -1210,7 +1289,7 @@ FOR (h:Header) REQUIRE (h.name, h.value, h.baseurl, h.user_id, h.project_id) IS 
 
 ---
 
-### 20. Traceroute
+### 17. Traceroute
 
 **Label:** `Traceroute`
 **Created by:** GVM/OpenVAS scanner (log-level finding)
@@ -1242,7 +1321,7 @@ FOR (tr:Traceroute) REQUIRE (tr.target_ip, tr.user_id, tr.project_id) IS UNIQUE;
 
 ---
 
-### 21. ExploitGvm
+### 18. ExploitGvm
 
 GVM/OpenVAS confirmed active exploitation. Created when a GVM "Active Check" NVT achieves QoD=100, meaning it actually executed a payload and received proof of compromise (e.g., command output showing `uid=0(root)`).
 
@@ -1276,8 +1355,8 @@ GVM/OpenVAS confirmed active exploitation. Created when a GVM "Active Check" NVT
 
 **Constraints:**
 ```cypher
-CREATE CONSTRAINT exploitgvm_unique IF NOT EXISTS
-FOR (e:ExploitGvm) REQUIRE e.id IS UNIQUE;
+CREATE CONSTRAINT exploitgvm_tenant_unique IF NOT EXISTS
+FOR (e:ExploitGvm) REQUIRE (e.id, e.user_id, e.project_id) IS UNIQUE;
 
 CREATE INDEX idx_exploitgvm_tenant IF NOT EXISTS
 FOR (e:ExploitGvm) ON (e.user_id, e.project_id);
@@ -1292,7 +1371,7 @@ FOR (e:ExploitGvm) ON (e.user_id, e.project_id);
 
 ---
 
-### 22. ExternalDomain
+### 19. ExternalDomain
 
 Foreign domains encountered during recon that are outside the target scope.
 These are **informational only** — they are never scanned, probed, or attacked.
@@ -1358,11 +1437,11 @@ FOR (ed:ExternalDomain) ON (ed.user_id, ed.project_id);
 
 ---
 
-### UserInput
+### 20. UserInput
 
 User-provided values for partial recon runs. When a user triggers a partial recon (e.g., subdomain discovery) and adds custom input values, a UserInput node is created to track the provenance of those inputs and the results they produced.
 
-**Created by:** `partial_recon.py` (partial recon pipeline)
+**Created by:** `recon/partial_recon.py` (partial recon pipeline)
 
 **Properties:**
 
@@ -1380,8 +1459,8 @@ User-provided values for partial recon runs. When a user triggers a partial reco
 
 **Constraints:**
 ```cypher
-CREATE CONSTRAINT userinput_unique IF NOT EXISTS
-FOR (ui:UserInput) REQUIRE (ui.id) IS UNIQUE;
+CREATE CONSTRAINT userinput_tenant_unique IF NOT EXISTS
+FOR (ui:UserInput) REQUIRE (ui.id, ui.user_id, ui.project_id) IS UNIQUE;
 
 CREATE INDEX idx_userinput_tenant IF NOT EXISTS
 FOR (ui:UserInput) ON (ui.user_id, ui.project_id);
@@ -1396,7 +1475,7 @@ FOR (ui:UserInput) ON (ui.user_id, ui.project_id);
 
 ---
 
-### Secret
+### 21. Secret
 
 Secrets discovered in live web resources (JavaScript files, configuration files, etc.) during reconnaissance. This is a **generic, source-agnostic** node: jsluice populates it now, but any future secret discovery tool can create the same node type.
 
@@ -1422,7 +1501,7 @@ Secrets discovered in live web resources (JavaScript files, configuration files,
 
 **Constraint:**
 ```cypher
-CREATE CONSTRAINT secret_unique IF NOT EXISTS FOR (s:Secret) REQUIRE (s.id) IS UNIQUE
+CREATE CONSTRAINT secret_tenant_unique IF NOT EXISTS FOR (s:Secret) REQUIRE (s.id, s.user_id, s.project_id) IS UNIQUE
 ```
 
 **Relationship:**
@@ -1434,11 +1513,11 @@ CREATE CONSTRAINT secret_unique IF NOT EXISTS FOR (s:Secret) REQUIRE (s.id) IS U
 
 ---
 
-### ThreatPulse
+### 22. ThreatPulse
 
 OTX threat intelligence pulses — named threat reports associating indicators (IPs, domains) with adversaries, malware families, and attack patterns. Each pulse represents a community-published threat report on AlienVault OTX. Up to 10 pulses per indicator are stored.
 
-**Created by:** `recon/otx_enrich.py` + `graph_db/mixins/osint_mixin.py::update_graph_from_otx()`
+**Created by:** `recon/main_recon_modules/otx_enrich.py` + `graph_db/mixins/osint_mixin.py::update_graph_from_otx()`
 
 ```cypher
 (:ThreatPulse {
@@ -1520,7 +1599,7 @@ and keying on the two nodes alone silently collapsed them onto one edge.
 
 ---
 
-### Malware
+### 23. Malware
 
 Malware samples (file hashes) associated with IPs or domains as reported by OSINT tools (OTX, VirusTotal). This is a **cross-tool** node type: OTX malware and VirusTotal malware samples both produce `Malware` nodes, allowing correlation across sources.
 
@@ -1566,14 +1645,19 @@ FOR (m:Malware) ON (m.user_id, m.project_id);
 ### Domain Relationships
 
 ```cypher
-// Domain owns subdomains
+// Domain owns subdomains. The inverse edge is written too, by most OSINT and
+// recon writers, so a traversal may start from either end.
 (Domain)-[:HAS_SUBDOMAIN]->(Subdomain)
+(Subdomain)-[:BELONGS_TO]->(Domain)
 
-// Domain encountered foreign domains during recon
+// Domain resolves directly to an IP (keeps OSINT-discovered IPs from orphaning
+// when no Subdomain sits between them)
+(Domain)-[:HAS_IP]->(IP)
+
+// Domain encountered foreign domains during recon. The ExternalDomain also
+// points back at the Domain whose scan surfaced it.
 (Domain)-[:HAS_EXTERNAL_DOMAIN]->(ExternalDomain)
-
-// Domain WHOIS contacts (if needed as separate nodes)
-(Domain)-[:REGISTERED_BY {registrar_url: "..."}]->(Registrar)
+(ExternalDomain)-[:DISCOVERED_BY]->(Domain)
 
 // OTX: historical IP resolutions (domain/passive_dns endpoint)
 (Domain)-[:HISTORICALLY_RESOLVED_TO {first_seen: "...", last_seen: "...", record_type: "A"}]->(IP)
@@ -1642,6 +1726,14 @@ FOR (m:Malware) ON (m.user_id, m.project_id);
 ### BaseURL Relationships
 
 ```cypher
+// Subdomain/Domain owns a BaseURL.
+// NOTE the underscore: writers emit HAS_BASE_URL. `HAS_BASEURL` is a LEGACY
+// spelling still on disk in older graphs (vhost and AI-surface data), so reads
+// that must cover both write `[:HAS_BASE_URL|HAS_BASEURL]`.
+(Subdomain)-[:HAS_BASE_URL]->(BaseURL)
+(Domain)-[:HAS_BASE_URL]->(BaseURL)
+
+// BaseURL has endpoints (discovered paths from vuln_scan)
 // BaseURL has observed or declared endpoints
 (BaseURL)-[:HAS_ENDPOINT]->(Endpoint)
 
@@ -1651,11 +1743,15 @@ FOR (m:Malware) ON (m.user_id, m.project_id);
 // BaseURL uses technologies (detected by httpx/wappalyzer)
 (BaseURL)-[:USES_TECHNOLOGY {confidence: 100, detected_by: "httpx"}]->(Technology)
 
-// BaseURL has TLS certificate (if HTTPS)
+// BaseURL has TLS certificate (httpx over HTTPS)
 (BaseURL)-[:HAS_CERTIFICATE]->(Certificate)
 
-// IP has TLS certificate (GVM-discovered, non-HTTP TLS)
+// IP has TLS certificate (GVM/Censys/FOFA/tlsx-discovered, incl. non-HTTP TLS ports)
 (IP)-[:HAS_CERTIFICATE]->(Certificate)
+
+// Certificate covers a hostname listed in its SAN (tlsx; wildcard-stripped).
+// Makes SAN data traversable instead of a dead list property.
+(Certificate)-[:COVERS_HOST]->(Subdomain)
 
 // BaseURL has HTTP headers
 (BaseURL)-[:HAS_HEADER]->(Header)
@@ -1752,14 +1848,19 @@ RETURN s.name, ip.address, v.name, v.severity
 // Technology has known CVEs (from CVE lookup via NVD, or from Nmap NSE scripts)
 (Technology)-[:HAS_KNOWN_CVE]->(CVE)
 
-// Technology runs on service (httpx detection via BaseURL)
-(Service)-[:POWERED_BY]->(Technology)
+// Only TWO edge types point at Technology, but each has several source labels
+// depending on which scanner detected it.
 
-// Service uses technology (Nmap -sV detection, e.g. Service:ftp:21 -> Technology:vsftpd/2.3.4)
-(Service)-[:USES_TECHNOLOGY]->(Technology)
+// USES_TECHNOLOGY — carries {confidence, detected_by} where the writer sets it
+(Service)-[:USES_TECHNOLOGY]->(Technology)   // Nmap -sV, e.g. Service:ftp:21 -> vsftpd/2.3.4
+(Port)-[:USES_TECHNOLOGY]->(Technology)      // GVM
+(IP)-[:USES_TECHNOLOGY]->(Technology)        // GVM
+(Endpoint)-[:USES_TECHNOLOGY]->(Technology)  // httpx / Wappalyzer, detected per-path-response
+(BaseURL)-[:USES_TECHNOLOGY]->(Technology)   // AI-surface fallback when no Port/IP matched
 
-// Port has technology (Nmap -sV detection, e.g. Port:21/tcp -> Technology:vsftpd/2.3.4)
-(Port)-[:HAS_TECHNOLOGY]->(Technology)
+// HAS_TECHNOLOGY
+(Port)-[:HAS_TECHNOLOGY]->(Technology)       // Nmap -sV, e.g. Port:21/tcp -> vsftpd/2.3.4
+(IP)-[:HAS_TECHNOLOGY]->(Technology)         // AI-surface fallback when the Port wasn't matched
 
 // NSE vulnerability found on technology (e.g. ftp-vsftpd-backdoor -> vsftpd/2.3.4)
 (Vulnerability)-[:FOUND_ON]->(Technology)
@@ -1783,6 +1884,10 @@ RETURN svc.name, svc.port_number, t.name, c.id
 ### CVE/MITRE Relationships
 
 ```cypher
+// A finding cites a CVE. Note the CVE is a GLOBAL reference node, matched on
+// its natural id with no tenant key (see "Global Reference Nodes" above).
+(Vulnerability)-[:INCLUDES_CVE]->(CVE)
+
 // CVE has CWE weakness data
 (CVE)-[:HAS_CWE]->(MitreData)
 
@@ -1824,9 +1929,9 @@ RETURN svc.name, svc.port_number, t.name, c.id
 ## 📐 Complete Graph Visualization
 
 ```
-┌──────────┐                        ┌─────────────┐
-│ Registrar│◄──REGISTERED_BY────────│   Domain    │
-└──────────┘                        │ (user_id,   │
+                                    ┌─────────────┐
+                                    │   Domain    │
+                                    │ (user_id,   │
                                     │ project_id) │
                                     └──────┬──────┘
                                            │
@@ -1854,7 +1959,7 @@ RETURN svc.name, svc.port_number, t.name, c.id
                                                │  Service  │
                                                └──┬─────┬──┘
                                                   │     │
-                                            SERVES_URL  POWERED_BY
+                                            SERVES_URL  USES_TECHNOLOGY
                                                   │     │
                                             ┌─────▼───┐ │
                                             │ BaseURL │─┼─────────────┐
@@ -1915,6 +2020,16 @@ redirected to HTTPS). This prevents orphaned BaseURL clusters in the graph.
 
 ## 🔍 Key Query Patterns
 
+> Most of these walk the full chain
+> `Domain -> Subdomain -> IP -> Port -> Service -> BaseURL`. That chain is not
+> guaranteed: a Subdomain may link straight to a BaseURL when `SERVES_URL` is
+> absent (port 80 redirected to HTTPS, so httpx never probed it but a crawler
+> still found URLs under it). Widen the middle to
+> `-[:RESOLVES_TO|HAS_PORT|RUNS_SERVICE|SERVES_URL|HAS_BASE_URL*1..4]->` when a
+> query must not miss those hosts. Technologies attach to `Endpoint` (httpx,
+> Wappalyzer), `Service`/`Port`/`IP` (Nmap, GVM) — not to `BaseURL` except as an
+> AI-surface fallback; see "Technology Relationships".
+
 ### 1. Get All Assets for a Project
 ```cypher
 MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
@@ -1955,12 +2070,14 @@ MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_PORT]->(port:Port)
       -[:RUNS_SERVICE]->(svc:Service)
       -[:SERVES_URL]->(u:BaseURL)
+      -[:HAS_ENDPOINT]->(e:Endpoint)
       -[:USES_TECHNOLOGY]->(t:Technology)
       -[:HAS_KNOWN_CVE]->(c:CVE)
 WHERE c.cvss >= 7.0
 RETURN t.name AS technology, t.version AS version, svc.name AS service, port.number AS port,
-       collect({cve: c.id, cvss: c.cvss, severity: c.severity}) AS cves
-ORDER BY max(c.cvss) DESC
+       collect({cve: c.id, cvss: c.cvss, severity: c.severity}) AS cves,
+       max(c.cvss) AS top_cvss
+ORDER BY top_cvss DESC
 ```
 
 ### 5. Find Potential Attack Paths (SQLi to Database)
@@ -1973,7 +2090,7 @@ MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:SERVES_URL]->(u:BaseURL)
       -[:HAS_ENDPOINT]->(e:Endpoint)<-[:FOUND_AT]-(v:Vulnerability)
 WHERE v.category = "sqli"
-MATCH (u)-[:USES_TECHNOLOGY]->(t:Technology)
+MATCH (e)-[:USES_TECHNOLOGY]->(t:Technology)
 WHERE t.name IN ["MySQL", "PostgreSQL", "MSSQL", "Oracle"]
 RETURN s.name AS host, svc.name AS service, port.number AS port, v.matched_at AS injection_point,
        v.extracted_results AS evidence, t.name AS database
@@ -1985,8 +2102,10 @@ MATCH (d:Domain {user_id: $user_id, project_id: $project_id})
       -[:HAS_SUBDOMAIN]->(s:Subdomain {name: $hostname})
 OPTIONAL MATCH (s)-[:RESOLVES_TO]->(ip:IP)
 OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)-[:RUNS_SERVICE]->(svc:Service)
-OPTIONAL MATCH (svc)-[:SERVES_URL]->(u:BaseURL)-[:USES_TECHNOLOGY]->(tech:Technology)
-OPTIONAL MATCH (u)-[:HAS_ENDPOINT]->(e:Endpoint)<-[:FOUND_AT]-(vuln:Vulnerability)
+OPTIONAL MATCH (svc)-[:SERVES_URL]->(u:BaseURL)
+OPTIONAL MATCH (u)-[:HAS_ENDPOINT]->(e:Endpoint)
+OPTIONAL MATCH (e)-[:USES_TECHNOLOGY]->(tech:Technology)
+OPTIONAL MATCH (e)<-[:FOUND_AT]-(vuln:Vulnerability)
 RETURN s, collect(DISTINCT ip) AS ips,
        collect(DISTINCT {port: port.number, service: svc.name}) AS services,
        collect(DISTINCT tech.name) AS technologies,
@@ -2057,30 +2176,30 @@ RETURN s.name AS host, svc.name AS service, u.url AS url,
 
 | Node | Key Properties | Indexed |
 |------|---------------|---------|
-| Domain | name, user_id, project_id, target, modules_executed, whois_*, anonymous_mode, bruteforce_mode | ✅ Tenant composite unique |
-| Subdomain | name, has_dns_records | ✅ Tenant composite unique |
-| IP | address, version, is_cdn, cdn_name, asn | ✅ Tenant composite unique |
-| Port | number, protocol, state, ip_address | ✅ Tenant composite unique |
-| Service | name, product, version, banner, port_number, ip_address | ✅ Tenant composite unique |
-| BaseURL | url, scheme, host, status_code, is_live, body_sha256 | ✅ Tenant composite unique |
-| Endpoint | path, method, baseurl, has_parameters, source | ✅ Tenant composite unique |
-| Parameter | name, position, endpoint_path, baseurl, is_injectable, sample_value | ✅ Tenant composite unique |
-| Technology | name, version, categories, confidence, product, known_cve_count | ✅ Tenant composite unique |
-| Certificate | subject_cn, issuer, not_before, not_after, source | ✅ Tenant composite unique |
-| DNSRecord | type, value, subdomain, ttl | ✅ Tenant composite unique |
-| Header | name, value, baseurl, is_security_header | ✅ Tenant composite unique |
-| Traceroute | target_ip, scanner_ip, hops, distance, source | ✅ Tenant composite unique |
-| Vulnerability | id, template_id, severity, category, matched_at, fuzzing_*, raw_request, raw_response, matched_ip | ✅ Unique (global) |
-| CVE | id, cvss, severity, description, published | ✅ Unique (global) |
-| MitreData | id, cve_id, cwe_id, cwe_name, cwe_description, abstraction, is_leaf | ✅ Unique (global) |
-| Capec | capec_id, name, description, likelihood, severity, prerequisites | ✅ Unique (global) |
-| ExploitGvm | id, source | ✅ Unique (global) |
-| GithubHunt | id, target, scan_start_time, status, repos_scanned, secrets_found | ✅ Unique (global), ✅ Tenant index |
-| GithubRepository | id, name | ✅ Unique (global), ✅ Tenant index |
-| SbomDocument | id, name | ✅ Unique (global), ✅ Tenant index |
-| GithubPath | id, repository, path | ✅ Unique (global), ✅ Tenant index |
-| GithubSecret | id, repository, path, secret_type, sample | ✅ Unique (global), ✅ Tenant index |
-| GithubSensitiveFile | id, repository, path, secret_type | ✅ Unique (global), ✅ Tenant index |
+| Domain | name, user_id, project_id, target, modules_executed, whois_*, anonymous_mode, bruteforce_mode | ✅ Unique (tenant), ✅ Tenant index |
+| Subdomain | name, has_dns_records | ✅ Unique (tenant), ✅ Tenant index |
+| IP | address, version, is_cdn, cdn_name, asn | ✅ Unique (tenant), ✅ Tenant index |
+| Port | number, protocol, state, ip_address | ✅ Unique (tenant), ✅ Tenant index |
+| Service | name, product, version, banner, port_number, ip_address | ✅ Unique (tenant), ✅ Tenant index |
+| BaseURL | url, scheme, host, status_code, is_live, body_sha256 | ✅ Unique (tenant), ✅ Tenant index |
+| Endpoint | path, method, baseurl, has_parameters, source | ✅ Unique (tenant), ✅ Tenant index |
+| Parameter | name, position, endpoint_path, baseurl, is_injectable, sample_value | ✅ Unique (tenant), ✅ Tenant index |
+| Technology | name, version, categories, confidence, product, known_cve_count | ✅ Unique (tenant), ✅ Tenant index |
+| Certificate | cert_key, subject_cn, issuer, not_before, not_after, source, observed_by | ✅ Unique (tenant), ✅ Tenant index |
+| DNSRecord | type, value, subdomain, ttl | ✅ Unique (tenant), ✅ Tenant index |
+| Header | name, value, baseurl, is_security_header | ✅ Unique (tenant), ✅ Tenant index |
+| Traceroute | target_ip, scanner_ip, hops, distance, source | ✅ Unique (tenant), ✅ Tenant index |
+| Vulnerability | id, template_id, severity, category, matched_at, fuzzing_*, raw_request, raw_response, matched_ip | ✅ Unique (tenant), ✅ Tenant index |
+| CVE | id, cvss, severity, description, published | ✅ Unique (global) — reference node, no tenant keys |
+| MitreData | id, cve_id, cwe_id, cwe_name, cwe_description, abstraction, is_leaf | ✅ Unique (global) — reference node, no tenant keys |
+| Capec | capec_id, name, description, likelihood, severity, prerequisites | ✅ Unique (global) — reference node, no tenant keys |
+| ExploitGvm | id, source | ✅ Unique (tenant), ✅ Tenant index |
+| GithubHunt | id, target, scan_start_time, status, repos_scanned, secrets_found | ✅ Unique (tenant), ✅ Tenant index |
+| GithubRepository | id, name | ✅ Unique (tenant), ✅ Tenant index |
+| SbomDocument | id, name | ✅ Unique (tenant), ✅ Tenant index |
+| GithubPath | id, repository, path | ✅ Unique (tenant), ✅ Tenant index |
+| GithubSecret | id, repository, path, secret_type, sample | ✅ Unique (tenant), ✅ Tenant index |
+| GithubSensitiveFile | id, repository, path, secret_type | ✅ Unique (tenant), ✅ Tenant index |
 | MultiscannerScan | id, source, target, status, total_findings, validated_findings, assets_scanned | ✅ Unique (tenant), ✅ Tenant index |
 | MultiscannerRepository | id, name, source, asset_kind | ✅ Unique (tenant), ✅ Tenant index |
 | MultiscannerImage | id, name, source, asset_kind | ✅ Unique (tenant), ✅ Tenant index |
@@ -2088,20 +2207,141 @@ RETURN s.name AS host, svc.name AS service, u.url AS url,
 | MultiscannerBucket | id, name, source, asset_kind | ✅ Unique (tenant), ✅ Tenant index |
 | MultiscannerEndpoint | id, name, source, asset_kind | ✅ Unique (tenant), ✅ Tenant index |
 | MultiscannerFinding | id, source, detector_name, validation_status, finding_kind, asset, location, line | ✅ Unique (tenant), ✅ Tenant index |
-| Secret | id, secret_type, severity, source, source_url, base_url, sample | ✅ Unique (global), ✅ Tenant index |
-| JsReconFinding | id, finding_type, severity, confidence, title, detail, source_url, package_name, package_version | ✅ Unique (global), ✅ Tenant index |
-| Package | purl, ecosystem, name, version, source, source_path, first_seen, last_seen | ✅ Unique (purl, user_id, project_id) |
-| MalPackageFinding | finding_id, verdict, source_tool, advisory_id, severity, confidence, title, detail, soft_error, aliases, incident_id, incident_url, incident_summary, incident_blast_radius, incident_remediation, incident_status, incident_feed_revised | ✅ Unique (finding_id, user_id, project_id) |
+| Secret | id, secret_type, severity, source, source_url, base_url, sample | ✅ Unique (tenant), ✅ Tenant index |
+| JsReconFinding | id, finding_type, severity, confidence, title, detail, source_url, package_name, package_version | ✅ Unique (tenant), ✅ Tenant index |
+| Package | purl, ecosystem, name, version, source, source_path, first_seen, last_seen | ✅ Unique (tenant), ✅ Tenant index |
+| MalPackageFinding | finding_id, verdict, source_tool, advisory_id, severity, confidence, title, detail, soft_error, aliases, incident_id, incident_url, incident_summary, incident_blast_radius, incident_remediation, incident_status, incident_feed_revised | ✅ Unique (tenant), ✅ Tenant index |
+| ExternalDomain | domain, sources, first_seen_at, ips_seen, times_seen, status_codes_seen | ✅ Unique (tenant), ✅ Tenant index |
+| UserInput | id, input_type, values, tool_id, source, status, stats | ✅ Unique (tenant), ✅ Tenant index |
+| ThreatPulse | pulse_id, name, adversary, malware_families, attack_ids, tags, tlp | ✅ Unique (tenant), ✅ Tenant index |
+| Malware | hash, hash_type, file_type, file_name, source, first_seen | ✅ Unique (tenant), ✅ Tenant index |
+| AttackChain | chain_id, title, objective, status, attack_path_type, total_steps, final_outcome | ✅ Unique (global, UUID), ✅ Tenant index |
+| ChainStep | step_id, chain_id, tool_name, phase, success, fireteam_id, agent_id | ✅ Unique (global, UUID), ✅ Tenant index |
+| ChainFinding | finding_id, chain_id, finding_type, severity, confidence, phase, fireteam_id, agent_id, source_agent | ✅ Unique (global, UUID), ✅ Tenant index |
+| ChainDecision | decision_id, chain_id | ✅ Unique (global, UUID), ✅ Tenant index |
+| ChainFailure | failure_id, failure_type, chain_id | ✅ Unique (global, UUID), ✅ Tenant index |
+| KBChunk | chunk_id | ✅ Unique (global) — knowledge base, content is universal |
+
+The `Chain*` keys are UUIDs (`uuid.uuid4()`), so a global uniqueness constraint
+carries no cross-project collision risk; the tenant index is what serves the
+per-project reads. Every other per-project label is keyed on the tenant triple —
+see the G2 note in `DROP_LEGACY_CONSTRAINTS` (`graph_db/schema.py`) for what an
+id-only key did to two projects scanning the same target.
 
 ---
 
 ## 🚀 Initialization Cypher
 
-Run this to set up constraints and indexes before importing data:
+`init_schema` (`graph_db/schema.py`) applies all of this automatically: it runs
+from `BaseMixin.__init__`, so every scan-container spawn and every agent graph
+call re-asserts it. Every statement is guarded by `IF NOT EXISTS` / `IF EXISTS`
+and is therefore idempotent. The block below is that schema reproduced for
+reference — `graph_db/schema.py` is the source of truth, not this listing.
+
+Four migrations run BEFORE the DDL, because a constraint on a new label or key
+cannot be satisfied while data still carries the old one: `migrate_legacy_labels`
+(Trufflehog -> Multiscanner), `backfill_updated_at`, `strip_reference_node_tenant`
+(removes tenant keys from `CVE` / `MitreData` / `Capec`) and `backfill_cert_key`.
+Each is guarded by a `:RedamonSchemaMigration {id}` marker node, so the
+steady-state cost is one lookup rather than a full scan per label on every
+client construction. That marker describes the DATABASE, not a project, so like
+the reference labels it carries no tenant key. The marker is written only after
+every step of a migration succeeded, so a partial run retries on the next
+connection instead of silently stopping half-way.
 
 ```cypher
 // =============================================================================
-// CONSTRAINTS — Tenant-scoped (per user_id + project_id)
+// DROP — legacy constraints/indexes superseded by the tenant-scoped ones
+// =============================================================================
+
+DROP CONSTRAINT subdomain_unique IF EXISTS;
+
+DROP CONSTRAINT ip_unique IF EXISTS;
+
+DROP CONSTRAINT baseurl_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogscan_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogrepository_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogfinding_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogimage_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogmodel_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogbucket_unique IF EXISTS;
+
+DROP CONSTRAINT trufflehogendpoint_unique IF EXISTS;
+
+DROP INDEX idx_trufflehogscan_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogrepository_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogfinding_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogimage_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogmodel_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogbucket_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogendpoint_tenant IF EXISTS;
+
+DROP INDEX idx_trufflehogfinding_detector IF EXISTS;
+
+DROP INDEX idx_trufflehogfinding_source IF EXISTS;
+
+DROP INDEX idx_trufflehogfinding_validation IF EXISTS;
+
+DROP INDEX idx_trufflehogscan_source IF EXISTS;
+
+DROP INDEX idx_trufflehogrepository_name IF EXISTS;
+
+DROP INDEX idx_trufflehogimage_name IF EXISTS;
+
+DROP INDEX idx_trufflehogmodel_name IF EXISTS;
+
+DROP INDEX idx_trufflehogbucket_name IF EXISTS;
+
+DROP INDEX idx_trufflehogendpoint_name IF EXISTS;
+
+DROP CONSTRAINT certificate_unique IF EXISTS;
+
+DROP CONSTRAINT vulnerability_unique IF EXISTS;
+
+DROP CONSTRAINT exploitgvm_unique IF EXISTS;
+
+DROP CONSTRAINT githubhunt_unique IF EXISTS;
+
+DROP CONSTRAINT githubrepo_unique IF EXISTS;
+
+DROP CONSTRAINT githubpath_unique IF EXISTS;
+
+DROP CONSTRAINT githubsecret_unique IF EXISTS;
+
+DROP CONSTRAINT githubsensitivefile_unique IF EXISTS;
+
+DROP CONSTRAINT sbomdoc_unique IF EXISTS;
+
+DROP CONSTRAINT jsreconfinding_unique IF EXISTS;
+
+DROP CONSTRAINT secret_unique IF EXISTS;
+
+DROP CONSTRAINT userinput_unique IF EXISTS;
+
+DROP CONSTRAINT exploit_unique IF EXISTS;
+
+DROP INDEX idx_cve_tenant IF EXISTS;
+
+DROP INDEX idx_mitredata_tenant IF EXISTS;
+
+DROP INDEX idx_capec_tenant IF EXISTS;
+
+DROP INDEX idx_exploit_type IF EXISTS;
+
+// =============================================================================
+// CONSTRAINTS — tenant-scoped, except the global reference labels
 // =============================================================================
 
 CREATE CONSTRAINT domain_unique IF NOT EXISTS
@@ -2137,21 +2377,11 @@ FOR (h:Header) REQUIRE (h.name, h.value, h.baseurl, h.user_id, h.project_id) IS 
 CREATE CONSTRAINT dnsrecord_unique IF NOT EXISTS
 FOR (dns:DNSRecord) REQUIRE (dns.type, dns.value, dns.subdomain, dns.user_id, dns.project_id) IS UNIQUE;
 
-CREATE CONSTRAINT certificate_unique IF NOT EXISTS
-FOR (c:Certificate) REQUIRE (c.subject_cn, c.user_id, c.project_id) IS UNIQUE;
+CREATE CONSTRAINT certificate_key_unique IF NOT EXISTS
+FOR (c:Certificate) REQUIRE (c.cert_key, c.user_id, c.project_id) IS UNIQUE;
 
 CREATE CONSTRAINT traceroute_unique IF NOT EXISTS
 FOR (tr:Traceroute) REQUIRE (tr.target_ip, tr.user_id, tr.project_id) IS UNIQUE;
-
-CREATE CONSTRAINT secret_unique IF NOT EXISTS
-FOR (s:Secret) REQUIRE (s.id) IS UNIQUE;
-
-// =============================================================================
-// CONSTRAINTS — Global (shared reference nodes)
-// =============================================================================
-
-CREATE CONSTRAINT vulnerability_unique IF NOT EXISTS
-FOR (v:Vulnerability) REQUIRE v.id IS UNIQUE;
 
 CREATE CONSTRAINT cve_unique IF NOT EXISTS
 FOR (c:CVE) REQUIRE c.id IS UNIQUE;
@@ -2162,16 +2392,95 @@ FOR (m:MitreData) REQUIRE m.id IS UNIQUE;
 CREATE CONSTRAINT capec_unique IF NOT EXISTS
 FOR (cap:Capec) REQUIRE cap.capec_id IS UNIQUE;
 
-CREATE CONSTRAINT exploitgvm_unique IF NOT EXISTS
-FOR (e:ExploitGvm) REQUIRE e.id IS UNIQUE;
+CREATE CONSTRAINT vulnerability_tenant_unique IF NOT EXISTS
+FOR (v:Vulnerability) REQUIRE (v.id, v.user_id, v.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT exploitgvm_tenant_unique IF NOT EXISTS
+FOR (e:ExploitGvm) REQUIRE (e.id, e.user_id, e.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT githubhunt_tenant_unique IF NOT EXISTS
+FOR (gh:GithubHunt) REQUIRE (gh.id, gh.user_id, gh.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT githubrepo_tenant_unique IF NOT EXISTS
+FOR (gr:GithubRepository) REQUIRE (gr.id, gr.user_id, gr.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT githubpath_tenant_unique IF NOT EXISTS
+FOR (gp:GithubPath) REQUIRE (gp.id, gp.user_id, gp.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT package_unique IF NOT EXISTS
+FOR (p:Package) REQUIRE (p.purl, p.user_id, p.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT sbomdoc_tenant_unique IF NOT EXISTS
+FOR (d:SbomDocument) REQUIRE (d.id, d.user_id, d.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT malpackagefinding_unique IF NOT EXISTS
+FOR (mf:MalPackageFinding) REQUIRE (mf.finding_id, mf.user_id, mf.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT githubsecret_tenant_unique IF NOT EXISTS
+FOR (gs:GithubSecret) REQUIRE (gs.id, gs.user_id, gs.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT githubsensitivefile_tenant_unique IF NOT EXISTS
+FOR (gsf:GithubSensitiveFile) REQUIRE (gsf.id, gsf.user_id, gsf.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerscan_unique IF NOT EXISTS
+FOR (ts:MultiscannerScan) REQUIRE (ts.id, ts.user_id, ts.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerrepository_unique IF NOT EXISTS
+FOR (tr:MultiscannerRepository) REQUIRE (tr.id, tr.user_id, tr.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerfinding_unique IF NOT EXISTS
+FOR (tf:MultiscannerFinding) REQUIRE (tf.id, tf.user_id, tf.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerimage_unique IF NOT EXISTS
+FOR (ti:MultiscannerImage) REQUIRE (ti.id, ti.user_id, ti.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannermodel_unique IF NOT EXISTS
+FOR (tm:MultiscannerModel) REQUIRE (tm.id, tm.user_id, tm.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerbucket_unique IF NOT EXISTS
+FOR (tb:MultiscannerBucket) REQUIRE (tb.id, tb.user_id, tb.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT multiscannerendpoint_unique IF NOT EXISTS
+FOR (te:MultiscannerEndpoint) REQUIRE (te.id, te.user_id, te.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT jsreconfinding_tenant_unique IF NOT EXISTS
+FOR (jf:JsReconFinding) REQUIRE (jf.id, jf.user_id, jf.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT secret_tenant_unique IF NOT EXISTS
+FOR (s:Secret) REQUIRE (s.id, s.user_id, s.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT externaldomain_unique IF NOT EXISTS
+FOR (ed:ExternalDomain) REQUIRE (ed.domain, ed.user_id, ed.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT threatpulse_unique IF NOT EXISTS
+FOR (tp:ThreatPulse) REQUIRE (tp.pulse_id, tp.user_id, tp.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT malware_unique IF NOT EXISTS
+FOR (m:Malware) REQUIRE (m.hash, m.user_id, m.project_id) IS UNIQUE;
+
+CREATE CONSTRAINT attack_chain_id IF NOT EXISTS
+FOR (ac:AttackChain) REQUIRE ac.chain_id IS UNIQUE;
+
+CREATE CONSTRAINT chain_step_id IF NOT EXISTS
+FOR (s:ChainStep) REQUIRE s.step_id IS UNIQUE;
+
+CREATE CONSTRAINT chain_finding_id IF NOT EXISTS
+FOR (f:ChainFinding) REQUIRE f.finding_id IS UNIQUE;
+
+CREATE CONSTRAINT chain_decision_id IF NOT EXISTS
+FOR (d:ChainDecision) REQUIRE d.decision_id IS UNIQUE;
+
+CREATE CONSTRAINT chain_failure_id IF NOT EXISTS
+FOR (fl:ChainFailure) REQUIRE fl.failure_id IS UNIQUE;
+
+CREATE CONSTRAINT kb_chunk_id IF NOT EXISTS
+FOR (c:KBChunk) REQUIRE c.chunk_id IS UNIQUE;
+
+CREATE CONSTRAINT userinput_tenant_unique IF NOT EXISTS
+FOR (ui:UserInput) REQUIRE (ui.id, ui.user_id, ui.project_id) IS UNIQUE;
 
 // =============================================================================
-// INDEXES (query performance)
-// =============================================================================
-
-// =============================================================================
-// TENANT COMPOSITE INDEXES (CRITICAL for multi-tenant query performance)
-// All queries MUST filter by user_id + project_id FIRST to leverage these indexes
+// TENANT COMPOSITE INDEXES — one per per-project label
 // =============================================================================
 
 CREATE INDEX idx_domain_tenant IF NOT EXISTS
@@ -2180,20 +2489,23 @@ FOR (d:Domain) ON (d.user_id, d.project_id);
 CREATE INDEX idx_subdomain_tenant IF NOT EXISTS
 FOR (s:Subdomain) ON (s.user_id, s.project_id);
 
-CREATE INDEX idx_subdomain_status IF NOT EXISTS
-FOR (s:Subdomain) ON (s.status);
-
 CREATE INDEX idx_ip_tenant IF NOT EXISTS
 FOR (i:IP) ON (i.user_id, i.project_id);
 
 CREATE INDEX idx_port_tenant IF NOT EXISTS
 FOR (p:Port) ON (p.user_id, p.project_id);
 
-CREATE INDEX idx_service_tenant IF NOT EXISTS
-FOR (svc:Service) ON (svc.user_id, svc.project_id);
+CREATE INDEX idx_dnsrecord_tenant IF NOT EXISTS
+FOR (dns:DNSRecord) ON (dns.user_id, dns.project_id);
 
 CREATE INDEX idx_baseurl_tenant IF NOT EXISTS
 FOR (u:BaseURL) ON (u.user_id, u.project_id);
+
+CREATE INDEX idx_technology_tenant IF NOT EXISTS
+FOR (t:Technology) ON (t.user_id, t.project_id);
+
+CREATE INDEX idx_header_tenant IF NOT EXISTS
+FOR (h:Header) ON (h.user_id, h.project_id);
 
 CREATE INDEX idx_endpoint_tenant IF NOT EXISTS
 FOR (e:Endpoint) ON (e.user_id, e.project_id);
@@ -2201,70 +2513,121 @@ FOR (e:Endpoint) ON (e.user_id, e.project_id);
 CREATE INDEX idx_parameter_tenant IF NOT EXISTS
 FOR (p:Parameter) ON (p.user_id, p.project_id);
 
-CREATE INDEX idx_technology_tenant IF NOT EXISTS
-FOR (t:Technology) ON (t.user_id, t.project_id);
-
 CREATE INDEX idx_vulnerability_tenant IF NOT EXISTS
 FOR (v:Vulnerability) ON (v.user_id, v.project_id);
 
-CREATE INDEX idx_cve_tenant IF NOT EXISTS
-FOR (c:CVE) ON (c.user_id, c.project_id);
+CREATE INDEX idx_exploit_tenant IF NOT EXISTS
+FOR (e:Exploit) ON (e.user_id, e.project_id);
 
-CREATE INDEX idx_mitredata_tenant IF NOT EXISTS
-FOR (m:MitreData) ON (m.user_id, m.project_id);
+CREATE INDEX idx_exploitgvm_tenant IF NOT EXISTS
+FOR (e:ExploitGvm) ON (e.user_id, e.project_id);
 
-CREATE INDEX idx_capec_tenant IF NOT EXISTS
-FOR (c:Capec) ON (c.user_id, c.project_id);
+CREATE INDEX idx_githubhunt_tenant IF NOT EXISTS
+FOR (gh:GithubHunt) ON (gh.user_id, gh.project_id);
 
-CREATE INDEX idx_dnsrecord_tenant IF NOT EXISTS
-FOR (dns:DNSRecord) ON (dns.user_id, dns.project_id);
+CREATE INDEX idx_githubrepo_tenant IF NOT EXISTS
+FOR (gr:GithubRepository) ON (gr.user_id, gr.project_id);
 
-CREATE INDEX idx_header_tenant IF NOT EXISTS
-FOR (h:Header) ON (h.user_id, h.project_id);
+CREATE INDEX idx_sbomdoc_tenant IF NOT EXISTS
+FOR (d:SbomDocument) ON (d.user_id, d.project_id);
 
-CREATE INDEX idx_traceroute_tenant IF NOT EXISTS
-FOR (tr:Traceroute) ON (tr.user_id, tr.project_id);
+CREATE INDEX idx_githubpath_tenant IF NOT EXISTS
+FOR (gp:GithubPath) ON (gp.user_id, gp.project_id);
+
+CREATE INDEX idx_githubsecret_tenant IF NOT EXISTS
+FOR (gs:GithubSecret) ON (gs.user_id, gs.project_id);
+
+CREATE INDEX idx_githubsensitivefile_tenant IF NOT EXISTS
+FOR (gsf:GithubSensitiveFile) ON (gsf.user_id, gsf.project_id);
+
+CREATE INDEX idx_multiscannerscan_tenant IF NOT EXISTS
+FOR (ts:MultiscannerScan) ON (ts.user_id, ts.project_id);
+
+CREATE INDEX idx_multiscannerrepository_tenant IF NOT EXISTS
+FOR (tr:MultiscannerRepository) ON (tr.user_id, tr.project_id);
+
+CREATE INDEX idx_multiscannerfinding_tenant IF NOT EXISTS
+FOR (tf:MultiscannerFinding) ON (tf.user_id, tf.project_id);
+
+CREATE INDEX idx_multiscannerimage_tenant IF NOT EXISTS
+FOR (ti:MultiscannerImage) ON (ti.user_id, ti.project_id);
+
+CREATE INDEX idx_multiscannermodel_tenant IF NOT EXISTS
+FOR (tm:MultiscannerModel) ON (tm.user_id, tm.project_id);
+
+CREATE INDEX idx_multiscannerbucket_tenant IF NOT EXISTS
+FOR (tb:MultiscannerBucket) ON (tb.user_id, tb.project_id);
+
+CREATE INDEX idx_multiscannerendpoint_tenant IF NOT EXISTS
+FOR (te:MultiscannerEndpoint) ON (te.user_id, te.project_id);
+
+CREATE INDEX idx_jsreconfinding_tenant IF NOT EXISTS
+FOR (jf:JsReconFinding) ON (jf.user_id, jf.project_id);
 
 CREATE INDEX idx_secret_tenant IF NOT EXISTS
 FOR (s:Secret) ON (s.user_id, s.project_id);
 
+CREATE INDEX idx_externaldomain_tenant IF NOT EXISTS
+FOR (ed:ExternalDomain) ON (ed.user_id, ed.project_id);
+
+CREATE INDEX idx_threatpulse_tenant IF NOT EXISTS
+FOR (tp:ThreatPulse) ON (tp.user_id, tp.project_id);
+
+CREATE INDEX idx_malware_tenant IF NOT EXISTS
+FOR (m:Malware) ON (m.user_id, m.project_id);
+
+CREATE INDEX idx_attackchain_tenant IF NOT EXISTS
+FOR (ac:AttackChain) ON (ac.user_id, ac.project_id);
+
+CREATE INDEX idx_chainstep_tenant IF NOT EXISTS
+FOR (s:ChainStep) ON (s.user_id, s.project_id);
+
+CREATE INDEX idx_chainfinding_tenant IF NOT EXISTS
+FOR (f:ChainFinding) ON (f.user_id, f.project_id);
+
+CREATE INDEX idx_chaindecision_tenant IF NOT EXISTS
+FOR (d:ChainDecision) ON (d.user_id, d.project_id);
+
+CREATE INDEX idx_chainfailure_tenant IF NOT EXISTS
+FOR (fl:ChainFailure) ON (fl.user_id, fl.project_id);
+
+CREATE INDEX idx_userinput_tenant IF NOT EXISTS
+FOR (ui:UserInput) ON (ui.user_id, ui.project_id);
+
+CREATE INDEX idx_traceroute_tenant IF NOT EXISTS
+FOR (tr:Traceroute) ON (tr.user_id, tr.project_id);
+
+CREATE INDEX idx_package_tenant IF NOT EXISTS
+FOR (p:Package) ON (p.user_id, p.project_id);
+
+CREATE INDEX idx_malpackagefinding_tenant IF NOT EXISTS
+FOR (mf:MalPackageFinding) ON (mf.user_id, mf.project_id);
+
+CREATE INDEX idx_certificate_tenant IF NOT EXISTS
+FOR (c:Certificate) ON (c.user_id, c.project_id);
+
 // =============================================================================
-// ADDITIONAL INDEXES (attribute-based lookups within tenant data)
+// ADDITIONAL FUNCTIONAL INDEXES
 // =============================================================================
 
-// Domain queries
-CREATE INDEX domain_target IF NOT EXISTS
-FOR (d:Domain) ON (d.target);
-
-// Subdomain lookups
 CREATE INDEX subdomain_name IF NOT EXISTS
 FOR (s:Subdomain) ON (s.name);
 
-// IP lookups
+CREATE INDEX idx_subdomain_status IF NOT EXISTS
+FOR (s:Subdomain) ON (s.status);
+
 CREATE INDEX ip_address IF NOT EXISTS
 FOR (i:IP) ON (i.address);
 
-CREATE INDEX ip_cdn IF NOT EXISTS
-FOR (i:IP) ON (i.is_cdn);
+CREATE INDEX idx_service_tenant IF NOT EXISTS
+FOR (svc:Service) ON (svc.user_id, svc.project_id);
 
-// BaseURL queries
-CREATE INDEX baseurl_status IF NOT EXISTS
-FOR (u:BaseURL) ON (u.status_code);
-
-CREATE INDEX baseurl_live IF NOT EXISTS
-FOR (u:BaseURL) ON (u.is_live);
-
-// Technology lookups
 CREATE INDEX tech_name IF NOT EXISTS
 FOR (t:Technology) ON (t.name);
 
 CREATE INDEX tech_name_version IF NOT EXISTS
 FOR (t:Technology) ON (t.name, t.version);
 
-CREATE INDEX tech_product IF NOT EXISTS
-FOR (t:Technology) ON (t.product);
-
-// Vulnerability queries (critical for attack chain analysis)
 CREATE INDEX vuln_severity IF NOT EXISTS
 FOR (v:Vulnerability) ON (v.severity);
 
@@ -2274,21 +2637,57 @@ FOR (v:Vulnerability) ON (v.category);
 CREATE INDEX vuln_template IF NOT EXISTS
 FOR (v:Vulnerability) ON (v.template_id);
 
-CREATE INDEX vuln_dast IF NOT EXISTS
-FOR (v:Vulnerability) ON (v.is_dast_finding);
+CREATE INDEX param_injectable IF NOT EXISTS
+FOR (p:Parameter) ON (p.is_injectable);
 
-// CVE queries
 CREATE INDEX cve_severity IF NOT EXISTS
 FOR (c:CVE) ON (c.severity);
 
 CREATE INDEX cve_cvss IF NOT EXISTS
 FOR (c:CVE) ON (c.cvss);
 
-// Parameter queries (attack surface)
-CREATE INDEX param_injectable IF NOT EXISTS
-FOR (p:Parameter) ON (p.is_injectable);
+CREATE INDEX capec_id IF NOT EXISTS
+FOR (c:Capec) ON (c.capec_id);
 
-// Secret queries
+CREATE INDEX idx_githubrepo_name IF NOT EXISTS
+FOR (gr:GithubRepository) ON (gr.name);
+
+CREATE INDEX idx_sbomdoc_name IF NOT EXISTS
+FOR (d:SbomDocument) ON (d.name);
+
+CREATE INDEX idx_githubpath_path IF NOT EXISTS
+FOR (gp:GithubPath) ON (gp.path);
+
+CREATE INDEX idx_githubsecret_secret_type IF NOT EXISTS
+FOR (gs:GithubSecret) ON (gs.secret_type);
+
+CREATE INDEX idx_multiscannerfinding_detector IF NOT EXISTS
+FOR (tf:MultiscannerFinding) ON (tf.detector_name);
+
+CREATE INDEX idx_multiscannerfinding_source IF NOT EXISTS
+FOR (tf:MultiscannerFinding) ON (tf.source);
+
+CREATE INDEX idx_multiscannerfinding_validation IF NOT EXISTS
+FOR (tf:MultiscannerFinding) ON (tf.validation_status);
+
+CREATE INDEX idx_multiscannerscan_source IF NOT EXISTS
+FOR (ts:MultiscannerScan) ON (ts.source);
+
+CREATE INDEX idx_multiscannerrepository_name IF NOT EXISTS
+FOR (tr:MultiscannerRepository) ON (tr.name);
+
+CREATE INDEX idx_multiscannerimage_name IF NOT EXISTS
+FOR (ti:MultiscannerImage) ON (ti.name);
+
+CREATE INDEX idx_multiscannermodel_name IF NOT EXISTS
+FOR (tm:MultiscannerModel) ON (tm.name);
+
+CREATE INDEX idx_multiscannerbucket_name IF NOT EXISTS
+FOR (tb:MultiscannerBucket) ON (tb.name);
+
+CREATE INDEX idx_multiscannerendpoint_name IF NOT EXISTS
+FOR (te:MultiscannerEndpoint) ON (te.name);
+
 CREATE INDEX idx_secret_type IF NOT EXISTS
 FOR (s:Secret) ON (s.secret_type);
 
@@ -2298,7 +2697,31 @@ FOR (s:Secret) ON (s.severity);
 CREATE INDEX idx_secret_source IF NOT EXISTS
 FOR (s:Secret) ON (s.source);
 
+CREATE INDEX idx_chainstep_chain IF NOT EXISTS
+FOR (s:ChainStep) ON (s.chain_id);
+
+CREATE INDEX idx_chainfinding_type IF NOT EXISTS
+FOR (f:ChainFinding) ON (f.finding_type);
+
+CREATE INDEX idx_chainfinding_severity IF NOT EXISTS
+FOR (f:ChainFinding) ON (f.severity);
+
+CREATE INDEX idx_chainfailure_type IF NOT EXISTS
+FOR (fl:ChainFailure) ON (fl.failure_type);
+
+CREATE INDEX idx_attackchain_status IF NOT EXISTS
+FOR (ac:AttackChain) ON (ac.status);
+
+CREATE INDEX idx_chainstep_by_fireteam IF NOT EXISTS
+FOR (s:ChainStep) ON (s.fireteam_id);
+
+CREATE INDEX idx_chainfinding_by_fireteam IF NOT EXISTS
+FOR (f:ChainFinding) ON (f.fireteam_id);
+
+CREATE INDEX idx_muted_tenant IF NOT EXISTS
+FOR (n:Muted) ON (n.project_id);
 ```
+
 
 ---
 
@@ -2356,7 +2779,7 @@ FOR (s:Secret) ON (s.source);
 | `port_scan.ip_to_hostnames.<ip>[]` | RESOLVES_TO | Subdomain → IP |
 | `http_probe.by_url.<url>` | SERVES_URL | Service → BaseURL |
 | `resource_enum.by_base_url.<url>` (orphan fallback) | HAS_BASE_URL | Subdomain → BaseURL |
-| `http_probe.by_url.<url>.technologies[]` | USES_TECHNOLOGY | BaseURL → Technology |
+| `http_probe.by_url.<url>.technologies[]` | USES_TECHNOLOGY | Endpoint → Technology |
 | `vuln_scan.discovered_urls.dast_urls_with_params[]` | HAS_ENDPOINT | BaseURL → Endpoint |
 | `vuln_scan.discovered_urls.dast_urls_with_params[]` | HAS_PARAMETER | Endpoint → Parameter |
 | `vuln_scan.by_target.<host>.findings[]` | FOUND_AT | Vulnerability → Endpoint |
@@ -2381,10 +2804,10 @@ The JSON contains several aggregation structures that don't need dedicated nodes
 |-----------|-------------|-------------------|
 | `http_probe.by_host.<host>.*` | Per-host summary (urls, technologies, servers, status_codes) | `MATCH (s:Subdomain)-[:RESOLVES_TO]->(:IP)-[:HAS_PORT]->(:Port)-[:RUNS_SERVICE]->(svc)-[:SERVES_URL]->(u)...` |
 | `http_probe.servers_found.*` | Server → URLs mapping | `MATCH (u:BaseURL) RETURN u.server, collect(u.url)` |
-| `http_probe.technologies_found.*` | Technology → URLs mapping | `MATCH (u)-[:USES_TECHNOLOGY]->(t) RETURN t.name_version, collect(u.url)` |
+| `http_probe.technologies_found.*` | Technology → URLs mapping | `MATCH (u:BaseURL)-[:HAS_ENDPOINT]->(e)-[:USES_TECHNOLOGY]->(t) RETURN t.name, t.version, collect(u.url)` |
 | `http_probe.summary.by_status_code.*` | Count by status code | `MATCH (u:BaseURL) RETURN u.status_code, count(*)` |
 | `vuln_scan.by_category.*` | Vulnerabilities grouped by category | `MATCH (v:Vulnerability) RETURN v.category, collect(v)` |
-| `vuln_scan.by_target.<host>.severity_counts` | Severity counts per target | `MATCH (v:Vulnerability {target: $host}) RETURN v.severity, count(*)` |
+| `vuln_scan.by_target.<host>.severity_counts` | Severity counts per target | `MATCH (s:Subdomain {name: $host})-[*1..4]->(:Endpoint)<-[:FOUND_AT]-(v:Vulnerability) RETURN v.severity, count(*)` |
 | `vuln_scan.vulnerabilities.critical[]` | Critical vulns list | `MATCH (v:Vulnerability {severity: "critical"}) RETURN v` |
 | `port_scan.all_ports[]` | All open ports list | `MATCH (p:Port) RETURN DISTINCT p.number` |
 
@@ -2538,20 +2961,20 @@ Domain -[:HAS_GITHUB_HUNT]-> GithubHunt
 ### Constraints & Indexes
 
 ```cypher
-CREATE CONSTRAINT githubhunt_unique IF NOT EXISTS
-FOR (gh:GithubHunt) REQUIRE gh.id IS UNIQUE;
+CREATE CONSTRAINT githubhunt_tenant_unique IF NOT EXISTS
+FOR (gh:GithubHunt) REQUIRE (gh.id, gh.user_id, gh.project_id) IS UNIQUE;
 
-CREATE CONSTRAINT githubrepo_unique IF NOT EXISTS
-FOR (gr:GithubRepository) REQUIRE gr.id IS UNIQUE;
+CREATE CONSTRAINT githubrepo_tenant_unique IF NOT EXISTS
+FOR (gr:GithubRepository) REQUIRE (gr.id, gr.user_id, gr.project_id) IS UNIQUE;
 
-CREATE CONSTRAINT githubpath_unique IF NOT EXISTS
-FOR (gp:GithubPath) REQUIRE gp.id IS UNIQUE;
+CREATE CONSTRAINT githubpath_tenant_unique IF NOT EXISTS
+FOR (gp:GithubPath) REQUIRE (gp.id, gp.user_id, gp.project_id) IS UNIQUE;
 
-CREATE CONSTRAINT githubsecret_unique IF NOT EXISTS
-FOR (gs:GithubSecret) REQUIRE gs.id IS UNIQUE;
+CREATE CONSTRAINT githubsecret_tenant_unique IF NOT EXISTS
+FOR (gs:GithubSecret) REQUIRE (gs.id, gs.user_id, gs.project_id) IS UNIQUE;
 
-CREATE CONSTRAINT githubsensitivefile_unique IF NOT EXISTS
-FOR (gsf:GithubSensitiveFile) REQUIRE gsf.id IS UNIQUE;
+CREATE CONSTRAINT githubsensitivefile_tenant_unique IF NOT EXISTS
+FOR (gsf:GithubSensitiveFile) REQUIRE (gsf.id, gsf.user_id, gsf.project_id) IS UNIQUE;
 
 CREATE INDEX idx_githubhunt_tenant IF NOT EXISTS
 FOR (gh:GithubHunt) ON (gh.user_id, gh.project_id);
@@ -2641,12 +3064,14 @@ other's metadata.
 
 **Relationship:** `Domain -[:HAS_MULTISCANNER_SCAN]-> MultiscannerScan`
 
-### Asset nodes (five labels, not sixteen)
+### Asset nodes (five labels, not fourteen)
 
 The graph renderer draws a node from `labels[0]` — a **single** label, and Neo4j
-does not guarantee label ordering — so every node carries exactly one. Sixteen
-source-specific labels would be unmaintainable and one generic label would make
-every source the same colour, so assets are grouped by **shape**:
+does not guarantee label ordering — so every node carries exactly one. One
+label per source (there are fourteen in `SOURCES`,
+`scanners/trufflehog_scan/sources.py`) would be unmaintainable, and one generic
+label would make every source the same colour, so assets are grouped by
+**shape**:
 
 | Label | Sources | `asset_kind` | `name` holds |
 | ----- | ------- | ------------ | ------------ |
@@ -2875,8 +3300,8 @@ JS Recon secrets extend the existing Secret node with:
 ### Constraints & Indexes
 
 ```cypher
-CREATE CONSTRAINT jsreconfinding_unique IF NOT EXISTS
-FOR (jf:JsReconFinding) REQUIRE jf.id IS UNIQUE;
+CREATE CONSTRAINT jsreconfinding_tenant_unique IF NOT EXISTS
+FOR (jf:JsReconFinding) REQUIRE (jf.id, jf.user_id, jf.project_id) IS UNIQUE;
 
 CREATE INDEX idx_jsreconfinding_tenant IF NOT EXISTS
 FOR (jf:JsReconFinding) ON (jf.user_id, jf.project_id);
@@ -2991,11 +3416,20 @@ Each tool execution in an attack chain. Contains the agent's thought process, to
     success: true,
     error_message: null,
     duration_ms: 1200,
-    created_at: datetime()
+
+    // Fireteam (multi-agent) attribution. Indexed by idx_chainstep_by_fireteam,
+    // because report queries assemble per-member sections from it.
+    fireteam_id: "ft-uuid-7",
+    agent_id: "agent-2",
+    agent_name: "recon-specialist",
+
+    created_at: datetime(),
+    updated_at: datetime()
 })
 ```
 
 **Relationships:**
+- `AttackChain -[:HAS_STEP]-> ChainStep` — The chain owns its steps
 - `ChainStep -[:NEXT_STEP]-> ChainStep` — Sequential step ordering
 - `ChainStep -[:PRODUCED]-> ChainFinding` — Step produced a finding
 - `ChainStep -[:FAILED_WITH]-> ChainFailure` — Step failed with error
@@ -3037,13 +3471,16 @@ A discovery made during an attack chain. Replaces the standalone `Exploit` node 
 })
 ```
 
-**Finding types:** `vulnerability_confirmed`, `credential_found`, `exploit_success`, `access_gained`, `privilege_escalation`, `service_identified`, `exploit_module_found`, `defense_detected`, `configuration_found`, `custom`
+**Finding types:** `vulnerability_confirmed`, `credential_found`, `exploit_success`, `access_gained`, `privilege_escalation`, `service_identified`, `exploit_module_found`, `defense_detected`, `configuration_found`, `information_disclosure`, `outbound_fetch`, `boolean_differential`, `data_exfiltration`, `lateral_movement`, `persistence_established`, `denial_of_service_success`, `social_engineering_success`, `remote_code_execution`, `session_hijacked`, `custom`
 
 **Relationships:**
 - `ChainFinding -[:FOUND_ON]-> IP` — Finding discovered on IP (bridge to recon)
 - `ChainFinding -[:FOUND_ON]-> Subdomain` — Finding discovered on subdomain (bridge to recon)
 - `ChainFinding -[:FINDING_RELATES_CVE]-> CVE` — Finding relates to CVE (bridge to recon)
-- `ChainFinding -[:CREDENTIAL_FOR]-> Service` — Credential found for service (bridge to recon)
+- `ChainFinding -[:FINDING_AFFECTS_ENDPOINT]-> Endpoint` — regex-matched from evidence
+- `ChainFinding -[:FINDING_AFFECTS_PORT]-> Port` — regex-matched from evidence
+- `ChainFinding -[:FINDING_AFFECTS_TECH]-> Technology` — name found in evidence
+- `ChainFinding -[:CONFIRMS]-> Vulnerability | Secret | MultiscannerFinding | GithubSecret | GithubSensitiveFile | JsReconFinding | MalPackageFinding | ExploitGvm` — the agent proved this specific recon finding, so the Priority Board scores it as proven (K1). Written only from a finding id the agent explicitly reported, tenant-scoped
 
 ### ChainDecision (Strategic Pivot)
 
@@ -3110,7 +3547,8 @@ Note: Bridges are only created for tool-execution steps. query_graph steps (read
     ChainStep -[:STEP_IDENTIFIED]-> Technology  (case-insensitive match on Technology.name)
     ChainFinding -[:FOUND_ON]-> IP / Subdomain  (IP vs Subdomain depends on whether related_ips value is an IP or hostname)
     ChainFinding -[:FINDING_RELATES_CVE]-> CVE
-    ChainFinding -[:CREDENTIAL_FOR]-> Service
+    ChainFinding -[:FINDING_AFFECTS_ENDPOINT|FINDING_AFFECTS_PORT|FINDING_AFFECTS_TECH]-> Endpoint / Port / Technology
+    ChainFinding -[:CONFIRMS]-> Vulnerability / Secret / MultiscannerFinding / GithubSecret / GithubSensitiveFile / JsReconFinding / MalPackageFinding / ExploitGvm  (the recon finding the agent proved, tenant-scoped, from a reported id only)
 ```
 
 ### Constraints & Indexes
@@ -3218,7 +3656,7 @@ ORDER BY s.iteration
 
 ## 🤖 AI Surface Annotations
 
-The adversarial-AI surface recon (see `_local/internal/ADVERSARIAL_AI/AI_SURFACE_RECON.md`) lands as **property additions on existing nodes** plus new instances on existing labels. **Zero new node labels are introduced.**
+The adversarial-AI surface recon (see [`AI_SURFACE_RECON_MODULE.md`](AI_SURFACE_RECON_MODULE.md)) lands as **property additions on existing nodes** plus new instances on existing labels. **Zero new node labels are introduced.**
 
 ### Naming convention — prefix-based discovery
 
@@ -3251,7 +3689,7 @@ RETURN labels(n) AS label, count(*) AS n
 | `Endpoint` | `ai_interface_type` | enum (`"llm-chat"`, `"llm-completion"`, `"llm-embedding"`, `"llm-tool-call"`, `"sse-stream"`, `"mcp"`, `"llm-graphql"`, `"non-llm"`) | `resource_enum` (path regex against `AI_PATH_PATTERNS`) |
 | `Endpoint` | `is_ai_rag_ingest` | bool | `resource_enum` (path regex against `AI_RAG_PATH_PATTERNS`; ambiguous paths gated on parent BaseURL being AI-tagged) |
 | `Parameter` | `is_ai_prompt_injectable` | bool | `resource_enum` (name in `AI_PARAM_NAMES` AND parent Endpoint AI-classified) |
-| `Parameter` | `ai_tool_arg_path` | string (JSON Pointer e.g. `"/parameters/properties/query"`) | reserved for central `ai_surface_recon` module — resolves against discovered OpenAPI / `ai-plugin.json` / MCP `tools/list` specs |
+| `Parameter` | `ai_tool_arg_path` | string (JSON Pointer e.g. `"/parameters/properties/query"`) | reserved — the graph write path exists (`graph_db/mixins/recon/resource_mixin.py`, COALESCEd so it is never erased), but the resolver in `recon/main_recon_modules/resource_enum.py` is still a stub, so nothing populates it yet. Intended to resolve against discovered OpenAPI / `ai-plugin.json` / MCP `tools/list` specs |
 
 > **Patch D model split (May 2026)**: AI annotations now live on `Endpoint` rather than `BaseURL`. `BaseURL` was redefined as host-level (`scheme://host:port`) — one per HTTP service — and `Endpoint` carries each probed path's status/headers/title/AI signals. Endpoints reach their parent via `(BaseURL)-[:HAS_ENDPOINT]->(Endpoint)`, or directly via `Endpoint.baseurl` property. The `USES_TECHNOLOGY` edge from `http_probe` also moved to `Endpoint`.
 
@@ -3264,8 +3702,8 @@ RETURN labels(n) AS label, count(*) AS n
 
 ### Relationships reused — no new edge types
 
-- `(Service)-[:USES_TECHNOLOGY]->(Technology)` and `(Port)-[:HAS_TECHNOLOGY]->(Technology)` — existing relationships used by `port_mixin.py`. The AI hook MERGEs new Technology nodes with `category` in `ai-*` and links via the existing relationship type, distinguished by the new `detected_by` property value.
-- `(Endpoint)-[:USES_TECHNOLOGY {confidence, detected_by}]->(Technology)` — existing relationship used by `http_mixin.py`. Patch D moved this edge from `BaseURL` to `Endpoint` so the per-path Technology signal lines up with the per-path AI annotations. The `BaseURL` carries no `USES_TECHNOLOGY` edges from `http_probe`.
+- `(Service)-[:USES_TECHNOLOGY]->(Technology)` and `(Port)-[:HAS_TECHNOLOGY]->(Technology)` — existing relationships used by `graph_db/mixins/recon/port_mixin.py`. The AI hook MERGEs new Technology nodes with `category` in `ai-*` and links via the existing relationship type, distinguished by the new `detected_by` property value.
+- `(Endpoint)-[:USES_TECHNOLOGY {confidence, detected_by}]->(Technology)` — existing relationship used by `graph_db/mixins/recon/http_mixin.py`. Patch D moved this edge from `BaseURL` to `Endpoint` so the per-path Technology signal lines up with the per-path AI annotations. The `BaseURL` carries no `USES_TECHNOLOGY` edges from `http_probe`.
 
 ### Useful query patterns
 
@@ -3350,7 +3788,7 @@ target → re-runs MERGE rather than duplicate; the same vuln found by two tools
 on the payload class). **A finding is never orphaned.** It links to the attacked
 `Endpoint` via `HAS_VULNERABILITY` when recon already discovered it; otherwise the
 normalizer materialises the target node chain — `BaseURL -[:HAS_ENDPOINT]-> Endpoint`
-anchored to `Domain -[:HAS_SUBDOMAIN]-> Subdomain -[:HAS_BASEURL]-> BaseURL` for a
+anchored to `Domain -[:HAS_SUBDOMAIN]-> Subdomain -[:HAS_BASE_URL]-> BaseURL` for a
 hostname, or to an `IP -[:HAS_VULNERABILITY]-> Vulnerability` for a raw IP (nodes
 marked `source='ai_attack_target'`, `ai_attack_synthetic=true`), mirroring how
 partial recon materialises user-typed inputs. So AI-attack findings always sit
@@ -3393,7 +3831,7 @@ document is modified by the feature.
 | Model | Purpose |
 |---|---|
 | `ScanVersion` | One point-in-time identity for the recon graph. `isCurrent = true` on exactly one row per project — that row IS the live graph and has `snapshot = null`. A frozen (past) version carries `snapshot` bytes. `@@unique([projectId, seq])` keeps numbering from forking. |
-| `ScanJob` | Run history: `trigger` (manual/scheduled), `mode`, `status` (queued/running/completed/failed/canceled/deferred_ram), who started it, timings, `ramReason`. |
+| `ScanJob` | Run history: `trigger` (manual/scheduled), `mode`, `status` (queued/running/completed/failed/canceled/deferred_ram), who started it, timings, `ramReason`. `kind` records WHICH scan the row is for (`full_recon` \| `partial_recon` \| `gvm` \| `github_hunt` \| `trufflehog` \| `supply_chain` \| `supply_chain_repo` \| `ai_attack`) — before it, a directly-started non-recon run had no record at all. `runId` is the orchestrator run id for the kinds that allow several concurrent runs per project (`partial_recon`, `ai_attack`), and is empty for the one-per-project kinds. |
 | `ScanSchedule` | A future/recurring full scan: `once` / `interval` / `cron` (UTC), plus the `scanMode` to use for the previous graph. |
 
 `Project` also gains the activation lock columns `activation_state`,
@@ -3543,7 +3981,8 @@ the writer is `graph_db/mixins/supply_chain_mixin.py`.
 
 ## Origin-IP Discovery (CDN/WAF unmasking)
 
-The `origin_discovery` module (recon `GROUP 6 Phase A`) unmasks the real origin
+The `origin_discovery` module (recon `GROUP 6 Phase A`, gated by
+`ORIGIN_DISCOVERY_ENABLED`) unmasks the real origin
 server behind a CDN/WAF and records it by **reusing the existing `IP` and
 `Vulnerability` labels** — no new node label — plus one new relationship,
 `HAS_ORIGIN`. Writer: `graph_db/mixins/osint_mixin.py`
@@ -3572,8 +4011,10 @@ bracketed) — this is what converges with the security-check producer — while
 `probe_url` records the actual `scheme://ip:port` that was probed. Its `id` is the
 shared **tenant-scoped** `stable_vuln_id(type, url, ip, user_id, project_id)`, so
 the same exposure emitted by both the security-check producer and
-origin_discovery within one tenant MERGEs to a single node (and never collides
-across tenants, despite the global `vulnerability_unique` constraint on `id`).
+origin_discovery within one tenant MERGEs to a single node. Cross-tenant
+collision is impossible in both halves: the id itself folds in the tenant, and
+`vulnerability_tenant_unique` is keyed on `(id, user_id, project_id)` rather than
+on `id` alone.
 
 ### Relationships
 

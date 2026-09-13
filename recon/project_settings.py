@@ -212,6 +212,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'TAKEOVER_RATE_LIMIT': 50,
     'TAKEOVER_MANUAL_REVIEW_AUTO_PUBLISH': False,
     'TAKEOVER_CNAME_VALIDATION_ENABLED': True,
+    # Certificate-derived takeover signals (Phase 3). Mirrors the CNAME toggle
+    # above; gates the cert enrichment + the new cert scoring rules. Reads
+    # whatever cert data is available (httpx 443 with tlsx off, more with on).
+    'TAKEOVER_CERT_VALIDATION_ENABLED': True,
     # Cascade-gated by AI_IN_PIPELINE. When on, takeover findings whose
     # response carries no third-party vendor token get an LLM second pass
     # to disambiguate genuine "service unclaimed" pages from WAF block
@@ -240,6 +244,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'VHOST_SNI_USE_GRAPH_CANDIDATES': True,
     'VHOST_SNI_CUSTOM_WORDLIST': '',
     'VHOST_SNI_MAX_CANDIDATES_PER_IP': 2000,
+
+    # tlsx TLS certificate grab (GROUP 3.6). Default ON: one handshake per open
+    # non-HTTP TLS port, quieter than -jarm (already default-on in httpx) and
+    # net-zero on the 5 SSL ports http_probe already dials and discards.
+    'TLSX_ENABLED': True,
+    'TLSX_DOCKER_IMAGE': 'projectdiscovery/tlsx:latest',
+    'TLSX_SCAN_MODE': 'auto',                # ctls|ztls|openssl|auto
+    'TLSX_CONCURRENCY': 50,                  # tlsx default is 300; 50 is quieter
+    'TLSX_TIMEOUT': 5,                       # per-handshake -timeout (seconds)
+    'TLSX_RUN_TIMEOUT': 900,                 # whole-container ceiling (Popen)
+    'TLSX_RETRIES': 1,                       # tlsx default is 3
+    'TLSX_MAX_INJECTED_HOSTNAMES': 200,      # SAN names merged into dns.subdomains
+    'TLSX_DELAY': '',                        # -delay (stealth only)
+    'TLSX_INCLUDE_HTTP_PORTS': False,        # anti-duplication with httpx
+    'TLSX_INJECT_HOSTNAMES': True,           # SAN -> dns.subdomains
+    'TLSX_REV_PTR_SNI': False,               # -rps, extra DNS per bare IP
+    'TLSX_MAX_HOSTNAMES_PER_IP': 1,          # SNI correctness cap
+    'TLSX_PROBE_JARM': False,                # -jarm/-ja3: ~10 handshakes/target
+    'TLSX_VERSION_ENUM': False,              # -ve: extra connections per target
+    'TLSX_CIPHER_ENUM': False,               # -ce: extra connections per target
+    'TLSX_CIPHER_CONCURRENCY': 10,           # -cec, only when cipher enum on
+    'TLSX_MAX_TARGETS': 2000,
 
     # Resource Enum AI Classifier — cross-cutting endpoint + parameter
     # classifier that runs after Katana/Hakrawler/GAU/FFuf/jsluice/ParamSpider/
@@ -584,6 +610,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'WAF_AI_CLASSIFIER': False,
     'SECURITY_CHECK_TLS_EXPIRING_SOON': True,
     'SECURITY_CHECK_TLS_EXPIRY_DAYS': 30,
+    # TLS-hygiene checks derived from certificate data (tlsx/httpx), per-check so
+    # an operator can silence one class of TLS finding without losing the rest.
+    'SECURITY_CHECK_TLS_EXPIRED': True,
+    'SECURITY_CHECK_TLS_SELF_SIGNED': True,
+    'SECURITY_CHECK_TLS_HOSTNAME_MISMATCH': True,
+    'SECURITY_CHECK_TLS_WEAK_VERSION': True,
+    'SECURITY_CHECK_TLS_WEAK_CIPHER': True,
+    'SECURITY_CHECK_TLS_WILDCARD_OVERBROAD': True,
     'SECURITY_CHECK_MISSING_REFERRER_POLICY': True,
     'SECURITY_CHECK_MISSING_PERMISSIONS_POLICY': True,
     'SECURITY_CHECK_MISSING_COOP': True,
@@ -736,6 +770,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'GRAPHQL_AUTH_TYPE': '',
     'GRAPHQL_AUTH_VALUE': '',
     'GRAPHQL_AUTH_HEADER': '',
+
+    # Unified authenticated-session profile (the whole ProjectAuthProfile row,
+    # or None). Served only to internal/scanner callers, so it carries the
+    # plaintext authValue/extraHeaders here. Consumed via helpers.auth_profile.
+    'AUTH_PROFILE': None,
     'GRAPHQL_ENDPOINTS': '',
     'GRAPHQL_DEPTH_LIMIT': 10,
     'GRAPHQL_RETRY_COUNT': 3,
@@ -1150,6 +1189,27 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['VHOST_SNI_CUSTOM_WORDLIST'] = project.get('vhostSniCustomWordlist', DEFAULT_SETTINGS['VHOST_SNI_CUSTOM_WORDLIST'])
     settings['VHOST_SNI_MAX_CANDIDATES_PER_IP'] = project.get('vhostSniMaxCandidatesPerIp', DEFAULT_SETTINGS['VHOST_SNI_MAX_CANDIDATES_PER_IP'])
 
+    # tlsx TLS certificate grab
+    settings['TLSX_ENABLED'] = project.get('tlsxEnabled', DEFAULT_SETTINGS['TLSX_ENABLED'])
+    settings['TLSX_DOCKER_IMAGE'] = project.get('tlsxDockerImage', DEFAULT_SETTINGS['TLSX_DOCKER_IMAGE'])
+    settings['TLSX_SCAN_MODE'] = project.get('tlsxScanMode', DEFAULT_SETTINGS['TLSX_SCAN_MODE'])
+    settings['TLSX_CONCURRENCY'] = project.get('tlsxConcurrency', DEFAULT_SETTINGS['TLSX_CONCURRENCY'])
+    settings['TLSX_TIMEOUT'] = project.get('tlsxTimeout', DEFAULT_SETTINGS['TLSX_TIMEOUT'])
+    settings['TLSX_RUN_TIMEOUT'] = project.get('tlsxRunTimeout', DEFAULT_SETTINGS['TLSX_RUN_TIMEOUT'])
+    settings['TLSX_RETRIES'] = project.get('tlsxRetries', DEFAULT_SETTINGS['TLSX_RETRIES'])
+    settings['TLSX_MAX_INJECTED_HOSTNAMES'] = project.get('tlsxMaxInjectedHostnames', DEFAULT_SETTINGS['TLSX_MAX_INJECTED_HOSTNAMES'])
+    settings['TLSX_DELAY'] = project.get('tlsxDelay', DEFAULT_SETTINGS['TLSX_DELAY'])
+    settings['TLSX_INCLUDE_HTTP_PORTS'] = project.get('tlsxIncludeHttpPorts', DEFAULT_SETTINGS['TLSX_INCLUDE_HTTP_PORTS'])
+    settings['TLSX_INJECT_HOSTNAMES'] = project.get('tlsxInjectHostnames', DEFAULT_SETTINGS['TLSX_INJECT_HOSTNAMES'])
+    settings['TLSX_REV_PTR_SNI'] = project.get('tlsxRevPtrSni', DEFAULT_SETTINGS['TLSX_REV_PTR_SNI'])
+    settings['TLSX_MAX_HOSTNAMES_PER_IP'] = project.get('tlsxMaxHostnamesPerIp', DEFAULT_SETTINGS['TLSX_MAX_HOSTNAMES_PER_IP'])
+    settings['TLSX_PROBE_JARM'] = project.get('tlsxProbeJarm', DEFAULT_SETTINGS['TLSX_PROBE_JARM'])
+    settings['TLSX_VERSION_ENUM'] = project.get('tlsxVersionEnum', DEFAULT_SETTINGS['TLSX_VERSION_ENUM'])
+    settings['TLSX_CIPHER_ENUM'] = project.get('tlsxCipherEnum', DEFAULT_SETTINGS['TLSX_CIPHER_ENUM'])
+    settings['TLSX_CIPHER_CONCURRENCY'] = project.get('tlsxCipherConcurrency', DEFAULT_SETTINGS['TLSX_CIPHER_CONCURRENCY'])
+    settings['TLSX_MAX_TARGETS'] = project.get('tlsxMaxTargets', DEFAULT_SETTINGS['TLSX_MAX_TARGETS'])
+    settings['TAKEOVER_CERT_VALIDATION_ENABLED'] = project.get('takeoverCertValidationEnabled', DEFAULT_SETTINGS['TAKEOVER_CERT_VALIDATION_ENABLED'])
+
     # Resource Enum AI Classifier
     settings['RESOURCE_ENUM_AI_CLASSIFIER_ENABLED'] = project.get('resourceEnumAiClassifierEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_CLASSIFIER_ENABLED'])
     settings['RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED'] = project.get('resourceEnumAiPathClassifierEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED'])
@@ -1403,6 +1463,12 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['WAF_AI_CLASSIFIER'] = project.get('wafAiClassifier', DEFAULT_SETTINGS['WAF_AI_CLASSIFIER'])
     settings['SECURITY_CHECK_TLS_EXPIRING_SOON'] = project.get('securityCheckTlsExpiringSoon', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_EXPIRING_SOON'])
     settings['SECURITY_CHECK_TLS_EXPIRY_DAYS'] = project.get('securityCheckTlsExpiryDays', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_EXPIRY_DAYS'])
+    settings['SECURITY_CHECK_TLS_EXPIRED'] = project.get('securityCheckTlsExpired', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_EXPIRED'])
+    settings['SECURITY_CHECK_TLS_SELF_SIGNED'] = project.get('securityCheckTlsSelfSigned', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_SELF_SIGNED'])
+    settings['SECURITY_CHECK_TLS_HOSTNAME_MISMATCH'] = project.get('securityCheckTlsHostnameMismatch', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_HOSTNAME_MISMATCH'])
+    settings['SECURITY_CHECK_TLS_WEAK_VERSION'] = project.get('securityCheckTlsWeakVersion', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_WEAK_VERSION'])
+    settings['SECURITY_CHECK_TLS_WEAK_CIPHER'] = project.get('securityCheckTlsWeakCipher', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_WEAK_CIPHER'])
+    settings['SECURITY_CHECK_TLS_WILDCARD_OVERBROAD'] = project.get('securityCheckTlsWildcardOverbroad', DEFAULT_SETTINGS['SECURITY_CHECK_TLS_WILDCARD_OVERBROAD'])
     settings['SECURITY_CHECK_MISSING_REFERRER_POLICY'] = project.get('securityCheckMissingReferrerPolicy', DEFAULT_SETTINGS['SECURITY_CHECK_MISSING_REFERRER_POLICY'])
     settings['SECURITY_CHECK_MISSING_PERMISSIONS_POLICY'] = project.get('securityCheckMissingPermissionsPolicy', DEFAULT_SETTINGS['SECURITY_CHECK_MISSING_PERMISSIONS_POLICY'])
     settings['SECURITY_CHECK_MISSING_COOP'] = project.get('securityCheckMissingCoop', DEFAULT_SETTINGS['SECURITY_CHECK_MISSING_COOP'])
@@ -1654,6 +1720,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['GRAPHQL_AUTH_TYPE'] = project.get('graphqlAuthType', DEFAULT_SETTINGS['GRAPHQL_AUTH_TYPE'])
     settings['GRAPHQL_AUTH_VALUE'] = project.get('graphqlAuthValue', DEFAULT_SETTINGS['GRAPHQL_AUTH_VALUE'])
     settings['GRAPHQL_AUTH_HEADER'] = project.get('graphqlAuthHeader', DEFAULT_SETTINGS['GRAPHQL_AUTH_HEADER'])
+    settings['AUTH_PROFILE'] = project.get('authProfile', DEFAULT_SETTINGS['AUTH_PROFILE'])
     settings['GRAPHQL_ENDPOINTS'] = project.get('graphqlEndpoints', DEFAULT_SETTINGS['GRAPHQL_ENDPOINTS'])
     settings['GRAPHQL_DEPTH_LIMIT'] = project.get('graphqlDepthLimit', DEFAULT_SETTINGS['GRAPHQL_DEPTH_LIMIT'])
     settings['GRAPHQL_RETRY_COUNT'] = project.get('graphqlRetryCount', DEFAULT_SETTINGS['GRAPHQL_RETRY_COUNT'])
@@ -1977,6 +2044,15 @@ def apply_stealth_overrides(settings: dict[str, Any]) -> dict[str, Any]:
     # build a custom preset (see red-team-operator) with graph-only candidates,
     # L7-only, low concurrency. ---
     settings['VHOST_SNI_ENABLED'] = False
+
+    # --- tlsx: KEEP it (a plain cert grab is one handshake per already-open port,
+    # far quieter than the vhost brute above), but force the loud dials off and
+    # throttle concurrency. JARM/JA3 add ~10 handshakes/target; version/cipher
+    # enum add extra connections per target. ---
+    settings['TLSX_PROBE_JARM'] = False
+    settings['TLSX_VERSION_ENUM'] = False
+    settings['TLSX_CIPHER_ENUM'] = False
+    settings['TLSX_CONCURRENCY'] = 5
 
     # --- Origin Discovery: keep it (unmasking is the point of a stealth engagement)
     # but throttle its active validation probes hard — 1 worker, ~1 rps — and drop

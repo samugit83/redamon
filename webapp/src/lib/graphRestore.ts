@@ -16,8 +16,28 @@
  * Tenancy: `project_id` is ALWAYS stamped from the caller's argument (never taken
  * from the payload), so a restore can only ever write into the target project.
  */
+import { createHash } from 'crypto'
 import type { Session } from 'neo4j-driver'
 import { functionalLabel } from '@/lib/scanSnapshot'
+
+/**
+ * Derive a Certificate `cert_key` for a snapshot node that predates the re-key
+ * (Phase 0.2). Mirrors graph_db/cert_key.build_cert_key exactly: fingerprint
+ * wins, else a surrogate over subject_cn|issuer|not_before|not_after. Without
+ * this, activating an old version restores every Certificate with a null key and
+ * they collapse into one node (or the restore throws IndexEntryConflict) AFTER
+ * clearProjectGraph has already wiped the live graph — irreversible loss.
+ */
+export function deriveCertKey(props: Record<string, unknown>): string {
+  const fp = typeof props.fingerprint_sha256 === 'string' && props.fingerprint_sha256
+    ? props.fingerprint_sha256
+    : (typeof props.sha256_fingerprint === 'string' ? props.sha256_fingerprint : '')
+        || (typeof props.fingerprint === 'string' ? props.fingerprint : '')
+  if (fp) return 'sha256:' + fp.trim().toLowerCase()
+  const s = (k: string) => (typeof props[k] === 'string' ? (props[k] as string) : '')
+  const surrogate = `${s('subject_cn')}|${s('issuer')}|${s('not_before')}|${s('not_after')}`
+  return 'surrogate:' + createHash('sha1').update(surrogate).digest('hex').slice(0, 32)
+}
 
 export interface RestorableNode {
   labels: string[]
@@ -134,15 +154,20 @@ export async function restoreGraph(
   const relBatchSize = opts.relBatchSize ?? DEFAULT_REL_BATCH
   const uniqueKeyMap = await loadUniqueKeys(session)
 
-  const prepared = nodes.map(node => ({
-    labels: node.labels,
-    properties: {
+  const prepared = nodes.map(node => {
+    const properties: Record<string, unknown> = {
       ...node.properties,
       ...(opts.userId ? { user_id: opts.userId } : {}),
       project_id: opts.projectId,
       _exportId: node._exportId,
-    },
-  }))
+    }
+    // Pre-re-key snapshots have no cert_key; the uniqueness constraint now
+    // requires it. Derive it before MERGE so old certificates do not collapse.
+    if (node.labels.includes('Certificate') && !properties.cert_key) {
+      properties.cert_key = deriveCertKey(properties)
+    }
+    return { labels: node.labels, properties }
+  })
 
   // Bucket by the node's FUNCTIONAL label, not labels[0]. A suppressed finding
   // is dual-labelled (`:Vulnerability:Muted`) and Neo4j does not order labels,

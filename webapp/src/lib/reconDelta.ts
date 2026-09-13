@@ -34,7 +34,7 @@ export const IDENTITY_KEYS: Record<string, string[]> = {
   CVE: ['id'],
   MitreData: ['cwe_id'],
   Capec: ['capec_id'],
-  Certificate: ['fingerprint', 'serial', 'subject'],
+  Certificate: ['cert_key', 'fingerprint_sha256', 'serial'],
   Header: ['url', 'name'],
   DNSRecord: ['name', 'type', 'value'],
   Email: ['address'],

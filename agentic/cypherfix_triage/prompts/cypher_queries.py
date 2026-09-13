@@ -6,6 +6,11 @@ the `&!Muted` exclusion every agent query gets for free is absent here and has t
 be written by hand. Without it a triage run re-collects and re-classifies
 findings an operator already suppressed, and they reappear in the Findings table.
 
+CVE, MitreData and Capec are shared reference nodes with no tenant keys, so
+any per-project label reached THROUGH one (ExploitGvm, Technology) must carry
+`{user_id: $userId, project_id: $projectId}` in its own pattern. Without it the
+traversal walks out of this project and returns another tenant's rows.
+
 Every query binding a MUTEABLE label (Vulnerability, ExploitGvm, GithubSecret,
 GithubSensitiveFile, Secret, JsReconFinding, MultiscannerFinding,
 MalPackageFinding) needs `WHERE NOT <var>:Muted`. ChainFinding is EvoGraph
@@ -46,7 +51,8 @@ MATCH (t:Technology {user_id: $userId, project_id: $projectId})
       -[:HAS_KNOWN_CVE]->(c:CVE)
 OPTIONAL MATCH (c)-[:HAS_CWE]->(m:MitreData)
 OPTIONAL MATCH (m)-[:HAS_CAPEC]->(cap:Capec)
-OPTIONAL MATCH (ex:ExploitGvm)-[:EXPLOITED_CVE]->(c)
+OPTIONAL MATCH (ex:ExploitGvm {user_id: $userId, project_id: $projectId})
+      -[:EXPLOITED_CVE]->(c)
   WHERE NOT ex:Muted
 RETURN t.name AS technology, t.version AS version,
        collect(DISTINCT {cve: c.id, cvss: c.cvss_score, description: c.description}) AS cves,
@@ -81,7 +87,7 @@ RETURN repo.name AS repo, repo.full_name AS full_name,
 MATCH (ex:ExploitGvm {user_id: $userId, project_id: $projectId})
       -[:EXPLOITED_CVE]->(c:CVE)
 WHERE NOT ex:Muted
-OPTIONAL MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c)
+OPTIONAL MATCH (t:Technology {user_id: $userId, project_id: $projectId})-[:HAS_KNOWN_CVE]->(c)
 RETURN c.id AS cve, c.cvss_score AS cvss, c.description AS description,
        collect(DISTINCT t.name) AS affected_technologies,
        collect(DISTINCT {exploit_id: ex.id, source: ex.source}) AS exploits
@@ -115,7 +121,6 @@ WHERE cf.finding_type IN ['exploit_success', 'credential_found', 'access_gained'
 OPTIONAL MATCH (cf)-[:FOUND_ON]->(target)
   WHERE target:IP OR target:Subdomain
 OPTIONAL MATCH (cf)-[:FINDING_RELATES_CVE]->(cve:CVE)
-OPTIONAL MATCH (cf)-[:CREDENTIAL_FOR]->(svc:Service)
 OPTIONAL MATCH (step:ChainStep)-[:PRODUCED]->(cf)
 OPTIONAL MATCH (ac:AttackChain)-[:HAS_STEP]->(step)
 RETURN cf.finding_id AS finding_id, cf.finding_type AS finding_type,
@@ -127,7 +132,6 @@ RETURN cf.finding_id AS finding_id, cf.finding_type AS finding_type,
        labels(target)[0] AS target_type,
        CASE WHEN target:IP THEN target.address ELSE target.name END AS target_value,
        collect(DISTINCT cve.id) AS related_cves,
-       svc.name AS credential_service,
        ac.chain_id AS chain_id, ac.status AS chain_status,
        ac.attack_path_type AS attack_path_type
 """,
@@ -168,14 +172,15 @@ MATCH (cert:Certificate {user_id: $userId, project_id: $projectId})
 OPTIONAL MATCH (bu:BaseURL)-[:HAS_CERTIFICATE]->(cert)
 OPTIONAL MATCH (ip:IP)-[:HAS_CERTIFICATE]->(cert)
 RETURN cert.subject_cn AS subject_cn,
+       cert.cert_key AS cert_key,
+       cert.fingerprint_sha256 AS fingerprint_sha256,
        cert.issuer AS issuer,
        cert.not_before AS valid_from,
        cert.not_after AS expires,
        cert.san AS san,
-       cert.key_type AS key_type,
-       cert.key_bits AS key_bits,
-       cert.signature_algorithm AS signature_algorithm,
        cert.self_signed AS self_signed,
+       cert.expired AS expired,
+       cert.mismatched AS mismatched,
        cert.source AS source,
        collect(DISTINCT bu.url) AS baseurl_urls,
        collect(DISTINCT ip.address) AS ip_addresses,

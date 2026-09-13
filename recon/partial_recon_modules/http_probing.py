@@ -458,7 +458,7 @@ def run_httpx(config: dict) -> None:
                                     MERGE (i:IP {address: $addr, user_id: $uid, project_id: $pid})
                                     SET i.version = $version, i.updated_at = datetime()
                                     WITH i
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(i)
                                     """,
                                     addr=ip_addr, uid=user_id, pid=project_id,

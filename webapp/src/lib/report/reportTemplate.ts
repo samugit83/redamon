@@ -444,6 +444,7 @@ ${renderJsRecon(data)}
 ${renderSupplyChain(data)}
 ${renderGraphqlScan(data)}
 ${renderVhostSni(data)}
+${renderTlsx(data)}
 ${renderWebCachePoison(data)}
 ${renderAiSurface(data)}
 ${renderOtx(data)}
@@ -513,6 +514,9 @@ function renderTOC(data: ReportData): string {
   }
   if (data.vhostSni.totalFindings > 0 || data.vhostSni.ipsTested > 0) {
     dynamicSections.push({ id: 'vhost-sni', label: 'VHost & SNI Enumeration' })
+  }
+  if (data.tlsx && data.tlsx.totalCertificates > 0) {
+    dynamicSections.push({ id: 'tls-certificates', label: 'TLS Certificate Posture' })
   }
   if (data.webCachePoison.totalFindings > 0) {
     dynamicSections.push({ id: 'web-cache-poison', label: 'Web Cache Poisoning' })
@@ -1462,6 +1466,45 @@ function renderVhostSni(data: ReportData): string {
     <tbody>${findingRows}</tbody>
   </table>
   ${vs.findings.length >= 50 ? '<p class="muted">Showing first 50 findings.</p>' : ''}` : '<p class="muted">No anomalies - all candidates returned the same response as the bare IP baseline.</p>'}
+</div>`
+}
+
+export function renderTlsx(data: ReportData): string {
+  const t = data.tlsx
+  if (!t || t.totalCertificates === 0) return ''
+
+  const issuerRows = t.topIssuers.map(i => `
+    <tr><td style="font-family:monospace;font-size:11px">${esc(i.issuer)}</td><td>${i.count}</td></tr>`).join('')
+
+  const flag = (on: boolean, label: string, color: string) => on
+    ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:${color};margin-left:3px">${label}</span>` : ''
+
+  const findingRows = t.findings.map(f => {
+    const badges =
+      flag(f.expired, 'expired', 'rgba(220,38,38,0.15);color:#dc2626')
+      + flag(f.selfSigned, 'self-signed', 'rgba(217,119,6,0.15);color:#d97706')
+      + flag(f.mismatched, 'mismatch', 'rgba(217,119,6,0.15);color:#d97706')
+      + flag(f.wildcard, 'wildcard', 'rgba(107,114,128,0.15);color:#6b7280')
+    return `
+    <tr>
+      <td style="font-family:monospace;font-size:11px">${esc(f.subjectCn || '(no CN)')}${badges}</td>
+      <td style="font-family:monospace;font-size:11px">${esc(f.issuer || '-')}</td>
+      <td style="text-align:center">${f.sanCount}</td>
+      <td style="font-family:monospace;font-size:10px">${esc(f.notAfter || '-')}</td>
+      <td style="font-size:10px;color:#6b7280">${esc(f.source || '-')}</td>
+    </tr>`
+  }).join('')
+
+  return `
+<div class="page-break"></div>
+<div class="section" id="tls-certificates">
+  <h2 class="section-title">TLS Certificate Posture</h2>
+  <p style="margin-bottom:12px">Observed <strong>${t.totalCertificates}</strong> TLS certificate(s): <strong>${t.expired}</strong> expired, <strong>${t.expiringSoon}</strong> expiring within 30 days, <strong>${t.selfSigned}</strong> self-signed, <strong>${t.mismatched}</strong> hostname-mismatched, <strong>${t.wildcard}</strong> wildcard.</p>
+  ${issuerRows ? `<h3 style="font-size:13px;margin:10px 0 4px">Top Issuers</h3>
+  <table class="data-table"><thead><tr><th>Issuer</th><th>Certificates</th></tr></thead><tbody>${issuerRows}</tbody></table>` : ''}
+  ${findingRows ? `<h3 style="font-size:13px;margin:14px 0 4px">Certificates</h3>
+  <table class="data-table"><thead><tr><th>Subject CN</th><th>Issuer</th><th>SANs</th><th>Expires</th><th>Source</th></tr></thead><tbody>${findingRows}</tbody></table>
+  ${t.findings.length >= 50 ? '<p class="muted">Showing first 50 certificates (posture problems first).</p>' : ''}` : ''}
 </div>`
 }
 

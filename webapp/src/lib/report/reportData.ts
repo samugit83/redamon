@@ -5,6 +5,7 @@
 
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { RISK_TOP_N, projectRisk } from '@/lib/projectRisk'
 import { notMuted } from '@/lib/graphMute'
 import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
@@ -216,6 +217,18 @@ export interface VhostSniFindingRecord {
   lastSeen: string | null
 }
 
+export interface TlsCertificateRecord {
+  subjectCn: string | null
+  issuer: string | null
+  sanCount: number
+  notAfter: string | null
+  expired: boolean
+  selfSigned: boolean
+  mismatched: boolean
+  wildcard: boolean
+  source: string | null
+}
+
 export interface WebCachePoisonFindingRecord {
   endpoint: string
   cacheHeader: string | null
@@ -270,7 +283,7 @@ export interface ReportData {
     suppressedCount: number
     subdomainStats: { total: number; resolved: number; uniqueIps: number }
     endpointCoverage: { baseUrls: number; endpoints: number; parameters: number }
-    certificateHealth: { total: number; expired: number; expiringSoon: number }
+    certificateHealth: { total: number; expired: number; expiringSoon: number; selfSigned: number; mismatched: number }
     infrastructureStats: {
       totalIps: number; ipv4: number; ipv6: number
       cdnCount: number; uniqueAsns: number; uniqueCdns: number
@@ -368,6 +381,20 @@ export interface ReportData {
     byLayer: { layer: string; count: number }[]
     byType: { findingType: string; count: number }[]
     findings: VhostSniFindingRecord[]
+  }
+
+  // TLS certificate inventory + posture (tlsx / httpx). This is the certificate
+  // posture view; the individual TLS-hygiene vulnerabilities flow through the
+  // findings sections as security_check Vulnerability nodes.
+  tlsx: {
+    totalCertificates: number
+    expired: number
+    selfSigned: number
+    mismatched: number
+    wildcard: number
+    expiringSoon: number
+    topIssuers: { issuer: string; count: number }[]
+    findings: TlsCertificateRecord[]
   }
 
   // Web Cache Poisoning
@@ -470,6 +497,35 @@ export interface ReportData {
   }
 }
 
+/**
+ * The per-finding risks a triage run produced, worst first.
+ *
+ * Feeds `projectRisk`, which combines them properly instead of adding up a
+ * weight per finding. Returns an empty list when nothing has been triaged, and
+ * the caller falls back rather than reporting a project as risk-free because
+ * nobody has looked at it yet.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function queryTriageRisks(session: any, projectId: string) {
+  const res = await session.run(
+    `MATCH (n:Vulnerability|JsReconFinding|Secret|MultiscannerFinding|GithubSecret
+            |GithubSensitiveFile|MalPackageFinding|ExploitGvm)
+     WHERE n.project_id = $projectId AND ${notMuted('n')}
+       AND n.triage_risk IS NOT NULL
+       AND coalesce(n.triage_state, 'open') = 'open'
+       AND coalesce(n.triage_status, '') <> 'likely_noise'
+     RETURN n.triage_risk AS risk
+     ORDER BY n.triage_risk DESC
+     LIMIT ${RISK_TOP_N}`,
+    { projectId }
+  )
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return res.records.map((r: any) => ({
+    triage_risk: typeof r.get('risk') === 'number' ? r.get('risk') : toNum(r.get('risk')),
+    triage_state: 'open',
+  }))
+}
+
 // ── Main Data Gathering ─────────────────────────────────────────────────────
 
 export async function gatherReportData(projectId: string): Promise<ReportData> {
@@ -478,7 +534,10 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
     prisma.remediation.findMany({
       where: { projectId, status: { not: 'dismissed' } },
-      orderBy: [{ priority: 'desc' }, { severity: 'asc' }],
+      // ASCENDING: `priority` is the RANK, so 1 is most urgent. Sorting it
+      // descending put the least urgent fix at the top of every report, the
+      // exact reverse of the dashboard and the Priority Board (X10).
+      orderBy: [{ priority: 'asc' }, { severity: 'asc' }],
     }),
   ])
 
@@ -496,6 +555,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     supplyChainData,
     graphqlData,
     vhostSniData,
+    tlsxData,
     webCachePoisonData,
     aiSurfaceData,
     otxData,
@@ -511,10 +571,14 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     withSession(s => querySupplyChain(s, projectId)),
     withSession(s => queryGraphql(s, projectId)),
     withSession(s => queryVhostSni(s, projectId)),
+    withSession(s => queryTlsx(s, projectId)),
     withSession(s => queryWebCachePoison(s, projectId)),
     withSession(s => queryAiSurface(s, projectId)),
     withSession(s => queryOtx(s, projectId)),
   ])
+
+  const triageRisks = await withSession(s => queryTriageRisks(s, projectId))
+    .catch(() => [])
 
   // Compute metrics
     const totalVulns = vulnData.severityDistribution.reduce((s: number, d: { count: number }) => s + d.count, 0)
@@ -601,7 +665,15 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
       return sum + d.count * w
     }, 0)
     const injectableScore = injectableParams * 25
-    const expiredCertScore = graphOverview.certificateHealth.expired * 10
+    // Widened to cover self-signed and hostname-mismatch (a single term, not a
+    // parallel one, so expired certs are not double-counted). Informational
+    // wildcards stay out of the score. NOTE: Phase 0 repaired the certificate
+    // anchor, so recon-sourced expired certs now count here for the first time
+    // -- riskScore can rise on projects where nothing about the target changed.
+    const expiredCertScore =
+      graphOverview.certificateHealth.expired * 10
+      + graphOverview.certificateHealth.selfSigned * 6
+      + graphOverview.certificateHealth.mismatched * 6
     // Missing security headers penalty
     const SEC_HEADERS = ['strict-transport-security', 'content-security-policy', 'x-frame-options', 'x-content-type-options']
     let missingHeaderScore = 0
@@ -637,10 +709,24 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
       + expiredCertScore + missingHeaderScore
       + trufflehogScore + jsReconScore + graphqlScore + otxScore + vhostSniScore
       + webCachePoisonScore + aiSurfaceScore + supplyChainScore
-    const riskScore = Math.min(100, Math.round(15 * Math.log(rawRisk + 1)))
+    // K15: the weighted sum above was a THIRD scoring system, and its real
+    // problem was its shape rather than its weights: a term per finding meant
+    // it measured how BIG a project is as much as how exposed it is. Scanning
+    // more hosts raised it even when every new finding was a missing header.
+    //
+    // When a triage run has produced per-finding risks, the project's risk is
+    // the chance at least one of its worst findings gets exploited, which is
+    // what the question actually means. The sum below stays ONLY as the
+    // fallback for a project nobody has triaged: reporting such a project as
+    // risk-free would be worse than reporting an imperfect number.
+    const measured = projectRisk(triageRisks)
+    const legacyRisk = Math.min(100, Math.round(15 * Math.log(rawRisk + 1)))
+    const riskScore = measured.unmeasured ? legacyRisk : measured.score
     const riskLabel: 'Critical' | 'High' | 'Medium' | 'Low' | 'Minimal' =
-      riskScore >= 80 ? 'Critical' : riskScore >= 60 ? 'High'
-      : riskScore >= 40 ? 'Medium' : riskScore >= 20 ? 'Low' : 'Minimal'
+      measured.unmeasured
+        ? (legacyRisk >= 80 ? 'Critical' : legacyRisk >= 60 ? 'High'
+           : legacyRisk >= 40 ? 'Medium' : legacyRisk >= 20 ? 'Low' : 'Minimal')
+        : measured.label
 
     // Fireteam (multi-agent) deployments, keyed by this project's conversations.
     // Authoritative findings-per-member come from Neo4j ChainFinding rows
@@ -741,6 +827,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
       supplyChain: supplyChainData,
       graphqlScan: graphqlData,
       vhostSni: vhostSniData,
+      tlsx: tlsxData,
       webCachePoison: webCachePoisonData,
       aiSurface: aiSurfaceData,
       otx: otxData,
@@ -793,10 +880,21 @@ async function queryGraphOverview(session: any, pid: string) {
     { pid }
   )
   const certRes = await session.run(
-    `OPTIONAL MATCH (:BaseURL {project_id: $pid})-[:HAS_CERTIFICATE]->(c:Certificate)
+    // Match BOTH anchors (a cert can be IP-anchored by tlsx/OSINT/GVM) and cast
+    // the ISO not_after string to datetime, mirroring the graph-overview query.
+    `MATCH (c:Certificate {project_id: $pid})
+     WHERE (:BaseURL {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+        OR (:IP {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+     WITH DISTINCT c,
+          CASE WHEN c.not_after IS NOT NULL
+               THEN datetime(replace(c.not_after, 'Z', '+00:00'))
+               ELSE null END AS expiry
      RETURN count(c) AS total,
-            count(CASE WHEN c.not_after < datetime() THEN 1 END) AS expired,
-            count(CASE WHEN c.not_after >= datetime() AND c.not_after < datetime() + duration('P30D') THEN 1 END) AS expiringSoon`,
+            count(CASE WHEN expiry IS NOT NULL AND expiry < datetime() THEN 1 END) AS expired,
+            count(CASE WHEN expiry IS NOT NULL AND expiry >= datetime()
+                            AND expiry < datetime() + duration('P30D') THEN 1 END) AS expiringSoon,
+            count(CASE WHEN c.self_signed = true THEN 1 END) AS selfSigned,
+            count(CASE WHEN c.mismatched = true THEN 1 END) AS mismatched`,
     { pid }
   )
   const infraRes = await session.run(
@@ -886,8 +984,9 @@ async function queryGraphOverview(session: any, pid: string) {
       ? { baseUrls: toNum(epRec.get('baseUrls')), endpoints: toNum(epRec.get('endpoints')), parameters: toNum(epRec.get('parameters')) }
       : { baseUrls: 0, endpoints: 0, parameters: 0 },
     certificateHealth: certRec
-      ? { total: toNum(certRec.get('total')), expired: toNum(certRec.get('expired')), expiringSoon: toNum(certRec.get('expiringSoon')) }
-      : { total: 0, expired: 0, expiringSoon: 0 },
+      ? { total: toNum(certRec.get('total')), expired: toNum(certRec.get('expired')), expiringSoon: toNum(certRec.get('expiringSoon')),
+          selfSigned: toNum(certRec.get('selfSigned')), mismatched: toNum(certRec.get('mismatched')) }
+      : { total: 0, expired: 0, expiringSoon: 0, selfSigned: 0, mismatched: 0 },
     infrastructureStats: infraRec
       ? {
           totalIps: toNum(infraRec.get('total')),
@@ -1643,6 +1742,96 @@ async function queryVhostSni(session: any, pid: string) {
     })),
   }
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function queryTlsx(session: any, pid: string) {
+  // Reads the FIXED anchors from Phase 0 (BaseURL OR IP), or it reproduces the
+  // empty-certificate-health bug this work exists to fix.
+  //
+  // Split into an AGGREGATE and a BOUNDED list, matching every other query in
+  // this file. Pulling every Certificate row and slicing in JS made report
+  // generation scale with the certificate population -- exactly the population
+  // tlsx exists to grow.
+  const ANCHORED = `MATCH (c:Certificate {project_id: $pid})
+     WHERE (:BaseURL {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+        OR (:IP {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+     WITH DISTINCT c,
+          CASE WHEN c.not_after IS NOT NULL
+               THEN datetime(replace(c.not_after, 'Z', '+00:00'))
+               ELSE null END AS expiry
+     WITH c,
+          coalesce(c.expired, false) OR (expiry IS NOT NULL AND expiry < datetime()) AS expired,
+          coalesce(c.self_signed, false) AS selfSigned,
+          coalesce(c.mismatched, false) AS mismatched,
+          coalesce(c.wildcard, false) AS wildcard,
+          (expiry IS NOT NULL AND expiry >= datetime()
+             AND expiry < datetime() + duration('P30D')) AS expiringSoon`
+
+  const totalsRes = await session.run(
+    `${ANCHORED}
+     RETURN count(c) AS total,
+            count(CASE WHEN expired THEN 1 END) AS expired,
+            count(CASE WHEN selfSigned THEN 1 END) AS selfSigned,
+            count(CASE WHEN mismatched THEN 1 END) AS mismatched,
+            count(CASE WHEN wildcard THEN 1 END) AS wildcard,
+            count(CASE WHEN expiringSoon THEN 1 END) AS expiringSoon`,
+    { pid }
+  )
+  const t = totalsRes.records[0]
+
+  const issuerRes = await session.run(
+    `${ANCHORED}
+     WITH coalesce(c.issuer, 'Unknown') AS issuer, count(*) AS count
+     RETURN issuer, count ORDER BY count DESC LIMIT 10`,
+    { pid }
+  )
+
+  // Posture problems first, then a stable tiebreak so the capped list does not
+  // reshuffle between two runs of the same report.
+  const listRes = await session.run(
+    `${ANCHORED}
+     WITH c, expired, selfSigned, mismatched, wildcard, expiringSoon,
+          CASE WHEN expired OR selfSigned OR mismatched OR expiringSoon OR wildcard
+               THEN 1 ELSE 0 END AS notable
+     RETURN c.subject_cn AS subjectCn, c.issuer AS issuer, c.san AS san,
+            c.not_after AS notAfter, c.source AS source,
+            expired, selfSigned, mismatched, wildcard
+     ORDER BY notable DESC, coalesce(c.subject_cn, c.cert_key) ASC
+     LIMIT 50`,
+    { pid }
+  )
+
+  const num = (v: unknown) => toNum(v)
+  return {
+    totalCertificates: t ? num(t.get('total')) : 0,
+    expired: t ? num(t.get('expired')) : 0,
+    selfSigned: t ? num(t.get('selfSigned')) : 0,
+    mismatched: t ? num(t.get('mismatched')) : 0,
+    wildcard: t ? num(t.get('wildcard')) : 0,
+    expiringSoon: t ? num(t.get('expiringSoon')) : 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    topIssuers: issuerRes.records.map((r: any) => ({
+      issuer: (r.get('issuer') as string) || 'Unknown',
+      count: num(r.get('count')),
+    })),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    findings: listRes.records.map((r: any) => {
+      const san = r.get('san')
+      return {
+        subjectCn: (r.get('subjectCn') as string) || null,
+        issuer: (r.get('issuer') as string) || null,
+        sanCount: Array.isArray(san) ? san.length : 0,
+        notAfter: (r.get('notAfter') as string) || null,
+        expired: r.get('expired') === true,
+        selfSigned: r.get('selfSigned') === true,
+        mismatched: r.get('mismatched') === true,
+        wildcard: r.get('wildcard') === true,
+        source: (r.get('source') as string) || null,
+      }
+    }),
+  }
+}
+
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function queryWebCachePoison(session: any, pid: string) {

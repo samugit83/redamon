@@ -11,6 +11,7 @@ from recon.partial_recon_modules.helpers import _is_valid_url, _is_valid_hostnam
 from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
 from recon.partial_recon_modules.user_inputs import _create_user_subdomains_in_graph
 from recon.helpers import build_target_urls, extract_targets_from_recon
+from recon.helpers.auth_profile import merge_auth_headers
 
 
 def run_katana(config: dict) -> None:
@@ -145,7 +146,7 @@ def run_katana(config: dict) -> None:
     KATANA_TIMEOUT = settings.get('KATANA_TIMEOUT', 3600)
     KATANA_JS_CRAWL = settings.get('KATANA_JS_CRAWL', True)
     KATANA_PARAMS_ONLY = settings.get('KATANA_PARAMS_ONLY', False)
-    KATANA_CUSTOM_HEADERS = settings.get('KATANA_CUSTOM_HEADERS', [])
+    KATANA_CUSTOM_HEADERS = merge_auth_headers(settings.get('KATANA_CUSTOM_HEADERS', []), settings, sorted(target_domains))
     KATANA_EXCLUDE_PATTERNS = settings.get('KATANA_EXCLUDE_PATTERNS', [])
 
     # Pull Docker image
@@ -256,7 +257,7 @@ def run_katana(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,
@@ -404,7 +405,7 @@ def run_hakrawler(config: dict) -> None:
     HAKRAWLER_MAX_URLS = settings.get('HAKRAWLER_MAX_URLS', 500)
     HAKRAWLER_INCLUDE_SUBS = settings.get('HAKRAWLER_INCLUDE_SUBS', False)
     HAKRAWLER_INSECURE = settings.get('HAKRAWLER_INSECURE', True)
-    HAKRAWLER_CUSTOM_HEADERS = settings.get('HAKRAWLER_CUSTOM_HEADERS', [])
+    HAKRAWLER_CUSTOM_HEADERS = merge_auth_headers(settings.get('HAKRAWLER_CUSTOM_HEADERS', []), settings, sorted(target_domains))
 
     # Pull Docker image
     print(f"[*][Partial Recon] Pulling Hakrawler Docker image: {HAKRAWLER_DOCKER_IMAGE}")
@@ -514,7 +515,7 @@ def run_hakrawler(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,
@@ -697,7 +698,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
     ZAP_AJAX_SPIDER_RANDOM_INPUTS = settings.get("ZAP_AJAX_SPIDER_RANDOM_INPUTS", False)
     ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE = settings.get("ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE", True)
     ZAP_AJAX_SPIDER_SCOPE_CHECK = settings.get("ZAP_AJAX_SPIDER_SCOPE_CHECK", "Strict")
-    ZAP_AJAX_SPIDER_CUSTOM_HEADERS = settings.get("ZAP_AJAX_SPIDER_CUSTOM_HEADERS", [])
+    ZAP_AJAX_SPIDER_CUSTOM_HEADERS = merge_auth_headers(settings.get("ZAP_AJAX_SPIDER_CUSTOM_HEADERS", []), settings, sorted(target_domains))
     ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS = settings.get("ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS", [])
     ZAP_AJAX_SPIDER_MAX_URLS = settings.get("ZAP_AJAX_SPIDER_MAX_URLS", 1000)
     ZAP_AJAX_SPIDER_PARALLELISM = settings.get("ZAP_AJAX_SPIDER_PARALLELISM", 1)
@@ -854,7 +855,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,
@@ -1009,7 +1010,7 @@ def run_ffuf(config: dict) -> None:
     FFUF_RECURSION_DEPTH = settings.get('FFUF_RECURSION_DEPTH', 2)
     FFUF_AUTO_CALIBRATE = settings.get('FFUF_AUTO_CALIBRATE', True)
     FFUF_FOLLOW_REDIRECTS = settings.get('FFUF_FOLLOW_REDIRECTS', False)
-    FFUF_CUSTOM_HEADERS = settings.get('FFUF_CUSTOM_HEADERS', [])
+    FFUF_CUSTOM_HEADERS = merge_auth_headers(settings.get('FFUF_CUSTOM_HEADERS', []), settings, sorted(target_domains))
     FFUF_SMART_FUZZ = settings.get('FFUF_SMART_FUZZ', True)
     FFUF_PARALLELISM = settings.get('FFUF_PARALLELISM', 20)
     FFUF_AI_EXTENSIONS = settings.get('FFUF_AI_EXTENSIONS', False)
@@ -1185,7 +1186,7 @@ def run_ffuf(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,
@@ -1796,7 +1797,7 @@ def run_jsluice(config: dict) -> None:
                                                   b.host = $host,
                                                   b.updated_at = datetime()
                                     WITH b
-                                    MATCH (ui:UserInput {id: $ui_id})
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
                                     MERGE (ui)-[:PRODUCED]->(b)
                                     """,
                                     ui_id=user_input_id, url=base_url,

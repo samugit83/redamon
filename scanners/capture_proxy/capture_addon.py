@@ -54,6 +54,47 @@ def _hard_blocked(host: str) -> bool:
     return blocked
 
 
+def _host_in_recording_scope(host: str, scope_hosts) -> bool:
+    """Exact host or ``*.suffix`` match for the operator-recording window.
+
+    Deliberately narrow: no wildcards implied, apex not matched by ``*.``. The
+    webapp already resolves scope from the project target, so this only enforces.
+    """
+    if not host or not scope_hosts:
+        return False
+    h = host.strip().rstrip(".").lower()
+    if ":" in h and not h.startswith("["):
+        h = h.split(":", 1)[0]
+    for entry in scope_hosts:
+        entry = str(entry).strip().rstrip(".").lower()
+        if not entry:
+            continue
+        if entry.startswith("*."):
+            if h.endswith(entry[1:]):
+                return True
+        elif h == entry:
+            return True
+    return False
+
+
+def _recording_expired(expires_at) -> bool:
+    """True if the recording window has lapsed. Unparseable/absent => treat as
+    NOT expired (the webapp only emits an unexpired window; the reconciler drops
+    the block within one poll of stop), so a clock/format mismatch can't wedge a
+    live recording. The bound is enforced authoritatively webapp-side."""
+    if not expires_at:
+        return False
+    try:
+        from datetime import datetime, timezone
+        s = str(expires_at).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= dt
+    except Exception:
+        return False
+
+
 def _num_env(name: str, default, cast):
     """Parse a numeric env var, falling back to `default` on missing/empty/garbage.
     Kept fail-safe because this runs in RedamonCapture.__init__, which is OUTSIDE
@@ -86,6 +127,7 @@ class RedamonCapture:
             "CAPTURE_CONFIG_FILE", os.path.join(self.spool_dir, ".capture-config.json"))
         self._config_sig = None
         self._config_lock = threading.Lock()
+        self.active_recording = None     # set by _apply_config when a recording is live
         raw, sig = self._read_config()
         self._apply_config(raw)          # sets egress_policy + all body-storage knobs
         self._config_sig = sig
@@ -183,6 +225,21 @@ class RedamonCapture:
         # relaxed by the config file (egress.is_internal_ip enforces it un-gated).
         extra_blocked = [ip for ip in os.environ.get("CAPTURE_BLOCKED_IPS", "").split(",") if ip.strip()]
 
+        # Operator-recording window (Phase 2): when the webapp is recording a
+        # login for a project, the reconciled config carries a pre-signed
+        # `operator` tag + its scope + expiry. The proxy mints NOTHING; it stamps
+        # this verbatim tag onto UNTAGGED, in-scope requests (see request()).
+        # A malformed/absent block => no injection (fail closed).
+        ar = raw.get("active_recording")
+        active_recording = None
+        if isinstance(ar, dict) and ar.get("tag"):
+            scope = ar.get("scope_hosts")
+            active_recording = {
+                "tag": str(ar["tag"]),
+                "scope_hosts": [str(h).strip().lower() for h in scope if str(h).strip()] if isinstance(scope, list) else [],
+                "expires_at": ar.get("expires_at"),
+            }
+
         with self._config_lock:
             self.egress_policy = policy
             self.store_bodies = store_bodies
@@ -192,6 +249,7 @@ class RedamonCapture:
             self.max_store_bytes = int(max_store_mb * 1024 * 1024) if max_store_mb > 0 else 0
             self.extra_blocked_ips = extra_blocked
             self.body_rules = body_rules
+            self.active_recording = active_recording
         print(f"[capture] config applied: egress<-{esrc} body<-{bsrc} "
               f"block_private={policy.block_private} store_bodies={store_bodies} "
               f"max_body_bytes={self.max_body_bytes} extra_blocked={len(extra_blocked)}", flush=True)
@@ -215,6 +273,18 @@ class RedamonCapture:
     def request(self, flow: http.HTTPFlow) -> None:
         # Lift + strip the internal tag BEFORE anything can forward it upstream.
         token = flow.request.headers.pop(self.CTX_HEADER, None)
+
+        # Operator recording (Phase 2): only when there is NO real tag (never
+        # override a scanner/agent tag) AND a recording window is active AND the
+        # request host is in the recording scope, stamp the pre-signed operator
+        # tag. Out-of-scope operator browsing stays untagged -> rejected at ingest,
+        # so it never lands in the corpus. The proxy mints nothing.
+        if token is None:
+            ar = getattr(self, "active_recording", None)
+            if ar and not _recording_expired(ar.get("expires_at")) \
+                    and _host_in_recording_scope(flow.request.pretty_host, ar.get("scope_hosts") or []):
+                token = ar["tag"]
+
         flow.metadata["redamon_ctx"] = token
         flow.metadata["redamon_started"] = time.time()
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Network, PanelRightOpen, Copy, Settings } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
@@ -218,6 +218,7 @@ export default function TrafficPage() {
             <option value="both">Both</option>
             <option value="recon">Recon</option>
             <option value="agent">Agent</option>
+            <option value="operator">Operator</option>
           </select>
         </div>
         <div className={styles.field}>
@@ -329,7 +330,7 @@ export default function TrafficPage() {
                 </td>
                 <td>{fmtTime(r.startedAt)}</td>
                 <td>
-                  <span className={`${styles.badge} ${r.source === 'recon' ? styles.badgeRecon : styles.badgeAgent}`}>
+                  <span className={`${styles.badge} ${r.source === 'recon' ? styles.badgeRecon : r.source === 'operator' ? styles.badgeOperator : styles.badgeAgent}`}>
                     {r.source}
                   </span>
                 </td>

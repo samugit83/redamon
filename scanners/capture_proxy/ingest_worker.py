@@ -197,6 +197,8 @@ def _keys() -> Dict[str, str]:
     return {
         "recon": os.environ.get("SCANNER_API_KEY", ""),
         "agent": os.environ.get("INTERNAL_API_KEY", ""),
+        # Operator-recording tags are minted by the webapp with INTERNAL_API_KEY.
+        "operator": os.environ.get("INTERNAL_API_KEY", ""),
     }
 
 
@@ -251,6 +253,13 @@ def _process_one(conn, path, reject_dir, keys, redact) -> None:  # pragma: no co
     if not payload or not payload.get("project_id") or not payload.get("user_id"):
         _reject(path, reject_dir)
         return
+
+    # Operator recording: extract the session BEFORE redaction and hand it to the
+    # webapp, which folds it into the ProjectAuthProfile. Best-effort — the corpus
+    # row below is still stored redacted, so raw secrets never persist here.
+    if payload.get("source") == "operator":
+        _observe_operator_session(payload, rec)
+
     row = build_row(payload, rec, redact)
     sql, values = _insert_sql(row)
     try:
@@ -268,6 +277,51 @@ def _process_one(conn, path, reject_dir, keys, redact) -> None:  # pragma: no co
             # reconnects and retries — never discard a validly-captured record.
             print(f"[traffic-ingest] transient insert error (will retry): {e}", flush=True)
             raise
+
+
+def _observe_operator_session(payload, rec) -> None:  # pragma: no cover
+    """POST extracted login material to the webapp observe endpoint.
+
+    Retried a few times: the spool file is consumed by the insert that follows,
+    so a webapp restart of a few seconds would otherwise discard the operator's
+    captured login for good, with the modal still showing "0 captured" and no
+    lastError (the endpoint that records lastError is the one that is down).
+    Still fail-open after the retries — ingest must never block on this.
+    """
+    import json as _json
+    import urllib.request
+    from session_extract import extract_session
+
+    material = extract_session(rec)
+    if not material:
+        return
+    webapp = os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
+    project_id = payload["project_id"]
+    body = _json.dumps({
+        "sessionId": payload.get("session_id"),
+        "host": material.get("host") or rec.get("host"),
+        "material": material,
+    }).encode()
+
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.Request(
+                f"{webapp}/api/internal/auth-profile/{project_id}/observe",
+                data=body, method="POST",
+                headers={"Content-Type": "application/json",
+                         "x-internal-key": os.environ.get("INTERNAL_API_KEY", "")},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:  # nosec - internal
+                resp.read()
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < 3:
+                time.sleep(1.0)
+    print(f"[traffic-ingest] operator observe FAILED after 3 attempts for project "
+          f"{project_id} session {payload.get('session_id')}: {last_err} — the "
+          f"recorded login for this request was lost; re-record.", flush=True)
 
 
 def _reject(path, reject_dir) -> None:  # pragma: no cover

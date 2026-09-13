@@ -57,6 +57,7 @@ from recon.partial_recon_modules.port_scanning import (
     run_masscan,
     run_nmap,
 )
+from recon.partial_recon_modules.tlsx_scanning import run_tlsx
 from recon.partial_recon_modules.http_probing import run_httpx
 from recon.partial_recon_modules.web_crawling import (
     run_katana,
@@ -137,6 +138,8 @@ def main():
         run_masscan(config)
     elif tool_id == "Nmap":
         run_nmap(config)
+    elif tool_id == "Tlsx":
+        run_tlsx(config)
     elif tool_id == "Httpx":
         run_httpx(config)
     elif tool_id == "Katana":

@@ -9,6 +9,7 @@ suite covers the same paths against a real Neo4j when a stack is up.
 
 import re
 
+from graph_db.mixins.base_mixin import BaseMixin
 from graph_db.mixins.secret_mixin import SecretMixin
 
 
@@ -51,8 +52,13 @@ class FakeSession:
             self.store["merge_keys"].append((label, tuple(sorted(keys))))
             return FakeResult({"linked": 1})
 
-        if "DETACH DELETE" in q:
-            label = re.search(r"MATCH \(\w+:(\w+)\)", q).group(1)
+        # Only the scoped clear's shape is modelled. The X7 prune that runs
+        # after a successful ingest MATCHes without a label and is proven
+        # against a real database (tests/test_ingest_then_prune_graph_live.py);
+        # here it is a no-op like any other unmodelled query.
+        labelled_delete = re.search(r"MATCH \(\w+:(\w+)\)", q)
+        if "DETACH DELETE" in q and labelled_delete:
+            label = labelled_delete.group(1)
             deleted = 0
             for node_key in list(self.store["nodes"]):
                 node_label, key_tuple = node_key
@@ -91,7 +97,7 @@ class FakeDriver:
         return FakeSession(self.store)
 
 
-class FakeClient(SecretMixin):
+class FakeClient(SecretMixin, BaseMixin):
     def __init__(self):
         self.store = {"nodes": {}, "rels": [], "deletes": [], "merge_keys": []}
         self.driver = FakeDriver(self.store)

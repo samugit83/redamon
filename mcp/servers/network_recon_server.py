@@ -120,7 +120,7 @@ def _globoff_args(cmd_args: list) -> list:
 
 
 @mcp.tool()
-def execute_curl(args: str, _redamon_ctx: str = "") -> str:
+def execute_curl(args: str, _redamon_ctx: str = "", use_session: bool = False) -> str:
     """
     Execute curl HTTP client with any valid CLI arguments.
 
@@ -130,6 +130,13 @@ def execute_curl(args: str, _redamon_ctx: str = "") -> str:
 
     Args:
         args: Command-line arguments for curl (without the 'curl' command itself)
+        use_session: When true, RedAmon attaches the project's recorded/entered
+            authenticated identity (cookie / bearer / headers) to this request,
+            but ONLY if the target host is in the project's auth scope. You do NOT
+            paste the credential yourself — the platform injects it, and it is
+            never shown to you. Default false, i.e. an ANONYMOUS request; leave it
+            false when testing access control, IDOR/BOLA, or the logged-out view.
+            Use a full http(s):// URL for the scope check to resolve the host.
 
     Returns:
         Command output (stdout + stderr combined)

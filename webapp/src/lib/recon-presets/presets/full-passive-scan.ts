@@ -161,6 +161,7 @@ Red team operators in the pre-engagement phase, OSINT analysts building target p
 
     // --- VHost & SNI: explicitly disabled - preset's identity is "no packets to target" ---
     vhostSniEnabled: false,
+    tlsxEnabled: false,        // zero-packets preset: do not open TLS handshakes (tlsx defaults on)
 
     // --- ENABLE CVE lookup (queries NVD/Vulners APIs, not the target) ---
     cveLookupEnabled: true,

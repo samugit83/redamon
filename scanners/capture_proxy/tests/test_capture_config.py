@@ -137,6 +137,24 @@ class TestApplyConfig(unittest.TestCase):
         inst = self._apply({"egress": "nope"}, env={})
         self.assertTrue(inst.egress_policy.block_private)
 
+    def test_active_recording_absent_is_none(self):
+        inst = self._apply({})
+        self.assertIsNone(inst.active_recording)
+
+    def test_active_recording_parsed(self):
+        inst = self._apply({"active_recording": {
+            "tag": "signed.tag", "scope_hosts": ["App.Target.test", " "],
+            "expires_at": "2099-01-01T00:00:00Z"}})
+        self.assertEqual(inst.active_recording["tag"], "signed.tag")
+        self.assertEqual(inst.active_recording["scope_hosts"], ["app.target.test"])
+
+    def test_active_recording_without_tag_ignored(self):
+        inst = self._apply({"active_recording": {"scope_hosts": ["x"]}})
+        self.assertIsNone(inst.active_recording)
+
+    def test_active_recording_non_dict_ignored(self):
+        self.assertIsNone(self._apply({"active_recording": "nope"}).active_recording)
+
     def test_empty_egress_dict_is_all_block(self):
         inst = self._apply({"egress": {}})
         self.assertTrue(inst.egress_policy.block_private)
@@ -171,6 +189,92 @@ class TestApplyConfig(unittest.TestCase):
     def test_blocked_ips_empty_env_yields_empty_list(self):
         inst = self._apply({"egress": {"block_private": False}}, env={})
         self.assertEqual(inst.extra_blocked_ips, [])
+
+
+class TestRecordingHelpers(unittest.TestCase):
+    def test_host_in_scope_exact_and_wildcard(self):
+        f = capture_addon._host_in_recording_scope
+        self.assertTrue(f("app.target.test", ["app.target.test"]))
+        self.assertTrue(f("app.target.test:8443", ["app.target.test"]))
+        self.assertTrue(f("a.b.target.test", ["*.target.test"]))
+        self.assertFalse(f("target.test", ["*.target.test"]))   # apex not matched
+        self.assertFalse(f("evil.test", ["app.target.test"]))
+        self.assertFalse(f("app.target.test", []))
+        self.assertFalse(f("", ["app.target.test"]))
+
+    def test_recording_expired(self):
+        f = capture_addon._recording_expired
+        self.assertFalse(f(None))                       # absent -> not expired
+        self.assertFalse(f("garbage"))                  # unparseable -> not expired
+        self.assertTrue(f("2000-01-01T00:00:00Z"))      # past
+        self.assertFalse(f("2099-01-01T00:00:00Z"))     # future
+
+
+class _FakeHeaders(dict):
+    def pop(self, key, default=None):
+        for k in list(self.keys()):
+            if k.lower() == key.lower():
+                return super().pop(k)
+        return default
+
+
+class _FakeFlow:
+    def __init__(self, host, headers=None):
+        self.request = mock.MagicMock()
+        self.request.headers = _FakeHeaders(headers or {})
+        self.request.pretty_host = host
+        self.request.host = host
+        self.request.port = 443
+        self.metadata = {}
+        self.server_conn = mock.MagicMock()
+
+
+class TestRequestTagInjection(unittest.TestCase):
+    """The proxy stamps the operator tag only on UNTAGGED, in-scope requests."""
+
+    def _inst(self, active_recording):
+        inst = _new_instance(tempfile.mkdtemp(prefix="capreq-"))
+        inst.egress_policy = mock.MagicMock(fail_closed_on_error=True)
+        inst.extra_blocked_ips = []
+        inst.active_recording = active_recording
+        return inst
+
+    _AR = {"tag": "operator.signed.tag", "scope_hosts": ["app.target.test"], "expires_at": None}
+
+    def test_untagged_in_scope_gets_operator_tag(self):
+        inst = self._inst(self._AR)
+        flow = _FakeFlow("app.target.test")
+        with mock.patch.object(capture_addon, "check_egress", return_value=(True, None, "ok")):
+            inst.request(flow)
+        self.assertEqual(flow.metadata["redamon_ctx"], "operator.signed.tag")
+
+    def test_real_tag_is_never_overridden(self):
+        inst = self._inst(self._AR)
+        flow = _FakeFlow("app.target.test", {"X-Redamon-Ctx": "real-recon-tag"})
+        with mock.patch.object(capture_addon, "check_egress", return_value=(True, None, "ok")):
+            inst.request(flow)
+        self.assertEqual(flow.metadata["redamon_ctx"], "real-recon-tag")
+
+    def test_out_of_scope_stays_untagged(self):
+        inst = self._inst(self._AR)
+        flow = _FakeFlow("unrelated.test")
+        with mock.patch.object(capture_addon, "check_egress", return_value=(True, None, "ok")):
+            inst.request(flow)
+        self.assertIsNone(flow.metadata["redamon_ctx"])
+
+    def test_no_active_recording_stays_untagged(self):
+        inst = self._inst(None)
+        flow = _FakeFlow("app.target.test")
+        with mock.patch.object(capture_addon, "check_egress", return_value=(True, None, "ok")):
+            inst.request(flow)
+        self.assertIsNone(flow.metadata["redamon_ctx"])
+
+    def test_expired_recording_stays_untagged(self):
+        inst = self._inst({**self._AR, "expires_at": "2000-01-01T00:00:00Z"})
+        flow = _FakeFlow("app.target.test")
+        with mock.patch.object(capture_addon, "check_egress", return_value=(True, None, "ok")):
+            inst.request(flow)
+        self.assertIsNone(flow.metadata["redamon_ctx"])
 
 
 class _StopLoop(BaseException):

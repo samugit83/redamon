@@ -135,6 +135,48 @@ def _first_http_status(text: str) -> str:
     return m.group(1) if m else "?"
 
 
+def _curl_target_host(args_str: str):
+    """The host of the first full URL in a curl arg string, or None. A bare host
+    (no scheme) returns None on purpose: the auth scope check needs a host it can
+    resolve unambiguously, and 'attach nothing' is the fail-closed default."""
+    try:
+        import shlex
+        from urllib.parse import urlparse
+        for tok in shlex.split(args_str or ""):
+            if tok.startswith(("http://", "https://")):
+                return urlparse(tok).hostname
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _maybe_attach_curl_session(tool_args: dict) -> dict:
+    """When the agent set use_session=true, append the project's auth headers to
+    the curl args — but ONLY for an in-scope host. The raw value is resolved from
+    project settings here (agent side), never handled by the LLM. Fails closed:
+    no profile, no host, or out of scope -> args unchanged, request stays anon."""
+    try:
+        if not tool_args.get("use_session"):
+            return tool_args
+        from auth_profile import auth_headers_for_host
+        from project_settings import target_scope_domains
+        profile = get_setting("AUTH_PROFILE")
+        host = _curl_target_host(tool_args.get("args", ""))
+        if not profile or not host:
+            return tool_args
+        scope_domains = []
+        for d in target_scope_domains():
+            scope_domains += [d, f"*.{d}"]   # subdomains are in scope, mirroring recon
+        headers = auth_headers_for_host(profile, host, scope_domains)
+        if not headers:
+            return tool_args
+        import shlex as _shlex
+        extra = "".join(f" -H {_shlex.quote(f'{k}: {v}')}" for k, v in headers.items())
+        return {**tool_args, "args": (tool_args.get("args", "") + extra)}
+    except Exception:  # noqa: BLE001
+        return tool_args
+
+
 # =============================================================================
 # SYSTEM MCP SERVERS (baseline — shipped with the product, not user-managed)
 # =============================================================================
@@ -2192,6 +2234,12 @@ class PhaseAwareToolExecutor:
             _redamon_ctx = self._build_redamon_ctx(tool_name)
             if _redamon_ctx:
                 tool_args = {**tool_args, "_redamon_ctx": _redamon_ctx}
+
+        # Opt-in authenticated identity for execute_curl. Injected here so the raw
+        # session value never reaches the LLM (mirrors the ctx tag), and only for
+        # an in-scope host so a curl the model points off-target cannot leak it.
+        if tool_name == "execute_curl":
+            tool_args = _maybe_attach_curl_session(tool_args)
 
         # proxy_brain: the signed tenant/session tag is how its kali `redamon` SDK
         # reaches the corpus (/traffic/exec) and the replay path (/traffic/replay),

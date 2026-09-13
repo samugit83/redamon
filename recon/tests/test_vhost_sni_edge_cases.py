@@ -139,7 +139,7 @@ class TestTlsSanEdgeCases:
     def test_wildcard_san_strips_star_dot(self):
         recon = {
             "http_probe": {
-                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls_subject_alt_names": ["*.acme.com"]}},
+                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls": {"certificate": {"san": ["*.acme.com"]}}}},
                 "by_host": {},
             },
         }
@@ -150,7 +150,7 @@ class TestTlsSanEdgeCases:
         # "**foo.com" -> "foo.com"
         recon = {
             "http_probe": {
-                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls_subject_alt_names": ["**foo.com"]}},
+                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls": {"certificate": {"san": ["**foo.com"]}}}},
                 "by_host": {},
             },
         }
@@ -159,10 +159,10 @@ class TestTlsSanEdgeCases:
         assert "foo.com" in candidates
 
     def test_san_alternative_key_tls_sans(self):
-        # http_probe sometimes uses 'tls_sans' instead of 'tls_subject_alt_names'
+        # The real httpx path is tls.certificate.san.
         recon = {
             "http_probe": {
-                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls_sans": ["alt.acme.com"]}},
+                "by_url": {"https://5.5.5.5": {"host": "5.5.5.5", "tls": {"certificate": {"san": ["alt.acme.com"]}}}},
                 "by_host": {},
             },
         }
@@ -171,7 +171,7 @@ class TestTlsSanEdgeCases:
     def test_san_for_different_ip_ignored(self):
         recon = {
             "http_probe": {
-                "by_url": {"https://9.9.9.9": {"host": "9.9.9.9", "tls_subject_alt_names": ["other.com"]}},
+                "by_url": {"https://9.9.9.9": {"host": "9.9.9.9", "tls": {"certificate": {"san": ["other.com"]}}}},
                 "by_host": {},
             },
         }
@@ -184,7 +184,7 @@ class TestTlsSanEdgeCases:
                 "by_url": {
                     "https://5.5.5.5": {
                         "host": "5.5.5.5",
-                        "tls_subject_alt_names": ["valid.acme.com", "INVALID HOST", ":colon.com"],
+                        "tls": {"certificate": {"san": ["valid.acme.com", "INVALID HOST", ":colon.com"]}},
                     }
                 },
                 "by_host": {},

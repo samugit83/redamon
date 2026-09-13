@@ -4,7 +4,11 @@
 
 **CypherFix** is RedAmon's automated vulnerability remediation pipeline. It bridges the gap between discovering vulnerabilities (via reconnaissance, DAST scanning, and AI-powered pentesting) and actually fixing them in code. The pipeline consists of two independent AI agents that operate in sequence:
 
-1. **Triage Agent** — Analyzes the Neo4j attack surface graph, correlates and deduplicates findings across data sources, prioritizes them using a weighted scoring algorithm, and generates structured remediation entries.
+1. **Triage Agent** - Scores every finding in the Neo4j attack surface graph
+   with a fixed risk model, groups the findings that share a fix, has an LLM
+   check the evidence behind the ones it can judge, and writes one remediation
+   per group. The score model is deterministic and runs with no LLM at all; see
+   [Score model v3](#score-model-v3).
 2. **CodeFix Agent** — Takes a single remediation entry, clones the target repository, explores the codebase, implements the fix using a ReAct loop, and opens a pull request.
 
 Both agents run inside the existing `agent` container and communicate with the frontend via dedicated WebSocket connections.
@@ -17,12 +21,13 @@ Both agents run inside the existing `agent` container and communicate with the f
 2. [End-to-End Workflow](#end-to-end-workflow)
 3. [Triage Agent](#triage-agent)
    - [File Structure](#triage-file-structure)
-   - [Hybrid Architecture](#hybrid-architecture)
-   - [Phase 1: Static Collection](#phase-1-static-collection)
-   - [Phase 2: ReAct Analysis](#phase-2-react-analysis)
-   - [Phase 3: Persistence](#phase-3-persistence)
+   - [The five steps](#the-five-steps-and-why-only-one-of-them-writes)
+   - [Collection](#collection)
+   - [Persistence](#persistence)
    - [Tools](#triage-tools)
-   - [Prioritization Algorithm](#prioritization-algorithm)
+   - [Score model v3](#score-model-v3)
+   - [Grouping, review and remediation](#grouping-review-and-remediation)
+   - [The run protocol](#the-run-protocol)
    - [State Model](#triage-state-model)
    - [WebSocket Protocol](#triage-websocket-protocol)
 4. [CodeFix Agent](#codefix-agent)
@@ -62,9 +67,10 @@ flowchart TB
 
     subgraph TriageAgent["Triage Agent"]
         T_ORCH[TriageOrchestrator]
-        T_CYPHER[9 Static Cypher Queries]
-        T_LLM[ReAct LLM Analysis]
-        T_TOOLS[query_graph + web_search]
+        T_FACTS["Fact sets + one row per finding"]
+        T_SCORE["score_model v3 (no LLM)"]
+        T_GROUP["Deterministic group keys"]
+        T_REVIEW["Evidence review (no tools bound)"]
     end
 
     subgraph CodeFixAgent["CodeFix Agent"]
@@ -117,15 +123,22 @@ sequenceDiagram
     participant CodeFixAgent
     participant GitHub
 
-    Note over User,GitHub: Phase 1 — Triage
-    User->>Frontend: Click "Start Triage"
+    Note over User,GitHub: Phase 1 - Triage
+    User->>Frontend: Confirm the triage dialog (preflight numbers)
     Frontend->>TriageAgent: WS: start_triage
-    TriageAgent->>Neo4j: Run 9 static Cypher queries
-    Neo4j-->>TriageAgent: Raw vulnerability data
-    TriageAgent->>LLM: Correlate, deduplicate, prioritize
-    LLM-->>TriageAgent: Structured remediation JSON
-    TriageAgent->>Frontend: WS: triage_complete (N remediations)
-    TriageAgent->>Frontend: POST /api/remediations/batch
+    TriageAgent->>Frontend: POST /api/internal/triage-runs (authorize)
+    TriageAgent->>Neo4j: Project fact sets, then one row per finding
+    Neo4j-->>TriageAgent: Facts and findings
+    Note over TriageAgent: Score (no LLM), then group by fix
+    TriageAgent->>LLM: Review the evidence behind reviewable findings
+    LLM-->>TriageAgent: Factor corrections, each with a quote
+    Note over TriageAgent: Verify every quote, recompute tier and score
+    TriageAgent->>LLM: Write the fix-item prose, per group
+    TriageAgent->>Frontend: POST .../publish (claim the write)
+    TriageAgent->>Neo4j: Publish the ranking, guarded by updated_at
+    TriageAgent->>Frontend: POST .../remediations (upsert by group key)
+    TriageAgent->>Frontend: POST .../finish
+    TriageAgent->>Frontend: WS: triage_complete
 
     Note over User,GitHub: Phase 2 — Review
     User->>Frontend: Browse remediations table
@@ -159,121 +172,207 @@ sequenceDiagram
 ```
 agentic/cypherfix_triage/
 ├── __init__.py
-├── orchestrator.py            # Hybrid orchestrator: static collection + ReAct analysis
-├── state.py                   # TriageFinding, RemediationDraft, TriageState
-├── tools.py                   # Neo4j query manager, Tavily web search, TRIAGE_TOOLS
+├── orchestrator.py            # The five steps: score, group, review, remediate, publish
+├── score_model.py             # The risk model. C x L x I x R -> tier -> 0-100. Pure
+├── fact_queries.py            # Project fact sets + one row per finding
+├── grouping.py                # Deterministic group keys (one problem, one fix)
+├── evidence.py                # The evidence bundle, redaction, the review cache key
+├── remediation.py             # Fix-item fields, every one computed in code
+├── intel.py                   # KEV / EPSS / PoC via the vulnx MCP tool
+├── run_client.py              # authorize, heartbeat, publish, finish
+├── state.py                   # RemediationDraft, TriageState
+├── tools.py                   # The Neo4j read path. No LLM tools are bound
 ├── project_settings.py        # Load CypherFix settings from webapp API
-├── websocket_handler.py       # WebSocket endpoint + TriageStreamingCallback
+├── websocket_handler.py       # WebSocket endpoint + the run registry
 └── prompts/
     ├── __init__.py
-    ├── system.py              # TRIAGE_SYSTEM_PROMPT (prioritization rules, output format)
-    └── cypher_queries.py      # 9 hardcoded Cypher queries for static collection
+    ├── review.py              # the evidence-review prompt AND its output validation
+    ├── remediation_prose.py   # the only thing a model writes about a fix item
+    └── cypher_queries.py      # the mute-enforcing collection queries
 ```
 
-### Hybrid Architecture
-
-The Triage Agent uses a **two-phase hybrid design** — deterministic data collection followed by LLM-powered analysis:
+### The five steps, and why only one of them writes
 
 ```mermaid
 flowchart LR
-    subgraph Phase1["Phase 1: Static Collection (No LLM)"]
+    subgraph Mem["In memory: nothing is written"]
         direction TB
-        Q1[Vulnerabilities]
-        Q2[CVE Chains]
-        Q3[Secrets]
-        Q4[Exploits]
-        Q5[Assets]
-        Q6[Chain Findings]
-        Q7[Attack Chains]
-        Q8[Certificates]
-        Q9[Security Checks]
+        A["A. Score: fact sets + one row per finding, score_model v3, no LLM"]
+        B["B. Group: deterministic keys, no LLM"]
+        C["C. Review: LLM corrects factors, every quote verified"]
+        D["D. Remediate: fields in code, prose by LLM"]
+        A --> B --> C --> D
     end
 
-    subgraph Phase2["Phase 2: ReAct Analysis (LLM)"]
-        direction TB
-        CORR[Correlate across sources]
-        DEDUP[Deduplicate findings]
-        PRIO[Apply priority scoring]
-        GEN[Generate remediations JSON]
-    end
-
-    subgraph Phase3["Phase 3: Persistence"]
-        SAVE[POST /api/remediations/batch]
-    end
-
-    NEO4J[(Neo4j)] --> Phase1
-    Phase1 -->|Raw data| Phase2
-    Phase2 -->|RemediationDraft| Phase3
-    Phase3 --> DB[(PostgreSQL)]
+    R["R. Authorize, before reading anything"] --> Mem
+    Mem --> E["E. Publish: claim, then write"]
+    NEO4J[(Neo4j)] --> A
+    E --> NEO4J
+    E --> DB[(PostgreSQL)]
 ```
 
-This design ensures:
-- **Deterministic coverage** — all 9 query categories always execute regardless of LLM behavior
-- **Cost efficiency** — a single LLM call analyzes all data rather than N separate calls
-- **Reproducibility** — the same raw data always gets collected; only the analysis varies
+**Steps A to D happen entirely in memory; Step E is the only thing that
+writes.** That single property is what makes a run safe to stop, safe to refuse
+and safe to run beside a scan: until the publish is claimed, the previous
+ranking is still what an operator sees, and a run that is killed halfway has
+changed nothing at all.
 
-### Phase 1: Static Collection
+It also gives the design its failure posture:
+
+- the run authorises BEFORE it reads, so a run that will not be allowed to
+  publish does not first spend minutes and LLM budget discovering that;
+- a publish that is refused writes nothing, rather than part of a result;
+- the LLM being unreachable costs detail, never the ranking: those findings
+  publish as "Not reviewed" with their maths intact.
+
+### Collection
+
 
 Nine hardcoded Cypher queries run against Neo4j to collect the full attack surface:
 
-| # | Query Name | Description | Key Nodes |
-|---|------------|-------------|-----------|
-| 1 | `vulnerabilities` | All vulns with endpoints, parameters, GVM fields | Vulnerability, Endpoint, Parameter |
-| 2 | `cve_chains` | Technology → CVE → CWE → CAPEC chains | Technology, CVE, MitreData, Capec |
-| 3 | `secrets` | GitHub secrets and sensitive files | GithubRepository, GithubSecret, GithubSensitiveFile |
-| 4 | `exploits` | CVEs with confirmed ExploitGvm nodes | ExploitGvm, CVE, Technology |
-| 5 | `assets` | Services, ports, IPs, base URLs | Subdomain, IP, Port, Service, BaseURL |
-| 6 | `chain_findings` | Pentesting findings (exploit_success, credential_found, etc.) | ChainFinding, ChainStep, AttackChain |
-| 7 | `attack_chains` | Attack chain session summaries | AttackChain with targets and outcomes |
-| 8 | `certificates` | TLS certificate status (expired, weak, valid) | Certificate, BaseURL |
-| 9 | `security_checks` | Missing headers, misconfigurations | Vulnerability (source='security_check') |
+The collection queries live in `cypherfix_triage/fact_queries.py` and come in
+two kinds.
 
-All queries are tenant-filtered with `$userId` and `$projectId` parameters. Progress is streamed to the frontend (5%–70% of the progress bar).
+**Project fact sets**, read once per run: which hosts are live, which ports an
+active scan found, which packages are actually served, what the agent proved,
+which hosts appear in threat intelligence, which assets are sensitive.
 
-### Phase 2: ReAct Analysis
+**One row per finding**, per label, using `COUNT {}` / `EXISTS {}` subqueries
+rather than `OPTIONAL MATCH` chains. That shape is the point: the old queries
+chained OPTIONAL MATCH, so a GVM finding hanging off three Technologies plus a
+Port plus a Subdomain came back five times, each scoring differently, and
+whichever row Neo4j returned last won. One OSV advisory hangs off up to eleven
+packages in the dev graph. Verified on a real graph: 536 findings, no duplicate
+ids.
 
-After collection, the raw data is formatted and sent to the LLM with the `TRIAGE_SYSTEM_PROMPT`. The LLM operates in a ReAct loop (max 10 iterations) where it can:
+The join happens in Python, in `score_model.score(finding, facts, intel)`, which
+is pure.
 
-1. **Analyze** the raw data directly
-2. **Call `query_graph`** for follow-up Cypher queries when more context is needed
-3. **Call `web_search`** to check CISA KEV status, exploit availability, or CVE details
-4. **Output** a JSON array of structured remediation entries
+All queries are tenant-filtered with `$userId` and `$projectId`. They also
+hand-write their own `NOT n:Muted` term: they run through `run_static_query`,
+which deliberately does not go through `scope_query`, so the exclusion every
+agent query gets for free is absent here.
 
-The LLM also receives a list of existing non-pending remediations (from previous triage runs) to avoid creating duplicates.
+### Persistence
 
-### Phase 3: Persistence
+Findings are published through `apply_triage_scores` in batches of 500, each row
+guarded by the `updated_at` it was read at. Remediations are upserted by
+`(projectId, groupKey)` in ONE transaction through
+`POST /api/internal/triage-runs/[runId]/remediations`.
 
-Parsed `TriageFinding` objects are batch-saved via `POST /api/remediations/batch`, which creates rows in the PostgreSQL `Remediation` table.
+The old path deleted every pending remediation and then created the new ones,
+outside a transaction: a failure in between left the project with no fix list at
+all, and a row the CodeFix agent was working on could be deleted underneath it,
+taking its branch and its PR link with it. Anything a person or CodeFix has
+touched is now never rewritten.
 
 ### Triage Tools
 
-| Tool | Description | Implementation |
-|------|-------------|----------------|
-| `query_graph` | Run follow-up Cypher queries against Neo4j | `TriageNeo4jToolManager.run_query()` — async Neo4j driver |
-| `web_search` | Search the web via Tavily API | `TriageWebSearchManager.search()` — HTTPS to `api.tavily.com` |
+**The triage agent binds NO tools.** It used to have `query_graph` and
+`web_search`, which meant a model steered by scanner output could write its own
+Cypher and its own search queries. Both are gone: Steps A to D read the graph
+through the fixed queries in `cypherfix_triage/fact_queries.py`, and the review
+and prose calls bind nothing at all, so an injected instruction has nothing to
+reach for.
 
-### Prioritization Algorithm
+The one outbound call triage can make is `cve_intel` on the kali-sandbox MCP
+server, checked against a one-name allowlist. Only CVE ids leave the machine,
+regex-validated in code, and only numbers and booleans are kept from the reply.
 
-The system prompt instructs the LLM to apply weighted scoring:
+### Score model v3
 
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| `CHAIN_EXPLOIT_SUCCESS` | 1200 | ChainFinding with `finding_type='exploit_success'` |
-| `CONFIRMED_EXPLOIT` | 1000 | ExploitGvm node exists for the CVE |
-| `CHAIN_ACCESS_GAINED` | 900 | ChainFinding with `finding_type='access_gained'` or `privilege_escalation` |
-| `CISA_KEV` | 800 | `v.cisa_kev=true` |
-| `CHAIN_CREDENTIAL` | 700 | ChainFinding with `finding_type='credential_found'` |
-| `SECRET_EXPOSED` | 500 | GitHub secret or sensitive file found |
-| `CHAIN_REACHABILITY` | 200 | Internet-facing asset to vuln ≤ 3 hops |
-| `DAST_CONFIRMED` | 150 | Nuclei DAST finding |
-| `INJECTABLE_PARAM` | 100 | Parameter marked `is_injectable=true` |
-| `CVSS_SCORE` | 100 | CVSS * 10 (0–100 points) |
-| `CERT_EXPIRED` | 80 | Expired TLS certificate |
-| `CERT_WEAK` | 40 | Self-signed or weak key |
-| `GVM_QOD` | 30 | Quality of Detection ≥ 70 |
-| `SEVERITY_WEIGHT` | 50 | critical=50, high=40, medium=20, low=10 |
+The weighted-sum algorithm is gone. It added points per signal, which counted
+one fact several times (severity, CVSS score and CVSS vector all describe the
+same thing), summed signals that mean the same thing (KEV + EPSS + a public
+PoC), and ADDED impact to likelihood when risk is impact TIMES likelihood.
 
-**Priority = MAX_SCORE - total_weighted_score** (0 = highest priority)
+`cypherfix_triage/score_model.py` is a pure module with no I/O. For every open
+finding it estimates four probabilities and multiplies them:
+
+| Factor | Meaning | Source |
+|---|---|---|
+| **C** | P(the finding is real) | How it was detected: an exploit that ran, a matcher with captured proof, a QoD band, a version guess |
+| **L** | P(exploited \| real) | The MAXIMUM of the exploit signals, never a sum, then capped modifiers |
+| **I** | Impact | The CVSS impact sub-score, else the numeric score, else severity, else the class table |
+| **R** | Reachability | A live endpoint, an actively-scanned port, a served package, a login wall, a local-only vector |
+
+```
+risk  = min(1, C x L x I x R)
+tier  = T1 Act now | T2 Act soon | T3 Plan | T4 Track     (fixed rules)
+score = 25 x tier_level + 25 x risk                        (0 to 100)
+```
+
+The tier is INSIDE the score, so one sort key gives "tier first, then risk" and
+the tier bands meet rather than overlap.
+
+**State is decided before the score.** A `fixed`, `gone` or `inactive` finding
+leaves the ranking entirely rather than being demoted to a small number that
+still sorts above something real.
+
+Three decisions worth knowing, because each was a live defect:
+
+- **Unknown is not info.** OSV writes `severity: info` to mean "never graded"
+  (all 419 PYSEC advisories in the dev graph), so ungraded maps to 0.45, not
+  0.02. This is the one place a "higher" severity word scores lower.
+- **A blanket severity cannot raise a class.** The GitHub hunt stamps "high" on
+  all 284 of its secrets, 119 of which are private IP addresses, so for writers
+  like that the class table caps I.
+- **Nothing without impact leaves Track unless it is proven**, so a famous KEV
+  CVE whose own vector says `C:N/I:N/A:N` cannot be Act now.
+
+Every table is data, so calibration is a diff of numbers rather than of code,
+and `SCORE_MODEL_VERSION` changes with them. All eight guarantees of the design
+are tests in `agentic/tests/test_score_model.py`; monotonicity, the missing-data
+rule and group risk are checked over seeded random cases.
+
+**C is the one factor that learns.** Every Real / False positive click is a
+label for the DETECTOR that produced the finding (`detector_key`: a nuclei
+template, a GVM OID, a TruffleHog detector; advisories key on the source, since
+a verdict on one CVE says nothing about another). C then becomes a Beta
+posterior over this user's own verdicts, with the rule-based C as its prior:
+
+```
+C = (10 x C_rule + real) / (10 + real + fp)        bounded to [0.1, 0.99]
+```
+
+Ten pseudo-counts is deliberately slow: a detector is judged on a handful of
+findings at first, and three unlucky clicks must not switch a real one off. The
+counts come from `detector_labels`, the only fact query scoped to `$userId`
+rather than to a project, because a detector that is noise on one of your
+projects is noise on the next. It is never scoped wider than one user. Proven
+findings are exempt, the same rule the review obeys. With no labels stored the
+rule stands unchanged, which is why the v3.1.0 ranking is byte-identical to
+v3.0.0 on a graph nobody has clicked. Tests:
+`agentic/tests/test_triage_detector_learning.py`.
+
+### Grouping, review and remediation
+
+- **Group** (`cypherfix_triage/grouping.py`): deterministic keys, no LLM. The
+  same CVE from two scanners is one group; every advisory on one package is one
+  group; a secret's key is a hash of its value, never the value.
+- **Review** (`cypherfix_triage/evidence.py`, `prompts/review.py`): the LLM
+  corrects FACTORS against quoted evidence and never produces a score. Every
+  quote is verified as a substring of what was sent; an unverifiable correction
+  becomes "no change". `security_check` and OSV findings never reach it.
+- **Remediate** (`cypherfix_triage/remediation.py`): every field that decides
+  anything is computed in code. `targetRepo` comes from project settings and
+  never from model output, because it decides where CodeFix pushes.
+
+### The run protocol
+
+A run is a `TriageRun` row, so activation, version save, the delta preview,
+import and delete can see one. Four calls, all fail-closed:
+
+| Call | What it does |
+|---|---|
+| `POST /api/internal/triage-runs` | Authorise, BEFORE reading anything. Strict ownership, ignoring `ACCESS_ENFORCE` |
+| `.../heartbeat` | Every 30s. The reply carries `abort`; two failures in a row are treated as one |
+| `.../publish` | A conditional `running -> publishing` transition. A run that lost its claim writes nothing |
+| `.../finish` | Always, from a `finally`. A run left `running` blocks activation until its heartbeat expires |
+
+Steps A to D are entirely in memory; Step E is the only thing that writes, in
+batches of 500, each row guarded by the `updated_at` it was read at, so a
+finding a scan re-ingested mid-run is skipped and picked up next time.
 
 ### Triage State Model
 

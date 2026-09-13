@@ -91,27 +91,6 @@
   to { transform: rotate(360deg); }
 }
 
-.triageBtn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-1) var(--space-2-5);
-  background: var(--accent-primary);
-  color: var(--text-on-accent);
-  border: 1px solid var(--accent-primary);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: var(--transition-all);
-}
-
-.triageBtn:hover {
-  background: var(--accent-primary-hover);
-  border-color: var(--accent-primary-hover);
-  color: var(--text-on-accent);
-}
-
 /* ── Filters ─────────────────────────────────────────── */
 
 .filters {

@@ -769,7 +769,7 @@ The advantage is **separation of concerns**. The agent is optimised for live dec
 
 ### Companion Orchestrators (Cypherfix Triage + Codefix)
 
-Two **sibling agents** live alongside the main pentest orchestrator: **Cypherfix Triage** clusters and scores findings post-engagement (drops false positives, ranks by impact, generates remediation handles), and **Cypherfix Codefix** edits source code in a GitHub repository to actually patch the identified vulnerabilities. Codefix uses a Claude-Code-style toolkit (`github_glob`, `github_grep`, `github_read`, `github_edit`, `github_write`, `github_bash`, `github_symbols`, `github_find_definition`, `github_find_references`, `github_repo_map`); mutating tools are serialised via a `SEQUENTIAL_TOOLS` set while read-only tools run concurrently.
+Two **sibling agents** live alongside the main pentest orchestrator. **Cypherfix Triage** scores every finding post-engagement with a fixed risk model, groups the ones that share a fix, has an LLM check the evidence behind the judgeable ones, and writes the fix list; the scoring and grouping run with no LLM, and the LLM binds no tools. **Cypherfix Codefix** edits source code in a GitHub repository to actually patch the identified vulnerabilities. Codefix uses a Claude-Code-style toolkit (`github_glob`, `github_grep`, `github_read`, `github_edit`, `github_write`, `github_bash`, `github_symbols`, `github_find_definition`, `github_find_references`, `github_repo_map`); mutating tools are serialised via a `SEQUENTIAL_TOOLS` set while read-only tools run concurrently.
 
 Both share infrastructure with the pentest agent, logging, project_settings, the `key_rotation` round-robin API key pool, the same WebSocket transport, but each has its own `state.py`, `prompts/`, and `orchestrator.py`. They are separate processes, separate ReAct loops, separate state shapes.
 
@@ -3987,7 +3987,8 @@ classDiagram
 | `STEP_IDENTIFIED` | ChainStep → Technology | Technology identified during this step |
 | `FOUND_ON` | ChainFinding → IP / Subdomain | Where the finding was discovered |
 | `FINDING_RELATES_CVE` | ChainFinding → CVE | CVE related to the finding |
-| `CREDENTIAL_FOR` | ChainFinding → Service / Port | Service/port the credential works on |
+| `FINDING_AFFECTS_ENDPOINT` / `_PORT` / `_TECH` | ChainFinding → Endpoint / Port / Technology | Regex-matched from the finding's evidence text |
+| `CONFIRMS` | ChainFinding → a recon finding | The agent proved this specific finding, so the Priority Board scores it as proven (from a reported id only, tenant-scoped) |
 
 ```mermaid
 flowchart LR
@@ -4370,7 +4371,15 @@ Two sibling orchestrators live alongside the main pentest agent under [agentic/c
 
 ### Cypherfix Triage
 
-LLM agent that triages findings produced by the pentest run, clusters duplicates, scores severity, drops false positives, and generates remediation handles consumable by the codefix agent. Lives in [agentic/cypherfix_triage/](../../agentic/cypherfix_triage/) with its own `orchestrator.py`, `state.py`, `tools.py`, `websocket_handler.py`, and `prompts/`.
+Scores every finding, groups the ones that share a fix, has an LLM check the
+evidence behind each judgeable one, and writes the fix list the codefix agent
+consumes. The scoring model (`score_model.py`) is pure and needs no LLM; the
+review corrects FACTORS against quoted evidence and never produces a score.
+
+Steps A to D happen entirely in memory and only Step E writes, so a run that is
+stopped or refused leaves the previous ranking exactly as it was. Lives in
+[agentic/cypherfix_triage/](../../agentic/cypherfix_triage/); see
+[README.CYPHERFIX_AGENTS.md](README.CYPHERFIX_AGENTS.md) for the full design.
 
 ### Cypherfix Codefix
 

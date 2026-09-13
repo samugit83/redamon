@@ -101,6 +101,7 @@ IMAGES=(
     "projectdiscovery/katana:latest"
     "projectdiscovery/nuclei:latest"
     "projectdiscovery/subfinder:latest"
+    "projectdiscovery/tlsx:latest"
     "sxcurity/gau:latest"
     "caffix/amass:latest"
     "frost19k/puredns:latest"

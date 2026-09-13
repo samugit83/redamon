@@ -135,14 +135,25 @@ class TestSyntax(unittest.TestCase):
                                     )
 
     def test_no_bare_module_code_in_mixins(self):
-        """No if __name__ == '__main__' blocks inside mixin files."""
+        """No `if __name__ == '__main__'` block, and no module-level side effect.
+
+        It used to assert `'__name__' not in src`, which also banned
+        `logging.getLogger(__name__)` - the idiomatic module logger, and not a
+        side effect at all. Checked against the AST now, so it catches the
+        thing it names and nothing else.
+        """
         mixin_files = [f for f in self.FILES
                        if "mixin" in f and f.endswith(".py") and "__init__" not in f]
         for fpath in mixin_files:
             with self.subTest(file=fpath):
-                src = open(os.path.join(_REPO, fpath)).read()
-                self.assertNotIn('__name__', src,
-                                 f"__main__ block found in mixin {fpath}")
+                tree = ast.parse(open(os.path.join(_REPO, fpath)).read())
+                for node in tree.body:
+                    if not isinstance(node, ast.If):
+                        continue
+                    guard = ast.dump(node.test)
+                    self.assertNotIn(
+                        "__name__", guard,
+                        f"__main__ block found in mixin {fpath}")
 
 
 # ─── METHOD PRESENCE TESTS ────────────────────────────────────────────────────

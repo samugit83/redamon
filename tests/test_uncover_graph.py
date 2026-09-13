@@ -27,9 +27,14 @@ def _load(name, relpath):
 # Load in dependency order (same pattern as test_graph_db_refactor.py)
 _cpe = _load("graph_db.cpe_resolver", "graph_db/cpe_resolver.py")
 _schema = _load("graph_db.schema", "graph_db/schema.py")
+# `graph_db` is stubbed with a MagicMock, which is not a package, so anything
+# the loaded modules import from it has to be pre-loaded here by hand. Missing
+# one shows up as "No module named graph_db.X; graph_db is not a package".
+_cert_key = _load("graph_db.cert_key", "graph_db/cert_key.py")
 sys.modules.setdefault("graph_db", MagicMock())
 sys.modules["graph_db.schema"] = _schema
 sys.modules["graph_db.cpe_resolver"] = _cpe
+sys.modules["graph_db.cert_key"] = _cert_key
 _base = _load("graph_db.mixins.base_mixin", "graph_db/mixins/base_mixin.py")
 _osint = _load("graph_db.mixins.osint_mixin", "graph_db/mixins/osint_mixin.py")
 
@@ -252,3 +257,46 @@ class TestUpdateGraphFromUncover(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestUncoverUrlEdgeCases(unittest.TestCase):
+    """Strategy row 8, and the K23 regressions."""
+
+    def _recon(self, urls, domain="example.com"):
+        return {"domain": domain, "uncover": {
+            "hosts": [], "ips": [], "ip_ports": {}, "urls": urls,
+            "sources": [], "source_counts": {}, "total_raw": 0, "total_deduped": 0}}
+
+    def _cyphers(self, session):
+        return [c.args[0] for c in session.run.call_args_list]
+
+    def _params(self, session):
+        return [c.kwargs for c in session.run.call_args_list]
+
+    def test_a_host_less_url_is_recorded_and_does_not_stop_the_batch(self):
+        """Row 8: a bad URL is one error line, and the URLs after it still land."""
+        client, session = _make_client()
+        stats = client.update_graph_from_uncover(
+            self._recon(["notaurl", "https://www.example.com/page"]), "u", "p")
+        self.assertEqual(stats["urls_created"], 1)
+        self.assertEqual(len(stats["errors"]), 1)
+        self.assertIn("notaurl", stats["errors"][0])
+        self.assertTrue(any("MERGE (e:Endpoint" in c for c in self._cyphers(session)))
+
+    def test_an_ip_host_does_not_mint_a_dotted_subdomain(self):
+        """Regression. IP mode names its Subdomain placeholder "1-2-3-4"
+        (http_mixin), so a Subdomain called "10.0.0.5" is a duplicate host
+        nothing else links to. An IP URL falls through to the Domain."""
+        client, session = _make_client()
+        client.update_graph_from_uncover(self._recon(["https://10.0.0.5/x"]), "u", "p")
+        hosts = [p.get("host") for p in self._params(session) if "host" in p]
+        self.assertNotIn("10.0.0.5", hosts)
+        self.assertTrue(any("(d:Domain" in c and "HAS_BASE_URL" in c
+                            for c in self._cyphers(session)))
+
+    def test_a_hostname_url_hangs_off_its_own_subdomain(self):
+        """The control for the test above: a real hostname still gets one."""
+        client, session = _make_client()
+        client.update_graph_from_uncover(self._recon(["https://api.example.com/v1"]), "u", "p")
+        hosts = [p.get("host") for p in self._params(session) if "host" in p]
+        self.assertIn("api.example.com", hosts)

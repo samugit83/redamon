@@ -201,9 +201,12 @@ class TestReconClearOwnership(LiveGraphCase):
     def test_a_shared_label_is_split_by_source(self):
         kept = sorted(r["id"] for r in self.session.run(
             "MATCH (v:Vulnerability {project_id:$p}) RETURN v.id AS id", p=self.p1))
-        self.assertEqual(kept, ["v-garak", "v-gvm", "v-osv"],
-                         "Vulnerability is written by four subsystems; only "
-                         "recon's own may go")
+        # X7 (ingest-then-prune): recon's OWN findings are no longer deleted
+        # by the clear either. They are pruned after a successful ingest, so a
+        # rescan cannot delete the operator's mutes and verdicts with them.
+        self.assertEqual(kept, ["v-garak", "v-gvm", "v-nuclei", "v-osv"],
+                         "Vulnerability is written by four subsystems; the "
+                         "clear may delete none of them")
 
     def test_a_technology_gvm_also_detected_is_kept(self):
         techs = sorted(r["n"] for r in self.session.run(
@@ -279,3 +282,90 @@ class TestReferenceTenantStripMigration(LiveGraphCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCrossSourceCertificateOwnership(LiveGraphCase):
+    """Strategy row 9: a certificate two scanners observed must survive EITHER
+    scanner's clear.
+
+    `source` is a single mutable scalar and whoever wrote last owns it, so the
+    old predicates destroyed data in both directions:
+
+      * clear_gvm_data deleted `c.source = 'gvm'`. If GVM wrote last to a
+        certificate httpx had also seen, the recon certificate went with it --
+        under a comment claiming it preserved them.
+      * clear_recon_data kept a node only when `source` was a non-recon source.
+        If httpx wrote last to a certificate GVM had also seen, GVM's
+        certificate was deleted by a recon re-run.
+
+    Neither logged anything. The fix is `observed_by`: an append-only list of
+    every writer, with each clear scoped to SOLE observership.
+    """
+
+    def _cert(self, key, observed_by, source):
+        # .consume() is load-bearing: session.run() is LAZY. clear_gvm_data /
+        # clear_recon_data open their OWN session, so without forcing this write
+        # to commit first the code under test can run before the fixture exists
+        # -- which makes a "the certificate survived" assertion pass for the
+        # wrong reason, and flakes the "it was deleted" one.
+        self.session.run(
+            """
+            CREATE (c:Certificate {cert_key: $key, user_id: $uid, project_id: $pid,
+                                   subject_cn: 'mail.acme.test', source: $source,
+                                   observed_by: $observed})
+            """,
+            key=key, uid=self.uid, pid=self.p1, source=source,
+            observed=observed_by).consume()
+
+    def _alive(self, key):
+        return self.count(
+            "MATCH (c:Certificate {cert_key: $k, project_id: $pid}) RETURN count(c) AS n",
+            k=key, pid=self.p1)
+
+    def _observers(self, key):
+        rec = self.session.run(
+            "MATCH (c:Certificate {cert_key: $k, project_id: $pid}) RETURN c.observed_by AS o",
+            k=key, pid=self.p1).single()
+        return list(rec["o"]) if rec else []
+
+    # -- direction 1: GVM's clear must not take httpx's certificate ----------
+    def test_gvm_clear_keeps_a_certificate_httpx_also_observed(self):
+        # GVM wrote last, so `source` says gvm -- the old predicate's trap.
+        self._cert("sha256:shared1", ["http_probe", "gvm"], "gvm")
+        self.client.clear_gvm_data(self.uid, self.p1)
+        self.assertEqual(self._alive("sha256:shared1"), 1,
+                         "GVM's clear destroyed a certificate httpx also observed")
+
+    def test_the_surviving_certificate_keeps_its_other_observer(self):
+        self._cert("sha256:shared1", ["http_probe", "gvm"], "gvm")
+        self.client.clear_gvm_data(self.uid, self.p1)
+        self.assertIn("http_probe", self._observers("sha256:shared1"))
+
+    def test_gvm_clear_still_removes_a_certificate_only_gvm_saw(self):
+        # Control: without this the fix would just be "never delete anything".
+        self._cert("sha256:gvmonly", ["gvm"], "gvm")
+        self.client.clear_gvm_data(self.uid, self.p1)
+        self.assertEqual(self._alive("sha256:gvmonly"), 0)
+
+    def test_gvm_clear_removes_a_legacy_certificate_with_no_observed_by(self):
+        # Rows written before observed_by existed still have to be collectable.
+        self.session.run(
+            """CREATE (c:Certificate {cert_key: 'sha256:legacygvm', user_id: $uid,
+                                      project_id: $pid, source: 'gvm'})""",
+            uid=self.uid, pid=self.p1).consume()
+        self.client.clear_gvm_data(self.uid, self.p1)
+        self.assertEqual(self._alive("sha256:legacygvm"), 0)
+
+    # -- direction 2: recon's clear must not take GVM's certificate ----------
+    def test_recon_clear_keeps_a_certificate_gvm_also_observed(self):
+        # httpx wrote last, so `source` says http_probe -- the mirror-image trap.
+        self._cert("sha256:shared2", ["gvm", "http_probe"], "http_probe")
+        self.client.clear_recon_data(self.uid, self.p1)
+        self.assertEqual(self._alive("sha256:shared2"), 1,
+                         "a recon re-run destroyed a certificate GVM also observed")
+
+    def test_recon_clear_still_removes_a_certificate_only_recon_saw(self):
+        # Control: recon rebuilds what it can re-observe, so its own must go.
+        self._cert("sha256:recononly", ["http_probe", "tlsx"], "http_probe")
+        self.client.clear_recon_data(self.uid, self.p1)
+        self.assertEqual(self._alive("sha256:recononly"), 0)

@@ -26,6 +26,11 @@ Properties written on each Vulnerability:
     evidence               raw response / fingerprint hit excerpt
     tool_raw               JSON-encoded raw output per tool
     first_seen, last_seen  ISO timestamps
+    cert_issuer            certificate issuer (Phase 3 cert signals)
+    cert_subject_cn        certificate subject CN
+    cert_name_match        the cert names this host (proves legit customer)
+    cert_provider          provider identified from the cert (CNAME-independent)
+    cert_expired, cert_self_signed, cert_mismatched   cert verdict booleans
 """
 
 from __future__ import annotations
@@ -111,6 +116,14 @@ class TakeoverMixin:
                         "is_dast_finding": False,
                         "tool_raw": tool_raw,
                         "last_seen": detected_at,
+                        # Certificate-derived takeover signals (Phase 3)
+                        "cert_issuer": finding.get("cert_issuer"),
+                        "cert_subject_cn": finding.get("cert_subject_cn"),
+                        "cert_name_match": finding.get("cert_name_match"),
+                        "cert_provider": finding.get("cert_provider"),
+                        "cert_expired": finding.get("cert_expired"),
+                        "cert_self_signed": finding.get("cert_self_signed"),
+                        "cert_mismatched": finding.get("cert_mismatched"),
                     }
                     # Remove None values so MERGE's SET += doesn't wipe existing props
                     vuln_props = {k: v for k, v in vuln_props.items() if v is not None}
@@ -119,12 +132,14 @@ class TakeoverMixin:
                     # first_seen only on create).
                     session.run(
                         """
-                        MERGE (v:Vulnerability {id: $id})
+                        MERGE (v:Vulnerability {id: $id, user_id: $uid,
+                                                project_id: $pid})
                         ON CREATE SET v.first_seen = $detected_at
                         SET v += $props,
                             v.updated_at = datetime()
                         """,
                         id=vuln_id, props=vuln_props, detected_at=detected_at,
+                        uid=user_id, pid=project_id,
                     )
                     stats["vulnerabilities_created"] += 1
 
@@ -133,7 +148,7 @@ class TakeoverMixin:
                     rel = session.run(
                         """
                         MATCH (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
-                        MATCH (v:Vulnerability {id: $id})
+                        MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                         MERGE (s)-[:HAS_VULNERABILITY]->(v)
                         RETURN count(*) AS matched
                         """,
@@ -147,7 +162,7 @@ class TakeoverMixin:
                         rel = session.run(
                             """
                             MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
-                            MATCH (v:Vulnerability {id: $id})
+                            MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                             MERGE (d)-[:HAS_VULNERABILITY]->(v)
                             RETURN count(*) AS matched
                             """,
@@ -169,7 +184,7 @@ class TakeoverMixin:
                                           s.created_at = datetime()
                             SET s.updated_at = datetime()
                             WITH s
-                            MATCH (v:Vulnerability {id: $id})
+                            MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
                             MERGE (s)-[:HAS_VULNERABILITY]->(v)
                             """,
                             hostname=hostname, uid=user_id, pid=project_id, id=vuln_id,

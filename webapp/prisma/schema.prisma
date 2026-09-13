@@ -356,6 +356,10 @@ model Project {
   conversations               Conversation[]
   graphViews                  GraphView[]
   capturedHttpTransactions    CapturedHttpTransaction[]
+  // A relation, never a scalar column: GET /api/projects/[id] spreads every
+  // Project scalar to the browser, so a secret stored here would leak.
+  authProfile                 ProjectAuthProfile?
+  recordingSessions           RecordingSession[]
 
   // ========== TARGET CONFIGURATION ==========
   targetDomain                String   @default("") @map("target_domain")
@@ -611,6 +615,9 @@ model Project {
   takeoverConfidenceThreshold      Int      @default(60)    @map("takeover_confidence_threshold")
   takeoverRateLimit                Int      @default(50)    @map("takeover_rate_limit")
   takeoverManualReviewAutoPublish  Boolean  @default(false) @map("takeover_manual_review_auto_publish")
+  // Certificate-derived takeover signals (Phase 3): reads whatever cert data is
+  // available (httpx 443 with tlsx off, more with on). Default on.
+  takeoverCertValidationEnabled    Boolean  @default(true)  @map("takeover_cert_validation_enabled")
   // BadDNS (AGPL-3.0 isolated sidecar — off by default, opt-in)
   baddnsEnabled                    Boolean  @default(false) @map("baddns_enabled")
   baddnsDockerImage                String   @default("redamon-baddns:latest") @map("baddns_docker_image")
@@ -630,6 +637,28 @@ model Project {
   vhostSniUseGraphCandidates       Boolean  @default(true) @map("vhost_sni_use_graph_candidates")
   vhostSniCustomWordlist           String   @default("") @map("vhost_sni_custom_wordlist") @db.Text
   vhostSniMaxCandidatesPerIp       Int      @default(2000) @map("vhost_sni_max_candidates_per_ip")
+
+  // ========== TLSX (TLS CERTIFICATE GRAB) ==========
+  // GROUP 3.6 active scanner: one TLS handshake per open non-HTTP port. Default
+  // ON (quieter than httpx -jarm which is already on). Loud sub-probes off.
+  tlsxEnabled                      Boolean  @default(true) @map("tlsx_enabled")
+  tlsxDockerImage                  String   @default("projectdiscovery/tlsx:latest") @map("tlsx_docker_image")
+  tlsxScanMode                     String   @default("auto") @map("tlsx_scan_mode")
+  tlsxConcurrency                  Int      @default(50) @map("tlsx_concurrency")
+  tlsxTimeout                      Int      @default(5) @map("tlsx_timeout")
+  tlsxRunTimeout                   Int      @default(900) @map("tlsx_run_timeout")
+  tlsxRetries                      Int      @default(1) @map("tlsx_retries")
+  tlsxMaxInjectedHostnames         Int      @default(200) @map("tlsx_max_injected_hostnames")
+  tlsxDelay                        String   @default("") @map("tlsx_delay")
+  tlsxIncludeHttpPorts             Boolean  @default(false) @map("tlsx_include_http_ports")
+  tlsxInjectHostnames              Boolean  @default(true) @map("tlsx_inject_hostnames")
+  tlsxRevPtrSni                    Boolean  @default(false) @map("tlsx_rev_ptr_sni")
+  tlsxMaxHostnamesPerIp            Int      @default(1) @map("tlsx_max_hostnames_per_ip")
+  tlsxProbeJarm                    Boolean  @default(false) @map("tlsx_probe_jarm")
+  tlsxVersionEnum                  Boolean  @default(false) @map("tlsx_version_enum")
+  tlsxCipherEnum                   Boolean  @default(false) @map("tlsx_cipher_enum")
+  tlsxCipherConcurrency            Int      @default(10) @map("tlsx_cipher_concurrency")
+  tlsxMaxTargets                   Int      @default(2000) @map("tlsx_max_targets")
 
   // ========== WEB CACHE POISONING ==========
   // Active GROUP 6 scanner: WCVS breadth engine + native 5-phase confirmation.
@@ -931,6 +960,12 @@ model Project {
   wafAiClassifier                   Boolean @default(false) @map("waf_ai_classifier")
   securityCheckTlsExpiringSoon      Boolean @default(true) @map("security_check_tls_expiring_soon")
   securityCheckTlsExpiryDays        Int     @default(30) @map("security_check_tls_expiry_days")
+  securityCheckTlsExpired           Boolean @default(true) @map("security_check_tls_expired")
+  securityCheckTlsSelfSigned        Boolean @default(true) @map("security_check_tls_self_signed")
+  securityCheckTlsHostnameMismatch  Boolean @default(true) @map("security_check_tls_hostname_mismatch")
+  securityCheckTlsWeakVersion       Boolean @default(true) @map("security_check_tls_weak_version")
+  securityCheckTlsWeakCipher        Boolean @default(true) @map("security_check_tls_weak_cipher")
+  securityCheckTlsWildcardOverbroad Boolean @default(true) @map("security_check_tls_wildcard_overbroad")
   securityCheckMissingReferrerPolicy Boolean @default(true) @map("security_check_missing_referrer_policy")
   securityCheckMissingPermissionsPolicy Boolean @default(true) @map("security_check_missing_permissions_policy")
   securityCheckMissingCoop          Boolean @default(true) @map("security_check_missing_coop")
@@ -1168,16 +1203,19 @@ model Project {
   cypherfixLlmModel                 String   @default("") @map("cypherfix_llm_model")
 
   // ========== FINDING TRIAGE ==========
-  // Below this confidence the classifier must return `needs_verification`
-  // instead of a real/noise call, so a guess is never recorded as a decision.
-  triageConfidenceThreshold         Float    @default(0.7)   @map("triage_confidence_threshold")
-  // Ships OFF and should stay off without a deliberate decision: muting is what
-  // hides a finding from the agent, so it stays a human action. Turning this on
-  // lets high-confidence `likely_noise` be suppressed automatically.
-  triageAutoMute                    Boolean  @default(false) @map("triage_auto_mute")
-  // How many top / ambiguous findings get an LLM rationale per run. The
-  // deterministic scorer ranks everything; this only caps the assist calls.
-  triageTopNForLlm                  Int      @default(40)    @map("triage_top_n_for_llm")
+  // How many findings the AI may review per run, and therefore what a run can
+  // cost. The ranking itself is free and never depends on this: 0 turns the
+  // review off entirely and still gives a fully ranked board.
+  //
+  // 150 rather than "all of them" because the review is narrowed to findings
+  // whose evidence a model can actually judge. Facts (security_check) and
+  // advisories (OSV) are skipped, and on a real project those are most of the
+  // graph, so 150 covers the interesting ones several times over.
+  //
+  // Replaces triageConfidenceThreshold, triageAutoMute and triageTopNForLlm:
+  // the first two were never read by any code, and the third capped an LLM step
+  // that no longer exists.
+  triageReviewBudget                Int      @default(150)   @map("triage_review_budget")
 
   // ========== RULES OF ENGAGEMENT ==========
   // --- Document & Metadata ---
@@ -1261,8 +1299,69 @@ model Project {
   scanSchedules                     ScanSchedule[]
   jobQueue                          JobQueue[]
   supplyChainBatches                SupplyChainBatch[]
+  // Run state, deliberately NOT on Project itself: the settings form PUTs the
+  // whole row back, so any run field living here would be overwritten by a
+  // browser tab that opened before the run started (X6).
+  triageRuns                        TriageRun[]
 
   @@map("projects")
+}
+
+// ========== AUTHENTICATED SESSION PROFILE ==========
+// One identity per project that every recon tool and the agent attach to
+// in-scope requests. authValue/extraHeaders are plaintext (same trust level as
+// UserLlmProvider.apiKey) and write-only from the UI: served to X-Internal-Key
+// callers, never to a browser (see lib/authProfile.ts).
+model ProjectAuthProfile {
+  id              String    @id @default(cuid())
+  projectId       String    @unique @map("project_id")
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId          String    @map("user_id")
+  authType        String    @default("none") @map("auth_type")          // none|bearer|cookie|header|basic|apikey
+  authHeaderName  String    @default("") @map("auth_header_name")
+  authValue       String    @default("") @map("auth_value") @db.Text
+  extraHeaders    Json      @default("{}") @map("extra_headers")       // {name: value}
+  // Hosts the session may attach to. Empty = the project's own target hosts,
+  // never broader, so a crawl cannot carry the cookie to a third party.
+  scopeHosts      String[]  @default([]) @map("scope_hosts")
+  // Independent consumer gates (both default on): whether the recon pipeline and
+  // the agent attach this identity. Lets an operator record once and choose which
+  // side uses it (e.g. authenticated crawl but anonymous agent probing).
+  reconEnabled    Boolean   @default(true) @map("recon_enabled")
+  agentEnabled    Boolean   @default(true) @map("agent_enabled")
+  source          String    @default("manual")                         // manual|recorded
+  status          String    @default("unknown")                        // unknown|active|expired
+  lastValidatedAt DateTime? @map("last_validated_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("project_auth_profiles")
+}
+
+// An operator login being recorded through the capture proxy. A table, not a
+// profile field: the capture-config route asks "is ANY recording active" every
+// reconcile tick, and start is a global single-active check-and-set.
+// Observed session material is held here (plaintext, never sent to a browser)
+// until the operator confirms it into the ProjectAuthProfile, so an empty or
+// unwanted capture never overwrites a working profile.
+model RecordingSession {
+  id              String    @id @default(cuid())
+  projectId       String    @map("project_id")
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId          String    @map("user_id")
+  state           String    @default("active")                          // active|stopped|committed|discarded
+  scopeHosts      String[]  @default([]) @map("scope_hosts")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  expiresAt       DateTime  @map("expires_at")
+  stoppedAt       DateTime? @map("stopped_at")
+  observedCount   Int       @default(0) @map("observed_count")
+  lastError       String?   @map("last_error")
+  pendingMaterial Json      @default("{}") @map("pending_material")
+
+  @@index([state, expiresAt])
+  @@index([projectId])
+  @@map("recording_sessions")
 }
 
 // ========== SCAN TIMELINE ==========
@@ -1749,13 +1848,67 @@ model Remediation {
   // ── File changes (populated by CodeFix agent) ──
   fileChanges       Json     @default("[]") @map("file_changes")
 
+  // ── Link back to the findings and the run that produced this ──
+  // Before these, nothing tied a remediation to a finding: de-duplication
+  // relied on the LLM's wording, and a mute could not be reflected here at all.
+  // groupKey is the upsert key (one problem, one fix). It is nullable so rows
+  // that predate it keep working: Postgres allows many NULLs in a unique index.
+  groupKey          String?  @map("group_key")
+  findingIds        String[] @default([]) @map("finding_ids")
+  liveMemberCount   Int      @default(0) @map("live_member_count")
+  priorityScore     Float    @default(0) @map("priority_score")
+  triageRunId       String   @default("") @map("triage_run_id")
+  // Resolved, but the findings are still being reported. Flagged rather than
+  // reopened, so a scan never undoes a human's decision.
+  stillDetected     Boolean  @default(false) @map("still_detected")
+
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
+  @@unique([projectId, groupKey])
   @@index([projectId, status])
   @@index([projectId, severity])
   @@index([projectId, priority])
   @@map("remediations")
+}
+
+// ========== TRIAGE RUNS ==========
+// One triage run, as a first-class object the rest of the product can see.
+// Before this a run existed only in the agent's memory, so version activation,
+// version save, the delta preview, project import and project delete had no way
+// to know one was in flight and could swap or delete the graph underneath it.
+// It is also the only record of who ranked what, with which model.
+model TriageRun {
+  id                String    @id @default(cuid())
+  projectId         String    @map("project_id")
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // The ticket's `sub`: the effective user, which for an admin acting as
+  // someone else is that someone else. realActorUserId is the admin behind it,
+  // so "who actually did this" survives simulation.
+  actorUserId       String    @map("actor_user_id")
+  realActorUserId   String?   @map("real_actor_user_id")
+
+  // running | publishing | completed | completed_partial | failed | stopped
+  status            String    @default("running")
+  startedAt         DateTime  @default(now()) @map("started_at")
+  // The agent refreshes this every 30s. A run whose heartbeat has gone stale
+  // stops blocking activation: a dead process must not hold a project forever.
+  heartbeatAt       DateTime  @default(now()) @map("heartbeat_at")
+  finishedAt        DateTime? @map("finished_at")
+
+  model             String    @default("")
+  scoreModelVersion String    @default("") @map("score_model_version")
+  intelDate         DateTime? @map("intel_date")
+
+  // Counts only: scored, reviewed, cache_hits, not_reviewed, skipped_changed,
+  // false_positives, remediations_*, llm_calls. Never finding text.
+  summary           Json      @default("{}")
+  // A code, never raw provider text: that routinely carries the API key.
+  errorClass        String    @default("") @map("error_class")
+
+  @@index([projectId, status])
+  @@map("triage_runs")
 }
 
 model Report {

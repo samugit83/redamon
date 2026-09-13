@@ -162,6 +162,7 @@
 
 .badgeRecon { color: var(--accent-primary); border-color: var(--accent-primary); }
 .badgeAgent { color: var(--accent-secondary, #7aa2f7); border-color: var(--accent-secondary, #7aa2f7); }
+.badgeOperator { color: var(--accent-warning, #e0af68); border-color: var(--accent-warning, #e0af68); }
 
 .status2xx { color: #3fb950; }
 .status3xx { color: #58a6ff; }

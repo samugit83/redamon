@@ -1,9 +1,15 @@
 """List directory tool."""
 
+from .repo_paths import RepoPathError, resolve_in_repo
+
 
 async def github_list_dir(state, path: str = ".") -> str:
     """List directory contents with type indicators."""
-    target = state.repo_path / path
+    try:
+        target = resolve_in_repo(state.repo_path, path)
+    except RepoPathError as exc:
+        return f"Error: {exc}"
+
     if not target.is_dir():
         return f"Error: Not a directory: {path}"
 

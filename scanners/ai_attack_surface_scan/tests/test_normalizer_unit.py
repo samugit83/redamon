@@ -73,7 +73,7 @@ class TestWriteFindingDispatch(unittest.TestCase):
         write_finding(s, _finding(base="http://api.example.com"), "u", "p")
         cy = _all_cypher(s)
         self.assertIn(":Subdomain", cy)
-        self.assertIn(":HAS_BASEURL", cy)
+        self.assertIn(":HAS_BASE_URL", cy)
         self.assertIn(":HAS_SUBDOMAIN", cy)
         self.assertNotIn("MERGE (ip:IP", cy)
 

@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 
 from graph_db.cpe_resolver import _resolve_cpe_to_display_name, _parse_cpe_string, _CPE_SKIP_LIST
+from graph_db.cert_key import build_cert_key
 
 
 class GvmMixin:
@@ -210,6 +211,12 @@ class GvmMixin:
                 """
                 MERGE (p:Port {number: $port_number, protocol: $protocol, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                 SET p.state = 'open',
+                    // K20: GVM Ports had no `source`, so nothing could tell a
+                    // port an ACTIVE scan confirmed from one a passive
+                    // intelligence feed merely reported. Reachability reads
+                    // that distinction, and a port with no source was scored as
+                    // if it had never been confirmed.
+                    p.source = coalesce(p.source, 'gvm'),
                     p.updated_at = datetime()
                 """,
                 port_number=port, protocol=effective_protocol, ip_addr=target_ip,
@@ -488,10 +495,12 @@ class GvmMixin:
 
                             session.run(
                                 """
-                                MERGE (e:ExploitGvm {id: $id})
+                                MERGE (e:ExploitGvm {id: $id, user_id: $uid,
+                                                     project_id: $pid})
                                 SET e += $props, e.updated_at = datetime()
                                 """,
-                                id=exploit_id, props=exploit_props
+                                id=exploit_id, props=exploit_props,
+                                uid=user_id, pid=project_id
                             )
                             stats["exploits_gvm_created"] += 1
                             if cisa_kev:
@@ -503,7 +512,9 @@ class GvmMixin:
                                 severity_label = "CRITICAL" if cvss_score >= 9.0 else "HIGH" if cvss_score >= 7.0 else "MEDIUM" if cvss_score >= 4.0 else "LOW"
                                 session.run(
                                     """
-                                    MATCH (e:ExploitGvm {id: $exploit_id})
+                                    MATCH (e:ExploitGvm {id: $exploit_id,
+                                                         user_id: $uid,
+                                                         project_id: $pid})
                                     MERGE (c:CVE {id: $cve_id})
                                     // GLOBAL reference node (UNIQUE on id, one per
                                     // CVE for the whole database). A tenant stamp made
@@ -556,11 +567,19 @@ class GvmMixin:
 
                         session.run(
                             """
-                            MERGE (v:Vulnerability {id: $id})
+                            MERGE (v:Vulnerability {id: $id, user_id: $uid,
+                                                    project_id: $pid})
                             SET v += $props,
                                 v.updated_at = datetime()
+                            // K21: `remediated` was set when a scan stopped
+                            // reporting a CVE and never cleared. GVM is
+                            // reporting it RIGHT NOW, so it is not remediated,
+                            // and without this it stayed in the board's
+                            // Resolved section for ever.
+                            REMOVE v.remediated, v.remediated_at
                             """,
-                            id=vuln_id, props=vuln_props
+                            id=vuln_id, props=vuln_props,
+                            uid=user_id, pid=project_id
                         )
                         stats["vulnerabilities_created"] += 1
                         if cisa_kev:
@@ -576,7 +595,7 @@ class GvmMixin:
                                 """
                                 MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip, user_id: $user_id, project_id: $project_id})
                                       -[:USES_TECHNOLOGY]->(t:Technology)
-                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                 MERGE (t)-[:HAS_VULNERABILITY]->(v)
                                 RETURN count(t) as matched
                                 """,
@@ -597,7 +616,7 @@ class GvmMixin:
                                 MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                       -[:USES_TECHNOLOGY]->(t:Technology)
                                 WHERE 'Operating systems' IN t.categories
-                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                 MERGE (t)-[:HAS_VULNERABILITY]->(v)
                                 RETURN count(t) as matched
                                 """,
@@ -616,7 +635,7 @@ class GvmMixin:
                             result = session.run(
                                 """
                                 MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip, user_id: $user_id, project_id: $project_id})
-                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                 MERGE (p)-[:HAS_VULNERABILITY]->(v)
                                 RETURN p
                                 """,
@@ -633,7 +652,7 @@ class GvmMixin:
                             result = session.run(
                                 """
                                 MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
-                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                 MERGE (i)-[:HAS_VULNERABILITY]->(v)
                                 RETURN i
                                 """,
@@ -649,7 +668,7 @@ class GvmMixin:
                             result = session.run(
                                 """
                                 MATCH (s:Subdomain {name: $hostname, user_id: $user_id, project_id: $project_id})
-                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
                                 MERGE (s)-[:HAS_VULNERABILITY]->(v)
                                 RETURN s
                                 """,
@@ -736,7 +755,9 @@ class GvmMixin:
                                 """
                                 MATCH (v:Vulnerability {user_id: $uid, project_id: $pid, source: 'gvm'})
                                 WHERE $cve_id IN v.cve_ids
-                                SET v.remediated = true, v.updated_at = datetime()
+                                SET v.remediated = true,
+                                    v.remediated_at = datetime(),
+                                    v.updated_at = datetime()
                                 """,
                                 uid=user_id, pid=project_id, cve_id=cve_id
                             )
@@ -773,26 +794,32 @@ class GvmMixin:
                             host_info = cert_data.get("host", {})
                             cert_ip = host_info.get("ip", "") if isinstance(host_info, dict) else str(host_info)
 
+                            cert_key = build_cert_key(
+                                fingerprint_sha256=sha256, subject_cn=subject_cn,
+                                issuer=issuer_dn, not_before=activation, not_after=expiration,
+                            )
                             cert_props = {
                                 "subject_cn": subject_cn,
-                                "user_id": user_id,
-                                "project_id": project_id,
                                 "issuer": issuer_dn,
                                 "serial": serial,
-                                "sha256_fingerprint": sha256,
+                                "fingerprint_sha256": sha256,
                                 "not_before": activation,
                                 "not_after": expiration,
-                                "source": "gvm",
                                 "scan_timestamp": scan_timestamp,
                             }
                             cert_props = {k: v for k, v in cert_props.items() if v}
 
                             session.run(
                                 """
-                                MERGE (c:Certificate {subject_cn: $subject_cn, user_id: $user_id, project_id: $project_id})
-                                SET c += $props, c.updated_at = datetime()
+                                MERGE (c:Certificate {cert_key: $cert_key, user_id: $user_id, project_id: $project_id})
+                                ON CREATE SET c.source = 'gvm'
+                                SET c += $props,
+                                    c.observed_by = CASE WHEN 'gvm' IN coalesce(c.observed_by, [])
+                                                         THEN c.observed_by
+                                                         ELSE coalesce(c.observed_by, []) + 'gvm' END,
+                                    c.updated_at = datetime()
                                 """,
-                                subject_cn=subject_cn, user_id=user_id, project_id=project_id, props=cert_props
+                                cert_key=cert_key, user_id=user_id, project_id=project_id, props=cert_props
                             )
 
                             # Link to IP node if available
@@ -800,10 +827,10 @@ class GvmMixin:
                                 session.run(
                                     """
                                     MATCH (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                                    MATCH (c:Certificate {subject_cn: $cn, user_id: $uid, project_id: $pid})
+                                    MATCH (c:Certificate {cert_key: $cert_key, user_id: $uid, project_id: $pid})
                                     MERGE (i)-[:HAS_CERTIFICATE]->(c)
                                     """,
-                                    ip=cert_ip, uid=user_id, pid=project_id, cn=subject_cn
+                                    ip=cert_ip, uid=user_id, pid=project_id, cert_key=cert_key
                                 )
 
                             stats["certificates_created"] += 1

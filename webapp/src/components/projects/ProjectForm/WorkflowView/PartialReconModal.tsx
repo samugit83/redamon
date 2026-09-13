@@ -86,6 +86,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     'Targets are loaded from the graph (IPs + open ports from prior port scanning). ' +
     'You can also provide custom subdomains or IPs below. ' +
     'Port, Service, Technology, Vulnerability, and CVE nodes are merged into the existing graph.',
+  Tlsx:
+    'Grabs the TLS certificate on each open non-HTTP port with a single handshake (SMTPS, IMAPS, LDAPS, and any odd TLS port). ' +
+    'Targets are loaded from the graph (IPs + open ports from prior port scanning); you can also provide custom IPs and ports below. ' +
+    'Certificate nodes, IP HAS_CERTIFICATE edges, COVERS_HOST edges to in-scope SAN hostnames, and TLS posture on the Service are merged into the existing graph.',
   Httpx:
     'Probes HTTP services on discovered ports and subdomains using httpx. ' +
     'Detects live services, technologies, SSL/TLS certificates, and response metadata. ' +
@@ -438,6 +442,7 @@ export function PartialReconModal({
   const domain = graphInputs?.domain || targetDomain || ''
   const isPortScanner = toolId === 'Naabu' || toolId === 'Masscan'
   const isNmap = toolId === 'Nmap'
+  const isTlsx = toolId === 'Tlsx'
   const isHttpx = toolId === 'Httpx'
   const isNuclei = toolId === 'Nuclei'
   const isGraphql = toolId === 'GraphqlScan'
@@ -452,10 +457,10 @@ export function PartialReconModal({
   const isVhostSni = toolId === 'VhostSni'
   const isWebCachePoison = toolId === 'WebCachePoison'
   const isOriginDiscovery = toolId === 'OriginDiscovery'
-  const hasUserInputs = isPortScanner || isNmap || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isOriginDiscovery
-  const hasIpInput = isPortScanner || isNmap || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
+  const hasUserInputs = isPortScanner || isNmap || isTlsx || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isOriginDiscovery
+  const hasIpInput = isPortScanner || isNmap || isTlsx || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
   const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
-  const hasPortInput = isNmap || isHttpx
+  const hasPortInput = isNmap || isTlsx || isHttpx
   // GraphqlScan / WebCachePoison SECTION_INPUT_MAP = [BaseURL, Endpoint]. Per
   // PROMPT.ADD_PARTIAL_RECON.md, BaseURL-accepting tools get a URL textarea;
   // Endpoint is graph-only (never manually entered).
@@ -596,7 +601,7 @@ export function PartialReconModal({
   const outputNodeTypes = SECTION_NODE_MAP[toolId] || []
   const enrichNodeTypes = SECTION_ENRICH_MAP[toolId] || []
   const hasNoGraphTargets = (isPortScanner && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0)
-    || (isNmap && !loadingInputs && (graphInputs?.existing_ports_count ?? 0) === 0)
+    || ((isNmap || isTlsx) && !loadingInputs && (graphInputs?.existing_ports_count ?? 0) === 0)
     || (isHttpx && !loadingInputs && (graphInputs?.existing_ports_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0)
     || (toolId === 'JsRecon' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0 && uploadedJsFiles.length === 0)
     || (isNuclei && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0)
@@ -613,7 +618,7 @@ export function PartialReconModal({
   const hasJsUploads = toolId === 'JsRecon' && uploadedJsFiles.length > 0
   const hasNoCustomTargets = (!hasSubdomainInput || !customSubdomains.trim()) && (!hasIpInput || !customIps.trim()) && !customPorts.trim() && (!hasUrlInput || !customUrls.trim()) && !hasJsUploads
   const noTargetsToScan = hasUserInputs && !isGau && !isParamSpider && !includeGraphTargets && hasNoCustomTargets
-  const nmapNoPorts = isNmap && !includeGraphTargets && !customPorts.trim()
+  const nmapNoPorts = (isNmap || isTlsx) && !includeGraphTargets && !customPorts.trim()
   const httpxNoPorts = isHttpx && !includeGraphTargets && !customPorts.trim() && !customSubdomains.trim()
   const resourceEnumNoUrls = isResourceEnum && !includeGraphTargets && !customUrls.trim() && !hasJsUploads
   const webCachePoisonNoUrls = isWebCachePoison && !includeGraphTargets && !customUrls.trim()
@@ -662,7 +667,7 @@ export function PartialReconModal({
               ))}
             </div>
             <div style={{ fontSize: '13px', fontFamily: 'monospace', color: 'var(--text-primary, #e2e8f0)' }}>
-              {loadingInputs ? 'Loading...' : isNmap
+              {loadingInputs ? 'Loading...' : (isNmap || isTlsx)
                 ? `${domain || 'No domain'} (${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_ports_count ?? 0} ports, ${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
                 : isHttpx
                 ? `${domain || 'No domain'} (${graphInputs?.existing_subdomains_count ?? 0} subdomains, ${graphInputs?.existing_ports_count ?? 0} ports, ${graphInputs?.existing_baseurls_count ?? 0} existing URLs)`
@@ -780,7 +785,7 @@ export function PartialReconModal({
             fontSize: '11px', color: '#facc15', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
             backgroundColor: 'rgba(234, 179, 8, 0.08)', border: '1px solid rgba(234, 179, 8, 0.2)',
           }}>
-            {isNmap
+            {(isNmap || isTlsx)
               ? 'No ports found in graph. Run Naabu first to discover open ports, or provide custom targets below.'
               : isHttpx
               ? 'No subdomains or ports found in graph. Run Subdomain Discovery + Port Scanning first, or provide custom subdomains below.'
@@ -816,7 +821,7 @@ export function PartialReconModal({
             fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
             backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
           }}>
-            Nmap requires ports to scan. Provide custom ports below or enable graph targets (which include existing ports from Naabu/Masscan).
+            {`${isTlsx ? 'TLS Certificate Grab' : 'Nmap'} requires ports to scan. Provide custom ports below or enable graph targets (which include existing ports from Naabu/Masscan).`}
           </div>
         )}
         {httpxNoPorts && !noTargetsToScan && (
@@ -941,7 +946,9 @@ export function PartialReconModal({
                 ))}
               </div>
             ) : (
-              <div style={hintStyle}>{isNmap || isHttpx
+              <div style={hintStyle}>{isTlsx
+                ? 'IPv4, IPv6, or CIDR ranges (/24-/32). Each open non-HTTP port gets one TLS handshake (graph + custom).'
+                : isNmap || isHttpx
                 ? 'IPv4, IPv6, or CIDR ranges (/24-/32). Will be probed on all ports (graph + custom).'
                 : 'IPv4, IPv6, or CIDR ranges (/24-/32)'}</div>
             )}
