@@ -34,4 +34,25 @@ class Neo4jClient(BaseMixin, ResolutionIntegrityMixin, ReconMixin, GvmMixin, Sec
     GraphQL security scanning integration: GraphQLMixin
     Web cache poisoning scanning integration: CacheMixin
     """
-    pass
+
+    def close(self):
+        """Enforce graph-wide resolution identity before closing the driver.
+
+        Several partial-recon helpers write directly through ``client.driver``
+        rather than an ``update_graph_*`` method.  The final sweep catches those
+        paths as well, so every client lifecycle leaves one RESOLVES_TO edge per
+        tenant/project Subdomain -> IP pair.
+        """
+        try:
+            removed = self._dedupe_all_resolution_edges()
+            if removed:
+                print(
+                    f"[+][graph-db] removed {removed} duplicate "
+                    "RESOLVES_TO relationship(s)"
+                )
+        except Exception as exc:
+            # Integrity cleanup must never prevent the underlying driver from
+            # closing. A later client lifecycle can retry the sweep.
+            print(f"[!][graph-db] RESOLVES_TO integrity sweep failed: {exc}")
+        finally:
+            super().close()
