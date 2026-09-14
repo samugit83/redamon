@@ -1,4 +1,7 @@
+import inspect
+
 from graph_db.mixins.resolution_integrity_mixin import ResolutionIntegrityMixin
+from graph_db.neo4j_client import Neo4jClient
 
 
 class _Result:
@@ -59,3 +62,28 @@ def test_resolution_guard_is_tenant_scoped():
 
     assert "Subdomain {user_id: $uid, project_id: $pid}" in session.query
     assert "IP {user_id: $uid, project_id: $pid}" in session.query
+
+
+def test_global_resolution_guard_still_refuses_cross_tenant_pairs():
+    session = _Session()
+    removed = _Client(session)._dedupe_all_resolution_edges()
+
+    assert removed == 2
+    assert "MATCH (s:Subdomain)-[r:RESOLVES_TO]->(i:IP)" in session.query
+    assert "i.user_id = s.user_id" in session.query
+    assert "i.project_id = s.project_id" in session.query
+    assert session.params == {}
+
+
+def test_partial_discovery_is_covered_immediately():
+    source = inspect.getsource(
+        ResolutionIntegrityMixin.update_graph_from_partial_discovery
+    )
+    assert "super().update_graph_from_partial_discovery" in source
+    assert "self._dedupe_resolution_edges" in source
+
+
+def test_client_close_runs_final_resolution_sweep():
+    source = inspect.getsource(Neo4jClient.close)
+    assert "self._dedupe_all_resolution_edges()" in source
+    assert "super().close()" in source
