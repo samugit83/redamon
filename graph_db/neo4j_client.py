@@ -7,10 +7,11 @@ Usage:
         client.update_graph_from_domain_discovery(recon_data, user_id, project_id)
 
 All methods are provided by the mixin classes combined via multiple inheritance.
-MRO: BaseMixin → ReconMixin → GvmMixin → SecretMixin → OsintMixin → GraphQLMixin → CacheMixin
+MRO: BaseMixin → ResolutionIntegrityMixin → ReconMixin → GvmMixin → SecretMixin → OsintMixin → GraphQLMixin → CacheMixin
 """
 
 from graph_db.mixins.base_mixin import BaseMixin
+from graph_db.mixins.resolution_integrity_mixin import ResolutionIntegrityMixin
 from graph_db.mixins.recon_mixin import ReconMixin
 from graph_db.mixins.gvm_mixin import GvmMixin
 from graph_db.mixins.secret_mixin import SecretMixin
@@ -20,11 +21,12 @@ from graph_db.mixins.cache_mixin import CacheMixin
 from graph_db.mixins.supply_chain_mixin import SupplyChainMixin
 
 
-class Neo4jClient(BaseMixin, ReconMixin, GvmMixin, SecretMixin, OsintMixin, GraphQLMixin, CacheMixin, SupplyChainMixin):
+class Neo4jClient(BaseMixin, ResolutionIntegrityMixin, ReconMixin, GvmMixin, SecretMixin, OsintMixin, GraphQLMixin, CacheMixin, SupplyChainMixin):
     """
     Public Neo4j client for RedAmon. All methods provided by mixins.
 
     Connection lifecycle and schema initialization: BaseMixin
+    DNS resolution relationship integrity: ResolutionIntegrityMixin
     Core recon pipeline (domain, IP, port, HTTP, vuln, resource): ReconMixin
     GVM vulnerability scanner integration: GvmMixin
     Secret detection (GitHub hunt, TruffleHog): SecretMixin
