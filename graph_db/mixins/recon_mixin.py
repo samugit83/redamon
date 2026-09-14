@@ -9,7 +9,7 @@ by per-topic sub-mixins in the graph_db.mixins.recon package:
     HttpMixin      -> HTTP probe
     VulnMixin      -> vulnerability scan (Vuln, CVE, CWE, CAPEC, Exploit, MitreData)
     ResourceMixin  -> resource enumeration (Endpoint, Parameter)
-    JsReconMixin   -> JS recon (JsReconFinding, Secret)
+    JsReconOwnedEndpointMixin -> JS recon + BaseURL-owned Endpoint integrity
     TriageMixin    -> finding triage verdicts + mute/unmute suppression
     UserInputMixin -> user input nodes + partial discovery + tool input gathering
 
@@ -22,7 +22,7 @@ from graph_db.mixins.recon.port_mixin import PortMixin
 from graph_db.mixins.recon.http_mixin import HttpMixin
 from graph_db.mixins.recon.vuln_mixin import VulnMixin
 from graph_db.mixins.recon.resource_mixin import ResourceMixin
-from graph_db.mixins.recon.js_recon_mixin import JsReconMixin
+from graph_db.mixins.recon.js_recon_owned_endpoint_mixin import JsReconOwnedEndpointMixin
 from graph_db.mixins.recon.user_input_mixin import UserInputMixin
 from graph_db.mixins.recon.takeover_mixin import TakeoverMixin
 from graph_db.mixins.recon.vhost_sni_mixin import VhostSniMixin
@@ -37,7 +37,7 @@ class ReconMixin(
     HttpMixin,
     VulnMixin,
     ResourceMixin,
-    JsReconMixin,
+    JsReconOwnedEndpointMixin,
     UserInputMixin,
     TakeoverMixin,
     VhostSniMixin,
