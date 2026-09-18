@@ -148,6 +148,29 @@ class TestMigrationOrdering(unittest.TestCase):
         self.assertLess(first_migration, first_constraint)
 
 
+class TestResolvesToIdentityMigration(unittest.TestCase):
+    def test_dedupe_is_marker_guarded_and_tenant_scoped(self):
+        session = fake_session(applied=False)
+        schema.dedupe_resolves_to(session)
+        qs = queries(session)
+        dedupe = [q for q in qs if "RESOLVES_TO" in q]
+        self.assertTrue(dedupe)
+        query = dedupe[0]
+        self.assertIn("s.user_id = i.user_id", query)
+        self.assertIn("s.project_id = i.project_id", query)
+        self.assertIn("SET keep += properties(r)", query)
+        self.assertIn("DELETE r", query)
+        self.assertIn("LIMIT", query)
+        self.assertTrue([q for q in qs if "MERGE" in q and "RedamonSchemaMigration" in q])
+
+    def test_applied_dedupe_does_one_marker_lookup(self):
+        session = fake_session(applied=True)
+        schema.dedupe_resolves_to(session)
+        qs = queries(session)
+        self.assertEqual(len(qs), 1)
+        self.assertIn("RedamonSchemaMigration", qs[0])
+
+
 class TestMigrationSchemaNames(unittest.TestCase):
     def test_old_constraints_are_dropped_by_their_old_names(self):
         """A constraint is identified by NAME. Recreating it under the new name

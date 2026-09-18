@@ -205,7 +205,8 @@ def run_httpx(config: dict) -> None:
                                             """
                                             MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                             MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                                            MERGE (s)-[:RESOLVES_TO {record_type: $rtype}]->(i)
+                                            MERGE (s)-[r:RESOLVES_TO]->(i)
+                                            SET r.record_type = $rtype
                                             """,
                                             sub=hostname, addr=ip_addr, uid=user_id, pid=project_id, rtype=record_type,
                                         )
@@ -444,7 +445,8 @@ def run_httpx(config: dict) -> None:
                                     SET i.version = $version, i.updated_at = datetime()
                                     WITH i
                                     MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
-                                    MERGE (s)-[:RESOLVES_TO {record_type: $rtype}]->(i)
+                                    MERGE (s)-[r:RESOLVES_TO]->(i)
+                                    SET r.record_type = $rtype
                                     """,
                                     addr=ip_addr, uid=user_id, pid=project_id,
                                     version=ip_version, sub=ip_attach_to, rtype=record_type,

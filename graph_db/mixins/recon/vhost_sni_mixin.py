@@ -221,7 +221,8 @@ class VhostSniMixin:
                             """
                             MATCH (s:Subdomain {name: $hostname, user_id: $uid, project_id: $pid})
                             MATCH (i:IP {address: $addr, user_id: $uid, project_id: $pid})
-                            MERGE (s)-[:RESOLVES_TO {discovered_via: 'vhost_sni_enum'}]->(i)
+                            MERGE (s)-[r:RESOLVES_TO]->(i)
+                            SET r.discovered_via = 'vhost_sni_enum'
                             RETURN count(i) AS matched
                             """,
                             hostname=hostname, addr=ip_addr,

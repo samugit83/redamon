@@ -239,7 +239,8 @@ class UserInputMixin:
                                     """
                                     MATCH (s:Subdomain {name: $sub, user_id: $uid, project_id: $pid})
                                     MATCH (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                                    MERGE (s)-[:RESOLVES_TO {record_type: $rt}]->(i)
+                                    MERGE (s)-[r:RESOLVES_TO]->(i)
+                                    SET r.record_type = $rt
                                     """,
                                     sub=subdomain, ip=ip_addr, rt=record_type,
                                     uid=user_id, pid=project_id,

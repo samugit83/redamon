@@ -660,6 +660,46 @@ def consolidate_technology_identity(session):
               f"gave {stats['versioned']} versionless node(s) version ''")
 
 
+RESOLVES_TO_DEDUPE_MARKER = "resolves-to-edge-identity-v1"
+
+
+def dedupe_resolves_to(session):
+    """Fold duplicate Subdomain -> IP edges without crossing tenants.
+
+    Older writers put properties inside the relationship MERGE pattern, so
+    the same node pair could accumulate one RESOLVES_TO edge per property map.
+    Keep one edge per tenant-scoped node pair and union every relationship
+    property map into it before deleting the duplicates.
+    """
+    if _migration_applied(session, RESOLVES_TO_DEDUPE_MARKER):
+        return
+
+    try:
+        deduped = _run_batched(
+            session,
+            f"""
+            MATCH (s:Subdomain)-[rels:RESOLVES_TO]->(i:IP)
+            WHERE s.user_id IS NOT NULL
+              AND s.project_id IS NOT NULL
+              AND s.user_id = i.user_id
+              AND s.project_id = i.project_id
+            WITH s, i, collect(rels) AS rels
+            WHERE size(rels) > 1
+            WITH head(rels) AS keep, tail(rels) AS duplicates
+            LIMIT {MIGRATION_BATCH}
+            FOREACH (r IN duplicates | SET keep += properties(r))
+            FOREACH (r IN duplicates | DELETE r)
+            RETURN count(keep) AS c
+            """,
+        )
+        _mark_migration_applied(session, RESOLVES_TO_DEDUPE_MARKER)
+        if deduped:
+            print(f"[graph-db] folded {deduped} duplicate RESOLVES_TO edge group(s)")
+    except Exception as e:
+        print(f"[!][graph-db] RESOLVES_TO dedupe incomplete; retried on the next "
+              f"connection (no marker written): {e}")
+
+
 def init_schema(session):
     """
     Initialize constraints and indexes for the graph schema.
@@ -673,6 +713,7 @@ def init_schema(session):
     strip_reference_node_tenant(session)
     backfill_cert_key(session)
     consolidate_technology_identity(session)
+    dedupe_resolves_to(session)
 
     for stmt in DROP_LEGACY_CONSTRAINTS:
         try:

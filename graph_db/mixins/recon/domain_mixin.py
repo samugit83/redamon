@@ -208,7 +208,8 @@ class DomainMixin:
                                         """
                                         MATCH (s:Subdomain {name: $subdomain, user_id: $user_id, project_id: $project_id})
                                         MATCH (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
-                                        MERGE (s)-[:RESOLVES_TO {record_type: $record_type}]->(i)
+                                        MERGE (s)-[r:RESOLVES_TO]->(i)
+                                        SET r.record_type = $record_type
                                         """,
                                         subdomain=subdomain, ip=ip_addr, record_type=record_type,
                                         user_id=user_id, project_id=project_id

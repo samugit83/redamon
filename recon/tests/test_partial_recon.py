@@ -2122,7 +2122,8 @@ class TestRunHttpx(unittest.TestCase):
         cypher_text = " ".join(cypher_calls)
         self.assertIn("MERGE (s:Subdomain", cypher_text)
         self.assertIn("MERGE (i:IP", cypher_text)
-        self.assertIn("MERGE (s)-[:RESOLVES_TO", cypher_text)
+        self.assertIn("MERGE (s)-[r:RESOLVES_TO]->(i)", cypher_text)
+        self.assertIn("SET r.record_type = $rtype", cypher_text)
 
     # --- user_targets edge cases ---
 
