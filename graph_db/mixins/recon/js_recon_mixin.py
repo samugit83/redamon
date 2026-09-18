@@ -8,6 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
+from graph_db.mixins.recon.scope import build_host_scope, host_in_scope
 
 class JsReconMixin:
     def update_graph_from_js_recon(self, recon_data: dict, user_id: str, project_id: str) -> dict:
@@ -34,25 +35,59 @@ class JsReconMixin:
             "secrets_created": 0,
             "endpoints_created": 0,
             "relationships_created": 0,
+            "skipped_out_of_scope": 0,
             "errors": [],
         }
 
         scan_ts = js_recon_data.get("scan_metadata", {}).get("scan_timestamp", "")
         domain_name = recon_data.get('domain', '')
+        target_hosts = build_host_scope(recon_data)
+
+        # Partial recon carries its actual graph/user targets in metadata. Add
+        # those hosts to the normal scan scope so a user-selected subdomain is
+        # not narrowed back to the apex domain merely because it is not in the
+        # DNS subdomain list yet.
+        for target in (recon_data.get("metadata") or {}).get("js_recon_target_hosts", []):
+            if not isinstance(target, str) or not target.strip():
+                continue
+            parsed_target = urlparse(target.strip())
+            target_host = (
+                parsed_target.hostname
+                if parsed_target.scheme
+                else target.strip().split(":", 1)[0]
+            )
+            if target_host:
+                target_hosts.add(target_host.lower())
 
         def _is_uploaded(source_url: str) -> bool:
             return source_url.startswith('upload://')
 
+        def _canonical_origin(value: str) -> str:
+            """Return a stable origin with default ports removed."""
+            if not isinstance(value, str) or not value:
+                return ''
+            try:
+                parsed = urlparse(value)
+                if not parsed.scheme or not parsed.hostname:
+                    return ''
+                scheme = parsed.scheme.lower()
+                host = parsed.hostname.lower()
+                if ':' in host and not host.startswith('['):
+                    host = f'[{host}]'
+                port = parsed.port
+                if port is not None and not (
+                    (scheme in ('http', 'ws') and port == 80)
+                    or (scheme in ('https', 'wss') and port == 443)
+                ):
+                    host = f'{host}:{port}'
+                return f'{scheme}://{host}'
+            except (TypeError, ValueError):
+                return ''
+
         def _derive_base_url(source_url: str) -> str:
             if not source_url or _is_uploaded(source_url):
                 return ''
-            try:
-                parsed = urlparse(source_url)
-                if parsed.netloc:
-                    return f"{parsed.scheme}://{parsed.netloc}"
-            except Exception:
-                pass
-            return ''
+            return _canonical_origin(source_url)
 
         def _filename_from_url(url: str) -> str:
             if _is_uploaded(url):
@@ -598,15 +633,41 @@ class JsReconMixin:
                     path = ep.get("path", "")
                     method = ep.get("method", "GET")
                     source_js = ep.get("source_js", "")
-                    base_url = ep.get("base_url", "")
+                    base_url = _canonical_origin(ep.get("base_url", "")) or ep.get("base_url", "")
                     is_upload = _is_uploaded(source_js)
 
-                    if not base_url and source_js and not is_upload:
+                    # An absolute URL in JavaScript owns the endpoint. Do not
+                    # fall back to the JS file's origin: that turned a URL such
+                    # as https://cdn.example.net/lib into a first-party
+                    # endpoint on the page's origin. Canonicalising the origin
+                    # also makes :443 match the port-less BaseURL written by
+                    # HTTP probing.
+                    candidate_url = ep.get("full_url", "") or ""
+                    candidate_origin = _canonical_origin(candidate_url)
+                    if candidate_origin:
+                        if is_upload:
+                            # Uploaded bundles have no page owner. Keep their
+                            # endpoint namespace as ``upload`` and reject an
+                            # absolute URL unless it is one of the explicit
+                            # scan targets.
+                            if not host_in_scope(candidate_origin, target_hosts):
+                                stats["skipped_out_of_scope"] += 1
+                                continue
+                            base_url = ''
+                        else:
+                            base_url = candidate_origin
+                            candidate_path = urlparse(candidate_url).path
+                            if candidate_path:
+                                path = candidate_path
+                    elif not base_url and source_js and not is_upload:
                         base_url = _derive_base_url(source_js)
 
                     if not path:
                         continue
                     if not base_url and not is_upload:
+                        continue
+                    if not is_upload and not host_in_scope(base_url, target_hosts):
+                        stats["skipped_out_of_scope"] += 1
                         continue
 
                     ep_key = f"{method}:{path}:{base_url or 'upload'}"
@@ -662,6 +723,26 @@ class JsReconMixin:
                     record = result.single()
                     if record and bool(record.get("created", False)):
                         stats["endpoints_created"] += 1
+
+                    # Endpoint ownership is established at write time. This
+                    # works for partial recon user URLs as well as full scans,
+                    # and never needs a project-wide cleanup pass.
+                    if not is_upload:
+                        session.run(
+                            """
+                            MERGE (bu:BaseURL {url: $base_url, user_id: $uid, project_id: $pid})
+                            ON CREATE SET bu.source = 'js_recon',
+                                          bu.updated_at = datetime()
+                            WITH bu
+                            MATCH (e:Endpoint {path: $path, method: $method,
+                                               baseurl: $base_url, user_id: $uid,
+                                               project_id: $pid})
+                            MERGE (bu)-[:HAS_ENDPOINT]->(e)
+                            """,
+                            base_url=effective_baseurl, path=path, method=method,
+                            uid=user_id, pid=project_id,
+                        )
+                        stats["relationships_created"] += 1
 
                     if _link_endpoint_to_file(session, source_js, path, method, effective_baseurl):
                         stats["relationships_created"] += 1

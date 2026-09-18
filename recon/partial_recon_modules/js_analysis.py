@@ -173,6 +173,10 @@ def run_jsrecon(config: dict) -> None:
         },
         "metadata": {
             "project_id": project_id,
+            # The graph may not have a Subdomain node yet for a URL the user
+            # explicitly selected. Preserve those actual targets for the JS
+            # graph writer's host-scope check.
+            "js_recon_target_hosts": target_urls,
         },
     }
 

@@ -152,7 +152,9 @@ class TestJsReconGraphIngestion(unittest.TestCase):
         stats = client.update_graph_from_js_recon(recon_data, "u1", "p1")
 
         self.assertEqual(stats["endpoints_created"], 0)
-        self.assertEqual(stats["relationships_created"], 1)
+        # The endpoint is now linked to its BaseURL at write time, in addition
+        # to the JS-file relationship.
+        self.assertEqual(stats["relationships_created"], 2)
         link_calls = [
             (query, kwargs) for query, kwargs in client.driver.session_obj.calls
             if "MERGE (file)-[r:HAS_ENDPOINT]->(n)" in query
@@ -262,6 +264,71 @@ class TestJsReconFindingPackageFields(unittest.TestCase):
         self.assertEqual(props["package_version"], "18.2.0")
         self.assertEqual(props["title"], "React 18.2.0")
         self.assertNotIn("name", props)
+
+
+class TestJsReconEndpointOwnership(unittest.TestCase):
+    def _recon_data(self, endpoints, metadata=None):
+        return {
+            "domain": "example.com",
+            "subdomains": ["app.example.com"],
+            "metadata": metadata or {},
+            "js_recon": {
+                "scan_metadata": {"scan_timestamp": "2026-09-18T00:00:00Z"},
+                "endpoints": endpoints,
+            },
+        }
+
+    def test_absolute_endpoint_uses_its_origin_and_links_the_owner(self):
+        client = GraphClient()
+        stats = client.update_graph_from_js_recon(self._recon_data([
+            {
+                "path": "/api/me",
+                "full_url": "https://app.example.com:443/api/me",
+                "base_url": "https://app.example.com:443",
+                "method": "GET",
+                "source_js": "https://app.example.com/app.js",
+            },
+            {
+                "path": "/lib",
+                "full_url": "https://cdn.thirdparty.test/lib",
+                "method": "GET",
+                "source_js": "https://app.example.com/app.js",
+            },
+        ]), "u1", "p1")
+
+        endpoint_calls = [
+            kwargs for query, kwargs in client.driver.session_obj.calls
+            if "MERGE (e:Endpoint" in query
+        ]
+        self.assertEqual([call["baseurl"] for call in endpoint_calls], ["https://app.example.com"])
+        self.assertEqual(stats["endpoints_created"], 1)
+        self.assertEqual(stats["skipped_out_of_scope"], 1)
+
+        owner_calls = [
+            (query, kwargs) for query, kwargs in client.driver.session_obj.calls
+            if "MERGE (bu:BaseURL" in query
+        ]
+        self.assertEqual(len(owner_calls), 1)
+        self.assertIn("MERGE (bu)-[:HAS_ENDPOINT]->(e)", owner_calls[0][0])
+        self.assertEqual(owner_calls[0][1]["base_url"], "https://app.example.com")
+
+    def test_partial_target_metadata_keeps_a_new_subdomain_in_scope(self):
+        client = GraphClient()
+        stats = client.update_graph_from_js_recon(
+            self._recon_data([
+                {
+                    "path": "/api/me",
+                    "full_url": "https://new.example.com/api/me",
+                    "method": "GET",
+                    "source_js": "https://new.example.com/app.js",
+                },
+            ], metadata={"js_recon_target_hosts": ["https://new.example.com/start"]}),
+            "u1",
+            "p1",
+        )
+
+        self.assertEqual(stats["endpoints_created"], 1)
+        self.assertEqual(stats["skipped_out_of_scope"], 0)
 
 
 if __name__ == "__main__":
