@@ -736,14 +736,14 @@ services:
       - "127.0.0.1:${MCP_METASPLOIT_PORT:-8003}:8003"
       - "127.0.0.1:${MCP_NMAP_PORT:-8004}:8004"
       - "127.0.0.1:${MCP_PLAYWRIGHT_PORT:-8005}:8005"
-      - "127.0.0.1:8013:8013"   # MSF progress stream (agent-internal)
-      - "127.0.0.1:8014:8014"   # Hydra progress stream (agent-internal)
+      - "127.0.0.1:${MSF_PROGRESS_PORT:-8013}:8013"   # MSF progress stream (agent-internal)
+      - "127.0.0.1:${HYDRA_PROGRESS_PORT:-8014}:8014" # Hydra progress stream (agent-internal)
       # 4444 stays routable on purpose: a compromised target connects BACK to the
       # operator host:4444 in direct (no-tunnel) reverse-shell mode. Loopback here
       # would break direct reverse shells. When a tunnel is active it binds
       # 127.0.0.1:4444 internally and is reached via the tunnel instead.
-      - "4444:4444"
-      - "127.0.0.1:4040:4040"   # ngrok local API (agent-internal)
+      - "${REVERSE_SHELL_PORT:-4444}:4444"
+      - "127.0.0.1:${NGROK_API_PORT:-4040}:4040"   # ngrok local API (agent-internal)
       - "127.0.0.1:8015:8015"   # tunnel-manager config (webapp-internal)
       - "127.0.0.1:8016:8016"   # terminal PTY WS (browser reaches via agent:8090)
     volumes:

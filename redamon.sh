@@ -693,7 +693,7 @@ allocate_memory() {
     # Nothing may take more than this share of the host, so one runaway service
     # cannot starve the databases. Proportional, mirroring PER_CONTAINER_MAX in
     # recon_orchestrator/resource_governor.py.
-    blast_mb=$(( total * "$(_pct_env BLAST_PCT 55 20 90)" / 100 ))
+    blast_mb=$(( total * $(_pct_env BLAST_PCT 55 20 90) / 100 ))
 
     # Parse the specs ONCE into parallel arrays; the passes below then need no
     # re-parsing (and no subshells) per service.
