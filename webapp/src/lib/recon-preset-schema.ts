@@ -191,8 +191,8 @@ export const reconPresetSchema = z.object({
   openapiEnabled: bool,
   openapiAutoDiscover: bool,
   openapiDiscoveryPaths: z.array(z.string()).max(200).optional(),
-  openapiTimeout: int,
-  openapiMaxDocuments: int,
+  openapiTimeout: z.number().int().min(1).max(60).optional(),
+  openapiMaxDocuments: z.number().int().min(1).max(200).optional(),
 
   // -- Web Crawling: ZAP Ajax Spider --
   zapAjaxSpiderEnabled: bool,
@@ -749,6 +749,7 @@ export const RECON_PARAMETER_CATALOG = `
 ## OpenAPI Ingestion
 - openapiEnabled: boolean - Import supported in-scope operations from OpenAPI documents
 - openapiAutoDiscover: boolean - Discover documents from crawl results and bounded common paths
+- openapiDiscoveryPaths: string[] - Paths probed for specification documents during auto-discovery
 - openapiTimeout: integer - Per-document fetch timeout in seconds (1-60)
 - openapiMaxDocuments: integer - Maximum specification documents to import (1-200)
 Source URLs and fetch headers are project-specific and may contain credentials, so they must never appear in generated presets.

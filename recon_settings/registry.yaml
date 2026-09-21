@@ -360,6 +360,16 @@ tools:
     partial_recon_module: "origin_enrichment"
     form_section: "OriginDiscoverySection"
     produces: ["IP"]
+  openapi_recon:
+    title: "OpenAPI ingestion"
+    phase: resource_enum
+    traffic: active
+    enabled_key: "OPENAPI_ENABLED"
+    module: "recon.main_recon_modules.openapi_recon"
+    partial_recon_module: "openapi_recon"
+    graph_writer: "update_graph_from_openapi"
+    form_section: "OpenApiSection"
+    produces: ["Domain", "Subdomain", "BaseURL", "Endpoint"]
   osint_enrichment:
     title: "OSINT enrichment"
     phase: domain_discovery
@@ -639,6 +649,94 @@ tools:
     produces: ["IP", "Port"]
 
 fields:
+  openapiEnabled:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_ENABLED"
+    unit: none
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    stealth: { set: false }
+    meaning: >-
+      Whether to import declared API operations from OpenAPI documents. Fetches specifications but never calls declared operations.
+  openapiAutoDiscover:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_AUTO_DISCOVER"
+    unit: none
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    stealth: { set: false }
+    meaning: >-
+      Discover specifications from crawl results and configured paths on known in-scope base URLs. Disabled in stealth mode.
+  openapiDiscoveryPaths:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_DISCOVERY_PATHS"
+    unit: none
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    stealth: { set: [] }
+    validator: free_text
+    meaning: >-
+      Paths probed for OpenAPI documents during auto-discovery. Empty disables common-path probes.
+  openapiSources:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_SOURCES"
+    unit: none
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: never
+    stealth: { set: [] }
+    deny_reason: secret
+    readable: false
+    read_deny_reason: credential
+    validator: json_object
+    meaning: >-
+      Project-specific specification sources and optional headers. May contain credentials; excluded from MCP reads and writes and reusable presets.
+  openapiDiscoveryHeaders:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_DISCOVERY_HEADERS"
+    unit: none
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: never
+    stealth: { set: [] }
+    deny_reason: secret
+    readable: false
+    read_deny_reason: credential
+    validator: json_object
+    meaning: >-
+      Headers used to fetch discovered specifications. May contain credentials; excluded from MCP reads and writes and reusable presets.
+  openapiTimeout:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_TIMEOUT"
+    unit: seconds
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    stealth: { ceiling: 10 }
+    bounds: { min: 1, max: 60 }
+    meaning: >-
+      Per-request timeout in seconds when fetching a specification or same-origin reference.
+  openapiMaxDocuments:
+    tool: openapi_recon
+    runtime_key: "OPENAPI_MAX_DOCUMENTS"
+    unit: count
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    stealth: { ceiling: 1 }
+    bounds: { min: 1, max: 200 }
+    meaning: >-
+      Maximum number of specification documents attempted per target run.
   activationStartedAt:
     tool: project
     runtime_key: null
