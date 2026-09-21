@@ -76,6 +76,7 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
       ...fieldsWhere(f => f.read_deny_reason === 'credential').map(f => f.key),
       ...fieldsWhere(f => f.deny_reason === 'escalation' || f.deny_reason === 'not-tuning').map(f => f.key),
       ...bookkeeping.map(f => f.key),
+      ...fieldsWhere(f => f.deny_reason === 'secret').map(f => f.key),
     ])
     expect([...PRESET_EXCLUDED_FIELDS].sort()).toEqual([...expected].sort())
   })
@@ -85,6 +86,15 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     // to their default on every apply - and mcpKaliExecEnabled defaults to ON.
     expect(PRESET_EXCLUDED_FIELDS.has('mcpKaliExecEnabled')).toBe(true)
     expect(PRESET_EXCLUDED_FIELDS.has('updateGraphDb')).toBe(true)
+  })
+
+  test('OpenAPI credentials cannot be captured or applied by presets', () => {
+    const settings = { openapiSources: [{ url: 'https://docs.example.test/spec.json' }], openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['Authorization: Bearer fixture-token'] }], openapiEnabled: true }
+    for (const result of [extractPresetSettings(settings), pickPresetFields(settings)]) {
+      expect(result).not.toHaveProperty('openapiSources')
+      expect(result).not.toHaveProperty('openapiDiscoveryHeaders')
+      expect(result.openapiEnabled).toBe(true)
+    }
   })
 
   test('the scope never travels: target, batch, ownership proof, guardrail', () => {

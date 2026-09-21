@@ -39,6 +39,10 @@ Use origin-relative paths starting with `/`, without queries or fragments (up to
 200 paths, 2048 characters each). Existing projects receive the default list when
 the new database column is added.
 
+Stealth mode disables OpenAPI ingestion and automatic discovery through the
+settings registry. Credential-bearing source and discovery-header settings are
+excluded from MCP reads/writes and reusable presets.
+
 ## Target association
 
 Scope follows the project's existing target settings:

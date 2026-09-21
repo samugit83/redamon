@@ -234,7 +234,7 @@ def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]
                       b.port = $port,
                       b.created_at = datetime()
         SET b.updated_at = datetime()
-        MERGE (s)-[:HAS_BASEURL]->(b)
+        MERGE (s)-[:HAS_BASE_URL]->(b)
         MERGE (e:Endpoint {path: $path, method: $method, baseurl: $baseurl,
                            user_id: $user_id, project_id: $project_id})
         ON CREATE SET e.source = 'openapi',

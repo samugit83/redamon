@@ -148,7 +148,7 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
                 MATCH (d:Domain {name: 'example.com', user_id: $user_id, project_id: $project_id})
                       -[:HAS_SUBDOMAIN]->
                       (s:Subdomain {name: 'api.example.com', user_id: $user_id, project_id: $project_id})
-                      -[:HAS_BASEURL]->
+                      -[:HAS_BASE_URL]->
                       (b:BaseURL {url: 'https://api.example.com', user_id: $user_id, project_id: $project_id})
                       -[:HAS_ENDPOINT]->
                       (e:Endpoint {user_id: $user_id, project_id: $project_id})
