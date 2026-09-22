@@ -234,7 +234,13 @@ def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]
                       b.port = $port,
                       b.created_at = datetime()
         SET b.updated_at = datetime()
-        MERGE (s)-[:HAS_BASE_URL]->(b)
+        WITH s, b
+        OPTIONAL MATCH (svc:Service {user_id: $user_id, project_id: $project_id})
+                       -[:SERVES_URL]->(b)
+        WITH s, b, count(svc) AS serving_services
+        FOREACH (_ IN CASE WHEN serving_services = 0 THEN [1] ELSE [] END |
+            MERGE (s)-[:HAS_BASE_URL]->(b)
+        )
         MERGE (e:Endpoint {path: $path, method: $method, baseurl: $baseurl,
                            user_id: $user_id, project_id: $project_id})
         ON CREATE SET e.source = 'openapi',
