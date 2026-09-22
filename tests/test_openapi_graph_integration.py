@@ -80,6 +80,7 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
         cls.user_id = f"openapi-it-user-{suffix}"
         cls.other_user_id = f"openapi-it-other-{suffix}"
         cls.project_id = f"openapi-it-project-{suffix}"
+        cls.other_project_id = f"openapi-it-other-project-{suffix}"
 
     @classmethod
     def tearDownClass(cls):
@@ -88,15 +89,66 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
                 session.run(
                     """
                     MATCH (n)
-                    WHERE n.project_id = $project_id
+                    WHERE n.project_id IN $project_ids
                       AND n.user_id IN $user_ids
                     DETACH DELETE n
                     """,
-                    project_id=cls.project_id,
+                    project_ids=[cls.project_id, cls.other_project_id],
                     user_ids=[cls.user_id, cls.other_user_id],
                 ).consume()
         finally:
             cls.driver.close()
+
+    def test_existing_service_path_does_not_gain_a_subdomain_fallback(self):
+        self._assert_service_linking("service.example.com", self.user_id, False)
+
+    def test_another_users_service_does_not_suppress_the_fallback(self):
+        self._assert_service_linking("other-user.example.com", self.other_user_id, True)
+
+    def test_another_projects_service_does_not_suppress_the_fallback(self):
+        self._assert_service_linking("other-project.example.com", self.user_id, True,
+                                     self.other_project_id)
+
+    def _assert_service_linking(self, host, service_user, expect_fallback, service_project=None):
+        service_project = service_project or self.project_id
+        baseurl = f"https://{host}"
+        with self.driver.session() as session:
+            session.run(
+                """
+                CREATE (svc:Service {name: 'https', port_number: 443,
+                                    ip_address: '192.0.2.10',
+                                    user_id: $service_user, project_id: $service_project})
+                CREATE (b:BaseURL {url: $baseurl, user_id: $user_id,
+                                  project_id: $project_id})
+                CREATE (svc)-[:SERVES_URL]->(b)
+                """,
+                service_user=service_user, service_project=service_project, user_id=self.user_id,
+                project_id=self.project_id, baseurl=baseurl,
+            ).consume()
+        payload = _recon([_operation("GET", "service-spec", "Declared operation", host)])
+        for _ in range(2):
+            stats = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+            self.assertEqual(stats["errors"], [])
+            self.assertEqual(stats["operations_imported"], 1)
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (b:BaseURL {url: $baseurl, user_id: $user_id, project_id: $project_id})
+                OPTIONAL MATCH (svc:Service {user_id: $service_user, project_id: $service_project})
+                               -[serves:SERVES_URL]->(b)
+                OPTIONAL MATCH (s:Subdomain {name: $host, user_id: $user_id,
+                                            project_id: $project_id})-[fallback:HAS_BASE_URL]->(b)
+                OPTIONAL MATCH (b)-[:HAS_ENDPOINT]->(e:Endpoint {user_id: $user_id,
+                                                               project_id: $project_id})
+                RETURN count(DISTINCT serves) AS services, count(DISTINCT fallback) AS fallbacks,
+                       count(DISTINCT e) AS endpoints
+                """,
+                baseurl=baseurl, host=host, user_id=self.user_id,
+                service_user=service_user, service_project=service_project, project_id=self.project_id,
+            ).single()
+        self.assertEqual(row["services"], 1)
+        self.assertEqual(row["fallbacks"], int(expect_fallback))
+        self.assertEqual(row["endpoints"], 1)
 
     def test_idempotent_tenant_scoped_declarations_form_a_coherent_host_chain(self):
         endpoint_key = {
