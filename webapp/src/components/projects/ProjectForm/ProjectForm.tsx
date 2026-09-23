@@ -207,7 +207,7 @@ const MINIMAL_DEFAULTS: Partial<ProjectFormData> = {
   domainBatchHosts: [],
   scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'resource_enum', 'vuln_scan'],
   openapiEnabled: true,
-  openapiAutoDiscover: true,
+  openapiAutoDiscover: false,
   openapiDiscoveryPaths: [...DEFAULT_OPENAPI_DISCOVERY_PATHS],
   openapiSources: [],
   openapiDiscoveryHeaders: [],

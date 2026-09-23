@@ -670,7 +670,7 @@ fields:
     mcp: settable
     stealth: { set: false }
     meaning: >-
-      Discover specifications from crawl results and configured paths on known in-scope base URLs. Disabled in stealth mode.
+      Discover specifications from crawl results and configured paths on known in-scope base URLs. Opt-in and disabled in stealth mode.
   openapiDiscoveryPaths:
     tool: openapi_recon
     runtime_key: "OPENAPI_DISCOVERY_PATHS"

@@ -366,7 +366,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'KATANA_CONCURRENCY': 15,
 
     'OPENAPI_ENABLED': True,
-    'OPENAPI_AUTO_DISCOVER': True,
+    'OPENAPI_AUTO_DISCOVER': False,
     'OPENAPI_DISCOVERY_PATHS': ["/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml", "/v3/api-docs", "/v2/api-docs", "/swagger/v1/swagger.json", "/swagger-ui/index.html", "/swagger-ui.html", "/docs", "/api-docs", "/api-docs/"],
     'OPENAPI_SOURCES': [],
     'OPENAPI_DISCOVERY_HEADERS': [],

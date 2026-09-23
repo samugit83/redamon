@@ -8522,11 +8522,11 @@
    "unit": "seconds"
   },
   "openapiAutoDiscover": {
-   "default": true,
+   "default": false,
    "form_section": "OpenApiSection",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Discover specifications from crawl results and configured paths on known in-scope base URLs. Disabled in stealth mode.",
+   "meaning": "Discover specifications from crawl results and configured paths on known in-scope base URLs. Opt-in and disabled in stealth mode.",
    "optional": false,
    "phase": "resource_enum",
    "prisma_type": "Boolean",

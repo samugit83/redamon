@@ -10,6 +10,9 @@ def run_openapi_partial(config: dict) -> None:
     from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
 
     settings = dict(get_settings())
+    if settings.get('STEALTH_MODE', False):
+        print('[*][OpenAPI] Partial recon skipped: stealth mode disables document fetching')
+        return
     settings['OPENAPI_ENABLED'] = True
     user_id = os.environ.get('USER_ID') or config.get('user_id', '')
     project_id = os.environ.get('PROJECT_ID') or config.get('project_id', '')

@@ -8,6 +8,7 @@ from html import unescape
 from urllib.parse import urljoin, urlsplit
 
 from graph_db.mixins.recon.openapi_scope import Scope
+from helpers import proxy_routing
 from recon.helpers.openapi.fetch import DocumentError, Fetcher, decode_document, http_url, origin, parse_headers, public_url
 from recon.helpers.openapi.parser import parse_operations
 
@@ -79,7 +80,7 @@ def embedded_document(text):
 
 
 def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
-    if not settings.get('OPENAPI_ENABLED', True):
+    if not settings.get('OPENAPI_ENABLED', True) or settings.get('STEALTH_MODE', False):
         return recon_data
     scope_data = scope_payload(settings)
     scope = Scope.from_payload(scope_data)
@@ -90,7 +91,9 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
         diagnostics.append({'url': '', 'code': 'invalid_scope', 'message': 'OpenAPI requires a configured target'})
         return recon_data
     max_documents = min(max(int(settings.get('OPENAPI_MAX_DOCUMENTS', 50)), 1), 200)
-    fetcher = Fetcher(settings.get('OPENAPI_TIMEOUT', 10), max_requests=max_documents * 10)
+    proxy_routing.configure(settings)
+    fetcher = Fetcher(settings.get('OPENAPI_TIMEOUT', 10), max_requests=max_documents * 10,
+                      max_rps=settings.get('ROE_GLOBAL_MAX_RPS', 0))
     queue = deque()
     seen = set()
     source_count = 0
@@ -98,6 +101,10 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
     def enqueue(url, headers, override=None, explicit=False, allowed_origin=None, context_id=None):
         try:
             url = http_url(url)
+            if not scope.allows(url):
+                diagnostics.append({'url': public_url(url), 'code': 'out_of_scope',
+                                    'message': 'Document source is outside engagement scope'})
+                return
             allowed_origin = allowed_origin or origin(url)
             if origin(url) != allowed_origin:
                 raise DocumentError('Cross-origin documentation link blocked')
@@ -120,7 +127,7 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
         except DocumentError as error:
             diagnostics.append({'url': public_url(source.get('url')), 'code': 'invalid_source', 'message': str(error)})
 
-    if settings.get('OPENAPI_AUTO_DISCOVER', True):
+    if settings.get('OPENAPI_AUTO_DISCOVER', False):
         discovery_paths = settings.get('OPENAPI_DISCOVERY_PATHS', list(DISCOVERY_PATHS))
         if (not isinstance(discovery_paths, list) or len(discovery_paths) > 200
                 or any(not isinstance(path, str) or len(path) > 2048

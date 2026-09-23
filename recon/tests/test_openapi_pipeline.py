@@ -93,3 +93,15 @@ def test_partial_uses_stored_scope_and_shared_graph_writer(monkeypatch):
     run_openapi_partial({'include_graph_targets': False})
     assert [(config['TARGET_DOMAIN'], config['SUBDOMAIN_LIST']) for _, config in captured] == [
         ('example.com', ['api.']), ('example.net', ['.'])]
+
+
+def test_partial_recon_cannot_override_stealth(monkeypatch):
+    import recon.project_settings
+    import recon.main_recon_modules.openapi_recon as runner_module
+    from recon.partial_recon_modules.openapi_recon import run_openapi_partial
+
+    monkeypatch.setattr(recon.project_settings, 'get_settings', lambda: {'STEALTH_MODE': True})
+    runner = Mock()
+    monkeypatch.setattr(runner_module, 'run_openapi_recon', runner)
+    run_openapi_partial({'include_graph_targets': False})
+    runner.assert_not_called()
