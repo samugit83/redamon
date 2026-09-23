@@ -39,3 +39,36 @@ def test_trickling_response_obeys_total_fetch_deadline():
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_document_download_uses_capture_proxy(monkeypatch):
+    from helpers import proxy_routing
+
+    observed = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            observed.append((self.path, self.headers.get('X-Redamon-Ctx')))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"openapi":"3.1.0"}')
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setattr(proxy_routing, 'get_capture_routing',
+                        lambda tool: (f'http://127.0.0.1:{server.server_port}', 'fixture-tag'))
+    fetcher = Fetcher()
+    try:
+        url, body = fetcher.fetch('http://api.example.test/spec', {}, 'http://api.example.test')
+        assert url == 'http://api.example.test/spec'
+        assert body == '{"openapi":"3.1.0"}'
+        assert observed == [('http://api.example.test/spec', 'fixture-tag')]
+    finally:
+        fetcher.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

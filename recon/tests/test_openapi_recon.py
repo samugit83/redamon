@@ -58,7 +58,7 @@ def test_scope_exclusions_and_filtered_subdomains(monkeypatch):
     doc = spec(servers=[{'url': f'https://{host}/v1'} for host in
                ['api.example.com', 'staging.example.com', 'example.com', 'example.com.evil.test']])
     result, _ = run(monkeypatch, {'https://docs.example.com/openapi.json': Response(doc)},
-                    {'SUBDOMAIN_LIST': ['api.', 'staging.', '.'], 'ROE_ENABLED': True,
+                    {'SUBDOMAIN_LIST': ['api.', 'docs.', 'staging.', '.'], 'ROE_ENABLED': True,
                      'ROE_EXCLUDED_HOSTS': ['staging.example.com']})
     assert {op['baseurl'] for op in result['operations']} == {'https://api.example.com', 'https://example.com'}
     assert len([d for d in result['diagnostics'] if d['code'] == 'out_of_scope']) == 2
@@ -328,9 +328,9 @@ def test_fetch_has_total_deadline(monkeypatch):
 
 
 def test_ip_mode_ignores_stale_domain_prefixes(monkeypatch):
-    url = 'https://docs.example.com/openapi.json'
+    url = 'http://192.0.2.10/openapi.json'
     result, _ = run(monkeypatch, {url: Response(spec(servers=[{'url': 'http://192.0.2.10/v1'}]))},
-                    {'IP_MODE': True, 'TARGET_IPS': ['192.0.2.0/24'], 'SUBDOMAIN_LIST': ['api.', '.']})
+                    {'OPENAPI_SOURCES': [{'url': url}], 'IP_MODE': True, 'TARGET_IPS': ['192.0.2.0/24'], 'SUBDOMAIN_LIST': ['api.', '.']})
     assert result['operations'][0]['baseurl'] == 'http://192.0.2.10'
 
 

@@ -7,8 +7,9 @@ confirmation that an operation is deployed or accessible.
 
 ## Configuration
 
-Enable **OpenAPI** in project recon settings. Automatic discovery checks a
-bounded set of common specification/documentation paths on in-scope HTTP origins
+Enable **OpenAPI** in project recon settings. Automatic discovery is off by
+default; enable it explicitly to check a bounded set of common
+specification/documentation paths on in-scope HTTP origins
 and documentation URLs found during resource enumeration. Literal Swagger UI
 `url`, `urls` and `configUrl` references and Redoc `spec-url` attributes are
 followed. Common probes include `/api-docs` and `/api-docs/`. Swagger UI initializer
@@ -16,10 +17,13 @@ scripts containing a JSON literal under `swaggerDoc` or `spec` are also parsed.
 Arbitrary JavaScript is not executed; use a direct source URL for
 documentation that builds its configuration dynamically.
 
+Changing the default does not reset a previously saved auto-discovery opt-in.
+
 Under **OpenAPI sources**, add one or more JSON/YAML specification URLs. Static
 Swagger UI/configuration URLs also work. Each entry has optional fetch headers,
-an optional API server override and an enable switch. Sources are fetched on each
-run. The UI/API assigns a stable source `id`; programmatic sources may supply one,
+an optional API server override and an enable switch. In-scope sources are fetched
+on each run; excluded or out-of-scope source URLs are rejected before any request.
+The UI/API assigns a stable source `id`; programmatic sources may supply one,
 otherwise the URL is its identity fallback. Use distinct IDs for separate auth
 contexts sharing a URL. Headers may authenticate the document download, for example
 `Authorization: Bearer <token>`; these are not API-operation credentials.
@@ -40,7 +44,12 @@ Use origin-relative paths starting with `/`, without queries or fragments (up to
 the new database column is added.
 
 Stealth mode disables OpenAPI ingestion and automatic discovery through the
-settings registry. Credential-bearing source and discovery-header settings are
+settings registry, including partial recon. All document requests, redirects, and
+external references share the engagement request-rate ceiling. When enabled and
+available, the capture proxy receives the requests with a signed context tag;
+direct requests never carry that tag. TLS verification remains enabled for direct
+requests; proxied requests accept the local capture proxy certificate.
+Credential-bearing source and discovery-header settings are
 excluded from MCP reads/writes and reusable presets.
 
 ## Target association

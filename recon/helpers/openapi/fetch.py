@@ -9,6 +9,8 @@ import requests
 import yaml
 from urllib3.exceptions import HTTPError
 
+from helpers import proxy_routing
+
 
 class OpenApiLoader(yaml.SafeLoader):
     def construct_mapping(self, node, deep=False):
@@ -125,9 +127,14 @@ def decode_document(text):
 
 
 class Fetcher:
-    def __init__(self, timeout=10, max_requests=500):
+    def __init__(self, timeout=10, max_requests=500, max_rps=0):
         self.timeout = min(max(float(timeout), 1), 60)
         self.max_requests = min(max(int(max_requests), 1), 1000)
+        rate = float(max_rps)
+        if not math.isfinite(rate) or rate < 0:
+            raise DocumentError('Invalid document request rate ceiling')
+        self.request_interval = 1 / rate if rate else 0
+        self.next_request_at = 0.0
         self.count = 0
         self.total_bytes = 0
         self.max_total_bytes = 32 * 1024 * 1024
@@ -154,13 +161,34 @@ class Fetcher:
                 raise DocumentError('Document request limit reached')
             if self.total_bytes >= self.max_total_bytes:
                 raise DocumentError('Total document byte limit reached')
+            proxy_url, token = proxy_routing.get_capture_routing('openapi')
+            routed = bool(proxy_url and token)
+            request_headers = {key: value for key, value in headers.items()
+                               if key.lower() != 'x-redamon-ctx'}
+            proxies = {}
+            if routed:
+                proxies = {'http': proxy_url, 'https': proxy_url}
+                request_headers['X-Redamon-Ctx'] = token
+            # A single fetcher paces all network requests, including redirects
+            # and references. Cached documents consume no request slots.
+            if self.request_interval:
+                delay = max(0.0, self.next_request_at - time.monotonic())
+                if delay >= deadline - time.monotonic():
+                    raise DocumentError('Document fetch deadline exceeded')
+                if delay:
+                    time.sleep(delay)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise DocumentError('Document fetch deadline exceeded')
+            if self.request_interval:
+                self.next_request_at = time.monotonic() + self.request_interval
             self.count += 1
             self.session.cookies.clear()
             try:
-                response = self.session.get(url, headers=headers, timeout=remaining,
+                # Capture terminates TLS with its local CA; direct requests
+                # retain certificate verification and never carry the context tag.
+                response = self.session.get(url, headers=request_headers, timeout=remaining,
+                                            proxies=proxies, verify=not routed,
                                             allow_redirects=False, stream=True)
                 try:
                     if response.status_code in (301, 302, 303, 307, 308):

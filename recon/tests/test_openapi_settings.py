@@ -5,7 +5,7 @@ from recon.project_settings import DEFAULT_SETTINGS, fetch_project_settings
 
 EXPECTED_DEFAULTS = {
     "OPENAPI_ENABLED": True,
-    "OPENAPI_AUTO_DISCOVER": True,
+    "OPENAPI_AUTO_DISCOVER": False,
     "OPENAPI_SOURCES": [],
     "OPENAPI_DISCOVERY_HEADERS": [],
     "OPENAPI_TIMEOUT": 10,
@@ -66,3 +66,7 @@ def test_openapi_settings_fall_back_for_existing_projects():
 def test_project_discovery_paths_preserve_custom_and_empty_values():
     assert _fetch({'openapiDiscoveryPaths': ['/custom/spec']})['OPENAPI_DISCOVERY_PATHS'] == ['/custom/spec']
     assert _fetch({'openapiDiscoveryPaths': []})['OPENAPI_DISCOVERY_PATHS'] == []
+
+
+def test_auto_discovery_preserves_explicit_opt_in():
+    assert _fetch({'openapiAutoDiscover': True})['OPENAPI_AUTO_DISCOVER'] is True

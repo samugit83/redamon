@@ -87,7 +87,7 @@ export function OpenApiSection({ data, updateField, onRun }: OpenApiSectionProps
                   <span className={styles.toggleLabel}>Automatic discovery</span>
                   <p className={styles.toggleDescription}>Inspect crawl results and bounded common paths for OpenAPI documents.</p>
                 </div>
-                <Toggle checked={data.openapiAutoDiscover ?? true} onChange={(checked) => updateField('openapiAutoDiscover', checked)} />
+                <Toggle checked={data.openapiAutoDiscover ?? false} onChange={(checked) => updateField('openapiAutoDiscover', checked)} />
               </div>
 
               <div className={styles.subSection}>
