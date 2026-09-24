@@ -50,7 +50,8 @@ the new database column is added.
 
 Stealth mode disables OpenAPI ingestion and automatic discovery through the
 settings registry, including partial recon. All document requests, redirects, and
-external references share the engagement request-rate ceiling. When enabled and
+external references share the engagement request-rate ceiling across every domain
+group in a full or partial batch run. When enabled and
 available, the capture proxy receives the requests with a signed context tag;
 direct requests never carry that tag. TLS verification remains enabled for direct
 requests; proxied requests accept the local capture proxy certificate.
@@ -73,6 +74,8 @@ A specification on `docs.example.com` can declare operations on
 Domain/Subdomain and BaseURL. Servers outside scope are reported and skipped.
 Specifications never expand project scope. Domain-batch runs use each stored,
 approved group and its subdomain prefixes independently in full and partial recon.
+Literal batch groups permit only their listed hosts. Wildcard groups permit
+subdomains; listing the root explicitly includes the apex as well.
 
 OpenAPI 3 operation/path/root server precedence, relative servers and variable
 defaults are supported. Swagger 2 uses schemes, host and basePath. The optional
@@ -114,8 +117,10 @@ its existing project graph reset behavior.
 The document summary retains sources from earlier partial imports and refreshes
 matching sources. Diagnostics are refreshed for the URLs processed by the new
 import, preserving unrelated diagnostics. Relationship counts report newly
-created graph links; an unchanged re-import creates none. IP-mode partial recon
-uses the pipeline's dashed-IP mock hostname when no hostname mapping is available.
+created graph links; an unchanged re-import creates none. IP-mode imports match
+equivalent IPv6 spellings and reuse existing pipeline mock or PTR hostnames.
+When no mapping or existing host is available, they use the pipeline's dashed-IP
+mock hostname.
 
 Full recon waits for graph persistence and records graph errors separately from
 parsing, preserving the parsed inventory if the graph write fails.

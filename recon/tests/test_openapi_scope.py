@@ -3,6 +3,33 @@ import pytest
 
 from graph_db.mixins.recon.openapi_scope import Scope
 from recon.helpers.roe_scope import _is_roe_excluded
+from recon.main_recon_modules.openapi_recon import scope_payload
+
+
+@pytest.mark.parametrize('prefixes,root_allowed,child_allowed', [
+    (['*'], False, True),
+    (['*', '.'], True, True),
+    (['*', 'api.'], False, True),
+    (['.'], True, False),
+    (['api.'], False, False),
+])
+def test_batch_wildcards_and_literal_groups_keep_master_scope(prefixes, root_allowed, child_allowed):
+    scope = Scope.from_payload(scope_payload({
+        'TARGET_DOMAIN': 'example.test', 'DOMAIN_BATCH_MODE': True,
+        'SUBDOMAIN_LIST': prefixes,
+    }))
+    assert scope.is_valid
+    assert scope.allows('https://example.test/spec') is root_allowed
+    assert scope.allows('https://other.example.test/spec') is child_allowed
+    assert scope.allows('https://api.example.test/spec') is (child_allowed or 'api.' in prefixes)
+    assert not scope.allows('https://outside.test/spec')
+
+
+def test_dotted_wildcard_prefix_cannot_enable_discovery():
+    scope = Scope.from_payload(scope_payload({
+        'TARGET_DOMAIN': 'example.test', 'SUBDOMAIN_LIST': ['*.'],
+    }))
+    assert not scope.allows('https://other.example.test/spec')
 
 
 @pytest.mark.parametrize('host,entry,expected', [

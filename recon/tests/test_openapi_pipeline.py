@@ -11,7 +11,7 @@ def test_full_pipeline_has_three_openapi_entrypoints_and_persists(tmp_path, monk
              and isinstance(n.func, ast.Name) and n.func.id == '_maybe_run_openapi']
     assert len(calls) == 3
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_maybe_run_openapi')
-    runner = Mock(side_effect=lambda result, settings: {**result, 'openapi': {'operations': []}})
+    runner = Mock(side_effect=lambda result, settings, *, pacer=None: {**result, 'openapi': {'operations': []}})
     monkeypatch.setattr('recon.main_recon_modules.openapi_recon.run_openapi_recon', runner)
     save = Mock()
     import graph_db
@@ -66,7 +66,7 @@ def test_partial_uses_stored_scope_and_shared_graph_writer(monkeypatch):
     monkeypatch.setenv('PROJECT_ID', 'fixture-project')
     captured = []
 
-    def runner(data, config):
+    def runner(data, config, *, pacer=None):
         captured.append((data, config))
         data['openapi'] = {'operations': []}
         return data

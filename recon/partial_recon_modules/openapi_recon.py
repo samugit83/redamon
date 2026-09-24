@@ -6,6 +6,7 @@ def run_openapi_partial(config: dict) -> None:
     from graph_db import Neo4jClient
     from recon.project_settings import get_settings
     from recon.main_recon_modules.openapi_recon import run_openapi_recon
+    from recon.helpers.openapi.fetch import RequestPacer
     from recon.partial_recon_modules.helpers import _should_include_root_domain
     from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
 
@@ -25,6 +26,7 @@ def run_openapi_partial(config: dict) -> None:
                            for group in settings.get('DOMAIN_BATCH_GROUPS', [])]
         if not target_settings:
             raise ValueError('OpenAPI batch has no approved target groups')
+    pacer = RequestPacer(settings.get('ROE_GLOBAL_MAX_RPS', 0))
     for settings in target_settings:
         # Scope comes from stored project settings, never from user-entered URLs.
         domain = settings.get('TARGET_DOMAIN', '')
@@ -35,7 +37,7 @@ def run_openapi_partial(config: dict) -> None:
             data = {'domain': domain, 'http_probe': {'by_url': {}}}
         for url in (config.get('user_targets') or {}).get('urls', []):
             data.setdefault('http_probe', {}).setdefault('by_url', {})[url] = {}
-        run_openapi_recon(data, settings)
+        run_openapi_recon(data, settings, pacer=pacer)
         if settings.get('UPDATE_GRAPH_DB', True):
             with Neo4jClient() as client:
                 stats = client.update_graph_from_openapi(data, user_id, project_id)
