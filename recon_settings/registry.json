@@ -8540,29 +8540,6 @@
    "type": "boolean",
    "unit": "none"
   },
-  "openapiDiscoveryHeaders": {
-   "default": "[]",
-   "deny_reason": "secret",
-   "form_section": "OpenApiSection",
-   "has_default": true,
-   "mcp": "never",
-   "meaning": "Headers used to fetch discovered specifications. May contain credentials; excluded from MCP reads and writes and reusable presets.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "Json",
-   "read_deny_reason": "credential",
-   "readable": false,
-   "roe_capped": false,
-   "runtime_key": "OPENAPI_DISCOVERY_HEADERS",
-   "stealth": {
-    "set": []
-   },
-   "tool": "openapi_recon",
-   "traffic": "active",
-   "type": "json",
-   "unit": "none",
-   "validator": "json_object"
-  },
   "openapiDiscoveryPaths": {
    "default": [
     "/openapi.json",
@@ -8644,7 +8621,7 @@
    "form_section": "OpenApiSection",
    "has_default": true,
    "mcp": "never",
-   "meaning": "Project-specific specification sources and optional headers. May contain credentials; excluded from MCP reads and writes and reusable presets.",
+   "meaning": "Project-specific specification sources. URLs may contain credentials; excluded from MCP reads and writes and reusable presets.",
    "optional": false,
    "phase": "resource_enum",
    "prisma_type": "Json",

@@ -3,7 +3,7 @@
 ### Infrastructure Nodes (Hierarchy: Domain -> Subdomain -> IP -> Port -> Service)
 
 **Domain** - Root domain being assessed
-- openapi_summary (string): JSON document inventory and sanitized diagnostics from the latest OpenAPI import
+- openapi_summary (string): JSON document inventory merged by source identity across OpenAPI imports, with sanitized diagnostics refreshed per URL and unrelated sources retained
 - openapi_last_import_at (datetime): Timestamp of the latest OpenAPI import
 - name (string): "example.com"
 - wildcard_mode (boolean): this domain was ENUMERATED (the operator wrote `*.domain.com` in a Domain batch, or it is a single-domain full-discovery run), rather than scanned as the exact host list that was supplied

@@ -1,3 +1,4 @@
+import { stripExcludedOnApply } from '@/lib/project-preset-utils'
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, assertOwner } from '@/lib/access'
@@ -23,7 +24,10 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     const denied = assertOwner(eff, preset.userId)
     if (denied) return denied
 
-    return NextResponse.json(preset)
+    return NextResponse.json({
+      ...preset,
+      settings: stripExcludedOnApply((preset.settings ?? {}) as Record<string, unknown>),
+    })
   } catch (error) {
     console.error('Failed to fetch preset:', error)
     return NextResponse.json(

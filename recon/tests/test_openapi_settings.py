@@ -7,7 +7,6 @@ EXPECTED_DEFAULTS = {
     "OPENAPI_ENABLED": True,
     "OPENAPI_AUTO_DISCOVER": False,
     "OPENAPI_SOURCES": [],
-    "OPENAPI_DISCOVERY_HEADERS": [],
     "OPENAPI_TIMEOUT": 10,
     "OPENAPI_MAX_DOCUMENTS": 50,
 }
@@ -32,19 +31,13 @@ def test_openapi_settings_round_trip_from_project_api():
     sources = [{
         "id": "source-primary",
         "url": "https://docs.example.test/openapi.json",
-        "headers": ["Authorization: Bearer test-token"],
         "serverOverride": "https://api.example.test/v2",
         "enabled": False,
-    }]
-    discovery_headers = [{
-        "origin": "https://docs.example.test",
-        "headers": ["X-API-Key: test-key"],
     }]
     result = _fetch({
         "openapiEnabled": False,
         "openapiAutoDiscover": False,
         "openapiSources": sources,
-        "openapiDiscoveryHeaders": discovery_headers,
         "openapiTimeout": 17,
         "openapiMaxDocuments": 23,
     })
@@ -52,7 +45,7 @@ def test_openapi_settings_round_trip_from_project_api():
     assert result["OPENAPI_ENABLED"] is False
     assert result["OPENAPI_AUTO_DISCOVER"] is False
     assert result["OPENAPI_SOURCES"] == sources
-    assert result["OPENAPI_DISCOVERY_HEADERS"] == discovery_headers
+    assert "OPENAPI_DISCOVERY_HEADERS" not in result
     assert result["OPENAPI_TIMEOUT"] == 17
     assert result["OPENAPI_MAX_DOCUMENTS"] == 23
 

@@ -369,7 +369,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'OPENAPI_AUTO_DISCOVER': False,
     'OPENAPI_DISCOVERY_PATHS': ["/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml", "/v3/api-docs", "/v2/api-docs", "/swagger/v1/swagger.json", "/swagger-ui/index.html", "/swagger-ui.html", "/docs", "/api-docs", "/api-docs/"],
     'OPENAPI_SOURCES': [],
-    'OPENAPI_DISCOVERY_HEADERS': [],
     'OPENAPI_TIMEOUT': 10,
     'OPENAPI_MAX_DOCUMENTS': 50,
 
@@ -1488,7 +1487,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['OPENAPI_DISCOVERY_PATHS'] = project.get('openapiDiscoveryPaths', DEFAULT_SETTINGS['OPENAPI_DISCOVERY_PATHS'])
     settings['OPENAPI_AUTO_DISCOVER'] = project.get('openapiAutoDiscover', DEFAULT_SETTINGS['OPENAPI_AUTO_DISCOVER'])
     settings['OPENAPI_SOURCES'] = project.get('openapiSources', DEFAULT_SETTINGS['OPENAPI_SOURCES'])
-    settings['OPENAPI_DISCOVERY_HEADERS'] = project.get('openapiDiscoveryHeaders', DEFAULT_SETTINGS['OPENAPI_DISCOVERY_HEADERS'])
     settings['OPENAPI_TIMEOUT'] = project.get('openapiTimeout', DEFAULT_SETTINGS['OPENAPI_TIMEOUT'])
     settings['OPENAPI_MAX_DOCUMENTS'] = project.get('openapiMaxDocuments', DEFAULT_SETTINGS['OPENAPI_MAX_DOCUMENTS'])
 

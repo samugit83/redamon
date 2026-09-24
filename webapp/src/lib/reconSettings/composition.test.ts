@@ -213,9 +213,9 @@ describe('the surface is the size it claims to be', () => {
     // The closed set grew by the 24 engagement-RECORD columns, which are not
     // pipeline parameters at all: the client, the contacts, the dates and the
     // document. Everything a scan is configured by is still open.
-    // OpenAPI source and discovery headers are two credential-bearing columns.
+    // OpenAPI source URLs may carry credentials and remain project-specific.
     expect(fieldsWhere(f => f.mcp === 'never' && f.deny_reason !== 'engagement-record').length)
-      .toBeLessThan(27)
+      .toBeLessThan(26)
   })
 
   test('every rate limit is reachable, not three of fifteen', () => {

@@ -20,16 +20,21 @@ documentation that builds its configuration dynamically.
 Changing the default does not reset a previously saved auto-discovery opt-in.
 
 Under **OpenAPI sources**, add one or more JSON/YAML specification URLs. Static
-Swagger UI/configuration URLs also work. Each entry has optional fetch headers,
-an optional API server override and an enable switch. In-scope sources are fetched
+Swagger UI/configuration URLs also work. Each entry has an optional API server
+override and an enable switch. In-scope sources are fetched
 on each run; excluded or out-of-scope source URLs are rejected before any request.
 The UI/API assigns a stable source `id`; programmatic sources may supply one,
-otherwise the URL is its identity fallback. Use distinct IDs for separate auth
-contexts sharing a URL. Headers may authenticate the document download, for example
-`Authorization: Bearer <token>`; these are not API-operation credentials.
+otherwise the URL is its identity fallback.
 
-Automatic discovery can use per-origin headers. Credentials stay on their exact
-origin (scheme, host and port). Cross-origin redirects, documentation links and
+For protected specifications, configure the project's **Authenticated Session**.
+OpenAPI uses that profile for configured sources, discovery, and same-origin
+references, respecting its scope hosts and recon enable switch. Source entries
+and discovery settings no longer accept separate headers; legacy headers are
+ignored and removed from project API/export payloads. Re-enter any needed legacy
+credentials in Authenticated Session.
+
+Credentials stay on their exact origin (scheme, host and port) during document
+traversal. Cross-origin redirects, documentation links and
 external references are blocked; configure another source explicitly when
 needed. Same-origin relative references are supported. Query values in source
 URLs are omitted from graph provenance; a source hash distinguishes documents
@@ -49,8 +54,8 @@ external references share the engagement request-rate ceiling. When enabled and
 available, the capture proxy receives the requests with a signed context tag;
 direct requests never carry that tag. TLS verification remains enabled for direct
 requests; proxied requests accept the local capture proxy certificate.
-Credential-bearing source and discovery-header settings are
-excluded from MCP reads/writes and reusable presets.
+The auth profile is stored separately, masked on read, and excluded from project
+exports. Source URLs remain excluded from MCP reads/writes and reusable presets.
 
 ## Target association
 
@@ -59,7 +64,7 @@ Scope follows the project's existing target settings:
 - An empty subdomain list permits subdomains and does not include the apex.
 - `.` includes the apex; by itself it still permits subdomain discovery.
 - Actual prefixes select exact subdomains; add `.` to include the apex too.
-- Enabled Rules of Engagement host/CIDR exclusions take precedence.
+- Enabled Rules of Engagement host, wildcard, and CIDR exclusions take precedence.
 - IP mode permits configured IPs/CIDRs only.
 
 The resolved API server controls graph placement, not the specification's host.
@@ -105,6 +110,12 @@ Partial recon is additive: matching declarations are updated; older declarations
 absent from a newer document retain their previous provenance. Absence from a
 specification does not establish removal of a deployed route. Full recon uses
 its existing project graph reset behavior.
+
+The document summary retains sources from earlier partial imports and refreshes
+matching sources. Diagnostics are refreshed for the URLs processed by the new
+import, preserving unrelated diagnostics. Relationship counts report newly
+created graph links; an unchanged re-import creates none. IP-mode partial recon
+uses the pipeline's dashed-IP mock hostname when no hostname mapping is available.
 
 Full recon waits for graph persistence and records graph errors separately from
 parsing, preserving the parsed inventory if the graph write fails.

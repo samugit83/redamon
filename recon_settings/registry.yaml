@@ -697,22 +697,7 @@ fields:
     read_deny_reason: credential
     validator: json_object
     meaning: >-
-      Project-specific specification sources and optional headers. May contain credentials; excluded from MCP reads and writes and reusable presets.
-  openapiDiscoveryHeaders:
-    tool: openapi_recon
-    runtime_key: "OPENAPI_DISCOVERY_HEADERS"
-    unit: none
-    phase: resource_enum
-    traffic: active
-    roe_capped: false
-    mcp: never
-    stealth: { set: [] }
-    deny_reason: secret
-    readable: false
-    read_deny_reason: credential
-    validator: json_object
-    meaning: >-
-      Headers used to fetch discovered specifications. May contain credentials; excluded from MCP reads and writes and reusable presets.
+      Project-specific specification sources. URLs may contain credentials; excluded from MCP reads and writes and reusable presets.
   openapiTimeout:
     tool: openapi_recon
     runtime_key: "OPENAPI_TIMEOUT"

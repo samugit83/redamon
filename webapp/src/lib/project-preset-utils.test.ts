@@ -67,6 +67,7 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     const expected = new Set([
       ...UNCLASSIFIED,
       ...fieldsWhere(f => f.mcp === 'create_only').map(f => f.key),
+      'openapiDiscoveryHeaders', // Legacy saved presets still need this retired field stripped.
       ...engagementLimitFields().map(f => f.key),
       ...engagementRecordFields().map(f => f.key),
       ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),

@@ -59,6 +59,7 @@ def test_partial_uses_stored_scope_and_shared_graph_writer(monkeypatch):
     from recon.partial_recon_modules.openapi_recon import run_openapi_partial
 
     settings = {'TARGET_DOMAIN': 'example.com', 'SUBDOMAIN_LIST': ['api.'],
+                'AUTH_PROFILE': {'authType': 'bearer', 'authValue': 'fixture-session'},
                 'OPENAPI_SOURCES': [{'url': 'https://docs.example.com/spec'}]}
     monkeypatch.setattr(recon.project_settings, 'get_settings', lambda: settings)
     monkeypatch.setenv('USER_ID', 'fixture-user')
@@ -82,6 +83,7 @@ def test_partial_uses_stored_scope_and_shared_graph_writer(monkeypatch):
     data, config = captured[0]
     assert data['domain'] == config['TARGET_DOMAIN'] == 'example.com'
     assert config['OPENAPI_SOURCES'] == settings['OPENAPI_SOURCES']
+    assert config['AUTH_PROFILE'] == settings['AUTH_PROFILE']
     assert 'OPENAPI_ENABLED' not in settings
     client.update_graph_from_openapi.assert_called_once_with(data, 'fixture-user', 'fixture-project')
 

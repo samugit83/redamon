@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlsplit
 
 from graph_db.mixins.recon.openapi_scope import Scope
 from helpers import proxy_routing
+from recon.helpers.auth_profile import auth_header_lines, profile_from_settings
 from recon.helpers.openapi.fetch import DocumentError, Fetcher, decode_document, http_url, origin, parse_headers, public_url
 from recon.helpers.openapi.parser import parse_operations
 
@@ -98,7 +99,7 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
     seen = set()
     source_count = 0
 
-    def enqueue(url, headers, override=None, explicit=False, allowed_origin=None, context_id=None):
+    def enqueue(url, override=None, explicit=False, allowed_origin=None, context_id=None):
         try:
             url = http_url(url)
             if not scope.allows(url):
@@ -108,6 +109,8 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
             allowed_origin = allowed_origin or origin(url)
             if origin(url) != allowed_origin:
                 raise DocumentError('Cross-origin documentation link blocked')
+            headers = parse_headers(auth_header_lines(profile_from_settings(settings),
+                                                       urlsplit(url).hostname, settings))
             context_id = context_id or url
             key = (url, tuple(sorted(headers.items())), override, context_id)
             if key not in seen and len(seen) < 2000:
@@ -120,8 +123,7 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
         if not isinstance(source, dict) or not source.get('enabled', True):
             continue
         try:
-            headers = parse_headers(source.get('headers', []))
-            enqueue(source.get('url'), headers, source.get('serverOverride') or None, True,
+            enqueue(source.get('url'), source.get('serverOverride') or None, True,
                     context_id=f"configured:{source.get('id') or source.get('url')}")
             source_count += 1
         except DocumentError as error:
@@ -136,12 +138,6 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
             diagnostics.append({'url': '', 'code': 'invalid_source',
                                 'message': 'Discovery paths must be at most 200 origin-relative paths without queries or fragments'})
             discovery_paths = []
-        auth_by_origin = {}
-        for entry in settings.get('OPENAPI_DISCOVERY_HEADERS') or []:
-            try:
-                auth_by_origin[origin(entry['origin'])] = parse_headers(entry.get('headers'))
-            except (DocumentError, TypeError, KeyError):
-                diagnostics.append({'url': '', 'code': 'invalid_source', 'message': 'Invalid discovery header configuration'})
         candidates = set((recon_data.get('http_probe') or {}).get('by_url', {}))
         resources = (recon_data.get('resource_enum') or {}).get('by_base_url', {})
         candidates.update(resources)
@@ -157,12 +153,12 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
                 base = origin(url)
                 origins.add(base)
                 if re.search(r'openapi|swagger|api-docs|/docs', urlsplit(url).path, re.I):
-                    enqueue(url, auth_by_origin.get(base, {}), explicit=True)
+                    enqueue(url, explicit=True)
             except DocumentError:
                 continue
         for base in sorted(origins):
             for path in dict.fromkeys(discovery_paths):
-                enqueue(base + path, auth_by_origin.get(base, {}))
+                enqueue(base + path)
 
     print(f'[*][OpenAPI] Processing {source_count} configured sources and {len(queue)} document candidates')
     budget = {'bytes': 16 * 1024 * 1024, 'operations': 10000}
@@ -208,7 +204,7 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
                                         'message': decode_error or 'No OpenAPI description or static documentation links found'})
                 for link in links:
                     child_context = context_id if context_id.startswith('configured:') else None
-                    enqueue(urljoin(final_url, link), headers, override, True, allowed_origin, child_context)
+                    enqueue(urljoin(final_url, link), override, True, allowed_origin, child_context)
         if queue:
             diagnostics.append({'url': '', 'code': 'limit_reached', 'message': 'Document budget exhausted; inventory is incomplete'})
     finally:

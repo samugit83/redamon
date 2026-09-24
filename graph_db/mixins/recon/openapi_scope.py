@@ -7,6 +7,8 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from recon_settings.scope import _is_roe_excluded, default_scope_hosts, host_in_scope
+
 
 def _normalize_host(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -82,6 +84,18 @@ class Scope:
         self.ip_networks = tuple(ip_networks)
         self.excluded_hosts = tuple(excluded_hosts)
         self._valid = _valid and bool(root or self.ip_networks)
+        defaults = default_scope_hosts({
+            'TARGET_DOMAIN': root,
+            'IP_MODE': not bool(root),
+            'TARGET_IPS': [str(network) for network in self.ip_networks],
+        })
+        # Auth defaults include the apex and every subdomain; serialized scan
+        # selection may authorize only explicit hosts, so narrow that default.
+        self._scope_hosts = tuple(self.hosts) + tuple(
+            entry for entry in defaults
+            if not root or (entry == root and include_root)
+            or (entry == f'*.{root}' and include_subdomains)
+        )
 
     @classmethod
     def from_payload(cls, payload: Any) -> "Scope":
@@ -155,10 +169,17 @@ class Scope:
                 continue
             except ValueError:
                 pass
-            host = _normalize_scope_host(value)
+            wildcard = value.strip().startswith('*.')
+            host = _normalize_scope_host(value.strip()[2:] if wildcard else value)
             if not host:
                 return cls(_valid=False)
-            exclusions.append(host)
+            if wildcard:
+                try:
+                    ip_address(host)
+                    return cls(_valid=False)
+                except ValueError:
+                    pass
+            exclusions.append(f'*.{host}' if wildcard else host)
 
         return cls(
             root=root,
@@ -210,23 +231,12 @@ class Scope:
             return False
 
         try:
-            address = ip_address(host)
+            ip_address(host)
         except ValueError:
-            address = None
-
-        for excluded in self.excluded_hosts:
-            if isinstance(excluded, str):
-                if host == excluded or host.endswith(f".{excluded}"):
-                    return False
-            elif address is not None and address in excluded:
+            pass
+        else:
+            if not self.ip_networks:
                 return False
-
-        if host in self.hosts:
-            return True
-        if address is not None:
-            return any(address in network for network in self.ip_networks)
-        if not self.root:
+        if _is_roe_excluded(host, [str(entry) for entry in self.excluded_hosts]):
             return False
-        if host == self.root:
-            return self.include_root
-        return self.include_subdomains and host.endswith(f".{self.root}")
+        return host_in_scope(host, self._scope_hosts)

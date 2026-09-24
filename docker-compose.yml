@@ -763,6 +763,7 @@ services:
       - ./mcp/nuclei-templates:/opt/nuclei-templates:ro
       # Shared tenant_filter.py used by the redagraph CLI
       - ./graph_db:/opt/graph_db:ro
+      - ./recon_settings:/opt/recon_settings:ro
       # Shared agent workspace — agent writes tool-outputs / jobs here; kali tools can read
       - ./agentic/agent-workspace:/workspace
       # Offline OSV database (supply-chain L3 execute_osv_scanner). Read-only:
