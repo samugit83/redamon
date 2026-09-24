@@ -562,7 +562,7 @@ def _maybe_run_cert_hygiene(result: dict, settings: dict, output_file: Path) -> 
     return result
 
 
-def _maybe_run_openapi(result: dict, settings: dict, output_file: Path) -> dict:
+def _maybe_run_openapi(result: dict, settings: dict, output_file: Path, *, pacer=None) -> dict:
     """Configured descriptions remain usable even when live HTTP probing fails."""
     if not settings.get('OPENAPI_ENABLED', True):
         return result
@@ -575,7 +575,7 @@ def _maybe_run_openapi(result: dict, settings: dict, output_file: Path) -> dict:
                 raise ValueError('OpenAPI batch target is not in the approved groups')
             settings = {**settings, 'TARGET_DOMAIN': group['rootDomain'],
                         'SUBDOMAIN_LIST': list(group.get('prefixes') or [])}
-        result = run_openapi_recon(result, settings)
+        result = run_openapi_recon(result, settings, pacer=pacer)
         modules = result.setdefault('metadata', {}).setdefault('modules_executed', [])
         if 'openapi' not in modules:
             modules.append('openapi')
@@ -1282,7 +1282,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
 def run_domain_recon(target: str, bruteforce: bool = False,
                      target_info: dict = None,
-                     discovery_enabled: bool = None) -> dict:
+                     discovery_enabled: bool = None, *, openapi_pacer=None) -> dict:
     """
     Run combined WHOIS + subdomain discovery + DNS resolution.
     Produces a single unified JSON file with incremental saves.
@@ -1835,7 +1835,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 save_recon_file(combined_result, output_file)
 
     # GROUP 4.5 — AI Surface Recon (runs after resource_enum)
-    combined_result = _maybe_run_openapi(combined_result, _settings, output_file)
+    combined_result = _maybe_run_openapi(combined_result, _settings, output_file, pacer=openapi_pacer)
     combined_result = _maybe_run_ai_surface(combined_result, _settings, output_file)
 
     # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;
@@ -2147,6 +2147,9 @@ def run_domain_batch(groups: list, start_time) -> int:
     cost the operator the other nineteen, so failures are collected and reported
     at the end; the run only fails outright if EVERY group failed.
     """
+    from recon.helpers.openapi.fetch import RequestPacer
+
+    openapi_pacer = RequestPacer(_settings.get('ROE_GLOBAL_MAX_RPS', 0))
     total = len(groups)
     print("═" * 63)
     print(f"[*][Batch] DOMAIN BATCH: {total} domain group(s), sequential")
@@ -2188,7 +2191,8 @@ def run_domain_batch(groups: list, start_time) -> int:
         # The marker the orchestrator parses into live "Group 2/3" progress.
         print(f"\n[Batch] Group {idx}/{total}: {root}")
         try:
-            rc = run_domain_group(root, prefixes, start_time=datetime.now())
+            rc = run_domain_group(root, prefixes, start_time=datetime.now(),
+                                  openapi_pacer=openapi_pacer)
         except Exception as e:  # noqa: BLE001 - one bad domain must not end the batch
             print(f"[!][Batch] Group {idx}/{total} ({root}) failed: {e}")
             rc = 1
@@ -2287,7 +2291,7 @@ def _run_pipeline():
     return run_domain_group(TARGET_DOMAIN, SUBDOMAIN_LIST, start_time=start_time)
 
 
-def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) -> int:
+def run_domain_group(target_domain: str, subdomain_list: list, start_time=None, *, openapi_pacer=None) -> int:
     """Run the whole domain pipeline for ONE target: a single-domain project, or
     one group of a Domain batch.
 
@@ -2387,7 +2391,8 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
             target_domain,
             bruteforce=USE_BRUTEFORCE_FOR_SUBDOMAINS,
             target_info=target_info,
-            discovery_enabled=discovery_enabled
+            discovery_enabled=discovery_enabled,
+            openapi_pacer=openapi_pacer,
         )
         _stamp_project_roots(domain_result)
     else:
@@ -2554,7 +2559,7 @@ def run_domain_group(target_domain: str, subdomain_list: list, start_time=None) 
                         json.dump(domain_result, f, indent=2)
 
         # GROUP 4.5 — AI Surface Recon (runs after resource_enum)
-        domain_result = _maybe_run_openapi(domain_result, _settings, output_file)
+        domain_result = _maybe_run_openapi(domain_result, _settings, output_file, pacer=openapi_pacer)
         domain_result = _maybe_run_ai_surface(domain_result, _settings, output_file)
 
         # GROUP 5b — JS Recon (runs after resource_enum, before vuln_scan;

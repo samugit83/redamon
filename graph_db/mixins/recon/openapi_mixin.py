@@ -197,12 +197,42 @@ def _domain_name(recon_data: dict, scope: Scope, project_id: str) -> str:
 
 def _subdomain_name(recon_data: dict, host: str) -> str:
     try:
-        ip_address(host)
+        address = ip_address(host)
     except ValueError:
         return host
     metadata = recon_data.get("metadata") or {}
-    mapped = (metadata.get("ip_to_hostname") or {}).get(host)
-    return _normalize_host(mapped) or host.replace(".", "-").replace(":", "-")
+    for raw_ip, hostname in (metadata.get("ip_to_hostname") or {}).items():
+        try:
+            matches = ip_address(raw_ip) == address
+        except ValueError:
+            continue
+        if matches and (mapped := _normalize_host(hostname)):
+            return mapped
+    return host.replace(".", "-").replace(":", "-")
+
+
+def _existing_ip_hostnames(session, domain: str, user_id: str, project_id: str) -> dict:
+    # Neo4j compares strings, so match equivalent IPv6 spellings in Python.
+    rows = session.run(
+        """
+        MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
+              -[:HAS_SUBDOMAIN]->(s:Subdomain {user_id: $user_id, project_id: $project_id})
+        OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP {user_id: $user_id, project_id: $project_id})
+        RETURN s.name AS name, s.actual_ip AS actual_ip, i.address AS address
+        ORDER BY s.actual_ip IS NOT NULL DESC, s.name
+        """,
+        domain=domain, user_id=user_id, project_id=project_id,
+    )
+    names = defaultdict(list)
+    for row in rows:
+        for value in (row["actual_ip"], row["address"]):
+            try:
+                canonical = str(ip_address(value))
+            except ValueError:
+                continue
+            if row["name"] not in names[canonical]:
+                names[canonical].append(row["name"])
+    return names
 
 
 def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]) -> int:
@@ -384,6 +414,15 @@ class OpenApiMixin:
             summary = {"documents": [], "diagnostics": []}
 
         with self.driver.session() as session:
+            existing_ip_names = {}
+            if scope.ip_networks and grouped:
+                try:
+                    existing_ip_names = _existing_ip_hostnames(
+                        session, domain_name, user_id, project_id,
+                    )
+                except Exception as exc:
+                    stats["errors"].append(f"OpenAPI IP host lookup failed: {exc}")
+                    return stats
             try:
                 session.execute_write(
                     _persist_summary,
@@ -397,6 +436,9 @@ class OpenApiMixin:
                 baseurl, path, method = key
                 meta = endpoint_meta[key]
                 subdomain = _subdomain_name(recon_data, meta["host"])
+                existing_names = existing_ip_names.get(meta["host"], [])
+                if existing_names and subdomain not in existing_names:
+                    subdomain = existing_names[0]
                 parameters = {
                     "domain": domain_name,
                     "subdomain": subdomain,

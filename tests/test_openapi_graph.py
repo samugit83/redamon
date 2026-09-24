@@ -27,6 +27,9 @@ class _Result:
     def single(self):
         return self._record
 
+    def __iter__(self):
+        return iter(())
+
     def consume(self):
         return SimpleNamespace(counters=SimpleNamespace(relationships_created=2))
 
@@ -257,6 +260,17 @@ class TestOpenApiGraph(unittest.TestCase):
         self.assertEqual(_subdomain_name({"metadata": {"ip_to_hostname": {
             "192.0.2.10": "ptr.example.test",
         }}}, "192.0.2.10"), "ptr.example.test")
+
+    def test_ipv6_metadata_keys_match_equivalent_address_spellings(self):
+        from graph_db.mixins.recon.openapi_mixin import _subdomain_name
+
+        for hostname in ("ptr.example.test", "2001-0db8-0-0-0-0-0-10"):
+            with self.subTest(hostname=hostname):
+                data = {"metadata": {"ip_to_hostname": {
+                    "not-an-ip": "unrelated.example.test",
+                    "2001:0db8:0:0:0:0:0:10": hostname,
+                }}}
+                self.assertEqual(_subdomain_name(data, "2001:db8::10"), hostname)
 
     def test_relationship_count_comes_from_write_counters(self):
         client = _Client()

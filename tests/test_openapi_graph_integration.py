@@ -149,6 +149,89 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
             "name": "192-0-2-10", "source": "dns", "url": "https://192.0.2.10",
         }])
 
+    def test_ipv6_partial_import_reuses_existing_mock_and_ptr_hosts(self):
+        domain = f"ip-targets.{self.project_id}"
+        for suffix, name, use_actual_ip in (
+            ("11", "2001-0db8-0-0-0-0-0-11", True),
+            ("12", "ipv6-ptr.example.com", False),
+        ):
+            with self.subTest(name=name):
+                expanded = f"2001:0db8:0:0:0:0:0:{suffix}"
+                canonical = f"2001:db8::{suffix}"
+                with self.driver.session() as session:
+                    session.run(
+                        "MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id}) "
+                        "CREATE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id, "
+                        "source: 'dns', actual_ip: $actual_ip}) "
+                        "CREATE (d)-[:HAS_SUBDOMAIN]->(s) "
+                        "CREATE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id}) "
+                        "CREATE (s)-[:RESOLVES_TO]->(i)",
+                        domain=domain, user_id=self.user_id, project_id=self.project_id,
+                        name=name, ip=expanded, actual_ip=expanded if use_actual_ip else None,
+                    ).consume()
+                payload = _recon([_operation("GET", "ipv6-spec", "IPv6", f"[{canonical}]")])
+                payload["domain"] = "stale.example.com"
+                payload["openapi"]["scope"] = {
+                    "root": "", "hosts": [], "include_subdomains": False,
+                    "include_root": False, "ip_networks": ["2001:db8::/32"], "excluded_hosts": [],
+                }
+                for _ in range(2):
+                    stats = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+                    self.assertEqual(stats["errors"], [])
+                with self.driver.session() as session:
+                    row = session.run(
+                        "MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id}) "
+                        "-[:HAS_SUBDOMAIN]->(s:Subdomain {user_id: $user_id, project_id: $project_id}) "
+                        "-[:HAS_BASE_URL]->(b:BaseURL {url: $url, user_id: $user_id, project_id: $project_id}) "
+                        "RETURN collect(s.name) AS names",
+                        domain=domain, user_id=self.user_id, project_id=self.project_id,
+                        url=f"https://[{canonical}]",
+                    ).single()
+                    duplicates = session.run(
+                        "MATCH (s:Subdomain {name: $fallback, user_id: $user_id, project_id: $project_id}) "
+                        "RETURN count(s) AS count", fallback=canonical.replace(":", "-"),
+                        user_id=self.user_id, project_id=self.project_id,
+                    ).single()["count"]
+                self.assertEqual(row["names"], [name])
+                self.assertEqual(duplicates, 0)
+
+    def test_ipv6_full_import_uses_expanded_metadata_and_ignores_foreign_hosts(self):
+        domain = f"ip-targets.{self.project_id}"
+        for suffix, expected in (("21", "ipv6-full.example.com"),
+                                 ("22", "2001-0db8-0-0-0-0-0-22")):
+            with self.subTest(expected=expected):
+                expanded = f"2001:0db8:0:0:0:0:0:{suffix}"
+                canonical = f"2001:db8::{suffix}"
+                with self.driver.session() as session:
+                    for foreign_user, foreign_project in (
+                        (self.other_user_id, self.project_id),
+                        (self.user_id, self.other_project_id),
+                    ):
+                        session.run(
+                            "MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id}) "
+                            "CREATE (s:Subdomain {name: 'foreign.example.com', user_id: $foreign_user, "
+                            "project_id: $foreign_project, actual_ip: $ip}) "
+                            "CREATE (d)-[:HAS_SUBDOMAIN]->(s)",
+                            domain=domain, user_id=self.user_id, project_id=self.project_id,
+                            foreign_user=foreign_user, foreign_project=foreign_project, ip=expanded,
+                        ).consume()
+                payload = _recon([_operation("GET", "ipv6-full", "IPv6", f"[{canonical}]")])
+                payload["metadata"] = {"ip_to_hostname": {expanded: expected}}
+                payload["openapi"]["scope"] = {
+                    "root": "", "hosts": [], "include_subdomains": False,
+                    "include_root": False, "ip_networks": ["2001:db8::/32"], "excluded_hosts": [],
+                }
+                stats = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+                self.assertEqual(stats["errors"], [])
+                with self.driver.session() as session:
+                    row = session.run(
+                        "MATCH (s:Subdomain {user_id: $user_id, project_id: $project_id}) "
+                        "-[:HAS_BASE_URL]->(b:BaseURL {url: $url, user_id: $user_id, project_id: $project_id}) "
+                        "RETURN collect(s.name) AS names", user_id=self.user_id,
+                        project_id=self.project_id, url=f"https://[{canonical}]",
+                    ).single()
+                self.assertEqual(row["names"], [expected])
+
     def test_concurrent_partial_summaries_preserve_sources_and_refresh_diagnostics(self):
         domain = "summary.example.com"
 

@@ -126,15 +126,36 @@ def decode_document(text):
     return doc
 
 
-class Fetcher:
-    def __init__(self, timeout=10, max_requests=500, max_rps=0):
-        self.timeout = min(max(float(timeout), 1), 60)
-        self.max_requests = min(max(int(max_requests), 1), 1000)
+class RequestPacer:
+    """A scan-owned request clock shared by its sequential domain groups."""
+
+    def __init__(self, max_rps=0):
         rate = float(max_rps)
         if not math.isfinite(rate) or rate < 0:
             raise DocumentError('Invalid document request rate ceiling')
         self.request_interval = 1 / rate if rate else 0
         self.next_request_at = 0.0
+
+    def wait(self, deadline):
+        if self.request_interval:
+            delay = max(0.0, self.next_request_at - time.monotonic())
+            if delay >= deadline - time.monotonic():
+                raise DocumentError('Document fetch deadline exceeded')
+            if delay:
+                time.sleep(delay)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DocumentError('Document fetch deadline exceeded')
+        if self.request_interval:
+            self.next_request_at = time.monotonic() + self.request_interval
+        return remaining
+
+
+class Fetcher:
+    def __init__(self, timeout=10, max_requests=500, max_rps=0, *, pacer=None):
+        self.timeout = min(max(float(timeout), 1), 60)
+        self.max_requests = min(max(int(max_requests), 1), 1000)
+        self.pacer = pacer if pacer is not None else RequestPacer(max_rps)
         self.count = 0
         self.total_bytes = 0
         self.max_total_bytes = 32 * 1024 * 1024
@@ -169,19 +190,9 @@ class Fetcher:
             if routed:
                 proxies = {'http': proxy_url, 'https': proxy_url}
                 request_headers['X-Redamon-Ctx'] = token
-            # A single fetcher paces all network requests, including redirects
-            # and references. Cached documents consume no request slots.
-            if self.request_interval:
-                delay = max(0.0, self.next_request_at - time.monotonic())
-                if delay >= deadline - time.monotonic():
-                    raise DocumentError('Document fetch deadline exceeded')
-                if delay:
-                    time.sleep(delay)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise DocumentError('Document fetch deadline exceeded')
-            if self.request_interval:
-                self.next_request_at = time.monotonic() + self.request_interval
+            # Batch groups share pacing, while cache and request budgets remain
+            # local to each fetcher. Redirects and references use the same clock.
+            remaining = self.pacer.wait(deadline)
             self.count += 1
             self.session.cookies.clear()
             try:

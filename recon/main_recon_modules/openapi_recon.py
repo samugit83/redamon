@@ -30,15 +30,17 @@ class Diagnostics(list):
 def scope_payload(settings):
     root = str(settings.get('TARGET_DOMAIN') or '').strip().lower().rstrip('.')
     prefixes = settings.get('SUBDOMAIN_LIST') or []
-    actual = [p.rstrip('.') for p in prefixes if isinstance(p, str) and p.rstrip('.')]
+    prefixes = [p.strip() for p in prefixes if isinstance(p, str)]
+    wildcard = '*' in prefixes
+    actual = [p.rstrip('.') for p in prefixes if p.rstrip('.') and p != '*']
     if settings.get('IP_MODE'):
         return {'root': '', 'hosts': [], 'include_subdomains': False, 'include_root': False,
                 'ip_networks': list(settings.get('TARGET_IPS') or []),
                 'excluded_hosts': list(settings.get('ROE_EXCLUDED_HOSTS') or []) if settings.get('ROE_ENABLED') else []}
     return {'root': root,
             'hosts': [f'{p}.{root}' for p in actual],
-            'include_subdomains': not actual,
-            'include_root': any(isinstance(p, str) and not p.rstrip('.') for p in prefixes),
+            'include_subdomains': wildcard or (not actual and not settings.get('DOMAIN_BATCH_MODE')),
+            'include_root': any(not p.rstrip('.') for p in prefixes),
             'ip_networks': list(settings.get('TARGET_IPS') or []) if settings.get('IP_MODE') else [],
             'excluded_hosts': list(settings.get('ROE_EXCLUDED_HOSTS') or []) if settings.get('ROE_ENABLED') else []}
 
@@ -80,7 +82,7 @@ def embedded_document(text):
     return None
 
 
-def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
+def run_openapi_recon(recon_data: dict, settings: dict, *, pacer=None) -> dict:
     if not settings.get('OPENAPI_ENABLED', True) or settings.get('STEALTH_MODE', False):
         return recon_data
     scope_data = scope_payload(settings)
@@ -94,7 +96,7 @@ def run_openapi_recon(recon_data: dict, settings: dict) -> dict:
     max_documents = min(max(int(settings.get('OPENAPI_MAX_DOCUMENTS', 50)), 1), 200)
     proxy_routing.configure(settings)
     fetcher = Fetcher(settings.get('OPENAPI_TIMEOUT', 10), max_requests=max_documents * 10,
-                      max_rps=settings.get('ROE_GLOBAL_MAX_RPS', 0))
+                      max_rps=settings.get('ROE_GLOBAL_MAX_RPS', 0), pacer=pacer)
     queue = deque()
     seen = set()
     source_count = 0
