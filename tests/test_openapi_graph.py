@@ -6,6 +6,7 @@ import re
 import sys
 import unittest
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,11 +27,15 @@ class _Result:
     def single(self):
         return self._record
 
+    def consume(self):
+        return SimpleNamespace(counters=SimpleNamespace(relationships_created=2))
+
 
 class _Session:
     def __init__(self):
         self.queries = []
         self.declarations = {}
+        self.summary = None
         self.fail_endpoint_write = False
 
     def __enter__(self):
@@ -51,6 +56,10 @@ class _Session:
 
     def run(self, query, **kwargs):
         self.queries.append((query, kwargs))
+        if "RETURN d.openapi_summary AS summary" in query:
+            return _Result({"summary": self.summary})
+        if "d.openapi_summary = $openapi_summary" in query:
+            self.summary = kwargs["openapi_summary"]
         if "RETURN e.openapi_declarations AS declarations" in query:
             value = self.declarations.get(self._key(kwargs))
             return _Result({"declarations": value} if value is not None else None)
@@ -225,6 +234,54 @@ class TestOpenApiScope(unittest.TestCase):
 
 
 class TestOpenApiGraph(unittest.TestCase):
+    def test_ip_domain_anchor_ignores_stale_domain_and_metadata(self):
+        client = _Client()
+        payload = _payload([_operation(baseurl="https://192.0.2.10")], scope={
+            "root": "", "hosts": [], "include_subdomains": False,
+            "include_root": False, "ip_networks": ["192.0.2.0/24"],
+            "excluded_hosts": [],
+        })
+        payload["domain"] = "old.example.test"
+        payload["metadata"] = {"root_domain": "older.example.test"}
+        stats = client.update_graph_from_openapi(payload, "u", "p")
+        self.assertEqual(stats["errors"], [])
+        domains = {params["domain"] for _, params in client.session.queries
+                   if "domain" in params}
+        self.assertEqual(domains, {"ip-targets.p"})
+
+    def test_ip_fallback_matches_pipeline_mock_names(self):
+        from graph_db.mixins.recon.openapi_mixin import _subdomain_name
+
+        self.assertEqual(_subdomain_name({}, "192.0.2.10"), "192-0-2-10")
+        self.assertEqual(_subdomain_name({}, "2001:db8::10"), "2001-db8--10")
+        self.assertEqual(_subdomain_name({"metadata": {"ip_to_hostname": {
+            "192.0.2.10": "ptr.example.test",
+        }}}, "192.0.2.10"), "ptr.example.test")
+
+    def test_relationship_count_comes_from_write_counters(self):
+        client = _Client()
+        stats = client.update_graph_from_openapi(_payload([_operation()]), "u", "p")
+        self.assertEqual(stats["errors"], [])
+        self.assertEqual(stats["relationships_created"], 2)
+
+    def test_summary_partial_import_retains_other_sources_and_replaces_current(self):
+        client = _Client()
+        initial = _payload([])
+        initial["openapi"]["documents"].append({
+            "url": "https://other.example.test/spec.json", "source_id": "source-b",
+            "version": "3.0.0",
+        })
+        client.update_graph_from_openapi(initial, "u", "p")
+        update = _payload([])
+        update["openapi"]["documents"][0]["version"] = "3.1.1"
+        for _ in range(2):
+            client.update_graph_from_openapi(update, "u", "p")
+        summary = json.loads(client.session.summary)
+        self.assertEqual(len(summary["documents"]), 2)
+        self.assertEqual({d["source_id"]: d["version"] for d in summary["documents"]},
+                         {"source-a": "3.1.1", "source-b": "3.0.0"})
+        self.assertEqual(len(summary["diagnostics"]), 1)
+
     def test_only_in_scope_operations_are_written(self):
         client = _Client()
         stats = client.update_graph_from_openapi(_payload([

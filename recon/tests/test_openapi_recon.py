@@ -123,7 +123,7 @@ paths:
 def test_fetch_headers_do_not_cross_origins(monkeypatch):
     result, calls = run(monkeypatch, {
         'https://docs.example.com/openapi.json': Response('', 302, {'Location': 'https://other.example.com/spec.json'})},
-        {'OPENAPI_SOURCES': [{'url': 'https://docs.example.com/openapi.json', 'headers': ['Authorization: Bearer fixture-token']}]})
+        {'AUTH_PROFILE': {'authType': 'bearer', 'authValue': 'fixture-token'}})
     assert len(calls) == 1
     assert calls[0][1]['headers']['Authorization'] == 'Bearer fixture-token'
     assert result['operations'] == []
@@ -191,8 +191,7 @@ def test_external_reference_does_not_forward_credentials(monkeypatch):
     doc = spec(paths={'/users': {'get': {'parameters': [{'$ref': 'https://vendor.test/params#/id'}],
                                       'responses': {'200': {'description': 'OK'}}}}})
     result, calls = run(monkeypatch, {'https://docs.example.com/openapi.json': Response(doc)},
-                        {'OPENAPI_SOURCES': [{'url': 'https://docs.example.com/openapi.json',
-                                              'headers': ['Authorization: Bearer fixture-token']}]})
+                        {'AUTH_PROFILE': {'authType': 'bearer', 'authValue': 'fixture-token'}})
     assert len(calls) == 1
     assert result['operations'][0]['operation']['parameters'][0]['$ref']
     assert any(d['code'] == 'unresolved_reference' for d in result['diagnostics'])
@@ -337,10 +336,11 @@ def test_ip_mode_ignores_stale_domain_prefixes(monkeypatch):
 def test_source_identity_survives_reordering_and_header_rotation(monkeypatch):
     urls = ['https://docs.example.com/one', 'https://docs.example.com/two']
     documents = {url: Response(spec()) for url in urls}
-    sources = [{'url': url, 'id': f'fixture-{i}', 'headers': ['Authorization: Bearer old']} for i, url in enumerate(urls)]
-    first, _ = run(monkeypatch, documents, {'OPENAPI_SOURCES': sources})
-    second, _ = run(monkeypatch, documents, {'OPENAPI_SOURCES': [{**source, 'headers': ['Authorization: Bearer new']}
-                                                               for source in reversed(sources)]})
+    sources = [{'url': url, 'id': f'fixture-{i}'} for i, url in enumerate(urls)]
+    first, _ = run(monkeypatch, documents, {'OPENAPI_SOURCES': sources,
+        'AUTH_PROFILE': {'authType': 'bearer', 'authValue': 'fixture-old'}})
+    second, _ = run(monkeypatch, documents, {'OPENAPI_SOURCES': list(reversed(sources)),
+        'AUTH_PROFILE': {'authType': 'bearer', 'authValue': 'fixture-new'}})
     assert {op['source_id'] for op in first['operations']} == {op['source_id'] for op in second['operations']}
 
 

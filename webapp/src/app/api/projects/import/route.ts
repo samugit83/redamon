@@ -1,3 +1,4 @@
+import { stripLegacyOpenApiHeaders } from '@/lib/validation/openapiSettings'
 import { NextRequest, NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
@@ -209,7 +210,7 @@ export async function POST(request: NextRequest) {
     if (!projectFile) {
       return NextResponse.json({ error: 'Invalid export: missing project.json' }, { status: 400 })
     }
-    const projectData = JSON.parse(await projectFile.async('text'))
+    const projectData = stripLegacyOpenApiHeaders(JSON.parse(await projectFile.async('text')))
 
     // Strip fields that will be regenerated.
     //

@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 
@@ -99,6 +100,98 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
         finally:
             cls.driver.close()
 
+    def test_relationship_counters_match_graph_changes_and_repeat_is_zero(self):
+        payload = _recon([_operation("GET", "counters", "Count", "counters.example.com"),
+                          _operation("POST", "counters", "Count", "counters.example.com")])
+
+        def count_relationships():
+            with self.driver.session() as session:
+                return session.run(
+                    "MATCH (n {user_id: $user_id, project_id: $project_id})-[r]->() "
+                    "RETURN count(r) AS count", user_id=self.user_id,
+                    project_id=self.project_id,
+                ).single()["count"]
+
+        before = count_relationships()
+        first = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+        self.assertEqual(first["errors"], [])
+        self.assertEqual(first["relationships_created"], count_relationships() - before)
+        self.assertEqual(first["relationships_created"], 5)
+        second = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+        self.assertEqual(second["errors"], [])
+        self.assertEqual(second["relationships_created"], 0)
+
+    def test_ip_import_reuses_pipeline_mock_subdomain(self):
+        domain = f"ip-targets.{self.project_id}"
+        with self.driver.session() as session:
+            session.run(
+                "CREATE (:Subdomain {name: '192-0-2-10', user_id: $user_id, "
+                "project_id: $project_id, source: 'dns'})",
+                user_id=self.user_id, project_id=self.project_id,
+            ).consume()
+        payload = _recon([_operation("GET", "ip-spec", "IP", "192.0.2.10")])
+        payload["domain"] = domain
+        payload["openapi"]["scope"] = {
+            "root": "", "hosts": [], "include_subdomains": False,
+            "include_root": False, "ip_networks": ["192.0.2.0/24"], "excluded_hosts": [],
+        }
+        stats = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
+        self.assertEqual(stats["errors"], [])
+        with self.driver.session() as session:
+            rows = list(session.run(
+                "MATCH (s:Subdomain {user_id: $user_id, project_id: $project_id}) "
+                "WHERE s.name IN ['192-0-2-10', '192.0.2.10'] "
+                "OPTIONAL MATCH (s)-[:HAS_BASE_URL]->(b:BaseURL) "
+                "RETURN s.name AS name, s.source AS source, b.url AS url",
+                user_id=self.user_id, project_id=self.project_id,
+            ))
+        self.assertEqual([dict(row) for row in rows], [{
+            "name": "192-0-2-10", "source": "dns", "url": "https://192.0.2.10",
+        }])
+
+    def test_concurrent_partial_summaries_preserve_sources_and_refresh_diagnostics(self):
+        domain = "summary.example.com"
+
+        def payload_for(index, version="3.0.0"):
+            payload = _recon([])
+            payload["domain"] = domain
+            payload["openapi"]["scope"]["root"] = domain
+            payload["openapi"]["documents"] = [{
+                "url": "https://docs.example.com/same.json", "source_id": f"source-{index}",
+                "version": version,
+            }]
+            return payload
+
+        seed = payload_for(0)
+        seed["openapi"]["diagnostics"] = [{
+            "url": "https://unrelated.example.com/spec.json", "code": "fetch_failed",
+            "message": "HTTP 404",
+        }, {"url": "https://docs.example.com/same.json", "code": "old_error"}]
+        self.assertEqual(self.client.update_graph_from_openapi(
+            seed, self.user_id, self.project_id)["errors"], [])
+
+        def import_source(index):
+            return self.client.update_graph_from_openapi(
+                payload_for(index), self.user_id, self.project_id)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(import_source, range(1, 9)))
+        self.assertTrue(all(not result["errors"] for result in results), results)
+        for _ in range(2):
+            self.assertEqual(self.client.update_graph_from_openapi(
+                payload_for(3, "3.1.1"), self.user_id, self.project_id)["errors"], [])
+        with self.driver.session() as session:
+            record = session.run(
+                "MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id}) "
+                "RETURN d.openapi_summary AS summary", domain=domain,
+                user_id=self.user_id, project_id=self.project_id,
+            ).single()
+        summary = json.loads(record["summary"])
+        self.assertEqual(len(summary["documents"]), 9)
+        self.assertEqual({item["source_id"]: item["version"] for item in summary["documents"]},
+                         {f"source-{i}": "3.1.1" if i == 3 else "3.0.0" for i in range(9)})
+        self.assertEqual(summary["diagnostics"], [seed["openapi"]["diagnostics"][0]])
+
     def test_existing_service_path_does_not_gain_a_subdomain_fallback(self):
         self._assert_service_linking("service.example.com", self.user_id, False)
 
@@ -126,10 +219,12 @@ class TestOpenApiGraphIntegration(unittest.TestCase):
                 project_id=self.project_id, baseurl=baseurl,
             ).consume()
         payload = _recon([_operation("GET", "service-spec", "Declared operation", host)])
-        for _ in range(2):
+        for iteration in range(2):
             stats = self.client.update_graph_from_openapi(payload, self.user_id, self.project_id)
             self.assertEqual(stats["errors"], [])
             self.assertEqual(stats["operations_imported"], 1)
+            self.assertEqual(stats["relationships_created"],
+                             3 + int(expect_fallback) if iteration == 0 else 0)
         with self.driver.session() as session:
             row = session.run(
                 """

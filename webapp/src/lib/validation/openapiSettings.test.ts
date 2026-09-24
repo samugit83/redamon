@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'vitest'
-import { normalizeOpenApiSourceIds, validateOpenApiSettings } from './openapiSettings'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings, stripLegacyOpenApiHeaders } from './openapiSettings'
 
 describe('validateOpenApiSettings', () => {
-  test('accepts configured sources and origin-bound discovery headers', () => {
+  test('accepts configured sources', () => {
     expect(validateOpenApiSettings({
       openapiEnabled: true,
       openapiAutoDiscover: true,
@@ -11,18 +11,13 @@ describe('validateOpenApiSettings', () => {
       openapiSources: [{
         id: 'source-primary',
         url: 'https://docs.example.test/openapi.yaml',
-        headers: ['Authorization: Bearer secret'],
         serverOverride: 'https://api.example.test/v2',
         enabled: true,
-      }],
-      openapiDiscoveryHeaders: [{
-        origin: 'https://docs.example.test',
-        headers: ['X-API-Key: secret'],
       }],
     })).toBeNull()
   })
 
-  test('allows a source to omit optional headers', () => {
+  test('allows a source to omit optional settings', () => {
     expect(validateOpenApiSettings({
       openapiSources: [{ url: 'https://docs.example.test/openapi.json' }],
     })).toBeNull()
@@ -45,12 +40,8 @@ describe('validateOpenApiSettings', () => {
     [{ openapiSources: 'https://docs.example.test/openapi.json' }, 'openapiSources must be an array'],
     [{ openapiSources: [{}] }, 'openapiSources[0].url must be an absolute HTTP(S) URL'],
     [{ openapiSources: [{ url: 'file:///tmp/openapi.yaml', headers: [] }] }, 'openapiSources[0].url must be an absolute HTTP(S) URL'],
-    [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: 'Authorization: secret' }] }, 'openapiSources[0].headers must be an array of header lines'],
-    [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: ['missing delimiter'] }] }, 'openapiSources[0].headers[0] must be a valid HTTP header line'],
     [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: [], serverOverride: '/v2' }] }, 'openapiSources[0].serverOverride must be an absolute HTTP(S) URL'],
     [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', serverOverride: 'https://api.example.test/v2?token=secret' }] }, 'openapiSources[0].serverOverride must be an absolute HTTP(S) URL without a query'],
-    [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: ['Host: attacker.test'] }] }, 'openapiSources[0].headers[0] uses a forbidden HTTP header'],
-    [{ openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['Content-Length: 20'] }] }, 'openapiDiscoveryHeaders[0].headers[0] uses a forbidden HTTP header'],
     [{ openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: [], enabled: 'yes' }] }, 'openapiSources[0].enabled must be a boolean'],
     [{ openapiSources: [{ id: '', url: 'https://docs.example.test/openapi.json' }] }, 'openapiSources[0].id must be a non-empty string of at most 128 characters'],
     [{ openapiSources: [{ id: 'a'.repeat(129), url: 'https://docs.example.test/openapi.json' }] }, 'openapiSources[0].id must be a non-empty string of at most 128 characters'],
@@ -58,7 +49,6 @@ describe('validateOpenApiSettings', () => {
       { id: 'source-1', url: 'https://docs.example.test/one.json' },
       { id: 'source-1', url: 'https://docs.example.test/two.json' },
     ] }, 'openapiSources[1].id must be unique'],
-    [{ openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test/path', headers: [] }] }, 'openapiDiscoveryHeaders[0].origin must contain only an HTTP(S) origin'],
     [{ openapiTimeout: 0 }, 'openapiTimeout must be an integer between 1 and 60'],
     [{ openapiMaxDocuments: 0 }, 'openapiMaxDocuments must be an integer between 1 and 200'],
   ])('rejects malformed OpenAPI settings without echoing credential values', (settings, expected) => {
@@ -74,4 +64,18 @@ test('validates project discovery paths and permits an empty list', () => {
   for (const paths of [['//external.test/spec'], ['https://external.test/spec'], ['/bad?x=1'], ['/bad#x'], ['/bad\\path'], [''], Array(201).fill('/docs'), 'invalid']) {
     expect(validateOpenApiSettings({ openapiDiscoveryPaths: paths })).toContain('openapiDiscoveryPaths')
   }
+})
+test('strips legacy plaintext credentials without mutating the stored project', () => {
+  const legacy = {
+    name: 'Copy',
+    openapiSources: [{ id: 'source-1', url: 'https://example.test/spec', enabled: true,
+      serverOverride: 'https://example.test/api', headers: ['Authorization: old-source-secret'],
+      unknown: { headers: ['nested-secret'] } }],
+    openapiDiscoveryHeaders: [{ origin: 'https://example.test', headers: ['Cookie: old-discovery-secret'] }],
+  }
+  const clean = stripLegacyOpenApiHeaders(legacy)
+  expect(clean).toEqual({ name: 'Copy', openapiSources: [{ id: 'source-1',
+    url: 'https://example.test/spec', enabled: true, serverOverride: 'https://example.test/api' }] })
+  expect(JSON.stringify(clean)).not.toContain('secret')
+  expect(legacy.openapiSources[0].headers).toHaveLength(1)
 })

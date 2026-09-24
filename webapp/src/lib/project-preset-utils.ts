@@ -57,6 +57,8 @@ const UNCLASSIFIED_EXCLUDED_FIELDS = [
 export const PRESET_EXCLUDED_FIELDS: ReadonlySet<string> = new Set([
   ...UNCLASSIFIED_EXCLUDED_FIELDS,
   ...fieldsWhere(f => f.mcp === 'create_only').map(f => f.key),
+  // Retired column may still be present in saved presets and imported exports.
+  'openapiDiscoveryHeaders',
   ...engagementLimitFields().map(f => f.key),
   ...engagementRecordFields().map(f => f.key),
   ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),

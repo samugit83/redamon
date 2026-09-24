@@ -191,8 +191,8 @@ describe('the dispositions cover the model', () => {
     // rather than a pipeline parameter.
     expect(counts.settable).toBeGreaterThan(600)
     const record = fieldsWhere(f => f.deny_reason === 'engagement-record').length
-    // OpenAPI source and discovery headers are two credential-bearing columns.
-    expect(counts.never - record).toBeLessThan(27)
+    // OpenAPI source URLs may carry credentials and remain project-specific.
+    expect(counts.never - record).toBeLessThan(26)
   })
 
   test('there is no tighten-only disposition left to hold anything', () => {

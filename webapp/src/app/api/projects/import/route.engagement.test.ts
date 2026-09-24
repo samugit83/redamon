@@ -144,3 +144,16 @@ describe('row 9: an unauthorized third-party bundle is refused', () => {
     expect(h.createProject.mock.calls[0][0].data.engagementKind).toBe('internal')
   })
 })
+
+test('importing a legacy project copy discards plaintext OpenAPI headers', async () => {
+  const res = await POST(await bundle({
+    engagementKind: 'internal',
+    openapiSources: [{ id: 's1', url: 'https://example.test/spec', headers: ['Authorization: legacy-secret'] }],
+    openapiDiscoveryHeaders: [{ origin: 'https://example.test', headers: ['Cookie: legacy-secret'] }],
+  }, []))
+  expect(res.status).toBeLessThan(400)
+  const stored = h.createProject.mock.calls[0][0].data
+  expect(stored.openapiSources).toEqual([{ id: 's1', url: 'https://example.test/spec' }])
+  expect(stored).not.toHaveProperty('openapiDiscoveryHeaders')
+  expect(JSON.stringify(stored)).not.toContain('legacy-secret')
+})

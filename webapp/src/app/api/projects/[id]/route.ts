@@ -21,7 +21,7 @@ import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { validateCrossFieldRules, writeFireteamAudit } from '@/lib/reconSettings/crossField'
 import { JEV_ENGINE_SELECT, validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { seedProjectDomains } from '@/lib/graphSeedDomains'
-import { normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings, stripLegacyOpenApiHeaders } from '@/lib/validation/openapiSettings'
 
 // Path to output directories (fallback for local deletion)
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/recon/output'
@@ -120,7 +120,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       nodeFilterExemptions?: { label: string; nodeKey: string }[]
     }
     const projectWithoutBinary = {
-      ...rest,
+      ...stripLegacyOpenApiHeaders(rest),
       authProfile: isServiceCaller ? authProfile : toAuthProfileMetadata(authProfile),
       ...(isServiceCaller
         ? {
@@ -174,7 +174,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       })
     }
 
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json(stripLegacyOpenApiHeaders(projectWithoutBinary))
   } catch (error) {
     console.error('Failed to fetch project:', error)
     return NextResponse.json(
@@ -213,7 +213,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       authProfile: _authProfile,
       roeEnabled: _roeEnabledDerived,
       ...rawUpdate
-    } = body
+    } = stripLegacyOpenApiHeaders(body)
 
     // The form sends back the updatedAt of the row it is editing. Writing only
     // while it still matches is what stops a form left open from reverting,
@@ -467,7 +467,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json(stripLegacyOpenApiHeaders(projectWithoutBinary))
   } catch (error: unknown) {
     console.error('Failed to update project:', error)
 

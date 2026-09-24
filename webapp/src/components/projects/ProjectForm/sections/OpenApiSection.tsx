@@ -13,14 +13,8 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 interface OpenApiSource {
   id?: string
   url: string
-  headers?: string[]
   serverOverride?: string
   enabled?: boolean
-}
-
-interface DiscoveryHeaders {
-  origin: string
-  headers: string[]
 }
 
 interface OpenApiSectionProps {
@@ -37,22 +31,13 @@ export function OpenApiSection({ data, updateField, onRun }: OpenApiSectionProps
   const [isOpen, setIsOpen] = useState(true)
   const discoveryPaths = data.openapiDiscoveryPaths ?? DEFAULT_OPENAPI_DISCOVERY_PATHS
   const sources = arrayValue<OpenApiSource>(data.openapiSources)
-  const discoveryHeaders = arrayValue<DiscoveryHeaders>(data.openapiDiscoveryHeaders)
 
   const setSources = (next: OpenApiSource[]) => {
     updateField('openapiSources', next as unknown as FormData['openapiSources'])
   }
-  const setDiscoveryHeaders = (next: DiscoveryHeaders[]) => {
-    updateField('openapiDiscoveryHeaders', next as unknown as FormData['openapiDiscoveryHeaders'])
-  }
-
   const updateSource = (index: number, patch: Partial<OpenApiSource>) => {
     setSources(sources.map((source, sourceIndex) => sourceIndex === index ? { ...source, ...patch } : source))
   }
-  const updateDiscovery = (index: number, patch: Partial<DiscoveryHeaders>) => {
-    setDiscoveryHeaders(discoveryHeaders.map((entry, entryIndex) => entryIndex === index ? { ...entry, ...patch } : entry))
-  }
-
   return (
     <div className={styles.section}>
       <div className={styles.sectionHeader} onClick={() => setIsOpen(!isOpen)}>
@@ -117,7 +102,7 @@ export function OpenApiSection({ data, updateField, onRun }: OpenApiSectionProps
 
               <div className={styles.subSection}>
                 <h3 className={styles.subSectionTitle}>Configured documents</h3>
-                <p className={styles.fieldHint}>Headers are sent only to the source URL origin. Enter one header per line.</p>
+                <p className={styles.fieldHint}>Protected specifications use the project’s Authenticated Session. Configure credentials there; session headers and cookies are sent only to allowed origins.</p>
                 {sources.map((source, index) => (
                   <div className={styles.subSection} key={`openapi-source-${index}`}>
                     <div className={styles.toggleRow}>
@@ -137,33 +122,11 @@ export function OpenApiSection({ data, updateField, onRun }: OpenApiSectionProps
                         <input type="url" className="textInput" value={source.serverOverride ?? ''} placeholder="https://api.example.test/v2" onChange={(event) => updateSource(index, { serverOverride: event.target.value || undefined })} />
                       </div>
                     </div>
-                    <div className={styles.fieldGroup}>
-                      <label className={styles.fieldLabel}>Fetch headers</label>
-                      <textarea className="textarea" rows={3} value={(source.headers ?? []).join('\n')} onChange={(event) => updateSource(index, { headers: event.target.value.split('\n').filter(Boolean) })} placeholder="Authorization: Bearer token" />
-                    </div>
                   </div>
                 ))}
-                <button type="button" className="secondaryButton" onClick={() => setSources([...sources, { id: crypto.randomUUID(), url: '', headers: [], enabled: true }])}><Plus size={14} /> Add document</button>
+                <button type="button" className="secondaryButton" onClick={() => setSources([...sources, { id: crypto.randomUUID(), url: '', enabled: true }])}><Plus size={14} /> Add document</button>
               </div>
 
-              <div className={styles.subSection}>
-                <h3 className={styles.subSectionTitle}>Discovery headers</h3>
-                <p className={styles.fieldHint}>Apply protected-document headers only to the exact origin shown here.</p>
-                {discoveryHeaders.map((entry, index) => (
-                  <div className={styles.fieldRow} key={`openapi-discovery-${index}`}>
-                    <div className={styles.fieldGroup}>
-                      <label className={styles.fieldLabel}>Origin</label>
-                      <input type="url" className="textInput" value={entry.origin} placeholder="https://docs.example.test" onChange={(event) => updateDiscovery(index, { origin: event.target.value })} />
-                    </div>
-                    <div className={styles.fieldGroup}>
-                      <label className={styles.fieldLabel}>Headers</label>
-                      <textarea className="textarea" rows={3} value={entry.headers.join('\n')} onChange={(event) => updateDiscovery(index, { headers: event.target.value.split('\n').filter(Boolean) })} placeholder="X-API-Key: token" />
-                    </div>
-                    <button type="button" className="iconButton" onClick={() => setDiscoveryHeaders(discoveryHeaders.filter((_, i) => i !== index))} aria-label={`Remove discovery origin ${index + 1}`}><Trash2 size={14} /></button>
-                  </div>
-                ))}
-                <button type="button" className="secondaryButton" onClick={() => setDiscoveryHeaders([...discoveryHeaders, { origin: '', headers: [] }])}><Plus size={14} /> Add origin headers</button>
-              </div>
             </>
           )}
         </div>

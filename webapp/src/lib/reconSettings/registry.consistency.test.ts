@@ -372,7 +372,6 @@ describe('T16 exactly the documented columns are closed', () => {
     mcpKaliExecEnabled: 'escalation',
     cypherfixGithubToken: 'secret',
     openapiSources: 'secret',
-    openapiDiscoveryHeaders: 'secret',
     // Written only by an endpoint that also places the file on disk. Opening
     // the column creates a second writer that skips the file write, so the
     // column can name a file this project never uploaded.

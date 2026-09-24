@@ -181,6 +181,10 @@ def _record_value(record: Any, key: str):
 
 
 def _domain_name(recon_data: dict, scope: Scope, project_id: str) -> str:
+    # Switching to IP mode preserves hidden domain settings; partial imports
+    # must still attach to the same synthetic Domain as the full IP pipeline.
+    if scope.ip_networks:
+        return f"ip-targets.{project_id}"
     if scope.root:
         return scope.root
     metadata = recon_data.get("metadata") or {}
@@ -188,7 +192,7 @@ def _domain_name(recon_data: dict, scope: Scope, project_id: str) -> str:
         normalized = _normalize_host(candidate)
         if normalized:
             return normalized
-    return f"ip-targets.{project_id}" if scope.ip_networks else ""
+    return ""
 
 
 def _subdomain_name(recon_data: dict, host: str) -> str:
@@ -198,10 +202,10 @@ def _subdomain_name(recon_data: dict, host: str) -> str:
         return host
     metadata = recon_data.get("metadata") or {}
     mapped = (metadata.get("ip_to_hostname") or {}).get(host)
-    return _normalize_host(mapped) or host
+    return _normalize_host(mapped) or host.replace(".", "-").replace(":", "-")
 
 
-def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]) -> None:
+def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]) -> int:
     record = tx.run(
         """
         MERGE (e:Endpoint {path: $path, method: $method, baseurl: $baseurl,
@@ -215,7 +219,7 @@ def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]
         **parameters,
     ).single()
     merged = _merge_declarations(_record_value(record, "declarations"), declarations)
-    tx.run(
+    result = tx.run(
         """
         MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
         ON CREATE SET d.source = 'openapi',
@@ -259,6 +263,57 @@ def _persist_endpoint(tx, parameters: dict, meta: dict, declarations: list[dict]
         full_url=f'{parameters["baseurl"]}{parameters["path"]}',
         openapi_declarations=merged,
     )
+    return result.consume().counters.relationships_created
+
+
+def _merge_summary(existing: Any, incoming: dict) -> str:
+    try:
+        previous = json.loads(existing) if isinstance(existing, str) else {}
+    except (TypeError, ValueError):
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    documents = _summary_entries(previous.get("documents"),
+                                 ("url", "source_id", "sha256", "version", "operation_count"))
+    for document in incoming["documents"]:
+        documents = [item for item in documents if not _same_source(
+            {**item, "source_url": item.get("url")},
+            {**document, "source_url": document.get("url")},
+        )]
+        documents.append(document)
+    # Diagnostics have URL identity only; a successful refresh clears old errors.
+    refreshed_urls = {item.get("url") for group in incoming.values() for item in group}
+    diagnostics = [item for item in _summary_entries(
+        previous.get("diagnostics"), ("url", "code", "message"),
+    ) if item.get("url") not in refreshed_urls]
+    diagnostics.extend(incoming["diagnostics"])
+    return _json({
+        "documents": sorted({_json(item): item for item in documents}.values(), key=_json),
+        "diagnostics": sorted({_json(item): item for item in diagnostics}.values(), key=_json),
+    })
+
+
+def _persist_summary(tx, parameters: dict, summary: dict) -> None:
+    # Acquire the Domain write lock before reading JSON to serialize partial imports.
+    record = tx.run(
+        """
+        MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
+        ON CREATE SET d.source = 'openapi', d.created_at = datetime()
+        SET d.updated_at = datetime()
+        RETURN d.openapi_summary AS summary
+        """,
+        **parameters,
+    ).single()
+    merged = _merge_summary(_record_value(record, "summary"), summary)
+    tx.run(
+        """
+        MATCH (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
+        SET d.openapi_summary = $openapi_summary,
+            d.openapi_last_import_at = datetime()
+        """,
+        **parameters,
+        openapi_summary=merged,
+    ).consume()
 
 
 class OpenApiMixin:
@@ -323,26 +378,17 @@ class OpenApiMixin:
             ),
         }
         try:
-            openapi_summary = _json(summary)
+            _json(summary)
         except (TypeError, ValueError) as exc:
             stats["errors"].append(f"OpenAPI summary is not JSON serializable: {exc}")
-            openapi_summary = _json({"documents": [], "diagnostics": []})
+            summary = {"documents": [], "diagnostics": []}
 
         with self.driver.session() as session:
             try:
-                session.run(
-                    """
-                    MERGE (d:Domain {name: $domain, user_id: $user_id, project_id: $project_id})
-                    ON CREATE SET d.source = 'openapi',
-                                  d.created_at = datetime()
-                    SET d.openapi_summary = $openapi_summary,
-                        d.openapi_last_import_at = datetime(),
-                        d.updated_at = datetime()
-                    """,
-                    domain=domain_name,
-                    user_id=user_id,
-                    project_id=project_id,
-                    openapi_summary=openapi_summary,
+                session.execute_write(
+                    _persist_summary,
+                    {"domain": domain_name, "user_id": user_id, "project_id": project_id},
+                    summary,
                 )
             except Exception as exc:
                 stats["errors"].append(f"OpenAPI summary storage failed: {exc}")
@@ -361,12 +407,12 @@ class OpenApiMixin:
                     "project_id": project_id,
                 }
                 try:
-                    session.execute_write(
+                    relationships_created = session.execute_write(
                         _persist_endpoint, parameters, meta, declarations,
                     )
                     stats["operations_imported"] += len(declarations)
                     stats["endpoints_updated"] += 1
-                    stats["relationships_created"] += 4
+                    stats["relationships_created"] += relationships_created
                 except Exception as exc:
                     stats["errors"].append(
                         f"OpenAPI endpoint {method} {baseurl}{path} failed: {exc}"

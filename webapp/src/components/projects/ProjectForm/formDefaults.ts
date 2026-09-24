@@ -20,7 +20,6 @@ export const MINIMAL_DEFAULTS: Partial<Project> = {
   openapiAutoDiscover: false,
   openapiDiscoveryPaths: [...DEFAULT_OPENAPI_DISCOVERY_PATHS],
   openapiSources: [],
-  openapiDiscoveryHeaders: [],
   openapiTimeout: 10,
   openapiMaxDocuments: 50,
 }
