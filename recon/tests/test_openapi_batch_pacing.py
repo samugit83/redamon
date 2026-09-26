@@ -50,6 +50,8 @@ def settings():
 def test_partial_batch_paces_groups_and_resets_for_next_scan(monkeypatch, clock_and_requests):
     from recon.partial_recon_modules.openapi_recon import run_openapi_partial
     monkeypatch.setattr('recon.project_settings.get_settings', settings)
+    # Isolate the request ceiling from the separate inter-root pause.
+    monkeypatch.setattr('recon.partial_recon_modules.helpers.ROOT_PAUSE_S', 0)
     monkeypatch.setenv('USER_ID', 'fixture-user')
     monkeypatch.setenv('PROJECT_ID', 'fixture-project')
     _, calls = clock_and_requests
@@ -63,10 +65,11 @@ def test_full_batch_paces_groups_and_resets_for_next_scan(tmp_path, clock_and_re
     path = Path(__file__).parents[1] / 'main.py'
     tree = ast.parse(path.read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-                 and node.name in ('run_domain_batch', '_maybe_run_openapi')]
+                 and node.name in ('run_domain_batch', '_maybe_run_openapi', '_eligible_batch_roots')]
     config = settings()
     namespace = {
         'Path': Path, 'datetime': datetime, '_settings': config,
+        'VERIFY_DOMAIN_OWNERSHIP': False, '_seed_batch_root_domains': Mock(),
         'OUTPUT_DIR': tmp_path, 'PROJECT_ID': 'fixture-project',
         'clear_batch_outputs': Mock(return_value=0), 'initialize_batch_canonical': Mock(),
         'merge_batch_outputs': Mock(), 'save_recon_file': Mock(),

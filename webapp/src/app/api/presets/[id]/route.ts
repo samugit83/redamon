@@ -1,4 +1,4 @@
-import { stripExcludedOnApply } from '@/lib/project-preset-utils'
+import { pickPresetFields } from '@/lib/project-preset-utils'
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, assertOwner } from '@/lib/access'
@@ -26,7 +26,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({
       ...preset,
-      settings: stripExcludedOnApply((preset.settings ?? {}) as Record<string, unknown>),
+      settings: pickPresetFields((preset.settings ?? {}) as Record<string, unknown>),
     })
   } catch (error) {
     console.error('Failed to fetch preset:', error)

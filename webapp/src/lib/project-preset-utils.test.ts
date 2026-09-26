@@ -160,7 +160,9 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
 describe('PRESET_FIELD_KEYS', () => {
   test('with the excluded set, partitions the whole registry exactly', () => {
     const all = fieldKeys()
-    expect(PRESET_FIELD_KEYS.length + PRESET_EXCLUDED_FIELDS.size).toBe(all.length)
+    const excludedColumns = all.filter(key => PRESET_EXCLUDED_FIELDS.has(key))
+    expect(PRESET_FIELD_KEYS.length + excludedColumns.length).toBe(all.length)
+    expect([...PRESET_EXCLUDED_FIELDS].filter(key => !all.includes(key))).toEqual(['openapiDiscoveryHeaders'])
     for (const key of all) {
       expect(PRESET_FIELD_KEYS.includes(key) !== PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
     }
