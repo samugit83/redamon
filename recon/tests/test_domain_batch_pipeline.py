@@ -161,7 +161,7 @@ class TestBatchLoop:
     def test_runs_every_group_in_the_given_order(self, recon_main, tmp_path):
         seen = []
         with mock.patch.object(recon_main, 'run_domain_group',
-                               side_effect=lambda d, p, start_time=None: seen.append(d) or 0), \
+                               side_effect=lambda d, p, start_time=None, *, openapi_pacer=None: seen.append(d) or 0), \
              mock.patch.object(recon_main, 'OUTPUT_DIR', tmp_path), \
              mock.patch.object(recon_main, 'merge_batch_outputs'):
             rc = recon_main.run_domain_batch(
@@ -173,7 +173,7 @@ class TestBatchLoop:
     def test_a_failing_group_does_not_abort_the_rest(self, recon_main, tmp_path):
         seen = []
 
-        def _run(domain, prefixes, start_time=None):
+        def _run(domain, prefixes, start_time=None, *, openapi_pacer=None):
             seen.append(domain)
             return 1 if domain == 'b.com' else 0
 
@@ -189,7 +189,7 @@ class TestBatchLoop:
     def test_a_raising_group_does_not_abort_the_rest(self, recon_main, tmp_path):
         seen = []
 
-        def _run(domain, prefixes, start_time=None):
+        def _run(domain, prefixes, start_time=None, *, openapi_pacer=None):
             seen.append(domain)
             if domain == 'a.com':
                 raise RuntimeError('DNS exploded')
@@ -217,7 +217,7 @@ class TestBatchLoop:
         # domain, which is exactly what batch mode promises not to do.
         seen = []
         with mock.patch.object(recon_main, 'run_domain_group',
-                               side_effect=lambda d, p, start_time=None: seen.append(d) or 0), \
+                               side_effect=lambda d, p, start_time=None, *, openapi_pacer=None: seen.append(d) or 0), \
              mock.patch.object(recon_main, 'OUTPUT_DIR', tmp_path), \
              mock.patch.object(recon_main, 'merge_batch_outputs'):
             recon_main.run_domain_batch(

@@ -18,6 +18,7 @@ import { NmapSection } from '../sections/NmapSection'
 import { TlsxSection } from '../sections/TlsxSection'
 import { HttpxSection } from '../sections/HttpxSection'
 import { KatanaSection } from '../sections/KatanaSection'
+import { OpenApiSection } from '../sections/OpenApiSection'
 import { ZapAjaxSpiderSection } from '../sections/ZapAjaxSpiderSection'
 import { HakrawlerSection } from '../sections/HakrawlerSection'
 import { JsluiceSection } from '../sections/JsluiceSection'
@@ -106,6 +107,7 @@ export function WorkflowNodeModal({
       case 'Tlsx':              return <TlsxSection {...baseProps} />
       case 'Httpx':             return <HttpxSection {...baseProps} />
       case 'Katana':            return <KatanaSection {...baseProps} />
+      case 'OpenAPI':           return <OpenApiSection {...baseProps} />
       case 'ZapAjaxSpider':     return <ZapAjaxSpiderSection {...baseProps} />
       case 'Hakrawler':         return <HakrawlerSection {...baseProps} />
       case 'Jsluice':           return <JsluiceSection {...baseProps} />

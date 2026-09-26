@@ -3,6 +3,8 @@
 ### Infrastructure Nodes (Hierarchy: Domain -> Subdomain -> IP -> Port -> Service)
 
 **Domain** - Root domain being assessed
+- openapi_summary (string): JSON document inventory merged by source identity across OpenAPI imports, with sanitized diagnostics refreshed per URL and unrelated sources retained
+- openapi_last_import_at (datetime): Timestamp of the latest OpenAPI import
 - name (string): "example.com"
 - wildcard_mode (boolean): this domain was ENUMERATED (the operator wrote `*.domain.com` in a Domain batch, or it is a single-domain full-discovery run), rather than scanned as the exact host list that was supplied
 - registrar, creation_date, expiration_date (WHOIS data)
@@ -196,7 +198,10 @@ Additional properties present on this node type, not yet described:
 
 ### Web Application Nodes (Hierarchy: BaseURL -> Endpoint -> Parameter)
 
-**BaseURL** - HTTP-probed base URLs
+**BaseURL** - HTTP-probed base URLs or declared OpenAPI server origins
+- scheme (string): Declared server scheme, http or https
+- host (string): Normalized declared server hostname or IP
+- port (integer): Declared server port, including the scheme default
 - url (string): "https://api.example.com:443"
 - status_code (integer): 200, 301, 404
 - title (string): page title
@@ -212,6 +217,9 @@ Additional properties present on this node type, not yet described:
 - discovery_source
 
 **Endpoint** - Discovered web endpoints/paths
+- openapi_declared (boolean): Operation declared in an imported specification; does not establish reachability or authorization
+- openapi_declarations (string): JSON array of source_url, optional source_id, document_hash, operation_ref and resolved operation objects. Imported declarations do not overwrite observed response fields
+- _openapi_write_lock (string): Transaction-local lock token used to serialize declaration merges; removed before commit
 - url (string): "https://api.example.com/api/v1/users"
 - path (string): "/api/v1/users"
 - method (string): "GET", "POST"

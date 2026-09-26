@@ -8521,6 +8521,146 @@
    "type": "int",
    "unit": "seconds"
   },
+  "openapiAutoDiscover": {
+   "default": false,
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Discover specifications from crawl results and configured paths on known in-scope base URLs. Opt-in and disabled in stealth mode.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_AUTO_DISCOVER",
+   "stealth": {
+    "set": false
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "boolean",
+   "unit": "none"
+  },
+  "openapiDiscoveryPaths": {
+   "default": [
+    "/openapi.json",
+    "/openapi.yaml",
+    "/swagger.json",
+    "/swagger.yaml",
+    "/v3/api-docs",
+    "/v2/api-docs",
+    "/swagger/v1/swagger.json",
+    "/swagger-ui/index.html",
+    "/swagger-ui.html",
+    "/docs",
+    "/api-docs",
+    "/api-docs/"
+   ],
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Paths probed for OpenAPI documents during auto-discovery. Empty disables common-path probes.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "String[]",
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_DISCOVERY_PATHS",
+   "stealth": {
+    "set": []
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "string-list",
+   "unit": "none",
+   "validator": "free_text"
+  },
+  "openapiEnabled": {
+   "default": true,
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Whether to import declared API operations from OpenAPI documents. Fetches specifications but never calls declared operations.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_ENABLED",
+   "stealth": {
+    "set": false
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "boolean",
+   "unit": "none"
+  },
+  "openapiMaxDocuments": {
+   "bounds": {
+    "min": 1,
+    "max": 200
+   },
+   "default": 50,
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Maximum number of specification documents attempted per target run.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_MAX_DOCUMENTS",
+   "stealth": {
+    "ceiling": 1
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "int",
+   "unit": "count"
+  },
+  "openapiSources": {
+   "default": "[]",
+   "deny_reason": "secret",
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "never",
+   "meaning": "Project-specific specification sources. URLs may contain credentials; excluded from MCP reads and writes and reusable presets.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Json",
+   "read_deny_reason": "credential",
+   "readable": false,
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_SOURCES",
+   "stealth": {
+    "set": []
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "json",
+   "unit": "none",
+   "validator": "json_object"
+  },
+  "openapiTimeout": {
+   "bounds": {
+    "min": 1,
+    "max": 60
+   },
+   "default": 10,
+   "form_section": "OpenApiSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Per-request timeout in seconds when fetching a specification or same-origin reference.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "OPENAPI_TIMEOUT",
+   "stealth": {
+    "ceiling": 10
+   },
+   "tool": "openapi_recon",
+   "traffic": "active",
+   "type": "int",
+   "unit": "seconds"
+  },
   "originDiscoveryEnabled": {
    "default": false,
    "form_section": "OriginDiscoverySection",
@@ -14983,6 +15123,22 @@
     "Vulnerability"
    ],
    "title": "Nuclei",
+   "traffic": "active"
+  },
+  "openapi_recon": {
+   "enabled_key": "OPENAPI_ENABLED",
+   "form_section": "OpenApiSection",
+   "graph_writer": "update_graph_from_openapi",
+   "module": "recon.main_recon_modules.openapi_recon",
+   "partial_recon_module": "openapi_recon",
+   "phase": "resource_enum",
+   "produces": [
+    "Domain",
+    "Subdomain",
+    "BaseURL",
+    "Endpoint"
+   ],
+   "title": "OpenAPI ingestion",
    "traffic": "active"
   },
   "origin_discovery": {

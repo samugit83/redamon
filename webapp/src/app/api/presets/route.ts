@@ -1,3 +1,5 @@
+import type { Prisma } from '@prisma/client'
+import { extractPresetSettings } from '@/lib/project-preset-utils'
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest) {
         userId: eff.userId,
         name: name.trim(),
         description: (description || '').trim(),
-        settings,
+        settings: extractPresetSettings(settings) as Prisma.InputJsonObject,
       },
       select: {
         id: true,

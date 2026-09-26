@@ -35,6 +35,7 @@ export const RECON_PHASES = [
   'Port Scanning',
   'HTTP Probing',
   'Resource Enumeration',
+  'OpenAPI Ingestion',
   'Vulnerability Scanning',
   'MITRE Enrichment',
 ] as const
@@ -231,7 +232,7 @@ export interface PartialReconParams {
  *  recon_orchestrator/batch_scope.py. */
 export const PARTIAL_RECON_OVERRIDE_KEYS = ['CVE_LOOKUP_ENABLED', 'MITRE_ENABLED', 'SECURITY_CHECK_ENABLED'] as const
 
-export const PARTIAL_RECON_SUPPORTED_TOOLS = new Set(['SubdomainDiscovery', 'Naabu', 'Masscan', 'Nmap', 'Tlsx', 'Httpx', 'Katana', 'ZapAjaxSpider', 'Hakrawler', 'Jsluice', 'Gau', 'Kiterunner', 'ParamSpider', 'Arjun', 'Ffuf', 'EndpointAiClassifier', 'AiSurfaceRecon', 'JsRecon', 'SupplyChainRecon', 'GraphqlScan', 'Nuclei', 'SubdomainTakeover', 'VhostSni', 'WebCachePoison', 'SecurityChecks', 'Shodan', 'Urlscan', 'Uncover', 'OsintEnrichment', 'OriginDiscovery'])
+export const PARTIAL_RECON_SUPPORTED_TOOLS = new Set(['SubdomainDiscovery', 'Naabu', 'Masscan', 'Nmap', 'Tlsx', 'Httpx', 'Katana', 'OpenAPI', 'ZapAjaxSpider', 'Hakrawler', 'Jsluice', 'Gau', 'Kiterunner', 'ParamSpider', 'Arjun', 'Ffuf', 'EndpointAiClassifier', 'AiSurfaceRecon', 'JsRecon', 'SupplyChainRecon', 'GraphqlScan', 'Nuclei', 'SubdomainTakeover', 'VhostSni', 'WebCachePoison', 'SecurityChecks', 'Shodan', 'Urlscan', 'Uncover', 'OsintEnrichment', 'OriginDiscovery'])
 
 export const PARTIAL_RECON_PHASE_MAP: Record<string, readonly string[]> = {
   SubdomainDiscovery: ['Subdomain Discovery'],
@@ -241,6 +242,7 @@ export const PARTIAL_RECON_PHASE_MAP: Record<string, readonly string[]> = {
   Tlsx: ['TLS Certificate Grab'],
   Httpx: ['HTTP Probing'],
   Katana: ['Resource Enumeration'],
+  OpenAPI: ['OpenAPI Ingestion'],
   ZapAjaxSpider: ['Resource Enumeration'],
   Hakrawler: ['Resource Enumeration'],
   Jsluice: ['Resource Enumeration'],

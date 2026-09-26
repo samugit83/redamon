@@ -142,6 +142,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   Nmap: PORTS_TOOL,
   Tlsx: PORTS_TOOL,
   Katana: BASEURL_TOOL,
+  OpenAPI: BASEURL_TOOL,
   Hakrawler: BASEURL_TOOL,
   Jsluice: BASEURL_TOOL,
   Ffuf: BASEURL_TOOL,

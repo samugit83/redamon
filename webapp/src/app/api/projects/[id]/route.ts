@@ -13,6 +13,7 @@ import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
 import { callGraphTriage } from '@/lib/triageClient'
 import { pickProjectColumns } from '@/lib/projectColumns'
+import { normalizeOpenApiSourceIds, validateOpenApiSettings, stripLegacyOpenApiHeaders } from '@/lib/validation/openapiSettings'
 
 // Path to output directories (fallback for local deletion)
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/recon/output'
@@ -84,7 +85,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       nodeFilterExemptions?: { label: string; nodeKey: string }[]
     }
     const projectWithoutBinary = {
-      ...rest,
+      ...stripLegacyOpenApiHeaders(rest),
       authProfile: isServiceCaller ? authProfile : toAuthProfileMetadata(authProfile),
       ...(isServiceCaller
         ? {
@@ -138,7 +139,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       })
     }
 
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json(stripLegacyOpenApiHeaders(projectWithoutBinary))
   } catch (error) {
     console.error('Failed to fetch project:', error)
     return NextResponse.json(
@@ -177,12 +178,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       authProfile: _authProfile,
       roeEnabled: _roeEnabledDerived,
       ...rawUpdate
-    } = body
+    } = stripLegacyOpenApiHeaders(body)
 
     // Only Project COLUMNS may be written here: a relation key in this whole-row
     // body would skip the relation's own route, its validation, its revision
     // check and its audit row.
     const updateData: Record<string, any> = pickProjectColumns(rawUpdate)
+    const openapiError = validateOpenApiSettings(updateData)
+    if (openapiError) {
+      return NextResponse.json({ error: openapiError }, { status: 400 })
+    }
+    if ('openapiSources' in updateData) {
+      updateData.openapiSources = normalizeOpenApiSourceIds(updateData.openapiSources)
+    }
 
     // Sanitize string inputs that are used as hostnames/IPs (trailing spaces break DNS)
     if (typeof updateData.targetDomain === 'string') {
@@ -437,7 +445,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
-    return NextResponse.json(projectWithoutBinary)
+    return NextResponse.json(stripLegacyOpenApiHeaders(projectWithoutBinary))
   } catch (error: unknown) {
     console.error('Failed to update project:', error)
 

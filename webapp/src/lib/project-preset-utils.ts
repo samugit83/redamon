@@ -57,6 +57,8 @@ const UNCLASSIFIED_EXCLUDED_FIELDS = [
 export const PRESET_EXCLUDED_FIELDS: ReadonlySet<string> = new Set([
   ...UNCLASSIFIED_EXCLUDED_FIELDS,
   ...fieldsWhere(f => f.mcp === 'create_only').map(f => f.key),
+  // Retired column may still be present in saved presets and imported exports.
+  'openapiDiscoveryHeaders',
   ...engagementLimitFields().map(f => f.key),
   ...engagementRecordFields().map(f => f.key),
   ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),
@@ -68,6 +70,7 @@ export const PRESET_EXCLUDED_FIELDS: ReadonlySet<string> = new Set([
     (f.deny_reason === 'identity' || f.deny_reason === 'internal' || f.deny_reason === 'derived')
     && key !== 'reconPresetId'
   ).map(f => f.key),
+  ...fieldsWhere(f => f.deny_reason === 'secret').map(f => f.key),
 ])
 
 /** Every column a preset captures and applies: the whole registry minus the excluded set. */

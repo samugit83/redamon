@@ -187,7 +187,7 @@ class TestCombinatorClass(unittest.TestCase):
                     "ResourceMixin", "JsReconMixin", "UserInputMixin",
                     "TakeoverMixin", "VhostSniMixin",
         "TlsxMixin", "AiSurfaceReconMixin",
-                    "TriageMixin"}
+                    "TriageMixin", "OpenApiMixin"}
         self.assertEqual(bases, required,
                          f"ReconMixin bases mismatch. got={bases} expected={required}")
 

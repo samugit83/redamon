@@ -186,6 +186,14 @@ export const reconPresetSchema = z.object({
   katanaParallelism: int,
   katanaConcurrency: int,
 
+  // Project-specific source URLs and Authenticated Session credentials are intentionally
+  // excluded from generated presets; presets may only tune non-secret controls.
+  openapiEnabled: bool,
+  openapiAutoDiscover: bool,
+  openapiDiscoveryPaths: z.array(z.string()).max(200).optional(),
+  openapiTimeout: z.number().int().min(1).max(60).optional(),
+  openapiMaxDocuments: z.number().int().min(1).max(200).optional(),
+
   // -- Web Crawling: ZAP Ajax Spider --
   zapAjaxSpiderEnabled: bool,
   zapAjaxSpiderDockerImage: str,
@@ -737,6 +745,14 @@ export const RECON_PARAMETER_CATALOG = `
 - katanaCustomHeaders: string[] - Custom HTTP headers for crawler
 - katanaParallelism: integer - Targets crawled simultaneously
 - katanaConcurrency: integer - Concurrent fetchers per target
+
+## OpenAPI Ingestion
+- openapiEnabled: boolean - Import supported in-scope operations from OpenAPI documents
+- openapiAutoDiscover: boolean - Discover documents from crawl results and bounded common paths
+- openapiDiscoveryPaths: string[] - Paths probed for specification documents during auto-discovery
+- openapiTimeout: integer - Per-document fetch timeout in seconds (1-60)
+- openapiMaxDocuments: integer - Maximum specification documents to import (1-200)
+OpenAPI source URLs and the project Authenticated Session profile are project-specific and may contain credentials, so they must never appear in generated presets.
 
 ## Web Crawling - ZAP Ajax Spider
 - zapAjaxSpiderEnabled: boolean - Enable browser-driven Ajax Spider crawling for modern SPAs and authenticated apps
