@@ -158,4 +158,3 @@ def host_in_scope(host, scope_hosts: Iterable[str]) -> bool:
         elif h == entry:
             return True
     return False
-

@@ -30,7 +30,11 @@ test('saving a preset excludes OpenAPI source and discovery credentials', async 
     method: 'POST', body: JSON.stringify({ name: 'preset', settings }),
   }))
   expect(response.status).toBe(201)
-  expect(h.create.mock.calls[0][0].data.settings).toEqual({ openapiEnabled: true })
+  const saved = h.create.mock.calls[0][0].data.settings
+  expect(saved.openapiEnabled).toBe(true)
+  expect(saved).not.toHaveProperty('openapiSources')
+  expect(saved).not.toHaveProperty('openapiDiscoveryHeaders')
+  expect(JSON.stringify(saved)).not.toContain('legacy-secret')
 })
 
 test('reading a legacy preset excludes project-specific OpenAPI settings', async () => {

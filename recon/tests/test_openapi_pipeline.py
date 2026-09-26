@@ -107,3 +107,34 @@ def test_partial_recon_cannot_override_stealth(monkeypatch):
     monkeypatch.setattr(runner_module, 'run_openapi_recon', runner)
     run_openapi_partial({'include_graph_targets': False})
     runner.assert_not_called()
+
+
+def test_partial_honors_prevalidated_roots_and_settings(monkeypatch):
+    import recon.project_settings
+    import recon.main_recon_modules.openapi_recon as runner_module
+    import recon.partial_recon_modules.graph_builders as builders
+    from recon.partial_recon_modules.openapi_recon import run_openapi_partial
+
+    settings = {'DOMAIN_BATCH_MODE': True, 'UPDATE_GRAPH_DB': False,
+                'DOMAIN_BATCH_GROUPS': [
+                    {'rootDomain': 'allowed.test', 'prefixes': ['api.']},
+                    {'rootDomain': 'refused.test', 'prefixes': ['.']},
+                ]}
+    monkeypatch.setattr(recon.project_settings, 'get_settings', Mock(return_value=settings))
+    monkeypatch.setenv('USER_ID', 'fixture-user')
+    monkeypatch.setenv('PROJECT_ID', 'fixture-project')
+    builder = Mock(side_effect=lambda domain, *args, **kwargs: {'domain': domain})
+    monkeypatch.setattr(builders, '_build_http_probe_data_from_graph', builder)
+    scanned = []
+
+    def runner(data, settings, *, pacer=None):
+        scanned.append(settings['TARGET_DOMAIN'])
+        data['openapi'] = {'operations': []}
+
+    monkeypatch.setattr(runner_module, 'run_openapi_recon', runner)
+    groups = [{'rootDomain': 'allowed.test', 'prefixes': ['api.'], 'batch': True}]
+    run_openapi_partial({'_settings': settings, 'domains': ['allowed.test'],
+                        'domain_groups': groups})
+    assert scanned == ['allowed.test']
+    recon.project_settings.get_settings.assert_not_called()
+    assert builder.call_args.kwargs['domain_groups'] == groups

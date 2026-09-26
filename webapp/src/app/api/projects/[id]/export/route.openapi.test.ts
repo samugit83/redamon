@@ -15,7 +15,8 @@ vi.mock('@/lib/prisma', () => ({ default: {
     findMany: vi.fn(async () => [{ id: 'p1', name: 'test', ...h.legacy }]),
   },
   ...Object.fromEntries(['conversation', 'chatMessage', 'remediation', 'report', 'scanVersion',
-    'scanJob', 'scanSchedule', 'engagementAuthorization'].map(name => [name, { findMany: vi.fn(async () => []) }])),
+    'scanJob', 'scanSchedule', 'engagementAuthorization', 'nodeFilterExemption', 'userMuteRulesPreset'].map(name => [name, { findMany: vi.fn(async () => []) }])),
+  projectNodeFilter: { findUnique: vi.fn(async () => null) },
   userProjectPreset: { findMany: vi.fn(async () => [{ id: 'preset', settings: h.legacy }]) },
 } }))
 vi.mock('@/lib/access', () => ({
