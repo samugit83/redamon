@@ -878,6 +878,28 @@ export const MCP_PRESETS: McpPreset[] = [
       tags: ['security', 'reverse-engineering'],
     }),
   },
+
+  // -------------------------------------------------------------------------
+  // 34) ScanMalware - sandboxed URL scans + searchable scan archive, no auth
+  // -------------------------------------------------------------------------
+  {
+    key: 'scanmalware',
+    label: 'ScanMalware',
+    category: 'osint',
+    blurb: 'Sandboxed URL scanner with a searchable archive of past scans - works without an API key.',
+    whyForRedamon: 'Passive recon from scans already in the archive, without touching the target: CT-log hostnames, past scans of a domain, detected technologies and CPEs, TLS/JARM and RDAP records, plus pivots to related hosts by IP, ASN, JARM or favicon hash. submit_scan results are public unless scan_type is "unlisted".',
+    docsUrl: 'https://github.com/scanmalware/mcp-server',
+    authRequired: false,
+    template: baseTemplate({
+      id: 'scanmalware',
+      name: 'ScanMalware',
+      description: 'Sandboxed URL scans + searchable scan archive (100+ tools, no auth required)',
+      transport: 'streamable_http',
+      url: 'https://mcp.scanmalware.com/mcp',
+      default_phases: ['informational'],
+      tags: ['osint', 'recon', 'threat-intel'],
+    }),
+  },
 ]
 
 export const PRESET_CATEGORY_LABELS: Record<PresetCategory, string> = {
