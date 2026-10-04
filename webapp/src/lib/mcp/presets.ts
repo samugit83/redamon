@@ -878,6 +878,30 @@ export const MCP_PRESETS: McpPreset[] = [
       tags: ['security', 'reverse-engineering'],
     }),
   },
+
+  // -------------------------------------------------------------------------
+  // 34) Serply - Google SERP API (dorks, News, Scholar) via hosted MCP
+  // -------------------------------------------------------------------------
+  {
+    key: 'serply',
+    label: 'Serply Search',
+    category: 'osint',
+    blurb: 'Google web, News and Scholar results via Serply (hosted MCP).',
+    whyForRedamon: 'Passive Google dorking (site:, filetype:, inurl:) and target footprinting without a SerpAPI key; also News and Scholar searches for company and people research.',
+    docsUrl: 'https://serply.io/mcp',
+    authRequired: true,
+    authHint: 'API key from https://serply.io (2,500 free credits for 30 days, no card). Paste it as the X-Api-Key header value.',
+    template: baseTemplate({
+      id: 'serply',
+      name: 'Serply Search',
+      description: 'Google web, News and Scholar search via Serply',
+      transport: 'streamable_http',
+      url: 'https://api.serply.io/mcp',
+      headers: { 'X-Api-Key': '' },
+      default_phases: ['informational'],
+      tags: ['osint', 'search'],
+    }),
+  },
 ]
 
 export const PRESET_CATEGORY_LABELS: Record<PresetCategory, string> = {
