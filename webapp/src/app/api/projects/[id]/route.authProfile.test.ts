@@ -147,6 +147,6 @@ test('saving a legacy project strips headers before storage and from the respons
   }), params)
   expect(res.status).toBe(200)
   const stored = mockProjectUpdate.mock.calls[0][0].data
-  expect(stored).toEqual({ openapiSources: [{ id: 's1', url: 'https://example.test/spec' }] })
+  expect(stored).toEqual({ openapiSources: [{ id: 's1', url: 'https://example.test/spec' }], updatedById: 'owner' })
   expect(await res.text()).not.toContain('legacy-secret')
 })

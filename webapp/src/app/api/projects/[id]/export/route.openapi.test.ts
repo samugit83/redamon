@@ -42,8 +42,11 @@ test('exported project and embedded presets contain no legacy header credentials
     const text = await zip.file(path)!.async('text')
     expect(text).not.toContain('legacy-secret')
     expect(text).not.toContain('openapiDiscoveryHeaders')
-    expect(text).toContain('https://example.test/spec')
   }
+  // The project keeps its sources; a preset never carries them, since presets
+  // hold only allowlisted fields and openapiSources is a credential-bearing secret.
+  expect(await zip.file('project.json')!.async('text')).toContain('https://example.test/spec')
+  expect(await zip.file('presets/user_project_presets.json')!.async('text')).not.toContain('openapiSources')
 })
 
 test('project list serialization also strips legacy OpenAPI credentials', async () => {
