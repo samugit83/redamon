@@ -1,0 +1,1 @@
+export const DEFAULT_OPENAPI_DISCOVERY_PATHS = ["/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml", "/v3/api-docs", "/v2/api-docs", "/swagger/v1/swagger.json", "/swagger-ui/index.html", "/swagger-ui.html", "/docs", "/api-docs", "/api-docs/"]

@@ -38,6 +38,7 @@ RUN retry pip install -r /tmp/gvm_requirements.txt neo4j
 # Copy project files (context is parent directory, so paths are relative to project root)
 COPY scanners/gvm_scan/ ./gvm_scan/
 COPY graph_db/ ./graph_db/
+COPY recon_settings/ ./recon_settings/
 
 # Create output directories
 RUN mkdir -p gvm_scan/output recon/output

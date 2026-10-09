@@ -121,7 +121,7 @@ def test_seeding_happens_before_the_first_group(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "VERIFY_DOMAIN_OWNERSHIP", False)
     monkeypatch.setattr(main, "_seed_batch_root_domains", lambda roots: order.append(("seed", roots)))
     monkeypatch.setattr(main, "run_domain_group",
-                        lambda root, prefixes, start_time=None: order.append(root) or 0)
+                        lambda root, prefixes, start_time=None, openapi_pacer=None: order.append(root) or 0)
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(main, "merge_batch_outputs", lambda *a, **k: None)
     from datetime import datetime

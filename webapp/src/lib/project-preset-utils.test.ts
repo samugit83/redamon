@@ -69,6 +69,7 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     const expected = new Set([
       ...UNCLASSIFIED,
       ...fieldsWhere(f => f.mcp === 'create_only').map(f => f.key),
+      'openapiDiscoveryHeaders', // Legacy saved presets still need this retired field stripped.
       ...engagementLimitFields().map(f => f.key),
       ...engagementRecordFields().map(f => f.key),
       ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),
@@ -76,6 +77,7 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
       ...fieldsWhere(f => f.read_deny_reason === 'credential').map(f => f.key),
       ...fieldsWhere(f => f.deny_reason === 'escalation' || f.deny_reason === 'not-tuning').map(f => f.key),
       ...bookkeeping.map(f => f.key),
+      ...fieldsWhere(f => f.deny_reason === 'secret').map(f => f.key),
     ])
     expect([...PRESET_EXCLUDED_FIELDS].sort()).toEqual([...expected].sort())
   })
@@ -85,6 +87,15 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
     // to their default on every apply - and mcpKaliExecEnabled defaults to ON.
     expect(PRESET_EXCLUDED_FIELDS.has('mcpKaliExecEnabled')).toBe(true)
     expect(PRESET_EXCLUDED_FIELDS.has('updateGraphDb')).toBe(true)
+  })
+
+  test('OpenAPI credentials cannot be captured or applied by presets', () => {
+    const settings = { openapiSources: [{ url: 'https://docs.example.test/spec.json' }], openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['Authorization: Bearer fixture-token'] }], openapiEnabled: true }
+    for (const result of [extractPresetSettings(settings), pickPresetFields(settings)]) {
+      expect(result).not.toHaveProperty('openapiSources')
+      expect(result).not.toHaveProperty('openapiDiscoveryHeaders')
+      expect(result.openapiEnabled).toBe(true)
+    }
   })
 
   test('the scope never travels: target, batch, ownership proof, guardrail', () => {
@@ -169,7 +180,9 @@ describe('the preset field set is exactly what a recon:settings token may write'
 describe('PRESET_FIELD_KEYS', () => {
   test('with the excluded set, partitions the whole registry exactly', () => {
     const all = fieldKeys()
-    expect(PRESET_FIELD_KEYS.length + PRESET_EXCLUDED_FIELDS.size).toBe(all.length)
+    const excludedColumns = all.filter(key => PRESET_EXCLUDED_FIELDS.has(key))
+    expect(PRESET_FIELD_KEYS.length + excludedColumns.length).toBe(all.length)
+    expect([...PRESET_EXCLUDED_FIELDS].filter(key => !all.includes(key))).toEqual(['openapiDiscoveryHeaders'])
     for (const key of all) {
       expect(PRESET_FIELD_KEYS.includes(key) !== PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
     }
@@ -225,13 +238,15 @@ describe('extractPresetSettings', () => {
       jsReconUploadedFiles: ['file1.js'],
       roeGlobalMaxRps: 5,
       roeClientName: 'ACME',
+      openapiSources: [{ url: 'https://docs.example.test/openapi.json', headers: ['Authorization: Bearer secret'] }],
+      openapiDiscoveryHeaders: [{ origin: 'https://docs.example.test', headers: ['X-API-Key: secret'] }],
       naabuEnabled: true,
       nucleiEnabled: false,
       agentMaxIterations: 50,
     })
     for (const key of ['name', 'description', 'targetDomain', 'subdomainList', 'ipMode',
       'targetIps', 'roeDocumentData', 'roeDocumentName', 'jsReconUploadedFiles',
-      'roeGlobalMaxRps', 'roeClientName']) {
+      'roeGlobalMaxRps', 'roeClientName', 'openapiSources', 'openapiDiscoveryHeaders']) {
       expect(result, key).not.toHaveProperty(key)
     }
     expect(result.naabuEnabled).toBe(true)
