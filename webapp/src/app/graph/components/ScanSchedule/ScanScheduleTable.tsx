@@ -36,6 +36,34 @@ interface Job {
    *  null = unknown/complete, N>0 = partial. */
   degradedSources: number | null
   version: { seq: number; label: string } | null
+  /** Stored delta vs the previous completed run (null = first scan / untracked). */
+  change: {
+    newSubdomains: number
+    removedSubdomains: number
+    newCves: string[]
+    newVulnCount: number
+    newPorts: number
+  } | null
+}
+
+interface AlertConfig {
+  enabled: boolean
+  slackConfigured: boolean
+  webhookConfigured: boolean
+  notifyOnNew: boolean
+  notifyOnRemoved: boolean
+}
+
+function describeChange(
+  c: NonNullable<Job['change']>
+): string {
+  const bits: string[] = []
+  if (c.newSubdomains) bits.push(`+${c.newSubdomains} sub`)
+  if (c.removedSubdomains) bits.push(`-${c.removedSubdomains} sub`)
+  if (c.newPorts) bits.push(`+${c.newPorts} port`)
+  if (c.newCves.length) bits.push(`+${c.newCves.length} CVE`)
+  if (c.newVulnCount) bits.push(`+${c.newVulnCount} finding`)
+  return bits.length ? bits.join(' ') : 'no changes'
 }
 
 interface ScanScheduleTableProps {
@@ -91,6 +119,13 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
   const [scanMode, setScanMode] = useState<Schedule['scanMode']>('new')
   const [label, setLabel] = useState('')
 
+  // change-alert preferences (webhook URLs are write-only: the API only ever
+  // reports whether one is stored, never the secret itself)
+  const [alerts, setAlerts] = useState<AlertConfig | null>(null)
+  const [slackUrl, setSlackUrl] = useState('')
+  const [webhookUrl, setWebhookUrl] = useState('')
+  const [savingAlerts, setSavingAlerts] = useState(false)
+
   // Depends on `projectId` ONLY. The alert helpers are rebuilt by their provider
   // whenever an alert opens or closes, so depending on one here would re-run the
   // effect below on every alert - and reporting a load failure through an alert
@@ -115,6 +150,45 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
   }, [projectId])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (!projectId) return
+    fetch(`/api/projects/${projectId}/alert-config`)
+      .then(r => r.json().catch(() => ({})))
+      .then(body => {
+        if (body?.config) setAlerts(body.config as AlertConfig)
+      })
+      .catch(() => undefined)
+  }, [projectId])
+
+  const saveAlerts = async () => {
+    if (!projectId || !alerts) return
+    setSavingAlerts(true)
+    try {
+      const res = await fetch(`/api/projects/${projectId}/alert-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: alerts.enabled,
+          notifyOnNew: alerts.notifyOnNew,
+          notifyOnRemoved: alerts.notifyOnRemoved,
+          ...(slackUrl.trim() ? { slackWebhookUrl: slackUrl.trim() } : {}),
+          ...(webhookUrl.trim() ? { genericWebhookUrl: webhookUrl.trim() } : {}),
+        }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        alertError(String(body.error || 'Could not save alert preferences'), 'Change alerts')
+        return
+      }
+      setAlerts(body.config as AlertConfig)
+      setSlackUrl('')
+      setWebhookUrl('')
+      toast.info('Alert preferences saved')
+    } finally {
+      setSavingAlerts(false)
+    }
+  }
 
   const create = async () => {
     if (!projectId) return
@@ -353,6 +427,58 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
         <Pager page={schedPage.page} pageCount={schedPage.pageCount} total={schedPage.total} onPage={schedPage.setPage} />
       </section>
 
+      <section className={styles.section}>
+        <h3 className={styles.heading}>Change alerts</h3>
+        <p className={styles.hint}>
+          When a scheduled scan finishes, RedAmon diffs it against the previous
+          run (new subdomains, open ports, CVEs) and posts to your Slack or
+          generic webhook. URLs are stored server-side and never shown back.
+        </p>
+        {alerts && (
+          <div className={styles.form}>
+            <label className={styles.field}>
+              Slack webhook (https)
+              <input
+                className={styles.input}
+                type="url"
+                value={slackUrl}
+                onChange={e => setSlackUrl(e.target.value)}
+                placeholder={alerts.slackConfigured ? 'stored — paste to replace' : 'https://hooks.slack.com/…'}
+              />
+            </label>
+            <label className={styles.field}>
+              Generic webhook (https)
+              <input
+                className={styles.input}
+                type="url"
+                value={webhookUrl}
+                onChange={e => setWebhookUrl(e.target.value)}
+                placeholder={alerts.webhookConfigured ? 'stored — paste to replace' : 'https://…'}
+              />
+            </label>
+            <label className={styles.field}>
+              Alert me
+              <select
+                className={styles.input}
+                value={alerts.notifyOnNew ? (alerts.notifyOnRemoved ? 'all' : 'new') : 'none'}
+                onChange={e => {
+                  const v = e.target.value
+                  setAlerts({ ...alerts, notifyOnNew: v !== 'none', notifyOnRemoved: v === 'all' })
+                }}
+              >
+                <option value="new">New findings only</option>
+                <option value="all">New + removed</option>
+                <option value="none">Paused</option>
+              </select>
+            </label>
+            <button className={styles.createBtn} onClick={saveAlerts} disabled={savingAlerts || !projectId}>
+              {savingAlerts ? <Loader2 size={13} className={styles.spinner} /> : null}
+              <span>Save alerts</span>
+            </button>
+          </div>
+        )}
+      </section>
+
       {/* Between the schedules that produce work and the history of work that
           finished: what is running or waiting right now. */}
       <ScanQueuePanel projectId={projectId} />
@@ -381,12 +507,12 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 />
               </th>
               <th>Type</th><th>Trigger</th><th>Mode</th><th>Status</th><th>Version</th>
-              <th>Started</th><th>Duration</th><th className={styles.num}>Nodes</th><th>Reason</th>
+              <th>Started</th><th>Duration</th><th className={styles.num}>Nodes</th><th>Changes</th><th>Reason</th>
             </tr>
           </thead>
           <tbody>
             {jobs.length === 0 && (
-              <tr><td colSpan={10} className={styles.empty}>No scans recorded yet.</td></tr>
+              <tr><td colSpan={11} className={styles.empty}>No scans recorded yet.</td></tr>
             )}
             {historyPage.slice.map(j => (
               <tr key={j.id} className={selected.has(j.id) ? styles.rowSelected : undefined}>
@@ -421,6 +547,9 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 <td className={styles.muted}>{fmt(j.startedAt ?? j.createdAt)}</td>
                 <td className={styles.muted}>{duration(j)}</td>
                 <td className={styles.num}>{j.nodeCount ?? '-'}</td>
+                <td className={styles.muted} title={j.change?.newCves?.join(', ') || undefined}>
+                  {j.change ? describeChange(j.change) : '-'}
+                </td>
                 <td className={styles.muted}>{j.ramReason ?? '-'}</td>
               </tr>
             ))}

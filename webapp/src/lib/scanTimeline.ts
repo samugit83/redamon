@@ -370,6 +370,17 @@ export async function reconcileScanJobStatus(
       where: { id: open.id },
       data: { status: mapped, finishedAt: new Date(), nodeCount, degradedSources },
     })
+
+    // Scheduled-scan change pipeline: diff vs the previous completed run and
+    // fan out to webhooks. Best-effort — never breaks the status poll.
+    if (mapped === 'completed' && kind === 'full_recon') {
+      try {
+        const { trackCompletedScan } = await import('./scanChangeTracker')
+        await trackCompletedScan(open.id)
+      } catch (err) {
+        console.error('[scanTimeline] change tracking failed (continuing):', err)
+      }
+    }
   } catch (err) {
     console.error('[scanTimeline] scan-job reconcile failed (continuing):', err)
   }

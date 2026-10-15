@@ -43,7 +43,19 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
         where: { projectId: id },
         orderBy: { createdAt: 'desc' },
         take: JOB_HISTORY_LIMIT,
-        include: { version: { select: { seq: true, label: true } } },
+        include: {
+          version: { select: { seq: true, label: true } },
+          change: {
+            select: {
+              newSubdomains: true,
+              removedSubdomains: true,
+              newCves: true,
+              newVulnCount: true,
+              newPorts: true,
+              removedPorts: true,
+            },
+          },
+        },
       }),
       // Directly-started scans of every kind now write a ScanJob, so the history
       // above is already multi-kind. This adds the runs the QUEUE owns: a job that
@@ -108,6 +120,15 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
             degradedSources: j.degradedSources,
             scheduleId: j.scheduleId,
             version: j.version ? { seq: j.version.seq, label: j.version.label } : null,
+            change: j.change
+              ? {
+                  newSubdomains: j.change.newSubdomains.length,
+                  removedSubdomains: j.change.removedSubdomains.length,
+                  newCves: j.change.newCves,
+                  newVulnCount: j.change.newVulnCount,
+                  newPorts: Array.isArray(j.change.newPorts) ? j.change.newPorts.length : 0,
+                }
+              : null,
           })),
           ...queueRuns,
         ]

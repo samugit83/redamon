@@ -1443,6 +1443,9 @@ model Project {
   scanVersions                      ScanVersion[]
   scanJobs                          ScanJob[]
   scanSchedules                     ScanSchedule[]
+  scanChanges                       ScanChange[]
+  scanAlerts                        ScanAlert[]
+  scanAlertConfig                   ScanAlertConfig?
   jobQueue                          JobQueue[]
   supplyChainBatches                SupplyChainBatch[]
   // Run state, deliberately NOT on Project itself: the settings form PUTs the
@@ -1739,6 +1742,7 @@ model ScanJob {
   /// document in force, which a later replace would otherwise erase. Null when
   /// the project had no document.
   roeTextSha256      String?      @map("roe_text_sha256")
+  change             ScanChange?
   createdAt          DateTime     @default(now()) @map("created_at")
   updatedAt          DateTime     @updatedAt @map("updated_at")
 
@@ -1874,6 +1878,67 @@ model ScanSchedule {
   @@index([enabled, nextRunAt])
   @@index([projectId])
   @@map("scan_schedules")
+}
+
+// Scheduled-scan change detection + alerts (help-wanted: scheduled scans with
+// diff detection and real-time alerts). The frozen ScanVersion snapshots are the
+// baselines; ScanChange stores the computed delta between a completed run and
+// its predecessor so the timeline can render "what is new" without re-reading
+// gigabytes of snapshots. Webhook URLs live on their own relation (never
+// Project columns: the settings form PUTs the whole Project row back, so a
+// secret stored there would leak to the browser via GET /api/projects/[id]).
+model ScanAlertConfig {
+  id                  String   @id @default(cuid())
+  projectId           String   @unique @map("project_id")
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  enabled             Boolean  @default(true)
+  // Slack incoming-webhook URL (https only, validated at write time).
+  slackWebhookUrl     String   @default("") @map("slack_webhook_url")
+  // Generic JSON webhook URL (https only, validated at write time).
+  genericWebhookUrl   String   @default("") @map("generic_webhook_url")
+  notifyOnNew         Boolean  @default(true) @map("notify_on_new")
+  notifyOnRemoved     Boolean  @default(false) @map("notify_on_removed")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("scan_alert_configs")
+}
+
+model ScanChange {
+  id                 String   @id @default(cuid())
+  projectId          String   @map("project_id")
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scanJobId          String   @unique @map("scan_job_id")
+  scanJob            ScanJob  @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+  oldVersionId       String?  @map("old_version_id")
+  newVersionId       String?  @map("new_version_id")
+  newSubdomains      String[] @default([]) @map("new_subdomains")
+  removedSubdomains  String[] @default([]) @map("removed_subdomains")
+  // [{ host, port, protocol }] — Json (not String[]) so the port rows keep shape.
+  newPorts           Json     @default("[]") @map("new_ports")
+  removedPorts       Json     @default("[]") @map("removed_ports")
+  newCves            String[] @default([]) @map("new_cves")
+  newVulnCount       Int      @default(0) @map("new_vuln_count")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, createdAt])
+  @@map("scan_changes")
+}
+
+model ScanAlert {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scanJobId   String?  @map("scan_job_id")
+  // "slack" | "webhook"
+  channel     String
+  // "sent" | "failed" | "skipped"
+  status      String   @default("sent")
+  error       String   @default("")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, createdAt])
+  @@map("scan_alerts")
 }
 
 model Conversation {
