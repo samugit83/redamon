@@ -46,15 +46,25 @@ _CANONICAL_SKILLS = {
     "bfla_exploitation",
     "insecure_deserialization",
     "mass_assignment",
-}
-
-# Skills that predate the canonical template but must still satisfy the
-# minimal invariants (file size, no em dashes, description extractable).
-_LEGACY_SKILLS = {
+    # Promoted 2026-10-16: the original @Shafranpackeer skills were rewritten
+    # from the legacy "## Overview / ## Tools Available / ## PHASE N" shape
+    # into the canonical template so the Intent Router classifies them with
+    # the same accuracy as the modern corpus.
     "api_testing",
     "sqli_exploitation",
     "xss_exploitation",
+    # New 2026-10-16 @Shafranpackeer community skills, authored canonical.
+    "auth_session_attacks",
+    "request_smuggling",
+    "broken_access_control",
+    "ssrf_exploitation",
+    "path_traversal",
 }
+
+# No legacy-format skills remain: every shipped community skill now follows the
+# canonical template. Kept as an empty set so the minimal-invariant suite and
+# any future legacy imports still have a stable reference.
+_LEGACY_SKILLS: set[str] = set()
 
 _FILE_SIZE_CAP_BYTES = 50_000  # webapp/.../attack-skills/route.ts enforces this
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")

@@ -473,6 +473,53 @@ RUN retry git clone https://github.com/0xacb/viewgen.git /opt/viewgen \
     && chmod +x /opt/viewgen/viewgen \
     && ln -s /opt/viewgen/viewgen /usr/local/bin/viewgen
 
+# -------------------------------------------------------------------------
+# Web-exploitation accelerators for the @Shafranpackeer community Agent Skills
+# (sqli_exploitation, api_testing, request_smuggling, auth_session_attacks).
+# Each skill documents a manual execute_code / execute_curl fallback, so these
+# are accelerators, not hard dependencies. Pure-stdlib clones track their
+# default branch (same unpinned pattern as ParamSpider above); pip/binary
+# installs pin a released version.
+# -------------------------------------------------------------------------
+
+# ghauri: fast boolean/time-based blind SQLi exploitation (sqli_exploitation).
+# Source: https://github.com/r0oth3x49/ghauri (MIT). Installs the `ghauri` CLI.
+RUN retry pip install --no-cache-dir "ghauri @ git+https://github.com/r0oth3x49/ghauri.git@1.3.5"
+
+# clairvoyance: recovers a GraphQL schema when introspection is disabled, by
+# walking field-suggestion error messages (api_testing GraphQL track).
+# Source: https://github.com/nikitastupin/clairvoyance (Apache-2.0).
+RUN retry pip install --no-cache-dir clairvoyance
+
+# smuggler: HTTP request smuggling detection (CL.TE/TE.CL/TE.TE) over raw
+# sockets (request_smuggling). Pure stdlib; tracks default branch.
+# Source: https://github.com/defparam/smuggler (Apache-2.0).
+RUN retry git clone https://github.com/defparam/smuggler.git /opt/smuggler \
+    && chmod +x /opt/smuggler/smuggler.py \
+    && ln -s /opt/smuggler/smuggler.py /usr/local/bin/smuggler.py \
+    && ln -s /opt/smuggler/smuggler.py /usr/local/bin/smuggler
+
+# h2csmuggler: HTTP/2 cleartext (h2c) upgrade smuggling, used by the
+# request_smuggling HTTP/2 downgrade track. Needs the `h2` lib (shared venv).
+# Source: https://github.com/BishopFox/h2csmuggler (BSD-3-Clause).
+RUN retry git clone https://github.com/BishopFox/h2csmuggler.git /opt/h2csmuggler \
+    && pip install --no-cache-dir h2 \
+    && chmod +x /opt/h2csmuggler/h2csmuggler.py \
+    && ln -s /opt/h2csmuggler/h2csmuggler.py /usr/local/bin/h2csmuggler
+
+# websocat: WebSocket client for GraphQL-over-WebSocket introspection and
+# OAuth/OIDC WebSocket legs (api_testing, auth_session_attacks). Static musl
+# release binary, same download pattern as chisel below.
+RUN WEBSOCAT_VERSION="1.13.0" && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) WBIN=websocat.x86_64-unknown-linux-musl ;; \
+         arm64) WBIN=websocat.aarch64-unknown-linux-musl ;; \
+         *) echo "unsupported arch: $ARCH" && exit 1 ;; \
+       esac \
+    && retry curl -fsSL -o /usr/local/bin/websocat \
+         "https://github.com/vi/websocat/releases/download/v${WEBSOCAT_VERSION}/${WBIN}" \
+    && chmod +x /usr/local/bin/websocat
+
 # Ensure ProjectDiscovery Go httpx wins over Python httpx CLI wrapper in PATH
 RUN ln -sf /root/go/bin/httpx /opt/venv/bin/httpx
 
