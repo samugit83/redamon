@@ -2645,8 +2645,8 @@ _prompt_and_create_admin() {
             exit 1
         fi
     else
-        read -rp "  Admin name: " a_name </dev/tty
-        read -rp "  Admin email: " a_email </dev/tty
+        read -erp "  Admin name: " a_name </dev/tty
+        read -erp "  Admin email: " a_email </dev/tty
         while true; do
             read -srp "  Admin password: " a_pass </dev/tty
             echo ""
@@ -2714,7 +2714,7 @@ cmd_create_admin() {
 
 cmd_reset_password() {
     echo ""
-    read -rp "  User email: " EMAIL </dev/tty
+    read -erp "  User email: " EMAIL </dev/tty
     read -srp "  New password: " NEW_PASS </dev/tty
     echo ""
     read -srp "  Confirm password: " CONFIRM </dev/tty
