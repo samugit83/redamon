@@ -1928,6 +1928,86 @@ Note: Bridge relationships are only created for tool-execution steps. Steps usin
 - `(f:ChainFinding)-[:FINDING_RELATES_CVE]->(c:CVE)` - Finding relates to CVE
 - `(f:ChainFinding)-[:CONFIRMS]->(v)` - the agent proved this recon finding (Vulnerability, Secret, MultiscannerFinding, GithubSecret, GithubSensitiveFile, JsReconFinding, MalPackageFinding or ExploitGvm); it is why that finding shows as proven on the Priority Board
 
+
+""",
+    },
+    {
+        "kind": 'SUBSECTION_HEAD',
+        "key": 'Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)',
+        "section": 'Relationships',
+        "documents": [],
+        "relationships": [],
+        "body": """### Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)
+Imported from BloodHound 4 collector JSON (bloodhound-python / SharpHound) by the
+`bloodhound_ingest` agent tool. Entity nodes: the tenant triple
+(object_identifier + user_id + project_id) is the MERGE key, so re-ingesting
+the same collector files refreshes instead of duplicating.
+
+""",
+    },
+    {
+        "kind": 'LABEL',
+        "key": 'ADUser',
+        "section": 'Relationships :: Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)',
+        "documents": ['ADUser'],
+        "description": "A directory user principal from the collector's users file",
+        "groups": [{'header': None, 'properties': [{'name': 'object_identifier', 'type': 'string', 'desc': 'BloodHound ObjectIdentifier (SID); part of the uniqueness key'}, {'name': 'name', 'type': 'string', 'desc': 'collector principal name, e.g. `JSMITH@CORP.EXAMPLE.COM`'}, {'name': 'domain', 'type': 'string', 'desc': 'collector domain, e.g. `CORP.EXAMPLE.COM`'}, {'name': 'sam', 'type': 'string', 'desc': 'sAMAccountName'}, {'name': 'source', 'type': 'string', 'desc': "'bloodhound_ingest' (provenance, first writer)"}]}],
+        "relationships": [],
+        "subtypes": [],
+        "notes": ['- dn / description / enabled / admincount / spn (string/bool/list): selected flat collector properties'],
+        "body": """**ADUser** - A directory user principal from the collector's users file
+- object_identifier (string): BloodHound ObjectIdentifier (SID); part of the uniqueness key
+- name (string): collector principal name, e.g. `JSMITH@CORP.EXAMPLE.COM`
+- domain (string): collector domain, e.g. `CORP.EXAMPLE.COM`
+- sam (string): sAMAccountName
+- dn / description / enabled / admincount / spn (string/bool/list): selected flat collector properties
+- source (string): 'bloodhound_ingest' (provenance, first writer)
+
+""",
+    },
+    {
+        "kind": 'LABEL',
+        "key": 'ADGroup',
+        "section": 'Relationships :: Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)',
+        "documents": ['ADGroup'],
+        "description": 'A directory group; nested groups carry MEMBER_OF edges too',
+        "groups": [{'header': None, 'properties': [{'name': 'object_identifier', 'type': 'string', 'desc': 'SID; part of the uniqueness key'}]}],
+        "relationships": [],
+        "subtypes": [],
+        "notes": ['- name / domain / sam / dn / description / admincount: as on ADUser'],
+        "body": """**ADGroup** - A directory group; nested groups carry MEMBER_OF edges too
+- object_identifier (string): SID; part of the uniqueness key
+- name / domain / sam / dn / description / admincount: as on ADUser
+
+""",
+    },
+    {
+        "kind": 'LABEL',
+        "key": 'ADComputer',
+        "section": 'Relationships :: Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)',
+        "documents": ['ADComputer'],
+        "description": "A machine account from the collector's computers file",
+        "groups": [{'header': None, 'properties': [{'name': 'object_identifier', 'type': 'string', 'desc': 'SID; part of the uniqueness key'}]}],
+        "relationships": [],
+        "subtypes": [],
+        "notes": ['- name / domain / sam / dn / os / haslaps: as on ADUser; os = operatingSystem'],
+        "body": """**ADComputer** - A machine account from the collector's computers file
+- object_identifier (string): SID; part of the uniqueness key
+- name / domain / sam / dn / os / haslaps: as on ADUser; os = operatingSystem
+
+""",
+    },
+    {
+        "kind": 'SUBSECTION',
+        "key": 'Active Directory (BloodHound ingest) Relationships',
+        "section": 'Relationships',
+        "documents": [],
+        "relationships": [{'type': 'MEMBER_OF', 'source': '', 'target': 'ADGroup', 'source_var': 'p', 'target_var': 'g', 'rel_props': '', 'source_props': '', 'target_props': '', 'lead': '- ', 'prefix': '', 'tail': ' - principal (ADUser/ADGroup) is a member of the group (collector MemberOf)'}, {'type': 'HAS_MEMBER', 'source': 'ADGroup', 'target': '', 'source_var': 'g', 'target_var': 'p', 'rel_props': '', 'source_props': '', 'target_props': '', 'lead': '- ', 'prefix': '', 'tail': ' - group contains principal (collector Members; the reverse view)'}, {'type': 'HAS_SESSION', 'source': 'ADUser', 'target': 'ADComputer', 'source_var': 'u', 'target_var': 'c', 'rel_props': '', 'source_props': '', 'target_props': '', 'lead': '- ', 'prefix': '', 'tail': ' - user had a session on the computer (collector Sessions)'}],
+        "body": """### Active Directory (BloodHound ingest) Relationships
+- `(p)-[:MEMBER_OF]->(g:ADGroup)` - principal (ADUser/ADGroup) is a member of the group (collector MemberOf)
+- `(g:ADGroup)-[:HAS_MEMBER]->(p)` - group contains principal (collector Members; the reverse view)
+- `(u:ADUser)-[:HAS_SESSION]->(c:ADComputer)` - user had a session on the computer (collector Sessions)
+- All three carry source = 'bloodhound_ingest' on creation; MERGE on endpoint pair, idempotent per ingest.
 """,
     },
 ]

@@ -188,6 +188,14 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Maximum 2 exploit attempts per target, then STOP
 - No `db_nmap`, no `hosts`, no `services` scanning commands
 
+### bloodhound_ingest — RESTRICTED (graph-only import; the collector run is the loud part)
+- This tool only WRITES the local graph from already-collected JSON — but do not run a fresh
+  BloodHound collection to feed it in stealth mode: directory enumeration (LDAP/SMB/DC sync)
+  is high-noise and touches every object in the domain.
+- Importing files the operator already collected is allowed; prefer reading them from the
+  workspace instead of pulling new ones off a share.
+- Never collect over an interactive session you did not already hold before stealth was enabled.
+
 ---
 
 ## Phase-Specific Rules
