@@ -129,7 +129,8 @@ class TestGraphQLMixinSubscriptions(unittest.TestCase):
 
 class TestRunVulnScanIsolated(unittest.TestCase):
     """Verifies the isolated wrapper deep-copies, skips incremental saves,
-    and returns only the vuln_scan dict."""
+    and returns the {vuln_scan: ..., technology_cves: ...} envelope that
+    _merge_isolated_result in main.py consumes."""
 
     def _make_stub(self):
         """Return a patched run_vuln_scan that writes a marker to recon_data."""
@@ -151,23 +152,23 @@ class TestRunVulnScanIsolated(unittest.TestCase):
         with patch('recon.main_recon_modules.vuln_scan.run_vuln_scan', side_effect=self._make_stub()):
             from recon.main_recon_modules.vuln_scan import run_vuln_scan_isolated
             result = run_vuln_scan_isolated({'domain': 'example.com'}, {})
-            self.assertIsNone(result['_received_output_file'])
+            self.assertIsNone(result['vuln_scan']['_received_output_file'])
 
-    def test_isolated_returns_only_vuln_scan_key(self):
+    def test_isolated_returns_envelope_keyed_by_vuln_scan(self):
         with patch('recon.main_recon_modules.vuln_scan.run_vuln_scan', side_effect=self._make_stub()):
             from recon.main_recon_modules.vuln_scan import run_vuln_scan_isolated
             result = run_vuln_scan_isolated({'domain': 'example.com', 'http_probe': {}}, {})
-            self.assertEqual(result, {'findings': ['marker'], '_received_output_file': None})
+            self.assertEqual(result, {'vuln_scan': {'findings': ['marker'], '_received_output_file': None}})
 
-    def test_isolated_returns_empty_when_key_missing(self):
+    def test_isolated_returns_empty_namespace_when_key_missing(self):
         """If run_vuln_scan doesn't add vuln_scan (e.g. Nuclei disabled early return),
-        wrapper returns {} instead of raising."""
+        wrapper still returns the envelope shape instead of raising."""
         def no_op(recon_data, output_file=None, settings=None):
             return recon_data
         with patch('recon.main_recon_modules.vuln_scan.run_vuln_scan', side_effect=no_op):
             from recon.main_recon_modules.vuln_scan import run_vuln_scan_isolated
             result = run_vuln_scan_isolated({'domain': 'example.com'}, {})
-            self.assertEqual(result, {})
+            self.assertEqual(result, {'vuln_scan': {}})
 
 
 # ============================================================================

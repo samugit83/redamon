@@ -274,6 +274,28 @@ def _graph_wait_all():
     _graph_executor = None
 
 
+def _merge_isolated_result(combined_result: dict, key: str, result) -> None:
+    """
+    Store a fan-out tool result into combined_result.
+
+    A namespace-only result (the contract of every _isolated wrapper except
+    run_vuln_scan_isolated) lands under its key exactly as before. An envelope
+    result — a dict that already contains `key` — additionally carries payloads
+    that belong beside the namespace at the top level (technology_cves, read
+    there by vuln_mixin and the MITRE enrichment); those land via setdefault so
+    a value written earlier in this run is never reverted by the wrapper's
+    pre-scan copy.
+    """
+    if isinstance(result, dict) and key in result:
+        for result_key, value in result.items():
+            if result_key == key:
+                combined_result[key] = value
+            else:
+                combined_result.setdefault(result_key, value)
+    else:
+        combined_result[key] = result
+
+
 # RoE excluded-host matching lives in recon.helpers.roe_scope so active scanners
 # (origin_discovery) can enforce it without importing this module. Re-exported
 # here so `from main import _is_roe_excluded/_filter_roe_excluded` still resolves.
@@ -1469,7 +1491,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 for fut in as_completed(futures):
                     key = futures[fut]
                     try:
-                        combined_result[key] = fut.result()
+                        _merge_isolated_result(combined_result, key, fut.result())
                         combined_result["metadata"]["modules_executed"].append(key)
                         save_recon_file(combined_result, output_file)
                         _graph_update_bg(f"update_graph_from_{key}", combined_result, USER_ID, PROJECT_ID)
@@ -2161,7 +2183,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 for fut in as_completed(futures):
                     key = futures[fut]
                     try:
-                        combined_result[key] = fut.result()
+                        _merge_isolated_result(combined_result, key, fut.result())
                         combined_result["metadata"]["modules_executed"].append(key)
                         save_recon_file(combined_result, output_file)
                         _graph_update_bg(f"update_graph_from_{key}", combined_result, USER_ID, PROJECT_ID)
