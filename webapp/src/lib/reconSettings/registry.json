@@ -10375,6 +10375,7 @@
    "unit": "none",
    "validator": "free_text",
    "values": [
+    "bloodhound_ingest",
     "cve_intel",
     "execute_amass",
     "execute_arjun",

@@ -1241,3 +1241,31 @@ Note: Bridge relationships are only created for tool-execution steps. Steps usin
 - `(f:ChainFinding)-[:FINDING_RELATES_CVE]->(c:CVE)` - Finding relates to CVE
 - `(f:ChainFinding)-[:CONFIRMS]->(v)` - the agent proved this recon finding (Vulnerability, Secret, MultiscannerFinding, GithubSecret, GithubSensitiveFile, JsReconFinding, MalPackageFinding or ExploitGvm); it is why that finding shows as proven on the Priority Board
 
+
+### Active Directory (BloodHound ingest) Nodes (agent tool bloodhound_ingest, post-exploitation)
+Imported from BloodHound 4 collector JSON (bloodhound-python / SharpHound) by the
+`bloodhound_ingest` agent tool. Entity nodes: the tenant triple
+(object_identifier + user_id + project_id) is the MERGE key, so re-ingesting
+the same collector files refreshes instead of duplicating.
+
+**ADUser** - A directory user principal from the collector's users file
+- object_identifier (string): BloodHound ObjectIdentifier (SID); part of the uniqueness key
+- name (string): collector principal name, e.g. `JSMITH@CORP.EXAMPLE.COM`
+- domain (string): collector domain, e.g. `CORP.EXAMPLE.COM`
+- sam (string): sAMAccountName
+- dn / description / enabled / admincount / spn (string/bool/list): selected flat collector properties
+- source (string): 'bloodhound_ingest' (provenance, first writer)
+
+**ADGroup** - A directory group; nested groups carry MEMBER_OF edges too
+- object_identifier (string): SID; part of the uniqueness key
+- name / domain / sam / dn / description / admincount: as on ADUser
+
+**ADComputer** - A machine account from the collector's computers file
+- object_identifier (string): SID; part of the uniqueness key
+- name / domain / sam / dn / os / haslaps: as on ADUser; os = operatingSystem
+
+### Active Directory (BloodHound ingest) Relationships
+- `(p)-[:MEMBER_OF]->(g:ADGroup)` - principal (ADUser/ADGroup) is a member of the group (collector MemberOf)
+- `(g:ADGroup)-[:HAS_MEMBER]->(p)` - group contains principal (collector Members; the reverse view)
+- `(u:ADUser)-[:HAS_SESSION]->(c:ADComputer)` - user had a session on the computer (collector Sessions)
+- All three carry source = 'bloodhound_ingest' on creation; MERGE on endpoint pair, idempotent per ingest.

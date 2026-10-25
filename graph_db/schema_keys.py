@@ -465,6 +465,36 @@ KEY_CONSTRAINTS = [
             "user_id",
             "project_id"
         ]
+    },
+    {
+        "label": "ADUser",
+        "constraint": "aduser_tenant_unique",
+        "var": "adu",
+        "key_properties": [
+            "object_identifier",
+            "user_id",
+            "project_id"
+        ]
+    },
+    {
+        "label": "ADGroup",
+        "constraint": "adgroup_tenant_unique",
+        "var": "adg",
+        "key_properties": [
+            "object_identifier",
+            "user_id",
+            "project_id"
+        ]
+    },
+    {
+        "label": "ADComputer",
+        "constraint": "adcomputer_tenant_unique",
+        "var": "adc",
+        "key_properties": [
+            "object_identifier",
+            "user_id",
+            "project_id"
+        ]
     }
 ]
 

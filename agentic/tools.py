@@ -2103,6 +2103,12 @@ class PhaseAwareToolExecutor:
             if graph_summary_tool:
                 self._all_tools["graph_summary"] = graph_summary_tool
 
+        # bloodhound_ingest: BloodHound collector import. Lazy
+        # imports only; the tool opens its own Neo4j connection at call time,
+        # so registration is unconditional.
+        from bloodhound_ingest_tool import build_bloodhound_ingest_tool
+        self._all_tools["bloodhound_ingest"] = build_bloodhound_ingest_tool()
+
         # Register web search tool
         if web_search_tool:
             self._all_tools["web_search"] = web_search_tool
@@ -2552,6 +2558,10 @@ class PhaseAwareToolExecutor:
                 else:
                     adjusted = tool_args
                 output = await active_tool.ainvoke(adjusted)
+            elif tool_name == "bloodhound_ingest":
+                # In-process tool; flat dict args pass through as-is
+                # (the acknowledged=true refusal lives inside the tool).
+                output = await active_tool.ainvoke(tool_args)
             else:
                 output = await active_tool.ainvoke(tool_args)
             # Extract clean text from MCP response (list of content blocks, etc.)

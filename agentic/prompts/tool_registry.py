@@ -1004,6 +1004,27 @@ TOOL_REGISTRY = {
             '   - Use only when you need a completely clean state'
         ),
     },
+    "bloodhound_ingest": {
+        "purpose": "Import BloodHound collector JSON into the graph as AD nodes",
+        "when_to_use": "Post-exploitation AD mapping once a domain credential produced collector files",
+        "args_format": '"path": "<workspace path to *_users/groups/computers.json or their dir>", "acknowledged": true',
+        "description": (
+            '**bloodhound_ingest** (AD mapping — DANGEROUS, approval per run)\n'
+            '   - Imports BloodHound 4 collector files (bloodhound-python / SharpHound) '
+            'from the workspace into the project graph as ADUser / ADGroup / ADComputer '
+            'nodes with MEMBER_OF, HAS_MEMBER and HAS_SESSION relationships, keyed by '
+            'the collector SIDs — re-running the same import is idempotent.\n'
+            '   - PRECONDITION: a valid domain credential already in the graph (check '
+            'with query_graph first). Collecting is NOT part of this tool: it only '
+            'imports files already in the workspace (e.g. produced via kali_shell '
+            'bloodhound-python).\n'
+            '   - Dangerous: per-run approval, and the call must pass '
+            '"acknowledged": true — without it the tool refuses and the graph is '
+            'left untouched.\n'
+            '   - Returns a counts summary only (nodes/relationships by type, skipped '
+            'records); query_graph for the imported AD data afterwards'
+        ),
+    },
 }
 
 # =========================================================================
