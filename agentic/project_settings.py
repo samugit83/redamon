@@ -320,6 +320,9 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
         'shodan': ['informational', 'exploitation', 'post_exploitation'],
         'google_dork': ['informational'],
         'tradecraft_lookup': ['exploitation', 'post_exploitation'],
+        # Read-only Scan Timeline delta. Informational only:
+        # comparing graph versions sends no traffic and performs no writes.
+        'graph_diff': ['informational'],
     },
 
     # User-managed MCP servers (UI-driven, see /settings/mcp). Stored as raw

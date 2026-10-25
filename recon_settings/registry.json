@@ -10395,6 +10395,7 @@
     "execute_subfinder",
     "execute_wpscan",
     "google_dork",
+    "graph_diff",
     "kali_shell",
     "metasploit_console",
     "msf_restart",
