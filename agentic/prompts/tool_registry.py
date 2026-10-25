@@ -1004,6 +1004,26 @@ TOOL_REGISTRY = {
             '   - Use only when you need a completely clean state'
         ),
     },
+    "graph_diff": {
+        "purpose": "Diff the project graph between two Scan Timeline points",
+        "when_to_use": "After a scan: what is new, gone or changed since the last saved version",
+        "args_format": '"mode": "last_two" | "versions", "from_version": "current|<id|seq>", "to_version": "current|<id|seq>"',
+        "description": (
+            '**graph_diff** (graph orientation)\n'
+            '   - Compare the attack-surface graph between two points of the Scan '
+            'Timeline: the live graph vs the most recent saved version (mode '
+            '"last_two"), or two explicit versions by id/seq/"current" (mode '
+            '"versions").\n'
+            '   - Read-only. Nodes are matched by identity (an IP is its address), '
+            'never by internal ids; volatile scan stamps are ignored so a re-scan '
+            'is not reported as a wall of changes.\n'
+            '   - Returns JSON: nodes added/removed/changed grouped by label with '
+            'counts and examples, plus relationship add/remove by type and a '
+            'one-line summary for a quick read.\n'
+            '   - Use it to see what the latest scan actually brought before '
+            'planning the next move'
+        ),
+    },
 }
 
 # =========================================================================

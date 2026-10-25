@@ -2103,6 +2103,13 @@ class PhaseAwareToolExecutor:
             if graph_summary_tool:
                 self._all_tools["graph_summary"] = graph_summary_tool
 
+        # graph_diff: read-only Scan Timeline delta tool. The
+        # factory imports langchain/psycopg lazily and live-side capture only
+        # needs manager.graph.query when it exists, so registration is
+        # unconditional — saved-version diffs work even without a graph session.
+        from graph_diff_tool import build_graph_diff_tool
+        self._all_tools["graph_diff"] = build_graph_diff_tool(self)
+
         # Register web search tool
         if web_search_tool:
             self._all_tools["web_search"] = web_search_tool
@@ -2552,6 +2559,9 @@ class PhaseAwareToolExecutor:
                 else:
                     adjusted = tool_args
                 output = await active_tool.ainvoke(adjusted)
+            elif tool_name == "graph_diff":
+                # In-process tool; flat dict args pass through as-is.
+                output = await active_tool.ainvoke(tool_args)
             else:
                 output = await active_tool.ainvoke(tool_args)
             # Extract clean text from MCP response (list of content blocks, etc.)
