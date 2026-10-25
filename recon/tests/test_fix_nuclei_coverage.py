@@ -98,7 +98,7 @@ class TestNucleiUnavailable:
     def test_the_isolated_wrapper_returns_the_security_checks(self, pipeline, monkeypatch):
         monkeypatch.setattr(vs, "is_docker_running", lambda: False)
         data = vs.run_vuln_scan_isolated(_recon(), _settings())
-        assert data == {"security_checks": SECURITY_RESULT["security_checks"]}
+        assert data == {"vuln_scan": {"security_checks": SECURITY_RESULT["security_checks"]}}
 
     def test_a_healthy_scan_degrades_nothing(self, pipeline):
         out = vs.run_vuln_scan(_recon(), settings=_settings())

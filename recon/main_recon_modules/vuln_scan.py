@@ -1156,17 +1156,33 @@ def enrich_recon_file(recon_file: Path) -> dict:
 
 
 
+# Top-level payloads run_vuln_scan writes OUTSIDE its own namespace. The CVE
+# lookup result is a sibling of the module namespaces — the graph writer
+# (vuln_mixin) and the MITRE enrichment both read recon_data["technology_cves"]
+# — so the fan-out wrapper must hand it back alongside the namespace or the
+# fan-out merge in main.py drops it. Keep in sync with what that merge is
+# allowed to land at the top level.
+VULN_SCAN_TOP_LEVEL_KEYS = ("technology_cves",)
+
+
 def run_vuln_scan_isolated(combined_result: dict, settings: dict) -> dict:
     """
     Thread-safe isolated wrapper for Nuclei vuln scanning.
 
     Deep-copies combined_result, runs the scan on the copy (without incremental
-    file saves), and returns only the resulting vuln_scan dict. Used by Group 6
+    file saves), and returns a {vuln_scan: ..., <VULN_SCAN_TOP_LEVEL_KEYS>: ...}
+    envelope consumed by _merge_isolated_result in main.py. Used by Group 6
     Phase A fan-out in main.py so Nuclei and GraphQL can run concurrently
-    without racing on shared state.
+    without racing on shared state. Every other _isolated wrapper returns a
+    bare namespace; this one cannot, because run_cve_lookup writes its result
+    beside the namespace, not inside it.
     """
     snapshot = copy.deepcopy(combined_result)
     # output_file=None => skip the function's own incremental saves (main.py
     # persists the merged result after the fan-out completes).
     run_vuln_scan(snapshot, output_file=None, settings=settings)
-    return snapshot.get("vuln_scan", {})
+    envelope = {"vuln_scan": snapshot.get("vuln_scan", {})}
+    for key in VULN_SCAN_TOP_LEVEL_KEYS:
+        if key in snapshot:
+            envelope[key] = snapshot[key]
+    return envelope
