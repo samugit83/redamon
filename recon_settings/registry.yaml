@@ -7547,7 +7547,7 @@ fields:
     roe_capped: false
     mcp: settable
     roe_parse: allow
-    values: ["cve_intel", "execute_amass", "execute_arjun", "execute_code", "execute_curl", "execute_ffuf", "execute_gau", "execute_guarddog", "execute_httpx", "execute_hydra", "execute_jsluice", "execute_katana", "execute_naabu", "execute_nmap", "execute_nuclei", "execute_osv_scanner", "execute_playwright", "execute_subfinder", "execute_wpscan", "google_dork", "kali_shell", "metasploit_console", "msf_restart", "proxy_brain", "query_graph", "shodan", "tradecraft_lookup", "web_search"]
+    values: ["cve_intel", "execute_amass", "execute_arjun", "execute_code", "execute_curl", "execute_ffuf", "execute_gau", "execute_guarddog", "execute_httpx", "execute_hydra", "execute_jsluice", "execute_katana", "execute_naabu", "execute_nmap", "execute_nuclei", "execute_osv_scanner", "execute_playwright", "execute_subfinder", "execute_wpscan", "google_dork", "kali_shell", "metasploit_console", "mimikatz_parse", "msf_restart", "proxy_brain", "query_graph", "shodan", "tradecraft_lookup", "web_search"]
     validator: free_text
     group: engagement_limits
     meaning: >-

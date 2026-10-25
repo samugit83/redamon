@@ -1004,6 +1004,27 @@ TOOL_REGISTRY = {
             '   - Use only when you need a completely clean state'
         ),
     },
+    "mimikatz_parse": {
+        "purpose": "Parse a mimikatz transcript into Credential graph nodes",
+        "when_to_use": "Post-exploitation after dumping credentials over a session (transcript saved to workspace)",
+        "args_format": '"path": "<workspace .txt transcript>", "origin_host": "<hostname the dump came from>", "acknowledged": true',
+        "description": (
+            '**mimikatz_parse** (credential harvest — DANGEROUS, approval per run)\n'
+            '   - Parses a mimikatz transcript saved in the workspace (run mimikatz '
+            'via the existing session tools — metasploit_console/kiwi — and save '
+            'the output with fs_write first) into tenant-scoped Credential nodes '
+            '(NTLM / LM / SHA1 hashes, plaintext) with an ORIGIN edge to the '
+            'source host when the graph knows it. Re-parsing the same transcript '
+            'is idempotent.\n'
+            '   - Supported formats: sekurlsa::logonpasswords, lsadump::sam, '
+            'lsadump::dcsync. Garbage lines are skipped, never fatal.\n'
+            '   - Dangerous: per-run approval, and the call must pass '
+            '"acknowledged": true — without it the tool refuses and the graph is '
+            'left untouched.\n'
+            '   - The response carries COUNTS ONLY (e.g. NTLM: 12, plaintext: 2) — '
+            'secret values live in the graph/workspace, never in tool output'
+        ),
+    },
 }
 
 # =========================================================================

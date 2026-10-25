@@ -72,6 +72,11 @@ export const NODE_COLORS: Record<string, string> = {
   ChainFinding: '#ff7a00',    // Vivid orange - outshines the whole warm band
   ChainFailure: '#8c5a5a',    // Grey-red - a dead end must never read as a success
 
+  // CREDENTIALS (mimikatz_parse, post-exploitation) - the highest-value
+  // harvest: darker than secrets found in web content so a credential from a
+  // foothold outranks a leaked API key at a glance.
+  Credential: '#b91c1c',      // Red-700 - captured auth material
+
   Default: '#6b7280',        // Gray - Fallback
 }
 
