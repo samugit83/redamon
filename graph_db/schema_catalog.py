@@ -1928,6 +1928,56 @@ Note: Bridge relationships are only created for tool-execution steps. Steps usin
 - `(f:ChainFinding)-[:FINDING_RELATES_CVE]->(c:CVE)` - Finding relates to CVE
 - `(f:ChainFinding)-[:CONFIRMS]->(v)` - the agent proved this recon finding (Vulnerability, Secret, MultiscannerFinding, GithubSecret, GithubSensitiveFile, JsReconFinding, MalPackageFinding or ExploitGvm); it is why that finding shows as proven on the Priority Board
 
+
+""",
+    },
+    {
+        "kind": 'SUBSECTION_HEAD',
+        "key": 'Credential Nodes (agent tool mimikatz_parse, post-exploitation)',
+        "section": 'Relationships',
+        "documents": [],
+        "relationships": [],
+        "body": """### Credential Nodes (agent tool mimikatz_parse, post-exploitation)
+Imported from mimikatz transcripts by the `mimikatz_parse` agent tool. Entity
+node: the tenant key (kind, username, domain, value + user_id + project_id) is
+the MERGE key, so re-parsing the same transcript refreshes instead of
+duplicating. Full secret values live ONLY here and in the workspace file —
+never in tool responses or logs.
+
+""",
+    },
+    {
+        "kind": 'LABEL',
+        "key": 'Credential',
+        "section": 'Relationships :: Credential Nodes (agent tool mimikatz_parse, post-exploitation)',
+        "documents": ['Credential'],
+        "description": 'An auth material captured from a foothold',
+        "groups": [{'header': None, 'properties': [{'name': 'kind', 'type': 'string', 'desc': 'ntlm | lm | sha1 | plaintext; part of the uniqueness key'}, {'name': 'username', 'type': 'string', 'desc': 'principal the credential belongs to; part of the key'}, {'name': 'domain', 'type': 'string', 'desc': 'domain of the principal (may be empty); part of the key'}, {'name': 'value', 'type': 'string', 'desc': 'the hash/plaintext itself; part of the key'}, {'name': 'rid', 'type': 'int, optional', 'desc': 'relative identifier when the transcript carried one'}, {'name': 'origin_host', 'type': 'string, optional', 'desc': 'host the dump came from (kept even when the graph does not know that host)'}, {'name': 'source', 'type': 'string', 'desc': "'mimikatz_parse' (provenance, first writer)"}]}],
+        "relationships": [],
+        "subtypes": [],
+        "notes": [],
+        "body": """**Credential** - An auth material captured from a foothold
+- kind (string): ntlm | lm | sha1 | plaintext; part of the uniqueness key
+- username (string): principal the credential belongs to; part of the key
+- domain (string): domain of the principal (may be empty); part of the key
+- value (string): the hash/plaintext itself; part of the key
+- rid (int, optional): relative identifier when the transcript carried one
+- origin_host (string, optional): host the dump came from (kept even when the
+  graph does not know that host)
+- source (string): 'mimikatz_parse' (provenance, first writer)
+
+""",
+    },
+    {
+        "kind": 'SUBSECTION',
+        "key": 'Credential Relationships',
+        "section": 'Relationships',
+        "documents": [],
+        "relationships": [{'type': 'ORIGIN', 'source': 'Credential', 'target': 'Subdomain', 'source_var': 'c', 'target_var': 'h', 'rel_props': '', 'source_props': '', 'target_props': '', 'lead': '- ', 'prefix': '', 'tail': ' - the credential was dumped on that'}],
+        "body": """### Credential Relationships
+- `(c:Credential)-[:ORIGIN]->(h:Subdomain)` - the credential was dumped on that
+  host; attached only when the graph already knows the host (the tool never
+  merges anchor nodes). Carries source = 'mimikatz_parse'.
 """,
     },
 ]

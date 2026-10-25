@@ -465,6 +465,19 @@ KEY_CONSTRAINTS = [
             "user_id",
             "project_id"
         ]
+    },
+    {
+        "label": "Credential",
+        "constraint": "credential_tenant_unique",
+        "var": "cred",
+        "key_properties": [
+            "kind",
+            "username",
+            "domain",
+            "value",
+            "user_id",
+            "project_id"
+        ]
     }
 ]
 

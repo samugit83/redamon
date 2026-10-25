@@ -188,6 +188,13 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Maximum 2 exploit attempts per target, then STOP
 - No `db_nmap`, no `hosts`, no `services` scanning commands
 
+### mimikatz_parse — RESTRICTED (local parse; the dump is the loud part)
+- This tool only parses a transcript already in the workspace and writes the local
+  graph — but in stealth mode do NOT harvest a fresh dump to feed it: LSASS access
+  and dcsync are among the loudest actions possible on a host/DC (EDR bait,
+  replication events). Parse what the operator already captured, nothing more.
+- Never pull transcripts off a share you did not already control pre-stealth.
+
 ---
 
 ## Phase-Specific Rules

@@ -2103,6 +2103,11 @@ class PhaseAwareToolExecutor:
             if graph_summary_tool:
                 self._all_tools["graph_summary"] = graph_summary_tool
 
+        # mimikatz_parse: transcript -> Credential nodes. Lazy
+        # imports only; opens its own Neo4j connection at call time.
+        from mimikatz_parse_tool import build_mimikatz_parse_tool
+        self._all_tools["mimikatz_parse"] = build_mimikatz_parse_tool()
+
         # Register web search tool
         if web_search_tool:
             self._all_tools["web_search"] = web_search_tool
@@ -2552,6 +2557,10 @@ class PhaseAwareToolExecutor:
                 else:
                     adjusted = tool_args
                 output = await active_tool.ainvoke(adjusted)
+            elif tool_name == "mimikatz_parse":
+                # In-process tool; flat dict args pass through as-is
+                # (the acknowledged=true refusal lives inside the tool).
+                output = await active_tool.ainvoke(tool_args)
             else:
                 output = await active_tool.ainvoke(tool_args)
             # Extract clean text from MCP response (list of content blocks, etc.)

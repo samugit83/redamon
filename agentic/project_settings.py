@@ -52,6 +52,10 @@ DANGEROUS_TOOLS = frozenset({
     # Supply-chain L3: execute_guarddog downloads attacker-authored tarballs
     # (registry egress). execute_osv_scanner is passive/offline -> NOT dangerous.
     'execute_guarddog',
+    # Post-exploitation credential harvest: parses foothold-derived
+    # mimikatz dumps into Credential nodes — approval per run, and the tool
+    # itself also requires acknowledged=true (defense in depth).
+    'mimikatz_parse',
 })
 
 # =============================================================================
@@ -320,6 +324,9 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
         'shodan': ['informational', 'exploitation', 'post_exploitation'],
         'google_dork': ['informational'],
         'tradecraft_lookup': ['exploitation', 'post_exploitation'],
+        # mimikatz transcript parse. Post-exploitation only:
+        # consumes foothold-derived dumps. Dangerous + approval + acknowledged.
+        'mimikatz_parse': ['post_exploitation'],
     },
 
     # User-managed MCP servers (UI-driven, see /settings/mcp). Stored as raw
