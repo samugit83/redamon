@@ -425,7 +425,17 @@ class AgentOrchestrator:
             password=self.neo4j_password,
             llm=self.llm
         )
-        graph_tool = self.neo4j_manager.get_tool()
+        # Docker daemon restarts do not honor Compose dependency ordering.
+        graph_tool = None
+        for attempt in range(24):
+            graph_tool = await asyncio.to_thread(self.neo4j_manager.get_tool)
+            if graph_tool is not None:
+                break
+            if attempt < 23:
+                logger.warning("Neo4j graph tools unavailable; retry %s/24 in 5s", attempt + 1)
+                await asyncio.sleep(5)
+        if graph_tool is None:
+            raise RuntimeError("Neo4j graph tools unavailable after startup retries")
         # The two companions ride on the SAME condition as query_graph:
         # get_tool() returns None when Neo4j setup fails, and a companion that
         # was offered anyway would fail on every call instead of disappearing.
