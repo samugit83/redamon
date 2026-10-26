@@ -1548,6 +1548,11 @@ class ContainerManager:
             detach=True,
             command=["python", "/app/ingest_worker.py"],
             network=self._CAPTURE_INGEST_NETWORK,
+            # Deployment-owned address avoids racing the controller's static IP.
+            **({"networking_config": self.client.api.create_networking_config({
+                self._CAPTURE_INGEST_NETWORK: self.client.api.create_endpoint_config(
+                    ipv4_address=os.environ["CAPTURE_INGEST_IPV4"])
+            })} if os.environ.get("CAPTURE_INGEST_IPV4") else {}),
             environment={
                 "CAPTURE_SPOOL_DIR": "/spool",
                 "CAPTURE_BODIES_DIR": "/bodies",
