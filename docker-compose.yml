@@ -190,7 +190,7 @@ services:
     image: registry.community.greenbone.net/community/pg-gvm:stable
     container_name: redamon-gvm-postgres
     mem_limit: ${GVM_POSTGRES_MEM:-1g}   # sized from host RAM by redamon.sh (GVM's own database)
-    restart: on-failure
+    restart: unless-stopped
     # The stale-lock cleanup runs INSIDE this container, right before postgres
     # starts. It used to be a sibling one-shot sharing the socket volume, which
     # deleted the LIVE socket on every repeat `up`: compose leaves an already-
@@ -250,7 +250,7 @@ services:
     image: registry.community.greenbone.net/community/ospd-openvas:stable
     container_name: redamon-gvm-ospd
     mem_limit: ${GVM_OSPD_MEM:-2g}   # sized from host RAM by redamon.sh (the actual OpenVAS scanner: heaviest of the stack)
-    restart: on-failure
+    restart: unless-stopped
     hostname: ospd-openvas.local
     cap_add:
       - NET_ADMIN
