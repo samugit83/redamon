@@ -19,6 +19,7 @@ import {
 import { getPerformanceTier, TIER_CONFIG, getAdaptiveForceConfig } from '../../config/graph'
 import { hasHighSeverityNodes, isGoalFinding } from '../../utils/nodeHelpers'
 import { useAnimationFrame } from '../../hooks'
+import { useGraphRendering } from '../../hooks/useGraphRendering'
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
   ssr: false,
@@ -48,8 +49,7 @@ export function GraphCanvas2D({
   activeChainId,
   externalGraphRef,
 }: GraphCanvas2DProps) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graphRef = useRef<any>(null)
+  const { graphRef, bindGraphRef, invalidate, onEngineStop, onEngineTick } = useGraphRendering(true, false)
 
   // Sync internal ref to external ref (for parent component access)
   useEffect(() => {
@@ -57,6 +57,8 @@ export function GraphCanvas2D({
   })
   const animationTimeRef = useRef<number>(0)
   const prevNodeCountRef = useRef<number>(0)
+
+  useEffect(() => { invalidate(true) }, [data, invalidate])
 
   // Performance tier + adaptive force config
   const tier = useMemo(() => getPerformanceTier(data.nodes.length), [data.nodes.length])
@@ -87,7 +89,7 @@ export function GraphCanvas2D({
     }, ANIMATION_CONFIG.initDelay)
 
     return () => clearTimeout(timer)
-  }, [forceConfig.collisionIterations])
+  }, [forceConfig.collisionIterations, graphRef])
 
   // Reheat on structural changes (new/removed nodes or links). Deferred via
   // setTimeout so graphRef.current is attached on first mount (ForceGraph2D is
@@ -104,11 +106,11 @@ export function GraphCanvas2D({
 
     if (structureChanged) {
       const timer = setTimeout(() => {
-        graphRef.current?.d3ReheatSimulation()
+        graphRef.current?.d3ReheatSimulation?.()
       }, ANIMATION_CONFIG.initDelay)
       return () => clearTimeout(timer)
     }
-  }, [data])
+  }, [data, graphRef])
 
   // Slow down zoom speed for smoother navigation
   useEffect(() => {
@@ -129,7 +131,7 @@ export function GraphCanvas2D({
       const timer = setTimeout(applyZoom, 500)
       return () => clearTimeout(timer)
     }
-  }, [data])
+  }, [data, graphRef])
 
   // Animation loop for pulsing glow effect (only when glow is enabled by tier)
   const hasHighSeverity = hasHighSeverityNodes(data.nodes)
@@ -154,8 +156,10 @@ export function GraphCanvas2D({
 
   return (
     <ForceGraph2D
-      ref={graphRef}
+      ref={bindGraphRef}
       graphData={data}
+      onEngineStop={onEngineStop}
+      onEngineTick={onEngineTick}
       nodeLabel={(node) => `${(node as GraphNode).name} (${(node as GraphNode).type})`}
       nodeRelSize={BASE_SIZES.node2D}
       linkLabel={(link) => (link as GraphLink).type}
