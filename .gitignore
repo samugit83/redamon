@@ -278,6 +278,10 @@ redamon-session-*.md
 # supply-chain guinea pig dry-run scratch output
 testing/guinea_pigs/supply_chain_target/.dryrun/
 
+# js_secret_lab sites: gen_lab.py assembles invented key-shaped values at run
+# time, so they must never be committed (GitHub push protection)
+testing/guinea_pigs/js_secret_lab/generated/
+
 # transient dir used by tests/redamon_env_block_test.sh (docker must see it,
 # so it cannot live in /tmp); always removed by the test itself
 .envblock-test.*
