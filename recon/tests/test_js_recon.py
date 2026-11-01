@@ -121,7 +121,8 @@ class TestScanReturnFormat(unittest.TestCase):
     def test_filtered_is_dict(self):
         _, filtered = patterns.scan_js_content('x', 'test.js')
         self.assertIsInstance(filtered, dict)
-        expected_keys = {'low_entropy', 'base64_blob', 'binary_context', 'repetitive', 'url_whitelist', 'generic_noise'}
+        expected_keys = {'low_entropy', 'base64_blob', 'binary_context', 'repetitive', 'url_whitelist', 'generic_noise',
+                         'no_key_data', 'no_keyword_nearby'}
         self.assertEqual(set(filtered.keys()), expected_keys)
 
     def test_finding_has_all_fields(self):
@@ -390,8 +391,13 @@ class TestGeneralSecrets(unittest.TestCase):
         self.assertTrue(any(f['name'] == 'JWT Token' for f in findings))
 
     def test_rsa_private_key(self):
-        findings = _scan('-----BEGIN RSA PRIVATE KEY-----')
+        # The marker alone is a parser branch or a runtime template in library
+        # code; a key needs key data after it (TruffleHog plan, item 0.2).
+        body = ('MIIEow' + 'IBAAKCAQEA' + 'x7Kp2Lm9Qz4Wn8Rt1Yb6Vc3Hd5Jf0Gs2') * 3
+        findings = _scan('-----BEGIN RSA PRIVATE KEY-----\n' + body + '\n-----END RSA PRIVATE KEY-----')
         self.assertTrue(any(f['name'] == 'RSA Private Key' for f in findings))
+        self.assertFalse(any(f['name'] == 'RSA Private Key'
+                             for f in _scan('"-----BEGIN RSA PRIVATE KEY-----\\n" + body')))
 
     def test_mongodb_uri(self):
         findings = _scan('mongodb+srv://user:pass@cluster.mongodb.net/db')
