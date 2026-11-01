@@ -121,6 +121,12 @@ def regex_rows(rows, nodes, phase):
             continue
         hashes = {row["match_sha12"], row["value_sha12"]}
         cands = [n for n in by_url.get(url_of(row), []) if not is_trufflehog(n) and n["mt12"] in hashes]
+        if exp is None and row.get("regex_today"):
+            # The rule that used to fire must be gone; another rule holding the
+            # same value (the provider finding a generic match folded into)
+            # is the row it folded into, checked there.
+            gone = row["regex_today"]["secret_type"]
+            cands = [n for n in cands if n["secret_type"] == gone]
         if exp is None:
             claimed.update(n["id"] for n in cands)
             check(row["label"], not cands, "no regex finding" if not cands else
@@ -171,7 +177,9 @@ def trufflehog_rows(rows, nodes, claimed):
         if th is None:
             check(case, not only, "not reported" if not only else f"reported as {[n['secret_type'] for n in only]}")
             continue
-        if row["regex"] is not None and merged:
+        # Merged into the regex node holding the key, whichever rule it is: a
+        # generic row's key lands on the provider finding it folded into.
+        if merged:
             check(case, True, f"merged into the regex node (TruffleHog:{th['detector']})")
             continue
         if not only:
