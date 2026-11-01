@@ -214,7 +214,6 @@ async def process_answer_node(state: AgentState, config) -> dict:
         "awaiting_user_question": False,
         "pending_question": None,
         "user_question_answer": None,
-        "_emitted_question_key": None,
         "qa_history": qa_history,
         "messages": [
             HumanMessage(content=f"User answer: {answer}"),

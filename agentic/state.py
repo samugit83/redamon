@@ -704,6 +704,10 @@ class FireteamMemberState(TypedDict):
     # Raw tool result from execute_tool_node (success, output, error).
     _tool_result: Optional[dict]
 
+    # Why the harness downgraded the member's last productivity verdict; the
+    # next member think turn shows it in the prompt. None when the claim held.
+    _last_productivity_discrepancy: Optional[str]
+
     # Last-written ChainStep id so follow-on steps can link via prev_step_id.
     _last_chain_step_id: Optional[str]
 
@@ -1044,6 +1048,7 @@ class AgentState(TypedDict):
     _abort_transition: bool  # True when user aborted a phase transition (routes to generate_response)
     _guardrail_blocked: bool  # True when project target was blocked by the scope guardrail
     _scope_signature: Optional[str]  # The scope the guardrails last approved; a change re-runs them
+    _roe_warnings: List[str]  # RoE date/time-window breaches, recomputed by initialize_node every turn
 
     # Tool plan execution (parallel wave)
     _current_plan: Optional[dict]  # ToolPlan.model_dump() with results after execution
@@ -1066,6 +1071,10 @@ class AgentState(TypedDict):
 
     # Response tier for adaptive formatting ("conversational", "summary", "full_report")
     _response_tier: Optional[str]
+    # Set by generate_response_node; streaming sends task_complete only once it
+    # is set. A new query clears it (_STREAMING_TRANSIENT_FIELDS), or the last
+    # run's flag would announce the next run complete before it starts.
+    _report_generated: Optional[bool]
 
     # Deep Think result (persists for chain, replaced on re-trigger)
     deep_think_result: Optional[str]
@@ -1104,6 +1113,9 @@ class AgentState(TypedDict):
     _previous_priority_order: Optional[List[str]]
     tested_axes: dict  # axis_key (str) -> list of {iteration, verdict, tool} dicts
     _last_productivity_score: Optional[dict]  # diagnostic: last computed score + components
+    # Why the harness downgraded the model's last productivity verdict; the next
+    # think turn shows it in the prompt. None when the last claim held.
+    _last_productivity_discrepancy: Optional[str]
 
     # Metasploit state tracking
     msf_session_reset_done: bool  # True if metasploit was reset at start of this session

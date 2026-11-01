@@ -12,6 +12,7 @@ _STREAMING_TRANSIENT_FIELDS = (
     "_completed_step",
     "_current_step",
     "_skill_workflow",
+    "_report_generated",
 )
 
 

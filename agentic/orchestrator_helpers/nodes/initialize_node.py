@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import zoneinfo
+from datetime import datetime, timezone
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -229,6 +231,67 @@ async def _scope_gate(state, llm, user_id, project_id, session_id) -> tuple[dict
     return None, updates
 
 
+def _roe_timing_warnings(now_utc: datetime) -> list[str]:
+    """Why ``now_utc`` falls outside the engagement dates or the testing window."""
+    warnings = []
+
+    start_date = get_setting('ROE_ENGAGEMENT_START_DATE', '')
+    end_date = get_setting('ROE_ENGAGEMENT_END_DATE', '')
+    if start_date:
+        try:
+            if now_utc.date() < datetime.strptime(start_date, '%Y-%m-%d').date():
+                warnings.append(f"Engagement has not started yet (starts {start_date}).")
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            if now_utc.date() > datetime.strptime(end_date, '%Y-%m-%d').date():
+                warnings.append(f"Engagement has ended ({end_date}). Testing may no longer be authorized.")
+        except ValueError:
+            pass
+
+    if get_setting('ROE_TIME_WINDOW_ENABLED', False):
+        tz_name = get_setting('ROE_TIME_WINDOW_TIMEZONE', 'UTC')
+        try:
+            now_local = now_utc.astimezone(zoneinfo.ZoneInfo(tz_name))
+            day_name = now_local.strftime('%A').lower()
+            allowed_days = get_setting('ROE_TIME_WINDOW_DAYS', [])
+            start_time = get_setting('ROE_TIME_WINDOW_START_TIME', '09:00')
+            end_time = get_setting('ROE_TIME_WINDOW_END_TIME', '18:00')
+
+            if day_name not in allowed_days:
+                warnings.append(f"Current day ({day_name.capitalize()}) is outside the allowed testing window.")
+            else:
+                current_time = now_local.strftime('%H:%M')
+                # Handle overnight windows (e.g. 22:00 - 06:00)
+                if start_time <= end_time:
+                    outside = current_time < start_time or current_time > end_time
+                else:
+                    outside = current_time < start_time and current_time > end_time
+                if outside:
+                    warnings.append(f"Current time ({current_time} {tz_name}) is outside the allowed window ({start_time}-{end_time}).")
+        except Exception:
+            pass
+
+    return warnings
+
+
+def _roe_warning_update(user_id, project_id, session_id) -> dict:
+    """This turn's RoE warnings for think_node's prompt, as a state update.
+
+    Returned, never written into ``state``: LangGraph hands a node a copy of the
+    state, so an in-place write never reaches the next node. Recomputed on every
+    turn because the value persists in the checkpoint and a session can outlive
+    its testing window or its engagement.
+    """
+    if not get_setting('ROE_ENABLED', False):
+        return {"_roe_warnings": []}
+    warnings = _roe_timing_warnings(datetime.now(timezone.utc))
+    if warnings:
+        logger.warning(f"[{user_id}/{project_id}/{session_id}] RoE WARNING: {' | '.join(warnings)}")
+    return {"_roe_warnings": warnings}
+
+
 async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dict:
     """Initialize state, after the scope gate (_scope_gate) lets the turn run."""
     user_id, project_id, session_id = get_config_values(config)
@@ -238,7 +301,7 @@ async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dic
     if updates.get("_guardrail_blocked") is False:
         state = {**state, "_guardrail_blocked": False}
     result = await _initialize(state, config, llm=llm, neo4j_creds=neo4j_creds)
-    return {**result, **updates}
+    return {**result, **updates, **_roe_warning_update(user_id, project_id, session_id)}
 
 
 async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
@@ -262,64 +325,6 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
     # Migrate legacy state if needed (backward compatibility)
     from state import migrate_legacy_objective
     state = migrate_legacy_objective(state)
-
-    # RoE engagement date and time window warnings (first invocation only)
-    if not state.get("execution_trace") and get_setting('ROE_ENABLED', False):
-        from datetime import datetime, timezone
-        try:
-            import zoneinfo
-        except ImportError:
-            from backports import zoneinfo
-
-        now_utc = datetime.now(timezone.utc)
-        warnings = []
-
-        # Engagement date check
-        start_date = get_setting('ROE_ENGAGEMENT_START_DATE', '')
-        end_date = get_setting('ROE_ENGAGEMENT_END_DATE', '')
-        if start_date:
-            try:
-                if now_utc.date() < datetime.strptime(start_date, '%Y-%m-%d').date():
-                    warnings.append(f"Engagement has not started yet (starts {start_date}).")
-            except ValueError:
-                pass
-        if end_date:
-            try:
-                if now_utc.date() > datetime.strptime(end_date, '%Y-%m-%d').date():
-                    warnings.append(f"Engagement has ended ({end_date}). Testing may no longer be authorized.")
-            except ValueError:
-                pass
-
-        # Time window check
-        if get_setting('ROE_TIME_WINDOW_ENABLED', False):
-            tz_name = get_setting('ROE_TIME_WINDOW_TIMEZONE', 'UTC')
-            try:
-                tz = zoneinfo.ZoneInfo(tz_name)
-                now_local = datetime.now(tz)
-                day_name = now_local.strftime('%A').lower()
-                allowed_days = get_setting('ROE_TIME_WINDOW_DAYS', [])
-                start_time = get_setting('ROE_TIME_WINDOW_START_TIME', '09:00')
-                end_time = get_setting('ROE_TIME_WINDOW_END_TIME', '18:00')
-
-                if day_name not in allowed_days:
-                    warnings.append(f"Current day ({day_name.capitalize()}) is outside the allowed testing window.")
-                else:
-                    current_time = now_local.strftime('%H:%M')
-                    # Handle overnight windows (e.g. 22:00 - 06:00)
-                    if start_time <= end_time:
-                        outside = current_time < start_time or current_time > end_time
-                    else:
-                        outside = current_time < start_time and current_time > end_time
-                    if outside:
-                        warnings.append(f"Current time ({current_time} {tz_name}) is outside the allowed window ({start_time}-{end_time}).")
-            except Exception:
-                pass
-
-        if warnings:
-            warning_text = " | ".join(warnings)
-            logger.warning(f"[{user_id}/{project_id}/{session_id}] RoE WARNING: {warning_text}")
-            # Inject warning into state so it appears in the agent's prompt context
-            state["_roe_warnings"] = warnings
 
     # If resuming after approval/answer, preserve state for routing
     if state.get("user_approval_response") and state.get("phase_transition_pending"):

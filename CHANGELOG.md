@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.5.1] - 2026-11-01
+
+Three agent features that never ran now do: the downgrade note, the RoE timing warnings and the end-of-task message.
+
+### Fixed
+
+- **The agent learns when its progress claim is downgraded.** When the model counted a step as progress but the output was empty or a repeat, the verdict was downgraded and the reason saved for the next turn's prompt, but it never got there. It now does, for the agent and for fireteam members. Rebuild `agent`.
+- **RoE timing warnings reach the agent.** Outside the engagement dates or the testing window, the agent is meant to be told so, and told not to test once the engagement has ended; the warning never reached its prompt, which showed the dates but not that they had passed. It now does, checked on every message instead of only the first of a session, so a session that runs past its window or its end date is warned too. Rebuild `agent`.
+- **The chat says when a task is complete.** The `task_complete` event was never sent, so the closing message, the last graph refresh and the transcript's completion entry were missing. Rebuild `agent`.
+- **A test catches the next one.** All three were values LangGraph drops without an error because the agent's state schema did not declare them (one was also written into a copy of the state). A unit test now checks every key an agent node writes against its graph's schema, and flags a node that writes into its own input.
+
 ## [7.5.0] - 2026-10-29
 
 Route exposure findings the agent can confirm, skills up to 500 KB, and errors that say why.

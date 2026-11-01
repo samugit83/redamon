@@ -3306,7 +3306,7 @@ flowchart TB
 
 | Field | Owner | Purpose |
 |---|---|---|
-| `_roe_warnings` | `initialize_node` | Pre-computed timing warnings (engagement ended, outside time window) injected into prompt by `think_node` |
+| `_roe_warnings` | `initialize_node` | Timing warnings (engagement ended, outside time window), recomputed every turn and injected into the prompt by `think_node` |
 
 ### Why Both Prompt-Level and Code-Level?
 
