@@ -68,7 +68,7 @@ Section guidelines:
 
   ATTACK SURFACE METRICS: Subdomains (active vs total), IPs (direct vs CDN-fronted), endpoints, parameters, open ports and services. Total graph nodes for scope context.
 
-  SECRETS & DATA EXPOSURE: GitHub secrets or sensitive files found: detail count and implications. TruffleHog credential findings in git history: total findings, verified vs unverified, detector types. Generic secret detection findings (from jsluice, JS Recon): count by severity, types (API keys, tokens, credentials), validation status. If none, state that no credential exposure was detected.
+  SECRETS & DATA EXPOSURE: GitHub secrets or sensitive files found: detail count and implications. TruffleHog credential findings in git history: total findings, verified vs unverified, detector types. Generic secret detection findings (from jsluice, JS Recon and its optional TruffleHog engine): count by severity, types (API keys, tokens, credentials), validation status. If none, state that no credential exposure was detected.
 
   JAVASCRIPT RECONNAISSANCE: JS Recon findings covering dependency confusion risks, source map exposure, DOM sinks, developer comments, and framework detection. Detail counts by severity and finding type. Highlight critical/high findings.
 

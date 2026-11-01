@@ -724,6 +724,7 @@ const JsRecon = (
     <div style={sectionTitleStyle}>How output transforms the graph</div>
     <ul style={listStyle}>
       <li>Each regex-matched secret (API keys, hardcoded endpoints, auth tokens) becomes a <strong>Secret</strong> node attached to its source BaseURL.</li>
+      <li><strong>TruffleHog</strong> (optional, off by default) also scans local copies of the same files in an isolated container and never fetches from the target. With key validation off it has no network; with it on it checks the keys it finds with their providers only. A key both engines find stays one Secret, with <span style={codeStyle}>{'TruffleHog:<Detector>'}</span> in <span style={codeStyle}>alternate_names</span>; a key only TruffleHog finds is a Secret with <span style={codeStyle}>detection_method</span> trufflehog.</li>
       <li>URLs found inside JS source become <strong>Endpoint</strong> nodes attached to the matching BaseURL, tagged with their source JS file.</li>
       <li>Variable assignments and route definitions extracted from JS produce <strong>Parameter</strong> nodes attached to relevant Endpoints.</li>
       <li>Detected JS libraries and frameworks (React, Vue, jQuery, etc.) become <strong>JsReconFinding</strong> nodes (with finding type "framework") attached to the analysed JS file via <span style={codeStyle}>HAS_JS_FINDING</span>. They are <em>not</em> currently promoted to Technology nodes, so they do not feed the CVE Lookup phase - that's a known gap.</li>

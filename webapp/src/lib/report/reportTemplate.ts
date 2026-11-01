@@ -2133,7 +2133,7 @@ function renderAppendix(data: ReportData): string {
       <tr><td>Vulnerability Scanning</td><td>Nuclei, GreenBone (GVM)</td></tr>
       <tr><td>Exploitation</td><td>Metasploit Framework</td></tr>
       <tr><td>Secret Detection</td><td>GitHub Hunt, Secret Multiscanner, jsluice, JS Recon</td></tr>
-      <tr><td>JS Analysis</td><td>JS Recon (dependency confusion, source maps, DOM sinks)</td></tr>
+      <tr><td>JS Analysis</td><td>JS Recon (secret patterns with optional TruffleHog, dependency confusion, source maps, DOM sinks)</td></tr>
       <tr><td>Threat Intelligence</td><td>AlienVault OTX</td></tr>
       <tr><td>Graph Database</td><td>Neo4j</td></tr>
     </tbody>
