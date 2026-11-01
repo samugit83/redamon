@@ -69,15 +69,29 @@ curl http://localhost:8010/health
 GET /health
 ```
 
-Returns service health and running recon count.
+Returns service health, the running scans per kind, and which optional scanner
+images are installed.
 
 ```json
 {
   "status": "healthy",
   "version": "1.0.0",
-  "running_recons": 0
+  "running_recons": 0,
+  "running_gvm_scans": 0,
+  "running_github_hunts": 0,
+  "running_trufflehog_scans": 0,
+  "running_ai_attack_scans": 0,
+  "gvm_available": false,
+  "trufflehog_available": true
 }
 ```
+
+`trufflehog_available` says whether `redamon-trufflehog:latest` exists. The webapp's
+`/api/js-recon/trufflehog/available` reads it to warn, in the JS Recon form, that the
+TruffleHog engine cannot run. The orchestrator also removes the stage directories
+(`/tmp/redamon/js_recon_th_*`) a killed JS Recon run left behind: when it reaps the run's
+containers or sees the run complete, and at startup for every run with no live recon
+container.
 
 ### Start Recon
 
