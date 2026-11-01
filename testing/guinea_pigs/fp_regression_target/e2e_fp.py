@@ -21,6 +21,7 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --ip-ownership --no-triage    # plan 11: IP attribution (.10 .31 .32) + Shodan stub
     python3 e2e_fp.py --ip-ownership-stealth --no-triage --log stealth.log   # the same, stealth mode
     python3 e2e_fp.py --ip-ownership-nwlab --no-triage   # plan 11, domain mode, nested-wildcard lab up
+    python3 e2e_fp.py --trufflehog on       # the same run with JS Recon's TruffleHog engine on
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
@@ -379,6 +380,8 @@ def main():
     ap.add_argument("--ip-ownership-nwlab", action="store_true",
                     help="the plan-11 IP attribution project in domain mode, over the nested-wildcard lab")
     ap.add_argument("--log", metavar="PATH", help="follow the recon container's log into PATH")
+    ap.add_argument("--trufflehog", choices=("on", "off"),
+                    help="set jsReconTrufflehogEnabled for this run (JS Recon's TruffleHog engine)")
     args = ap.parse_args()
 
     mcp.init()
@@ -421,8 +424,11 @@ def main():
                                       **target})
         project_id = (out.get("project") or {}).get("id") or out.get("id") or out.get("projectId")
         print(f"[+] project {project_id} ({name})", flush=True)
-    if args.set:
-        changed = call("update_recon_settings", {"projectId": project_id, "settings": json.loads(args.set)})
+    extra = json.loads(args.set) if args.set else {}
+    if args.trufflehog:
+        extra["jsReconTrufflehogEnabled"] = args.trufflehog == "on"
+    if extra:
+        changed = call("update_recon_settings", {"projectId": project_id, "settings": extra})
         print("[*] settings:", json.dumps(changed)[:300], flush=True)
     print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
     print("[*] SPA state:", json.dumps(spa_state(args.spa_state)), flush=True)
