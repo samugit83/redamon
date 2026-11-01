@@ -194,10 +194,10 @@ describe('GlobalHeader – Plugins button', () => {
     expect(link.className).toContain('coreNavItem')
   })
 
-  test('carries the green "New!" badge', () => {
+  test('no longer carries the "New!" badge', () => {
+    // db045488 moved the badge to the Route Exposure workflow node.
     render(<GlobalHeader />)
-    const badge = pluginsLink()!.querySelector('span[class*="newBadge"]')
-    expect(badge?.textContent).toBe('New!')
+    expect(pluginsLink()!.querySelector('span[class*="newBadge"]')).toBeNull()
   })
 
   test('in the core nav group, directly before Reports', () => {
