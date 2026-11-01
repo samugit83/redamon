@@ -86,4 +86,25 @@ describe('JS Recon secret copy button', () => {
     expect(writeText).toHaveBeenCalledWith(FULL_VALUE)
     await waitFor(() => expect(btn.querySelector('svg.lucide-check')).not.toBeNull())
   })
+
+  test('a TruffleHog-only row copies its full value the same way', async () => {
+    // Built in parts so no key-shaped literal sits in the repository.
+    const value = ['ghp', '_', 'x'.repeat(36)].join('')
+    DATA.secrets.push({ nodeId: '102', id: 's2', severity: 'high', name: 'GitHub Token Classic', redacted_value: 'ghp_xx...xxxx',
+      matched_text: value, category: 'vcs', source_url: 'https://a.invalid/app.js',
+      detection_method: 'trufflehog', confidence: 0.5, validation: { status: 'unknown' } })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    installFetch()
+    try {
+      render(<JsReconTable projectId="proj-1" search="" />, { wrapper: makeWrapper() })
+      const buttons = await screen.findAllByTitle('Copy full value')
+      expect(buttons).toHaveLength(2)
+      const row = (await screen.findByText('TruffleHog')).closest('tr')!
+      await act(async () => { fireEvent.click(row.querySelector('button[title="Copy full value"]')!) })
+      expect(writeText).toHaveBeenCalledWith(value)
+    } finally {
+      DATA.secrets.pop()
+    }
+  })
 })

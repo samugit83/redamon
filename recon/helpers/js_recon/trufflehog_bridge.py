@@ -705,10 +705,6 @@ def _stronger(old: Optional[dict], new: dict) -> dict:
     return new if rank(new) > rank(old) else old
 
 
-def trufflehog_info(secret: dict) -> Optional[dict]:
-    return (secret.get("validation") or {}).get("trufflehog")
-
-
 # --------------------------------------------------------------------------- run
 
 @dataclass

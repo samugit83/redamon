@@ -5,6 +5,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
 import { isPublicClientKey } from '@/lib/secrets/publicClientKeys'
+import { secretSourceLabel } from '@/lib/secrets/jsReconSecret'
 import { validationRank } from '@/lib/secrets/validationStatus'
 import { internalError } from '@/lib/routeErrors'
 
@@ -211,7 +212,7 @@ export async function GET(request: NextRequest) {
         confidence: (r.get('confidence') as string | number | null) ?? null,
         severity: publicClientKey ? 'info' : ((r.get('severity') as string) || 'medium'),
         publicClientKey,
-        sourceModule: r.get('sourceModule') as string | null,
+        sourceModule: secretSourceLabel(r.get('sourceModule'), r.get('detectionMethod')),
         sourceUrl: r.get('sourceUrl') as string | null,
         secretBaseUrl: r.get('secretBaseUrl') as string | null,
         keyType: r.get('keyType') as string | null,

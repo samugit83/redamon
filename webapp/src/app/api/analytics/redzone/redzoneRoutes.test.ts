@@ -603,6 +603,25 @@ describe('/api/analytics/redzone/secrets', () => {
     expect(direct.origin).toBe('Secret')
     expect(js.origin).toBe('JsReconFinding')
   })
+
+  test('a js_recon Secret only TruffleHog found is labelled TruffleHog (JS Recon)', async () => {
+    // A key both engines found keeps js_recon's row and label; only the
+    // TruffleHog-only one changes, and its detection stays machine-readable.
+    runReturnFor = [{ match: /MATCH \(s:Secret/, rows: [
+      { id: 'th', secretType: 'GitHub Token Classic', sourceModule: 'js_recon', detectionMethod: 'trufflehog',
+        validationStatus: 'unknown', origin: 'JsReconFinding' },
+      { id: 'rx', secretType: 'GitHub Token Classic', sourceModule: 'js_recon', detectionMethod: 'regex',
+        validationStatus: 'unknown', origin: 'JsReconFinding' },
+      { id: 'old', secretType: 'GitHub Token Classic', sourceModule: 'js_recon', detectionMethod: null,
+        validationStatus: 'unknown', origin: 'JsReconFinding' },
+    ] }]
+    const body = await (await secretsRoute.GET(makeRequest('p1'))).json()
+    const byId = Object.fromEntries(body.rows.map((r: any) => [r.id, r]))
+    expect(byId.th.sourceModule).toBe('TruffleHog (JS Recon)')
+    expect(byId.th.detectionMethod).toBe('trufflehog')
+    expect(byId.rx.sourceModule).toBe('js_recon')
+    expect(byId.old.sourceModule).toBe('js_recon')
+  })
 })
 
 // ---------------------------------------------------------------------------

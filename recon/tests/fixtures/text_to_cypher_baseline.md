@@ -510,7 +510,9 @@ JS Recon secret properties (source="js_recon" only):
 - key_type (string): the matching pattern's category
 - confidence (string): high, medium, low
 - validation_status (string): validated (the provider accepted it), rejected (the provider refused it), unknown (no verdict: a timeout, a 429 or 5xx, a 403, a skipped call), format_invalid, format_validated, incomplete, unvalidated (no validator for it), skipped. Nodes written before these states hold invalid or error
-- detection_method (string): "regex"
+- detection_method (string): "regex", or "trufflehog" for a key only TruffleHog found (JS Recon's TruffleHog engine, off by default)
+- line_number (integer): the line of the file the key is on (a minified bundle is one line); absent on a TruffleHog hit it decoded (base64 in `atob()`, unicode escapes) and on nodes written before it existed
+- alternate_names (list of strings): other rules that matched the same key, e.g. a generic rule whose match held this key, and `TruffleHog:<Detector>` when TruffleHog found it too. Absent on nodes written before it existed
 - context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
 - public_client_key (boolean): true for a key that is public by design (a browser key, a publishable key, a DSN, a write-only analytics key); written at severity info. Absent on nodes written before it existed: readers then also treat a secret_type in the public-client list as public
 
@@ -1166,9 +1168,9 @@ DOM-sink and developer-reference properties (finding_type dom_sink or dev_refere
 - source_url (string): JS file where finding was discovered
 - source (string): always "js_recon"
 - validation_status (string): validated, rejected, unknown, format_invalid, format_validated, incomplete, unvalidated, skipped (legacy: invalid, error)
-- validation_info (string): JSON with validation details (scope, account info)
+- validation_info (string): JSON with validation details (scope, account info); with TruffleHog on, a `trufflehog` object (detector, verified, error_class, allowlisted extra), never a key value. `checked_by: "trufflehog"` marks a status TruffleHog decided, which is only ever `validated` or `unknown`
 - confidence (string): high, medium, low
-- detection_method (string): regex (or "ai_sdk_catalogue" when matched by Phase 6)
+- detection_method (string): regex, trufflehog (found by TruffleHog only), or "ai_sdk_catalogue" when matched by Phase 6
 - key_type (string): category of secret (cloud, payment, auth, etc.)
 - ai_provider (string, optional): set when the secret matches an AI provider key shape via Phase 6 AI SDK detection (e.g. "OpenAI SDK constructor", "Anthropic SDK constructor", "Langfuse Secret Key"). Lets queries pivot from generic Secret to AI-context findings in one step.
 - ai_finding_id (string, optional): foreign key into the matching JsReconFinding(finding_type='ai-sdk-key-literal') for full provenance.
