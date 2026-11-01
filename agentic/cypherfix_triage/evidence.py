@@ -35,7 +35,9 @@ whether a review a v3.1 run stored still describes the evidence
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from typing import Optional
 
 #: Per-field caps. `raw_response` is the big one, and the one worth spending on:
 #: the difference between "nuclei matched" and "the response is the site's 404
@@ -186,6 +188,30 @@ def _line(label: str, value) -> str:
     return f"{label}: {text}\n" if text else ""
 
 
+def _trufflehog_facts(finding: dict) -> Optional[dict]:
+    """What JS Recon's TruffleHog engine said about a Secret, as evidence
+    lines; None for every Secret it did not touch, whose bundle (and so its
+    review's hash) stays byte-identical. TruffleHog's "could not confirm" is
+    said in words: it is not a verdict that the key is dead."""
+    alternate = [str(a)[len("TruffleHog:"):] for a in finding.get("alternate_names") or []
+                 if str(a).startswith("TruffleHog:")]
+    try:
+        info = json.loads(finding.get("validation_info") or "{}") or {}
+    except (TypeError, ValueError):
+        info = {}
+    info = info if isinstance(info, dict) else {}
+    th = info.get("trufflehog") if isinstance(info.get("trufflehog"), dict) else {}
+    only = finding.get("detection_method") == "trufflehog"
+    if not (only or alternate or th):
+        return None
+    detector = str(th.get("detector") or (alternate[0] if alternate else "") or "").strip()
+    who = f"TruffleHog ({detector})" if detector else "TruffleHog"
+    facts = {"found_by": who if only else f"JS Recon and {who}"}
+    if info.get("checked_by") == "trufflehog" and finding.get("validation_status") == "unknown":
+        facts["validation"] = "unknown — TruffleHog could not confirm it, which is not proof it is dead"
+    return facts
+
+
 def build_bundle(finding: dict) -> str:
     """The evidence for one finding, as plain text: normalised, redacted, capped.
 
@@ -258,9 +284,14 @@ def _build(finding: dict, clean: bool) -> str:
         parts.append(_line("Type", finding.get("secret_type")
                            or finding.get("detector_name")))
         parts.append(_line("Detector", finding.get("detector_name")))
+        # Only a JS Recon Secret carries what its TruffleHog engine said.
+        trufflehog = _trufflehog_facts(finding) if clean and label == "Secret" else None
+        if trufflehog:
+            parts.append(_line("Found by", trufflehog["found_by"]))
         path = finding.get("path") or finding.get("location") or finding.get("triage_host")
         parts.append(_line("Found in", path))
-        parts.append(_line("Validation", finding.get("validation_status") or "never tested"))
+        parts.append(_line("Validation", (trufflehog or {}).get("validation")
+                           or finding.get("validation_status") or "never tested"))
         value = (finding.get("matched_text") or finding.get("sample")
                  or finding.get("raw_secret") or finding.get("secret_value"))
         if value:

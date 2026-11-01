@@ -701,6 +701,9 @@ async def lifespan(app: FastAPI):
     # so Docker reports its host source. Unresolvable => not mounted, and the
     # local-fixture sources find an empty directory rather than a guessed one.
     container_manager.trufflehog_scan_targets = _host_mounts.get("/app/scan_targets", "")
+    # Copies of target JS a JS Recon run left behind (its container was killed
+    # or crashed); a live, re-adopted run keeps its own.
+    await container_manager._run_blocking(container_manager.sweep_trufflehog_stages)
     reaper = asyncio.create_task(_ai_attack_reaper())
     capture_reconciler = asyncio.create_task(_capture_config_reconcile())
     # Scan Timeline (Section 7.2): the scheduler worker lives here because the
@@ -786,6 +789,7 @@ async def health_check():
         running_trufflehog_scans=container_manager.get_trufflehog_running_count() if container_manager else 0,
         running_ai_attack_scans=container_manager.get_ai_attack_running_count() if container_manager else 0,
         gvm_available=container_manager.is_gvm_available() if container_manager else False,
+        trufflehog_available=container_manager.is_trufflehog_available() if container_manager else False,
     )
 
 

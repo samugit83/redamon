@@ -4498,6 +4498,9 @@ cmd_purge() {
     # Per-run TruffleHog scratch dirs (job file + findings before publication).
     # One per project+source, so bounded — but `purge` claims to leave nothing.
     rm -rf /tmp/redamon/trufflehog_* >/dev/null 2>&1 || true
+    # JS Recon's TruffleHog stage dirs: copies of a target's JavaScript, which a
+    # run removes itself unless its container was killed or crashed.
+    rm -rf /tmp/redamon/js_recon_th_* >/dev/null 2>&1 || true
 
     info "Removing RedAmon images..."
     remove_redamon_images
