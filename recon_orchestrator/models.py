@@ -107,6 +107,8 @@ class HealthResponse(BaseModel):
     running_trufflehog_scans: int = 0
     running_ai_attack_scans: int = 0
     gvm_available: bool = False
+    # JS Recon's TruffleHog engine needs redamon-trufflehog:latest.
+    trufflehog_available: bool = False
 
 
 # =============================================================================

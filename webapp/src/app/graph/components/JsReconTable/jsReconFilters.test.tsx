@@ -231,3 +231,72 @@ describe('JS Recon Node ID column', () => {
     expect(firstCellIds(container)).toEqual(['401', '301'])
   })
 })
+
+describe('JS Recon secrets: TruffleHog detection, line and alternate names', () => {
+  const TH_DATA = {
+    secrets: [
+      { nodeId: '501', id: 'th1', severity: 'high', name: 'GitHub Token Classic', redacted_value: 'ghp_…', category: 'vcs',
+        source_url: 'https://a.invalid/app.js', detection_method: 'trufflehog', line_number: 42, alternate_names: [],
+        confidence: 'medium', validation: { status: 'unknown' } },
+      { nodeId: '502', id: 'rx1', severity: 'critical', name: 'Stripe Secret Key', redacted_value: 'sk_l…', category: 'payment',
+        source_url: 'https://a.invalid/app.js', detection_method: 'regex', line_number: 7,
+        alternate_names: ['Generic API Key', 'TruffleHog:Stripe'], confidence: 'high', validation: { status: 'rejected' } },
+      // Written before line_number / alternate_names / detection_method existed.
+      { nodeId: '503', id: 'old1', severity: 'low', name: 'Sentry DSN', redacted_value: 'https…', category: 'monitoring',
+        source_url: 'https://a.invalid/old.js', confidence: 'low', validation: { status: 'unvalidated' } },
+    ],
+  }
+
+  function cellsByHeader(container: HTMLElement, nodeId: string): Record<string, string> {
+    const headers = [...container.querySelectorAll('thead th')].map(th => th.textContent?.trim() ?? '')
+    const row = [...container.querySelectorAll('tbody tr')]
+      .find(r => r.querySelector(`[data-node-id="${nodeId}"]`))!
+    const cells = [...row.querySelectorAll('td')].map(td => td.textContent?.trim() ?? '')
+    return Object.fromEntries(headers.map((h, i) => [h, cells[i]]))
+  }
+
+  test('Detection reads TruffleHog, Line shows line_number', async () => {
+    installFetch({}, TH_DATA)
+    const { container } = renderTable()
+    await waitFor(() => expect(rowCount(container)).toBe(3))
+    expect(cellsByHeader(container, '501')).toMatchObject({ Detection: 'TruffleHog', Line: '42' })
+    expect(cellsByHeader(container, '502')).toMatchObject({ Detection: 'Regex', Line: '7' })
+  })
+
+  test('the name cell lists the other names, TruffleHog ones readably', async () => {
+    installFetch({}, TH_DATA)
+    const { container } = renderTable()
+    await waitFor(() => expect(rowCount(container)).toBe(3))
+    expect(cellsByHeader(container, '502').Type).toBe('Stripe Secret Keyalso: Generic API Key, TruffleHog (Stripe)')
+    // An empty list adds nothing.
+    expect(cellsByHeader(container, '501').Type).toBe('GitHub Token Classic')
+  })
+
+  test('an old node without the properties shows a dash, not a blank or 0', async () => {
+    installFetch({}, TH_DATA)
+    const { container } = renderTable()
+    await waitFor(() => expect(rowCount(container)).toBe(3))
+    const old = cellsByHeader(container, '503')
+    expect(old.Detection).toBe('—')
+    expect(old.Line).toBe('—')
+    expect(old.Type).toBe('Sentry DSN')
+  })
+
+  test('the Detection filter separates TruffleHog-only rows', async () => {
+    installFetch({}, TH_DATA)
+    const { container } = renderTable()
+    await waitFor(() => expect(rowCount(container)).toBe(3))
+    await openFilters()
+    openColumnCard('Detection')
+    fireEvent.click(await screen.findByRole('checkbox', { name: /^trufflehog/ }))
+    await waitFor(() => expect(rowCount(container)).toBe(1))
+    expect(cellsByHeader(container, '501').Detection).toBe('TruffleHog')
+  })
+
+  test('the alternate names are a filterable column', async () => {
+    installFetch({}, TH_DATA)
+    renderTable()
+    await openFilters()
+    expect(screen.getByRole('button', { name: /^Filter by Also matched as/ })).toBeTruthy()
+  })
+})

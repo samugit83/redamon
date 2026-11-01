@@ -322,6 +322,8 @@ Pentesters with full authorization on an engagement where stealth is irrelevant.
     jsReconConcurrency: 10,
     jsReconValidateKeys: true,
     jsReconValidationTimeout: 5,
+    jsReconTrufflehogEnabled: true,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,

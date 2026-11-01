@@ -31,7 +31,7 @@ function extractRow(row: Record<string, unknown>, columns: string[]): Record<str
 // ============================================================
 
 const EXPORT_COLUMNS = {
-  secrets: ['severity', 'name', 'redacted_value', 'matched_text', 'category', 'source_url', 'line_number', 'context', 'detection_method', 'validation.status', 'confidence', 'validator_ref'],
+  secrets: ['severity', 'name', 'alternate_names', 'redacted_value', 'matched_text', 'category', 'source_url', 'line_number', 'context', 'detection_method', 'validation.status', 'confidence', 'validator_ref'],
   endpoints: ['severity', 'method', 'path', 'full_url', 'type', 'category', 'base_url', 'source_js', 'parameters', 'line_number'],
   dependencies: ['severity', 'finding_type', 'package_name', 'scope', 'npm_exists', 'confidence', 'title', 'detail', 'recommendation', 'source_urls'],
   sourceMaps: ['severity', 'finding_type', 'js_url', 'map_url', 'accessible', 'discovery_method', 'files_count', 'source_files', 'secrets_in_source', 'secrets'],
@@ -64,6 +64,7 @@ function mockSecret() {
     context: 'var key = "AKIA5FAKE1234567890X"',
     validator_ref: 'aws_access_key',
     detection_method: 'regex',
+    alternate_names: ['Generic API Key', 'TruffleHog:AWS'],
     validation: { status: 'validated', provider: 'aws' },
   }
 }
@@ -514,5 +515,22 @@ describe('exportJsReconJson Node ID column', () => {
     })
     expect(ids.map(Number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     expect(Subdomains[0]).toEqual({ subdomain: 'new.example.com' })
+  })
+
+  test('the Secrets sheet carries the line and the alternate names joined with "; "', async () => {
+    await exportJsReconJson({
+      secrets: [
+        { nodeId: '1', ...mockSecret() },
+        // A node written before the two properties.
+        { nodeId: '2', id: 'sec-old', name: 'Sentry DSN', severity: 'low' },
+      ],
+    })
+    const { Secrets } = JSON.parse(await blobs[0].text()) as Record<string, Record<string, unknown>[]>
+    // The stored names, so the export greps like the graph does.
+    expect(Secrets[0].alternate_names).toBe('Generic API Key; TruffleHog:AWS')
+    expect(Secrets[0].line_number).toBe(42)
+    expect(Object.keys(Secrets[0]).slice(0, 4)).toEqual(['nodeId', 'severity', 'name', 'alternate_names'])
+    expect(Secrets[1].alternate_names).toBeNull()
+    expect(Secrets[1].line_number).toBeNull()
   })
 })

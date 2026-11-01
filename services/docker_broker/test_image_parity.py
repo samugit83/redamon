@@ -69,6 +69,12 @@ BROKER_IMAGES_BEYOND_RECON: dict[str, tuple[str | None, str]] = {
         "(supply_chain_recon.py) and the supply-chain scan container, both on "
         "DOCKER_HOST=broker",
     ),
+    "redamon-trufflehog:latest": (
+        "recon/helpers/js_recon/trufflehog_bridge.py",
+        "JS Recon's TruffleHog sidecar: the bridge shells out to `docker run` "
+        "from the recon container on DOCKER_HOST=broker; not a `*_DOCKER_IMAGE` "
+        "setting and not pre-pulled (a normal install builds it)",
+    ),
 }
 
 

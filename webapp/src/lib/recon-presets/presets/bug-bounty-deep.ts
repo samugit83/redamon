@@ -185,6 +185,8 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
     jsReconConcurrency: 10,
     jsReconValidateKeys: true,
     jsReconValidationTimeout: 5,
+    jsReconTrufflehogEnabled: true,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,

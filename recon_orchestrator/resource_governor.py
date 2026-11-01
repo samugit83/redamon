@@ -369,6 +369,11 @@ _FALLBACK_PROFILE = {
         # it by CONTAINER_CAP_HEADROOM (1.5) to 1.5 GB, reproducing the literal
         # this replaced. Envelopes are peaks; caps are peaks x headroom.
         "supply_chain_analyzer": 1_073_741_824,
+        # JS Recon's TruffleHog sidecar, spawned by recon over the broker: the
+        # staged JS plus TruffleHog's chunk buffers. Its own key, not the
+        # Secret Multiscanner's (that image is shared), so mem_calibrate does
+        # not size it from the other tool's runs.
+        "trufflehog_js": 805_306_368,
         "_default": 1_500_000_000,
     },
     "scan_job_envelope_bytes": {
@@ -380,6 +385,9 @@ _FALLBACK_PROFILE = {
         # by ~3x. Keyed "<kind>:<tool_id>" so only this tool pays; every other
         # partial keeps the cheap envelope and small hosts stay admittable.
         "partial_recon:SupplyChainRecon": 1_879_048_192,  # 1.75 GB step + analyzer
+        # A JS Recon partial holds every downloaded bundle in memory and may
+        # spawn the TruffleHog sidecar beside it.
+        "partial_recon:JsRecon": 1_610_612_736,  # 1.5 GB step + sidecar
         "ai_attack": 1_073_741_824,       # 1 GB   probe workers (the local LLM is separate)
         "gvm": 2_684_354_560,             # 2.5 GB openvas is the heaviest scanner
         "github_hunt": 805_306_368,       # 768 MB clone + regex sweep

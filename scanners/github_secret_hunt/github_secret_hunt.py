@@ -408,6 +408,55 @@ def redact_sample(text: str) -> str:
     return '***'
 
 
+# Two checks mirrored from js_recon (recon/helpers/js_recon/patterns.py,
+# `_has_key_data` and `_REQUIRES_NEARBY`), the hunter's own copy as its
+# patterns are: a private-key marker counts only with key data after it (in
+# code it opens a parser branch or a template), and `YC` + 38 counts only
+# with "yandex" before it (it is also a webpack chunk id).
+_PEM_KEY_TYPES = frozenset({
+    "RSA Private Key", "DSA Private Key", "EC Private Key", "OpenSSH Private Key",
+    "PGP Private Key", "Generic Private Key",
+})
+_PEM_MIN_KEY_CHARS = 64
+_PEM_LOOKAHEAD = 4000
+_PEM_EDGE_CHARS = ' \t"\'`+,;()'
+_PEM_ARMOR_HEADER = re.compile(r'^[A-Za-z][A-Za-z-]*:\s')
+_BASE64_RUN = re.compile(r'[A-Za-z0-9+/=]+')
+_REQUIRES_NEARBY = {
+    "Yandex AWS Access Token": (re.compile(r'(?i)yandex'), 120),
+}
+
+
+def _has_key_data(after: str) -> bool:
+    text = after[:_PEM_LOOKAHEAD].replace('\\r', '\n').replace('\\n', '\n').replace('\r', '\n')
+    run = 0
+    started = False
+    for piece in text.split('\n'):
+        piece = piece.strip(_PEM_EDGE_CHARS)
+        if not piece:
+            continue
+        if not started and _PEM_ARMOR_HEADER.match(piece):
+            continue
+        started = True
+        m = _BASE64_RUN.match(piece)
+        run += len(m.group(0)) if m else 0
+        if run >= _PEM_MIN_KEY_CHARS:
+            return True
+        if not m or m.end() < len(piece):
+            return False
+    return False
+
+
+def _reportable(secret_type: str, content: str, match) -> bool:
+    if secret_type in _PEM_KEY_TYPES:
+        return _has_key_data(content[match.end():match.end() + _PEM_LOOKAHEAD])
+    nearby = _REQUIRES_NEARBY.get(secret_type)
+    if nearby:
+        keyword, reach = nearby
+        return bool(keyword.search(content[max(0, match.start() - reach):match.start()]))
+    return True
+
+
 # Pre-compile all patterns at module load time for performance
 COMPILED_SECRET_PATTERNS = {}
 for _name, _regex in SECRET_PATTERNS.items():
@@ -772,7 +821,8 @@ class GitHubSecretHunter:
             # The whole match, as js_recon stores it: `findall` returns a
             # pattern's capturing group, which for the generic ones is the
             # keyword ("password"), not the value.
-            matches = [m.group(0) for m in compiled_re.finditer(content)]
+            matches = [m.group(0) for m in compiled_re.finditer(content)
+                       if _reportable(secret_type, content, m)]
             if matches:
                 self._add_finding(
                     "SECRET", repo_name, path, secret_type,

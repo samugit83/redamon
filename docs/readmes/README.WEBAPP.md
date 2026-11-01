@@ -192,6 +192,14 @@ Features:
   Starting an image built from an older schema DROPS every column that exists only
   in a newer one, including a column someone else added in an uncommitted schema
   edit on the same database.
+- **A new column's `@default` fills every existing row.** The push adds it as
+  `ADD COLUMN ... NOT NULL DEFAULT <value>`, so a default meant for new projects
+  only (a switch that should stay off where it never existed) reaches every
+  project on the next start. Add the column first, with the value existing rows
+  must keep, in a step that runs before the push in both the entrypoint and the
+  dev command (`tests/webapp_dev_startup_parity_test.sh` compares them); the push
+  then only changes the default. `webapp/scripts/add-js-recon-trufflehog-column.mjs`
+  is the pattern.
 - **A CSS-module selector list whose items each hold two `:global()`s compiles
   wrong.** Next 16 / Turbopack emits a stray `)` on the last item, for example
   `:global([data-theme="light"]) .header :global(.a):disabled, :global([data-theme="light"]) .header :global(.b):disabled {}`.

@@ -505,6 +505,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'JS_RECON_CONCURRENCY': 10,
     'JS_RECON_VALIDATE_KEYS': True,
     'JS_RECON_VALIDATION_TIMEOUT': 5,
+    # TruffleHog over the analysed JS, in a sidecar (trufflehog_bridge.py).
+    'JS_RECON_TRUFFLEHOG_ENABLED': True,
+    # Which TruffleHog-only results to keep when keys are verified.
+    'JS_RECON_TRUFFLEHOG_RESULTS': ['verified', 'unknown', 'unverified'],
     'JS_RECON_EXTRACT_ENDPOINTS': True,
     'JS_RECON_VALIDATE_ENDPOINTS': False,
     'JS_RECON_ENDPOINT_ACCEPT_STATUS': [200, 201, 204, 301, 302, 307, 308, 401, 403, 405],
@@ -1820,6 +1824,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['JS_RECON_CONCURRENCY'] = project.get('jsReconConcurrency', DEFAULT_SETTINGS['JS_RECON_CONCURRENCY'])
     settings['JS_RECON_VALIDATE_KEYS'] = project.get('jsReconValidateKeys', DEFAULT_SETTINGS['JS_RECON_VALIDATE_KEYS'])
     settings['JS_RECON_VALIDATION_TIMEOUT'] = project.get('jsReconValidationTimeout', DEFAULT_SETTINGS['JS_RECON_VALIDATION_TIMEOUT'])
+    settings['JS_RECON_TRUFFLEHOG_ENABLED'] = project.get('jsReconTrufflehogEnabled', DEFAULT_SETTINGS['JS_RECON_TRUFFLEHOG_ENABLED'])
+    settings['JS_RECON_TRUFFLEHOG_RESULTS'] = project.get('jsReconTrufflehogResults') or DEFAULT_SETTINGS['JS_RECON_TRUFFLEHOG_RESULTS']
     settings['JS_RECON_EXTRACT_ENDPOINTS'] = project.get('jsReconExtractEndpoints', DEFAULT_SETTINGS['JS_RECON_EXTRACT_ENDPOINTS'])
     settings['JS_RECON_REGEX_PATTERNS'] = project.get('jsReconRegexPatterns', DEFAULT_SETTINGS['JS_RECON_REGEX_PATTERNS'])
     settings['JS_RECON_SOURCE_MAPS'] = project.get('jsReconSourceMaps', DEFAULT_SETTINGS['JS_RECON_SOURCE_MAPS'])

@@ -616,7 +616,7 @@ kinds:
         # states hold. A rule naming `invalid` (saved, preset, imported, MCP)
         # also matches what replaced its dead cases; never `unknown`.
         aliases: { invalid: [rejected, format_invalid] }
-      detection_method: { type: enum, prop: detection_method, label: Detection, values: [regex] }
+      detection_method: { type: enum, prop: detection_method, label: Detection, values: [regex, trufflehog] }
       public_client_key: { type: bool, normalizer: public_client_key, label: Public by design }
       source_url:       { type: url, prop: source_url, label: Found in }
       base_url:         { type: url, prop: base_url, label: Base URL }

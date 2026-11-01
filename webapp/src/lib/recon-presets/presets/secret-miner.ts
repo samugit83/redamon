@@ -48,6 +48,8 @@ Bug bounty hunters and pentesters targeting modern web applications built with R
     jsReconConcurrency: 10,
     jsReconValidateKeys: true,
     jsReconValidationTimeout: 5,
+    jsReconTrufflehogEnabled: true,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,

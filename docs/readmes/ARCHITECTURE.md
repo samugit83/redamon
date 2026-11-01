@@ -323,6 +323,7 @@ flowchart TB
         subgraph Module4b["4b️⃣ js_recon"]
             JsPatterns[Secret Detection<br/>100 Regex Patterns]
             JsValidate[Key Validation<br/>21 Service Validators]
+            JsTruffleHog[TruffleHog Sidecar<br/>optional, keys merged]
             JsSrcMap[Source Map<br/>Discovery]
             JsDepConf[Dependency<br/>Confusion Check]
             JsDomSink[DOM Sink +<br/>Framework Detection]

@@ -143,6 +143,8 @@ Bug bounty hunters and red teamers who want to maximize credential and secret di
     jsReconConcurrency: 15,
     jsReconValidateKeys: true,
     jsReconValidationTimeout: 10,
+    jsReconTrufflehogEnabled: true,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,

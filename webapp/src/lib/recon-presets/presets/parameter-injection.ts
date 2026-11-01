@@ -148,6 +148,7 @@ Pentesters and bug bounty hunters focused on injection vulnerabilities. Ideal fo
 
     // --- DISABLE JS Recon ---
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
     // --- DISABLE ffuf ---

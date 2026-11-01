@@ -365,6 +365,9 @@ def test_the_controls_a_document_must_never_relax_are_tighten_only():
         "agentNgrokTunnelEnabled": False,
         "agentChiselTunnelEnabled": False,
         "agentActivatePostExplPhase": False,
+        # Validation sends every key JS Recon finds to its provider (TruffleHog
+        # plan, step 1.14): a document may forbid it, never allow it.
+        "jsReconValidateKeys": False,
     }
     actual = {
         k: f.get("roe_safe_value") for k, f in fields().items() if f.get("roe_parse") == "tighten_only"

@@ -613,5 +613,21 @@ class TestProfileRobustness(GovernorTestBase):
         self.assertEqual(_F["scan_job_envelope_bytes"], before)
 
 
+
+class TestJsReconTruffleHogEnvelopes(GovernorTestBase):
+    """JS Recon's TruffleHog sidecar has its own tool envelope (the image is
+    shared with the Secret Multiscanner, whose scans are sized separately), and
+    a JS Recon partial reserves for the step plus that sidecar."""
+
+    def test_the_sidecar_envelope_and_its_cap(self):
+        self.assertEqual(g.tool_container_envelope("trufflehog_js"), 768 * 1024 ** 2)
+        self.assertEqual(g.container_cap(g.tool_container_envelope("trufflehog_js")),
+                         int(768 * 1024 ** 2 * 1.5))
+
+    def test_a_js_recon_partial_reserves_more_than_a_plain_partial(self):
+        self.assertEqual(g.scan_job_envelope("partial_recon:JsRecon"), int(1.5 * GB))
+        self.assertGreater(g.scan_job_envelope("partial_recon:JsRecon"), g.scan_job_envelope("partial_recon"))
+
+
 if __name__ == "__main__":
     unittest.main()

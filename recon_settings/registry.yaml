@@ -4933,6 +4933,36 @@ fields:
     meaning: >-
       How long JS recon may spend before it is abandoned, in seconds. A run that
       hits it contributes whatever it found so far rather than failing the scan.
+  jsReconTrufflehogEnabled:
+    tool: js_recon
+    runtime_key: "JS_RECON_TRUFFLEHOG_ENABLED"
+    unit: none
+    phase: js_recon
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Runs TruffleHog over local copies of the JavaScript JS recon analyses, in
+      an isolated container, and merges its findings with JS recon's: one finding
+      per key. With key validation on, TruffleHog also checks the keys it finds
+      with their providers (never a host named in the JavaScript); with it off
+      the container has no network.
+  jsReconTrufflehogResults:
+    tool: js_recon
+    runtime_key: "JS_RECON_TRUFFLEHOG_RESULTS"
+    unit: none
+    phase: js_recon
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    values: ["verified", "unknown", "unverified"]
+    fallback: falsy
+    meaning: >-
+      Which keys found only by TruffleHog are kept when key validation is on:
+      verified (the provider accepted it), unknown (the check errored) and
+      unverified (not shown live, or not checkable). A key JS recon also found is
+      always kept. Ignored when key validation is off; empty means all three.
   jsReconUploadedFiles:
     tool: js_recon
     runtime_key: "JS_RECON_UPLOADED_FILES"
@@ -4968,10 +4998,15 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    roe_parse: tighten_only
+    roe_safe_value: false
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      Validate discovered API keys
+      Validate discovered API keys by sending each one to its provider (and, with
+      TruffleHog on, letting TruffleHog check the keys it finds the same way): a
+      live key is confirmed, but every key found is used against a third-party
+      service. A Rules of Engagement document can only turn it off.
   jsReconValidationTimeout:
     tool: js_recon
     runtime_key: "JS_RECON_VALIDATION_TIMEOUT"

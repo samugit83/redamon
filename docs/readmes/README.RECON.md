@@ -482,8 +482,11 @@ flowchart TB
         JsRecon --> DepConf
         JsRecon --> EpExtract
         JsRecon --> FwSink
+        JsRecon -.->|on by default for new projects| TruffleHog[TruffleHog sidecar<br/>local copies only, 33 detectors excluded<br/>network none unless keys are validated]
 
-        Patterns --> KeyVal[Key Validation<br/>21 service validators]
+        Patterns --> SecretMerge[Merge<br/>one finding per key]
+        TruffleHog --> SecretMerge
+        SecretMerge --> KeyVal[Key Validation<br/>21 service validators<br/>TruffleHog: validated or unknown, never rejected]
         KeyVal --> Out4b[(JS Findings + Secrets + Endpoints)]
         SrcMap --> Out4b
         DepConf --> Out4b
@@ -641,7 +644,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
 | *IP attribution* | Tags every IP `shared_edge` / `dedicated` / `unknown` (`main_recon_modules/ip_attribution.py`), then writes the Shodan CVEs and the Netlas data GROUP 3/3b held back | Sequential; the TLS handshakes without SNI in a small pool, paced at the RoE ceiling | After GROUP 4 and the certificate SAN feedback; before GROUP 5 and 6. Runs if `IP_ATTRIBUTION_ENABLED` |
 | **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
-| **GROUP 5b** | JS Recon Scanner (100 regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks) | 5 analyzers parallel per file | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |
+| **GROUP 5b** | JS Recon Scanner (250+ regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks; optionally TruffleHog in a hardened sidecar, its keys merged one per key) | 5 analyzers parallel per file (TruffleHog in its own worker, on its own running-time budget) | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |
 | **GROUP 5.5** | Supply-Chain Recon (black-box package harvest + offline OSV verdict, retire.js over served JS, optional GuardDog; then incident enrichment, malicious-host correlation and typosquat detection) | Sequential; dispatches the DIRTY analyzer | Needs JS files from GROUP 5b; runs if `SUPPLY_CHAIN_RECON_ENABLED` |
 | **GROUP 6 Phase A** | Vuln Scan (Nuclei) ∥ GraphQL Security Testing ∥ Subdomain Takeover ∥ VHost & SNI Enumeration ∥ Web Cache Poisoning ∥ Origin Discovery ∥ Route Exposure | Up to 7 parallel tasks (ThreadPoolExecutor, `_isolated` wrappers), each only when enabled | Needs endpoints from GROUP 5/5b |
 | **GROUP 6 Phase B** | MITRE Enrichment (CWE + CAPEC) | Sequential | Needs CVEs from Phase A (Nuclei) |
@@ -785,10 +788,40 @@ What follows from that:
   `validated`, `rejected`, `unknown`, `format_invalid`, `format_validated`,
   `incomplete`, `unvalidated` (no validator) or `skipped`. Only a `401` or a
   provider's own "invalid key" answer is `rejected`; a timeout, `429`, `5xx`,
-  breaker skip or `403` is `unknown`. The node-filter catalog keeps the legacy
+  breaker skip or `403` is `unknown`. With TruffleHog on
+  (`recon/helpers/js_recon/trufflehog_bridge.py`), only its `Verified: true`
+  changes a status, to `validated` with `checked_by: trufflehog`; a
+  TruffleHog-only key it did not verify is `unknown` (`skipped` with validation
+  off). TruffleHog never writes `rejected`: without a route to the provider its
+  check answers as for a dead key. A key it verified skips js_recon's provider
+  call, except `validate_firebase` and `validate_google_maps`, which test what
+  the key opens. The node-filter catalog keeps the legacy
   `invalid` as an alias (`aliases: {invalid: [rejected, format_invalid]}` on the
   field, expanded in `graph_db/node_filters/evaluate.py`), so saved rules keep
   matching.
+- **JS Recon's TruffleHog engine merges by key, never re-keys.**
+  `trufflehog_bridge.py` stages the analysed files under
+  `/tmp/redamon/js_recon_th_<run>_<id>`, runs `redamon-trufflehog:latest`
+  through the broker (`--network none`, or `redamon-trufflehog-net` with key
+  validation on) with `TRUFFLEHOG_EXCLUDED_DETECTORS` (33 verifiers that would
+  dial a host from the JavaScript; review the list on every TruffleHog
+  upgrade). A key both engines found keeps the regex finding's id and gains
+  `TruffleHog:<Detector>` in `alternate_names`; a TruffleHog-only key is
+  `detection_method: 'trufflehog'`, its id built like a regex one.
+  `SUPERSEDED_BY_TRUFFLEHOG` in `patterns.py` (today `Travis CI Token`) drops a
+  rule's unconfirmed hits only when the run's status is `ran`. With the switch
+  off `_run_analysis` makes no TruffleHog call at all
+  (`test_regression_js_recon_trufflehog_off_identical.py`). A run that did not
+  complete keeps the earlier TruffleHog-only Secrets of the files it was given
+  alive (`trufflehog_kept_alive` in `js_recon_mixin.py`). A stage directory a
+  killed run left behind is removed by the orchestrator when it reaps the run
+  or sees it complete, by its startup sweep, and by `./redamon.sh purge`.
+- **`jsReconTrufflehogEnabled` is on for new projects only.** `db push` would
+  add the column as `NOT NULL DEFAULT true`, which fills every existing row.
+  `webapp/scripts/add-js-recon-trufflehog-column.mjs` runs before the push in
+  both the production entrypoint and the dev command and adds the column with
+  `DEFAULT false`, so the push only moves the default; it is a no-op on a fresh
+  database and once the column exists, and fails closed.
 - **Public client keys.** `PUBLIC_CLIENT_KEY_NAMES` in `patterns.py` is written
   at severity info with `public_client_key`. The same names, lowercased, live in
   `score_model.PUBLIC_CLIENT_KEY_TYPES`, `triage_mixin._PUBLIC_CLIENT_KEY_TYPES`,

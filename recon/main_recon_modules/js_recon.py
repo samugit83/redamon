@@ -28,9 +28,10 @@ from typing import NamedTuple, Optional
 from recon.helpers import catchall
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.js_recon.patterns import (
-    scan_js_content, scan_dev_comments, load_custom_patterns,
+    SUPERSEDED_BY_TRUFFLEHOG, scan_js_content, scan_dev_comments, load_custom_patterns,
 )
 from recon.helpers.js_recon.validators import validate_secret
+from recon.helpers.js_recon import trufflehog_bridge
 from recon.helpers.js_recon.sourcemap import discover_and_analyze_sourcemaps, pseudo_file_base
 from recon.helpers.js_recon.dependency import detect_dependency_confusion
 from recon.helpers.js_recon.endpoints import extract_endpoints
@@ -785,7 +786,8 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
     analysis_budget = settings.get('JS_RECON_TIMEOUT', 900)
     started = time.monotonic()
     deadline = started + analysis_budget
-    executor = ThreadPoolExecutor(max_workers=4)
+    trufflehog_on = bool(settings.get('JS_RECON_TRUFFLEHOG_ENABLED', False))
+    executor = ThreadPoolExecutor(max_workers=5 if trufflehog_on else 4)
     try:
         # Stage 1: discover and fetch the source maps. A map's first-party
         # sources come back as pseudo-files, which every analyzer in stage 2
@@ -817,6 +819,22 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
 
         # Stage 2: every analyzer on the downloaded files and the pseudo-files.
         futures = {}
+
+        # TruffleHog first: its container is the slowest analyzer. It is
+        # collected on its own running-time budget, after the others, never on
+        # the wall-clock deadline, which a recon pause would spend.
+        trufflehog_future = None
+        if trufflehog_on:
+            verify = bool(settings.get('JS_RECON_VALIDATE_KEYS', True))
+            th_budget = min(_TRUFFLEHOG_MAX_BUDGET_S, max(15.0, deadline - time.monotonic() - 10))
+            print(f"[*][JsRecon] TruffleHog: scanning {len(js_files)} file(s), "
+                  f"verification {'on' if verify else 'off'}, budget {int(th_budget)}s")
+            trufflehog_future = executor.submit(
+                trufflehog_bridge.run, list(js_files), verify=verify,
+                concurrency=settings.get('JS_RECON_CONCURRENCY', 10),
+                validation_timeout=settings.get('JS_RECON_VALIDATION_TIMEOUT', 5),
+                budget_s=th_budget,
+            )
 
         # 1. Pattern scanning (secrets, emails, IPs, UUIDs)
         if settings.get('JS_RECON_REGEX_PATTERNS', True):
@@ -979,6 +997,14 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
             except Exception as e:
                 unanalyzed.extend(f.get('url') for f in js_files)
                 print(f"[!][JsRecon] Analyzer '{name}' failed: {type(e).__name__}: {e}")
+
+        if trufflehog_future is not None:
+            try:
+                th_run = trufflehog_future.result()
+            except Exception as e:  # noqa: BLE001 - run() never raises; a bug must not cost the scan
+                th_run = trufflehog_bridge.ThRun('failed', type(e).__name__,
+                                                 'redamon-trufflehog-net' if verify else 'none')
+            results['_trufflehog'] = _merge_trufflehog(results, th_run, js_files, settings)
     finally:
         # cancel_futures drops tasks that have not started yet; tasks already
         # running cannot be killed (Python limitation) but the container exits
@@ -990,6 +1016,111 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
     _count_source_map_secrets(results)
     results['_unanalyzed_urls'] = unanalyzed
     return results
+
+
+#: TruffleHog's running-time budget never exceeds this, whatever JS_RECON_TIMEOUT.
+_TRUFFLEHOG_MAX_BUDGET_S = 600.0
+#: Verification counts as degraded when at least this share of at least
+#: _TRUFFLEHOG_DEGRADED_MIN results errored: the provider checks, not the keys.
+_TRUFFLEHOG_DEGRADED_SHARE = 0.5
+_TRUFFLEHOG_DEGRADED_MIN = 5
+
+
+def _trufflehog_keep(settings: dict, verify: bool) -> Optional[set]:
+    """The TruffleHog-only results to keep (JS_RECON_TRUFFLEHOG_RESULTS). Empty
+    or unreadable means all three; without verification every result is
+    unverified, so the filter does not apply."""
+    raw = settings.get('JS_RECON_TRUFFLEHOG_RESULTS') or []
+    if isinstance(raw, str):
+        raw = [p.strip() for p in raw.split(',')]
+    keep = {str(v).strip().lower() for v in raw if str(v).strip()} & set(trufflehog_bridge.RESULT_CLASSES)
+    keep = keep or set(trufflehog_bridge.RESULT_CLASSES)
+    if not verify:
+        if keep != set(trufflehog_bridge.RESULT_CLASSES):
+            print("[*][JsRecon] TruffleHog result filter ignored: key validation is off, "
+                  "so no result is verified")
+        return None
+    return keep
+
+
+def _unconfirmed_superseded(secret: dict) -> bool:
+    """A hit of a rule TruffleHog supersedes that TruffleHog did not match."""
+    return (secret.get('name') in SUPERSEDED_BY_TRUFFLEHOG
+            and secret.get('detection_method', 'regex') == 'regex'
+            and not any(str(a).startswith('TruffleHog:') for a in secret.get('alternate_names') or []))
+
+
+def _merge_trufflehog(results: dict, th_run, js_files: list, settings: dict) -> dict:
+    """Merge one TruffleHog run into results['secrets'] and return its outcome
+    record (scan_metadata.trufflehog). A failure is logged and recorded; it
+    never drops or prunes a regex finding."""
+    verify = bool(settings.get('JS_RECON_VALIDATE_KEYS', True))
+    keep = _trufflehog_keep(settings, verify)
+    secrets, stats = trufflehog_bridge.merge(
+        results.get('secrets') or [], th_run.results, th_run.manifest, verify=verify, keep=keep)
+    superseded = 0
+    if th_run.status == 'ran':
+        # Only a complete run can confirm: a failed or missing TruffleHog
+        # leaves these rules reporting as they always did.
+        kept = [s for s in secrets if not _unconfirmed_superseded(s)]
+        superseded = len(secrets) - len(kept)
+        secrets = kept
+    results['secrets'] = secrets
+
+    verification = 'off'
+    if verify and th_run.status == 'ran':
+        verification = 'ok'
+        checked = stats.merged + stats.new + stats.filtered
+        degraded = (checked >= _TRUFFLEHOG_DEGRADED_MIN
+                    and stats.verify_errors >= _TRUFFLEHOG_DEGRADED_SHARE * checked)
+        try:
+            from recon.helpers import circuit_breaker as cb
+            breaker = cb.get_breaker('secretval:trufflehog', label='SecretValidator',
+                                     threshold=cb.INTERNAL_THRESHOLD)
+            if degraded:
+                breaker.record(cb.Outcome.TRANSIENT, 'verification degraded')
+            else:
+                breaker.record(cb.Outcome.OK)
+        except Exception:  # noqa: BLE001 - bookkeeping never fails the scan
+            pass
+        if degraded:
+            verification = 'degraded'
+            print(f"[!][JsRecon] TruffleHog verification degraded: {stats.verify_errors}/{checked} checks errored")
+
+    network = 'bridge' if th_run.network != 'none' else 'none'
+    excluded = len(trufflehog_bridge.TRUFFLEHOG_EXCLUDED_DETECTORS)
+    if th_run.status == 'skipped' and th_run.reason == 'image_missing':
+        print(f"[-][JsRecon] TruffleHog image {trufflehog_bridge.TRUFFLEHOG_IMAGE} not found: "
+              f"run ./redamon.sh update")
+    elif th_run.status not in ('ran', 'stopped', 'skipped'):
+        print(f"[!][JsRecon] TruffleHog {th_run.status}: {th_run.reason}")
+        for line in th_run.stderr_tail if th_run.status == 'failed' else ():
+            print(f"[!][JsRecon] TruffleHog stderr: {line}")
+    if th_run.bad_lines:
+        print(f"[!][JsRecon] TruffleHog: {th_run.bad_lines} output line(s) unreadable")
+    if superseded:
+        print(f"[*][JsRecon] TruffleHog: dropped {superseded} hit(s) it did not confirm, of rules it "
+              f"supersedes ({', '.join(sorted(SUPERSEDED_BY_TRUFFLEHOG))})")
+    print(f"[+][JsRecon] TruffleHog: {stats.results} results, {stats.merged} merged, {stats.new} new, "
+          f"{stats.validated} validated, {stats.filtered} filtered, network={network}, "
+          f"{excluded} detectors excluded, {th_run.duration_s}s")
+
+    return {
+        'status': th_run.status,
+        'reason': th_run.reason,
+        'network': network,
+        'results': stats.results,
+        'merged': stats.merged,
+        'new': stats.new,
+        'validated': stats.validated,
+        'filtered': stats.filtered,
+        'verify_errors': stats.verify_errors,
+        'verification': verification,
+        'superseded_dropped': superseded,
+        'duration_s': th_run.duration_s,
+        # The files TruffleHog was given, for the coverage reason on a failure.
+        '_input_urls': [f.get('url') for f in js_files if (f.get('content') or '').strip()],
+    }
 
 
 # Stage 1 (source-map discovery) may use this share of JS_RECON_TIMEOUT, so a
@@ -1045,6 +1176,11 @@ def _count_source_map_secrets(results: dict) -> None:
         source_map['secrets_in_source'] = sum(1 for u in secret_urls if u.startswith(prefix))
 
 
+#: Validators that run even on a key TruffleHog verified: an open Firebase
+#: database read and a key's Google API restriction are findings of their own.
+_ALWAYS_RUN_VALIDATORS = frozenset({'validate_firebase', 'validate_google_maps'})
+
+
 def _validate_secrets(secrets: list, settings: dict) -> list:
     """
     Validate discovered secrets using service-specific validators.
@@ -1052,15 +1188,42 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
     Only validates high/medium-confidence findings that have a validator_ref.
     Network validations run in parallel (capped by JS_RECON_CONCURRENCY); each
     task mutates its own secret dict in place, so no shared-state lock needed.
+
+    What TruffleHog said about a key (`validation['trufflehog']`, set by the
+    merge) survives. A TruffleHog-only finding keeps the status TruffleHog
+    gave it. A key TruffleHog verified costs no provider call, except the
+    Firebase and Google Maps checks, which test what the key opens, not
+    whether it lives. TruffleHog only ever promotes a key to `validated`: its
+    "not verified" is no verdict (rule V1), so `rejected` stays ours alone.
     """
+    th_of = {id(s): (s.get('validation') or {}).get('trufflehog') for s in secrets}
+
+    def _with_th(secret: dict, validation: dict) -> dict:
+        th = th_of.get(id(secret))
+        return {**validation, 'trufflehog': th} if th else validation
+
     if not settings.get('JS_RECON_VALIDATE_KEYS', True):
         for s in secrets:
-            s['validation'] = {'status': 'skipped'}
+            s['validation'] = _with_th(s, {'status': 'skipped'})
         return secrets
 
     validation_timeout = settings.get('JS_RECON_VALIDATION_TIMEOUT', 5)
 
-    def _validate_one(secret: dict) -> None:
+    def _validate_one(secret: dict, th: Optional[dict]) -> None:
+        verified = bool(th and th.get('verified'))
+        validator_ref = secret.get('validator_ref')
+        if verified and validator_ref not in _ALWAYS_RUN_VALIDATORS:
+            secret['validation'] = {'status': 'validated', 'valid': True, 'checked_by': 'trufflehog'}
+            return
+        _run_validator(secret)
+        if verified and secret['validation'].get('status') != 'validated':
+            secret['validation'] = {
+                'status': 'validated', 'valid': True, 'checked_by': 'trufflehog',
+                'info': secret['validation'].get('info', ''),
+                'validator_status': secret['validation'].get('status'),
+            }
+
+    def _run_validator(secret: dict) -> None:
         try:
             validator_ref = secret.get('validator_ref')
             if not validator_ref:
@@ -1120,14 +1283,20 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
     # source map's original file is one credential.
     same_key: dict = {}
     for secret in secrets:
+        if secret.get('detection_method') == 'trufflehog':
+            continue
         key = (secret.get('name'), secret.get('matched_text'), secret.get('validator_ref'),
                secret.get('confidence'))
         same_key.setdefault(key, []).append(secret)
 
     def _validate_group(group: list) -> None:
-        _validate_one(group[0])
+        infos = [th_of.get(id(s)) for s in group if th_of.get(id(s))]
+        th = next((i for i in infos if i.get('verified')), infos[0] if infos else None)
+        _validate_one(group[0], th)
         for other in group[1:]:
             other['validation'] = dict(group[0].get('validation') or {})
+        for s in group:
+            s['validation'] = _with_th(s, s['validation'])
 
     workers = max(1, min(settings.get('JS_RECON_CONCURRENCY', 10), 20))
     if secrets:
@@ -1528,7 +1697,8 @@ def _considered_base_urls(combined_result: dict, settings: dict, js_urls) -> set
 
 
 def _js_coverage(combined_result: dict, settings: dict, at: str, *, js_urls=(), selected=(),
-                 downloaded=(), unreachable=(), unanalyzed=(), results=None, error=None) -> dict:
+                 downloaded=(), unreachable=(), unanalyzed=(), results=None, error=None,
+                 trufflehog_reason=None, trufflehog_urls=()) -> dict:
     """``{"at", "hosts": {base_url_key: row}}``, one row per considered host.
 
     A host with no JS candidate, or whose candidates all turned out not to be
@@ -1536,6 +1706,11 @@ def _js_coverage(combined_result: dict, settings: dict, at: str, *, js_urls=(), 
     unreachable host or a failed analyzer is ``failed``; one that lost some,
     or had files cut by JS_RECON_MAX_FILES, is ``partial``, with the reasons.
     A fatal error fails every host, since none of its findings reached output.
+
+    ``trufflehog_reason`` (a TruffleHog run that did not complete) is added to
+    the reason of each host whose files TruffleHog was given
+    (``trufflehog_urls``), without changing its status: js_recon's own
+    analysis of those files is complete.
     """
     from collections import Counter
     from recon.helpers.coverage_stamps import base_url_key, coverage_row
@@ -1558,6 +1733,8 @@ def _js_coverage(combined_result: dict, settings: dict, at: str, *, js_urls=(), 
         for key in _COVERAGE_FINDING_KEYS for f in (results or {}).get(key) or [] if isinstance(f, dict)
     )
 
+    trufflehog_hosts = by_host(trufflehog_urls) if trufflehog_reason else {}
+
     hosts = {}
     for key in sorted(_considered_base_urls(combined_result, settings, js_urls)):
         if error:
@@ -1576,6 +1753,8 @@ def _js_coverage(combined_result: dict, settings: dict, at: str, *, js_urls=(), 
             status = 'failed'
         else:
             status = 'partial'
+        if trufflehog_hosts.get(key):
+            reasons.append(trufflehog_reason)
         hosts[key] = coverage_row(status, read[key], found[key], ', '.join(reasons))
     return {'at': at, 'hosts': hosts}
 
@@ -1636,6 +1815,8 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
             ("JS_RECON_CUSTOM_FRAMEWORKS", "Filtering"),
             ("JS_RECON_VALIDATE_KEYS", "Validation"),
             ("JS_RECON_VALIDATION_TIMEOUT", "Validation"),
+            ("JS_RECON_TRUFFLEHOG_ENABLED", "Validation"),
+            ("JS_RECON_TRUFFLEHOG_RESULTS", "Validation"),
             ("JS_RECON_VALIDATE_ENDPOINTS", "Endpoint validation"),
             ("JS_RECON_ENDPOINT_ACCEPT_STATUS", "Endpoint validation"),
             ("JS_RECON_ENDPOINT_CUSTOM_HEADERS", "Endpoint validation"),
@@ -1707,6 +1888,14 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
         # 3. Run all analysis modules
         results = _run_analysis(js_files, settings)
+        trufflehog = results.pop('_trufflehog', None)
+        trufflehog_urls = trufflehog.pop('_input_urls', []) if trufflehog else []
+        trufflehog_reason = (f"trufflehog {trufflehog['status']}: {trufflehog['reason']}"
+                             if trufflehog and trufflehog['status'] not in ('ran', 'stopped') else None)
+        if trufflehog and trufflehog['status'] != 'ran':
+            # The graph writer keeps this run's earlier TruffleHog-only findings
+            # of these files alive: a failed run must not prune them.
+            trufflehog['analyzed_urls'] = trufflehog_urls
         source_map_files = results.pop('_source_map_files', 0)
         extracted_from = results.pop('_endpoint_extraction_files', 0)
         endpoint_miss = extracted_from >= _TOOL_MISS_MIN_FILES and not results.get('endpoints')
@@ -1831,7 +2020,9 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 'coverage': _js_coverage(
                     combined_result, settings, coverage_at, js_urls=js_urls, selected=selected_urls,
                     downloaded=downloaded, unreachable=unreachable, unanalyzed=unanalyzed or (),
-                    results=results),
+                    results=results, trufflehog_reason=trufflehog_reason,
+                    trufflehog_urls=trufflehog_urls),
+                **({'trufflehog': trufflehog} if trufflehog else {}),
             },
             # Where the downloaded JS lives. GROUP 5.5 (supply-chain recon)
             # hands this path to the DIRTY analyzer so retire.js can read the

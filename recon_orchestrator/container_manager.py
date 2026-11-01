@@ -203,6 +203,20 @@ def run_labels(project_id: str, run_id: str, kind: str) -> dict:
     """The labels a recon or partial-recon container is spawned with."""
     return {RUN_PROJECT_LABEL: project_id, RUN_KIND_LABEL: kind, RUN_ID_LABEL: run_id}
 
+
+# JS Recon's TruffleHog stage dirs (recon/helpers/js_recon/trufflehog_bridge.py
+# `stage_files`): js_recon_th_<run id>_<8 hex> under the shared /tmp/redamon,
+# copies of a target's JavaScript. The run id is the RECON_RUN_ID /
+# PARTIAL_RECON_RUN_ID this orchestrator handed the run, made path-safe. A
+# name without the suffix reads as a run id of its own, which no live run has.
+JS_TRUFFLEHOG_STAGE_ROOT = "/tmp/redamon"
+JS_TRUFFLEHOG_STAGE_RE = re.compile(r"^js_recon_th_(.+?)(?:_[0-9a-f]{8})?$")
+
+
+def _stage_safe_run_id(run_id: str) -> str:
+    """The run id as trufflehog_bridge.run_id() writes it into a dir name."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(run_id))[:64]
+
 # Tool-name phase patterns, for a log with no pipeline header yet (partial recon,
 # or a container from before the headers). Order matters - more specific patterns
 # should come first within each phase.
@@ -1060,6 +1074,7 @@ class ContainerManager:
                             state.completed_at = datetime.now(timezone.utc)
 
                         # Auto-cleanup: remove finished container
+                        self._remove_trufflehog_stages(self._run_id_of(container))
                         try:
                             container.remove()
                             logger.info(f"Auto-removed finished container for project {project_id}")
@@ -1496,11 +1511,67 @@ class ContainerManager:
             filters={"label": [f"{BROKER_OWNED_LABEL}=1", f"{RUN_ID_LABEL}={run_id}"]},
         )
 
-    def _remove_run_tools_sync(self, run_id: Optional[str]) -> int:
-        """Kill and remove every tool container of one run. Blocking: call
-        through _run_blocking. Returns how many were removed."""
+    @staticmethod
+    def _trufflehog_stage_run(name: str) -> Optional[str]:
+        m = JS_TRUFFLEHOG_STAGE_RE.match(name)
+        return m.group(1) if m else None
+
+    def _remove_trufflehog_stages(self, run_id: Optional[str], root: Optional[str] = None) -> int:
+        """Delete one run's JS Recon TruffleHog stage dirs: copies of a target's
+        JavaScript the recon container could not remove itself (killed at the
+        stop grace, crashed). Returns how many were removed."""
         if not run_id:
             return 0
+        wanted = _stage_safe_run_id(run_id)
+        removed = 0
+        try:
+            entries = list(os.scandir(root or JS_TRUFFLEHOG_STAGE_ROOT))
+        except OSError:
+            return 0
+        for entry in entries:
+            if self._trufflehog_stage_run(entry.name) == wanted and entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+        if removed:
+            logger.info(f"Removed {removed} JS Recon TruffleHog stage dir(s) of run {run_id}")
+        return removed
+
+    def sweep_trufflehog_stages(self, root: Optional[str] = None) -> int:
+        """At startup: delete the stage dirs whose run has no live recon or
+        partial-recon container. Runs survive an orchestrator restart and are
+        re-adopted, so a live run's dir is spared; when the containers cannot
+        be listed nothing is deleted."""
+        try:
+            live = set()
+            for prefix in ("redamon-recon-", "redamon-partial-recon-"):
+                for container in self.client.containers.list(all=True, filters={"name": prefix}):
+                    if container.status in ("exited", "dead"):
+                        continue
+                    run_id = self._run_id_of(container)
+                    if run_id:
+                        live.add(_stage_safe_run_id(run_id))
+            entries = list(os.scandir(root or JS_TRUFFLEHOG_STAGE_ROOT))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"JS Recon TruffleHog stage sweep skipped: {e}")
+            return 0
+        removed = 0
+        for entry in entries:
+            run = self._trufflehog_stage_run(entry.name)
+            if run is None or run in live or not entry.is_dir(follow_symlinks=False):
+                continue
+            shutil.rmtree(entry.path, ignore_errors=True)
+            removed += 1
+        if removed:
+            logger.info(f"Startup sweep removed {removed} orphaned JS Recon TruffleHog stage dir(s)")
+        return removed
+
+    def _remove_run_tools_sync(self, run_id: Optional[str]) -> int:
+        """Kill and remove every tool container of one run, and the run's JS
+        Recon TruffleHog stage dirs. Blocking: call through _run_blocking.
+        Returns how many containers were removed."""
+        if not run_id:
+            return 0
+        self._remove_trufflehog_stages(run_id)
         removed = 0
         try:
             containers = self._run_tool_containers(run_id)
@@ -2299,6 +2370,7 @@ class ContainerManager:
                     state.status = PartialReconStatus.ERROR
                     state.error = _exit_reason_of(container)
                     state.completed_at = datetime.now(timezone.utc)
+                self._remove_trufflehog_stages(state.run_id)
                 try:
                     container.remove()
                     logger.info(f"Auto-removed partial recon container for {state.project_id}/{state.run_id}")
@@ -3696,6 +3768,15 @@ class ContainerManager:
     def get_gvm_running_count(self) -> int:
         """Get count of running GVM scan processes"""
         return sum(1 for s in self.gvm_states.values() if s.status == GvmStatus.RUNNING)
+
+    def is_trufflehog_available(self) -> bool:
+        """Whether JS Recon's TruffleHog image is present. Uncached: an install
+        or an update builds it while the orchestrator runs."""
+        try:
+            self.client.images.get(self.trufflehog_image)
+            return True
+        except Exception:  # noqa: BLE001 - NotFound, or a daemon that did not answer
+            return False
 
     def is_gvm_available(self) -> bool:
         """Check if GVM stack is installed by looking for the gvmd container"""

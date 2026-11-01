@@ -12,12 +12,14 @@
   },
   "tool_container_envelope_bytes": {
     "supply_chain_analyzer": 1073741824,
+    "trufflehog_js": 805306368,
     "_default": 1500000000
   },
   "scan_job_envelope_bytes": {
     "full_recon": 2147483648,
     "partial_recon": 805306368,
     "partial_recon:SupplyChainRecon": 1879048192,
+    "partial_recon:JsRecon": 1610612736,
     "ai_attack": 1073741824,
     "gvm": 2684354560,
     "github_hunt": 805306368,

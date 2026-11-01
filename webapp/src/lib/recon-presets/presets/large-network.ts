@@ -168,6 +168,7 @@ Network security teams and pentesters who need to map large external perimeters 
     // --- DISABLE JS analysis ---
     jsluiceEnabled: false,
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
     // --- DISABLE directory/API fuzzing ---

@@ -1,0 +1,190 @@
+{
+ "certificate": [
+  [
+   "PKCS12 Certificate",
+   "d0c9b163111a60cf"
+  ]
+ ],
+ "databricks": [
+  [
+   "Databricks API Token",
+   "e978effba1018426"
+  ]
+ ],
+ "gcp_in_apikey": [
+  [
+   "Firebase API Key",
+   "5b1242058b0992f8"
+  ],
+  [
+   "GCP API Key",
+   "df1b469861fdad07"
+  ],
+  [
+   "Generic API Key",
+   "33abd2ec57dc641d"
+  ]
+ ],
+ "gemini_in_api_key": [
+  [
+   "GCP API Key",
+   "cb94b77f91d02eaf"
+  ],
+  [
+   "Generic API Key",
+   "503653dfaa41472d"
+  ],
+  [
+   "Google Gemini API Key",
+   "6451bdaaaf3bb328"
+  ]
+ ],
+ "generic_api_key": [
+  [
+   "Generic API Key",
+   "33696e8ad512d8d3"
+  ]
+ ],
+ "generic_secret": [
+  [
+   "Generic Secret",
+   "fcd37669e1627ba9"
+  ]
+ ],
+ "generic_token": [
+  [
+   "Generic Token",
+   "8c97268d23e2bef8"
+  ]
+ ],
+ "generic_uuid": [
+  [
+   "Generic API Key",
+   "141e8c4fbeb53042"
+  ],
+  [
+   "UUID v4",
+   "7f3699875fa066da"
+  ]
+ ],
+ "hardcoded_password": [
+  [
+   "Hardcoded Password",
+   "e2ca50f9ea5f6290"
+  ]
+ ],
+ "heroku_uuid": [
+  [
+   "Generic API Key",
+   "b3f06d420166640a"
+  ],
+  [
+   "Heroku API Key",
+   "839204493ddd192a"
+  ],
+  [
+   "UUID v4",
+   "1215fb790865f65f"
+  ]
+ ],
+ "huggingface": [
+  [
+   "HuggingFace Access Token",
+   "2e78004de977feeb"
+  ]
+ ],
+ "infracost": [
+  [
+   "Infracost API Token",
+   "90612103fad27cb0"
+  ]
+ ],
+ "mapbox": [
+  [
+   "Mapbox Token",
+   "586e07c606bef66b"
+  ]
+ ],
+ "nuget": [
+  [
+   "NuGet API Key",
+   "aee7fbd53985a8be"
+  ]
+ ],
+ "octopus": [
+  [
+   "Octopus Deploy API Key",
+   "6492ba8a664fb06d"
+  ]
+ ],
+ "pem_dsa": [
+  [
+   "DSA Private Key",
+   "bba1bf2a94bfee69"
+  ]
+ ],
+ "pem_ec": [
+  [
+   "EC Private Key",
+   "34c40e898f3b5d80"
+  ]
+ ],
+ "pem_generic": [
+  [
+   "Generic Private Key",
+   "6b16d508914a09f7"
+  ]
+ ],
+ "pem_openssh": [
+  [
+   "OpenSSH Private Key",
+   "c9ffa423aa0fee9b"
+  ]
+ ],
+ "pem_pgp": [
+  [
+   "PGP Private Key",
+   "d37d05f6d744ff15"
+  ]
+ ],
+ "pem_rsa": [
+  [
+   "RSA Private Key",
+   "a5ae2abceac43296"
+  ]
+ ],
+ "pulumi": [
+  [
+   "Pulumi Access Token",
+   "c5baed16cdd666f3"
+  ]
+ ],
+ "replicate": [
+  [
+   "Replicate API Token",
+   "fff71676444d33b2"
+  ]
+ ],
+ "resend": [
+  [
+   "Resend API Key",
+   "56c0a63ec9df5da6"
+  ]
+ ],
+ "stripe_in_secret": [
+  [
+   "Generic Secret",
+   "ea1135b1532377cf"
+  ],
+  [
+   "Stripe Secret Key",
+   "9481abd5db620f7b"
+  ]
+ ],
+ "yandex_aws": [
+  [
+   "Yandex AWS Access Token",
+   "3d1b1b54a1cf8e79"
+  ]
+ ]
+}

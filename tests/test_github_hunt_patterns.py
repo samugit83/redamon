@@ -133,3 +133,31 @@ class TestSampleIsTheRedactedValue:
         from graph_db.mixins.secret_mixin import _redact_sample
         for value in (AWS_KEY, f'password = "{PASSWORD}"', "abcdefgh", "abc", ""):
             assert _redact_sample(value) == ghh.redact_sample(value)
+
+
+class TestPhase0Mirror:
+    """The TruffleHog plan's Phase 0, items 0.2 and 0.4, mirrored from js_recon:
+    a private-key marker needs key data after it, and the Yandex AWS rule needs
+    "yandex" within 120 characters before it. Certificates (0.3) and generic
+    UUID values (0.6) do not apply: the hunter has no severities."""
+
+    BODY = ("MIIEow" + "IBAAKCAQEA" + "x7Kp2Lm9Qz4Wn8Rt1Yb6Vc3Hd5Jf0Gs2") * 3
+
+    def test_a_pem_template_is_no_finding(self, ghh):
+        head = "-----BEGIN " + "RSA PRIVATE KEY-----"
+        for text in ('p = "' + head + '\\n" + body + "\\n-----END RSA PRIVATE KEY-----"\n',
+                     "p = `" + head + "\\n${body}\\n-----END RSA PRIVATE KEY-----`\n"):
+            found, _ = _scan(ghh, text)
+            assert "RSA Private Key" not in found
+
+    def test_a_key_with_key_data_is_a_finding(self, ghh):
+        head = "-----BEGIN " + "RSA PRIVATE KEY-----"
+        found, _ = _scan(ghh, head + "\n" + self.BODY + "\n-----END RSA PRIVATE KEY-----\n")
+        assert "RSA Private Key" in found
+
+    def test_yandex_needs_its_keyword(self, ghh):
+        value = "Y" + "C" + "x7Kp2Lm9Qz4Wn8Rt1Yb6Vc3Hd5Jf0Gs2Ae8Ui4"
+        found, _ = _scan(ghh, 'chunk = "' + value + '"\n')
+        assert "Yandex AWS Access Token" not in found
+        found, _ = _scan(ghh, 'yandex_cloud = {"key": "' + value + '"}\n')
+        assert "Yandex AWS Access Token" in found

@@ -1,0 +1,1159 @@
+{
+ "lab": "js_secret_lab",
+ "seed": "js-secret-lab:2026-11-01",
+ "how": "python3 -I gen_lab.py --emit-expected (keeps trufflehog and regex_p2). Values are sha256(value)[:12]; match_sha12 is the hash of the text the js_recon rule matches. regex_today = the code before the plan's Phase 0, regex = after Phase 0, regex_p2 (optional) = after Phase 2, trufflehog = TBD until plan step 1.3.",
+ "hosts": {
+  "192.88.96.10": {
+   "role": "app-modern",
+   "rule": "every row below"
+  },
+  "192.88.96.11": {
+   "role": "vendor-only",
+   "rule": "no js_recon Secret of severity medium or higher after Phase 0"
+  },
+  "192.88.96.12": {
+   "role": "ssrf-bait",
+   "rule": "hashes depend on the canary IP: see generated/expected_runtime.json"
+  },
+  "192.88.96.14": {
+   "role": "clean-control",
+   "rule": "no js_recon Secret of severity medium or higher; ideally none"
+  },
+  "upload": {
+   "role": "upload",
+   "rule": "upload://upload_keys.js, only in the partial-recon scenario (E4)"
+  }
+ },
+ "rows": [
+  {
+   "label": "aws-akia-id",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "025d9c62411e",
+   "match_sha12": "025d9c62411e",
+   "regex_today": {
+    "secret_type": "AWS Access Key ID",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "AWS Access Key ID",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "AWS",
+    "secret_type": "AWS Access Key ID",
+    "severity": "critical",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "aws-akia-secret",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "7bc6dcc87ae9",
+   "match_sha12": "7bc6dcc87ae9",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null,
+   "note": "next to aws_secret_access_key: the AWS Secret Key rule allows 10 characters between aws_secret and the quote, the key name has 12; TruffleHog pairs it with the ID"
+  },
+  {
+   "label": "aws-asia-id",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "5441c79b80a1",
+   "match_sha12": "5441c79b80a1",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "AWS Session Key",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "AWSSessionKey",
+    "secret_type": "AWS Session Key",
+    "severity": "high",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "aws-asia-secret",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "e03bc1399fc9",
+   "match_sha12": "e03bc1399fc9",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null
+  },
+  {
+   "label": "aws-asia-session-token",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "5e37b3c63eca",
+   "match_sha12": "5e37b3c63eca",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null
+  },
+  {
+   "label": "stripe-sk-live-main",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "e9ba86bef85d",
+   "match_sha12": "e9ba86bef85d",
+   "regex_today": {
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "github-ghp",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "39ecb0709a86",
+   "match_sha12": "39ecb0709a86",
+   "regex_today": {
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "slack-xoxb",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "e7caa1dcb065",
+   "match_sha12": "e7caa1dcb065",
+   "regex_today": {
+    "secret_type": "Slack Bot Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Slack Bot Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Slack",
+    "secret_type": "Slack Bot Token",
+    "severity": "high",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "openai-key",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "7d19d74d3000",
+   "match_sha12": "7d19d74d3000",
+   "regex_today": {
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false,
+    "alternate_names_include": [
+     "Generic API Key"
+    ]
+   },
+   "trufflehog": {
+    "detector": "OpenAI",
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "openai-key-generic",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "7d19d74d3000",
+   "match_sha12": "4292f77c5618",
+   "regex_today": {
+    "secret_type": "Generic API Key",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": {
+    "detector": "OpenAI",
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "note": "Phase 0 item 0.1: generic loses to specific"
+  },
+  {
+   "label": "anthropic-key",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "654502dcf493",
+   "match_sha12": "654502dcf493",
+   "regex_today": {
+    "secret_type": "Anthropic API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Anthropic API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Anthropic",
+    "secret_type": "Anthropic API Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "firebase-apikey-gcp",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "07bac5c59e3a",
+   "match_sha12": "07bac5c59e3a",
+   "regex_today": {
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "regex": {
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true,
+    "alternate_names_include": [
+     "Generic API Key"
+    ]
+   },
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   }
+  },
+  {
+   "label": "firebase-apikey-generic",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "07bac5c59e3a",
+   "match_sha12": "dd7da5d00ebb",
+   "regex_today": {
+    "secret_type": "Generic API Key",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "note": "Phase 0 item 0.1"
+  },
+  {
+   "label": "gemini-key",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "716bc7b63622",
+   "match_sha12": "3830a4429a4d",
+   "regex_today": {
+    "secret_type": "Google Gemini API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Google Gemini API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   }
+  },
+  {
+   "label": "gemini-key-gcp",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "716bc7b63622",
+   "match_sha12": "716bc7b63622",
+   "regex_today": {
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "regex": {
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "note": "a Gemini key must not lose to the public GCP rule: both stay"
+  },
+  {
+   "label": "gemini-key-generic",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "716bc7b63622",
+   "match_sha12": "13c522903d2e",
+   "regex_today": {
+    "secret_type": "Generic API Key",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "note": "Phase 0 item 0.1"
+  },
+  {
+   "label": "supabase-anon-jwt",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "388985fea1e8",
+   "match_sha12": "388985fea1e8",
+   "regex_today": {
+    "secret_type": "Supabase anon key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "regex": {
+    "secret_type": "Supabase anon key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "supabase-service-jwt",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "ed6d8b24de7d",
+   "match_sha12": "ed6d8b24de7d",
+   "regex_today": {
+    "secret_type": "Supabase service_role key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Supabase service_role key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "mapbox-token",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "d79ab5cc655d",
+   "match_sha12": "8658294cda86",
+   "regex_today": {
+    "secret_type": "Mapbox Token",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "regex": {
+    "secret_type": "Mapbox Token",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "trufflehog": null,
+   "note": "the rule stops at the token's second dot"
+  },
+  {
+   "label": "github-ghp-uescaped",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "a335b370701f",
+   "match_sha12": "a335b370701f",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false,
+    "decoded": true
+   },
+   "note": "written as \\uXXXX escapes: TruffleHog decodes them, the regex does not"
+  },
+  {
+   "label": "github-ghp-near-location",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "key",
+   "value_sha12": "b3da1abc33a8",
+   "match_sha12": "b3da1abc33a8",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "note": "dropped by js_recon's binary-context filter: its font-table name 'loca' matches 'location' within 300 characters; TruffleHog-only"
+  },
+  {
+   "label": "noise-yc-1",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "451fa500ab03",
+   "match_sha12": "451fa500ab03",
+   "regex_today": {
+    "secret_type": "Yandex AWS Access Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
+  },
+  {
+   "label": "noise-yc-2",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "fd39d7e3d785",
+   "match_sha12": "fd39d7e3d785",
+   "regex_today": {
+    "secret_type": "Yandex AWS Access Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
+  },
+  {
+   "label": "noise-yc-3",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "e75d91df7765",
+   "match_sha12": "e75d91df7765",
+   "regex_today": {
+    "secret_type": "Yandex AWS Access Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
+  },
+  {
+   "label": "noise-configure-1",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "16be154cad53",
+   "match_sha12": "32f30e9bebba",
+   "regex_today": {
+    "secret_type": "Resend API Key",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.5: re_ needs a left boundary"
+  },
+  {
+   "label": "noise-configure-2",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "c33ce84d8cc1",
+   "match_sha12": "29f9355f9fcf",
+   "regex_today": {
+    "secret_type": "Resend API Key",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.5: re_ needs a left boundary"
+  },
+  {
+   "label": "noise-uuid-apikey",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "863284fb9fef",
+   "match_sha12": "8a646b093056",
+   "regex_today": {
+    "secret_type": "Generic API Key",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Generic API Key",
+    "severity": "low",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.6: a bare UUIDv4 value is low"
+  },
+  {
+   "label": "noise-uuid-apikey-uuid",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "863284fb9fef",
+   "match_sha12": "863284fb9fef",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null,
+   "note": "UUID v4 is routed to object_references (a JsReconFinding), never a Secret"
+  },
+  {
+   "label": "noise-pem-template",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "3021d90eb943",
+   "match_sha12": "3021d90eb943",
+   "regex_today": {
+    "secret_type": "Generic Private Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.2: a jsrsasign-style template, no key data"
+  },
+  {
+   "label": "noise-certificate",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "ddddb6cbd348",
+   "match_sha12": "ddddb6cbd348",
+   "regex_today": {
+    "secret_type": "PKCS12 Certificate",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "PKCS12 Certificate",
+    "severity": "info",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.3: a public certificate is info"
+  },
+  {
+   "label": "noise-css-password",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "69c56f8c7a45",
+   "match_sha12": "7af78346f7b5",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null,
+   "note": "a CSS-module class name bound to a secret-looking key"
+  },
+  {
+   "label": "noise-css-secret",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js",
+   "kind": "noise",
+   "value_sha12": "022c08434e0c",
+   "match_sha12": "1a417135ad00",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null,
+   "note": "a CSS-module class name bound to a secret-looking key"
+  },
+  {
+   "label": "stripe-sk-live-sourcemap",
+   "host": "192.88.96.10",
+   "file": "/assets/js/main.7c98ce6e.js.map#src/config/payments.ts",
+   "kind": "key",
+   "value_sha12": "0e34024fdc62",
+   "match_sha12": "0e34024fdc62",
+   "regex_today": {
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "note": "only in the source map's sourcesContent (a pseudo-file)"
+  },
+  {
+   "label": "sendgrid-key",
+   "host": "192.88.96.10",
+   "file": "/assets/js/412.44f905ca.js",
+   "kind": "key",
+   "value_sha12": "9261da06d5a8",
+   "match_sha12": "9261da06d5a8",
+   "regex_today": {
+    "secret_type": "SendGrid API Key",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "SendGrid API Key",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "SendGrid",
+    "secret_type": "SendGrid API Key",
+    "severity": "high",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "supabase-sb-secret",
+   "host": "192.88.96.10",
+   "file": "/assets/js/412.44f905ca.js",
+   "kind": "key",
+   "value_sha12": "d12f59f35365",
+   "match_sha12": "d12f59f35365",
+   "regex_today": {
+    "secret_type": "Supabase Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Supabase Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "pem-private-key-full",
+   "host": "192.88.96.10",
+   "file": "/assets/js/412.44f905ca.js",
+   "kind": "key",
+   "value_sha12": "c4e4658237e9",
+   "match_sha12": "3021d90eb943",
+   "regex_today": {
+    "secret_type": "Generic Private Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Generic Private Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.2: key data present (\\n escapes in a JS string)"
+  },
+  {
+   "label": "stripe-pk-live",
+   "host": "192.88.96.10",
+   "file": "/assets/js/checkout.278ebda8.js",
+   "kind": "key",
+   "value_sha12": "e9546fc68b66",
+   "match_sha12": "e9546fc68b66",
+   "regex_today": {
+    "secret_type": "Stripe Publishable Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "regex": {
+    "secret_type": "Stripe Publishable Key",
+    "severity": "info",
+    "public_client_key": true
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "stripe-whsec",
+   "host": "192.88.96.10",
+   "file": "/assets/js/checkout.278ebda8.js",
+   "kind": "key",
+   "value_sha12": "56f5a4cd8eeb",
+   "match_sha12": "56f5a4cd8eeb",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "Stripe Webhook Secret",
+    "severity": "high",
+    "public_client_key": false,
+    "alternate_names_include": [
+     "Generic Secret"
+    ]
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7: new rule"
+  },
+  {
+   "label": "stripe-whsec-generic",
+   "host": "192.88.96.10",
+   "file": "/assets/js/checkout.278ebda8.js",
+   "kind": "noise",
+   "value_sha12": "56f5a4cd8eeb",
+   "match_sha12": "49cc4094dff6",
+   "regex_today": {
+    "secret_type": "Generic Secret",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": null,
+   "trufflehog": null,
+   "note": "Phase 0 item 0.1"
+  },
+  {
+   "label": "stripe-sk-live-atob",
+   "host": "192.88.96.10",
+   "file": "/assets/js/checkout.278ebda8.js",
+   "kind": "key",
+   "value_sha12": "031fa6702e10",
+   "match_sha12": "031fa6702e10",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false,
+    "decoded": true
+   },
+   "note": "inside atob(\"<base64>\"): TruffleHog decodes it, the regex does not"
+  },
+  {
+   "label": "ssrf-postgres",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "PostgreSQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "PostgreSQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-mysql",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "MySQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "MySQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-mongodb",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "MongoDB URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "MongoDB URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-redis",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "Redis URL",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Redis URL",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-jdbc",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "JDBC with password",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7: new rule"
+  },
+  {
+   "label": "ssrf-jdbc-mysql",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "JDBC with password",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7; the MySQL URI hit inside it stays (specific never beats specific)"
+  },
+  {
+   "label": "ssrf-jdbc-mysql-uri",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "MySQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "MySQL URI",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-ftp",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "Credentials in URL",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7: new rule"
+  },
+  {
+   "label": "ssrf-ldap-uri",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": null,
+   "note": "ldap is not a Credentials-in-URL scheme"
+  },
+  {
+   "label": "ssrf-ldap-bindpw",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "Generic Secret",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Generic Secret",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-https-creds",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "Credentials in URL",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7: new rule"
+  },
+  {
+   "label": "ssrf-http-creds",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": null,
+   "regex": {
+    "secret_type": "Credentials in URL",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "Phase 0 item 0.7: new rule"
+  },
+  {
+   "label": "ssrf-jira-token",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "Atlassian API Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Atlassian API Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-okta-token",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "Okta API Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Okta API Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-artifactory-token",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "JFrog Reference Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "JFrog Reference Token",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": null
+  },
+  {
+   "label": "ssrf-jwt-iss",
+   "host": "192.88.96.12",
+   "file": "/assets/js/services.f6ffd94a.js",
+   "kind": "key",
+   "value_sha12": "runtime",
+   "match_sha12": "runtime",
+   "regex_today": {
+    "secret_type": "JWT Token",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "JWT Token",
+    "severity": "medium",
+    "public_client_key": false
+   },
+   "trufflehog": null,
+   "note": "RS256, iss on the canary: TruffleHog's JWT verifier fetches keys from iss"
+  },
+  {
+   "label": "upload-gitlab-pat",
+   "host": "upload",
+   "file": "upload_keys.js",
+   "kind": "key",
+   "value_sha12": "379f45dc86e3",
+   "match_sha12": "379f45dc86e3",
+   "regex_today": {
+    "secret_type": "GitLab PAT",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "GitLab PAT",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Gitlab",
+    "secret_type": "GitLab PAT",
+    "severity": "high",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "upload-stripe-rk",
+   "host": "upload",
+   "file": "upload_keys.js",
+   "kind": "key",
+   "value_sha12": "71a9faf58a19",
+   "match_sha12": "71a9faf58a19",
+   "regex_today": {
+    "secret_type": "Stripe Restricted Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "regex": {
+    "secret_type": "Stripe Restricted Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Restricted Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
+  },
+  {
+   "label": "upload-shodan",
+   "host": "upload",
+   "file": "upload_keys.js",
+   "kind": "key",
+   "value_sha12": "c0955ed41e4b",
+   "match_sha12": "c0955ed41e4b",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": {
+    "detector": "ShodanKey",
+    "secret_type": "ShodanKey",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "note": "no js_recon rule: TruffleHog-only (keyword shodan)"
+  },
+  {
+   "label": "upload-virustotal",
+   "host": "upload",
+   "file": "upload_keys.js",
+   "kind": "key",
+   "value_sha12": "9edeac79f085",
+   "match_sha12": "9edeac79f085",
+   "regex_today": null,
+   "regex": null,
+   "trufflehog": {
+    "detector": "VirusTotal",
+    "secret_type": "VirusTotal",
+    "severity": "high",
+    "public_client_key": false
+   },
+   "note": "no js_recon rule: TruffleHog-only (keyword virustotal)"
+  }
+ ]
+}

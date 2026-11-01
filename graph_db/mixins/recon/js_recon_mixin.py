@@ -17,6 +17,27 @@ from graph_db.mixins.recon.scope import build_host_scope, home_domain, host_in_s
 # domain run copies that dict wholesale, RoE-excluded names included.
 _VETTED_HOSTNAME_SOURCES = ("js_recon", "tlsx", "certificate_san")
 
+# JS Recon's TruffleHog engine: an alternate name it adds to a key the regex
+# engine also found.
+_TRUFFLEHOG_ALT_PREFIX = "TruffleHog:"
+
+
+def _keep_trufflehog_data(secret: dict, stored: dict) -> tuple:
+    """`(alternate_names, validation)` for a key this run could not ask
+    TruffleHog about: what TruffleHog said in an earlier run stays on it."""
+    alternate = list(secret.get("alternate_names") or [])
+    alternate += [a for a in stored.get("alternate_names") or []
+                  if isinstance(a, str) and a.startswith(_TRUFFLEHOG_ALT_PREFIX) and a not in alternate]
+    validation = dict(secret.get("validation") or {})
+    if "trufflehog" not in validation:
+        try:
+            earlier = json.loads(stored.get("validation_info") or "{}") or {}
+        except (TypeError, ValueError):
+            earlier = {}
+        if isinstance(earlier, dict) and isinstance(earlier.get("trufflehog"), dict):
+            validation["trufflehog"] = earlier["trufflehog"]
+    return alternate, validation
+
 
 def _displayable_map_url(map_url: str) -> str:
     """An inline `data:` map is the whole map, megabytes of base64: keep a
@@ -711,6 +732,30 @@ class JsReconMixin:
                     stats["errors"].append(f"External domain finding failed: {e}")
 
             # --- 2. Secret nodes (source='js_recon') ---
+            # A TruffleHog run that did not complete (failed, timed out, image
+            # missing) found nothing this time, which is not "gone": its own
+            # earlier findings of the files it was given stay alive, and keys
+            # both engines found keep what TruffleHog said about them. Regex
+            # findings prune as always.
+            trufflehog = (js_recon_data.get("scan_metadata") or {}).get("trufflehog") or {}
+            trufflehog_missed = bool(trufflehog) and trufflehog.get("status") != "ran"
+            stored_trufflehog = {}
+            if trufflehog_missed:
+                try:
+                    ids = [f"secret-{user_id}-{project_id}-{s.get('id')}"
+                           for s in js_recon_data.get("secrets", []) if s.get("id")]
+                    for record in session.run(
+                            """
+                            MATCH (s:Secret {user_id: $uid, project_id: $pid, source: 'js_recon'})
+                            WHERE s.id IN $ids
+                            RETURN s.id AS id, s.alternate_names AS alternate_names,
+                                   s.validation_info AS validation_info
+                            """,
+                            uid=user_id, pid=project_id, ids=ids):
+                        stored_trufflehog[record["id"]] = dict(record)
+                except Exception as e:
+                    stats["errors"].append(f"JS Recon TruffleHog data read failed: {e}")
+
             created_secrets = set()
             for secret in js_recon_data.get("secrets", []):
                 try:
@@ -725,6 +770,10 @@ class JsReconMixin:
                     source_url = secret.get("source_url", "")
                     base_url = _derive_base_url(source_url)
                     validation = secret.get("validation", {})
+                    alternate_names = [str(a) for a in secret.get("alternate_names") or []]
+                    if node_id in stored_trufflehog:
+                        alternate_names, validation = _keep_trufflehog_data(secret, stored_trufflehog[node_id])
+                    line_number = secret.get("line_number")
 
                     session.run(
                         """
@@ -746,11 +795,15 @@ class JsReconMixin:
                             s.validation_info = $validation_info,
                             s.context = $context,
                             s.public_client_key = $public_client_key,
+                            s.line_number = $line_number,
+                            s.alternate_names = $alternate_names,
                             s.discovered_at = $discovered_at,
                             s.updated_at = datetime()
                         """,
                         id=node_id, user_id=user_id, project_id=project_id,
                         public_client_key=bool(secret.get("public_client_key")),
+                        line_number=line_number if isinstance(line_number, int) else None,
+                        alternate_names=alternate_names,
                         # Already masked by the detector; the cap guards the node.
                         context=(secret.get("context") or "")[:400],
                         secret_type=secret.get("name", "unknown"),
@@ -774,6 +827,22 @@ class JsReconMixin:
 
                 except Exception as e:
                     stats["errors"].append(f"JS Recon Secret node failed: {e}")
+
+            analyzed_urls = [u for u in trufflehog.get("analyzed_urls") or [] if isinstance(u, str)]
+            if trufflehog_missed and analyzed_urls:
+                try:
+                    record = session.run(
+                        """
+                        MATCH (s:Secret {user_id: $uid, project_id: $pid, source: 'js_recon',
+                                         detection_method: 'trufflehog'})
+                        WHERE s.source_url IN $analyzed_urls
+                        SET s.updated_at = datetime()
+                        RETURN count(s) AS kept
+                        """,
+                        uid=user_id, pid=project_id, analyzed_urls=analyzed_urls).single()
+                    stats["trufflehog_kept_alive"] = int((record or {}).get("kept", 0) or 0)
+                except Exception as e:
+                    stats["errors"].append(f"JS Recon TruffleHog keep-alive failed: {e}")
 
             # --- 3. Endpoint nodes (source='js_recon') ---
             created_endpoints = set()

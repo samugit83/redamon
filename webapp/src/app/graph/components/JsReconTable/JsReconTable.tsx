@@ -19,6 +19,7 @@ import {
 import { NODE_ID_KEY, NodeIdCell, NodeIdTh, withNodeId } from '../RedZoneTables/nodeId'
 import { MuteNodeButton, useMuteNodeContext } from '../MuteNode'
 import { type ValidationTone, validationLabel, validationRank, validationTone } from '@/lib/secrets/validationStatus'
+import { alternateNameLabel, detectionMethodLabel } from '@/lib/secrets/jsReconSecret'
 import {
   timestampSlug,
   downloadStreaming,
@@ -85,6 +86,7 @@ const TAB_FILTER_COLUMNS: Record<string, RedZoneFilterColumn[]> = {
     { key: 'validation.status', header: 'Validation' },
     { key: 'confidence', header: 'Confidence' },
     { key: 'line_number', header: 'Line' },
+    { key: 'alternate_names', header: 'Also matched as' },
     UPDATED_AT_COLUMN,
   ]),
   endpoints: withNodeId([
@@ -141,11 +143,16 @@ function getCol(row: any, col: string): unknown {
   return col.includes('.') ? col.split('.').reduce((o: any, k) => o?.[k], row) : row[col]
 }
 
+/** The stored names, not their display form, so an export greps like the graph. */
+function withJoinedAlternateNames(row: any): any {
+  return Array.isArray(row?.alternate_names) ? { ...row, alternate_names: row.alternate_names.join('; ') } : row
+}
+
 function buildJsReconSheets(data: JsReconData): JsReconSheet[] {
   const N = NODE_ID_KEY
   // Subdomains are bare strings with no node behind them, so no Node ID.
   return [
-    { name: 'Secrets', rows: data.secrets || [], columns: [N, 'severity', 'name', 'redacted_value', 'matched_text', 'category', 'source_url', 'line_number', 'context', 'detection_method', 'validation.status', 'confidence', 'validator_ref', 'updatedAt'] },
+    { name: 'Secrets', rows: (data.secrets || []).map(withJoinedAlternateNames), columns: [N, 'severity', 'name', 'alternate_names', 'redacted_value', 'matched_text', 'category', 'source_url', 'line_number', 'context', 'detection_method', 'validation.status', 'confidence', 'validator_ref', 'updatedAt'] },
     { name: 'Endpoints', rows: data.endpoints || [], columns: [N, 'severity', 'method', 'path', 'full_url', 'type', 'category', 'base_url', 'source_js', 'parameters', 'line_number', 'updatedAt'] },
     { name: 'Dependencies', rows: data.dependencies || [], columns: [N, 'severity', 'finding_type', 'package_name', 'scope', 'npm_exists', 'confidence', 'title', 'detail', 'recommendation', 'source_urls', 'updatedAt'] },
     { name: 'Source Maps', rows: data.source_maps || [], columns: [N, 'severity', 'finding_type', 'js_url', 'map_url', 'accessible', 'discovery_method', 'files_count', 'source_files', 'secrets_in_source', 'secrets', 'updatedAt'] },
@@ -483,18 +490,25 @@ function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: re
   if (!filtered.length) return <div className={styles.stateContainer}>No secrets found.</div>
   return (
     <table className={styles.table}>
-      <thead><tr><NodeIdTh /><th>Severity</th><th>Type</th><th>Redacted Value</th><th>Source</th><th>Validation</th><th>Confidence</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
+      <thead><tr><NodeIdTh /><th>Severity</th><th>Type</th><th>Redacted Value</th><th>Source</th><th>Line</th><th>Detection</th><th>Validation</th><th>Confidence</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
       <tbody>
         {filtered.map((s, i) => (
           <tr key={s.id || i}>
             <td><NodeIdCell value={s.nodeId} /></td>
             <td>{sevBadge(s.severity)}</td>
-            <td>{s.name}</td>
+            <td>
+              {s.name}
+              {Array.isArray(s.alternate_names) && s.alternate_names.length > 0 && (
+                <span className={styles.alsoNames}>also: {s.alternate_names.map(alternateNameLabel).join(', ')}</span>
+              )}
+            </td>
             <td>
               <code className={styles.mono}>{s.redacted_value}</code>
               <CopyButton text={s.matched_text || ''} />
             </td>
             <td className={styles.truncate} title={s.source_url}><ExternalLink href={s.source_url}>{s.source_url}</ExternalLink></td>
+            <td>{typeof s.line_number === 'number' ? s.line_number : <span className={styles.nullCell}>—</span>}</td>
+            <td>{detectionMethodLabel(s.detection_method) ?? <span className={styles.nullCell}>—</span>}</td>
             <td>{valBadge(s.validation?.status)}</td>
             <td>{s.confidence}</td>
             <td><UpdatedAtCell value={s.updatedAt} /></td>

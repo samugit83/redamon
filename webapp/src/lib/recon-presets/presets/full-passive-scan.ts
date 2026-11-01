@@ -127,6 +127,7 @@ Red team operators in the pre-engagement phase, OSINT analysts building target p
 
     // --- DISABLE JS Recon (crawls and downloads from target) ---
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
     // Supply Chain: harvest the served package set and verdict it against the
     // OFFLINE OSV database (passive, no extra target traffic).
     supplyChainReconEnabled: true,

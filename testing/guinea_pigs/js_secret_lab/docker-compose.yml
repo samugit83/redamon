@@ -1,0 +1,79 @@
+# RedAmon JS secret lab: js_recon's regex engine and TruffleHog against
+# planted, invented keys. Start and stop it with ./up.sh and ./down.sh, which
+# generate the sites (gen_lab.py) and give .12 the canary's address.
+#
+# 192.88.96.0/24 sits in the deprecated 6to4 relay prefix, like the other recon
+# labs: JS recon fetches through an SSRF guard that rejects RFC1918, loopback
+# and TEST-NET, and Python counts this prefix as global. Scans run with host
+# networking and reach the lab over the local bridge route; no host port is
+# published and nothing leaves the host.
+#
+# The canary is NOT a scan target and NOT on the lab network: it sits on
+# redamon-trufflehog-net, the bridge a verifying TruffleHog sidecar uses, and
+# logs every connection made to it. .12's connection strings all point at it.
+# Host .15 (real keys, scenario E3 only) is never defined here: gen_lab.py
+# --real-keys writes its own compose file under _local/.
+
+name: redamon-js-secret-lab
+
+x-site: &site
+  image: python:3.12-slim
+  restart: unless-stopped
+  mem_limit: 128m
+  pids_limit: 128
+  cpus: 0.5
+  read_only: true
+  environment: { PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" }
+  command: ["python", "-m", "http.server", "80", "--bind", "0.0.0.0", "--directory", "/srv"]
+
+services:
+  app-modern:
+    <<: *site
+    container_name: jslab-app-modern
+    volumes: ["./generated/app-modern:/srv:ro"]
+    networks: { lab: { ipv4_address: 192.88.96.10 } }
+
+  vendor-only:
+    <<: *site
+    container_name: jslab-vendor-only
+    volumes: ["./generated/vendor-only:/srv:ro"]
+    networks: { lab: { ipv4_address: 192.88.96.11 } }
+
+  ssrf-bait:
+    <<: *site
+    container_name: jslab-ssrf-bait
+    volumes: ["./generated/ssrf-bait:/srv:ro"]
+    networks: { lab: { ipv4_address: 192.88.96.12 } }
+
+  clean-control:
+    <<: *site
+    container_name: jslab-clean-control
+    volumes: ["./generated/clean-control:/srv:ro"]
+    networks: { lab: { ipv4_address: 192.88.96.14 } }
+
+  canary:
+    image: python:3.12-slim
+    container_name: jslab-canary
+    restart: unless-stopped
+    mem_limit: 64m
+    pids_limit: 64
+    cpus: 0.25
+    read_only: true
+    environment: { PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" }
+    command: ["python", "-u", "/canary/canary_report.py", "--serve"]
+    volumes: ["./canary_report.py:/canary/canary_report.py:ro"]
+    networks: [trufflehog]
+
+networks:
+  lab:
+    name: redamon_js_secret_lab
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.88.96.0/24
+          gateway: 192.88.96.1
+  # Shared with the orchestrator, which creates it on demand; up.sh creates it
+  # the same way when missing. External, so `compose down` never removes it.
+  trufflehog:
+    name: redamon-trufflehog-net
+    external: true

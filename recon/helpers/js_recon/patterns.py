@@ -27,6 +27,9 @@ _RAW_PATTERNS = [
     # ========== CLOUD CREDENTIALS (Critical) ==========
     ("AWS Access Key ID", r"AKIA[0-9A-Z]{16}", "critical", "high", "cloud", "validate_aws"),
     ("AWS Secret Key", r"(?i)aws(?:_secret|_key|secret_key|_access).{0,10}['\"][0-9a-zA-Z/+]{40}['\"]", "critical", "medium", "cloud", "validate_aws"),
+    # Temporary STS credentials: the ID alone cannot sign a request, so high,
+    # and medium confidence (an `ASIA` + 16 run also occurs in random text).
+    ("AWS Session Key", r"ASIA[0-9A-Z]{16}", "high", "medium", "cloud", None),
     ("AWS MWS Key", r"amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "critical", "high", "cloud", None),
     ("GCP API Key", r"AIza[0-9A-Za-z\-_]{35}", "critical", "high", "cloud", "validate_google_maps"),
     ("GCP OAuth Client", r"[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com", "high", "high", "cloud", None),
@@ -64,6 +67,8 @@ _RAW_PATTERNS = [
     ("Stripe Test Key", r"sk_test_[0-9a-zA-Z]{24,}", "medium", "high", "payment", None),
     ("Stripe Restricted Key", r"rk_live_[0-9a-zA-Z]{24,}", "critical", "high", "payment", None),
     ("Stripe Publishable Key", r"pk_live_[0-9a-zA-Z]{24,}", "low", "high", "payment", None),
+    # Signs webhook payloads: whoever holds it forges Stripe events to the app.
+    ("Stripe Webhook Secret", r"whsec_[A-Za-z0-9]{32,}", "high", "high", "payment", None),
     ("PayPal Client ID", r"(?i)paypal[^\n]{0,120}?client[_-]?id[^\n]{0,120}?['\"][A-Za-z0-9-]{20,}['\"]", "high", "medium", "payment", None),
     ("PayPal Braintree Token", r"access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}", "critical", "high", "payment", None),
     ("Square Access Token", r"sq0atp-[0-9A-Za-z\-_]{22}", "critical", "high", "payment", None),
@@ -213,7 +218,8 @@ _RAW_PATTERNS = [
     ("Doppler API Token", r"dp\.pt\.[a-zA-Z0-9]{43}", "high", "high", "secret", None),
     ("Pulumi Access Token", r"pul-[a-f0-9]{40}", "high", "high", "secret", None),
     ("Infracost API Token", r"ico-[a-zA-Z0-9]{32}", "high", "high", "secret", None),
-    ("Databricks API Token", r"dapi[a-h0-9]{32}", "high", "high", "secret", None),
+    # Left boundary: `dapi` + 32 also sits inside base64 integrity hashes.
+    ("Databricks API Token", r"(?<![A-Za-z0-9_])dapi[a-h0-9]{32}", "high", "high", "secret", None),
     ("Netlify Access Token", r"nfp_[a-zA-Z0-9]{40}", "high", "high", "secret", None),
     ("Fly.io Access Token", r"FlyV1\s+fm1r_[a-zA-Z0-9_-]{43}", "high", "high", "secret", None),
     ("Scalingo API Token", r"tk-us-[a-zA-Z0-9-_]{48}", "high", "high", "secret", None),
@@ -265,7 +271,9 @@ _RAW_PATTERNS = [
     ("Neon DB Connection String", r"\bpostgresql://[^\s'\"]*@[^\s'\"]*\.neon\.tech/[^\s'\"]+", "high", "high", "secret", None),
     ("Upstash Redis REST Token", r"(?i)upstash[^\n]{0,120}?['\"]AX[a-zA-Z0-9_-]{36,}['\"]", "high", "medium", "secret", None),
     ("Upstash Redis REST URL", r"https://[a-z0-9-]+\.upstash\.io", "medium", "high", "infrastructure", None),
-    ("Resend API Key", r"re_[a-zA-Z0-9]{20,}", "high", "high", "auth", None),
+    # Left boundary: `re_` + 20 also ends `configure_...` / `prepare_...`
+    # identifiers (13 hits on 300 clean library files, none a key).
+    ("Resend API Key", r"(?<![A-Za-z0-9_])re_[a-zA-Z0-9]{20,}", "high", "high", "auth", None),
     ("Convex Deploy Key", r"(?:prod|dev):[a-z0-9]+:[a-zA-Z0-9_-]{40,}", "high", "high", "secret", None),
     ("Turso DB Token", r"(?i)turso[^\n]{0,120}?eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", "high", "medium", "secret", None),
     ("Trigger.dev API Key", r"tr_(?:dev|prod|test)_[a-zA-Z0-9]{24,}", "high", "high", "secret", None),
@@ -292,12 +300,19 @@ _RAW_PATTERNS = [
     ("OpenSSH Private Key", r"-----BEGIN OPENSSH PRIVATE KEY-----", "critical", "high", "secret", None),
     ("PGP Private Key", r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "critical", "high", "secret", None),
     ("Generic Private Key", r"-----BEGIN PRIVATE KEY-----", "critical", "high", "secret", None),
-    ("PKCS12 Certificate", r"-----BEGIN CERTIFICATE-----", "high", "medium", "secret", None),
+    # A certificate is public, so info. The name and category stay: the
+    # finding id hashes the name, and mutes, verdicts and node-filter rules
+    # attach to that id.
+    ("PKCS12 Certificate", r"-----BEGIN CERTIFICATE-----", "info", "medium", "secret", None),
     ("MongoDB URI", r"\bmongodb(?:\+srv)?://[^\s'\"]+", "high", "high", "secret", None),
     ("PostgreSQL URI", r"\bpostgres(?:ql)?://[^\s'\"]+", "high", "high", "secret", None),
     ("MySQL URI", r"\bmysql://[^\s'\"]+", "high", "high", "secret", None),
     ("Redis URL", r"\bredis://[^\s'\"]+", "high", "high", "secret", None),
     ("CockroachDB URL", r"\bcockroachdb://[^\s'\"]+", "high", "high", "secret", None),
+    # The password is judged like a generic value (_GENERIC_VALUE_RE), so
+    # `user:password@`, `${PASS}` and `<pass>` placeholders stay silent.
+    ("Credentials in URL", r"\b(?:https?|ftp|amqps?|smtp)://[^\s:/@'\"]{1,64}:[^\s@'\"]{1,128}@[^\s/'\"]+", "high", "medium", "secret", None),
+    ("JDBC with password", r"(?i)jdbc:[a-z0-9]+:[^\s'\"]{0,512}?(?:password|pwd)=[^\s;&'\"]+", "high", "high", "secret", None),
     ("Generic API Key", r"(?i)(api[_-]?key|apikey|api_secret)[\"']?\s*[:=]\s*[\"']?[a-zA-Z0-9_\-]{16,}[\"']?", "medium", "low", "secret", None),
     ("Generic Secret", r"(?i)(secret|password|passwd|pwd)[\"']?\s*[:=]\s*[\"'][^\"']{8,}[\"']", "medium", "low", "secret", None),
     ("Generic Token", r"(?i)(access[_-]?token|auth[_-]?token)[\"']?\s*[:=]\s*[\"']?[a-zA-Z0-9_\-]{16,}[\"']?", "medium", "low", "secret", None),
@@ -356,6 +371,15 @@ PUBLIC_CLIENT_KEY_NAMES = frozenset({
     "Flutterwave Public Key",
     "Supabase anon key",
     "Supabase Publishable Key",
+})
+
+#: Rules that report only what TruffleHog confirmed, when TruffleHog ran: each
+#: had false positives on clean code, TruffleHog detects its key type at 99% or
+#: more, and it has no precise provider prefix (TruffleHog plan, step 2.3, with
+#: the numbers). A hit TruffleHog matched stays, with its own id; with
+#: TruffleHog off, failed or missing the rule reports as before.
+SUPERSEDED_BY_TRUFFLEHOG = frozenset({
+    "Travis CI Token",  # 3 hits on 300 clean library files; TravisCI detects 99.5%
 })
 
 # A search-only Algolia key has the admin key's format; only its label tells
@@ -601,6 +625,7 @@ _GENERIC_VALUE_RE = {
     'Hardcoded Password': re.compile(r'=\s*["\']([^"\']*)["\']'),
     'Generic API Key': re.compile(r'[:=]\s*["\']?([a-zA-Z0-9_\-]{16,})'),
     'Generic Token': re.compile(r'[:=]\s*["\']?([a-zA-Z0-9_\-]{16,})'),
+    'Credentials in URL': re.compile(r'://[^\s:/@\'"]{1,64}:([^\s@\'"]{1,128})@'),
 }
 _PLACEHOLDER_VALUE = re.compile(
     r'^(?:x{3,}|\*{3,}|\.{3,}|changeme|change[_-]?me|example|sample|dummy|placeholder|test|testing'
@@ -678,6 +703,102 @@ def _looks_like_identifier(value: str) -> bool:
     return sum(len(p) for p in parts) / len(parts) >= 3.5 and with_vowel / len(parts) >= 0.8
 
 
+#: Keyword rules that name no provider. When one's match holds a provider
+#: rule's (`apiKey: "AIza..."`), the provider rule says what the value is.
+_GENERIC_NAMES = frozenset({'Generic API Key', 'Generic Token', 'Generic Secret', 'Hardcoded Password'})
+
+#: Markers that are a private key only with key data after them: in library
+#: code they open a parser branch or a runtime template (`"...KEY-----\n" + n`).
+_PEM_KEY_NAMES = frozenset({
+    'RSA Private Key', 'DSA Private Key', 'EC Private Key', 'OpenSSH Private Key',
+    'PGP Private Key', 'Generic Private Key',
+})
+_PEM_MIN_KEY_CHARS = 64
+_PEM_LOOKAHEAD = 4000
+_PEM_EDGE_CHARS = ' \t"\'`+,;()'
+_PEM_ARMOR_HEADER = re.compile(r'^[A-Za-z][A-Za-z-]*:\s')
+_BASE64_RUN = re.compile(r'[A-Za-z0-9+/=]+')
+
+#: Loose rules that report only with their provider's word in the given
+#: number of characters before the match. `YC` + 38 is also a webpack chunk
+#: id, and the "AWS" in the name made each such hit a top-tier credential.
+_REQUIRES_NEARBY = {
+    'Yandex AWS Access Token': (re.compile(r'(?i)yandex'), 120),
+}
+
+_UUID4 = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.IGNORECASE)
+
+
+def _has_key_data(after: str) -> bool:
+    """True when at least _PEM_MIN_KEY_CHARS base64 characters follow a PEM
+    marker, through the ways JS writes a key: escaped `\\n`, string quotes,
+    `+` concatenation over the next lines, and PGP armor headers."""
+    text = after[:_PEM_LOOKAHEAD].replace('\\r', '\n').replace('\\n', '\n').replace('\r', '\n')
+    run = 0
+    started = False
+    for piece in text.split('\n'):
+        piece = piece.strip(_PEM_EDGE_CHARS)
+        if not piece:
+            continue
+        if not started and _PEM_ARMOR_HEADER.match(piece):
+            continue
+        started = True
+        m = _BASE64_RUN.match(piece)
+        run += len(m.group(0)) if m else 0
+        if run >= _PEM_MIN_KEY_CHARS:
+            return True
+        if not m or m.end() < len(piece):
+            return False
+    return False
+
+
+def _generic_value_is_uuid(name: str, matched_text: str) -> bool:
+    """A generic rule whose value is a bare UUIDv4: a config, feature-flag or
+    object id with no provider authority behind it."""
+    value_re = _GENERIC_VALUE_RE.get(name) if name in _GENERIC_NAMES else None
+    m = value_re.search(matched_text) if value_re else None
+    return bool(m) and bool(_UUID4.match(m.group(1).strip()))
+
+
+def _drop_generic_overlaps(findings: list) -> list:
+    """A generic finding whose span holds a provider finding's span on the same
+    line is that provider's key: drop it and name it on the provider finding.
+    Generic never beats generic and specific never beats specific, so a
+    Gemini key keeps its critical rule beside the public GCP one."""
+    specific: dict = {}
+    for f in findings:
+        if f['name'] not in _GENERIC_NAMES and f['category'] not in _UNMASKED_CATEGORIES:
+            specific.setdefault((f['source_url'], f['line_number']), []).append(f)
+    if not specific:
+        return findings
+    kept = []
+    for f in findings:
+        if f['name'] in _GENERIC_NAMES:
+            start, end = f['_span']
+            inside = [s for s in specific.get((f['source_url'], f['line_number']), [])
+                      if start <= s['_span'][0] and s['_span'][1] <= end]
+            if inside:
+                winner = max(inside, key=_collapse_rank)
+                names = winner.setdefault('alternate_names', [])
+                for name in [f['name']] + f.get('alternate_names', []):
+                    if name not in names and name != winner['name']:
+                        names.append(name)
+                continue
+        kept.append(f)
+    return kept
+
+
+def _collapse_rank(f: dict) -> tuple:
+    """Higher severity > higher confidence > the match that IS the token >
+    longer pattern name (specificity proxy)."""
+    return (
+        SEVERITY_ORDER.get(f['severity'], 0),
+        CONFIDENCE_ORDER.get(f['confidence'], 0),
+        f.get('_jwt') is not None and f['matched_text'] == f['_jwt'],
+        len(f['name']),
+    )
+
+
 def _collapse_span_duplicates(findings: list) -> list:
     """Collapse findings that matched the same span under different pattern names.
 
@@ -708,19 +829,12 @@ def _collapse_span_duplicates(findings: list) -> list:
         if len(group) == 1:
             collapsed.append(group[0])
             continue
-        # Rank: higher severity > higher confidence > the match that IS the
-        # token > longer pattern name (specificity proxy)
-        group.sort(key=lambda f: (
-            SEVERITY_ORDER.get(f['severity'], 0),
-            CONFIDENCE_ORDER.get(f['confidence'], 0),
-            f.get('_jwt') is not None and f['matched_text'] == f['_jwt'],
-            len(f['name']),
-        ), reverse=True)
+        group.sort(key=_collapse_rank, reverse=True)
         primary = group[0]
         primary['alternate_names'] = [f['name'] for f in group[1:]]
         collapsed.append(primary)
 
-    return collapsed
+    return _drop_generic_overlaps(collapsed)
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1007,8 @@ def scan_js_content(
         'repetitive': 0,
         'url_whitelist': 0,
         'generic_noise': 0,
+        'no_key_data': 0,
+        'no_keyword_nearby': 0,
     }
 
     # Categories where false-positive filters apply
@@ -991,6 +1107,23 @@ def scan_js_content(
                         filtered_counts['repetitive'] += 1
                         continue
 
+                full_line = lines[line_num - 1]
+                abs_start, abs_end = offset + match.start(), offset + match.end()
+                if pattern['name'] in _PEM_KEY_NAMES and not _has_key_data(
+                        full_line[abs_end:abs_end + _PEM_LOOKAHEAD] + '\n'
+                        + '\n'.join(lines[line_num:line_num + 2])):
+                    filtered_counts['no_key_data'] += 1
+                    continue
+                nearby_rule = _REQUIRES_NEARBY.get(pattern['name'])
+                if nearby_rule:
+                    keyword, reach = nearby_rule
+                    before = full_line[max(0, abs_start - reach):abs_start]
+                    if len(before) < reach and line_num > 1:
+                        before = (lines[line_num - 2] + '\n' + before)[-reach:]
+                    if not keyword.search(before):
+                        filtered_counts['no_keyword_nearby'] += 1
+                        continue
+
                 # Deduplicate by content hash. Keyed on the PATTERN's name, so a
                 # hit `_refine` renames keeps the node id (and the mute,
                 # verdict and fix item on it) it had before the rename.
@@ -1003,12 +1136,15 @@ def scan_js_content(
                                   line[match.end():match.end() + _JWT_PAYLOAD_MAX + 200])
                 name = refined.get('name', pattern['name'])
                 public = name in PUBLIC_CLIENT_KEY_NAMES
+                severity = refined.get('severity', pattern['severity'])
+                if _generic_value_is_uuid(pattern['name'], matched_text):
+                    severity = 'low'
                 findings.append({
                     'id': finding_id,
                     'name': name,
                     'matched_text': matched_text,
                     'redacted_value': redact(matched_text),
-                    'severity': 'info' if public else refined.get('severity', pattern['severity']),
+                    'severity': 'info' if public else severity,
                     'public_client_key': public,
                     'confidence': refined.get('confidence', pattern['confidence']),
                     'category': pattern['category'],

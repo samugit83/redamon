@@ -147,6 +147,7 @@ Discover every subdomain that exists and squeeze every possible takeover finding
     paramspiderEnabled: false,
     jsluiceEnabled: false,
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
     aiSurfaceReconEnabled: false,
     ffufEnabled: false,
     kiterunnerEnabled: false,
