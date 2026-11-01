@@ -71,6 +71,10 @@ _DEFAULT_ALLOWED_IMAGES = [
     # fails closed. The CLEAN scanner is started by the orchestrator on the real
     # socket, so it is not on this list.
     "redamon-supply-chain-analyzer:latest",
+    # JS Recon's TruffleHog sidecar, spawned by recon over the broker socket
+    # (recon/helpers/js_recon/trufflehog_bridge.py). The orchestrator's own
+    # TruffleHog scans use the real socket and need no entry.
+    "redamon-trufflehog:latest",
     "alpine",          # temp-file cleanup helper
     "alpine:latest",
 ]

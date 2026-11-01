@@ -42,7 +42,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "AWS",
+    "secret_type": "AWS Access Key ID",
+    "severity": "critical",
+    "public_client_key": false
+   }
   },
   {
    "label": "aws-akia-secret",
@@ -53,7 +58,7 @@
    "match_sha12": "7bc6dcc87ae9",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "next to aws_secret_access_key: the AWS Secret Key rule allows 10 characters between aws_secret and the quote, the key name has 12; TruffleHog pairs it with the ID"
   },
   {
@@ -69,7 +74,12 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "AWSSessionKey",
+    "secret_type": "AWS Session Key",
+    "severity": "high",
+    "public_client_key": false
+   }
   },
   {
    "label": "aws-asia-secret",
@@ -80,7 +90,7 @@
    "match_sha12": "e03bc1399fc9",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "aws-asia-session-token",
@@ -91,7 +101,7 @@
    "match_sha12": "5e37b3c63eca",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "stripe-sk-live-main",
@@ -110,7 +120,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
   },
   {
    "label": "github-ghp",
@@ -129,7 +144,12 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   }
   },
   {
    "label": "slack-xoxb",
@@ -148,7 +168,12 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Slack",
+    "secret_type": "Slack Bot Token",
+    "severity": "high",
+    "public_client_key": false
+   }
   },
   {
    "label": "openai-key",
@@ -170,7 +195,12 @@
      "Generic API Key"
     ]
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "OpenAI",
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
   },
   {
    "label": "openai-key-generic",
@@ -185,7 +215,12 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "OpenAI",
+    "secret_type": "OpenAI API Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
    "note": "Phase 0 item 0.1: generic loses to specific"
   },
   {
@@ -205,7 +240,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Anthropic",
+    "secret_type": "Anthropic API Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
   },
   {
    "label": "firebase-apikey-gcp",
@@ -227,7 +267,12 @@
      "Generic API Key"
     ]
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   }
   },
   {
    "label": "firebase-apikey-generic",
@@ -242,7 +287,12 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
    "note": "Phase 0 item 0.1"
   },
   {
@@ -262,7 +312,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   }
   },
   {
    "label": "gemini-key-gcp",
@@ -281,7 +336,12 @@
     "severity": "info",
     "public_client_key": true
    },
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
    "note": "a Gemini key must not lose to the public GCP rule: both stay"
   },
   {
@@ -297,7 +357,12 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "GoogleGeminiAPIKey",
+    "secret_type": "GCP API Key",
+    "severity": "info",
+    "public_client_key": true
+   },
    "note": "Phase 0 item 0.1"
   },
   {
@@ -317,7 +382,7 @@
     "severity": "info",
     "public_client_key": true
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "supabase-service-jwt",
@@ -336,7 +401,7 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "mapbox-token",
@@ -355,7 +420,7 @@
     "severity": "info",
     "public_client_key": true
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "the rule stops at the token's second dot"
   },
   {
@@ -367,7 +432,13 @@
    "match_sha12": "a335b370701f",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false,
+    "decoded": true
+   },
    "note": "written as \\uXXXX escapes: TruffleHog decodes them, the regex does not"
   },
   {
@@ -379,7 +450,12 @@
    "match_sha12": "b3da1abc33a8",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "Github",
+    "secret_type": "GitHub Token Classic",
+    "severity": "high",
+    "public_client_key": false
+   },
    "note": "dropped by js_recon's binary-context filter: its font-table name 'loca' matches 'location' within 300 characters; TruffleHog-only"
   },
   {
@@ -395,7 +471,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
   },
   {
@@ -411,7 +487,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
   },
   {
@@ -427,7 +503,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.4: no 'yandex' within 120 characters"
   },
   {
@@ -443,7 +519,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.5: re_ needs a left boundary"
   },
   {
@@ -459,7 +535,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.5: re_ needs a left boundary"
   },
   {
@@ -479,7 +555,7 @@
     "severity": "low",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.6: a bare UUIDv4 value is low"
   },
   {
@@ -491,7 +567,7 @@
    "match_sha12": "863284fb9fef",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "UUID v4 is routed to object_references (a JsReconFinding), never a Secret"
   },
   {
@@ -507,7 +583,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.2: a jsrsasign-style template, no key data"
   },
   {
@@ -527,7 +603,7 @@
     "severity": "info",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.3: a public certificate is info"
   },
   {
@@ -539,7 +615,7 @@
    "match_sha12": "7af78346f7b5",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "a CSS-module class name bound to a secret-looking key"
   },
   {
@@ -551,7 +627,7 @@
    "match_sha12": "1a417135ad00",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "a CSS-module class name bound to a secret-looking key"
   },
   {
@@ -571,7 +647,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false
+   },
    "note": "only in the source map's sourcesContent (a pseudo-file)"
   },
   {
@@ -591,7 +672,12 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "SendGrid",
+    "secret_type": "SendGrid API Key",
+    "severity": "high",
+    "public_client_key": false
+   }
   },
   {
    "label": "supabase-sb-secret",
@@ -610,7 +696,7 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "pem-private-key-full",
@@ -629,7 +715,7 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.2: key data present (\\n escapes in a JS string)"
   },
   {
@@ -649,7 +735,7 @@
     "severity": "info",
     "public_client_key": true
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "stripe-whsec",
@@ -667,7 +753,7 @@
      "Generic Secret"
     ]
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7: new rule"
   },
   {
@@ -683,7 +769,7 @@
     "public_client_key": false
    },
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.1"
   },
   {
@@ -695,7 +781,13 @@
    "match_sha12": "031fa6702e10",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Secret Key",
+    "severity": "critical",
+    "public_client_key": false,
+    "decoded": true
+   },
    "note": "inside atob(\"<base64>\"): TruffleHog decodes it, the regex does not"
   },
   {
@@ -715,7 +807,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-mysql",
@@ -734,7 +826,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-mongodb",
@@ -753,7 +845,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-redis",
@@ -772,7 +864,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-jdbc",
@@ -787,7 +879,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7: new rule"
   },
   {
@@ -803,7 +895,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7; the MySQL URI hit inside it stays (specific never beats specific)"
   },
   {
@@ -823,7 +915,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-ftp",
@@ -838,7 +930,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7: new rule"
   },
   {
@@ -850,7 +942,7 @@
    "match_sha12": "runtime",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "ldap is not a Credentials-in-URL scheme"
   },
   {
@@ -870,7 +962,7 @@
     "severity": "medium",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-https-creds",
@@ -885,7 +977,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7: new rule"
   },
   {
@@ -901,7 +993,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "Phase 0 item 0.7: new rule"
   },
   {
@@ -921,7 +1013,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-okta-token",
@@ -940,7 +1032,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-artifactory-token",
@@ -959,7 +1051,7 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": null
   },
   {
    "label": "ssrf-jwt-iss",
@@ -978,7 +1070,7 @@
     "severity": "medium",
     "public_client_key": false
    },
-   "trufflehog": "TBD",
+   "trufflehog": null,
    "note": "RS256, iss on the canary: TruffleHog's JWT verifier fetches keys from iss"
   },
   {
@@ -998,7 +1090,12 @@
     "severity": "high",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Gitlab",
+    "secret_type": "GitLab PAT",
+    "severity": "high",
+    "public_client_key": false
+   }
   },
   {
    "label": "upload-stripe-rk",
@@ -1017,7 +1114,12 @@
     "severity": "critical",
     "public_client_key": false
    },
-   "trufflehog": "TBD"
+   "trufflehog": {
+    "detector": "Stripe",
+    "secret_type": "Stripe Restricted Key",
+    "severity": "critical",
+    "public_client_key": false
+   }
   },
   {
    "label": "upload-shodan",
@@ -1028,7 +1130,12 @@
    "match_sha12": "c0955ed41e4b",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "ShodanKey",
+    "secret_type": "ShodanKey",
+    "severity": "high",
+    "public_client_key": false
+   },
    "note": "no js_recon rule: TruffleHog-only (keyword shodan)"
   },
   {
@@ -1040,7 +1147,12 @@
    "match_sha12": "9edeac79f085",
    "regex_today": null,
    "regex": null,
-   "trufflehog": "TBD",
+   "trufflehog": {
+    "detector": "VirusTotal",
+    "secret_type": "VirusTotal",
+    "severity": "high",
+    "public_client_key": false
+   },
    "note": "no js_recon rule: TruffleHog-only (keyword virustotal)"
   }
  ]

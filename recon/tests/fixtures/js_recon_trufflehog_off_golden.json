@@ -1,0 +1,285 @@
+{
+ "coverage": {
+  "https://app.example.com:443": {
+   "inputs": 2,
+   "outputs": 12,
+   "reason": null,
+   "status": "complete"
+  }
+ },
+ "keys": [
+  "_filtered_stats",
+  "ai_sdk_findings",
+  "cloud_assets",
+  "dependencies",
+  "dev_comments",
+  "dev_references",
+  "discovered_subdomains",
+  "dom_sinks",
+  "emails",
+  "endpoints",
+  "external_domains",
+  "frameworks",
+  "ip_addresses",
+  "object_references",
+  "scan_metadata",
+  "secrets",
+  "source_maps",
+  "summary",
+  "work_dir"
+ ],
+ "scan_metadata": {
+  "endpoint_extraction_miss": false,
+  "file_budget": {
+   "by_host": {
+    "app.example.com:443": {
+     "candidates": 2,
+     "cut": 0,
+     "selected": 2
+    }
+   },
+   "candidates": 2,
+   "cut": 0,
+   "max_files": 100,
+   "selected": 2
+  },
+  "js_files_analyzed": 2,
+  "js_files_total_size_bytes": 585,
+  "mode": "post_recon",
+  "source_map_files_analyzed": 0
+ },
+ "secrets": [
+  {
+   "alternate_names": [],
+   "category": "auth",
+   "confidence": "high",
+   "context": "01d49e52c7d0",
+   "detection_method": "regex",
+   "id": "08363d145f7fa694",
+   "line_number": 2,
+   "matched_text": "2b4535216122",
+   "name": "SendGrid API Key",
+   "public_client_key": false,
+   "redacted_value": "35c207548deb",
+   "severity": "high",
+   "source_url": "https://app.example.com/assets/chunk.js",
+   "validation": {
+    "error": "",
+    "info": "status=503",
+    "status": "unknown",
+    "valid": false
+   }
+  },
+  {
+   "alternate_names": [],
+   "category": "auth",
+   "confidence": "high",
+   "context": "02c3be76206d",
+   "detection_method": "regex",
+   "id": "35002e52a43cbce2",
+   "line_number": 1,
+   "matched_text": "373003e3d052",
+   "name": "GitHub Token Classic",
+   "public_client_key": false,
+   "redacted_value": "0e5dc33627a3",
+   "severity": "high",
+   "source_url": "https://app.example.com/assets/main.js",
+   "validation": {
+    "error": "",
+    "info": "status=401",
+    "status": "rejected",
+    "valid": false
+   }
+  },
+  {
+   "alternate_names": [
+    "Clerk Secret Key"
+   ],
+   "category": "payment",
+   "confidence": "high",
+   "context": "02c3be76206d",
+   "detection_method": "regex",
+   "id": "5e6667778f04e029",
+   "line_number": 1,
+   "matched_text": "2df39f3976a7",
+   "name": "Stripe Secret Key",
+   "public_client_key": false,
+   "redacted_value": "b4022d5e61e3",
+   "severity": "critical",
+   "source_url": "https://app.example.com/assets/main.js",
+   "validation": {
+    "info": "live",
+    "scope": "account",
+    "status": "validated",
+    "valid": true
+   }
+  },
+  {
+   "alternate_names": [],
+   "category": "secret",
+   "confidence": "medium",
+   "context": "02c3be76206d",
+   "detection_method": "regex",
+   "id": "a03114bd245ce990",
+   "line_number": 1,
+   "matched_text": "fd8708181936",
+   "name": "Credentials in URL",
+   "public_client_key": false,
+   "redacted_value": "10d2469a2b30",
+   "severity": "high",
+   "source_url": "https://app.example.com/assets/main.js",
+   "validation": {
+    "status": "unvalidated"
+   }
+  },
+  {
+   "alternate_names": [],
+   "category": "cloud",
+   "confidence": "high",
+   "context": "02c3be76206d",
+   "detection_method": "regex",
+   "id": "a9102c80210db03c",
+   "line_number": 1,
+   "matched_text": "23507ce114e2",
+   "name": "AWS Access Key ID",
+   "public_client_key": false,
+   "redacted_value": "6cf6eb64e288",
+   "severity": "critical",
+   "source_url": "https://app.example.com/assets/main.js",
+   "validation": {
+    "error": "",
+    "info": "status=503",
+    "status": "unknown",
+    "valid": false
+   }
+  },
+  {
+   "alternate_names": [
+    "Generic API Key"
+   ],
+   "category": "cloud",
+   "confidence": "high",
+   "context": "02c3be76206d",
+   "detection_method": "regex",
+   "id": "cd10a6d622bec6e6",
+   "line_number": 1,
+   "matched_text": "023862e7108b",
+   "name": "GCP API Key",
+   "public_client_key": true,
+   "redacted_value": "aaedf5648481",
+   "severity": "info",
+   "source_url": "https://app.example.com/assets/main.js",
+   "validation": {
+    "error": "",
+    "info": "status=503",
+    "status": "unknown",
+    "valid": false
+   }
+  },
+  {
+   "alternate_names": [],
+   "category": "auth",
+   "confidence": "high",
+   "context": "723b6aaa55fa",
+   "detection_method": "regex",
+   "id": "d088161597566c7d",
+   "line_number": 1,
+   "matched_text": "40138f717cd5",
+   "name": "Slack Bot Token",
+   "public_client_key": false,
+   "redacted_value": "203c3dcec48b",
+   "severity": "high",
+   "source_url": "https://app.example.com/assets/chunk.js",
+   "validation": {
+    "error": "",
+    "info": "status=503",
+    "status": "unknown",
+    "valid": false
+   }
+  },
+  {
+   "alternate_names": [
+    "Generic Secret"
+   ],
+   "category": "secret",
+   "confidence": "low",
+   "context": "866aa85d797f",
+   "detection_method": "regex",
+   "id": "f87bbf4a2854d9d2",
+   "line_number": 4,
+   "matched_text": "371cc865873e",
+   "name": "Hardcoded Password",
+   "public_client_key": false,
+   "redacted_value": "a8e656a3e2d3",
+   "severity": "medium",
+   "source_url": "https://app.example.com/assets/chunk.js",
+   "validation": {
+    "status": "unvalidated"
+   }
+  }
+ ],
+ "summary": {
+  "ai_sdk_findings_by_category": {
+   "ai-sdk-key-literal": 1
+  },
+  "ai_sdk_findings_by_severity": {
+   "medium": 1
+  },
+  "ai_sdk_findings_total": 1,
+  "cloud_assets_found": 0,
+  "dependency_confusion_count": 0,
+  "dev_references_found": 0,
+  "dom_sinks_found": 0,
+  "emails_found": 1,
+  "endpoint_validation": {
+   "hittable": 0,
+   "not_hittable": 0,
+   "unvalidated": 0
+  },
+  "endpoints_discovered": 0,
+  "endpoints_hittable": 0,
+  "external_domains_found": 1,
+  "false_positives_filtered": {
+   "base64_blob": 0,
+   "binary_context": 0,
+   "generic_noise": 0,
+   "low_entropy": 0,
+   "no_key_data": 0,
+   "no_keyword_nearby": 0,
+   "repetitive": 0,
+   "url_whitelist": 0
+  },
+  "false_positives_filtered_total": 0,
+  "frameworks_detected": [],
+  "internal_ips_found": 0,
+  "new_subdomains_discovered": 0,
+  "object_references_found": 1,
+  "secrets_by_severity": {
+   "critical": 2,
+   "high": 4,
+   "info": 1,
+   "medium": 1
+  },
+  "secrets_by_type": {
+   "AWS Access Key ID": 1,
+   "Credentials in URL": 1,
+   "GCP API Key": 1,
+   "GitHub Token Classic": 1,
+   "Hardcoded Password": 1,
+   "SendGrid API Key": 1,
+   "Slack Bot Token": 1,
+   "Stripe Secret Key": 1
+  },
+  "source_maps_exposed": 0,
+  "validated_keys": {
+   "format_invalid": 0,
+   "format_validated": 0,
+   "incomplete": 0,
+   "live": 1,
+   "rejected": 1,
+   "skipped": 0,
+   "unknown": 4,
+   "unvalidated": 2
+  }
+ }
+}
