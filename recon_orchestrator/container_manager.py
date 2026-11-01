@@ -207,9 +207,10 @@ def run_labels(project_id: str, run_id: str, kind: str) -> dict:
 # JS Recon's TruffleHog stage dirs (recon/helpers/js_recon/trufflehog_bridge.py
 # `stage_files`): js_recon_th_<run id>_<8 hex> under the shared /tmp/redamon,
 # copies of a target's JavaScript. The run id is the RECON_RUN_ID /
-# PARTIAL_RECON_RUN_ID this orchestrator handed the run, made path-safe.
+# PARTIAL_RECON_RUN_ID this orchestrator handed the run, made path-safe. A
+# name without the suffix reads as a run id of its own, which no live run has.
 JS_TRUFFLEHOG_STAGE_ROOT = "/tmp/redamon"
-JS_TRUFFLEHOG_STAGE_RE = re.compile(r"^js_recon_th_(.+)_[0-9a-f]{8}$")
+JS_TRUFFLEHOG_STAGE_RE = re.compile(r"^js_recon_th_(.+?)(?:_[0-9a-f]{8})?$")
 
 
 def _stage_safe_run_id(run_id: str) -> str:

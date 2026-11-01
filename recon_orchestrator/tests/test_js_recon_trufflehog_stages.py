@@ -86,8 +86,12 @@ def test_completion_of_a_partial_run_removes_its_stage_dirs(root):
 
 def test_the_startup_sweep_spares_a_live_run(root):
     m = _manager([_recon("redamon-recon-p", LIVE), _recon("redamon-recon-q", DEAD, status="exited")])
-    assert m.sweep_trufflehog_stages() == 2
-    assert _left(root) == sorted([f"js_recon_th_{LIVE}_0a1b2c3d", *UNRELATED])
+    (root / "js_recon_th_test_x").mkdir()
+    # Every stage dir of a run that is not alive goes, a hand-named one too;
+    # a plain file and js_recon's own work dir are not stage dirs.
+    assert m.sweep_trufflehog_stages() == 4
+    assert _left(root) == sorted([f"js_recon_th_{LIVE}_0a1b2c3d", "js_recon_abcdef012345",
+                                  f"js_recon_th_{DEAD}_aaaaaaaa", "trufflehog_p_git"])
 
 
 def test_a_paused_run_is_alive_too(root):
