@@ -6389,6 +6389,49 @@
    "type": "int",
    "unit": "seconds"
   },
+  "jsReconTrufflehogEnabled": {
+   "default": false,
+   "form_section": "JsReconSection",
+   "group": "not-tuning",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Runs TruffleHog over local copies of the JavaScript JS recon analyses, in an isolated container, and merges its findings with JS recon's: one finding per key. With key validation on, TruffleHog also checks the keys it finds with their providers (never a host named in the JavaScript); with it off the container has no network.",
+   "optional": false,
+   "phase": "js_recon",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "JS_RECON_TRUFFLEHOG_ENABLED",
+   "tool": "js_recon",
+   "traffic": "active",
+   "type": "boolean",
+   "unit": "none"
+  },
+  "jsReconTrufflehogResults": {
+   "default": [
+    "verified",
+    "unknown",
+    "unverified"
+   ],
+   "fallback": "falsy",
+   "form_section": "JsReconSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Which keys found only by TruffleHog are kept when key validation is on: verified (the provider accepted it), unknown (the check errored) and unverified (not shown live, or not checkable). A key JS recon also found is always kept. Ignored when key validation is off; empty means all three.",
+   "optional": false,
+   "phase": "js_recon",
+   "prisma_type": "String[]",
+   "roe_capped": false,
+   "runtime_key": "JS_RECON_TRUFFLEHOG_RESULTS",
+   "tool": "js_recon",
+   "traffic": "active",
+   "type": "string-list",
+   "unit": "none",
+   "values": [
+    "verified",
+    "unknown",
+    "unverified"
+   ]
+  },
   "jsReconUploadedFiles": {
    "default": [],
    "deny_reason": "upload-managed",
@@ -6432,11 +6475,13 @@
    "group": "not-tuning",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Validate discovered API keys",
+   "meaning": "Validate discovered API keys by sending each one to its provider (and, with TruffleHog on, letting TruffleHog check the keys it finds the same way): a live key is confirmed, but every key found is used against a third-party service. A Rules of Engagement document can only turn it off.",
    "optional": false,
    "phase": "js_recon",
    "prisma_type": "Boolean",
    "roe_capped": false,
+   "roe_parse": "tighten_only",
+   "roe_safe_value": false,
    "runtime_key": "JS_RECON_VALIDATE_KEYS",
    "stealth": {
     "set": false

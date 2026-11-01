@@ -94,6 +94,8 @@ Every AI signal is a property annotation on existing graph nodes (Endpoint, Tech
     // --- JS recon ---
     jsReconEnabled: true,
     jsReconAiSdkDetectionEnabled: true,
+    jsReconTrufflehogEnabled: false,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
 
     // --- Vuln / security ---
     nucleiEnabled: true,

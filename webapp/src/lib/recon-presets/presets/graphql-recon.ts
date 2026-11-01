@@ -181,6 +181,8 @@ Use \`API Security Audit\` if you also need heavy REST endpoint discovery via Ki
     jsReconMaxFiles: 500,
     jsReconTimeout: 900,
     jsReconConcurrency: 10,
+    jsReconTrufflehogEnabled: false,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,   // extracts /graphql paths from compiled JS
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,         // exposed source maps may include full schema

@@ -226,6 +226,8 @@ Pentesters running a final comprehensive sweep on a target they have full author
     jsReconConcurrency: 15,
     jsReconValidateKeys: true,
     jsReconValidationTimeout: 10,
+    jsReconTrufflehogEnabled: false,
+    jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: true,
     jsReconRegexPatterns: true,
     jsReconSourceMaps: true,

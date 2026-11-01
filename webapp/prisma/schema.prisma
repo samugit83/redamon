@@ -912,6 +912,8 @@ model Project {
   jsReconConcurrency          Int      @default(10)    @map("js_recon_concurrency")
   jsReconValidateKeys         Boolean  @default(true)  @map("js_recon_validate_keys")
   jsReconValidationTimeout    Int      @default(5)     @map("js_recon_validation_timeout")
+  jsReconTrufflehogEnabled    Boolean  @default(false) @map("js_recon_trufflehog_enabled")
+  jsReconTrufflehogResults    String[] @default(["verified", "unknown", "unverified"]) @map("js_recon_trufflehog_results")
   jsReconExtractEndpoints     Boolean  @default(true)  @map("js_recon_extract_endpoints")
   jsReconValidateEndpoints     Boolean  @default(false) @map("js_recon_validate_endpoints")
   jsReconEndpointAcceptStatus  Int[]    @default([200, 201, 204, 301, 302, 307, 308, 401, 403, 405]) @map("js_recon_endpoint_accept_status")

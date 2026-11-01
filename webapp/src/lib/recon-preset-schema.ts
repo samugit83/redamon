@@ -272,6 +272,8 @@ export const reconPresetSchema = z.object({
   jsReconConcurrency: int,
   jsReconValidateKeys: bool,
   jsReconValidationTimeout: int,
+  jsReconTrufflehogEnabled: bool,
+  jsReconTrufflehogResults: strArr,
   jsReconExtractEndpoints: bool,
   jsReconValidateEndpoints: bool,
   jsReconEndpointAcceptStatus: intArr,
@@ -864,6 +866,8 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - jsReconConcurrency: integer
 - jsReconValidateKeys: boolean - Validate discovered API keys
 - jsReconValidationTimeout: integer
+- jsReconTrufflehogEnabled: boolean - Also run TruffleHog (isolated container) over the analysed JS and merge its findings, one per key. It verifies keys with their providers only when jsReconValidateKeys is true; otherwise it has no network
+- jsReconTrufflehogResults: string[] - Which TruffleHog-only keys to keep when keys are validated: any of "verified", "unknown", "unverified" (default all three)
 - jsReconExtractEndpoints: boolean
 - jsReconValidateEndpoints: boolean - Probe extracted endpoints and drop confirmed-dead ones before graph ingestion (default off)
 - jsReconEndpointAcceptStatus: integer[] - HTTP status codes treated as live during endpoint verification

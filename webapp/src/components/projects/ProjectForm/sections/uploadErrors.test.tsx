@@ -116,7 +116,8 @@ describe('JS Recon files', () => {
     expect(screen.queryByRole('button', { name: /Upload JS Files/ })).toBeNull()
     expect(screen.queryByText('Custom Extension Files')).toBeNull()
     expect(container.querySelector('input[type="file"]')).toBeNull()
-    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/api/js-recon/'))).toBe(false)
+    // The project's own routes; the TruffleHog availability check is not per project.
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/api/js-recon/p1/'))).toBe(false)
   })
 
   test('an edit-mode form offers the uploads and no save-first hint', async () => {
