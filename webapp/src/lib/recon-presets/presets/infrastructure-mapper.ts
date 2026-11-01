@@ -159,6 +159,7 @@ Network pentesters and infrastructure security teams mapping an external or inte
     // --- DISABLE JS analysis ---
     jsluiceEnabled: false,
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
     // --- DISABLE directory/API fuzzing ---

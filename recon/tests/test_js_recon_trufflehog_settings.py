@@ -32,7 +32,8 @@ def _analyse(settings):
 
 
 def test_the_defaults():
-    assert ps.DEFAULT_SETTINGS["JS_RECON_TRUFFLEHOG_ENABLED"] is False
+    # On for new projects since the plan's Phase 2 (step 2.6); a stored value wins.
+    assert ps.DEFAULT_SETTINGS["JS_RECON_TRUFFLEHOG_ENABLED"] is True
     assert ps.DEFAULT_SETTINGS["JS_RECON_TRUFFLEHOG_RESULTS"] == ["verified", "unknown", "unverified"]
 
 

@@ -6390,7 +6390,7 @@
    "unit": "seconds"
   },
   "jsReconTrufflehogEnabled": {
-   "default": false,
+   "default": true,
    "form_section": "JsReconSection",
    "group": "not-tuning",
    "has_default": true,

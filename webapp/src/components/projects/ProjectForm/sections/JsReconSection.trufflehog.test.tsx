@@ -56,8 +56,10 @@ describe('availability', () => {
     answer = () => new Promise<Response>(() => {})
     const { updateField } = renderSection()
     expect(toggle()).not.toBeDisabled()
+    // A project saved before the field existed reads the default: on.
+    expect(toggle()).toBeChecked()
     fireEvent.click(toggle())
-    expect(updateField).toHaveBeenCalledWith('jsReconTrufflehogEnabled', true)
+    expect(updateField).toHaveBeenCalledWith('jsReconTrufflehogEnabled', false)
   })
 
   test('installed: usable, no notice', async () => {
@@ -70,7 +72,7 @@ describe('availability', () => {
 
   test('image missing on a project with it off: disabled, the tooltip says how to install it', async () => {
     answer = async () => json(200, { available: false, reason: 'image_missing' })
-    const { updateField } = renderSection()
+    const { updateField } = renderSection({ jsReconTrufflehogEnabled: false })
     await waitFor(() => expect(toggle()).toBeDisabled())
     expect(toggle().closest('span[title]')).toHaveAttribute('title', TRUFFLEHOG_IMAGE_MISSING)
     expect(TRUFFLEHOG_IMAGE_MISSING).toBe('TruffleHog image not installed: run ./redamon.sh update')

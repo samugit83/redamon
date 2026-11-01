@@ -62,7 +62,7 @@ Use \`Full Pipeline - Maximum\` if you want supply-chain findings as one signal 
     jsReconIncludeArchivedJs: true,
     jsReconRegexPatterns: false,      // not a secret hunt
     jsReconValidateKeys: false,
-    jsReconTrufflehogEnabled: false,
+    jsReconTrufflehogEnabled: false,  // not a secret hunt, like the regex rules
     jsReconTrufflehogResults: ['verified', 'unknown', 'unverified'],
     jsReconExtractEndpoints: false,
     jsReconDomSinks: false,

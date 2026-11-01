@@ -161,6 +161,7 @@ Red team operators performing authorized reconnaissance against targets with act
 
     // --- DISABLE JS Recon ---
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
     // --- DISABLE directory fuzzing ---

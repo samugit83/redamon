@@ -149,6 +149,7 @@ Cloud security engineers, red teams targeting cloud-hosted organizations, and se
     // --- DISABLE JS analysis ---
     jsluiceEnabled: false,
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
     // --- DISABLE directory/API fuzzing ---

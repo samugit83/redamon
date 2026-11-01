@@ -139,6 +139,7 @@ Use \`Web App Pentester\` or \`Full Active Scan\` if you want WCP as one tool am
     //     httpx tech-detect (what the WCP packs actually read); JS bundle parsing is
     //     extra cost not needed for cache poisoning. ---
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
     jsluiceEnabled: false,
 
     // --- Directory/path brute force: OFF (WCP tests existing live URLs) ---

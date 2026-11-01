@@ -482,7 +482,7 @@ flowchart TB
         JsRecon --> DepConf
         JsRecon --> EpExtract
         JsRecon --> FwSink
-        JsRecon -.->|optional, off by default| TruffleHog[TruffleHog sidecar<br/>local copies only, 33 detectors excluded<br/>network none unless keys are validated]
+        JsRecon -.->|on by default for new projects| TruffleHog[TruffleHog sidecar<br/>local copies only, 33 detectors excluded<br/>network none unless keys are validated]
 
         Patterns --> SecretMerge[Merge<br/>one finding per key]
         TruffleHog --> SecretMerge

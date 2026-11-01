@@ -126,6 +126,7 @@ _DETECTOR_NAMES = {
     "HuggingFace": (("api_org_", "HuggingFace Org Token"), ("hf_", "HuggingFace Access Token")),
     "TelegramBotToken": (("", "Telegram Bot Token"),),
     "DiscordBotToken": (("", "Discord Bot Token"),),
+    "TravisCI": (("", "Travis CI Token"),),
 }
 
 #: Detectors whose `Raw` is the key joined to something else; the key is the

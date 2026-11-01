@@ -5,6 +5,14 @@ Live API validation for discovered secrets/keys. Each validator makes a single
 API call to confirm if a key is active and returns scope/permission info.
 
 Rate-limited: 1 req/sec per service via threading.Lock.
+
+Every validator stays alongside JS Recon's TruffleHog engine (plan step 2.5):
+TruffleHog cannot say a key is dead (with no network its checks answer "not
+verified" exactly as for a dead key), so these validators remain the only
+source of `rejected`; `validate_firebase` (an open database read) and
+`validate_google_maps` (the key's API restriction) test what a key opens, not
+whether it lives. A key TruffleHog verified skips its provider call here,
+except for those two (js_recon._validate_secrets).
 """
 
 import re

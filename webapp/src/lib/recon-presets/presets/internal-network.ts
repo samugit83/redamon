@@ -175,6 +175,7 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
     // --- DISABLE JS analysis ---
     jsluiceEnabled: false,
     jsReconEnabled: false,
+    jsReconTrufflehogEnabled: false,
 
     aiSurfaceReconEnabled: false,
 

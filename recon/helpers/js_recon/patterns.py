@@ -373,6 +373,15 @@ PUBLIC_CLIENT_KEY_NAMES = frozenset({
     "Supabase Publishable Key",
 })
 
+#: Rules that report only what TruffleHog confirmed, when TruffleHog ran: each
+#: had false positives on clean code, TruffleHog detects its key type at 99% or
+#: more, and it has no precise provider prefix (TruffleHog plan, step 2.3, with
+#: the numbers). A hit TruffleHog matched stays, with its own id; with
+#: TruffleHog off, failed or missing the rule reports as before.
+SUPERSEDED_BY_TRUFFLEHOG = frozenset({
+    "Travis CI Token",  # 3 hits on 300 clean library files; TravisCI detects 99.5%
+})
+
 # A search-only Algolia key has the admin key's format; only its label tells
 # them apart, so an unlabelled key stays the (high) API key.
 _ALGOLIA_SEARCH_LABEL = re.compile(

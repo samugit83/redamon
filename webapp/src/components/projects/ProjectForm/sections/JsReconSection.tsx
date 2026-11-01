@@ -328,7 +328,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
   const validateKeysStored = (data as any).jsReconValidateKeys ?? true
   const validateKeysEffective = validateKeysStored && !stealthForcesValidationOff
 
-  const trufflehogEnabled = (data as any).jsReconTrufflehogEnabled ?? false
+  const trufflehogEnabled = (data as any).jsReconTrufflehogEnabled ?? true
   const trufflehogMissing = trufflehog.state === 'image_missing'
   const storedResults = (data as any).jsReconTrufflehogResults
   const trufflehogResults: string[] = Array.isArray(storedResults) ? storedResults : DEFAULT_TRUFFLEHOG_RESULTS

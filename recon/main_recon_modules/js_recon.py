@@ -28,7 +28,7 @@ from typing import NamedTuple, Optional
 from recon.helpers import catchall
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.js_recon.patterns import (
-    scan_js_content, scan_dev_comments, load_custom_patterns,
+    SUPERSEDED_BY_TRUFFLEHOG, scan_js_content, scan_dev_comments, load_custom_patterns,
 )
 from recon.helpers.js_recon.validators import validate_secret
 from recon.helpers.js_recon import trufflehog_bridge
@@ -1043,6 +1043,13 @@ def _trufflehog_keep(settings: dict, verify: bool) -> Optional[set]:
     return keep
 
 
+def _unconfirmed_superseded(secret: dict) -> bool:
+    """A hit of a rule TruffleHog supersedes that TruffleHog did not match."""
+    return (secret.get('name') in SUPERSEDED_BY_TRUFFLEHOG
+            and secret.get('detection_method', 'regex') == 'regex'
+            and not any(str(a).startswith('TruffleHog:') for a in secret.get('alternate_names') or []))
+
+
 def _merge_trufflehog(results: dict, th_run, js_files: list, settings: dict) -> dict:
     """Merge one TruffleHog run into results['secrets'] and return its outcome
     record (scan_metadata.trufflehog). A failure is logged and recorded; it
@@ -1051,6 +1058,13 @@ def _merge_trufflehog(results: dict, th_run, js_files: list, settings: dict) -> 
     keep = _trufflehog_keep(settings, verify)
     secrets, stats = trufflehog_bridge.merge(
         results.get('secrets') or [], th_run.results, th_run.manifest, verify=verify, keep=keep)
+    superseded = 0
+    if th_run.status == 'ran':
+        # Only a complete run can confirm: a failed or missing TruffleHog
+        # leaves these rules reporting as they always did.
+        kept = [s for s in secrets if not _unconfirmed_superseded(s)]
+        superseded = len(secrets) - len(kept)
+        secrets = kept
     results['secrets'] = secrets
 
     verification = 'off'
@@ -1084,6 +1098,9 @@ def _merge_trufflehog(results: dict, th_run, js_files: list, settings: dict) -> 
             print(f"[!][JsRecon] TruffleHog stderr: {line}")
     if th_run.bad_lines:
         print(f"[!][JsRecon] TruffleHog: {th_run.bad_lines} output line(s) unreadable")
+    if superseded:
+        print(f"[*][JsRecon] TruffleHog: dropped {superseded} hit(s) it did not confirm, of rules it "
+              f"supersedes ({', '.join(sorted(SUPERSEDED_BY_TRUFFLEHOG))})")
     print(f"[+][JsRecon] TruffleHog: {stats.results} results, {stats.merged} merged, {stats.new} new, "
           f"{stats.validated} validated, {stats.filtered} filtered, network={network}, "
           f"{excluded} detectors excluded, {th_run.duration_s}s")
@@ -1099,6 +1116,7 @@ def _merge_trufflehog(results: dict, th_run, js_files: list, settings: dict) -> 
         'filtered': stats.filtered,
         'verify_errors': stats.verify_errors,
         'verification': verification,
+        'superseded_dropped': superseded,
         'duration_s': th_run.duration_s,
         # The files TruffleHog was given, for the coverage reason on a failure.
         '_input_urls': [f.get('url') for f in js_files if (f.get('content') or '').strip()],

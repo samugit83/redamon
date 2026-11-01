@@ -540,7 +540,7 @@ Everything runs on a **fan-out / fan-in** architecture: each phase fires as many
 | | **Endpoint AI Classifier** | Path + parameter classifier — tags `Endpoint.ai_interface_type` (`llm-chat`, `llm-completion`, `llm-embedding`, `llm-tool-call`, `sse-stream`, `mcp`, `llm-graphql`), `is_ai_rag_ingest`, `Parameter.is_ai_prompt_injectable` against catalogued AI signatures | Passive | Sequential (post-crawl) |
 | **JS Recon** | **JS Secret Detection** | 100 regex patterns + custom uploads | Passive | Parallel per file |
 | | **Key Validation** | 21 service validators (AWS, GitHub, Stripe, etc.) | Active | Rate-limited (1/sec/svc) |
-| | **TruffleHog Engine** | TruffleHog in a hardened sidecar over local copies of the JS, keys merged one per key (off by default; no network unless keys are validated) | Passive (Active with key validation) | Own worker, own budget |
+| | **TruffleHog Engine** | TruffleHog in a hardened sidecar over local copies of the JS, keys merged one per key (on by default for new projects; no network unless keys are validated) | Passive (Active with key validation) | Own worker, own budget |
 | | **Source Map Discovery** | Comment, header, path probing | Active | Per JS file |
 | | **Dependency Confusion** | npm registry check | Passive | Per scoped package |
 | | **Endpoint Extraction** | REST, GraphQL, WebSocket, router patterns | Passive | Per JS file |

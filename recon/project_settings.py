@@ -506,7 +506,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'JS_RECON_VALIDATE_KEYS': True,
     'JS_RECON_VALIDATION_TIMEOUT': 5,
     # TruffleHog over the analysed JS, in a sidecar (trufflehog_bridge.py).
-    'JS_RECON_TRUFFLEHOG_ENABLED': False,
+    'JS_RECON_TRUFFLEHOG_ENABLED': True,
     # Which TruffleHog-only results to keep when keys are verified.
     'JS_RECON_TRUFFLEHOG_RESULTS': ['verified', 'unknown', 'unverified'],
     'JS_RECON_EXTRACT_ENDPOINTS': True,
