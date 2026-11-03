@@ -84,12 +84,15 @@ def _import_js_recon():
     # non-AI analysis pass OFF in the settings so these stubs never execute.
     for name in (
         "patterns", "validators", "sourcemap", "dependency",
-        "endpoints", "framework",
+        "endpoints", "framework", "trufflehog_bridge",
     ):
         mod = types.ModuleType(f"recon.helpers.js_recon.{name}")
         sys.modules[f"recon.helpers.js_recon.{name}"] = mod
     js_recon_pkg = types.ModuleType("recon.helpers.js_recon")
     sys.modules["recon.helpers.js_recon"] = js_recon_pkg
+    # js_recon imports this one as a module (`from recon.helpers.js_recon import
+    # trufflehog_bridge`), so the package must carry it.
+    js_recon_pkg.trufflehog_bridge = sys.modules["recon.helpers.js_recon.trufflehog_bridge"]
 
     # What counts as a JS file decides which files reach the AI-SDK matcher, and it
     # needs only the stdlib, so load the real one.
@@ -102,6 +105,7 @@ def _import_js_recon():
     spec.loader.exec_module(js_urls)
 
     # Minimal symbols js_recon.py imports from each.
+    sys.modules["recon.helpers.js_recon.patterns"].SUPERSEDED_BY_TRUFFLEHOG = frozenset()
     sys.modules["recon.helpers.js_recon.patterns"].scan_js_content = lambda *a, **kw: ([], {})
     sys.modules["recon.helpers.js_recon.patterns"].scan_dev_comments = lambda *a, **kw: []
     sys.modules["recon.helpers.js_recon.patterns"].load_custom_patterns = lambda *a, **kw: None
@@ -158,6 +162,7 @@ def _make_settings(ai_on: bool = True) -> dict:
         "JS_RECON_FRAMEWORK_DETECT": False,
         "JS_RECON_DOM_SINKS": False,
         "JS_RECON_DEV_COMMENTS": False,
+        "JS_RECON_TRUFFLEHOG_ENABLED": False,
         "JS_RECON_AI_SDK_DETECTION_ENABLED": ai_on,
         "JS_RECON_TIMEOUT": 30,
         "JS_RECON_MIN_CONFIDENCE": "low",
