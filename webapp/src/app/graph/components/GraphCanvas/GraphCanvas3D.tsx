@@ -18,7 +18,7 @@ import {
   THREE_CONFIG,
 } from '../../config'
 import { TIER_CONFIG, getAdaptiveForceConfig } from '../../config/graph'
-import { hasHighSeverityNodes, isGoalFinding } from '../../utils/nodeHelpers'
+import { isGoalFinding } from '../../utils/nodeHelpers'
 import { useAnimationFrame } from '../../hooks'
 import { useGraphRendering, type GraphInstance } from '../../hooks/useGraphRendering'
 
@@ -27,6 +27,10 @@ const LABEL_DISTANCE_THRESHOLD = 300
 const ForceGraph3D = dynamic(() => import('react-force-graph-3d'), {
   ssr: false,
 })
+
+const isExploitType = (node: GraphNode) => node.type === 'ExploitGvm' || node.type === 'ChainFinding'
+const isChainType = (node: GraphNode) =>
+  node.type === 'AttackChain' || node.type === 'ChainStep' || node.type === 'ChainDecision' || node.type === 'ChainFailure'
 
 interface GraphCanvas3DProps {
   data: GraphData
@@ -76,8 +80,8 @@ function buildFullDetail(
   const sphereSize = BASE_SIZES.node3D * getNodeSize(graphNode)
   const nodeColor = getNodeColor(graphNode)
 
-  const isExploit = graphNode.type === 'ExploitGvm' || graphNode.type === 'ChainFinding'
-  const isChainNode = graphNode.type === 'AttackChain' || graphNode.type === 'ChainStep' || graphNode.type === 'ChainDecision' || graphNode.type === 'ChainFailure'
+  const isExploit = isExploitType(graphNode)
+  const isChainNode = isChainType(graphNode)
   const isGoal = isGoalFinding(graphNode)
   const isCluster = !!graphNode.isCluster
 
@@ -299,9 +303,12 @@ export function GraphCanvas3D({
       if (label) label.visible = !!(showLabels && cameraPos && cameraPos.distanceTo(group.position) < LABEL_DISTANCE_THRESHOLD)
     })
   }, [showLabels])
-  const hasAnimatedNodes = useMemo(() => hasHighSeverityNodes(data.nodes) || data.nodes.some(node =>
-    !!activeChainId && node.properties?.chain_id === activeChainId &&
-    ['AttackChain', 'ChainStep', 'ChainDecision', 'ChainFailure', 'ExploitGvm', 'ChainFinding'].includes(node.type)
+  // Must match what the frame loop below animates, or the scene sleeps with a ring
+  // mid-pulse: the glow ring buildFullDetail adds for getGlowLevel, and the chain
+  // ring it shows on chain/exploit nodes of the active chain.
+  const hasAnimatedNodes = useMemo(() => data.nodes.some(node =>
+    !!getGlowLevel(node) ||
+    (!!activeChainId && node.properties?.chain_id === activeChainId && (isChainType(node) || isExploitType(node)))
   ), [data, activeChainId])
   const hasParticles = useMemo(() => data.links.some(link => getParticleCount(link, selectedNode?.id) > 0), [data, selectedNode?.id])
   const { graphRef, bindGraphRef, invalidate, onEngineStop, onEngineTick } = useGraphRendering(

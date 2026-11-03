@@ -11,6 +11,14 @@ export interface GraphInstance {
   }
 }
 
+interface RenderActions {
+  wake: (layoutChanged?: boolean) => void
+  stop: () => void
+  tick: () => void
+}
+
+const NO_ACTIONS: RenderActions = { wake: () => {}, stop: () => {}, tick: () => {} }
+
 /** Keep the library's own interaction/simulation loop, but let static 3D scenes sleep. */
 export function useGraphRendering(
   continuous: boolean,
@@ -18,15 +26,17 @@ export function useGraphRendering(
   onCameraChange?: (graph: GraphInstance) => void,
 ) {
   // The two graph packages expose different imperative APIs.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null)
   const [instance, setInstance] = useState<GraphInstance | null>(null)
   const continuousRef = useRef(continuous)
   const cameraChangeRef = useRef(onCameraChange)
-  const actions = useRef({ wake: (_layoutChanged = false) => {}, stop: () => {}, tick: () => {} })
+  const actions = useRef<RenderActions>(NO_ACTIONS)
   continuousRef.current = continuous
   cameraChangeRef.current = onCameraChange
 
   // These packages type ref as an object, so observe attachment through its setter.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bindGraphRef = useMemo<{ current: any }>(() => ({
     get current() { return graphRef.current },
     set current(graph: GraphInstance | null | undefined) {
@@ -110,7 +120,7 @@ export function useGraphRendering(
 
     return () => {
       clearTimers()
-      actions.current = { wake: () => {}, stop: () => {}, tick: () => {} }
+      actions.current = NO_ACTIONS
       controls?.removeEventListener('start', start)
       controls?.removeEventListener('end', end)
       controls?.removeEventListener('change', change)
