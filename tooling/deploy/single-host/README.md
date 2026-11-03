@@ -182,6 +182,7 @@ flag it manages. Control KB with `ENABLE_KB` only.
 | `SCA_INTEL_MATCH_ENABLED` | `false` turns off matching captured requests against the catalog (blank -> `true`). |
 | `CAPTURE_IOC_IGNORE_SUFFIXES` | Hosts excluded from that match. Blank -> the five OAST providers the catalog lists as indicators, so your own Burp Collaborator callbacks are not flagged. |
 | `API_USAGE_CHECK_ENABLED` | `false` (or `0`, `no`, `off`, any case) turns off **Settings > API Keys > Check API usage** on an **air-gapped** host: the check makes the webapp call each provider's account/usage endpoint with the saved keys, on demand. The last saved report stays readable. Blank -> `true`. |
+| `WORKSPACE_URL_IMPORT_ENABLED` | `false` turns off **Import from URL** in the Agent Workspace for every user (folder and archive uploads stay). Blank -> on. See below. |
 
 LLM provider keys are configured in the UI, not here.
 
@@ -192,6 +193,15 @@ stack come up, so `verify` re-checks the volume and warns if it is empty. To fix
 `ssh` in and run `./redamon.sh supply-chain-sync` (optionally `... npm PyPI Go`). The download
 is plain HTTPS egress to the OSV GCS bucket, which the default ufw policy (`allow outgoing`)
 already permits.
+
+**Agent Workspace URL import.** A signed-in user can import a repository, an archive, a file
+or a copy of a website into the Agent Workspace, so this server fetches public URLs that users
+name: plain HTTP(S) egress, which `allow outgoing` permits. Private, loopback and metadata
+addresses are refused on the link and on every redirect, and a website copy keeps to the
+project's Rules of Engagement. It is on by default; `WORKSPACE_URL_IMPORT_ENABLED=false` turns
+it off; a change reaches the running agent on the next `deploy.sh update`, because
+`redamon.sh update` brings the running services onto the changed `.env` even when there is no
+new code (only a service whose configuration changed is recreated).
 
 ### Behaviour / safety
 | Key | Purpose |
@@ -352,8 +362,8 @@ server `.env` from the same derived origin as `MCP_ALLOWED_ORIGIN` (nginx forwar
 RedAmon's threat model assumes a local-only deployment with no anonymous internet attacker.
 Putting it on a public IP invalidates that, so the deploy closes the gap:
 
-- Parts of the agent REST API remain **unauthenticated** (the whole `/workspace/*` family,
-  `/sessions/*`, `/files`, FastAPI `/docs` + `/openapi.json`); `/graph/exec` and
+- Parts of the agent REST API remain **unauthenticated** (`/sessions/*`, `/files`, FastAPI
+  `/docs` + `/openapi.json`; the `/workspace/*` family needs the internal key); `/graph/exec` and
   `/emergency-stop-all` now require `require_internal_auth` (wave 2). All four WS paths now
   enforce a signed ws-ticket + a server-side same-origin check and **fail closed** when
   `AGENT_WS_TICKET_SECRET` is unset - including `/ws/kali-terminal` (the root PTY) and the two
@@ -457,7 +467,9 @@ hosts, optional Docker DNS, and inotify limits. Nothing is assumed pre-present.
 `update` first upgrades Docker Engine and Compose when they are too old (a no-op on a current
 host), then wraps `redamon.sh update`: `git pull --ff-only` + diff-driven
 selective rebuild + secret regen (all via redamon.sh, which preserves DB passwords by volume
-detection), then re-renders nginx. No source patches are applied: the single-origin agent WS
+detection), then re-renders nginx. The settings it seeds take effect in the same run, even
+with no new code: `redamon.sh update` brings every running service onto the current `.env`,
+recreating only the ones whose configuration changed. No source patches are applied: the single-origin agent WS
 URL is a first-class `ARG NEXT_PUBLIC_AGENT_WS_URL` in the base `webapp/Dockerfile`, baked from
 the prod overlay's build-arg, so redamon.sh's own webapp rebuild bakes the right value.
 **All engagement data (Postgres, Neo4j, reports, GVM feeds, models) lives in named volumes

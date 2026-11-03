@@ -141,6 +141,8 @@ CERT_BASE="${LEGACY_CERT_DIR:-$SCRIPT_DIR}"
 # Agent in the Loop rides on the MCP server: on by default, inert unless
 # MCP_SERVER_ENABLED is on too (that one stays off by default on a deployed host).
 : "${AGENT_IN_THE_LOOP_ENABLED:=true}"; : "${MCP_RATE_LOOP_PER_MIN:=}"
+# Empty keeps the app's default (on): the server fetches public URLs a signed-in user names.
+: "${WORKSPACE_URL_IMPORT_ENABLED:=}"
 : "${MCP_DISABLED_TOOLS:=}"
 : "${MCP_TOKEN_PRUNE_INTERVAL:=}"
 : "${ADMIN_NAME:=}"; : "${ADMIN_EMAIL:=}"; : "${ADMIN_PASSWORD:=}"
@@ -382,6 +384,7 @@ build_deploy_env() {
              MCP_RATE_COMPARE_PER_WINDOW MCP_RATE_COMPARE_WINDOW_MS \
              MCP_KALI_EXEC_ENABLED MCP_RATE_EXEC_PER_MIN \
              AGENT_IN_THE_LOOP_ENABLED MCP_RATE_LOOP_PER_MIN \
+             WORKSPACE_URL_IMPORT_ENABLED \
              MCP_DISABLED_TOOLS \
              MCP_PUBLIC_ORIGIN \
              ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD \
@@ -548,6 +551,7 @@ seed MCP_KALI_EXEC_ENABLED "\${MCP_KALI_EXEC_ENABLED}"
 seed MCP_RATE_EXEC_PER_MIN "\${MCP_RATE_EXEC_PER_MIN}"
 seed AGENT_IN_THE_LOOP_ENABLED "\${AGENT_IN_THE_LOOP_ENABLED}"
 seed MCP_RATE_LOOP_PER_MIN "\${MCP_RATE_LOOP_PER_MIN}"
+seed WORKSPACE_URL_IMPORT_ENABLED "\${WORKSPACE_URL_IMPORT_ENABLED}"
 seed MCP_DISABLED_TOOLS "\${MCP_DISABLED_TOOLS}"
 seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
 # The webapp validates the request Origin against its own URL, which nginx
@@ -946,6 +950,7 @@ seed MCP_KALI_EXEC_ENABLED "\${MCP_KALI_EXEC_ENABLED}"
 seed MCP_RATE_EXEC_PER_MIN "\${MCP_RATE_EXEC_PER_MIN}"
 seed AGENT_IN_THE_LOOP_ENABLED "\${AGENT_IN_THE_LOOP_ENABLED}"
 seed MCP_RATE_LOOP_PER_MIN "\${MCP_RATE_LOOP_PER_MIN}"
+seed WORKSPACE_URL_IMPORT_ENABLED "\${WORKSPACE_URL_IMPORT_ENABLED}"
 seed MCP_DISABLED_TOOLS "\${MCP_DISABLED_TOOLS}"
 seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
 # The webapp validates the request Origin against its own URL, which nginx
