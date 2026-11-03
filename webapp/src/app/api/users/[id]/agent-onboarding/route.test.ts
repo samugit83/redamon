@@ -292,3 +292,34 @@ describe('a failure outside the generation itself', () => {
     expect(await res.json()).toEqual({ error: 'Could not generate the onboarding pack', code: 'P1001' })
   })
 })
+
+// --- Agent in the Loop: the client, the switch -------------------------------
+
+describe('the Agent in the Loop pack', () => {
+  const loopReq = (over: Record<string, unknown> = {}) => POST(
+    req(valid({ profile: 'agent_in_the_loop', scopes: ['recon:read', 'agent:loop'], ...over })),
+    params(),
+  )
+
+  test('each client gets its own setup files', async () => {
+    const claude = await (await loopReq({ client: 'claude-code' })).json()
+    expect(claude.files.map((f: { path: string }) => f.path)).toContain('templates/claude-mcp.json')
+    const codex = await (await loopReq({ client: 'codex' })).json()
+    expect(codex.files.map((f: { path: string }) => f.path)).toContain('templates/codex-config.toml')
+    expect(codex.features).toEqual({ agentInTheLoop: true })
+  })
+
+  test('no client means Claude Code; an unknown one is refused', async () => {
+    const res = await loopReq()
+    expect((await res.json()).files.map((f: { path: string }) => f.path)).toContain('templates/claude-settings.json')
+    expect((await loopReq({ client: 'cursor' })).status).toBe(400)
+  })
+
+  test('with the switch off the profile answers 409 loop_disabled', async () => {
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'false')
+    const res = await loopReq()
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('loop_disabled')
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
+  })
+})

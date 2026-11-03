@@ -34,6 +34,7 @@ import { skillToggleWarnings, trimImportedSkillToggles } from '@/lib/userSkills'
 import { declaredBodyTooLarge } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 import { DEFAULT_IMPORT_MAX_UPLOAD_BYTES } from './limits'
+import { SCHEMA_DEFAULT_AGENT_MODEL, isLoopModel } from '@/lib/agentInTheLoop'
 
 const MUTEABLE_LABELS = new Set<string>(MUTEABLE_FINDING_LABELS)
 
@@ -327,6 +328,21 @@ export async function POST(request: NextRequest) {
       else delete projectFields.attackSkillConfig
       skillToggleNotes.push(...skillToggleWarnings(trimmed, 'project'))
     }
+
+    // A person picks the brain: an imported project never arrives on Agent in
+    // the Loop. The importing user's default (never a loop model) or the schema
+    // default takes its place, and the answer says so.
+    const modelNotes: string[] = []
+    if (isLoopModel(projectFields.agentOpenaiModel)) {
+      const importer = await prisma.user.findUnique({ where: { id: userId }, select: { defaultAgentModel: true } })
+      const fallback = importer?.defaultAgentModel && !isLoopModel(importer.defaultAgentModel)
+        ? importer.defaultAgentModel
+        : SCHEMA_DEFAULT_AGENT_MODEL
+      modelNotes.push(`The project used Agent in the Loop; it was imported with ${fallback}. ` +
+        'Pick Agent in the Loop again in the project form if you want it.')
+      projectFields.agentOpenaiModel = fallback
+    }
+    if (isLoopModel(projectFields.aiPipelineModel)) delete projectFields.aiPipelineModel
 
     // Create new project under the specified user
     // The bundle's column values are not type-checked here (they never were);
@@ -866,6 +882,7 @@ export async function POST(request: NextRequest) {
         : []),
       ...skillToggleNotes,
       ...scope.warnings,
+      ...modelNotes,
     ]
 
     return NextResponse.json({

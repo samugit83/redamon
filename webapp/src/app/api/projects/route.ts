@@ -18,6 +18,7 @@ import { ALLOWED_EXTENSIONS_LABEL, MAX_FILE_SIZE, classifyRoeFile, type RoeFileK
 import { contentLengthProblem } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
+import { projectModelProblem } from '@/lib/agentInTheLoop'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
@@ -130,6 +131,11 @@ export async function POST(request: NextRequest) {
       domainBatchMode?: boolean
       id?: string
       [key: string]: unknown
+    }
+
+    const loopProblem = projectModelProblem(optionalParams)
+    if (loopProblem) {
+      return NextResponse.json({ error: loopProblem, code: 'loop_model_not_allowed' }, { status: 400 })
     }
 
     // Domain batch: the groups are ALWAYS re-derived here from the raw host list.

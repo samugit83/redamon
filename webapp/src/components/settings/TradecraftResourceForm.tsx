@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Loader2, Eye, EyeOff, Search } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { ModelPicker } from '@/components/shared/ModelPicker'
+import { excludeLoop } from '@/lib/agentInTheLoop'
 import { useFeatureModelGate } from '@/components/shared/FeatureModelGate'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
@@ -550,6 +551,7 @@ export function TradecraftResourceForm({
             value={llmModel}
             onChange={setLlmModel}
             placeholder="pick the model used to crawl + summarize this resource"
+            filter={excludeLoop}
           />
           <span style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginTop: '4px' }}>
             Required. Used at verify time (crawl decisions + summary) and at agent runtime. The

@@ -35,7 +35,9 @@ export interface LiveCheckFailure {
   cause?: string
 }
 
-async function liveSessions(projectId: string): Promise<{ ids: Set<string> } | { failure: LiveCheckFailure }> {
+async function liveSessions(
+  projectId: string,
+): Promise<{ ids: Set<string>; loopStates: Record<string, string> } | { failure: LiveCheckFailure }> {
   let res: Response
   try {
     res = await agentFetch(
@@ -54,8 +56,11 @@ async function liveSessions(projectId: string): Promise<{ ids: Set<string> } | {
     return { failure: { code: 'agent_error', upstreamStatus: res.status } }
   }
   let ids: unknown
+  let loopStates: unknown
   try {
-    ids = (await res.json())?.session_ids
+    const body = await res.json()
+    ids = body?.session_ids
+    loopStates = body?.loop_states
   } catch {
     ids = undefined
   }
@@ -63,7 +68,22 @@ async function liveSessions(projectId: string): Promise<{ ids: Set<string> } | {
     console.warn('[agentSessions] live-session check: the agent answered without a session list (treating a set flag as running)')
     return { failure: { code: 'agent_bad_answer', upstreamStatus: res.status } }
   }
-  return { ids: new Set(ids.filter((id): id is string => typeof id === 'string')) }
+  return {
+    ids: new Set(ids.filter((id): id is string => typeof id === 'string')),
+    // Agent in the Loop runs only, keyed by session id (absent from older agents).
+    loopStates: loopStates && typeof loopStates === 'object' && !Array.isArray(loopStates)
+      ? Object.fromEntries(Object.entries(loopStates).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+      : {},
+  }
+}
+
+/**
+ * Whether a live Agent in the Loop run of this project is waiting for its
+ * external agent to answer a step. False when the agent could not be asked.
+ */
+export async function agentLoopWaiting(projectId: string): Promise<boolean> {
+  const live = await liveSessions(projectId)
+  return 'loopStates' in live && Object.values(live.loopStates).includes('waiting_for_agent')
 }
 
 /** Session ids the agent holds a running task for, or null when it could not say. */

@@ -87,6 +87,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 }
 
+/** The auth context, or null outside an AuthProvider (a component also rendered alone). */
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext)
+}
+
 export function useAuth() {
   const context = useContext(AuthContext)
   if (!context) {

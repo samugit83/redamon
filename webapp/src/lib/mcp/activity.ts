@@ -24,7 +24,7 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { isActivationInProgress } from '@/lib/activationLock'
 import { findLiveTriageRun } from '@/lib/triageRun'
 import { findLiveNodeFilterRun } from '@/lib/nodeFilterRun'
-import { checkAgentSessions } from '@/lib/agentSessions'
+import { agentLoopWaiting, checkAgentSessions } from '@/lib/agentSessions'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
@@ -54,6 +54,8 @@ export interface ProjectActivity {
   /** Only this project's scans. Another project's work is never included. */
   scans: ActiveScan[]
   agentSession: boolean
+  /** The running chat is an Agent in the Loop run waiting for its external agent. */
+  waitingForExternalAgent?: boolean
   triageRun: boolean
   /** Mutes and unmutes findings page by page, so counts move while it runs. */
   muteRulesApply: boolean
@@ -180,6 +182,15 @@ export async function readProjectActivity(projectId: string): Promise<ProjectAct
   } catch (err) {
     console.error('[mcp] agent session state unreadable:', err)
     unreadable('the agent session state could not be read')
+  }
+
+  if (out.agentSession) {
+    // Best-effort detail: the session is already counted either way.
+    try {
+      out.waitingForExternalAgent = await agentLoopWaiting(projectId)
+    } catch {
+      out.waitingForExternalAgent = false
+    }
   }
 
   return out

@@ -6,6 +6,7 @@
  * of server-only imports. The ids are the keys of `UserSettings.featureModels`:
  * renaming one orphans every model saved under the old key.
  */
+import { isLoopModel } from '@/lib/agentInTheLoop'
 
 export type FeatureId =
   | 'roe_parse'
@@ -141,6 +142,8 @@ export function getLlmFeature(id: FeatureId): LlmFeature {
 }
 
 export function modelAllowedForFeature(id: FeatureId, modelId: string): boolean {
+  // Agent in the Loop answers only inside a chat run: no feature can run on it.
+  if (isLoopModel(modelId)) return false
   return !getLlmFeature(id).excludeModelPrefixes.some(prefix => modelId.startsWith(prefix))
 }
 

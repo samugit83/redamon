@@ -13,6 +13,7 @@ import { TodoListWidget } from './TodoListWidget'
 import { formatTokenCount } from '@/lib/formatTokens'
 import { copyText } from '@/lib/copyText'
 import type { ThinkingItem } from './AgentTimeline'
+import { answeredViaLine } from './hooks/loopStatus'
 
 interface ThinkingCardProps {
   item: ThinkingItem
@@ -91,6 +92,9 @@ export function ThinkingCard({ item, isExpanded, onToggleExpand }: ThinkingCardP
 
       {isExpanded && (
         <div className={styles.cardContent}>
+          {answeredViaLine(item.answeredBy) && (
+            <p className={styles.previewReasoning}>{answeredViaLine(item.answeredBy)}</p>
+          )}
           {/* Thought */}
           {item.thought && item.thought.trim() && (
             <div className={styles.section}>

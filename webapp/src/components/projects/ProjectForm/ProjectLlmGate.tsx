@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { Cpu, Bot, Sparkles, ArrowRight } from 'lucide-react'
 import { ModelPicker } from '@/components/shared/ModelPicker'
+import { excludeLoop } from '@/lib/agentInTheLoop'
 import { bothModelsSelected } from './projectLlmGate.logic'
 import styles from './ProjectForm.module.css'
 
@@ -11,7 +12,14 @@ import styles from './ProjectForm.module.css'
  * LLM provider configured. Both the agent and the AI recon pipeline need one,
  * so creation cannot continue until a provider is added in Global Settings.
  */
-export function ProviderRequiredModal({ onCancel }: { onCancel: () => void }) {
+export function ProviderRequiredModal({
+  onCancel,
+  onUseLoop,
+}: {
+  onCancel: () => void
+  /** Offered while Agent in the Loop is on: it needs no provider. */
+  onUseLoop?: () => void
+}) {
   const router = useRouter()
   return (
     <div className={styles.guardrailOverlay}>
@@ -28,6 +36,16 @@ export function ProviderRequiredModal({ onCancel }: { onCancel: () => void }) {
           <button type="button" className="secondaryButton" onClick={onCancel}>
             Back to Projects
           </button>
+          {onUseLoop && (
+            <button
+              type="button"
+              className="secondaryButton"
+              onClick={onUseLoop}
+              title="Your own Claude Code or Codex answers each step; no API key needed"
+            >
+              Use Agent in the Loop instead
+            </button>
+          )}
           <button
             type="button"
             className="primaryButton"
@@ -37,6 +55,12 @@ export function ProviderRequiredModal({ onCancel }: { onCancel: () => void }) {
             <ArrowRight size={14} />
           </button>
         </div>
+        {onUseLoop && (
+          <p className={styles.gateHint}>
+            With Agent in the Loop the recon AI features need a provider model too. They stay off
+            until you add one in Global Settings.
+          </p>
+        )}
       </div>
     </div>
   )
@@ -50,6 +74,8 @@ interface ModelSelectionModalProps {
   onChangeAiPipeline: (id: string) => void
   onConfirm: () => void
   onCancel: () => void
+  /** Agent in the Loop with no provider: the pipeline model may stay unset. */
+  pipelineOptional?: boolean
 }
 
 /**
@@ -65,8 +91,9 @@ export function ModelSelectionModal({
   onChangeAiPipeline,
   onConfirm,
   onCancel,
+  pipelineOptional = false,
 }: ModelSelectionModalProps) {
-  const ready = bothModelsSelected(agentModel, aiPipelineModel)
+  const ready = bothModelsSelected(agentModel, aiPipelineModel, pipelineOptional)
   return (
     <div className={styles.guardrailOverlay}>
       <div className={styles.gateModalWide}>
@@ -102,11 +129,18 @@ export function ModelSelectionModal({
             Used by recon AI hooks: Nuclei tag cascade, FP filter, WAF and takeover classifiers,
             FFuf extensions.
           </span>
+          {pipelineOptional && (
+            <span className={styles.gateHint} role="note">
+              Recon AI features need a provider model. They stay off until you add one in Global
+              Settings.
+            </span>
+          )}
           <ModelPicker
             userId={userId}
             value={aiPipelineModel}
             onChange={onChangeAiPipeline}
             placeholder="Search pipeline models..."
+            filter={excludeLoop}
           />
         </div>
 

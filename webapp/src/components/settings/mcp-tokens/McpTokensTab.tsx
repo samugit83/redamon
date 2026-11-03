@@ -37,6 +37,7 @@ import {
 import ScopeChecklist from './ScopeChecklist'
 import AgentOnboardingModal from './AgentOnboardingModal'
 import styles from './McpTokensTab.module.css'
+import { profileOffered } from '@/lib/agentInTheLoop'
 
 interface Props {
   userId: string
@@ -134,6 +135,10 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
   const { dangerConfirm, confirm, alertError } = useAlertModal()
 
   const [tokens, setTokens] = useState<TokenRow[]>([])
+  // Agent in the Loop on this deployment (from the list answer): off, its scope
+  // and its profile are not offered.
+  const [loopOn, setLoopOn] = useState(false)
+  const profileList = PROFILE_LIST.filter(p => profileOffered(p.id, loopOn))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -215,6 +220,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
       if (!r.ok) throw await readApiError(r, 'Could not load tokens')
       const data = await r.json()
       setTokens(Array.isArray(data.tokens) ? data.tokens : [])
+      setLoopOn(data.features?.agentInTheLoop === true)
     } catch (e) {
       // Never a silent empty list: that reads as "you have no tokens" and
       // prompts a duplicate mint.
@@ -590,7 +596,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                 value={profile}
                 onChange={e => void changeProfile(e.target.value as ProfileId)}
               >
-                {PROFILE_LIST.map(p => (
+                {profileList.map(p => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
@@ -614,7 +620,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               </select>
             </div>
 
-            <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} />
+            <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} loopOff={!loopOn} />
 
             <div className={`formGroup ${styles.field}`}>
               <label className="formLabel" htmlFor="mcpTokenPassword">Confirm your password</label>
@@ -687,7 +693,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                 disabled={!!editing.revokedAt}
                 onChange={e => void changeEditProfile(e.target.value as ProfileId)}
               >
-                {PROFILE_LIST.map(p => (
+                {profileList.map(p => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
@@ -739,6 +745,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               selected={editScopes}
               disabled={!!editing.revokedAt}
               profile={editProfile}
+              loopOff={!loopOn}
               onToggle={s => {
                 setEditScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
                 setServerWantsPassword(false)
@@ -836,6 +843,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
         initialProfile={onboarding?.profile ?? null}
         initialScopes={onboarding?.scopes ?? [...DEFAULT_MCP_SCOPES]}
         tokenName={onboarding?.name}
+        loopOn={loopOn}
       />
 
       {!loading && !loadError && tokens.length > 0 && (

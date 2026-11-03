@@ -7,6 +7,7 @@
  */
 
 import { isChatProvider } from '@/lib/llmProviderKinds'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 
 /** Shape of the bits of the user record the gate cares about. */
 export interface UserModelDefaults {
@@ -39,9 +40,10 @@ export function needsModelGate(
   mode: 'create' | 'edit',
   agentModel: string | null | undefined,
   aiPipelineModel: string | null | undefined,
+  pipelineOptional = false,
 ): boolean {
   if (mode !== 'create') return false
-  return !agentModel?.trim() || !aiPipelineModel?.trim()
+  return !bothModelsSelected(agentModel, aiPipelineModel, pipelineOptional)
 }
 
 /**
@@ -64,8 +66,37 @@ export function hasNoConfiguredProvider(providers: unknown): boolean {
 export function bothModelsSelected(
   agentModel: string | null | undefined,
   aiPipelineModel: string | null | undefined,
+  pipelineOptional = false,
 ): boolean {
-  return !!agentModel?.trim() && !!aiPipelineModel?.trim()
+  return !!agentModel?.trim() && (pipelineOptional || !!aiPipelineModel?.trim())
+}
+
+/**
+ * Whether the provider gate blocks creation. Agent in the Loop needs no
+ * provider (the person's own Claude Code or Codex answers), so a loop agent
+ * model passes while the deployment has it on.
+ */
+export function providerGateApplies(
+  providers: unknown,
+  agentModel: string | null | undefined,
+  loopAvailable: boolean,
+): boolean {
+  if (loopAvailable && isLoopModel(agentModel)) return false
+  return hasNoConfiguredProvider(providers)
+}
+
+/**
+ * With a loop agent model and no provider, the recon pipeline model may stay
+ * unset: the schema default is stored, and every recon AI hook falls back to
+ * its built-in choice when its model cannot be built (it never fails a scan).
+ */
+export function pipelineModelOptional(agentModel: string | null | undefined, noProvider: boolean): boolean {
+  return noProvider && isLoopModel(agentModel)
+}
+
+/** Whether the model list offers Agent in the Loop (it does only while the switch is on). */
+export function loopModelOffered(models: Record<string, { id: string }[]> | null | undefined): boolean {
+  return Object.values(models ?? {}).some(list => list.some(m => isLoopModel(m.id)))
 }
 
 /**

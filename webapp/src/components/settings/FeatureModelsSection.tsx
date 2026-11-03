@@ -14,6 +14,7 @@ import {
 import { getDisplayName } from '@/app/graph/components/AIAssistantDrawer/modelUtils'
 import { ApiError, fetchJson, formatApiError, toApiError } from '@/lib/apiError'
 import { LLM_FEATURES, isPluginFeatureId, modelAllowedForFeature, type PluginFeatureId } from '@/lib/llmFeatures'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import styles from './FeatureModelsSection.module.css'
 
 interface FeatureModelsSectionProps {
@@ -161,7 +162,10 @@ export function FeatureModelsSection({ userId, providersCount, providersLoading 
 
   const tiles: TileFeature[] = [
     ...LLM_FEATURES.map(f => ({ ...f, allowed: (id: string) => modelAllowedForFeature(f.id, id) })),
-    ...plugins.map(p => ({ id: p.featureId, label: p.label, description: p.description, plugin: true })),
+    ...plugins.map(p => ({
+      id: p.featureId, label: p.label, description: p.description, plugin: true,
+      allowed: (id: string) => !isLoopModel(id),
+    })),
   ]
 
   return (

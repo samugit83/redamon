@@ -7,7 +7,7 @@
 
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import type { ActiveSkill } from './hooks/useSendHandlers'
 import styles from './AIAssistantDrawer.module.css'
 
@@ -30,7 +30,10 @@ import { usePendingNodeQuery } from './hooks/usePendingNodeQuery'
 // External hooks
 import { useAgentWebSocket } from '@/hooks/useAgentWebSocket'
 import { useAgentHealth } from '@/hooks/useAgentHealth'
-import { ConnectionStatus, type ConnectedPayload } from '@/lib/websocket-types'
+import { ConnectionStatus, type ConnectedPayload, type LoopStatusPayload } from '@/lib/websocket-types'
+import { useOptionalAuth } from '@/providers/AuthProvider'
+import { useOptionalProject } from '@/providers/ProjectProvider'
+import { loopDisplay } from './hooks/loopStatus'
 import { useConversations } from '@/hooks/useConversations'
 import { useChatPersistence } from '@/hooks/useChatPersistence'
 import { useToast } from '@/components/ui'
@@ -87,6 +90,14 @@ export function AIAssistantDrawer({
   // ─── State hooks ─────────────────────────────────────────────────────────────
   const [activeSkill, setActiveSkill] = useState<ActiveSkill | null>(null)
   const statusWord = useLoadingWord()
+  // Agent in the Loop: the live status of this session's run (null otherwise).
+  const [loopStatus, setLoopStatus] = useState<LoopStatusPayload | null>(null)
+  useEffect(() => { setLoopStatus(null) }, [sessionId])
+  // Under act-as the run is driven by the impersonated user's own token.
+  const effectiveUserId = useOptionalProject()?.userId ?? null
+  const signedInId = useOptionalAuth()?.user?.id
+  const actingAs = Boolean(effectiveUserId && signedInId && effectiveUserId !== signedInId)
+  const loop = useMemo(() => loopDisplay(loopStatus, { actingAs }), [loopStatus, actingAs])
   const toast = useToast()
 
   const {
@@ -275,6 +286,7 @@ export function AIAssistantDrawer({
     awaitingToolConfirmationRef, isProcessingToolConfirmation,
     pendingApprovalToolId, pendingApprovalWaveId,
     onGraphMutation: onRefetchGraph,
+    setLoopStatus,
   })
 
   const {
@@ -298,6 +310,7 @@ export function AIAssistantDrawer({
     // believed to be going, and take the spinner state from the server's live
     // agent_running instead of trusting events that may have been lost.
     onConnect: useCallback((payload: ConnectedPayload) => {
+      setLoopStatus(payload?.loop_state ?? null)
       resyncActiveConversation(sessionId, {
         agentRunning: payload?.agent_running,
         clientRunning: isLoadingRef.current,
@@ -598,6 +611,7 @@ export function AIAssistantDrawer({
         openApiKeyModal={openApiKeyModal}
         handleTimelineToolConfirmation={guardedToolConfirmation}
         handleToolStop={handleToolStop}
+        loop={loop}
       />
 
       <ApprovalDialog

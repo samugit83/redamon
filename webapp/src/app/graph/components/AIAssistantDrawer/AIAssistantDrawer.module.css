@@ -2561,3 +2561,44 @@ td:hover .tableCellCopyButton {
   cursor: not-allowed;
 }
 
+
+/* Agent in the Loop notices: under the chat, wrap at the drawer's narrowest width. */
+.loopNotices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.loopNotice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--status-info);
+  border-radius: var(--radius-default);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.loopNotice_warning {
+  border-left-color: var(--status-warning);
+}
+
+.loopNotice_error {
+  border-left-color: var(--status-error);
+}
+
+.loopNoticeLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.loopNoticeLinks a {
+  color: var(--text-primary);
+  text-decoration: underline;
+}

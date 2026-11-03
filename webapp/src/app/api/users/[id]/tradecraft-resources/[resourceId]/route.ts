@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -93,6 +94,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           { error: 'llmModel cannot be empty' },
           { status: 400 }
         )
+      }
+      if (isLoopModel(val)) {
+        return NextResponse.json({ error: 'Agent in the Loop answers only inside a chat run; pick a provider model for this resource', code: 'loop_model_not_allowed' }, { status: 400 })
       }
       updateData.llmModel = val.trim()
     }

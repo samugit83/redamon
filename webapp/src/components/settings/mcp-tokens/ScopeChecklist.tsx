@@ -25,6 +25,7 @@ import { ExternalLink } from '@/components/ui'
 import type { McpScope } from '@/lib/mcpAuth'
 import { MCP_SCOPE_COPY as SCOPE_COPY, SCOPE_GROUPS, type ScopeAccess } from '@/lib/mcp/scopeCopy'
 import { PROFILES, type ProfileId } from '@/lib/mcp/profiles'
+import { LOOP_SCOPE, loopTokenWarning } from '@/lib/mcp/loopScopes'
 import styles from './McpTokensTab.module.css'
 
 /** Read and write share one chip each; the point is only what changes. */
@@ -44,9 +45,14 @@ interface Props {
    * while staying unchecked.
    */
   profile?: ProfileId | null
+  /**
+   * Agent in the Loop is off on this deployment: its scope is not offered for a
+   * new token, and a token that already holds it shows it marked off.
+   */
+  loopOff?: boolean
 }
 
-export default function ScopeChecklist({ selected, onToggle, disabled = false, profile }: Props) {
+export default function ScopeChecklist({ selected, onToggle, disabled = false, profile, loopOff = false }: Props) {
   const meta = profile ? PROFILES[profile] : null
   const recommended = new Set(meta?.recommendedScopes ?? [])
   const optIn = new Set(meta?.optInScopes ?? [])
@@ -63,6 +69,8 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
     }
     return { checked, tag: checked ? 'added' : null }
   }
+  const offered = (scope: McpScope) => !(loopOff && scope === LOOP_SCOPE && !selected.includes(scope))
+  const loopWarning = loopTokenWarning(selected)
 
   const renderRow = (scope: McpScope, tone: 'neutral' | 'action' | 'exec') => {
     const { checked, tag } = rowState(scope)
@@ -96,6 +104,9 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
             </span>
             <code className={styles.scopeCode}>{scope}</code>
             {tag && <span className={styles.scopeTag}>{tag}</span>}
+            {loopOff && scope === LOOP_SCOPE && (
+              <span className={styles.scopeTag}>(off on this deployment)</span>
+            )}
           </span>
           <span className={styles.scopeBlurb}>{tone === 'exec' ? copy.detail ?? copy.blurb : copy.blurb}</span>
           {tone === 'exec' && copy.learnMore && (
@@ -116,15 +127,21 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
     <fieldset className={styles.scopes} disabled={disabled}>
       <legend className="formLabel">Permissions</legend>
 
-      {SCOPE_GROUPS.filter(g => g.tone !== 'exec').map(group => (
+      {SCOPE_GROUPS.filter(g => g.tone !== 'exec' && g.scopes.some(offered)).map(group => (
         <div key={group.id} className={styles.scopeGroup}>
           <div className={styles.scopeGroupHeader}>
             <span className={styles.scopeGroupLabel}>{group.label}</span>
             <span className={styles.scopeGroupHint}>{group.hint}</span>
           </div>
           <div className={styles.scopeList}>
-            {group.scopes.map(s => renderRow(s, group.tone))}
+            {group.scopes.filter(offered).map(s => renderRow(s, group.tone))}
           </div>
+          {group.scopes.includes(LOOP_SCOPE) && loopWarning && (
+            <p className={styles.scopeFootnote} role="alert">
+              <ShieldAlert size={13} />
+              <span>{loopWarning}</span>
+            </p>
+          )}
         </div>
       ))}
 

@@ -80,8 +80,10 @@ const AGENT_FACING = [
   // update_project_scope's refusals and result note point the agent at the
   // next call (preflight_scope_check), so they go stale like any description.
   'scopeTools.ts',
-  // The loop tools' refusals and hints tell a driver what to call next.
+  // The loop tools' refusals and hints tell a driver what to call next, and
+  // the loop skill teaches the whole procedure.
   'loopTools.ts',
+  'loopSkill.ts',
 ]
 
 /**

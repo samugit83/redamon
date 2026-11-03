@@ -1,4 +1,5 @@
 import { Shield, Target, Zap } from 'lucide-react'
+import { LOOP_MODEL_LABEL, isLoopModel } from '@/lib/agentInTheLoop'
 
 /** Recursively extract plain text from React children (for copy-to-clipboard). */
 export function extractTextFromChildren(children: any): string {
@@ -12,6 +13,7 @@ export function extractTextFromChildren(children: any): string {
 
 /** Format prefixed model names for display (e.g. "openrouter/meta-llama/llama-4" → "llama-4 (OR)") */
 export function formatModelDisplay(model: string): string {
+  if (isLoopModel(model)) return LOOP_MODEL_LABEL
   if (model.startsWith('openai_compat/')) {
     const parts = model.slice('openai_compat/'.length).split('/')
     return `${parts[parts.length - 1]} (OA-Compat)`

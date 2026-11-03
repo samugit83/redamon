@@ -22,6 +22,9 @@ import {
   bothModelsSelected,
   isBlankModelField,
   MODEL_DEFAULT_FIELDS,
+  providerGateApplies,
+  pipelineModelOptional,
+  loopModelOffered,
 } from './projectLlmGate.logic'
 
 // ---------------------------------------------------------------------------
@@ -215,5 +218,51 @@ describe('isBlankModelField (server backstop)', () => {
     expect(isBlankModelField('agentOpenaiModel', null)).toBe(false)
     expect(isBlankModelField('agentOpenaiModel', undefined)).toBe(false)
     expect(isBlankModelField('agentOpenaiModel', 123)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent in the Loop: no provider needed for the agent model (E3: recon AI
+// hooks fall back quietly when their model cannot be built)
+// ---------------------------------------------------------------------------
+
+
+describe('Agent in the Loop and the provider gate', () => {
+  const NONE: unknown[] = []
+  const ONE = [{ providerType: 'anthropic' }]
+
+  test('loop agent + no provider + switch on: not blocked', () => {
+    expect(providerGateApplies(NONE, 'loop/mcp', true)).toBe(false)
+  })
+
+  test('loop agent + switch off: blocked as today', () => {
+    expect(providerGateApplies(NONE, 'loop/mcp', false)).toBe(true)
+  })
+
+  test('provider model + no provider: blocked as today, whatever the switch', () => {
+    expect(providerGateApplies(NONE, 'claude-opus-4-6', true)).toBe(true)
+    expect(providerGateApplies(NONE, '', true)).toBe(true)
+  })
+
+  test('a provider configured: never blocked (unchanged)', () => {
+    expect(providerGateApplies(ONE, 'claude-opus-4-6', false)).toBe(false)
+    expect(providerGateApplies(ONE, 'loop/mcp', false)).toBe(false)
+  })
+
+  test('the pipeline model may stay unset only for a loop agent with no provider', () => {
+    expect(pipelineModelOptional('loop/mcp', true)).toBe(true)
+    expect(pipelineModelOptional('loop/mcp', false)).toBe(false)
+    expect(pipelineModelOptional('gpt-5', true)).toBe(false)
+    expect(needsModelGate('create', 'loop/mcp', '', true)).toBe(false)
+    expect(needsModelGate('create', 'loop/mcp', '', false)).toBe(true)
+    expect(needsModelGate('create', '', '', true)).toBe(true)
+    expect(bothModelsSelected('loop/mcp', '', true)).toBe(true)
+  })
+
+  test('the model list says whether the loop is offered', () => {
+    expect(loopModelOffered({ 'Agent in the Loop': [{ id: 'loop/mcp' }] })).toBe(true)
+    expect(loopModelOffered({ Anthropic: [{ id: 'claude-opus-4-6' }] })).toBe(false)
+    expect(loopModelOffered({})).toBe(false)
+    expect(loopModelOffered(null)).toBe(false)
   })
 })

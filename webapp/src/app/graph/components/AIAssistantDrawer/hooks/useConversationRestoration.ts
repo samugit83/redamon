@@ -245,6 +245,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           productivity_score: data.productivity_score ?? null,
           productivity_tier: (data.productivity_tier as string) ?? null,
           stall: data.stall ?? null,
+          answeredBy: data.answeredBy ?? null,
         } as ThinkingItem
       } else if (msg.type === 'tool_start') {
         if (data.wave_id) return null

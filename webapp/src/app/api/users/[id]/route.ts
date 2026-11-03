@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { purgeProjectWorkspace } from '@/lib/workspacePurge'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -105,6 +106,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (email) data.email = email
     if (role === 'admin' || role === 'standard') data.role = role
     // Remembered model choices, used to pre-fill the next new project.
+    if (isLoopModel(defaultAgentModel) || isLoopModel(defaultAiPipelineModel)) {
+      return NextResponse.json(
+        { error: 'Agent in the Loop cannot be a default model; pick it per project.', code: 'loop_model_not_allowed' },
+        { status: 400 },
+      )
+    }
     if (typeof defaultAgentModel === 'string') data.defaultAgentModel = defaultAgentModel
     if (typeof defaultAiPipelineModel === 'string') data.defaultAiPipelineModel = defaultAiPipelineModel
 

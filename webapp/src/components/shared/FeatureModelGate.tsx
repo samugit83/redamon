@@ -26,6 +26,7 @@ import {
   type FeatureId,
   type PluginFeatureId,
 } from '@/lib/llmFeatures'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import styles from './FeatureModelGate.module.css'
 
 /** A core feature, or a plugin's own entry (`plugin:<id>`, TD-10). */
@@ -56,9 +57,10 @@ function featureText(featureId: GateFeatureId, plugin: PluginFeatureText = {}): 
   }
 }
 
-// Plugin features have no excluded models: the exclusions are core features' own limits.
+// Plugin features have no excluded models of their own; Agent in the Loop is
+// excluded everywhere, because it answers only inside a chat run.
 const allowedFor = (featureId: GateFeatureId) => (id: string) =>
-  isPluginFeatureId(featureId) || modelAllowedForFeature(featureId, id)
+  isPluginFeatureId(featureId) ? !isLoopModel(id) : modelAllowedForFeature(featureId, id)
 
 // ---------------------------------------------------------------------------
 // Client calls shared by the gate and the Models by feature section

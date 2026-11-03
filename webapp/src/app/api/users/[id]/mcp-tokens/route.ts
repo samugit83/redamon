@@ -25,6 +25,7 @@ import {
 } from '@/lib/mcpAuth'
 import { validateProfile } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -55,7 +56,8 @@ export const GET = withRouteErrors('Could not load tokens', async (request: Next
     })
     // Expired and revoked rows stay visible: "why did my agent stop working" is
     // the common support question, and hiding the answer makes it harder.
-    return NextResponse.json({ tokens })
+    // The browser cannot read the deployment's switches; the token UI needs this one.
+    return NextResponse.json({ tokens, features: { agentInTheLoop: agentInTheLoopEnabled() } })
   } catch (error) {
     return internalError(error, 'Could not load tokens', { log: '[mcp-tokens] list failed' })
   }

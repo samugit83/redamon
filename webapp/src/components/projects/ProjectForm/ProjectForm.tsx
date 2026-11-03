@@ -93,7 +93,12 @@ import { RouteExposureSection } from './sections/RouteExposureSection'
 import { PartialReconModal } from './WorkflowView/PartialReconModal'
 import { ReconPresetModal } from './ReconPresetModal'
 import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
-import { seedInitialModels, needsModelGate, hasNoConfiguredProvider } from './projectLlmGate.logic'
+import {
+  seedInitialModels, needsModelGate, hasNoConfiguredProvider, providerGateApplies,
+  pipelineModelOptional, loopModelOffered,
+} from './projectLlmGate.logic'
+import { fetchModelOptions } from '@/components/shared/modelOptions'
+import { LOOP_MODEL_ID } from '@/lib/agentInTheLoop'
 import { SavePresetModal } from './SavePresetModal'
 import { UserPresetDrawer } from './UserPresetDrawer'
 import { getPresetById, type ReconPreset } from '@/lib/recon-presets'
@@ -414,6 +419,10 @@ export function ProjectForm({
 
   // LLM provider / model gates (create mode only)
   const [showProviderGate, setShowProviderGate] = useState(false)
+  // Agent in the Loop needs no provider: offered from the provider gate while
+  // the deployment has it on (the model list then carries it).
+  const [loopAvailable, setLoopAvailable] = useState(false)
+  const [noProvider, setNoProvider] = useState(false)
   // create mode: false until the provider check resolves; gates the form render
   // so a no-provider user sees the "configure provider" gate immediately, not
   // the project form flashing first.
@@ -688,8 +697,10 @@ export function ProjectForm({
   useEffect(() => {
     if (mode !== 'create' || !userId) return
     fetchJson<unknown>(`/api/users/${userId}/llm-providers`, undefined, 'Could not check your LLM providers')
-      .then((providers) => {
+      .then(async (providers) => {
         if (hasNoConfiguredProvider(providers)) {
+          setNoProvider(true)
+          setLoopAvailable(await fetchModelOptions(userId).then(loopModelOffered, () => false))
           setShowProviderGate(true)
         }
         setProviderChecked(true)
@@ -900,7 +911,8 @@ export function ProjectForm({
     if (mode !== 'create' || !userId) return true
     try {
       const providers = await fetchJson<unknown>(`/api/users/${userId}/llm-providers`, undefined, 'Could not check your LLM providers')
-      if (hasNoConfiguredProvider(providers)) {
+      setNoProvider(hasNoConfiguredProvider(providers))
+      if (providerGateApplies(providers, formData.agentOpenaiModel as string, loopAvailable)) {
         setShowProviderGate(true)
         return false
       }
@@ -942,7 +954,8 @@ export function ProjectForm({
     if (!(await ensureProviderConfigured())) return
 
     // Force explicit LLM model selection on create (agent + AI recon pipeline)
-    if (needsModelGate(mode, formData.agentOpenaiModel, formData.aiPipelineModel)) {
+    if (needsModelGate(mode, formData.agentOpenaiModel, formData.aiPipelineModel,
+      pipelineModelOptional(formData.agentOpenaiModel as string, noProvider))) {
       setPendingSaveAction('submit')
       setShowModelGate(true)
       return
@@ -1022,7 +1035,8 @@ export function ProjectForm({
     if (!(await ensureProviderConfigured())) return false
 
     // Force explicit LLM model selection on create (agent + AI recon pipeline)
-    if (needsModelGate(mode, formData.agentOpenaiModel, formData.aiPipelineModel)) {
+    if (needsModelGate(mode, formData.agentOpenaiModel, formData.aiPipelineModel,
+      pipelineModelOptional(formData.agentOpenaiModel as string, noProvider))) {
       setPendingSaveAction('stay')
       setShowModelGate(true)
       return false
@@ -1202,8 +1216,11 @@ export function ProjectForm({
       </div>
     )
   }
+  const useLoopInstead = loopAvailable
+    ? () => { updateField('agentOpenaiModel', LOOP_MODEL_ID); setShowProviderGate(false) }
+    : undefined
   if (mode === 'create' && showProviderGate) {
-    return <ProviderRequiredModal onCancel={onCancel} />
+    return <ProviderRequiredModal onCancel={onCancel} onUseLoop={useLoopInstead} />
   }
 
   return (
@@ -1680,7 +1697,7 @@ export function ProjectForm({
 
       {/* LLM provider gate: no provider configured -> can't create a project */}
       {showProviderGate && (
-        <ProviderRequiredModal onCancel={onCancel} />
+        <ProviderRequiredModal onCancel={onCancel} onUseLoop={useLoopInstead} />
       )}
 
       {/* Model selection gate: force picking both models before saving */}
@@ -1691,6 +1708,7 @@ export function ProjectForm({
           aiPipelineModel={(formData.aiPipelineModel as string) || ''}
           onChangeAgent={(id) => updateField('agentOpenaiModel', id)}
           onChangeAiPipeline={(id) => updateField('aiPipelineModel', id)}
+          pipelineOptional={pipelineModelOptional(formData.agentOpenaiModel as string, noProvider)}
           onCancel={() => { setShowModelGate(false); setPendingSaveAction(null) }}
           onConfirm={() => {
             setShowModelGate(false)

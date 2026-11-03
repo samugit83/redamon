@@ -318,3 +318,20 @@ describe('DELETE /api/users/[id]', () => {
     expect(res.status).toBe(404)
   })
 })
+
+
+describe('PUT /api/users/[id]: Agent in the Loop is never a default model', () => {
+  test.each([
+    [{ defaultAgentModel: 'loop/mcp', defaultAiPipelineModel: 'gpt-5' }],
+    [{ defaultAiPipelineModel: 'loop/mcp' }],
+  ])('%j -> 400, nothing written', async (body) => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    const res = await PUT(putReq(body), makeParams('user-1'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'Agent in the Loop cannot be a default model; pick it per project.',
+      code: 'loop_model_not_allowed',
+    })
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})

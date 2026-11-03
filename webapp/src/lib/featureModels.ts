@@ -5,6 +5,7 @@
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import {
   FEATURE_MODEL_MAX_LEN,
   FEATURE_MODEL_STATUS,
@@ -81,6 +82,10 @@ export function parseFeatureModelsPatch(
       return { error: `The model for ${key} is longer than ${FEATURE_MODEL_MAX_LEN} characters` }
     }
     if (CONTROL_CHARS.test(model)) return { error: `The model for ${key} contains a control character` }
+    // Plugin features too: a plugin's model call has no chat run behind it either.
+    if (isLoopModel(model)) {
+      return { error: `Agent in the Loop answers only inside a chat run; pick a provider model for ${key}` }
+    }
     if (!plugin && !modelAllowedForFeature(key as FeatureId, model)) {
       return { error: `${getLlmFeature(key as FeatureId).label} cannot run on ${model}` }
     }

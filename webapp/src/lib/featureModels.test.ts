@@ -97,6 +97,17 @@ describe('parseFeatureModelsPatch', () => {
   test('200 characters is allowed', () => {
     expect(parseFeatureModelsPatch({ triage: 'x'.repeat(200) })).toEqual({ set: { triage: 'x'.repeat(200) }, removed: [] })
   })
+
+  test('Agent in the Loop is refused for a core feature and for a plugin feature', () => {
+    // A feature's model call has no chat run behind it, so no driver can answer.
+    const core = parseFeatureModelsPatch({ triage: 'loop/mcp' })
+    expect(core).toHaveProperty('error')
+    expect((core as { error: string }).error).toMatch(/Agent in the Loop answers only inside a chat run/)
+    const plugin = parseFeatureModelsPatch({ 'plugin:acme': 'loop/mcp' }, { pluginFeatureIds: new Set(['plugin:acme']) })
+    expect(plugin).toHaveProperty('error')
+    expect(parseFeatureModelsPatch({ 'plugin:acme': 'gpt-5' }, { pluginFeatureIds: new Set(['plugin:acme']) }))
+      .toEqual({ set: { 'plugin:acme': 'gpt-5' }, removed: [] })
+  })
 })
 
 describe('featureModelErrorResponse', () => {

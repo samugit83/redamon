@@ -19,6 +19,7 @@ import type { ChatItem, Message, FileDownloadItem, FireteamItem, LatsSearchItem 
 import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } from './AgentTimeline'
 import styles from './AIAssistantDrawer.module.css'
 import type { TodoItem } from '@/lib/websocket-types'
+import { LOOP_SETTINGS_URL, LOOP_WIKI_URL, type LoopDisplay } from './hooks/loopStatus'
 
 type TimelineGroupItem = ThinkingItem | ToolExecutionItem | PlanWaveItem | DeepThinkItem | FireteamItem | LatsSearchItem
 
@@ -43,6 +44,8 @@ interface ChatAreaProps {
   handleTimelineToolConfirmation: (itemId: string, decision: 'approve' | 'reject') => void
   /** Cancel a single running tool card. Receives the tool's item.id. */
   handleToolStop?: (itemId: string) => void
+  /** Agent in the Loop: the status word, the chip and the notices of a loop run. */
+  loop?: LoopDisplay
 }
 
 export function ChatArea({
@@ -60,6 +63,7 @@ export function ChatArea({
   openApiKeyModal,
   handleTimelineToolConfirmation,
   handleToolStop,
+  loop,
 }: ChatAreaProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [copiedFieldKey, setCopiedFieldKey] = useState<string | null>(null)
@@ -68,7 +72,7 @@ export function ChatArea({
   // Live KPI chips for the Todos bar, derived from data already in chatItems
   // (see agentStatus.ts). Single reverse scan, no extra state.
   const agentStatus = useMemo(() => deriveAgentStatus(chatItems), [chatItems])
-  const showAgentStatus = hasAgentStatus(agentStatus)
+  const showAgentStatus = hasAgentStatus(agentStatus) || Boolean(loop?.chip)
 
   // Random heartbeat animation for the loading eye
   useEffect(() => {
@@ -251,7 +255,7 @@ export function ChatArea({
         <div className={styles.todoWidgetContainer}>
           <TodoListWidget
             items={todoList}
-            headerRight={showAgentStatus ? <AgentStatusChips {...agentStatus} /> : undefined}
+            headerRight={showAgentStatus ? <AgentStatusChips {...agentStatus} loopActive={loop?.chip} /> : undefined}
           />
         </div>
       )}
@@ -310,9 +314,27 @@ export function ChatArea({
             </div>
             <div className={styles.messageContent}>
               <div className={styles.loadingIndicator}>
-                <span key={statusWord} className={styles.loadingWord}>{statusWord}</span>
+                <span key={loop?.statusWord ?? statusWord} className={styles.loadingWord}>
+                  {loop?.statusWord ?? statusWord}
+                </span>
               </div>
             </div>
+          </div>
+        )}
+
+        {loop && loop.notices.length > 0 && (
+          <div className={styles.loopNotices} role="status">
+            {loop.notices.map(n => (
+              <div key={n.text} className={`${styles.loopNotice} ${styles[`loopNotice_${n.tone}`] ?? ''}`}>
+                <span>{n.text}</span>
+                {n.links && (
+                  <span className={styles.loopNoticeLinks}>
+                    <a href={LOOP_WIKI_URL} target="_blank" rel="noopener noreferrer">Set up Agent in the Loop</a>
+                    <a href={LOOP_SETTINGS_URL}>Global Settings → MCP Server</a>
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

@@ -14,7 +14,7 @@
  * handler's collaborators minimal.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const mockUserFindUnique = vi.fn()
 const mockProjectCreate = vi.fn()
@@ -115,5 +115,32 @@ describe('POST /api/projects — model-field guard', () => {
     const data = createdData()
     expect(data.agentOpenaiModel).toBe('deepseek/deepseek-chat')
     expect('aiPipelineModel' in data).toBe(false)
+  })
+})
+
+describe('Agent in the Loop on create', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  test('a loop agent model is saved from the UI while the switch is on', async () => {
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
+    await POST(postReq({ ...BASE, agentOpenaiModel: 'loop/mcp' }))
+    expect(createdData().agentOpenaiModel).toBe('loop/mcp')
+  })
+
+  test('a loop agent model is refused while the switch is off', async () => {
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'false')
+    const res = await POST(postReq({ ...BASE, agentOpenaiModel: 'loop/mcp' }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Agent in the Loop is turned off on this deployment.',
+      code: 'loop_model_not_allowed' })
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a loop pipeline model is always refused', async () => {
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
+    const res = await POST(postReq({ ...BASE, aiPipelineModel: 'loop/mcp' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('loop_model_not_allowed')
+    expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 })

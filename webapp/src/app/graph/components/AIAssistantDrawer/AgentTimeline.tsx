@@ -36,6 +36,8 @@ export interface ThinkingItem {
   productivity_score?: number | null
   productivity_tier?: string | null
   stall?: number | null
+  /** Agent in the Loop: the MCP token that supplied this decision (display fields only). */
+  answeredBy?: { token_prefix?: string; token_name?: string } | null
 }
 
 export interface ToolExecutionItem {

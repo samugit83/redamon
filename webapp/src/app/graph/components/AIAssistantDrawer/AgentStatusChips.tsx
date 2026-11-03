@@ -13,7 +13,8 @@
 
 'use client'
 
-import { Zap, Radar, Network } from 'lucide-react'
+import { Zap, Radar, Network, Cable } from 'lucide-react'
+import { LOOP_CHIP_LABEL, LOOP_CHIP_TOOLTIP } from './hooks/loopStatus'
 import styles from './AgentStatusChips.module.css'
 
 interface AgentStatusChipsProps {
@@ -23,6 +24,8 @@ interface AgentStatusChipsProps {
   latsActive: boolean
   latsRollouts?: number
   latsBudget?: number
+  /** The run's model calls are answered by Agent in the Loop. */
+  loopActive?: boolean
 }
 
 // Stall turns at/above which the chip warns (matches the LATS re-activation
@@ -36,6 +39,7 @@ export function AgentStatusChips({
   latsActive,
   latsRollouts,
   latsBudget,
+  loopActive = false,
 }: AgentStatusChipsProps) {
   const hasScore = typeof score === 'number' && !Number.isNaN(score)
   const tierClass = tier ? styles[`tier_${tier}`] || '' : ''
@@ -84,6 +88,14 @@ export function AgentStatusChips({
           {latsActive ? `${latsRollouts ?? 0}/${latsBudget ?? 0}` : 'idle'}
         </span>
       </span>
+
+      {/* 4. Agent in the Loop */}
+      {loopActive && (
+        <span className={`${styles.chip} ${styles.latsActive}`} title={LOOP_CHIP_TOOLTIP}>
+          <Cable size={12} className={styles.icon} />
+          <span className={styles.value}>{LOOP_CHIP_LABEL}</span>
+        </span>
+      )}
     </div>
   )
 }

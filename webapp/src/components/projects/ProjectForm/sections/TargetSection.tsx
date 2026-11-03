@@ -21,6 +21,7 @@ import { deriveRoeEnabled } from '@/lib/engagement'
 import { isValidDomain } from '@/lib/validation'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
+import { excludeLoop } from '@/lib/agentInTheLoop'
 import { useProject } from '@/providers/ProjectProvider'
 import styles from '../ProjectForm.module.css'
 
@@ -868,6 +869,7 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
                       userId={userId}
                       value={data.aiPipelineModel}
                       onChange={(id) => updateField('aiPipelineModel', id)}
+                      filter={excludeLoop}
                     />
                     <span className={styles.fieldHint}>
                       Model used by every AI hook in recon. Independent of the

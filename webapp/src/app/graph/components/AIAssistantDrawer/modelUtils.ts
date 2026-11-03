@@ -1,3 +1,5 @@
+import { LOOP_MODEL_LABEL, isLoopModel } from '@/lib/agentInTheLoop'
+
 export interface ModelOption {
   id: string
   name: string
@@ -17,5 +19,8 @@ export function getDisplayName(modelId: string, allModels: Record<string, ModelO
     const found = models.find(m => m.id === modelId)
     if (found) return found.name
   }
+  // The loop model is listed only while the switch is on; its name must not
+  // turn back into an id when the list is empty or still loading.
+  if (isLoopModel(modelId)) return LOOP_MODEL_LABEL
   return modelId
 }

@@ -19,6 +19,7 @@ import { wikiCheckoutPresent } from '@/lib/wikiCheckout.testUtils'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { describe, test, expect, beforeAll, vi } from 'vitest'
+import { loopTokenProblem } from './loopScopes'
 
 // tools/list needs a server, and a server imports the Prisma-touching tool
 // bodies. Nothing here calls a tool, so an absent client is enough.
@@ -152,13 +153,26 @@ describe('the registry', () => {
     expect(PROFILES.triage.optInScopes).toContain('triage:mute')
   })
 
-  test('EVERY profile auto-ticks kali:exec, and none offers it as opt-in', () => {
+  test('EVERY profile but Agent in the Loop auto-ticks kali:exec, and none offers it as opt-in', () => {
     // Sandbox access is on by default: a new token reaches the shell unless the
     // operator unticks it. A profile that dropped it would silently mint tokens
     // that cannot use the sandbox.
     for (const p of PROFILE_LIST) {
+      if (p.id === 'agent_in_the_loop') continue
       expect(p.recommendedScopes, `${p.id} does not tick kali:exec`).toContain('kali:exec')
       expect(p.optInScopes, `${p.id} still offers kali:exec as opt-in`).not.toContain('kali:exec')
+    }
+  })
+
+  test('the Agent in the Loop profile mints a token the loop tools accept', () => {
+    // A driver reads target-controlled text at every step: agent:loop plus read
+    // scopes only, which is exactly what loopTokenProblem accepts.
+    const p = PROFILES.agent_in_the_loop
+    expect(p.recommendedScopes).toEqual(['recon:read', 'agent:loop'])
+    expect(p.optInScopes).toEqual([])
+    expect(loopTokenProblem(p.recommendedScopes)).toEqual([])
+    for (const other of PROFILE_LIST.filter(x => x.id !== 'agent_in_the_loop')) {
+      expect(other.recommendedScopes, `${other.id} ticks agent:loop`).not.toContain('agent:loop')
     }
   })
 

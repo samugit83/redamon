@@ -77,3 +77,15 @@ describe('getDisplayName', () => {
     expect(getDisplayName('claude-sonnet-4-6', mockModels)).toBe('Claude Sonnet 4.6')
   })
 })
+
+describe('Agent in the Loop by name', () => {
+  test('getDisplayName names the loop model even when the list does not carry it', () => {
+    expect(getDisplayName('loop/mcp', {})).toBe('Agent in the Loop')
+  })
+
+  test('formatModelDisplay names it too', async () => {
+    const { formatModelDisplay } = await import('./phaseConfig')
+    expect(formatModelDisplay('loop/mcp')).toBe('Agent in the Loop')
+    expect(formatModelDisplay('deepseek/deepseek-chat')).toBe('deepseek-chat (DeepSeek)')
+  })
+})

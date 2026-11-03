@@ -31,6 +31,9 @@ import {
 import ScopeChecklist from './ScopeChecklist'
 import styles from './McpTokensTab.module.css'
 import { MAX_REVIEW_BUDGET, MCP_RUNS_PER_DAY } from '@/lib/triage/limits'
+import { LOOP_PROFILE_ID, profileOffered } from '@/lib/agentInTheLoop'
+import type { LoopClient } from '@/lib/mcp/loopSkill'
+import { loopTokenWarning } from '@/lib/mcp/loopScopes'
 
 interface GeneratedFile {
   path: string
@@ -47,6 +50,8 @@ interface Props {
   initialScopes: McpScope[]
   /** Shown in the header so it is obvious which token this describes. */
   tokenName?: string
+  /** Agent in the Loop is on for this deployment (its scope and profile are offered). */
+  loopOn?: boolean
 }
 
 /**
@@ -84,11 +89,13 @@ function shapeWarnings(scopes: McpScope[]): string[] {
   if (has('kali:exec')) {
     out.push('`kali:exec` is the only permission that reaches a live target outside a scan. The pack includes the command-execution reference.')
   }
+  const loopWarning = loopTokenWarning(scopes)
+  if (loopWarning) out.push(loopWarning)
   return out
 }
 
 export default function AgentOnboardingModal({
-  userId, isOpen, onClose, initialProfile, initialScopes, tokenName,
+  userId, isOpen, onClose, initialProfile, initialScopes, tokenName, loopOn = false,
 }: Props) {
   const { alertError } = useAlertModal()
 
@@ -97,6 +104,7 @@ export default function AgentOnboardingModal({
   const [serverUrl, setServerUrl] = useState('')
   const [style, setStyle] = useState<'mcp' | 'http'>('mcp')
   const [layout, setLayout] = useState<'folder' | 'single'>('folder')
+  const [client, setClient] = useState<LoopClient>('claude-code')
 
   const [files, setFiles] = useState<GeneratedFile[] | null>(null)
   const [active, setActive] = useState(0)
@@ -126,7 +134,7 @@ export default function AgentOnboardingModal({
       const r = await fetch(`/api/users/${userId}/agent-onboarding`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile, scopes, serverUrl, style, layout }),
+        body: JSON.stringify({ profile, scopes, serverUrl, style, layout, client }),
       })
       if (!r.ok) {
         setError((await readApiError(r, 'Could not generate the pack')).message)
@@ -140,7 +148,7 @@ export default function AgentOnboardingModal({
     } finally {
       setGenerating(false)
     }
-  }, [userId, profile, scopes, serverUrl, style, layout])
+  }, [userId, profile, scopes, serverUrl, style, layout, client])
 
   const skillDir = profile === 'custom' ? 'redamon-mcp' : `redamon-${profile.replace(/_/g, '-')}`
 
@@ -248,7 +256,7 @@ export default function AgentOnboardingModal({
               setFiles(null)
             }}
           >
-            {PROFILE_LIST.map(p => (
+            {PROFILE_LIST.filter(p => profileOffered(p.id, loopOn)).map(p => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </select>
@@ -258,6 +266,7 @@ export default function AgentOnboardingModal({
         <ScopeChecklist
           selected={scopes}
           profile={profile}
+          loopOff={!loopOn}
           onToggle={s => {
             setScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
             setFiles(null)
@@ -293,6 +302,20 @@ export default function AgentOnboardingModal({
             >
               <option value="mcp">MCP client</option>
               <option value="http">Raw HTTP (adds curl examples)</option>
+            </select>
+          </div>
+
+          <div className={`formGroup ${styles.field}`}>
+            <label className="formLabel" htmlFor="onboardClient">Client</label>
+            <select
+              id="onboardClient"
+              className={`select ${styles.control}`}
+              value={client}
+              onChange={e => { setClient(e.target.value as LoopClient); setFiles(null) }}
+            >
+              <option value="claude-code">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="other">Other MCP client</option>
             </select>
           </div>
 
@@ -357,10 +380,23 @@ export default function AgentOnboardingModal({
                 <strong>Where it goes.</strong> The archive already contains a{' '}
                 <code className={styles.scopeCode}>{skillDir}/</code> folder with{' '}
                 <code className={styles.scopeCode}>SKILL.md</code> at its root and the reference files
-                under <code className={styles.scopeCode}>references/</code>, so for Claude Code and
-                Claude Desktop just unzip it into{' '}
-                <code className={styles.scopeCode}>~/.claude/skills/</code>. Other clients have their
-                own skill directory.
+                under <code className={styles.scopeCode}>references/</code>,{' '}
+                {client === 'codex' ? (
+                  <>so for Codex unzip it into{' '}
+                    <code className={styles.scopeCode}>.agents/skills/</code> in the folder you run
+                    Codex from.</>
+                ) : client === 'other' ? (
+                  <>so put it wherever your client keeps skills.</>
+                ) : profile === LOOP_PROFILE_ID ? (
+                  <>so for Claude Code unzip it into{' '}
+                    <code className={styles.scopeCode}>.claude/skills/</code> of an empty folder you
+                    use only for this, and follow the Connecting steps in{' '}
+                    <code className={styles.scopeCode}>SKILL.md</code>.</>
+                ) : (
+                  <>so for Claude Code and Claude Desktop just unzip it into{' '}
+                    <code className={styles.scopeCode}>~/.claude/skills/</code>. Other clients have
+                    their own skill directory.</>
+                )}
               </p>
               <p>
                 <strong>This is a second install.</strong> The MCP server config (the token and the

@@ -8,6 +8,7 @@ import { toProjectSummary } from '@/lib/projectSummary'
 import type { Project } from '@prisma/client'
 import { useAlertModal, useToast } from '@/components/ui'
 import styles from './page.module.css'
+import { rememberedDefaults } from '@/lib/agentInTheLoop'
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -36,14 +37,12 @@ export default function NewProjectPage() {
 
     // Remember the chosen models so the next new project pre-fills them.
     // Fire-and-forget: a failure here must not block project creation.
-    if (projectData.agentOpenaiModel && projectData.aiPipelineModel) {
+    const defaults = rememberedDefaults(projectData.agentOpenaiModel, projectData.aiPipelineModel)
+    if (defaults) {
       fetch(`/api/users/${userId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          defaultAgentModel: projectData.agentOpenaiModel,
-          defaultAiPipelineModel: projectData.aiPipelineModel,
-        }),
+        body: JSON.stringify(defaults),
       }).catch(() => {})
     }
 

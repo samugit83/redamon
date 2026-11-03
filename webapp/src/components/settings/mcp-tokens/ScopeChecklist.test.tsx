@@ -147,3 +147,30 @@ describe('divergence from the profile is shown, not corrected', () => {
     expect(screen.queryByText(/never ticks those for you/)).toBeNull()
   })
 })
+
+describe('Agent in the Loop', () => {
+  test('a too-broad driver token is warned about, naming the extra scopes', () => {
+    const { rerender } = render(
+      <ScopeChecklist selected={['agent:loop', 'recon:read', 'kali:exec', 'recon:scan']} onToggle={vi.fn()} />,
+    )
+    const warning = screen.getByRole('alert')
+    expect(warning.textContent).toMatch(/must not also hold kali:exec, recon:scan/)
+    expect(warning.textContent).toMatch(/Mint a separate token/)
+    rerender(<ScopeChecklist selected={['agent:loop', 'recon:read', 'triage:read']} onToggle={vi.fn()} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+    rerender(<ScopeChecklist selected={['recon:read', 'kali:exec']} onToggle={vi.fn()} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  test('off on this deployment: not offered to a new token', () => {
+    render(<ScopeChecklist selected={['recon:read']} onToggle={vi.fn()} loopOff />)
+    expect(screen.queryByText('agent:loop')).toBeNull()
+    expect(screen.queryByText('Agent in the Loop')).toBeNull()
+  })
+
+  test('off on this deployment: a token that holds it shows it marked off', () => {
+    render(<ScopeChecklist selected={['recon:read', 'agent:loop']} onToggle={vi.fn()} loopOff />)
+    expect(boxFor('agent:loop').checked).toBe(true)
+    expect(screen.getByText('(off on this deployment)')).toBeInTheDocument()
+  })
+})

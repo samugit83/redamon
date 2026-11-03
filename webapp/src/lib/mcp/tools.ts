@@ -268,6 +268,9 @@ export async function getProjectActivity(ctx: McpContext, projectId: string) {
     // and another tenant's work is never echoed, nor counted.
     scans: activity.scans,
     agentSession: activity.agentSession,
+    ...(activity.waitingForExternalAgent
+      ? { agentSessionNote: 'The chat run is waiting for the external agent (Agent in the Loop) to answer a step.' }
+      : {}),
     triageRun: activity.triageRun,
     muteRulesApply: activity.muteRulesApply,
     activating: activity.activating,

@@ -94,8 +94,6 @@ export const IGNORED_SERVER_MESSAGES: Readonly<Partial<Record<MessageType, strin
     'The drawer builds its timeline from the tool and thinking events; the step record is not displayed.',
   [MessageType.SKILL_INJECT_ACK]:
     'The drawer shows an injected chat skill when it sends it; the queue position in the ack is not displayed.',
-  [MessageType.LOOP_STATUS]:
-    'Agent in the Loop status. The drawer does not display it yet; the run\'s own events still show every step.',
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +380,27 @@ export interface ConnectedPayload {
    *  while the socket was down are lost, so every (re)connect uses this to
    *  keep or clear the spinner. Absent from agents older than this field. */
   agent_running?: boolean
+  /** Agent in the Loop: the live status, for a reconnecting browser of a loop run. */
+  loop_state?: LoopStatusPayload
+}
+
+/**
+ * Agent in the Loop status (master plan T6). Never carries prompt or answer
+ * text: a step is named by id, purpose and iteration only.
+ */
+export interface LoopStatusPayload {
+  state: 'thinking' | 'running_tool' | 'awaiting_human' | 'finished' | 'stopped' | 'error' | string
+  detail: {
+    tool?: string
+    kind?: 'approval' | 'question' | 'tool_confirmation' | string
+    code?: 'loop_step_not_answered' | 'loop_step_declined' | 'loop_no_driver' | string
+    /** A decline's reason, sanitized by the agent (one line, at most 300 characters). */
+    reason?: string
+  }
+  step?: { stepId: string; state: 'open' | 'claimed' | string; purpose: string; iteration?: number | null }
+  driver: { connected: boolean; lastSeenSeconds: number | null }
+  openSteps: number
+  sinceSeconds: number
 }
 
 export interface ThinkingPayload {
@@ -392,6 +411,8 @@ export interface ThinkingPayload {
   action?: string
   input_tokens?: number
   output_tokens?: number
+  /** Agent in the Loop: the MCP token that supplied this decision (display prefix and name). */
+  answeredBy?: { token_prefix?: string; token_name?: string }
 }
 
 export interface ThinkingChunkPayload {
