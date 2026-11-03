@@ -317,6 +317,26 @@ describe('FileSystemDrawer: upload menu', () => {
     expect(uploadMocks.uploadBlob).not.toHaveBeenCalled()
     expect(screen.queryByRole('list', { name: 'Transfers' })).not.toBeInTheDocument()
   })
+
+  test('the small-upload hint is unchanged', async () => {
+    let release: () => void = () => {}
+    const answered = new Promise<void>((r) => { release = r })
+    fetchHandler = async (url) => {
+      if (url.includes('/api/agent/workspace/upload')) {
+        await answered
+        return new Response(JSON.stringify({ path: 'a.txt' }), { status: 200 })
+      }
+      return listAndOk(url)
+    }
+    const inputs = captureInputs()
+    await renderDrawer()
+    fireEvent.click(screen.getByTitle('Upload file(s) to current directory'))
+    pick(inputs[inputs.length - 1], [new File(['v'], 'a.txt')])
+    expect(await screen.findByText('Uploading 1 file…')).toBeInTheDocument()
+    release()
+    await waitFor(() => expect(screen.queryByText('Uploading 1 file…')).not.toBeInTheDocument())
+    expect(screen.queryByRole('list', { name: 'Transfers' })).not.toBeInTheDocument()
+  })
 })
 
 describe('FileSystemDrawer: drop', () => {

@@ -166,6 +166,28 @@ describe('ImportUrlDialog: check and preview', () => {
     expect(importButton().disabled).toBe(true)
   })
 
+  test('shows that the link is being checked', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const answer = resolveAnswer
+    resolveAnswer = () => json(GITHUB_REPO)
+    const real = global.fetch
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === '/api/agent/workspace/import-url/resolve') await gate
+      return real(input, init)
+    }) as unknown as typeof fetch
+    renderDialog()
+    fireEvent.change(screen.getByLabelText('Link'), { target: { value: OWNER_REPO } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    expect(await screen.findByRole('status', { name: 'Checking the link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check' })).toBeDisabled()
+    expect(importButton().disabled).toBe(true)
+    release()
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Checking the link' })).not.toBeInTheDocument())
+    expect(screen.getByText('GitHub repository')).toBeInTheDocument()
+    resolveAnswer = answer
+  })
+
   test('a preview the server marks unsupported cannot be imported', async () => {
     resolveAnswer = () => json({
       kind: 'docs-site', url: 'https://docs.example.test/', suggestedName: 'docs.example.test', host: 'docs.example.test',

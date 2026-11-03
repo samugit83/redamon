@@ -19,6 +19,8 @@ const mockUpdate = vi.fn()
 const mockDelete = vi.fn()
 const mockGetSession = vi.fn()
 const mockIsInternal = vi.fn()
+const mockProjectFindMany = vi.fn()
+const mockPurge = vi.fn()
 
 vi.mock('@/lib/prisma', () => ({
   default: {
@@ -28,7 +30,12 @@ vi.mock('@/lib/prisma', () => ({
       delete: (...args: unknown[]) => mockDelete(...args),
     },
     capturedHttpTransaction: { findMany: vi.fn().mockResolvedValue([]) },
+    project: { findMany: (...args: unknown[]) => mockProjectFindMany(...args) },
   },
+}))
+
+vi.mock('@/lib/workspacePurge', () => ({
+  purgeProjectWorkspace: (...args: unknown[]) => mockPurge(...args),
 }))
 
 vi.mock('@/lib/session', () => ({
@@ -68,6 +75,10 @@ beforeEach(() => {
   mockGetSession.mockReset()
   mockIsInternal.mockReset()
   mockIsInternal.mockReturnValue(false)
+  mockProjectFindMany.mockReset()
+  mockProjectFindMany.mockResolvedValue([])
+  mockPurge.mockReset()
+  mockPurge.mockResolvedValue(undefined)
 })
 
 // ---------------------------------------------------------------------------
@@ -276,6 +287,28 @@ describe('DELETE /api/users/[id]', () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to delete user', code: 'P2003' })
     errSpy.mockRestore()
+  })
+
+  test("deleting a user purges each of their projects' workspaces, after the delete", async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a' }, { id: 'proj-b' }])
+    const order: string[] = []
+    mockDelete.mockImplementation(async () => { order.push('delete') })
+    mockPurge.mockImplementation(async (pid: string) => { order.push(`purge ${pid}`) })
+    const res = await DELETE(delReq(), makeParams('user-2'))
+    expect(res.status).toBe(200)
+    expect(mockProjectFindMany).toHaveBeenCalledWith({ where: { userId: 'user-2' }, select: { id: true } })
+    // The agent refuses a purge while the web app still answers for the project.
+    expect(order).toEqual(['delete', 'purge proj-a', 'purge proj-b'])
+  })
+
+  test('a failed purge never fails the user delete', async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a' }])
+    mockDelete.mockResolvedValue({})
+    mockPurge.mockRejectedValue(new Error('agent down'))
+    const res = await DELETE(delReq(), makeParams('user-2'))
+    expect(res.status).toBe(200)
   })
 
   test('a user already gone is still a 404', async () => {
