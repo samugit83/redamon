@@ -824,7 +824,7 @@ async def _build_sitemap_mkdocs(base_url: str, github_token: str = "") -> Dict[s
         nav = []
         for u in urls:
             slug = urllib.parse.urlsplit(u).path.strip("/").split("/")[-1] or u
-            title = re.sub(r"[-_]", " ", slug.rstrip(".html")).title()
+            title = re.sub(r"[-_]", " ", slug.removesuffix(".html")).title()
             nav.append({"title": title, "path": u})
         return {"nav": nav}
     # 2. mkdocs.yml (rare on hosted)

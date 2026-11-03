@@ -242,6 +242,19 @@ class TestSitemapXmlRecursion(unittest.TestCase):
             urls = run_async(_fetch_sitemap_xml("https://x.com/sitemap.xml"))
         self.assertEqual(urls, [])
 
+    def test_sitemap_titles_strip_only_the_html_suffix(self):
+        # rstrip(".html") strips a character SET: install.html became "Insta".
+        from orchestrator_helpers.tradecraft_lookup import _build_sitemap_mkdocs
+        locs = ["https://docs.example.test/install.html", "https://docs.example.test/ssh",
+                "https://docs.example.test/html-basics.html"]
+
+        async def fake_sitemap(url, max_depth=2):
+            return list(locs)
+
+        with mock.patch("orchestrator_helpers.tradecraft_lookup._fetch_sitemap_xml", fake_sitemap):
+            out = run_async(_build_sitemap_mkdocs("https://docs.example.test"))
+        self.assertEqual([e["title"] for e in out["nav"]], ["Install", "Ssh", "Html Basics"])
+
 
 # =========================================================================
 # Prompt-injection envelope safety

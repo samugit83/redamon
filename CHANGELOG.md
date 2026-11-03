@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Tradecraft crawls follow relative links correctly.** Links on pages such as `…/page.html` resolved under the page's own name, so the crawl fetched pages that do not exist. They now resolve against the page's final address and its `<base>` tag, as a browser does; the mkdocs and gitbook nav harvests use the same rule. Rebuild `agent`.
+- **Tradecraft sitemap titles keep their last letters.** Titles taken from a sitemap lost any trailing `h`, `t`, `m`, `l` or `.` (`install.html` became `Insta`). Rebuild `agent`.
 
 ## [7.5.1] - 2026-11-01
 
