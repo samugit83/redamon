@@ -282,6 +282,7 @@ redamon/
 │   │   ├── guardrail.py            #     Soft (LLM) scope guardrail — prevents scanning unauthorized targets
 │   │   ├── hard_guardrail.py       #     Deterministic, non-disableable target blocklist
 │   │   ├── roe_gate.py             #     RoE + recon-budget gate every executor path asks before a tool runs
+│   │   ├── web_sources.py          #     Pure web helpers shared by Tradecraft and URL import (links, GitHub URLs, sitemaps, HTML/PDF text)
 │   │   ├── chat_persistence.py     #     Saves conversation history to PostgreSQL via webapp API
 │   │   ├── report_summarizer.py    #     Generates pentest report summaries from agent sessions
 │   │   ├── streaming.py            #     WebSocket event emission (status, thoughts, tool output)
@@ -291,6 +292,15 @@ redamon/
 │   │   ├── config.py               #     Orchestrator configuration constants
 │   │   ├── json_utils.py           #     JSON serialization helpers
 │   │   └── debug.py                #     Debug utilities
+│   ├── workspace_import/           #   Folder/archive uploads and URL imports into the Agent Workspace
+│   │   ├── extract.py              #     safe_extract: hand-written extraction, real-byte caps, no links or devices
+│   │   ├── staging.py              #     /workspace/.staging op dirs, disk-reservation ledger, boot swap recovery
+│   │   ├── place.py                #     Atomic placement: Keep both / Replace (crash-safe swap) / Fail
+│   │   ├── busy.py                 #     Paths a running import will replace; drawer and fs_* writes refuse them
+│   │   ├── executor.py             #     Bounded thread pool for import CPU/disk work (never the default pool)
+│   │   ├── downloads.py            #     Streaming file and archive downloads (attachment + nosniff)
+│   │   ├── http_routes.py          #     Master-key /workspace/* routes of the package (job status, ...)
+│   │   └── errors.py / limits.py   #     Failure codes with fixed sentences; env caps and the URL-import switch
 │   ├── cypherfix_triage/           #   Vulnerability triage agent
 │   │   ├── orchestrator.py         #     Hybrid orchestrator: static Cypher + ReAct analysis
 │   │   ├── state.py                #     TriageFinding, RemediationDraft, TriageState

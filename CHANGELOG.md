@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Workspace downloads stream.** A file, a folder archive or a bulk download is streamed from disk instead of being read into the agent's memory first, so a large file no longer risks the agent's memory limit. Archives are built in a staging folder on their own thread pool, and refuse with "not enough free disk space" when building one would take the disk below the scan floor plus 1 GiB. Every download is saved as an attachment (`X-Content-Type-Options: nosniff`), never shown inline. Rebuild `agent` and `webapp`.
+- **Big folders list in pages.** The Files tab shows the first 2,000 entries of a folder and says how many it left out; the filter searches only the entries shown. Rebuild `agent` and `webapp`.
+- **The agent sees uploaded folders.** A folder in `uploads/` is listed in the agent's workspace inbox (`name/`), counted with the files; names are shown on one line, control characters replaced. Rebuild `agent`.
+
 ### Fixed
 
 - **Tradecraft crawls follow relative links correctly.** Links on pages such as `…/page.html` resolved under the page's own name, so the crawl fetched pages that do not exist. They now resolve against the page's final address and its `<base>` tag, as a browser does; the mkdocs and gitbook nav harvests use the same rule. Rebuild `agent`.
+- **A background job cancelled before it started no longer shows as running.** Its task had not run a step yet, so nothing recorded the cancel and the Jobs tab showed it running until the next restart. Rebuild `agent`.
 - **Tradecraft sitemap titles keep their last letters.** Titles taken from a sitemap lost any trailing `h`, `t`, `m`, `l` or `.` (`install.html` became `Insta`). Rebuild `agent`.
 
 ## [7.5.1] - 2026-11-01
