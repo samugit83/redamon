@@ -112,6 +112,25 @@ printf 'MCP_ALLOWED_ORIGIN=https://redamon.example.org\n' > "$D/.env"
 run_secrets "$D"
 eq "deployed host without the line: written off" "$(val "$D" MCP_SERVER_ENABLED)" "false"
 rm -rf "$D"
+# deploy.sh's own mark is enough on its own.
+D="$(mktemp -d)"
+printf 'MCP_SERVER_ENABLED=false\nREDAMON_SINGLE_HOST_DEPLOY=true\n' > "$D/.env"
+run_secrets "$D"
+eq "deploy mark: MCP server stays off" "$(val "$D" MCP_SERVER_ENABLED)" "false"
+rm -rf "$D"
+# Keeping it off is said, never silent (a local .env with MCP_ALLOWED_ORIGIN set by hand).
+D="$(mktemp -d)"
+printf 'MCP_SERVER_ENABLED=false\nMCP_ALLOWED_ORIGIN=https://redamon.example.org\n' > "$D/.env"
+NOTE="$( cd "$REPO_ROOT" && ENVDIR="$D" bash -c '
+    set -uo pipefail
+    source ./redamon.sh
+    set +e
+    info(){ echo "INFO $*"; }; warn(){ :; }; error(){ :; }; success(){ :; }
+    SCRIPT_DIR="$ENVDIR"
+    ensure_auth_secrets
+' 2>/dev/null | grep -c 'MCP_SERVER_ENABLED stays false')"
+eq "the operator is told why the MCP server stays off" "$NOTE" "1"
+rm -rf "$D"
 
 echo
 echo "== the Agent in the Loop switch reaches both services, default ON =="

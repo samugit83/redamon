@@ -187,6 +187,12 @@ grep -q 'AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off' "$DEPLOY"
 awk '/AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off/{print}' "$DEPLOY" | grep -q '^ *log ' \
   && ok "that is a log(), not a warn() or a die()" \
   || bad "that is a log()" "warn, die or absent" "log"
+for site in cmd_init cmd_update; do
+  _end=$([[ $site == cmd_init ]] && echo cmd_update || echo cmd_status)
+  awk "/^${site}\\(\\)/,/^${_end}\\(\\)/" "$DEPLOY" | grep -q '^seed REDAMON_SINGLE_HOST_DEPLOY true' \
+    && ok "$site marks the .env as a deployed server" \
+    || bad "$site marks the .env as a deployed server" "absent" "seed REDAMON_SINGLE_HOST_DEPLOY true"
+done
 grep -q 'the flag did not reach the \\$svc container' "$DEPLOY" \
   && ok "verify checks both containers received the loop switch" \
   || bad "verify checks the loop switch" "absent" "a printenv check"

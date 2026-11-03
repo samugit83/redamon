@@ -532,6 +532,8 @@ seed CAPTURE_IOC_IGNORE_SUFFIXES "\${CAPTURE_IOC_IGNORE_SUFFIXES}"
 # host actively pins the flag off and the operator's choice is unreachable.
 # seed() overwrites an existing key, so re-running is idempotent either way.
 seed MCP_SERVER_ENABLED "\${MCP_SERVER_ENABLED}"
+# Marks this .env as a deployed server: redamon.sh then never turns its MCP server on.
+seed REDAMON_SINGLE_HOST_DEPLOY true
 seed MCP_TOKEN_RETENTION_DAYS "\${MCP_TOKEN_RETENTION_DAYS}"
 seed MCP_LLM_DAILY_BUDGET "\${MCP_LLM_DAILY_BUDGET}"
 seed MCP_RATE_MUTE_PER_MIN "\${MCP_RATE_MUTE_PER_MIN}"
@@ -921,6 +923,8 @@ seed() { local k="\$1" v="\$2"; [ -z "\$v" ] && return 0; grep -q "^\$k=" .env &
 # host actively pins the flag off and the operator's choice is unreachable.
 # seed() overwrites an existing key, so re-running is idempotent either way.
 seed MCP_SERVER_ENABLED "\${MCP_SERVER_ENABLED}"
+# Marks this .env as a deployed server: redamon.sh then never turns its MCP server on.
+seed REDAMON_SINGLE_HOST_DEPLOY true
 seed MCP_TOKEN_RETENTION_DAYS "\${MCP_TOKEN_RETENTION_DAYS}"
 seed MCP_LLM_DAILY_BUDGET "\${MCP_LLM_DAILY_BUDGET}"
 seed MCP_RATE_MUTE_PER_MIN "\${MCP_RATE_MUTE_PER_MIN}"
