@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -159,6 +160,33 @@ class CancelAndCrash(PlaceBase):
                 break
             await asyncio.sleep(0.05)
         self.assertEqual(list((self.tmp / ".staging/p1").glob("trash-*")), [])
+
+    async def test_cancel_while_the_trash_removal_waits_still_removes_it(self):
+        target = self.root / "uploads/repo"
+        target.mkdir()
+        (target / "old.txt").write_text("old")
+        gate = threading.Event()
+        blockers = [executor.submit(gate.wait) for _ in range(2)]  # both workers busy: the removal queues
+        trash = lambda: list((self.tmp / ".staging/p1").glob("trash-*"))
+        task = asyncio.ensure_future(place.place("p1", self.staged_dir(), "uploads", "repo", "replace"))
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if (target / "README").exists():
+                break
+        for _ in range(3):  # let place() reach its wait on the queued removal
+            await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        gate.set()
+        for b in blockers:
+            await asyncio.wrap_future(b)
+        for _ in range(100):
+            if not trash():
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(trash(), [])
+        self.assertEqual(sorted(os.listdir(target)), ["README"])
 
     async def test_crash_after_first_rename_is_recovered_at_boot(self):
         target = self.root / "uploads/repo"

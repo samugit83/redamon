@@ -123,15 +123,21 @@ async def place(project_id: str, staged, dest_dir_rel: str, name: str, policy: s
 
             def _after_swap(fut, trash=trash):
                 # Runs even when this task was cancelled while the shielded
-                # swap finished, so the old copy never lingers until boot.
-                if not fut.cancelled() and fut.exception() is None:
+                # swap finished, so the old copy never lingers until boot. A
+                # failed swap that put the old copy back leaves only its record;
+                # one that could not keeps the trash for recover_swaps().
+                if fut.cancelled():
+                    return
+                if fut.exception() is None or not (trash / staging.SWAP_ENTRY).exists():
                     cleanup.append(executor.submit(staging.remove_tree, trash))
 
             swap = asyncio.ensure_future(_swap(target, trash / staging.SWAP_ENTRY, staged))
             swap.add_done_callback(_after_swap)
             await asyncio.shield(swap)
             if cleanup:
-                await asyncio.wrap_future(cleanup[0])
+                # Shielded: cancelling the wrapper would cancel the removal
+                # itself while it still waits for a pool thread.
+                await asyncio.shield(asyncio.wrap_future(cleanup[0]))
         else:
             _move_new(staged, target)
     if is_dir:
