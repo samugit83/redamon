@@ -19,9 +19,11 @@ tools.py's in-process dispatch and route directly to this module.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
@@ -69,6 +71,12 @@ class JobHandle:
     exit_code: Optional[int] = None
     output_path: str = ""
     error: Optional[str] = None
+    # Set by long in-process jobs through report_progress(); meta files written
+    # before this field existed simply lack it.
+    progress: Optional[dict] = None
+    # False for workspace upload/import jobs: they run in-process and are capped
+    # by WORKSPACE_IMPORT_MAX_JOBS instead of taking a governed subprocess slot.
+    counts_toward_cap: bool = True
     task: Optional[asyncio.Task] = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
@@ -82,12 +90,42 @@ class JobHandle:
 # Must return {"success": bool, "output": str|None, "error": str|None}.
 RunnerFn = Callable[[str, dict, Callable[[str], Awaitable[None]]], Awaitable[dict]]
 
+# (registry, handle) of the job whose runner is executing in this task, so a
+# runner can report progress without a change to the runner contract above.
+_current_job: contextvars.ContextVar = contextvars.ContextVar("current_job", default=None)
+_PROGRESS_META_INTERVAL_SEC = 1.0
+
+
+async def report_progress(progress: dict, *, now: Callable[[], float] = time.monotonic) -> None:
+    """Record the running job's progress. Meta and the job_update event are
+    throttled to one per second; the final meta write always carries the last
+    value. Outside a job this does nothing."""
+    current = _current_job.get()
+    if current is None:
+        return
+    registry, handle = current
+    handle.progress = dict(progress)
+    t = now()
+    last = registry._progress_written.get(handle.job_id)
+    if last is not None and t - last < _PROGRESS_META_INTERVAL_SEC:
+        return
+    registry._progress_written[handle.job_id] = t
+    registry._write_meta(handle)
+    await registry._notify({
+        "type": "job_update",
+        "project_id": handle.project_id,
+        "job_id": handle.job_id,
+        "status": "running",
+        "progress": handle.progress,
+    })
+
 
 class JobRegistry:
     def __init__(self):
         self._jobs: dict[str, JobHandle] = {}
         self._lock = asyncio.Lock()
         self._ws_emit: Optional[Callable[[dict], Awaitable[None]]] = None
+        self._progress_written: dict[str, float] = {}
 
     def set_ws_emitter(self, fn: Optional[Callable[[dict], Awaitable[None]]]) -> None:
         """Register a coroutine to receive job_update events for the drawer."""
@@ -131,6 +169,7 @@ class JobRegistry:
         args: dict,
         runner: RunnerFn,
         label: Optional[str] = None,
+        counts_toward_cap: bool = True,
     ) -> dict:
         """Kick off a background tool execution. Returns synchronously."""
         if not project_id:
@@ -138,7 +177,11 @@ class JobRegistry:
         # Memory governor (Part 3): cap concurrent background jobs to available RAM
         # (none existed before). Generous base, scaled down under pressure; the
         # agent container mem_limit is the hard backstop. Fail-open.
-        cap = _governed_max_jobs()
+        cap = _governed_max_jobs() if counts_toward_cap else None
+        workspace_cap = None
+        if not counts_toward_cap:
+            from workspace_import import limits as _ws_limits
+            workspace_cap = _ws_limits.max_jobs()
         job_id = uuid.uuid4().hex
         started = datetime.now(timezone.utc).isoformat()
         log_path = self._log_path(project_id, job_id)
@@ -152,15 +195,24 @@ class JobRegistry:
             status="running",
             started_at=started,
             output_path=str(log_path),
+            counts_toward_cap=counts_toward_cap,
         )
         # Count-and-insert atomically under the lock so two concurrent spawns
         # can't both pass the cap and over-admit.
         async with self._lock:
             if cap is not None:
-                active = sum(1 for h in self._jobs.values() if h.status == "running")
+                active = sum(1 for h in self._jobs.values()
+                             if h.status == "running" and h.counts_toward_cap)
                 if active >= cap:
                     return {"error": f"Too many background jobs running ({active}/{cap}); "
                                      f"memory-limited, retry shortly.", "limitType": "ram"}
+            if workspace_cap is not None:
+                active = sum(1 for h in self._jobs.values()
+                             if h.status == "running" and not h.counts_toward_cap)
+                if active >= workspace_cap:
+                    return {"error": f"Too many workspace uploads and imports running "
+                                     f"({active}/{workspace_cap}); retry shortly.",
+                            "limitType": "workspace"}
             self._jobs[job_id] = handle
         log_path.touch()   # only after admission, so a rejected job leaves no file
         self._write_meta(handle)
@@ -177,6 +229,7 @@ class JobRegistry:
                 logger.error(f"job {job_id} log append failed: {e}")
 
         async def _run():
+            _current_job.set((self, handle))
             try:
                 result = await runner(tool_name, args or {}, append_log)
                 if isinstance(result, dict) and result.get("success"):
@@ -202,6 +255,7 @@ class JobRegistry:
             finally:
                 handle.ended_at = datetime.now(timezone.utc).isoformat()
                 handle.task = None
+                self._progress_written.pop(job_id, None)
                 self._write_meta(handle)
                 await self._notify({
                     "type": "job_update",
@@ -259,6 +313,14 @@ class JobRegistry:
                 await h.task
             except (asyncio.CancelledError, Exception):
                 pass
+            if h.status == "running":
+                # Cancelled before its first step, so _run never ran to record it.
+                h.status = "cancelled"
+                h.ended_at = datetime.now(timezone.utc).isoformat()
+                h.task = None
+                self._write_meta(h)
+                await self._notify({"type": "job_update", "project_id": project_id,
+                                    "job_id": job_id, "status": "cancelled"})
         return self.status(project_id, job_id)
 
     def list(self, project_id: str, active: Optional[bool] = None) -> list[dict]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from workspace_import import limits
@@ -35,9 +35,7 @@ def _workers(pool: ThreadPoolExecutor) -> int:
     return getattr(pool, "_max_workers", 1)
 
 
-async def run_blocking(fn: Callable[..., Any], *args, on_queued: Optional[Callable[[], Any]] = None):
-    """Run `fn(*args)` on the import pool. When every worker is already busy,
-    call `on_queued()` once first, so the job can report that it waits."""
+def _submit(fn: Callable[..., Any], *args) -> tuple[Future, bool]:
     global _in_flight
     pool = _executor()
     with _lock:
@@ -50,6 +48,18 @@ async def run_blocking(fn: Callable[..., Any], *args, on_queued: Optional[Callab
         raise
     # Counted down when the WORK ends: a cancelled await leaves it running.
     future.add_done_callback(_done)
+    return future, queued
+
+
+def submit(fn: Callable[..., Any], *args) -> Future:
+    """Fire-and-forget on the import pool (a clean-up that must outlive a cancel)."""
+    return _submit(fn, *args)[0]
+
+
+async def run_blocking(fn: Callable[..., Any], *args, on_queued: Optional[Callable[[], Any]] = None):
+    """Run `fn(*args)` on the import pool. When every worker is already busy,
+    call `on_queued()` once first, so the job can report that it waits."""
+    future, queued = _submit(fn, *args)
     if queued and on_queued is not None:
         result = on_queued()
         if inspect.isawaitable(result):

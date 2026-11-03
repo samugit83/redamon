@@ -46,7 +46,9 @@ from websocket_api import WebSocketManager, websocket_endpoint, MessageType
 import workspace_fs
 import job_runner
 import ws_job_emitter
+from workspace_import import staging as _ws_staging
 from workspace_import.errors import ImportFailure, error_body
+from workspace_import.http_routes import reset_project_imports, router as workspace_import_router
 
 # Initialize logging with file rotation
 setup_logging(log_level=logging.INFO, log_to_console=True, log_to_file=True)
@@ -94,6 +96,11 @@ async def lifespan(app: FastAPI):
     # tasks are gone by definition - this is a state-only fixup.
     reg = job_runner.get_registry()
     reg.recover_on_boot()
+
+    # No upload or import survives a restart. First put back any folder a
+    # Re-sync was swapping when the process died, then empty the staging area.
+    _ws_staging.recover_swaps()
+    _ws_staging.sweep_all()
 
     # Wire the JobRegistry to push job_update events through the WS manager
     # so the frontend drawer sees status changes in real time. The emitter
@@ -174,6 +181,8 @@ async def _request_validation_error(request, exc: RequestValidationError):
 
 # Plugin platform: the overridable built-in skill parts and their validator.
 app.include_router(plugin_router)
+# Workspace folder/archive upload sessions and URL imports.
+app.include_router(workspace_import_router)
 
 
 # =============================================================================
@@ -2715,6 +2724,8 @@ async def workspace_reset(req: WorkspaceResetRequest):
     if not req.projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     try:
+        workspace_fs._validate_project_id(req.projectId)
+        await reset_project_imports(req.projectId)
         summary = workspace_fs.reset_for_project(req.projectId)
         return {"projectId": req.projectId, **summary}
     except ValueError as e:
