@@ -149,6 +149,14 @@
   width: 100%;
 }
 
+.truncatedNotice {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-default);
+  text-align: center;
+}
+
 .empty,
 .error,
 .loading {

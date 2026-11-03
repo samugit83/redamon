@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { agentErrorResponse, callAgent } from '../agentProxy'
+import { agentErrorResponse } from '../agentProxy'
+import { callAgentForDownload, safeDownloadName, streamDownload } from '../downloadProxy'
 
 const FAILED = 'Failed to download file'
 
@@ -29,22 +30,9 @@ export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
     : `/files?path=${encodeURIComponent(path)}`
   // The legacy /files endpoint requires the internal key (it was an
   // unauthenticated command-injection surface); agentFetch sends it on both.
-  const call = await callAgent(agentPath, {}, FAILED, { timeoutMs: 60_000 })
+  const call = await callAgentForDownload(request, agentPath, {}, FAILED, 60_000)
   if (!call.ok) return call.response
   const resp = call.res
   if (!resp.ok) return agentErrorResponse(resp, FAILED)
-
-  const buffer = await resp.arrayBuffer()
-  const contentDisposition = resp.headers.get('Content-Disposition') || `attachment; filename="${path.split('/').pop()}"`
-  const contentType = resp.headers.get('Content-Type') || 'application/octet-stream'
-
-  return new NextResponse(buffer, {
-    status: 200,
-    headers: {
-      'Content-Type': contentType,
-      'Content-Disposition': contentDisposition,
-      'Content-Length': String(buffer.byteLength),
-      'Cache-Control': 'no-cache',
-    },
-  })
+  return streamDownload(resp, safeDownloadName(path))
 })

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { agentErrorResponse, callAgent } from '../../agentProxy'
+import { agentErrorResponse } from '../../agentProxy'
+import { callAgentForDownload, safeDownloadName, streamDownload } from '../../downloadProxy'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+export const maxDuration = 900
 
 const FAILED = 'Failed to build archive'
 
@@ -21,24 +22,15 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   const __denied = await guardProject(body.projectId || '')
   if (__denied) return __denied
 
-  const call = await callAgent('/workspace/bulk-archive', {
+  // The agent builds the whole archive before its first byte.
+  const call = await callAgentForDownload(request, '/workspace/bulk-archive', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }, FAILED, { timeoutMs: 60_000 })
+  }, FAILED, 900_000)
   if (!call.ok) return call.response
   const resp = call.res
   if (!resp.ok) return agentErrorResponse(resp, FAILED)
-  const buffer = await resp.arrayBuffer()
-  const contentDisposition = resp.headers.get('Content-Disposition') || ''
-  const contentType = resp.headers.get('Content-Type') || 'application/octet-stream'
-  return new NextResponse(buffer, {
-    status: 200,
-    headers: {
-      'Content-Type': contentType,
-      'Content-Disposition': contentDisposition,
-      'Content-Length': String(buffer.byteLength),
-      'Cache-Control': 'no-cache',
-    },
-  })
+  const ext = body.format === 'zip' ? 'zip' : 'tar.gz'
+  return streamDownload(resp, `${safeDownloadName(body.archiveName, 'bundle')}.${ext}`)
 })

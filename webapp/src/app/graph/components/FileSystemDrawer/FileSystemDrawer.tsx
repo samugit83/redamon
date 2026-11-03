@@ -153,6 +153,8 @@ export function FileSystemDrawer({
   const [tab, setTab] = useState<Tab>(initialTab)
   const [currentPath, setCurrentPath] = useState(initialPath)
   const [entries, setEntries] = useState<Entry[]>([])
+  // Set when the agent capped the listing: the folder holds more than it sent.
+  const [listingTotal, setListingTotal] = useState<number | null>(null)
   const [entriesLoading, setEntriesLoading] = useState(false)
   const [entriesError, setEntriesError] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
@@ -271,13 +273,16 @@ export function FileSystemDrawer({
     }
     try {
       const url = `/api/agent/workspace/list?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`
-      const data = await fetchJson<{ entries?: Entry[] }>(url, { cache: 'no-store' }, 'Failed to list workspace')
+      const data = await fetchJson<{ entries?: Entry[]; total?: number; truncated?: boolean }>(
+        url, { cache: 'no-store' }, 'Failed to list workspace')
       setEntries(data.entries || [])
+      setListingTotal(data.truncated && typeof data.total === 'number' ? data.total : null)
       if (silent) setEntriesError(null)
     } catch (e) {
       if (!silent) {
         setEntriesError(errorMessage(e, 'Failed to load'))
         setEntries([])
+        setListingTotal(null)
       }
     } finally {
       if (!silent) setEntriesLoading(false)
@@ -1074,6 +1079,12 @@ export function FileSystemDrawer({
                     </span>
                   </div>
                 ))
+              )}
+              {listingTotal !== null && (
+                <div className={styles.truncatedNotice} role="status">
+                  Showing the first {entries.length.toLocaleString()} of {listingTotal.toLocaleString()} entries.
+                  Narrow the folder or download it. The filter searches only the entries shown.
+                </div>
               )}
             </div>
           )}

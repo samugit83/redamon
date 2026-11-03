@@ -16,16 +16,24 @@ import { GET } from './route'
 
 let fetchCalls: string[]
 let fetchInits: (RequestInit | undefined)[]
+let agentHeaders: Record<string, string>
+let agentBody: ReadableStream<Uint8Array>
 const NOT_FOUND = NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+function bodyOf(text: string): ReadableStream<Uint8Array> {
+  return new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(text)); c.close() } })
+}
 
 beforeEach(() => {
   fetchCalls = []
   fetchInits = []
+  agentHeaders = {}
+  agentBody = bodyOf('abc')
   mockGuardProject.mockReset()
   vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
     fetchCalls.push(String(url))
     fetchInits.push(init)
-    return { ok: true, arrayBuffer: async () => new ArrayBuffer(3), headers: new Headers() } as unknown as Response
+    return new Response(agentBody, { status: 200, headers: agentHeaders })
   }))
 })
 
@@ -64,5 +72,41 @@ describe('GET /api/agent/files', () => {
     expect(res.status).toBe(200)
     const headers = (fetchInits[0]?.headers ?? {}) as Record<string, string>
     expect(headers['x-internal-key']).toBe('test-key-123')
+  })
+})
+
+describe('GET /api/agent/files streams safely', () => {
+  test('streams agent body without buffering', async () => {
+    agentHeaders = { 'Content-Type': 'application/octet-stream', 'Content-Length': '3' }
+    const res = await GET(new NextRequest('http://x/api/agent/files?path=/tmp/out.bin'))
+    expect(res.body).toBe(agentBody)  // the upstream stream itself, never read into memory
+    expect(res.headers.get('Content-Length')).toBe('3')
+    expect(await res.text()).toBe('abc')
+  })
+
+  test.each([
+    ['legacy /files branch', 'http://x/api/agent/files?path=/tmp/evil.html'],
+    ['projectId branch', 'http://x/api/agent/files?projectId=p1&path=uploads/site/evil.svg'],
+  ])('html and svg downloads are attachment with nosniff (%s)', async (_name, url) => {
+    mockGuardProject.mockResolvedValue(null)
+    agentHeaders = { 'Content-Type': url.endsWith('.svg') ? 'image/svg+xml' : 'text/html' }
+    const res = await GET(new NextRequest(url))
+    expect(res.headers.get('Content-Disposition')).toMatch(/^attachment; filename="evil\.(html|svg)"/)
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+  })
+
+  test('agent Content-Disposition is never forwarded', async () => {
+    mockGuardProject.mockResolvedValue(null)
+    agentHeaders = { 'Content-Disposition': 'inline; filename="x.html"' }
+    const res = await GET(new NextRequest('http://x/api/agent/files?projectId=p1&path=uploads/a"b\r\nc.html'))
+    const cd = res.headers.get('Content-Disposition') || ''
+    expect(cd.startsWith('attachment;')).toBe(true)
+    expect(cd).not.toContain('inline')
+    expect(cd).not.toMatch(/[\r\n]/)
+  })
+
+  test('the agent call carries the browser request signal', async () => {
+    await GET(new NextRequest('http://x/api/agent/files?path=/tmp/a'))
+    expect(fetchInits[0]?.signal).toBeInstanceOf(AbortSignal)
   })
 })

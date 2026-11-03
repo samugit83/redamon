@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { guardProject } from '@/lib/access'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { agentErrorResponse, callAgent } from '../../agentProxy'
+import { agentErrorResponse } from '../../agentProxy'
+import { callAgentForDownload, safeDownloadName, streamDownload } from '../../downloadProxy'
 
 const FAILED = 'Failed to download archive'
 
@@ -16,25 +17,18 @@ export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
     return NextResponse.json({ error: 'projectId, path required' }, { status: 400 })
   }
 
-  const call = await callAgent(
+  // The agent builds the whole archive before its first byte; a 2 GiB folder
+  // takes far longer than a minute.
+  const call = await callAgentForDownload(
+    request,
     `/workspace/archive-download?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}&format=${encodeURIComponent(format)}`,
     {},
     FAILED,
-    { timeoutMs: 60_000 },
+    900_000,
   )
   if (!call.ok) return call.response
   const resp = call.res
   if (!resp.ok) return agentErrorResponse(resp, FAILED)
-  const buffer = await resp.arrayBuffer()
-  const contentDisposition = resp.headers.get('Content-Disposition') || ''
-  const contentType = resp.headers.get('Content-Type') || 'application/octet-stream'
-  return new NextResponse(buffer, {
-    status: 200,
-    headers: {
-      'Content-Type': contentType,
-      'Content-Disposition': contentDisposition,
-      'Content-Length': String(buffer.byteLength),
-      'Cache-Control': 'no-cache',
-    },
-  })
+  const ext = format === 'zip' ? 'zip' : 'tar.gz'
+  return streamDownload(resp, `${safeDownloadName(path, 'workspace')}.${ext}`)
 })
