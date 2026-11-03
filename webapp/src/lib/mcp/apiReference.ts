@@ -274,7 +274,7 @@ function renderAuthentication(): string {
     '',
     `Every request carries a personal access token in the \`Authorization\` header. That is the only way in: this endpoint ignores the browser session cookie and RedAmon's internal service keys, and it never reads a token from the URL. A token acts as the user who created it, inside that user's own projects, limited to the permissions ticked on it.`,
     '',
-    'The server is off by default. Until `MCP_SERVER_ENABLED=true` is set in `.env` and the webapp container is recreated with `docker compose up -d webapp`, every request answers `404`, whatever the token, with an error message that says the server is disabled and names that variable. A plain `docker compose restart` keeps the old environment, so the server stays off.',
+    'A local install has the server on: `./redamon.sh` writes `MCP_SERVER_ENABLED=true` into `.env` (a single-host server deploy keeps it off until you enable it). While the switch is off, every request answers `404`, whatever the token, with an error message that says the server is disabled and names that variable. After changing it, recreate the webapp container with `docker compose up -d webapp`: a plain `docker compose restart` keeps the old environment.',
     '',
     '### 1. Create a token',
     '',

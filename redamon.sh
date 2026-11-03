@@ -1975,20 +1975,37 @@ ensure_auth_secrets() {
         echo "TRAFFIC_INGEST_DATABASE_URL=postgresql://traffic_ingest:$(openssl rand -hex 32)@postgres:5432/${_ti_db}" >> "$env_file"
         info "Generated TRAFFIC_INGEST_DATABASE_URL (capture ingest role)"
     fi
-    # Inbound MCP server. Written EXPLICITLY as false rather than left unset, so
-    # the operator can see the switch exists and where to flip it. The webapp has
-    # NO env_file, so this is also listed in its compose `environment` block - a
-    # value set only here would otherwise be silently inert.
-    if ! grep -q '^MCP_SERVER_ENABLED=' "$env_file" 2>/dev/null; then
-        echo "MCP_SERVER_ENABLED=false" >> "$env_file"
-        info "Initialized MCP_SERVER_ENABLED=false (inbound MCP server off by default)"
-    fi
-    # Agent in the Loop: written explicitly as false for the same reason. The agent
-    # and the webapp both read it, so it is in both compose environment blocks.
-    if ! grep -q '^AGENT_IN_THE_LOOP_ENABLED=' "$env_file" 2>/dev/null; then
-        echo "AGENT_IN_THE_LOOP_ENABLED=false" >> "$env_file"
-        info "Initialized AGENT_IN_THE_LOOP_ENABLED=false (Agent in the Loop off by default)"
-    fi
+    # Inbound MCP server and Agent in the Loop: ON by default, and written
+    # EXPLICITLY so the operator can see each switch and where to flip it. Neither
+    # does anything until a person mints a token. The webapp has NO env_file, so
+    # both are also listed in its compose `environment` block (the loop switch in
+    # the agent's too) - a value set only here would otherwise be silently inert.
+    #
+    # Earlier releases wrote MCP_SERVER_ENABLED=false, so an existing .env is
+    # switched on ONCE and the marker key below records it: a false written after
+    # it is the operator's own choice and is kept. A KEY=value line, not a comment:
+    # every line this function writes is one (redamon_plugins_lifecycle_test.sh).
+    #
+    # A single-host deploy (deploy.sh seeds MCP_ALLOWED_ORIGIN) faces the internet
+    # and sets MCP_SERVER_ENABLED itself, default off and refused over plain http:
+    # its MCP switch is never turned on here, even by a hand-run update.
+    local switched_on_once='MCP_AND_LOOP_DEFAULT_ON_APPLIED=1'
+    local deployed="" switch value default
+    [[ -n "$(_env_get MCP_ALLOWED_ORIGIN "$env_file")" ]] && deployed=1
+    for switch in MCP_SERVER_ENABLED AGENT_IN_THE_LOOP_ENABLED; do
+        default=true
+        [[ -n "$deployed" && "$switch" == MCP_SERVER_ENABLED ]] && default=false
+        value="$(_env_get "$switch" "$env_file")"
+        if ! grep -q "^${switch}=" "$env_file" 2>/dev/null; then
+            echo "${switch}=${default}" >> "$env_file"
+            info "Initialized ${switch}=${default}"
+        elif [[ "$default" == "true" && "$value" == "false" ]] && ! grep -qxF "$switched_on_once" "$env_file" 2>/dev/null; then
+            _env_strip_var "$env_file" "$switch"
+            echo "${switch}=true" >> "$env_file"
+            info "Turned ${switch} on (now on by default; set it to false in .env to keep it off)"
+        fi
+    done
+    grep -qxF "$switched_on_once" "$env_file" 2>/dev/null || echo "$switched_on_once" >> "$env_file"
     # The plugin platform always runs, so a PLUGINS_ENABLED line left by an older
     # release only misleads whoever reads .env. Nothing reads it.
     if grep -qE '^[[:space:]]*(export[[:space:]]+)?PLUGINS_ENABLED=' "$env_file" 2>/dev/null; then
@@ -2025,11 +2042,10 @@ mcp_server_preflight() {
 
     internal="$(_env_get INTERNAL_API_KEY "$env_file")"
     if [[ -z "$internal" || "$internal" == "changeme" ]]; then
-        error "MCP_SERVER_ENABLED=true but INTERNAL_API_KEY is unset or 'changeme'."
+        error "MCP_SERVER_ENABLED=true but INTERNAL_API_KEY is unset or 'changeme' (delete the line; the next ./redamon.sh up generates it)."
         error "The agent's auth fails OPEN in that state, and its port is published"
         error "on 0.0.0.0 in docker-compose.yml. Refusing to enable the inbound MCP"
-        error "server. Run './redamon.sh install' to generate the secrets, or set"
-        error "MCP_SERVER_ENABLED=false in .env."
+        error "server. Or set MCP_SERVER_ENABLED=false in .env."
         return 1
     fi
     return 0

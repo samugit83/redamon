@@ -138,8 +138,9 @@ CERT_BASE="${LEGACY_CERT_DIR:-$SCRIPT_DIR}"
 : "${MCP_RATE_START_PER_WINDOW:=}"; : "${MCP_RATE_START_WINDOW_MS:=}"
 : "${MCP_RATE_COMPARE_PER_WINDOW:=}"; : "${MCP_RATE_COMPARE_WINDOW_MS:=}"
 : "${MCP_KALI_EXEC_ENABLED:=true}"; : "${MCP_RATE_EXEC_PER_MIN:=}"
-# Agent in the Loop rides on the MCP server: inert unless MCP_SERVER_ENABLED is on too.
-: "${AGENT_IN_THE_LOOP_ENABLED:=false}"; : "${MCP_RATE_LOOP_PER_MIN:=}"
+# Agent in the Loop rides on the MCP server: on by default, inert unless
+# MCP_SERVER_ENABLED is on too (that one stays off by default on a deployed host).
+: "${AGENT_IN_THE_LOOP_ENABLED:=true}"; : "${MCP_RATE_LOOP_PER_MIN:=}"
 : "${MCP_DISABLED_TOOLS:=}"
 : "${MCP_TOKEN_PRUNE_INTERVAL:=}"
 : "${ADMIN_NAME:=}"; : "${ADMIN_EMAIL:=}"; : "${ADMIN_PASSWORD:=}"
@@ -236,9 +237,10 @@ preflight_validate() {
       warn "MCP over https-ip with a self-signed cert: most MCP clients reject the certificate. Use a real cert (TLS_MODE=provided) or a domain."
     fi
   fi
-  # A warning, not a refusal: the switch is harmless while the server is off.
+  # A note, not a warning: the loop switch is on by default and harmless while
+  # the server is off, which is this deploy's default.
   if is_true "${AGENT_IN_THE_LOOP_ENABLED}" && ! is_true "${MCP_SERVER_ENABLED}"; then
-    warn "AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off: an external agent reaches its steps over the MCP server, so Agent in the Loop stays inert."
+    log "AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off: an external agent reaches its steps over the MCP server, so Agent in the Loop stays inert until you turn the MCP server on."
   fi
   [[ -z "${OPERATOR_ALLOW_CIDRS}" && "${GATE_MODE}" == "ip_allowlist" ]] && warn "GATE_MODE=ip_allowlist but OPERATOR_ALLOW_CIDRS is empty -> the nginx gate will allow all"
 

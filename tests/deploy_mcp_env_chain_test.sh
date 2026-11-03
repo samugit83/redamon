@@ -167,7 +167,7 @@ if [[ -z "$LOOP_SVCS" ]]; then
 else
   for svc in agent webapp; do
     eq "$svc gets AGENT_IN_THE_LOOP_ENABLED" \
-       "$(awk -v s="$svc" '$1==s{print $2}' <<<"$LOOP_SVCS")" '${AGENT_IN_THE_LOOP_ENABLED:-false}'
+       "$(awk -v s="$svc" '$1==s{print $2}' <<<"$LOOP_SVCS")" '${AGENT_IN_THE_LOOP_ENABLED:-true}'
   done
 fi
 for site in cmd_init cmd_update; do
@@ -176,15 +176,17 @@ for site in cmd_init cmd_update; do
     && ok "$site seeds AGENT_IN_THE_LOOP_ENABLED" \
     || bad "$site seeds AGENT_IN_THE_LOOP_ENABLED" "absent" "a seed line"
 done
-grep -qE ': "\$\{AGENT_IN_THE_LOOP_ENABLED:=false\}"' "$DEPLOY" \
-  && ok "deploy.sh defaults the loop switch to false" \
-  || bad "deploy.sh defaults the loop switch" "no default" ': "${AGENT_IN_THE_LOOP_ENABLED:=false}"'
+grep -qE ': "\$\{AGENT_IN_THE_LOOP_ENABLED:=true\}"' "$DEPLOY" \
+  && ok "deploy.sh defaults the loop switch to true" \
+  || bad "deploy.sh defaults the loop switch" "no default" ': "${AGENT_IN_THE_LOOP_ENABLED:=true}"'
 grep -q 'AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off' "$DEPLOY" \
-  && ok "deploy.sh warns when the loop is on without the MCP server" \
-  || bad "deploy.sh warns when the loop is on without the MCP server" "no warning" "a warn"
-awk '/AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off/{print}' "$DEPLOY" | grep -q 'warn ' \
-  && ok "that is a warn(), not a die()" \
-  || bad "that is a warn()" "die or absent" "warn"
+  && ok "deploy.sh notes when the loop is on without the MCP server" \
+  || bad "deploy.sh notes when the loop is on without the MCP server" "no note" "a log line"
+# The loop switch is on by default and the MCP server off by default here, so this
+# is the default state: a note, never a warning or a refusal.
+awk '/AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off/{print}' "$DEPLOY" | grep -q '^ *log ' \
+  && ok "that is a log(), not a warn() or a die()" \
+  || bad "that is a log()" "warn, die or absent" "log"
 grep -q 'the flag did not reach the \\$svc container' "$DEPLOY" \
   && ok "verify checks both containers received the loop switch" \
   || bad "verify checks the loop switch" "absent" "a printenv check"
