@@ -187,8 +187,9 @@ class _Writer:
 
 
 class _Budget:
-    def __init__(self, max_bytes, max_entries, report, progress, cancel_event, now):
+    def __init__(self, max_bytes, max_entries, report, progress, cancel_event, now, on_bytes=None):
         self.max_bytes = max_bytes
+        self.on_bytes = on_bytes
         self.max_entries = max_entries
         self.report = report
         self.progress = progress
@@ -231,6 +232,8 @@ def _copy(src, fd: int, budget: _Budget, mtime: Optional[float]) -> None:
             budget.report.bytes += len(chunk)
             if budget.report.bytes > budget.max_bytes:
                 raise ImportFailure("too_large")
+            if budget.on_bytes is not None:
+                budget.on_bytes(budget.report.bytes)
             view = memoryview(chunk)
             while view:
                 written = os.write(fd, view)
@@ -372,6 +375,7 @@ def safe_extract(
     cancel_event=None,
     single_name: Optional[str] = None,
     now: Callable[[], float] = time.monotonic,
+    on_bytes: Optional[Callable[[int], None]] = None,
 ) -> ExtractReport:
     """Extract `archive` into `dest`, an empty directory inside staging.
 
@@ -379,6 +383,10 @@ def safe_extract(
     prefix. A gzip that is not a tar becomes one file named `single_name`
     (default: the archive's name minus `.gz`). On any ImportFailure the
     caller removes `dest`.
+
+    `on_bytes(total)` sees the bytes extracted so far before each write, and
+    may raise (a refused disk reservation): an archive can hold far more than
+    its own size.
     """
     archive, dest = Path(archive), Path(dest)
     if not dest.is_dir() or dest.is_symlink() or any(dest.iterdir()):
@@ -387,7 +395,7 @@ def safe_extract(
     if fmt is None:
         raise ImportFailure("unsupported_archive")
     report = ExtractReport()
-    budget = _Budget(max_bytes, max_entries, report, progress, cancel_event, now)
+    budget = _Budget(max_bytes, max_entries, report, progress, cancel_event, now, on_bytes)
     writer = _Writer(dest)
     try:
         if fmt == "zip":

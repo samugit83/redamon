@@ -27,6 +27,12 @@ class BootAndReset(unittest.TestCase):
         self.assertLess(body.index("recover_on_boot()"), recover)
         self.assertLess(sweep, body.index("yield"))
 
+    def test_boot_starts_the_idle_upload_sweeper_and_shutdown_stops_it(self):
+        body = _function("lifespan")
+        start = body.index("asyncio.create_task(_ws_upload_sessions.sweep_idle_forever())")
+        self.assertLess(body.index("sweep_all()"), start)
+        self.assertLess(body.index("yield"), body.index("idle_upload_sweeper.cancel()"))
+
     def test_reset_drops_imports_before_wiping_the_tree(self):
         body = _function("workspace_reset")
         self.assertLess(body.index("await reset_project_imports("), body.index("reset_for_project("))

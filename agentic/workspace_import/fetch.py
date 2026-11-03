@@ -19,6 +19,7 @@ import inspect
 import json
 import os
 import socket
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,10 @@ from workspace_import.redact import redact_text, redact_url  # noqa: F401  (impo
 
 USER_AGENT = "RedAmon-WorkspaceImport/1.0"
 MAX_REDIRECTS = 5
+# httpx's timeout bounds each read, so a server that sends a byte every few
+# seconds would hold a job forever: a body must deliver this much per window.
+STALL_WINDOW_SEC = 60.0
+STALL_MIN_BYTES = 64 * 1024
 PROBE_BYTES = 64 * 1024
 _CHUNK = 64 * 1024
 
@@ -73,6 +78,22 @@ def disposition_filename(value: Optional[str]) -> str:
     return sanitize_name(name, fallback="") if name else ""
 
 
+class _Pace:
+    """Refuses a body that delivers less than `min_bytes` in any `window` seconds."""
+
+    def __init__(self, window: float, min_bytes: int, clock: Callable[[], float]):
+        self.window, self.min_bytes, self.clock = window, min_bytes, clock
+        self.start, self.got = clock(), 0
+
+    def add(self, n: int) -> None:
+        self.got += n
+        now = self.clock()
+        if now - self.start >= self.window:
+            if self.got < self.min_bytes:
+                raise ImportFailure("timeout")
+            self.start, self.got = now, 0
+
+
 def _is_dns_failure(e: BaseException) -> bool:
     seen = 0
     while e is not None and seen < 6:
@@ -87,8 +108,11 @@ def _is_dns_failure(e: BaseException) -> bool:
 class GuardedFetcher:
     def __init__(self, github_token: str = "", transport: Optional[httpx.AsyncBaseTransport] = None,
                  timeout: float = 20.0, hop_policy: Optional[HopPolicy] = None,
-                 assert_safe: Callable[[str], None] = assert_safe_fetch_url):
+                 assert_safe: Callable[[str], None] = assert_safe_fetch_url,
+                 stall_window: float = STALL_WINDOW_SEC, stall_min_bytes: int = STALL_MIN_BYTES,
+                 clock: Callable[[], float] = time.monotonic):
         self._token = github_token or ""
+        self._pace = lambda: _Pace(stall_window, stall_min_bytes, clock)
         self._transport = transport
         self._timeout = timeout
         self._hop_policy = hop_policy
@@ -160,8 +184,10 @@ class GuardedFetcher:
         if not truncate and declared.isdigit() and int(declared) > max_bytes:
             raise ImportFailure("too_large")
         body = bytearray()
+        pace = self._pace()
         try:
             async for chunk in resp.aiter_bytes(_CHUNK):
+                pace.add(len(chunk))
                 body += chunk
                 if len(body) > max_bytes:
                     if truncate:
@@ -228,12 +254,14 @@ class GuardedFetcher:
             if total is not None and total > max_bytes:
                 raise ImportFailure("too_large")
             digest, written = hashlib.sha256(), 0
+            pace = self._pace()
             fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666)
             try:
                 try:
                     async for chunk in resp.aiter_bytes(_CHUNK):
                         if cancel_event is not None and cancel_event.is_set():
                             raise ImportFailure("cancelled")
+                        pace.add(len(chunk))
                         written += len(chunk)
                         if written > max_bytes:
                             raise ImportFailure("too_large")

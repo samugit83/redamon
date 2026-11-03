@@ -266,6 +266,37 @@ class Limits(MirrorBase):
         self.assertEqual(stats.stopped_because, "max_bytes")
         self.assertNotIn("docs/big.bin", self.files())
 
+    async def test_a_huge_sitemap_never_queues_more_than_the_page_limit(self):
+        locs = [f"https://example.test/p{i}.html" for i in range(30000)]
+        sitemap = "<urlset>" + "".join(f"<url><loc>{u}</loc></url>" for u in locs) + "</urlset>"
+        self.routes = {"https://example.test/": html("home"),
+                       "https://example.test/sitemap.xml": typed(sitemap.encode(), "application/xml")}
+        for u in locs[:50]:
+            self.routes[u] = html("page")
+        seen_sizes = []
+        real_enqueue = mirror_mod._Crawl._enqueue
+
+        def spy(crawl, url, depth, role):
+            real_enqueue(crawl, url, depth, role)
+            seen_sizes.append((crawl.queue.qsize(), len(crawl.seen)))
+        with mock.patch.object(mirror_mod._Crawl, "_enqueue", spy):
+            stats = await self.run_mirror(seed="https://example.test/", opts=MirrorOptions(max_pages=10))
+        self.assertEqual((stats.pages, stats.stopped_because), (10, "max_pages"))
+        self.assertLessEqual(max(q for q, _ in seen_sizes), 10)
+        self.assertLessEqual(max(n for _, n in seen_sizes), 10)
+
+    def test_assets_queued_per_page_are_capped(self):
+        crawl = mirror_mod._Crawl("https://example.test/", self.out, MirrorOptions(max_pages=2),
+                                  fetcher_factory=self.factory, hard_blocked=lambda _h: (False, ""),
+                                  roe_excluded=None, sleep=self.clock.sleep, now=self.clock.now, cancel_event=None,
+                                  progress=None, grow=None, still_exists=None, concurrency=1, gap_for=None,
+                                  pdf_timeout=1, request_allowed=None)
+        crawl._set_scope("https://example.test/")
+        for i in range(500):
+            crawl._enqueue(f"https://example.test/img/{i}.png", 0, "asset")
+        self.assertEqual(crawl.queue.qsize(), 2 * mirror_mod.ASSETS_PER_PAGE)
+        self.assertEqual(len(crawl.seen), 2 * mirror_mod.ASSETS_PER_PAGE)
+
     async def test_query_variants_capped(self):
         links = "".join(f'<a href="list.html?page={i}">{i}</a>' for i in range(25))
         self.routes = {"https://example.test/docs/": html(links)}
@@ -291,6 +322,22 @@ class Limits(MirrorBase):
         gaps = [b - a for a, b in zip(starts, starts[1:])]
         self.assertTrue(all(g >= mirror_mod.SAME_HOST_GAP_SEC - 1e-9 for g in gaps), gaps)
         self.assertTrue(self.clock.sleeps)
+
+    async def test_a_request_still_running_at_the_budget_ends_the_crawl(self):
+        import time as _time
+        never = asyncio.Event()
+
+        async def hang():
+            yield b"<html>"
+            await never.wait()
+        self.routes["https://example.test/docs/intro.html"] = lambda r: httpx.Response(
+            200, content=hang(), headers={"content-type": "text/html"})
+        began = _time.monotonic()
+        stats = await self.run_mirror(opts=MirrorOptions(time_budget_sec=1.0), now=_time.monotonic, concurrency=1)
+        self.assertEqual(stats.stopped_because, "time_budget")
+        self.assertGreaterEqual(stats.pages, 1)
+        self.assertLess(_time.monotonic() - began, 15)
+        self.assertNotIn("docs/intro.html", self.files())
 
     async def test_time_budget_stops(self):
         self.chain(6)

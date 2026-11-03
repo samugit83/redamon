@@ -47,12 +47,13 @@ def clear() -> None:
         _entries.clear()
 
 
-def busy_job(project_id: str, rel_path: str) -> Optional[str]:
-    """The id of the job that makes `rel_path` busy, or None."""
+def busy_job(project_id: str, rel_path: str, *, exclude: Optional[str] = None) -> Optional[str]:
+    """The id of the job that makes `rel_path` busy, or None. `exclude` is the
+    asking job itself, which may of course write where it registered."""
     path = normalize(rel_path)
     with _lock:
         for job_id, (pid, target, dest) in _entries.items():
-            if pid != project_id:
+            if pid != project_id or job_id == exclude:
                 continue
             if target is not None and _within(path, target):
                 return job_id

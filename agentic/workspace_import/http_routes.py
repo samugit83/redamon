@@ -77,6 +77,8 @@ class CreateSessionBody(_Body):
     size: StrictInt
     kind: StrictStr
     onConflict: StrictStr = "keep_both"
+    # A folder's entry count, known to the browser before it sends a byte.
+    entries: Optional[StrictInt] = None
 
 
 class ProjectBody(_Body):
@@ -165,7 +167,7 @@ async def create_upload_session(request: Request):
         return fail("invalid_request")
     try:
         created = upload_sessions.create(body.projectId, body.destDir, body.name, body.size,
-                                         body.kind, body.onConflict)
+                                         body.kind, body.onConflict, entries=body.entries)
     except ImportFailure as e:
         return failure_response(e)
     except Exception as e:

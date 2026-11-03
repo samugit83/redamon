@@ -1,6 +1,7 @@
 """Workspace downloads and archive builds stream from disk, as attachments."""
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
@@ -193,3 +194,53 @@ class Listing(StreamingBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DescriptorOwnership(unittest.TestCase):
+    """The response owns the descriptor: closed exactly once, even when the
+    stream never starts. uvicorn speaks ASGI 2.3, so Starlette races the stream
+    against a disconnect listener."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ws-fd-"))
+        self.file = self.tmp / "big.bin"
+        self.file.write_bytes(b"x" * (3 * 1024 * 1024 + 7))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def serve(self, resp, receive):
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+        scope = {"type": "http", "asgi": {"spec_version": "2.3"}, "method": "GET", "path": "/"}
+        asyncio.run(resp(scope, receive, send))
+        return sent
+
+    def assertClosed(self, fd):
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+
+    def test_descriptor_closed_when_the_client_left_before_the_first_byte(self):
+        from workspace_import import downloads
+        fd = os.open(self.file, os.O_RDONLY)
+        resp = downloads.stream_fd(fd, self.file.stat().st_size, "application/octet-stream", "big.bin")
+
+        async def gone():
+            return {"type": "http.disconnect"}
+        sent = self.serve(resp, gone)
+        self.assertFalse(any(m.get("body") for m in sent))
+        self.assertClosed(fd)
+
+    def test_full_stream_sends_everything_and_closes_once(self):
+        from workspace_import import downloads
+        fd = os.open(self.file, os.O_RDONLY)
+        resp = downloads.stream_fd(fd, self.file.stat().st_size, "application/octet-stream", "big.bin")
+
+        async def stays():
+            await asyncio.Event().wait()
+        sent = self.serve(resp, stays)
+        body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+        self.assertEqual(body, self.file.read_bytes())
+        self.assertClosed(fd)

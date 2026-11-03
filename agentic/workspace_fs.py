@@ -20,6 +20,7 @@ import hashlib
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import shutil
 import stat as statlib
@@ -1499,6 +1500,8 @@ def upload_for_project(
     if not full_dir.is_dir():
         raise ValueError(f"not a directory: {dest_dir}")
     target = full_dir / filename
+    # Inside a folder a Re-sync is replacing, the swap would delete this file.
+    check_not_busy(project_id, posixpath.join(dest_dir or ".", filename))
     if (target.exists() or target.is_symlink()) and not overwrite:
         raise FileExistsError(f"{filename} already exists in {dest_dir}")
     # Atomic write (consistent with fs_write)
@@ -1523,6 +1526,7 @@ def mkdir_for_project(project_id: str, path: str) -> str:
     full = resolve_for_project(project_id, path)
     if full.exists() or full.is_symlink():
         raise ValueError(f"already exists: {path}")
+    check_not_busy(project_id, path)
     full.mkdir(parents=True)
     try:
         os.chmod(full, 0o777)

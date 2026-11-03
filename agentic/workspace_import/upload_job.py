@@ -33,6 +33,7 @@ def _safe(name: str) -> str:
 async def _extract(session, out, progress, cancel):
     # `safe_extract` is read here, at call time, so tests can patch it.
     return await jobs_common.extract_on_pool(safe_extract, session.data_path, out, progress, cancel,
+                                             reservation=session.reservation, base_bytes=session.size,
                                              single_name=session.name)
 
 

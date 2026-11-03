@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import urllib.parse
 from typing import Callable, Iterator
 
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 import workspace_fs
 from workspace_import import executor, staging
@@ -33,20 +35,47 @@ def attachment_headers(filename: str, size: int) -> dict:
     }
 
 
-def _iter_fd(fd: int) -> Iterator[bytes]:
+class _OwnedFd:
+    """A descriptor closed exactly once, by whichever comes first: the stream's
+    end or the response's background task."""
+
+    def __init__(self, fd: int):
+        self.fd = fd
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._lock:
+            fd, self.fd = self.fd, -1
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _iter_fd(owned: _OwnedFd) -> Iterator[bytes]:
+    # pread at our own offset: a read still in flight after the background
+    # close can never move the offset of a descriptor that reused the number.
+    offset = 0
     try:
-        while True:
-            chunk = os.read(fd, _CHUNK)
+        while owned.fd >= 0:
+            chunk = os.pread(owned.fd, _CHUNK, offset)
             if not chunk:
                 break
+            offset += len(chunk)
             yield chunk
     finally:
-        os.close(fd)
+        owned.close()
 
 
 def stream_fd(fd: int, size: int, mime: str, filename: str) -> StreamingResponse:
-    """Stream an already-opened, already-checked descriptor; closes it at the end."""
-    return StreamingResponse(_iter_fd(fd), media_type=mime, headers=attachment_headers(filename, size))
+    """Stream an already-opened, already-checked descriptor and close it. A
+    client that leaves before the first byte (during an archive build) means
+    the stream never starts; the background task closes the descriptor then,
+    or an unlinked archive would hold its disk space until the agent restarts."""
+    owned = _OwnedFd(fd)
+    return StreamingResponse(_iter_fd(owned), media_type=mime, headers=attachment_headers(filename, size),
+                             background=BackgroundTask(owned.close))
 
 
 def _open_built(path) -> tuple[int, int]:

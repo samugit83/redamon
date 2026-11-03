@@ -249,6 +249,28 @@ class Successful(RunnerBase):
         self.assertNotIn("SECRET-IN-MESSAGE", text)
         self.assertNotIn("SECRET-QUERY-VALUE", text)
 
+    async def test_github_link_with_a_page_query_stays_resyncable(self):
+        _, status = await self.do_import("https://github.com/o/r?tab=readme-ov-file")
+        self.assertEqual(status["status"], "done", status)
+        rec = provenance.read(self.root / status["progress"]["path"], project_id="p1")
+        self.assertTrue(rec["resyncable"])
+        self.assertEqual(rec["source"]["url"], "https://github.com/o/r")
+        body = json.dumps({"projectId": "p1", "path": status["progress"]["path"]}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        from starlette.requests import Request
+        resp = await http_routes.resync_import(Request({"type": "http", "method": "POST", "headers": []}, receive))
+        self.assertEqual(resp.status_code, 202, resp.body)
+        again = await job_runner.get_registry().wait("p1", json.loads(resp.body)["jobId"], 10)
+        self.assertEqual(again["status"], "done", again)
+
+    async def test_an_archive_link_with_a_query_is_still_not_resyncable(self):
+        self.world.routes["https://files.example.test/pack.zip?sig=abc"] = self.world.routes["https://files.example.test/pack.zip"]
+        _, status = await self.do_import("https://files.example.test/pack.zip?sig=abc")
+        rec = provenance.read(self.root / status["progress"]["path"], project_id="p1")
+        self.assertFalse(rec["resyncable"])
+
     async def test_tree_link_with_cleared_subfolder_imports_whole_repo(self):
         # The dialog sends subpath "" when the user clears the field of a
         # /tree/<ref>/<dir> link; the route must not drop it.

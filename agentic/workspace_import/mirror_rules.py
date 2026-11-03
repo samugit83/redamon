@@ -21,7 +21,7 @@ import os
 import re
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from auth_profile import is_roe_excluded
@@ -111,9 +111,17 @@ class MirrorRules:
     concurrency: int
     gap_for: Callable[[str], float]
     seed_in_scope: bool
+    # host -> may a request go there now. A copy can outlast the engagement
+    # window it started in, so the window is judged on every target request.
+    request_allowed: Callable[[str], bool] = lambda _host: True
 
 
-def rules_for(seed_url: str, settings: dict, *, now_utc: datetime) -> MirrorRules:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def rules_for(seed_url: str, settings: dict, *, now_utc: datetime,
+              clock: Callable[[], datetime] = _utc_now) -> MirrorRules:
     """The rules a mirror of `seed_url` runs under; raises roe_outside_window."""
     roe_on = bool(settings.get("ROE_ENABLED"))
     excluded = list(settings.get("ROE_EXCLUDED_HOSTS") or [])
@@ -123,10 +131,14 @@ def rules_for(seed_url: str, settings: dict, *, now_utc: datetime) -> MirrorRule
     seed_in_scope = in_scope((urllib.parse.urlsplit(seed_url).hostname or "").lower())
     concurrency = mirror.CONCURRENCY
     target_gap = mirror.SAME_HOST_GAP_SEC
+    window_open: Optional[Callable[[], bool]] = None
     if seed_in_scope and roe_on:
         from orchestrator_helpers.nodes.initialize_node import _roe_timing_warnings
         if _roe_timing_warnings(now_utc, get=settings.get):
             raise ImportFailure("roe_outside_window")
+
+        def window_open() -> bool:
+            return not _roe_timing_warnings(clock(), get=settings.get)
         try:
             rps = float(settings.get("ROE_GLOBAL_MAX_RPS") or 0)
         except (TypeError, ValueError):
@@ -139,5 +151,8 @@ def rules_for(seed_url: str, settings: dict, *, now_utc: datetime) -> MirrorRule
 
     def gap_for(host: str) -> float:
         return target_gap if in_scope(host) else mirror.SAME_HOST_GAP_SEC
+
+    def request_allowed(host: str) -> bool:
+        return window_open is None or not in_scope(host) or window_open()
     return MirrorRules(roe_excluded=roe_excluded, concurrency=concurrency, gap_for=gap_for,
-                       seed_in_scope=seed_in_scope)
+                       seed_in_scope=seed_in_scope, request_allowed=request_allowed)

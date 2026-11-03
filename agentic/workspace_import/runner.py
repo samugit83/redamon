@@ -27,6 +27,7 @@ from workspace_import.redact import redact_url, safe_traceback
 logger = logging.getLogger(__name__)
 
 JOB_TOOL = "workspace_import"
+PATH_ONLY_KINDS = ("github-repo", "github-gist") + FORGE_KINDS
 MAX_IMPORTS_PER_PROJECT = 2
 
 # (project, canonical url, destination) -> {"job_id", "done"}: a second
@@ -96,8 +97,10 @@ def _record(spec: ImportSpec, insp, stats: dict, options: Optional[dict] = None)
         "options": dict(spec.options if options is None else options),
         "fetchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "stats": stats,
-        # A query is never stored (it can hold a token), so the URL could not be fetched again.
-        "resyncable": not urllib.parse.urlsplit(spec.url).query,
+        # A query is never stored (it can hold a token), so the URL could not be
+        # fetched again; except where the source is resolved from the path alone
+        # (GitHub's own ?tab=readme-ov-file, for one, is page state).
+        "resyncable": insp.kind in PATH_ONLY_KINDS or not urllib.parse.urlsplit(spec.url).query,
     }
 
 
@@ -146,6 +149,7 @@ async def _fetch_into(fetcher, spec, insp, op, reservation, progress, cancel, gi
         if is_html(dl.content_type, _head(tarball)):
             raise ImportFailure("unexpected_html")
         report = await jobs_common.extract_on_pool(safe_extract, tarball, out, progress, cancel,
+                                                   reservation=reservation, base_bytes=dl.bytes,
                                                    member_filter=member_filter)
         return out, True, {"files": report.files, "bytes": report.bytes, "skipped": report.skipped_count}
 
@@ -155,6 +159,7 @@ async def _fetch_into(fetcher, spec, insp, op, reservation, progress, cancel, gi
         if is_html(dl.content_type, _head(data)):
             raise ImportFailure("unexpected_html")
         report = await jobs_common.extract_on_pool(safe_extract, data, out, progress, cancel,
+                                                   reservation=reservation, base_bytes=dl.bytes,
                                                    single_name=spec.name)
         top = single_top_dir(out)
         return (top or out), True, {"files": report.files, "bytes": report.bytes, "skipped": report.skipped_count}
@@ -192,7 +197,7 @@ async def _mirror_into(spec: ImportSpec, insp, op, reservation, progress, cancel
         roe_excluded=rules.roe_excluded, cancel_event=cancel, progress=progress,
         grow=jobs_common.ReservationGrower(reservation),
         still_exists=lambda: jobs_common.ensure_project_exists(project_id),
-        concurrency=rules.concurrency, gap_for=rules.gap_for,
+        concurrency=rules.concurrency, gap_for=rules.gap_for, request_allowed=rules.request_allowed,
     )
     return out, stats.record(), opts.record()
 

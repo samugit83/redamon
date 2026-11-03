@@ -131,6 +131,35 @@ class InScopeTargets(MirrorBase):
             mirror_rules.rules_for("https://docs.example.test/", cfg, now_utc=NOW.replace(hour=20))
         self.assertEqual(ctx.exception.code, "roe_outside_window")
 
+    def test_window_closing_mid_crawl_refuses_target_requests_only(self):
+        cfg = settings(ROE_ENABLED=True, TARGET_DOMAIN="example.test", **WINDOW)
+        now = {"t": NOW}
+        rules = mirror_rules.rules_for("https://docs.example.test/", cfg, now_utc=NOW, clock=lambda: now["t"])
+        self.assertTrue(rules.request_allowed("docs.example.test"))
+        now["t"] = NOW.replace(hour=18, minute=1)  # the 09:00-18:00 window has closed
+        self.assertFalse(rules.request_allowed("docs.example.test"))
+        self.assertFalse(rules.request_allowed("api.example.test"))
+        self.assertTrue(rules.request_allowed("elsewhere.test"))
+        off = mirror_rules.rules_for("https://docs.example.test/", dict(cfg, ROE_ENABLED=False), now_utc=NOW,
+                                     clock=lambda: now["t"])
+        self.assertTrue(off.request_allowed("docs.example.test"))
+
+    async def test_crawl_stops_when_the_window_closes_and_keeps_what_it_saved(self):
+        allowed = {"open": True}
+        base = self.handler
+        hits = []
+
+        def counting(request):
+            hits.append(str(request.url))
+            if len(hits) == 3:
+                allowed["open"] = False  # the window closes after the third request
+            return base(request)
+        self.handler = counting
+        stats = await self.run_mirror(concurrency=1, request_allowed=lambda _h: allowed["open"])
+        self.assertEqual(stats.stopped_because, "roe_window")
+        self.assertEqual(len(hits), 3)
+        self.assertGreaterEqual(stats.pages, 1)
+
     def test_in_scope_mirror_refused_after_end_date(self):
         cfg = settings(ROE_ENABLED=True, TARGET_DOMAIN="example.test", ROE_ENGAGEMENT_END_DATE="2026-01-01")
         with self.assertRaises(ImportFailure) as ctx:

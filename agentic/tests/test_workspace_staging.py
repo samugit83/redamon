@@ -115,6 +115,14 @@ class Reservations(StagingBase):
         r.release()
         self.assertEqual(staging.reserved_total(), 0)
 
+    def test_grow_after_release_brings_nothing_back(self):
+        # An extraction thread can outlive its job by a few chunks.
+        with self.free(4 * GIB):
+            r = staging.reserve("op", GIB)
+            r.release()
+            r.grow(GIB)
+        self.assertEqual((r.nbytes, staging.reserved_total()), (0, 0))
+
     def test_sweep_releases_reservations(self):
         with self.free(10 * GIB):
             staging.reserve("a-op", GIB, project_id="pa")

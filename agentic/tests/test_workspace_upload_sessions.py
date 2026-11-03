@@ -5,6 +5,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,6 +108,24 @@ class Create(SessionBase):
         self.assertCode("invalid_request", self.create, pid=".staging")
 
 
+class EntryCount(SessionBase):
+    def test_folder_over_the_entry_cap_is_refused_before_any_byte(self):
+        with mock.patch.dict(os.environ, {"WORKSPACE_IMPORT_MAX_ENTRIES": "10"}):
+            with self.assertRaises(ImportFailure) as ctx:
+                upload_sessions.create("p1", "uploads", "node-project", 100, "folder", "keep_both", entries=11)
+            self.assertEqual(ctx.exception.code, "too_many_entries")
+            self.assertEqual(upload_sessions._sessions, {})
+            self.assertEqual(staging.reserved_total(), 0)
+            self.assertFalse(list((self.tmp / ".staging" / "p1").glob("up-*")))
+            upload_sessions.create("p1", "uploads", "small", 100, "folder", "keep_both", entries=10)
+
+    def test_entry_count_must_be_a_count(self):
+        for bad in (-1, True, "5", 1.5):
+            with self.assertRaises(ImportFailure, msg=repr(bad)) as ctx:
+                upload_sessions.create("p1", "uploads", "x", 100, "folder", "keep_both", entries=bad)
+            self.assertEqual(ctx.exception.code, "invalid_request")
+
+
 class Chunks(SessionBase):
     async def test_chunks_append_in_order(self):
         uid = self.create(size=10)["uploadId"]
@@ -166,6 +185,35 @@ class Lifecycle(SessionBase):
         self.assertIn(fresh, upload_sessions._sessions)
         self.assertFalse((self.tmp / ".staging" / "p1" / f"up-{old}").exists())
         self.assertTrue(any(old in line for line in logs.output))
+
+    async def test_idle_sessions_are_swept_on_a_timer_without_any_create(self):
+        stale = self.create(name="stale", now=lambda: time.time() - 7200)["uploadId"]
+        live = self.create(name="live")["uploadId"]
+        ticks = []
+
+        async def tick(seconds):
+            ticks.append(seconds)
+            if len(ticks) > 1:
+                raise asyncio.CancelledError
+        with self.assertRaises(asyncio.CancelledError):
+            await upload_sessions.sweep_idle_forever(interval=300, sleep=tick)
+        self.assertEqual(ticks, [300, 300])
+        self.assertNotIn(stale, upload_sessions._sessions)
+        self.assertIn(live, upload_sessions._sessions)
+        self.assertFalse((self.tmp / ".staging" / "p1" / f"up-{stale}").exists())
+        self.assertEqual(staging.reserved_total(), upload_sessions._sessions[live].reservation.nbytes)
+
+    async def test_a_failing_sweep_never_stops_the_timer(self):
+        calls = []
+
+        async def tick(_s):
+            calls.append(1)
+            if len(calls) > 2:
+                raise asyncio.CancelledError
+        with mock.patch.object(upload_sessions, "sweep_idle", side_effect=OSError("disk")):
+            with self.assertRaises(asyncio.CancelledError):
+                await upload_sessions.sweep_idle_forever(interval=1, sleep=tick)
+        self.assertEqual(len(calls), 3)
 
     def test_abort_is_idempotent(self):
         uid = self.create()["uploadId"]

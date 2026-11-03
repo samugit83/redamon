@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 import workspace_fs
-from workspace_import import executor, staging
+from workspace_import import busy, executor, staging
 from workspace_import.busy import normalize
 from workspace_import.errors import ImportFailure
 
@@ -112,6 +112,12 @@ async def place(project_id: str, staged, dest_dir_rel: str, name: str, policy: s
         final = choose_name(dest_dir, name, policy, is_dir=is_dir)
         target = dest_dir / final
         rel = _rel(project_id, target)
+        # Another job replacing this folder (or a folder above it) would undo
+        # the placement when it swaps; this job's own registration is fine.
+        from job_runner import current_job_id
+        holder = busy.busy_job(project_id, rel, exclude=current_job_id())
+        if holder is not None:
+            raise ImportFailure("busy", detail=holder)
         if policy == "replace" and _present(target):
             if workspace_fs.is_protected_path(rel):
                 raise ImportFailure("protected_path")

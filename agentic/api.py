@@ -48,6 +48,7 @@ import job_runner
 import ws_job_emitter
 from workspace_import import downloads as _ws_downloads
 from workspace_import import staging as _ws_staging
+from workspace_import import upload_sessions as _ws_upload_sessions
 from workspace_import.errors import ImportFailure, error_body
 from workspace_import.http_routes import reset_project_imports, router as workspace_import_router
 
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI):
     # Re-sync was swapping when the process died, then empty the staging area.
     _ws_staging.recover_swaps()
     _ws_staging.sweep_all()
+    idle_upload_sweeper = asyncio.create_task(_ws_upload_sessions.sweep_idle_forever())
 
     # Wire the JobRegistry to push job_update events through the WS manager
     # so the frontend drawer sees status changes in real time. The emitter
@@ -136,6 +138,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down RedAmon Agent API...")
+    idle_upload_sweeper.cancel()
     if orchestrator:
         await orchestrator.close()
 
@@ -2786,6 +2789,8 @@ async def workspace_upload(
             projectId, path, file_bytes, file.filename or "uploaded", overwrite=overwrite,
         )
         return {"projectId": projectId, "path": new_path, "size": len(file_bytes)}
+    except ImportFailure as e:
+        return JSONResponse(content=error_body(e.code, jobId=e.detail), status_code=e.status)
     except FileExistsError as e:
         return JSONResponse(
             content={"error": str(e), "code": "exists"}, status_code=409,
@@ -2811,6 +2816,8 @@ async def workspace_mkdir(req: WorkspaceMkdirRequest):
     try:
         new_path = workspace_fs.mkdir_for_project(req.projectId, req.path)
         return {"projectId": req.projectId, "path": new_path}
+    except ImportFailure as e:
+        return JSONResponse(content=error_body(e.code, jobId=e.detail), status_code=e.status)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:

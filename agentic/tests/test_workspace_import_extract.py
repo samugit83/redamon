@@ -413,3 +413,27 @@ class Catalogue(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtractedBytesHook(Base):
+    def test_on_bytes_sees_the_running_total_before_each_write(self):
+        archive = self.tmp / "a.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("zeros.bin", b"\0" * (3 * 1024 * 1024))
+        seen = []
+        report = self.extract(archive, on_bytes=seen.append)
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(seen[-1], report.bytes)
+        self.assertGreater(len(seen), 1)
+
+    def test_on_bytes_refusal_stops_the_extraction(self):
+        archive = self.tmp / "a.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("zeros.bin", b"\0" * (8 * 1024 * 1024))
+
+        def refuse(total):
+            if total > 1024 * 1024:
+                raise ImportFailure("insufficient_storage")
+        self.assertCode("insufficient_storage", self.extract, archive, on_bytes=refuse)
+        written = sum(p.stat().st_size for p in self.dest.rglob("*") if p.is_file())
+        self.assertLessEqual(written, 2 * 1024 * 1024)

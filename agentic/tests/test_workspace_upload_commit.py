@@ -164,6 +164,36 @@ class Uploads(CommitBase):
 
 
 class Refusals(CommitBase):
+    async def test_archive_extracting_past_its_reservation_needs_the_disk_for_it(self):
+        # 70 MiB of zeros deflates to about 70 KB: the 2x reservation taken at
+        # create covers 140 KB, so the extraction must ask the disk for the rest.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("zeros/z.bin", b"\0" * (70 * 1024 * 1024))
+        data = buf.getvalue()
+        self.free = 10 * 1024 * 1024  # room for the archive, not for what it extracts to
+        _, status = await self.run_commit(data, "zeros", "archive")
+        self.assertEqual(status["error"], "insufficient_storage")
+        self.assertFalse((self.root / "uploads/zeros").exists())
+        self.assertTrue(self.staging_empty())
+        self.assertEqual(staging.reserved_total(), 0)
+
+    async def test_archive_extraction_grows_its_reservation(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("zeros/z.bin", b"\0" * (70 * 1024 * 1024))
+        peak = []
+        real_grow = staging.Reservation.grow
+
+        def grow(reservation, n):
+            real_grow(reservation, n)
+            peak.append(staging.reserved_total())
+        with mock.patch.object(staging.Reservation, "grow", grow):
+            _, status = await self.run_commit(buf.getvalue(), "zeros", "archive")
+        self.assertEqual(status["status"], "done", status)
+        self.assertGreaterEqual(max(peak), 70 * 1024 * 1024)
+        self.assertEqual(staging.reserved_total(), 0)
+
     async def test_traversal_archive_fails_unsafe_path_and_leaves_nothing(self):
         data = zip_bytes([("ok.txt", b"ok"), ("../evil.txt", b"x")])
         _, status = await self.run_commit(data, "trav", "archive")

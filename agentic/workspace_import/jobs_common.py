@@ -51,11 +51,20 @@ async def report_done(progress: dict) -> None:
 
 
 async def extract_on_pool(extractor: Callable, archive, out, progress: Progress, cancel: threading.Event,
-                          **kwargs):
+                          *, reservation=None, base_bytes: int = 0, **kwargs):
     """Run `extractor(archive, out, ...)` on the import pool. On cancel, tell the
-    worker to stop and wait for it, so staging is never deleted under a writer."""
+    worker to stop and wait for it, so staging is never deleted under a writer.
+
+    With `reservation`, the disk it holds grows to cover the archive still on
+    disk (`base_bytes`) plus everything extracted so far, or the extraction
+    stops with insufficient_storage: a compressed archive's size says nothing
+    about what it extracts to."""
     def on_progress(files, nbytes):
         progress.update(phase="extracting", files=files, bytes=nbytes)
+
+    if reservation is not None:
+        grower = ReservationGrower(reservation)
+        kwargs["on_bytes"] = lambda extracted: grower(base_bytes + extracted)
 
     future, queued = executor.start(
         lambda: extractor(archive, out, max_bytes=limits.max_bytes(), max_entries=limits.max_entries(),

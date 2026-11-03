@@ -134,6 +134,34 @@ class Redirects(FetchBase):
                                                                  check_response=refuse))
         self.assertFalse(dest.exists())
 
+    async def test_a_trickling_body_times_out(self):
+        # A byte every 25 s never trips httpx's per-read timeout.
+        clock = {"t": 0.0}
+
+        def trickle():
+            async def body():
+                for _ in range(20):
+                    clock["t"] += 25
+                    yield b"x"
+            return httpx.Response(200, content=body())
+        routes = {"https://a.example.test/f": lambda r: trickle()}
+        async with self.fetcher(routes, clock=lambda: clock["t"]) as f:
+            await self.assertCode("timeout", f.download("https://a.example.test/f", self.tmp / "f", max_bytes=1000))
+            await self.assertCode("timeout", f.get_text("https://a.example.test/f", max_bytes=1000))
+        self.assertFalse((self.tmp / "f").exists())
+
+    async def test_a_slow_but_steady_body_is_kept(self):
+        clock = {"t": 0.0}
+
+        async def body():
+            for _ in range(5):
+                clock["t"] += 50
+                yield b"y" * (64 * 1024)
+        routes = {"https://a.example.test/f": lambda r: httpx.Response(200, content=body())}
+        async with self.fetcher(routes, clock=lambda: clock["t"]) as f:
+            dl = await f.download("https://a.example.test/f", self.tmp / "f", max_bytes=10 * 1024 * 1024)
+        self.assertEqual(dl.bytes, 5 * 64 * 1024)
+
     async def test_too_many_redirects(self):
         routes = {f"https://a.example.test/{i}": redirect(f"/{i + 1}") for i in range(10)}
         async with self.fetcher(routes) as f:

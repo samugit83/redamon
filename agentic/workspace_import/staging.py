@@ -122,6 +122,7 @@ class Reservation:
     def __init__(self, op_id: str, project_id: str):
         self.op_id = op_id
         self.project_id = project_id
+        self._released = False
 
     @property
     def nbytes(self) -> int:
@@ -134,12 +135,16 @@ class Reservation:
         if n <= 0:
             return
         with _ledger_lock:
+            # A worker thread that outlived its job must not bring the entry back.
+            if self._released:
+                return
             _check_locked(n)
             pid, have = _ledger.get(self.op_id, (self.project_id, 0))
             _ledger[self.op_id] = (pid, have + n)
 
     def release(self) -> None:
         with _ledger_lock:
+            self._released = True
             _ledger.pop(self.op_id, None)
 
 

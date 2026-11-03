@@ -47,6 +47,11 @@ CONCURRENCY = 4
 SAME_HOST_GAP_SEC = 0.25
 MAX_QUERY_VARIANTS = 20
 MAX_SUB_SITEMAPS = 20
+# What a crawl may hold in memory, whatever a site links to or its sitemap
+# lists: pages beyond max_pages are never queued, assets at most this many per
+# allowed page, sitemap locations at most this many times max_pages.
+ASSETS_PER_PAGE = 20
+SITEMAP_LOCS_PER_PAGE = 10
 PROJECT_CHECK_SEC = 300
 ROBOTS_MAX_BYTES = 512 * 1024
 MANIFEST = "_manifest.jsonl"
@@ -251,7 +256,7 @@ class _Robots:
 class _Crawl:
     def __init__(self, seed: str, out_dir: Path, opts: MirrorOptions, *, fetcher_factory, hard_blocked,
                  roe_excluded, sleep, now, cancel_event, progress, grow, still_exists, concurrency, gap_for,
-                 pdf_timeout):
+                 pdf_timeout, request_allowed):
         self.seed = seed
         self.out = Path(out_dir)
         self.tmp = self.out.parent / f"{self.out.name}.tmp"
@@ -259,6 +264,7 @@ class _Crawl:
         self.fetcher_factory = fetcher_factory
         self.hard_blocked = hard_blocked
         self.roe_excluded = roe_excluded
+        self.request_allowed = request_allowed
         self.now = now
         self.cancel_event = cancel_event or threading.Event()
         self.progress = progress
@@ -281,6 +287,8 @@ class _Crawl:
         self.scope_dir = "/"
         self.scope_scheme = "https"
         self.pages_started = 0
+        self.pages_queued = 0
+        self.assets_queued = 0
         self.page_cap_hit = False
         self.depth_cut = False
         self.downloaded = 0
@@ -332,6 +340,9 @@ class _Crawl:
                 self._refuse(seed, "hard_blocked", "hard_blocked")
             if self.roe_excluded is not None and self.roe_excluded(host):
                 self._refuse(seed, "roe_excluded", "roe")
+            if self.request_allowed is not None and not self.request_allowed(host):
+                # The engagement window closed mid-crawl: keep what was saved in it.
+                raise _Stop("roe_window")
             if not seed and hop > 0:
                 if role == "page" and not self._in_page_scope(url):
                     raise Skip("redirect_offsite")
@@ -346,8 +357,8 @@ class _Crawl:
         return check
 
     async def _robots_text(self, url: str) -> tuple:
-        status, text, _final, _headers = await self.fetcher.get_text(
-            url, max_bytes=ROBOTS_MAX_BYTES, policy=self._policy("robots"))
+        status, text, _final, _headers = await self._in_budget(self.fetcher.get_text(
+            url, max_bytes=ROBOTS_MAX_BYTES, policy=self._policy("robots")))
         return status, text
 
     # --- bookkeeping -------------------------------------------------------
@@ -422,7 +433,12 @@ class _Crawl:
             if depth > self.opts.max_depth:
                 self.depth_cut = True
                 return
+            if self.pages_queued >= self.opts.max_pages:
+                self.page_cap_hit = True
+                return
         elif not self._asset_allowed(url):
+            return
+        elif self.assets_queued >= self.opts.max_pages * ASSETS_PER_PAGE:
             return
         self.seen.add(canon)
         if urllib.parse.urlsplit(canon).query:
@@ -431,7 +447,23 @@ class _Crawl:
                 self._record(url, depth, skipped="query_variants")
                 return
             self.variants[key] += 1
+        if role == "page":
+            self.pages_queued += 1
+        else:
+            self.assets_queued += 1
         self.queue.put_nowait(_Item(url, depth, role))
+
+    async def _in_budget(self, awaitable):
+        """Await `awaitable` for at most what is left of the time budget: the
+        check between items cannot end a request that is already running."""
+        left = self.opts.time_budget_sec - (self.now() - self.started)
+        # asyncio.timeout, not wait_for: on 3.11 wait_for can swallow the
+        # cancel run() sends its workers when the request ends at that moment.
+        try:
+            async with asyncio.timeout(max(left, 0.001)):
+                return await awaitable
+        except TimeoutError:
+            raise _Stop("time_budget") from None
 
     def _check_budget(self) -> None:
         if self.cancel_event.is_set():
@@ -458,10 +490,10 @@ class _Crawl:
     async def _fetch(self, item: _Item, *, seed: bool = False) -> None:
         tmp = self.tmp / str(next(self._names))
         try:
-            dl = await self.fetcher.download(
+            dl = await self._in_budget(self.fetcher.download(
                 item.url, tmp, max_bytes=self.opts.per_file_bytes, on_bytes=self._on_bytes(),
                 cancel_event=self.cancel_event, policy=self._policy(item.role, seed=seed),
-                check_response=self._type_gate)
+                check_response=self._type_gate))
         except Skip as s:
             self._record(item.url, item.depth, skipped=s.reason)
             return
@@ -538,20 +570,24 @@ class _Crawl:
     async def _sitemap(self) -> None:
         if self.opts.max_depth < 1:
             return
+        cap = max(self.opts.max_pages * SITEMAP_LOCS_PER_PAGE, 1000)
         locs: list[str] = []
         for host in sorted(self.scope_hosts):
-            found = await self._sitemap_locs(f"{self.scope_scheme}://{host}/sitemap.xml", nested=True)
+            if len(locs) >= cap:
+                break
+            found = await self._sitemap_locs(f"{self.scope_scheme}://{host}/sitemap.xml", nested=True,
+                                             cap=cap - len(locs))
             locs.extend(found)
-        locs = [u for u in locs if self._in_page_scope(u)]
         if self.opts.english_only:
             locs = prefer_english(locs)
         for url in locs:
             self._enqueue(url, 1, "page")
 
-    async def _sitemap_locs(self, url: str, *, nested: bool) -> list[str]:
+    async def _sitemap_locs(self, url: str, *, nested: bool, cap: int) -> list[str]:
+        """In-scope page locations of a sitemap (one level of index), at most `cap`."""
         try:
-            status, text, _final, _headers = await self.fetcher.get_text(
-                url, max_bytes=SITEMAP_MAX_BYTES, policy=self._policy("sitemap"))
+            status, text, _final, _headers = await self._in_budget(self.fetcher.get_text(
+                url, max_bytes=SITEMAP_MAX_BYTES, policy=self._policy("sitemap")))
         except (ImportFailure, Skip) as e:
             if isinstance(e, ImportFailure) and e.code in _FATAL:
                 raise
@@ -562,12 +598,18 @@ class _Crawl:
         if shape == "index" and nested:
             out: list[str] = []
             for sub in locs[:MAX_SUB_SITEMAPS]:
-                out.extend(await self._sitemap_locs(sub, nested=False))
+                if len(out) >= cap:
+                    break
+                out.extend(await self._sitemap_locs(sub, nested=False, cap=cap - len(out)))
             return out
-        return locs if shape == "urlset" else []
+        if shape != "urlset":
+            return []
+        return [u for u in locs if self._in_page_scope(u)][:cap]
 
     async def _worker(self) -> None:
-        while True:
+        # After a fatal failure every worker leaves on its own too: one whose
+        # cancel was lost would otherwise wait on the empty queue forever.
+        while not self.halt.is_set():
             item = await self.queue.get()
             try:
                 if self.stop_reason is not None or self.fatal is not None:
@@ -608,7 +650,7 @@ class _Crawl:
             async with self.fetcher_factory() as fetcher:
                 self.fetcher = fetcher
                 self._check_budget()
-                self.pages_started = 1
+                self.pages_started = self.pages_queued = 1
                 self.seen.add(canonical_url(self.seed))
                 try:
                     await self._fetch(_Item(self.seed, 0, "page"), seed=True)
@@ -617,7 +659,10 @@ class _Crawl:
                 except OSError as e:
                     raise map_os_error(e) or e
                 if self.scope_hosts and self.stop_reason is None:
-                    await self._sitemap()
+                    try:
+                        await self._sitemap()
+                    except _Stop as s:
+                        self.stop_reason = s.reason
                 self._report()
                 workers = [asyncio.ensure_future(self._worker()) for _ in range(self.concurrency)]
                 drained = asyncio.ensure_future(self.queue.join())
@@ -649,17 +694,19 @@ async def mirror(seed: str, out_dir, opts: MirrorOptions, *, fetcher_factory,
                  grow: Optional[Callable[[int], None]] = None,
                  still_exists: Optional[Callable[[], Awaitable[None]]] = None,
                  concurrency: int = CONCURRENCY, gap_for: Optional[Callable[[str], float]] = None,
-                 pdf_timeout: float = pdf_text.TIMEOUT_SEC) -> MirrorStats:
+                 pdf_timeout: float = pdf_text.TIMEOUT_SEC,
+                 request_allowed: Optional[Callable[[str], bool]] = None) -> MirrorStats:
     """Mirror `seed` into `out_dir` (a fresh staging folder) with `opts`.
 
     `fetcher_factory()` returns a GuardedFetcher (an async context manager).
     `grow(total_bytes)` grows the job's disk reservation and raises
     insufficient_storage when refused; `still_exists()` raises when the
     project was deleted, and runs at most every 5 minutes. `gap_for(host)` is
-    the politeness gap in seconds (RoE rate caps and stealth raise it).
+    the politeness gap in seconds (RoE rate caps and stealth raise it), and
+    `request_allowed(host)` False ends the crawl as `roe_window`.
     """
     crawl = _Crawl(seed, Path(out_dir), opts, fetcher_factory=fetcher_factory, hard_blocked=hard_blocked,
                    roe_excluded=roe_excluded, sleep=sleep, now=now, cancel_event=cancel_event, progress=progress,
                    grow=grow, still_exists=still_exists, concurrency=concurrency, gap_for=gap_for,
-                   pdf_timeout=pdf_timeout)
+                   pdf_timeout=pdf_timeout, request_allowed=request_allowed)
     return await crawl.run()

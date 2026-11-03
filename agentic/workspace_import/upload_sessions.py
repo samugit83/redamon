@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import posixpath
 import re
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from workspace_import.place import POLICIES
 logger = logging.getLogger(__name__)
 
 UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+SWEEP_INTERVAL_SEC = 300
 KINDS = ("file", "folder", "archive")
 MAX_SESSIONS_PER_PROJECT = 4
 DATA_NAME = "data.part"
@@ -96,6 +98,18 @@ def sweep_idle(now: Optional[float] = None) -> int:
     return swept
 
 
+async def sweep_idle_forever(interval: float = SWEEP_INTERVAL_SEC, sleep=asyncio.sleep) -> None:
+    """Sweep idle sessions on a timer. A tab that died mid-upload sends no
+    DELETE, and the next create(), which also sweeps, may not come for days;
+    meanwhile the session holds its partial file and its disk reservation."""
+    while True:
+        await sleep(interval)
+        try:
+            sweep_idle()
+        except Exception as e:
+            logger.warning(f"[workspace-import] idle upload session sweep failed: {type(e).__name__}")
+
+
 def forget_project(project_id: str) -> None:
     """Drop the project's sessions from the table (its staging is swept by the caller)."""
     for s in [s for s in _sessions.values() if s.project_id == project_id]:
@@ -104,7 +118,7 @@ def forget_project(project_id: str) -> None:
 
 
 def create(project_id: str, dest_dir: str, name: str, size, kind: str, on_conflict: str,
-           *, now: Callable[[], float] = time.time) -> dict:
+           *, now: Callable[[], float] = time.time, entries: Optional[int] = None) -> dict:
     try:
         workspace_fs._validate_project_id(project_id)
     except ValueError:
@@ -117,12 +131,19 @@ def create(project_id: str, dest_dir: str, name: str, size, kind: str, on_confli
         raise ImportFailure("invalid_request")
     if size > limits.max_bytes():
         raise ImportFailure("too_large")
+    if entries is not None and (not isinstance(entries, int) or isinstance(entries, bool) or entries < 0):
+        raise ImportFailure("invalid_request")
+    # Refused before the upload, not after gigabytes of it; extraction still
+    # counts the real entries.
+    if kind == "folder" and entries is not None and entries > limits.max_entries():
+        raise ImportFailure("too_many_entries")
     try:
         dest = workspace_fs.resolve_for_project(project_id, dest_dir)
     except ValueError:
         raise ImportFailure("invalid_request") from None
     if not dest.is_dir():
         raise ImportFailure("destination_missing")
+    workspace_fs.check_not_busy(project_id, posixpath.join(dest_dir or ".", name))
     if sum(1 for s in _sessions.values() if s.project_id == project_id) >= MAX_SESSIONS_PER_PROJECT:
         raise ImportFailure("too_many_uploads")
     op = staging.new_op_dir(project_id, "up")

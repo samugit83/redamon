@@ -21,7 +21,7 @@ CODES: dict[str, tuple[int, str]] = {
     "unsafe_path": (422, "The archive holds a path that leaves its folder (absolute, '..' or NUL)."),
     "too_deep": (422, "The archive nests folders more than 64 levels deep."),
     "name_too_long": (422, "The archive holds a name longer than 255 bytes, or a path longer than 4096 bytes."),
-    "too_many_entries": (413, "The archive holds more entries than the server allows."),
+    "too_many_entries": (413, "The upload holds more files and folders than the server allows."),
     "too_large": (413, "The content is larger than the server allows."),
     "conflicting_entries": (422, "The archive holds a file and a folder with the same path."),
     "unsupported_archive": (422, "The file is not a zip, tar, tar.gz, tar.bz2, tar.xz or gz archive."),

@@ -177,6 +177,51 @@ class Resync(ResyncBase):
         await job_runner.get_registry().wait("p1", data["jobId"], 10)
         workspace_fs.check_not_busy("p1", f"{path}/README")
 
+    async def test_uploads_and_new_folders_into_a_resync_target_are_refused_until_it_ends(self):
+        # The swap replaces the whole folder: anything written into it meanwhile
+        # would be deleted with the old copy, so every writer is refused.
+        from workspace_import import place, upload_sessions
+        from workspace_import.errors import ImportFailure
+        path = await self.imported()
+        gate = asyncio.Event()
+
+        async def slow_body():
+            await gate.wait()
+            yield REPO_TGZ
+
+        self.world.routes["https://codeload.github.com/o/r/tar.gz/7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"] = \
+            lambda r: httpx.Response(200, content=slow_body())
+        code, data, _ = await self.resync(path, wait=False)
+        self.assertEqual(code, 202, data)
+        await asyncio.sleep(0.2)
+        writers = {
+            "drawer upload": lambda: workspace_fs.upload_for_project("p1", path, b"mine", "notes.txt"),
+            "new folder": lambda: workspace_fs.mkdir_for_project("p1", f"{path}/sub"),
+            "upload session": lambda: upload_sessions.create("p1", path, "big.bin", 10, "file", "keep_both"),
+        }
+        for name, write in writers.items():
+            with self.assertRaises(ImportFailure, msg=name) as ctx:
+                write()
+            self.assertEqual((ctx.exception.code, ctx.exception.detail), ("busy", data["jobId"]), name)
+        staged = self.root.parent / "staged-notes.txt"
+        staged.write_text("x")
+        with self.assertRaises(ImportFailure) as ctx:  # another job's placement into it
+            await place.place("p1", staged, path, "notes.txt", "keep_both")
+        self.assertEqual(ctx.exception.code, "busy")
+        self.assertFalse((self.root / path / "notes.txt").exists())
+        gate.set()
+        status = await job_runner.get_registry().wait("p1", data["jobId"], 10)
+        self.assertEqual(status["status"], "done", status)
+        workspace_fs.upload_for_project("p1", path, b"mine", "notes.txt")
+        workspace_fs.mkdir_for_project("p1", f"{path}/sub")
+        self.assertEqual((self.root / path / "notes.txt").read_bytes(), b"mine")
+
+    async def test_a_job_may_place_where_it_registered(self):
+        # The Re-sync's own swap is the one writer its registration allows.
+        path = await self.imported()
+        code, data, status = await self.resync(path)
+        self.assertEqual((code, status["status"]), (202, "done"), status)
+
     async def test_resync_target_deleted_from_host_mid_job_is_destination_missing(self):
         path = await self.imported()
         gate = asyncio.Event()
