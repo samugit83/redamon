@@ -815,7 +815,11 @@ else
 fi
 step "Agent in the Loop switch"
 # Both services read it: the agent opens steps, the webapp serves the loop_* tools.
-if is_true "\${AGENT_IN_THE_LOOP_ENABLED:-false}"; then
+# The switch defaults on here, so deploy assets newer than the app (a REPO_BRANCH
+# from before the feature) must not fail verify on a flag that app never passes.
+if ! grep -q AGENT_IN_THE_LOOP_ENABLED "\$APP_PATH/docker-compose.yml" 2>/dev/null; then
+  info "Agent in the Loop: not in this app version (skipped)"
+elif is_true "\${AGENT_IN_THE_LOOP_ENABLED:-false}"; then
   for svc in agent webapp; do
     v=\$(sg docker -c "docker compose exec -T \$svc printenv AGENT_IN_THE_LOOP_ENABLED" 2>/dev/null | tr -d '[:space:]')
     if is_true "\$v"; then success "\$svc has AGENT_IN_THE_LOOP_ENABLED=true"
@@ -861,8 +865,11 @@ EOF
       *)   warn "MCP -> ${mcp} (unexpected)" ;;
     esac
   else
-    [[ "${mcp}" == "404" ]] && ok "MCP disabled -> 404 (as configured)" \
-      || warn "MCP is disabled but /api/mcp-server -> ${mcp} (expected 404)"
+    case "${mcp}" in
+      404) ok "MCP disabled -> 404 (as configured)" ;;
+      401) err "MCP is configured off but /api/mcp-server -> 401: the webapp has it ON. Check MCP_SERVER_ENABLED in the server's app .env and re-run update" ;;
+      *)   warn "MCP is disabled but /api/mcp-server -> ${mcp} (expected 404)" ;;
+    esac
   fi
 
   # Stateless mode has no stream to manage, so GET must be refused.

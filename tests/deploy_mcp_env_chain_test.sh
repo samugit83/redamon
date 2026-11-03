@@ -196,6 +196,15 @@ done
 grep -q 'the flag did not reach the \\$svc container' "$DEPLOY" \
   && ok "verify checks both containers received the loop switch" \
   || bad "verify checks the loop switch" "absent" "a printenv check"
+# Deploy assets newer than the app (REPO_BRANCH before Agent in the Loop): the loop
+# switch defaults on here, so verify must not fail on an app that has no such flag.
+grep -q 'grep -q AGENT_IN_THE_LOOP_ENABLED "\\$APP_PATH/docker-compose.yml"' "$DEPLOY" \
+  && ok "verify skips the loop check on an app that predates it" \
+  || bad "verify skips the loop check on an older app" "absent" "a docker-compose.yml check"
+# MCP configured off but the endpoint answers 401: the webapp has it on. Red, not a warning.
+awk '/MCP disabled -> 404/,/fi$/' "$DEPLOY" | grep -q 'err "MCP is configured off but' \
+  && ok "verify flags an MCP server that is on against the deploy's configuration" \
+  || bad "verify flags an MCP server on while configured off" "warn or absent" "an err line"
 
 # ------------------------------------------------------------ the overlay ----
 echo
