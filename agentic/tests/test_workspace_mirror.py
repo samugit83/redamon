@@ -495,6 +495,30 @@ class Options(unittest.TestCase):
                           o.external_assets), ("raw", 300, 3, False, False, False))
         self.assertEqual(o.max_bytes, mirror_mod.TOTAL_BYTES_CEILING)
 
+    def test_docs_site_defaults_applied(self):
+        o = MirrorOptions.for_kind("docs-site", None, total_cap=2 * 1024 ** 3)
+        self.assertEqual((o.output_mode, o.max_pages, o.max_depth, o.respect_robots, o.english_only,
+                          o.external_assets), ("readable", 1000, 6, False, True, False))
+        o = MirrorOptions.for_kind("docs-site", {"outputMode": "raw", "englishOnly": False}, total_cap=10)
+        self.assertEqual((o.output_mode, o.english_only, o.max_pages), ("raw", False, 1000))
+
+    def test_options_clamped_to_ceilings(self):
+        o = MirrorOptions.for_kind("website", {"maxPages": 999_999, "maxDepth": 99}, total_cap=10 * 1024 ** 3)
+        self.assertEqual((o.max_pages, o.max_depth), (2000, 10))
+        o = MirrorOptions.for_kind("website", {"maxPages": 0, "maxDepth": -5}, total_cap=100)
+        self.assertEqual((o.max_pages, o.max_depth, o.max_bytes), (1, 0, 100))
+        self.assertEqual(MirrorOptions.for_kind("website", None, total_cap=10 * 1024 ** 3).max_bytes,
+                         mirror_mod.TOTAL_BYTES_CEILING)
+
+    def test_mirror_suggested_names(self):
+        from workspace_import.detect import suggested_name
+        for url, name in (("https://docs.example.test/", "docs.example.test"),
+                          ("https://example.test/docs/intro.html", "example.test-docs"),
+                          ("https://example.test/docs/v2/", "example.test-docs"),
+                          ("https://Example.TEST", "example.test")):
+            self.assertEqual(suggested_name("website", {}, url=url), name, url)
+            self.assertEqual(suggested_name("docs-site", {}, url=url), name, url)
+
     def test_bad_option_type_is_invalid_option(self):
         for bad in ({"maxPages": "10"}, {"maxPages": True}, {"respectRobots": 1}, {"outputMode": "pdf"},
                     {"externalAssets": None}):
