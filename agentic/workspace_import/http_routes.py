@@ -19,7 +19,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, StrictSt
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import limits, purge, resolve, staging, upload_job, upload_sessions
+from workspace_import import limits, purge, resolve, runner, staging, upload_job, upload_sessions
+from workspace_import.detect import MIRROR_KINDS
+from workspace_import.names import sanitize_name
+from workspace_import.place import POLICIES
 from workspace_import.errors import ImportFailure, error_body, status_for
 from workspace_import.fetch import GuardedFetcher
 
@@ -87,6 +90,17 @@ class ResolveBody(_Body):
     subpath: Optional[StrictStr] = None
 
 
+class ImportBody(_Body):
+    projectId: StrictStr
+    url: StrictStr
+    destDir: StrictStr = "."
+    name: Optional[StrictStr] = None
+    onConflict: StrictStr = "keep_both"
+    options: dict = {}
+    githubToken: Optional[StrictStr] = None
+
+
+IMPORT_OPTION_KEYS = ("subpath",)
 RESOLVE_TIMEOUT_SEC = 20.0
 # Injectable for tests: builds the fetcher a resolve or an import uses.
 fetcher_factory = GuardedFetcher
@@ -250,3 +264,64 @@ async def resolve_import_url(request: Request):
         return unexpected("resolve import url", e)
     return inspection.answer()
 
+
+def _clean_options(options: dict) -> Optional[dict]:
+    """The options this version understands, type-checked; None when invalid."""
+    out = {}
+    for key, value in (options or {}).items():
+        if key not in IMPORT_OPTION_KEYS:
+            continue
+        if not isinstance(value, str) or len(value) > 1024:
+            return None
+        if value.strip("/"):
+            out[key] = value.strip("/")
+    return out
+
+
+async def start_import(project_id: str, url: str, dest_dir: str, name: Optional[str], on_conflict: str,
+                       options: dict, github_token: str) -> JSONResponse:
+    """Shared by a new import and a Re-sync: inspect on the server, then spawn."""
+    try:
+        dest = workspace_fs.resolve_for_project(project_id, dest_dir)
+    except ValueError:
+        return fail("invalid_request")
+    if not dest.is_dir():
+        return fail("destination_missing")
+
+    async def inspect():
+        async with fetcher_factory(github_token=github_token) as fetcher:
+            return await resolve.inspect(url, fetcher, subpath=options.get("subpath"))
+
+    try:
+        insp = await asyncio.wait_for(inspect(), RESOLVE_TIMEOUT_SEC)
+        if insp.kind in MIRROR_KINDS:
+            raise ImportFailure("kind_not_supported")
+        final_name = sanitize_name(name, fallback="") if name else insp.name
+        if not final_name:
+            return fail("invalid_request")
+        spec = runner.ImportSpec(url=url, dest_dir=dest_dir, name=final_name, on_conflict=on_conflict,
+                                 options=options)
+        started = await runner.start(spec, insp, project_id=project_id, github_token=github_token)
+    except asyncio.TimeoutError:
+        return fail("timeout")
+    except ImportFailure as e:
+        return failure_response(e)
+    except Exception as e:
+        return unexpected("start import", e)
+    return JSONResponse(content=started, status_code=202)
+
+
+@router.post("/import-url")
+async def import_url(request: Request):
+    """Start a URL import job. The answer's facts come from the server's own
+    inspection; the web app audits them."""
+    if not limits.url_import_enabled():
+        return fail("import_disabled")
+    body = await parse_body(request, ImportBody)
+    if body is None or not valid_project(body.projectId) or body.onConflict not in POLICIES:
+        return fail("invalid_request")
+    options = _clean_options(body.options)
+    if options is None:
+        return fail("invalid_request")
+    return await start_import(body.projectId, body.url, body.destDir, body.name, body.onConflict, options,
+                              body.githubToken or "")

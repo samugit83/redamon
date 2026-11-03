@@ -14,18 +14,15 @@ import posixpath
 import threading
 
 import job_runner
-from workspace_import import busy, executor, place, project_check, staging, upload_sessions
+from workspace_import import busy, jobs_common, place, staging, upload_sessions
 from workspace_import.errors import ImportFailure, map_os_error
 from workspace_import.extract import safe_extract, single_top_dir
-from workspace_import import limits
 from workspace_import.redact import safe_traceback
 
 logger = logging.getLogger(__name__)
 
 JOB_TOOL = "workspace_upload"
 MAX_LOGGED_SKIPS = 200
-_PROGRESS_TICK_SEC = 0.25
-_CANCEL_GRACE_SEC = 30.0
 
 
 def _safe(name: str) -> str:
@@ -33,56 +30,10 @@ def _safe(name: str) -> str:
     return _prompt_safe_name(name)
 
 
-class _Progress:
-    """Extraction progress written by the pool thread, reported by the job's task."""
-
-    def __init__(self, base: dict):
-        self.state = dict(base)
-        self._lock = threading.Lock()
-        self.version = 0
-
-    def update(self, **kw) -> None:
-        with self._lock:
-            self.state.update(kw)
-            self.version += 1
-
-    def snapshot(self) -> tuple[int, dict]:
-        with self._lock:
-            return self.version, dict(self.state)
-
-
-async def _report_loop(progress: _Progress) -> None:
-    seen = -1
-    while True:
-        version, state = progress.snapshot()
-        if version != seen:
-            seen = version
-            await job_runner.report_progress(state)
-        await asyncio.sleep(_PROGRESS_TICK_SEC)
-
-
-async def _extract(session, out, progress: _Progress, cancel: threading.Event):
-    def on_progress(files, nbytes):
-        progress.update(phase="extracting", files=files, bytes=nbytes)
-
-    future, queued = executor.start(
-        lambda: safe_extract(session.data_path, out, max_bytes=limits.max_bytes(),
-                             max_entries=limits.max_entries(), progress=on_progress,
-                             cancel_event=cancel, single_name=session.name),
-    )
-    if queued:
-        progress.update(phase="queued")
-    try:
-        return await asyncio.wrap_future(future)
-    except asyncio.CancelledError:
-        # A pool thread cannot be killed: tell it to stop, and wait for it, so
-        # staging is not deleted under a writer.
-        cancel.set()
-        try:
-            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), _CANCEL_GRACE_SEC)
-        except BaseException:
-            pass
-        raise
+async def _extract(session, out, progress, cancel):
+    # `safe_extract` is read here, at call time, so tests can patch it.
+    return await jobs_common.extract_on_pool(safe_extract, session.data_path, out, progress, cancel,
+                                             single_name=session.name)
 
 
 def _staged_entry(session, out):
@@ -100,8 +51,8 @@ async def run_upload_commit(session, append_log) -> dict:
     job_id = job_runner.current_job_id() or session.upload_id
     target = posixpath.join(session.dest_dir, session.name) if session.on_conflict == "replace" else None
     busy.register(pid, job_id, target=target, dest_dir=session.dest_dir)
-    progress = _Progress({"phase": "extracting", "files": 0, "bytes": 0, "totalBytes": session.size})
-    reporter = asyncio.ensure_future(_report_loop(progress))
+    progress = jobs_common.Progress({"phase": "extracting", "files": 0, "bytes": 0, "totalBytes": session.size})
+    reporter = asyncio.ensure_future(jobs_common.report_loop(progress))
     cancel = threading.Event()
     kind = f"upload-{session.kind}"
     try:
@@ -116,12 +67,7 @@ async def run_upload_commit(session, append_log) -> dict:
             skipped = report.skipped
             staged = _staged_entry(session, out)
 
-        try:
-            exists = await project_check.project_exists(pid)
-        except project_check.ProjectCheckFailed:
-            raise ImportFailure("settings_unavailable") from None
-        if not exists:
-            raise ImportFailure("project_deleted")
+        await jobs_common.ensure_project_exists(pid)
 
         progress.update(phase="placing")
         rel = await place.place(pid, staged, session.dest_dir, session.name, session.on_conflict)
@@ -130,8 +76,7 @@ async def run_upload_commit(session, append_log) -> dict:
             lines = [f"skipped {_safe(name)} ({reason})" for name, reason in skipped[:MAX_LOGGED_SKIPS]]
             await append_log("\n".join(lines))
         reporter.cancel()
-        await job_runner.report_progress({"phase": "done", "path": rel, "files": files, "bytes": nbytes},
-                                         now=lambda: float("inf"))
+        await jobs_common.report_done({"phase": "done", "path": rel, "files": files, "bytes": nbytes})
         logger.info(f"[workspace-import] done project={pid} job={job_id} kind={kind} "
                     f"path={_safe(rel)} files={files} bytes={nbytes}")
         return {"success": True,
