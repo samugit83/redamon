@@ -34,6 +34,17 @@ CODES: dict[str, tuple[int, str]] = {
     "name_exhausted": (409, "Too many entries with that name already exist in the folder."),
     "exists": (409, "An entry with that name already exists in the folder."),
     "destination_missing": (409, "The destination folder no longer exists."),
+    # Upload sessions and jobs
+    "too_many_uploads": (429, "This project already has 4 uploads in progress. Wait for one to finish."),
+    "session_not_found": (404, "The upload session does not exist (the workspace was reset or the agent restarted)."),
+    "offset_mismatch": (409, "The chunk does not continue the upload where it stands."),
+    "chunk_overflow": (400, "The chunk goes past the declared size of the upload."),
+    "chunk_too_large": (413, "The chunk is larger than the server accepts."),
+    "session_incomplete": (409, "The upload is not complete yet."),
+    "too_many_jobs": (429, "Too many uploads and imports are running on the server. Retry shortly."),
+    "project_deleted": (409, "The project was deleted."),
+    "settings_unavailable": (503, "The project could not be checked with the web app. Retry shortly."),
+    "project_exists": (409, "The project still exists; its workspace was not purged."),
 }
 
 

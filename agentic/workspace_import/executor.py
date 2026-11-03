@@ -56,6 +56,13 @@ def submit(fn: Callable[..., Any], *args) -> Future:
     return _submit(fn, *args)[0]
 
 
+def start(fn: Callable[..., Any], *args) -> tuple[Future, bool]:
+    """(future, queued): queued is True when every worker was busy. For callers
+    that must wait for the worker itself after a cancel, which run_blocking
+    cannot do."""
+    return _submit(fn, *args)
+
+
 async def run_blocking(fn: Callable[..., Any], *args, on_queued: Optional[Callable[[], Any]] = None):
     """Run `fn(*args)` on the import pool. When every worker is already busy,
     call `on_queued()` once first, so the job can report that it waits."""

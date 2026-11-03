@@ -877,6 +877,17 @@ services:
       # D10: fs_extract zip/tar/gz decompression caps (generous safe defaults).
       FS_EXTRACT_MAX_ENTRIES: ${FS_EXTRACT_MAX_ENTRIES:-5000}
       FS_EXTRACT_MAX_TOTAL_BYTES: ${FS_EXTRACT_MAX_TOTAL_BYTES:-524288000}
+      # Workspace folder/archive uploads and URL imports (README.DEV §8).
+      WORKSPACE_IMPORT_MAX_BYTES: ${WORKSPACE_IMPORT_MAX_BYTES:-2147483648}
+      WORKSPACE_IMPORT_MAX_ENTRIES: ${WORKSPACE_IMPORT_MAX_ENTRIES:-50000}
+      WORKSPACE_IMPORT_MIN_FREE_BYTES: ${WORKSPACE_IMPORT_MIN_FREE_BYTES:-1073741824}
+      WORKSPACE_IMPORT_MAX_JOBS: ${WORKSPACE_IMPORT_MAX_JOBS:-4}
+      WORKSPACE_IMPORT_WORKERS: ${WORKSPACE_IMPORT_WORKERS:-2}
+      # Must stay well under the 60 MB request cap of the Next proxy and nginx.
+      WORKSPACE_UPLOAD_CHUNK_BYTES: ${WORKSPACE_UPLOAD_CHUNK_BYTES:-8388608}
+      WORKSPACE_UPLOAD_SESSION_IDLE_SEC: ${WORKSPACE_UPLOAD_SESSION_IDLE_SEC:-3600}
+      # The scan dispatcher's disk floor: imports never take the disk below it.
+      JOB_QUEUE_MIN_FREE_DISK: ${JOB_QUEUE_MIN_FREE_DISK:-10737418240}
       # MCP tool servers (internal docker network)
       MCP_NETWORK_RECON_URL: http://kali-sandbox:8000/sse
       MCP_NUCLEI_URL: http://kali-sandbox:8002/sse

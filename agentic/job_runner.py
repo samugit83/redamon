@@ -96,6 +96,12 @@ _current_job: contextvars.ContextVar = contextvars.ContextVar("current_job", def
 _PROGRESS_META_INTERVAL_SEC = 1.0
 
 
+def current_job_id() -> Optional[str]:
+    """The id of the job whose runner is executing in this task, or None."""
+    current = _current_job.get()
+    return current[1].job_id if current else None
+
+
 async def report_progress(progress: dict, *, now: Callable[[], float] = time.monotonic) -> None:
     """Record the running job's progress. Meta and the job_update event are
     throttled to one per second; the final meta write always carries the last
