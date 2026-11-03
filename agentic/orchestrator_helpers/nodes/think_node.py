@@ -75,6 +75,7 @@ from prompts.base import (
     CACHE_MARKERS,
     build_workspace_rules_block,
     build_uploads_inbox_block,
+    build_imports_block,
 )
 from prompts.skill_part_seam import applied_skill_workflow
 from prompts.classification import build_skill_menu
@@ -584,6 +585,11 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     _uploads_block = build_uploads_inbox_block(project_id)
     if _uploads_block:
         system_prompt += "\n\n" + _uploads_block
+    # Imports get their own block, never the inbox's "CHECK THESE NOW": they
+    # are third-party content, read only when a task needs them.
+    _imports_block = build_imports_block(project_id)
+    if _imports_block:
+        system_prompt += "\n\n" + _imports_block
     if _session_config_text:
         system_prompt += "\n\n" + _session_config_text
     if get_setting('STEALTH_MODE', False):

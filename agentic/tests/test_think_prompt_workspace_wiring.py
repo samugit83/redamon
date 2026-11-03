@@ -30,6 +30,14 @@ class ThinkNodeWiring(unittest.TestCase):
         self.assertIn("system_prompt += ", after)
         self.assertNotIn("build_uploads_inbox_block", src[:fmt])
 
+    def test_imports_block_appended_after_uploads_block(self):
+        src = _think_source()
+        uploads = src.index("build_uploads_inbox_block(project_id)")
+        imports = src.index("build_imports_block(project_id)")
+        self.assertGreater(imports, uploads)
+        self.assertGreater(imports, src.index("REACT_SYSTEM_PROMPT.format("))
+        self.assertIn("system_prompt += ", src[imports:imports + 300])
+
     def test_layout_block_with_inline_inbox_is_not_on_the_live_path(self):
         self.assertNotIn("build_workspace_layout_block(", _think_source())
 
@@ -52,6 +60,7 @@ class RulesBlockIsStatic(unittest.TestCase):
         self.assertNotIn("staged-folder", rules)
         self.assertNotIn("staged-file.txt", rules)
         self.assertIn("staged-folder", base.build_uploads_inbox_block("proj"))
+        self.assertNotIn("IMPORTED SOURCES", rules)
 
 
 if __name__ == "__main__":
