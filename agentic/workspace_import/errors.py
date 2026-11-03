@@ -45,6 +45,16 @@ CODES: dict[str, tuple[int, str]] = {
     "project_deleted": (409, "The project was deleted."),
     "settings_unavailable": (503, "The project could not be checked with the web app. Retry shortly."),
     "project_exists": (409, "The project still exists; its workspace was not purged."),
+    # Fetching
+    "unsupported_scheme": (400, "Only http and https links can be imported."),
+    "credentials_in_url": (400, "The link holds a user name or password. Remove it; private GitHub repositories use the GitHub token in Global Settings."),
+    "invalid_url": (400, "The link is not a valid URL."),
+    "blocked_address": (403, "The link points at a private, internal or metadata address. Only public internet addresses can be imported."),
+    "dns_failed": (422, "The link's host name does not resolve."),
+    "timeout": (422, "The source did not answer in time."),
+    "network_error": (422, "The source could not be reached."),
+    "too_many_redirects": (422, "The link redirects more than 5 times."),
+    "upstream_status": (422, "The source answered with an error."),
 }
 
 
