@@ -294,6 +294,23 @@ Repeated 401s are banned by the `redamon-mcp-auth` fail2ban jail.
 In `https-ip` with a self-signed certificate most MCP clients reject the connection. Use a
 real certificate (`TLS_MODE=provided`) or a domain.
 
+### Agent in the Loop (on, once the MCP server is)
+
+`AGENT_IN_THE_LOOP_ENABLED` (default `true`) lets a person pick **Agent in the Loop** as a
+chat's model: their own Claude Code or Codex then answers each reasoning step of that run
+through the `loop_*` MCP tools. It needs the MCP server, which stays off by default on a
+deploy: until you set `MCP_SERVER_ENABLED=true`, `deploy.sh` notes that the switch is
+inert. `deploy.sh` also writes `REDAMON_SINGLE_HOST_DEPLOY=true` into the server's app `.env`, so
+`redamon.sh` (which turns the MCP server on by default on a local install) never turns it on
+here, even when someone runs `./redamon.sh update` on the server by hand; `verify` reports an
+MCP server that answers while configured off as an error. Against an app older than Agent in
+the Loop, `verify` skips the loop check. The flag is seeded into the server `.env` and passed to
+both the `agent` and `webapp` containers; `deploy.sh verify` checks that it reached both.
+The three gates above apply unchanged (the driver is just another MCP client), and
+`MCP_RATE_LOOP_PER_MIN` (default 120) is the per-token rate of the loop tools. The client
+setup is on the wiki page
+[Agent in the Loop](https://github.com/samugit83/redamon/wiki/Agent-in-the-Loop).
+
 ## The plugin platform
 
 Every deploy runs the RedAmon plugin platform: the Plugins page, where an admin installs
