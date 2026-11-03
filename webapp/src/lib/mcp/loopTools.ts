@@ -7,13 +7,13 @@
  * confirmation: no tool here can.
  *
  * Order in each body: requireScope, the switch, the DB read of the user's owned
- * projects, the token rule, argument checks, the rate bucket, the agent call.
- * The owned project ids go to the agent, whose broker serves only steps of those
+ * loop projects, the token rule, argument checks, the rate bucket, the agent call.
+ * Those project ids go to the agent, whose broker serves only steps of those
  * projects (a deleted or transferred project's steps never reach a driver).
  */
 import prisma from '@/lib/prisma'
 import { requireScope } from '@/lib/mcpAuth'
-import { agentInTheLoopEnabled, isLoopModel } from '@/lib/agentInTheLoop'
+import { LOOP_PREFIX, agentInTheLoopEnabled, isLoopModel } from '@/lib/agentInTheLoop'
 import { McpToolError } from './errors'
 import { enforceRate, type McpContext } from './tools'
 import {
@@ -25,6 +25,8 @@ import { loopTokenProblem } from './loopScopes'
 /** Mirrors the agent's LOOP_ANSWER_MAX_CHARS default; the agent re-checks its own. */
 export const LOOP_ANSWER_MAX_CHARS = 262_144
 export const LOOP_WAIT_DEFAULT_S = 50
+/** The agent refuses a longer project list (MAX_PROJECT_IDS in agent_in_the_loop/routes.py). */
+export const MAX_LOOP_PROJECT_IDS = 2000
 const STEP_ID_RE = /^[0-9a-f]{32}$/
 
 const NO_LOOP_PROJECT_HINT =
@@ -41,12 +43,31 @@ function assertLoopEnabled(): void {
   }
 }
 
-/** The user's owned projects NOW: ownership, not the current model, is the filter. */
+/**
+ * The user's owned projects NOW that a loop run can be in: on a loop model, or with
+ * a chat running (a project switched to another model mid-run still serves its
+ * open step). Ownership is the filter; the narrow list keeps a user with thousands
+ * of projects under the agent's limit.
+ */
 async function ownedProjects(userId: string): Promise<{ ids: string[]; anyLoop: boolean }> {
   const rows = await prisma.project.findMany({
-    where: { userId },
+    where: {
+      userId,
+      OR: [
+        { agentOpenaiModel: { startsWith: LOOP_PREFIX } },
+        { conversations: { some: { agentRunning: true } } },
+      ],
+    },
     select: { id: true, agentOpenaiModel: true },
+    take: MAX_LOOP_PROJECT_IDS + 1,
   })
+  if (rows.length > MAX_LOOP_PROJECT_IDS) {
+    throw new McpToolError(
+      `More than ${MAX_LOOP_PROJECT_IDS} of your projects use Agent in the Loop or have a chat ` +
+      'running. Switch some of them to another agent model.',
+      'too_many_loop_projects'
+    )
+  }
   return { ids: rows.map((r) => r.id), anyLoop: rows.some((r) => isLoopModel(r.agentOpenaiModel)) }
 }
 

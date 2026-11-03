@@ -30,7 +30,7 @@ vi.mock('@/lib/mcp/loopClient', () => ({
 }))
 
 import { McpScopeError, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
-import { loopGetStep, loopSubmitStep, loopWaitStep } from './loopTools'
+import { MAX_LOOP_PROJECT_IDS, loopGetStep, loopSubmitStep, loopWaitStep } from './loopTools'
 import { loopTokenProblem } from './loopScopes'
 import type { McpContext } from './tools'
 
@@ -62,6 +62,27 @@ const noAgentCall = () => {
   expect(h.get).not.toHaveBeenCalled()
   expect(h.answer).not.toHaveBeenCalled()
 }
+
+describe('the project list sent to the agent', () => {
+  test('only projects a loop run can be in: on a loop model, or with a chat running', async () => {
+    await loopWaitStep(ctx(), {})
+    const where = h.findProjects.mock.calls[0][0].where
+    expect(where.userId).toBe('owner')
+    expect(where.OR).toEqual([
+      { agentOpenaiModel: { startsWith: 'loop/' } },
+      { conversations: { some: { agentRunning: true } } },
+    ])
+    expect(h.wait.mock.calls[0][0].projectIds).toEqual(['p1', 'p2'])
+  })
+
+  test('more projects than the agent accepts is a clear refusal, never an opaque 422', async () => {
+    h.findProjects.mockResolvedValue(
+      Array.from({ length: MAX_LOOP_PROJECT_IDS + 1 }, (_, i) => ({ id: `p${i}`, agentOpenaiModel: 'loop/mcp' })))
+    await expect(loopWaitStep(ctx(), {})).rejects.toMatchObject({ code: 'too_many_loop_projects' })
+    expect(h.findProjects.mock.calls[0][0].take).toBe(MAX_LOOP_PROJECT_IDS + 1)
+    noAgentCall()
+  })
+})
 
 describe('refusals before the agent', () => {
   test('a token without agent:loop', async () => {
@@ -111,7 +132,7 @@ describe('refusals before the agent', () => {
 describe('what reaches the agent', () => {
   test('the owned project ids, the token identity, and the driver name', async () => {
     await loopWaitStep(ctx(), { driver: 'cc-amber', waitSeconds: 30 })
-    expect(h.findProjects).toHaveBeenCalledWith({ where: { userId: 'owner' },
+    expect(h.findProjects.mock.calls[0][0]).toMatchObject({ where: { userId: 'owner' },
       select: { id: true, agentOpenaiModel: true } })
     expect(h.wait).toHaveBeenCalledWith({
       userId: 'owner', driverId: 'tok1', driverName: 'cc-amber', projectIds: ['p1', 'p2'],

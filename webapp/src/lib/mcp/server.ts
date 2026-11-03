@@ -1853,9 +1853,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       title: 'Read a page of an Agent in the Loop step',
       description:
         'Read another page of a step you received from loop_wait_step (pass the previous ' +
-        'page.nextCursor as cursor until it is null), or the whole step again with full=true ' +
-        'when a part shows as an "unchanged since your previous step" placeholder you no longer ' +
-        'have. Reading renews your claim on the step, so another client does not take it.',
+        'page.nextCursor as cursor until it is null), or the whole step again from cursor 0 with ' +
+        'full=true when a part shows as an "unchanged since your previous step" placeholder you no ' +
+        'longer have; later cursors stay in that full document. Reading renews your claim on the ' +
+        'step, so another client does not take it.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       _meta: scopesMeta({ required: ['agent:loop'] }),
       inputSchema: {

@@ -9,8 +9,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { LOOP_MODEL_ID, LOOP_MODEL_LABEL, LOOP_PREFIX, agentInTheLoopEnabled } from './agentInTheLoop'
 import { LOOP_CONTRACT_VERSION } from './mcp/loopSkill'
+import { MAX_LOOP_PROJECT_IDS } from './mcp/loopTools'
 
 const LOOP_INIT_PY = join(__dirname, '../../../agentic/agent_in_the_loop/__init__.py')
+const LOOP_ROUTES_PY = join(__dirname, '../../../agentic/agent_in_the_loop/routes.py')
 
 function pythonConstant(src: string, name: string): string {
   const m = new RegExp(`^${name}\\s*=\\s*(.+)$`, 'm').exec(src)
@@ -32,6 +34,10 @@ describe('the loop constants equal the agent\'s', () => {
 
   test.skipIf(!available)('the skill pack is written for the agent\'s contract version', () => {
     expect(String(LOOP_CONTRACT_VERSION)).toBe(pythonConstant(src, 'CONTRACT_VERSION'))
+  })
+
+  test.skipIf(!available)('the project list limit matches the agent route', () => {
+    expect(String(MAX_LOOP_PROJECT_IDS)).toBe(pythonConstant(readFileSync(LOOP_ROUTES_PY, 'utf8'), 'MAX_PROJECT_IDS'))
   })
 
   test.skipIf(!available)('the switch accepts the same values on both sides', () => {

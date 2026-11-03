@@ -789,7 +789,7 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
     whenToUse:
       'Read the remaining pages of a long step, or the whole step again after you lost earlier context.',
     gotchas: [
-      'A `[[part … unchanged since your previous step …]]` placeholder points at text from your previous step. Ask `full: true` if you no longer have it.',
+      'A `[[part … unchanged since your previous step …]]` placeholder points at text from an earlier step. If you no longer have it (after a context compaction, say), read again from `cursor: 0` with `full: true`; later cursors stay in that full document.',
       'Reading renews your lease; a step you neither read nor answer for 90 seconds can go to another client.',
     ],
     workflowRefs: ['drive-a-session'],
@@ -1180,7 +1180,7 @@ export const WORKFLOWS: Workflow[] = [
       '   is `thinking` or `running_tool`; say once what the person must do if it is `awaiting_human`;',
       '   stop if it is `finished`, `stopped` or `error`, or there is no session.',
       '3. If a step came back, check `contractVersion` is 1, then read every page with `loop_get_step` while',
-      '   `page.nextCursor` is not null (`full: true` if a placeholder points at text you no longer have).',
+      '   `page.nextCursor` is not null (from `cursor: 0` with `full: true` if a placeholder points at text you no longer have).',
       '4. Answer exactly what the last instruction asks, in `answerFormat`: one JSON object for `json`, only the',
       '   query for `cypher`, the report for `markdown`.',
       '5. Call `loop_submit_step` with `stepId` and `answer` (or `declined: true` and a short reason), print',
