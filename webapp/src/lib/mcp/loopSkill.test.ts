@@ -68,9 +68,14 @@ describe('the files, per client', () => {
     const skill = file(p, 'SKILL.md')
     expect(skill).toMatch(new RegExp(`^---\\nname: ${LOOP_SKILL_NAME}\\ndescription: >-`))
     expect(skill).not.toContain('disallowed-tools')
-    expect(skill).toContain(`codex mcp add redamon --url ${ENDPOINT} --bearer-token-env-var REDAMON_MCP_TOKEN`)
+    // The lock-down is project-scoped: no global `codex mcp add`, no ~/.codex/config.toml edit.
+    expect(skill).toContain('Copy the config to `.codex/config.toml` in that folder.')
+    expect(skill).toContain('trust it when asked')
+    expect(skill.split('\n').filter(l => l.includes('codex mcp add'))).toEqual([
+      'Do not also run `codex mcp add redamon`: it writes the same server into `~/.codex/config.toml`,',
+    ])
     expect(file(p, 'templates/codex-config.toml')).toBe([
-      '# Merge into ~/.codex/config.toml (or a Codex profile you start for this).',
+      '# Save as .codex/config.toml in the folder you run Codex from for this, and only that folder.',
       '# The driver reads target-controlled text at every step: no shell, no web, no writes.',
       'sandbox_mode = "read-only"',
       'approval_policy = "never"',

@@ -12,11 +12,13 @@
  *    ANTHROPIC_AUTH_TOKEN as empty in remote headers (hence our own name); an
  *    HTTP MCP request times out after 60 s unless the server's `timeout` says
  *    otherwise; a project server needs the person's approval on first start.
- *  - Codex: `codex mcp add NAME --url URL --bearer-token-env-var VAR` stores the
- *    variable's name; `tool_timeout_sec` defaults to 60; `enabled_tools`,
- *    `default_tools_approval_mode = "approve"`, `web_search = "disabled"`,
- *    `[features] shell_tool = false` and `[history] persistence = "none"` are
- *    config.toml keys.
+ *  - Codex: `bearer_token_env_var` stores the variable's name; `tool_timeout_sec`
+ *    defaults to 60; `enabled_tools`, `default_tools_approval_mode = "approve"`,
+ *    `web_search = "disabled"`, `[features] shell_tool = false` and
+ *    `[history] persistence = "none"` are config.toml keys; a project's
+ *    `.codex/config.toml` is read once the person trusts the folder. The pack uses
+ *    that file, not `~/.codex/config.toml`, so the lock-down covers only the driver
+ *    folder, and not `codex mcp add`, which writes the same server table globally.
  */
 
 export const LOOP_CLIENTS = ['claude-code', 'codex', 'other'] as const
@@ -143,7 +145,7 @@ const CLAUDE_SETTINGS_JSON = JSON.stringify({
 }, null, 2)
 
 const CODEX_TOML = (endpoint: string) => [
-  '# Merge into ~/.codex/config.toml (or a Codex profile you start for this).',
+  '# Save as .codex/config.toml in the folder you run Codex from for this, and only that folder.',
   '# The driver reads target-controlled text at every step: no shell, no web, no writes.',
   'sandbox_mode = "read-only"',
   'approval_policy = "never"',
@@ -228,19 +230,20 @@ export function renderLoopConnecting(client: LoopClient, serverUrl: string, sing
       '',
       ...keep,
       '',
-      '```bash',
-      `export ${TOKEN_VAR}=…`,
-      `codex mcp add redamon --url ${endpoint} --bearer-token-env-var ${TOKEN_VAR}`,
-      '```',
+      'Run Codex in an empty folder used only for this, with this skill in it as above.',
       '',
-      '`--bearer-token-env-var` stores the variable\'s NAME, never the token. Then merge the lock-down',
-      'settings into `~/.codex/config.toml` (or a profile you start for this): a read-only sandbox, no',
-      'shell tool, no web search, no saved history, only the three loop tools, approved without a',
-      'prompt, and a tool timeout above the 55-second wait.',
+      '1. Copy the config to `.codex/config.toml` in that folder. It connects the `redamon` server',
+      `   through \`bearer_token_env_var\` (the variable's NAME, never the token) and locks this`,
+      '   folder\'s sessions down: a read-only sandbox, no shell tool, no web search, no saved history,',
+      '   only the three loop tools, approved without a prompt, and a tool timeout above the',
+      '   55-second wait. Your other Codex sessions keep their own settings.',
+      ...include('templates/codex-config.toml', CODEX_TOML(endpoint), 'toml').map(l => `   ${l}`.trimEnd()),
+      `2. \`export ${TOKEN_VAR}=…\`, start \`codex\` in the folder and trust it when asked: Codex reads a`,
+      '   project\'s `.codex/config.toml` only in a trusted folder.',
+      '3. Say: "Drive my RedAmon session".',
       '',
-      ...include('templates/codex-config.toml', CODEX_TOML(endpoint), 'toml'),
-      '',
-      'Then say: "Drive my RedAmon session".',
+      `Do not also run \`codex mcp add redamon\`: it writes the same server into \`~/.codex/config.toml\`,`,
+      'for every Codex session on this machine.',
     ].join('\n')
   }
   return [
