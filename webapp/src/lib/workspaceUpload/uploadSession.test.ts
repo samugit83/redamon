@@ -160,6 +160,27 @@ describe('uploadBlob', () => {
     expect(calls.some((c) => c.url.includes('/commit'))).toBe(false)
   })
 
+  test('an abort during create deletes the session once the create answers', async () => {
+    // The server may have created the session already: the client must learn
+    // its id to delete it, so the create itself is never aborted.
+    let answerCreate: (r: Response) => void = () => {}
+    routes.create = () => new Promise<Response>((resolve) => { answerCreate = resolve })
+    const controller = new AbortController()
+
+    const upload = track(uploadBlob(options(new Blob(['abcdefgh']), { signal: controller.signal })))
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1))
+    controller.abort()
+    await vi.waitFor(() => expect(upload.done).toBe(true))
+    expect((upload.error as Error).name).toBe('AbortError')
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+
+    answerCreate(json({ uploadId: UPLOAD_ID, chunkSize: 4, maxBytes: 1 << 30 }, 201))
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1))
+    expect(calls.filter((c) => c.method === 'DELETE')[0].url)
+      .toBe(`/api/agent/workspace/upload-sessions/${UPLOAD_ID}?projectId=p1`)
+    expect(chunkCalls()).toHaveLength(0)
+  })
+
   test('reports progress', async () => {
     const onProgress = vi.fn()
     await uploadBlob(options(new Blob(['abcdefghij']), { onProgress }))

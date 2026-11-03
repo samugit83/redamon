@@ -165,6 +165,23 @@ function asApiError(err: unknown, fallback: string): unknown {
   return toApiError(err, fallback)
 }
 
+/** `promise`, or an AbortError as soon as `signal` aborts (then `onAbandon` runs once). */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbandon: () => void): Promise<T> {
+  if (!signal) return promise
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      onAbandon()
+      reject(abortError())
+    }
+    if (signal.aborted) return onAbort()
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      (err) => { signal.removeEventListener('abort', onAbort); reject(err) },
+    )
+  })
+}
+
 /** Ask the server to drop a session. keepalive lets it leave with a closing page; a failure is left to the server's sweep. */
 export function deleteUploadSession(projectId: string, uploadId: string): void {
   const url = `${SESSIONS_URL}/${encodeURIComponent(uploadId)}?projectId=${encodeURIComponent(projectId)}`
@@ -308,7 +325,13 @@ export async function uploadBlob(opts: UploadBlobOptions): Promise<UploadResult>
   if (signal?.aborted) throw abortError()
   const patience = { signal, onWaiting: opts.onWaiting }
 
-  const { uploadId, chunkSize } = await createSession(opts, patience)
+  // The create is never aborted: the server may have made the session before
+  // the abort, and only its answer names the session to delete. An abort
+  // meanwhile rejects at once and deletes the session when the answer lands.
+  const creating = createSession(opts, { onWaiting: opts.onWaiting })
+  const { uploadId, chunkSize } = await untilAborted(creating, signal, () => {
+    creating.then((c) => deleteUploadSession(projectId, c.uploadId), () => {})
+  })
   let open = true
   const close = () => {
     if (!open) return
