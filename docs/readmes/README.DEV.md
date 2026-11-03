@@ -1205,6 +1205,22 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 | `AGENT_PORT` | `8090` | Host port for the agent API (maps to internal :8080) |
 | `RECON_ORCH_PORT` | `8010` | Host port for the recon orchestrator |
 
+### Agent Workspace uploads and URL import (agent)
+
+Read by the agent with safe fallbacks: a size or count that is not a positive integer falls back to its default, so a typo can never disable a cap. Every one has a compose default; `.env` needs none of them.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKSPACE_IMPORT_MAX_BYTES` | `2147483648` (2 GiB) | Cap per upload or import: the download and the extracted total each |
+| `WORKSPACE_IMPORT_MAX_ENTRIES` | `50000` | Entries per extraction or import |
+| `WORKSPACE_IMPORT_MIN_FREE_BYTES` | `1073741824` (1 GiB) | Headroom on top of the scan floor: the free disk left after an operation must be `JOB_QUEUE_MIN_FREE_DISK` + this |
+| `JOB_QUEUE_MIN_FREE_DISK` | `10737418240` (10 GiB) | The recon scan dispatcher's disk floor, also given to the agent so imports never take the disk below it (`0` turns that floor off, as it does for the dispatcher) |
+| `WORKSPACE_IMPORT_MAX_JOBS` | `4` | Upload commits and URL imports running at once, across projects (they take no governed background-job slot) |
+| `WORKSPACE_IMPORT_WORKERS` | `2` | Threads of the import pool (extraction, hashing, archive builds); work beyond them waits as `queued` |
+| `WORKSPACE_UPLOAD_CHUNK_BYTES` | `8388608` (8 MiB) | Chunk size of an upload session; keep it well under the web app's 60 MB request cap (`proxyClientMaxBodySize` in `webapp/next.config.ts`) |
+| `WORKSPACE_UPLOAD_SESSION_IDLE_SEC` | `3600` | An upload session idle longer than this is deleted |
+| `WORKSPACE_URL_IMPORT_ENABLED` | `true` | Kill switch for import from a URL; any value but `true`/`1`/`yes` turns it off (the import routes answer 403 `import_disabled`). Folder and archive upload have no switch |
+
 > The MCP servers listen on fixed container ports (8000, 8002–8005, from `SERVERS` in
 > `mcp/servers/run_servers.py`). Their host ports, bound to `127.0.0.1`, come from
 > `MCP_NETWORK_RECON_PORT`, `MCP_NUCLEI_PORT`, `MCP_METASPLOIT_PORT`, `MCP_NMAP_PORT` and

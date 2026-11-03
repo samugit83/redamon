@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Upload folders, archives and large files into the Agent Workspace.** The Files tab's upload button gains a menu: **Upload files…**, **Upload folder…** and **Upload archive and extract…** (zip, tar, tar.gz, tar.bz2, tar.xz). A dropped folder keeps its tree, empty folders included, and a drop on a folder row uploads into that folder. Files over 32 MiB, folders and archives are sent in 8 MiB chunks, so the 60 MB request cap no longer limits them. Each upload may hold up to 2 GiB and 50,000 entries, and is refused when it would leave less free disk than the scan floor (`JOB_QUEUE_MIN_FREE_DISK`) plus 1 GiB. A name already taken is kept beside the old one (`name-2`). A transfers panel shows each upload's progress and a Cancel button, then a link to where it was saved, or the failure with its code. An archive is extracted on the server: a path that leaves its folder refuses the whole archive, and links and devices are skipped. Leaving the graph page stops the uploads still sending bytes (closing or reloading the tab asks first); one the server is already extracting finishes, and shows in the Jobs tab. The limits are environment variables (README.DEV §8). Rebuild `agent` and `webapp`.
+
 ### Changed
 
+- **Deleting a project deletes its agent workspace.** Its files, staged uploads and running workspace jobs go with it, and deleting a user does the same for each of their projects. An unreachable agent never blocks the delete; the folder then stays on disk. Upgrade: workspaces of projects deleted before this release stay in `agentic/agent-workspace/`. Remove the folders whose id matches no project by hand. Rebuild `agent` and `webapp`.
 - **Workspace downloads stream.** A file, a folder archive or a bulk download is streamed from disk instead of being read into the agent's memory first, so a large file no longer risks the agent's memory limit. Archives are built in a staging folder on their own thread pool, and refuse with "not enough free disk space" when building one would take the disk below the scan floor plus 1 GiB. Every download is saved as an attachment (`X-Content-Type-Options: nosniff`), never shown inline. Rebuild `agent` and `webapp`.
 - **Big folders list in pages.** The Files tab shows the first 2,000 entries of a folder and says how many it left out; the filter searches only the entries shown. Rebuild `agent` and `webapp`.
 - **The agent sees uploaded folders.** A folder in `uploads/` is listed in the agent's workspace inbox (`name/`), counted with the files; names are shown on one line, control characters replaced. Rebuild `agent`.
 
 ### Fixed
 
+- **Dropping files on the Agent Workspace drawer uploads them.** The drop target ignored the pointer until a drag was over it, and only the target itself could notice one, so a drop never reached the drawer. Rebuild `webapp`.
+- **A right-aligned menu no longer jumps while it opens** (the MCP token row actions, the workspace upload menu): the fade-in replaced the menu's shift for its 150 ms. Rebuild `webapp`.
 - **Tradecraft crawls follow relative links correctly.** Links on pages such as `…/page.html` resolved under the page's own name, so the crawl fetched pages that do not exist. They now resolve against the page's final address and its `<base>` tag, as a browser does; the mkdocs and gitbook nav harvests use the same rule. Rebuild `agent`.
 - **A background job cancelled before it started no longer shows as running.** Its task had not run a step yet, so nothing recorded the cancel and the Jobs tab showed it running until the next restart. Rebuild `agent`.
 - **Tradecraft sitemap titles keep their last letters.** Titles taken from a sitemap lost any trailing `h`, `t`, `m`, `l` or `.` (`install.html` became `Insta`). Rebuild `agent`.
