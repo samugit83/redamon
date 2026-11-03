@@ -570,12 +570,14 @@ class StepBroker:
                         token_id: str, driver_name: Optional[str], timeout: float,
                         full: bool = False) -> dict:
         allowed = set(project_ids)
-        self._record_driver_call(user_id, token_id, driver_name, project_ids=allowed,
-                                 session_id=session_id)
         self._prune()
         loop = asyncio.get_running_loop()
         give_up = loop.time() + max(0.0, timeout)
         while True:
+            # A chat that starts while this call waits is served by it: count it
+            # as present at once, not only from the driver's next call.
+            self._record_driver_call(user_id, token_id, driver_name, project_ids=allowed,
+                                     session_id=session_id)
             self._purge_leases()
             step = self._claimable(user_id, allowed, session_id)
             if step is not None:

@@ -607,6 +607,15 @@ class PresencePerSession(BrokerCase):
         self.assertTrue(rec_a.payloads[-1]["driver"]["connected"])
         self.assertTrue(rec_b.payloads[-1]["driver"]["connected"])
 
+    async def test_a_chat_started_during_a_long_poll_counts_as_served(self):
+        rec = Recorder()
+        waiting = asyncio.create_task(self.wait(timeout=1.5))
+        await asyncio.sleep(0.05)
+        await self.scope(session="sNew", callback=rec)   # no step yet: nothing to claim
+        await asyncio.sleep(1.2)                          # one wait slice later
+        self.assertTrue(rec.payloads[-1]["driver"]["connected"])
+        await waiting
+
     async def test_a_driver_of_other_projects_is_no_presence(self):
         rec = Recorder()
         scope = await self.scope(callback=rec)
