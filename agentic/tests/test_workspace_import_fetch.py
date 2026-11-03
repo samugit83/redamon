@@ -89,6 +89,35 @@ class Redirects(FetchBase):
         self.assertEqual(calls, [("https://a.example.test/x", 0), ("https://b.example.test/y", 1)])
         self.assertEqual(len(self.seen), 1)  # the refused hop was never requested
 
+    async def test_per_request_policy_runs_after_the_fetchers_own(self):
+        order = []
+
+        def own(url, hop):
+            order.append(("own", hop))
+
+        async def per_request(url, hop):
+            order.append(("request", hop))
+
+        routes = {"https://a.example.test/x": redirect("/y"), "https://a.example.test/y": httpx.Response(200, text="ok")}
+        async with self.fetcher(routes, hop_policy=own) as f:
+            status, text, _final, _h = await f.get_text("https://a.example.test/x", max_bytes=100, policy=per_request)
+            self.assertEqual((status, text), (200, "ok"))
+            await f.get_text("https://a.example.test/y", max_bytes=100)
+        self.assertEqual(order, [("own", 0), ("request", 0), ("own", 1), ("request", 1), ("own", 0)])
+
+    async def test_check_response_refuses_before_any_byte_is_written(self):
+        dest = self.tmp / "out.bin"
+
+        def refuse(resp):
+            if resp.headers.get("content-type") == "image/png":
+                raise ImportFailure("unexpected_html")
+
+        routes = {"https://a.example.test/i.png": httpx.Response(200, content=b"png", headers={"content-type": "image/png"})}
+        async with self.fetcher(routes) as f:
+            await self.assertCode("unexpected_html", f.download("https://a.example.test/i.png", dest, max_bytes=100,
+                                                                 check_response=refuse))
+        self.assertFalse(dest.exists())
+
     async def test_too_many_redirects(self):
         routes = {f"https://a.example.test/{i}": redirect(f"/{i + 1}") for i in range(10)}
         async with self.fetcher(routes) as f:

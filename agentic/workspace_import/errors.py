@@ -68,6 +68,14 @@ CODES: dict[str, tuple[int, str]] = {
     "not_resyncable": (422, "This import cannot be re-synced: its link had a query string, which is not stored."),
     "redirect_refused": (422, "The git server redirected the clone, which is not allowed."),
     "git_failed": (422, "The git clone failed."),
+    # Website mirror
+    "invalid_option": (400, "An import option has the wrong type or value."),
+    "hard_blocked": (403, "The site is a government, military, education or intergovernmental domain, which RedAmon never fetches."),
+    "roe_excluded": (403, "The project's Rules of Engagement exclude this host."),
+    "roe_outside_window": (403, "The project's Rules of Engagement do not allow requests to this target now (outside the engagement dates or the time window)."),
+    "robots_disallowed": (403, "The site's robots.txt disallows this page, and Respect robots.txt is on."),
+    "robots_unavailable": (422, "The site's robots.txt could not be read, so with Respect robots.txt on nothing is fetched."),
+    "nothing_saved": (422, "The mirror saved nothing: every page was refused, skipped or failed."),
 }
 
 

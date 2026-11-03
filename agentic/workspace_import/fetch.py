@@ -107,7 +107,7 @@ class GuardedFetcher:
             await self._client.aclose()
             self._client = None
 
-    async def _check_hop(self, url: str, hop: int) -> None:
+    async def _check_hop(self, url: str, hop: int, policy: Optional[HopPolicy] = None) -> None:
         scheme = urllib.parse.urlsplit(url).scheme.lower()
         if scheme not in ("http", "https"):
             raise ImportFailure("unsupported_scheme")
@@ -115,17 +115,20 @@ class GuardedFetcher:
             await asyncio.to_thread(self._assert_safe, url)
         except UnsafeFetchURLError:
             raise ImportFailure("blocked_address", detail=redact_url(url)) from None
-        if self._hop_policy is not None:
-            result = self._hop_policy(url, hop)
-            if inspect.isawaitable(result):
-                await result
+        for check in (self._hop_policy, policy):
+            if check is not None:
+                result = check(url, hop)
+                if inspect.isawaitable(result):
+                    await result
 
-    async def _send(self, url: str, accept: Optional[str] = None) -> tuple[httpx.Response, str, list]:
-        """The open (streaming) response at the end of the redirect chain."""
+    async def _send(self, url: str, accept: Optional[str] = None,
+                    policy: Optional[HopPolicy] = None) -> tuple[httpx.Response, str, list]:
+        """The open (streaming) response at the end of the redirect chain.
+        `policy` runs on every hop of this request only, after the fetcher's own."""
         assert self._client is not None, "use GuardedFetcher as an async context manager"
         current, hops = url, []
         for hop in range(MAX_REDIRECTS + 1):
-            await self._check_hop(current, hop)
+            await self._check_hop(current, hop, policy)
             headers = {"User-Agent": USER_AGENT}
             if accept:
                 headers["Accept"] = accept
@@ -192,9 +195,10 @@ class GuardedFetcher:
             obj = None
         return resp.status_code, obj, resp.headers
 
-    async def get_text(self, url: str, *, max_bytes: int, accept: Optional[str] = None):
+    async def get_text(self, url: str, *, max_bytes: int, accept: Optional[str] = None,
+                       policy: Optional[HopPolicy] = None):
         """(status, text, final_url, headers)."""
-        resp, final_url, _hops = await self._send(url, accept=accept)
+        resp, final_url, _hops = await self._send(url, accept=accept, policy=policy)
         try:
             raw = await self._read(resp, max_bytes)
         finally:
@@ -204,16 +208,21 @@ class GuardedFetcher:
     async def download(self, url: str, dest, *, max_bytes: int,
                        progress: Optional[Callable[[int, Optional[int]], None]] = None,
                        on_bytes: Optional[Callable[[int], None]] = None,
-                       cancel_event=None) -> Download:
+                       cancel_event=None, policy: Optional[HopPolicy] = None,
+                       check_response: Optional[Callable[[httpx.Response], None]] = None) -> Download:
         """Stream the body into `dest` (created, never overwritten). `on_bytes`
-        sees the running total and may raise (a refused disk reservation)."""
+        sees the running total and may raise (a refused disk reservation);
+        `check_response` sees a 2xx answer before any byte is written, and may
+        raise to refuse it."""
         dest = Path(dest)
-        resp, final_url, hops = await self._send(url)
+        resp, final_url, hops = await self._send(url, policy=policy)
         try:
             if resp.status_code == 404:
                 raise ImportFailure("not_found", detail=redact_url(final_url))
             if not 200 <= resp.status_code < 300:
                 raise ImportFailure("upstream_status", detail=str(resp.status_code))
+            if check_response is not None:
+                check_response(resp)
             declared = resp.headers.get("content-length", "")
             total = int(declared) if declared.isdigit() else None
             if total is not None and total > max_bytes:
