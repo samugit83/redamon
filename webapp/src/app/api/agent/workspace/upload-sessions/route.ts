@@ -13,7 +13,7 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   } catch {
     return NextResponse.json({ error: 'invalid JSON body', code: 'invalid_request' }, { status: 400 })
   }
-  const { projectId, destDir, name, size, kind, onConflict } = body ?? {}
+  const { projectId, destDir, name, size, kind, onConflict, entries } = body ?? {}
   if (typeof projectId !== 'string' || !projectId || typeof name !== 'string' || typeof kind !== 'string'
     || typeof size !== 'number' || !Number.isInteger(size)) {
     return NextResponse.json({ error: 'projectId, name, size and kind required', code: 'invalid_request' }, { status: 400 })
@@ -28,6 +28,7 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
       projectId, name, size, kind,
       destDir: typeof destDir === 'string' ? destDir : '.',
       onConflict: typeof onConflict === 'string' ? onConflict : 'keep_both',
+      ...(typeof entries === 'number' && Number.isInteger(entries) && entries >= 0 ? { entries } : {}),
     }),
   }, FAILED)
   if (!call.ok) return call.response

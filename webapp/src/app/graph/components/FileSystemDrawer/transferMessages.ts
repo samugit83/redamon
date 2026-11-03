@@ -9,7 +9,7 @@ const JOB_FAILURES: Record<string, string> = {
   unsafe_path: 'The archive holds a path that leaves its folder',
   too_deep: 'The archive nests folders more than 64 levels deep',
   name_too_long: 'The archive holds a name or path that is too long',
-  too_many_entries: 'The archive holds more entries than the server allows',
+  too_many_entries: 'The upload holds more files and folders than the server allows',
   too_large: 'The content is larger than the server allows',
   conflicting_entries: 'The archive holds a file and a folder with the same path',
   unsupported_archive: 'The file is not a zip, tar, tar.gz, tar.bz2, tar.xz or gz archive',
@@ -21,6 +21,7 @@ const JOB_FAILURES: Record<string, string> = {
   name_exhausted: 'Too many entries with that name already exist in the folder',
   exists: 'An entry with that name already exists in the folder',
   destination_missing: 'The destination folder no longer exists',
+  busy: 'A running import is replacing that folder. Retry when it finishes',
   project_deleted: 'The project was deleted',
   settings_unavailable: 'The project could not be checked with the web app. Retry shortly',
   interrupted: 'The agent restarted before the transfer finished',
@@ -79,6 +80,7 @@ const STOP_REASONS: Record<string, string> = {
   max_depth: 'Stopped at the depth limit',
   max_bytes: 'Stopped at the size limit',
   time_budget: 'Stopped at the 30-minute limit',
+  roe_window: 'Stopped when the Rules of Engagement window closed',
 }
 
 /** Why a website mirror ended before it ran out of pages, or '' when it did not. */

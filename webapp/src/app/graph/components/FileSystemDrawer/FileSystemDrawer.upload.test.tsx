@@ -249,6 +249,8 @@ describe('FileSystemDrawer: upload menu', () => {
     await waitFor(() => expect(uploadMocks.uploadBlob).toHaveBeenCalledTimes(1))
     const opts = pendingUploads[0].opts
     expect(opts).toMatchObject({ projectId: 'p1', kind: 'folder', name: 'site', destDir: 'uploads', onConflict: 'keep_both' })
+    expect(typeof opts.entries).toBe('number')
+    expect(opts.entries).toBeGreaterThan(0)
     const tar = new TextDecoder().decode(await opts.blob.arrayBuffer())
     expect(tar).toContain('site/index.html')
     expect(tar).toContain('site/css/a.css')
@@ -316,6 +318,26 @@ describe('FileSystemDrawer: upload menu', () => {
     expect((uploadRouteCalls()[1].init!.body as FormData).get('overwrite')).toBe('true')
     expect(uploadMocks.uploadBlob).not.toHaveBeenCalled()
     expect(screen.queryByRole('list', { name: 'Transfers' })).not.toBeInTheDocument()
+  })
+
+  test('a small upload into a busy folder alerts with the job instead of offering to overwrite', async () => {
+    fetchHandler = async (url) => {
+      if (url.includes('/api/agent/workspace/upload')) {
+        return new Response(JSON.stringify({
+          error: 'A running import is replacing this folder. Retry when it finishes.', code: 'busy', jobId: 'd'.repeat(32),
+        }), { status: 409 })
+      }
+      return listAndOk(url)
+    }
+    const inputs = captureInputs()
+    await renderDrawer()
+    fireEvent.click(screen.getByTitle('Upload file(s) to current directory'))
+    pick(inputs[inputs.length - 1], [new File(['v'], 'a.txt')])
+    await waitFor(() => expect(alertSpies.alertError).toHaveBeenCalled())
+    const [message, title] = alertSpies.alertError.mock.calls[0] as unknown as [string, string]
+    expect(title).toBe('Upload failed')
+    expect(message).toContain('Running job dddddddd')
+    expect(screen.queryByText('File already exists')).not.toBeInTheDocument()
   })
 
   test('the small-upload hint is unchanged', async () => {

@@ -51,6 +51,8 @@ export interface UploadBlobOptions {
   kind: UploadKind
   blob: Blob
   onConflict?: ConflictPolicy
+  /** A folder's entry count, so the server can refuse one over its cap before any byte is sent. */
+  entries?: number
   onProgress?: (progress: UploadProgress) => void
   /** True while the server answers 429 and the request waits to be retried; false when it goes through. */
   onWaiting?: (waiting: boolean) => void
@@ -249,6 +251,7 @@ async function createSession(opts: UploadBlobOptions, patience: Parameters<typeo
         name: opts.name,
         size: opts.blob.size,
         kind: opts.kind,
+        ...(opts.entries !== undefined ? { entries: opts.entries } : {}),
         onConflict: opts.onConflict ?? 'keep_both',
       }),
     }, patience)

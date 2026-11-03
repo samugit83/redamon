@@ -100,6 +100,11 @@ describe('uploadBlob', () => {
     expect(chunkCalls().map((c) => (c.init.body as Blob).size)).toEqual([4, 4, 1])
   })
 
+  test("sends a folder's entry count with the create", async () => {
+    await uploadBlob({ ...options(new Blob(['abcdefgh'])), entries: 3 })
+    expect(JSON.parse(calls[0].init.body as string)).toMatchObject({ kind: 'folder', entries: 3 })
+  })
+
   test('retries a 5xx chunk', async () => {
     vi.useFakeTimers()
     let failures = 1

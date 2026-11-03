@@ -63,6 +63,8 @@ export interface UploadRequest {
   destDir: string
   blob: Blob
   onConflict?: ConflictPolicy
+  /** A folder's entry count (see UploadBlobOptions.entries). */
+  entries?: number
 }
 
 export interface JobRequest {
@@ -197,6 +199,7 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
         kind: request.kind,
         blob: request.blob,
         onConflict: request.onConflict ?? 'keep_both',
+        entries: request.entries,
         signal: ctrl.signal,
         onProgress: ({ sentBytes, totalBytes }) => patch(id, { sentBytes, totalBytes }),
         onWaiting: (waiting) => patch(id, { waiting }),

@@ -480,7 +480,7 @@ export function FileSystemDrawer({
       setMkdirInput(null)
       fetchEntries(currentPath)
     } catch (e) {
-      alertError(errorMessage(e, 'mkdir failed'), 'Create folder failed')
+      alertError(busyAwareMessage(e, 'mkdir failed'), 'Create folder failed')
     }
   }, [mkdirInput, projectId, currentPath, fetchEntries, alertWarning, alertError])
 
@@ -499,14 +499,16 @@ export function FileSystemDrawer({
         body: fd,
       })
       if (resp.status === 409) {
-        // Server reports name collision - queue an overwrite confirm
+        const err = await readApiError(resp, 'upload failed')
+        // A folder an import is replacing is not a name collision: overwriting would not help.
+        if (err.code === 'busy') throw err
         setOverwritePending({ file, destDir })
         return
       }
       if (!resp.ok) throw await readApiError(resp, 'upload failed')
       fetchEntries(currentPath)
     } catch (e) {
-      alertError(toApiError(e, 'upload failed').message, 'Upload failed')
+      alertError(busyAwareMessage(e, 'upload failed'), 'Upload failed')
     } finally {
       setUploadingCount((n) => Math.max(0, n - 1))
     }
@@ -529,7 +531,7 @@ export function FileSystemDrawer({
     for (const folder of picked.folders) {
       try {
         const { blob } = buildTarBlob(folder.entries)
-        addUpload({ projectId, kind: 'folder', name: folder.name, destDir, blob })
+        addUpload({ projectId, kind: 'folder', name: folder.name, destDir, blob, entries: folder.entries.length })
       } catch (e) {
         alertError(errorMessage(e, 'Could not pack the folder'), 'Upload failed')
       }

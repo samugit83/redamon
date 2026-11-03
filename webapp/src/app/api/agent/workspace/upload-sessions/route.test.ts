@@ -36,6 +36,16 @@ describe('POST upload-sessions', () => {
     })
   })
 
+  test("forwards a folder's entry count, and drops an invalid one", async () => {
+    await POST(req({ projectId: 'p1', name: 'site', size: 10, kind: 'folder', entries: 60001 }))
+    expect(JSON.parse(String(calls[0].init?.body)).entries).toBe(60001)
+    for (const bad of [-1, 1.5, '12', true]) {
+      calls = []
+      await POST(req({ projectId: 'p1', name: 'site', size: 10, kind: 'folder', entries: bad }))
+      expect(JSON.parse(String(calls[0].init?.body))).not.toHaveProperty('entries')
+    }
+  })
+
   test('denied project never reaches the agent', async () => {
     mockGuard.mockResolvedValue(NextResponse.json({ error: 'Not found' }, { status: 404 }))
     const res = await POST(req({ projectId: 'victim', name: 'a', size: 1, kind: 'file' }))
