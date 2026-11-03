@@ -144,6 +144,15 @@ class InScopeTargets(MirrorBase):
                                      clock=lambda: now["t"])
         self.assertTrue(off.request_allowed("docs.example.test"))
 
+    async def test_a_target_asset_outside_the_window_is_skipped_not_the_whole_copy(self):
+        stats = await self.run_mirror(opts=MirrorOptions(external_assets=True),
+                                      request_allowed=lambda host: host != "cdn.example.test")
+        self.assertEqual(stats.stopped_because, "complete")
+        self.assertEqual(stats.pages, 5)
+        self.assertNotIn("https://cdn.example.test/lib.js", self.requested())
+        line = next(m for m in self.manifest() if m["url"] == "https://cdn.example.test/lib.js")
+        self.assertEqual(line["skipped"], "roe_window")
+
     async def test_crawl_stops_when_the_window_closes_and_keeps_what_it_saved(self):
         allowed = {"open": True}
         base = self.handler
@@ -196,6 +205,23 @@ class InScopeTargets(MirrorBase):
         self.assertFalse(rules.seed_in_scope)
         self.assertEqual((rules.concurrency, rules.gap_for("docs.example.test")),
                          (mirror_mod.CONCURRENCY, mirror_mod.SAME_HOST_GAP_SEC))
+
+    def test_target_hosts_reached_from_a_non_target_site_keep_the_window_and_pace(self):
+        cfg = settings(ROE_ENABLED=True, TARGET_DOMAIN="target.example.test", ROE_GLOBAL_MAX_RPS=2, **WINDOW)
+        now = {"t": NOW.replace(hour=20)}
+        # Outside the window: the copy of a non-target site still starts.
+        rules = mirror_rules.rules_for("https://docs.example.test/", cfg, now_utc=now["t"], clock=lambda: now["t"])
+        self.assertFalse(rules.seed_in_scope)
+        self.assertTrue(rules.request_allowed("docs.example.test"))
+        self.assertFalse(rules.request_allowed("cdn.target.example.test"))
+        now["t"] = NOW
+        self.assertTrue(rules.request_allowed("cdn.target.example.test"))
+        self.assertEqual(rules.gap_for("cdn.target.example.test"), 0.5)
+        self.assertEqual(rules.gap_for("docs.example.test"), mirror_mod.SAME_HOST_GAP_SEC)
+        stealth = mirror_rules.rules_for("https://docs.example.test/", settings(
+            TARGET_DOMAIN="target.example.test", STEALTH_MODE=True), now_utc=NOW)
+        self.assertEqual((stealth.concurrency, stealth.gap_for("cdn.target.example.test")),
+                         (mirror_mod.CONCURRENCY, mirror_rules.STEALTH_GAP_SEC))
 
     def test_batch_and_ip_mode_scope_detection(self):
         batch = settings(DOMAIN_BATCH_MODE=True, DOMAIN_BATCH_GROUPS=[

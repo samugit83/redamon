@@ -132,9 +132,12 @@ def rules_for(seed_url: str, settings: dict, *, now_utc: datetime,
     concurrency = mirror.CONCURRENCY
     target_gap = mirror.SAME_HOST_GAP_SEC
     window_open: Optional[Callable[[], bool]] = None
-    if seed_in_scope and roe_on:
+    # The window, the rate cap and stealth's pace hold for every request to a
+    # target, also an asset a copy of some other site links to; only refusing
+    # the whole copy, and stealth's one-at-a-time, need the seed to be one.
+    if roe_on:
         from orchestrator_helpers.nodes.initialize_node import _roe_timing_warnings
-        if _roe_timing_warnings(now_utc, get=settings.get):
+        if seed_in_scope and _roe_timing_warnings(now_utc, get=settings.get):
             raise ImportFailure("roe_outside_window")
 
         def window_open() -> bool:
@@ -145,9 +148,10 @@ def rules_for(seed_url: str, settings: dict, *, now_utc: datetime,
             rps = 0.0
         if rps > 0:
             target_gap = max(target_gap, 1.0 / rps)
-    if seed_in_scope and settings.get("STEALTH_MODE"):
-        concurrency = 1
+    if settings.get("STEALTH_MODE"):
         target_gap = max(target_gap, STEALTH_GAP_SEC)
+        if seed_in_scope:
+            concurrency = 1
 
     def gap_for(host: str) -> float:
         return target_gap if in_scope(host) else mirror.SAME_HOST_GAP_SEC

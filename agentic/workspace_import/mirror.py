@@ -341,8 +341,12 @@ class _Crawl:
             if self.roe_excluded is not None and self.roe_excluded(host):
                 self._refuse(seed, "roe_excluded", "roe")
             if self.request_allowed is not None and not self.request_allowed(host):
-                # The engagement window closed mid-crawl: keep what was saved in it.
-                raise _Stop("roe_window")
+                # Outside the engagement window. The site being copied is a
+                # target: stop and keep what was saved inside the window. A
+                # target asset another site links to is only skipped.
+                if seed or host in self.scope_hosts:
+                    raise _Stop("roe_window")
+                raise Skip("roe_window")
             if not seed and hop > 0:
                 if role == "page" and not self._in_page_scope(url):
                     raise Skip("redirect_offsite")
