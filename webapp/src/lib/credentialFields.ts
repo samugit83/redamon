@@ -133,7 +133,7 @@ export const SHARED_SCANNER_KEY_FIELDS: CredentialField[] = [
   {
     name: 'githubAccessToken', label: 'GitHub Secret Hunt Token', source: 'github-secret-hunt',
     signupUrl: 'https://github.com/settings/tokens',
-    hint: 'Required for GitHub Secret Hunt, which searches public GitHub for secrets mentioning your target. Also used by Tradecraft Lookup to fetch a resource from GitHub. A read-only token is enough; unauthenticated GitHub search is rate-limited to the point of being unusable.',
+    hint: 'Required for GitHub Secret Hunt, which searches public GitHub for secrets mentioning your target. Also used by Tradecraft Lookup to fetch a resource from GitHub. A read-only token is enough; unauthenticated GitHub search is rate-limited to the point of being unusable. Also used by Workspace URL import, to import private GitHub repositories and to lift GitHub\'s limit of 60 requests an hour for unauthenticated use.',
   },
   {
     name: 'supplyChainGithubToken', label: 'Supply Chain GitHub Token', source: 'supply-chain',

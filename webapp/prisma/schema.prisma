@@ -172,8 +172,8 @@ model UserSettings {
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Tool API Keys
-  /// github.com PAT for GitHub Secret Hunt, and for Tradecraft Lookup fetching
-  /// a resource from GitHub. Supply Chain has its own (below): the two scan a
+  /// github.com PAT for GitHub Secret Hunt, for Tradecraft Lookup fetching
+  /// a resource from GitHub, and Workspace URL import. Supply Chain has its own (below): the two scan a
   /// different set of repositories and an operator has to be able to give them
   /// different scopes, or revoke one without stopping the other.
   githubAccessToken String @default("") @map("github_access_token")
