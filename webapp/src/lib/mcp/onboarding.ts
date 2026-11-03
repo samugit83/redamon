@@ -746,6 +746,7 @@ const BUCKET_COPY: Record<McpBucketName, string> = {
   start: 'starting a scan, counted PER PROJECT',
   exec: 'commands at the target',
   compare: 'version comparisons, counted per project',
+  loop: 'Agent in the Loop waits, page reads and answers',
 }
 
 function perWindow(bucket: McpBucketName): string {

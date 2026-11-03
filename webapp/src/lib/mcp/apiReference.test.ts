@@ -132,9 +132,12 @@ beforeEach(async () => {
   // backend is reached. This file is about scopes matching what each tool
   // enforces, so the switch is turned on; kaliTools.test.ts owns the off case.
   vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+  // The same for the Agent in the Loop tools, off by default.
+  vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
   // One test calls every write tool with the same token, which is more than the
   // real 10-a-minute write bucket allows. This file is about scopes, not rates.
   vi.stubEnv('MCP_RATE_WRITE_PER_MIN', '1000')
+  vi.stubEnv('MCP_RATE_LOOP_PER_MIN', '1000')
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
   tools = await listAdvertisedTools()
 })

@@ -45,6 +45,8 @@ beforeAll(() => {
   // The build's full surface. Unset reads as off and withdraws the sandbox
   // tools, while docker-compose.yml defaults the switch on.
   vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+  // Agent in the Loop is off by default; the loop tools are part of the build.
+  vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
 })
 
 const LIB_MCP_DIR = fileURLToPath(new URL('.', import.meta.url))

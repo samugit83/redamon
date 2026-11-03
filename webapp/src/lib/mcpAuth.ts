@@ -91,6 +91,12 @@ export const MCP_SCOPES = [
   // reopens exactly eight target-list fields, so it is never auto-ticked, and
   // widening a third-party engagement also needs engagement:authorize.
   'project:rescope',
+  // Agent in the Loop: the token's client answers the model calls of the
+  // owner's chat runs, so it decides what RedAmon's agent does next. Split
+  // because it hands the agent's reasoning to an outside process; a token that
+  // holds it must hold no other write or exec scope (loopTokenProblem), since
+  // the driver reads target-controlled text at every step.
+  'agent:loop',
   'kali:exec',
 ] as const
 
@@ -394,7 +400,7 @@ export async function assertMcpProjectAccess(
 // SAFE DEFAULTS, so an unset value falls back to the documented limit and never
 // to "no limit".
 
-export type McpBucketName = 'read' | 'query' | 'write' | 'mute' | 'start' | 'exec' | 'compare'
+export type McpBucketName = 'read' | 'query' | 'write' | 'mute' | 'start' | 'exec' | 'compare' | 'loop'
 
 interface BucketSpec {
   /** Max calls in the window. */
@@ -438,6 +444,10 @@ export function bucketSpec(bucket: McpBucketName): BucketSpec {
     // is the allowlist and the scope check; this is a runaway-loop ceiling.
     case 'exec':
       return { limit: envInt('MCP_RATE_EXEC_PER_MIN', 20), windowMs: 60_000 }
+    // Agent in the Loop: one step costs two to four calls (wait, a page or two,
+    // submit), and a long poll returns early on every status change.
+    case 'loop':
+      return { limit: envInt('MCP_RATE_LOOP_PER_MIN', 120), windowMs: 60_000 }
     // Orders of magnitude heavier than any other read: a version comparison
     // gunzips and parses a whole stored graph, and a `current` side captures
     // the live one under the snapshot semaphore.

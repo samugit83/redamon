@@ -130,6 +130,14 @@ describe('the grouping', () => {
     }
   })
 
+  test('agent:loop is a write scope in its own group', () => {
+    // Every loop tool claims a lease or resolves a step, so none is read-only.
+    expect(MCP_SCOPE_COPY['agent:loop'].access).toBe('write')
+    const group = SCOPE_GROUPS.find(g => g.scopes.includes('agent:loop'))!
+    expect(group.scopes).toEqual(['agent:loop'])
+    expect(group.tone).toBe('action')
+  })
+
   test('kali:exec is set apart in its own tier, not treated as a ninth checkbox', () => {
     const exec = SCOPE_GROUPS.find(g => g.tone === 'exec')!
     expect(exec.scopes).toEqual(['kali:exec'])
@@ -162,6 +170,8 @@ describe('the access badge matches what the tools do', () => {
     // The build's full surface. Unset reads as off and withdraws the sandbox
     // tools, while docker-compose.yml defaults the switch on.
     vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+    // Agent in the Loop is off by default; the loop tools are part of the build.
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
     tools = await listAdvertisedTools()
   })
 

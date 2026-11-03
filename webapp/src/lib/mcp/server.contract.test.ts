@@ -23,7 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { ListToolsResultSchema, ToolSchema } from '@modelcontextprotocol/sdk/types.js'
 
-import { SANDBOX_TOOL_NAMES, buildMcpServer } from './server'
+import { LOOP_TOOL_NAMES, SANDBOX_TOOL_NAMES, buildMcpServer } from './server'
 import { listAdvertisedTools, toolScopes } from './apiReference'
 import { renderInlineOnboarding } from './onboarding'
 import type { McpContext } from './tools'
@@ -57,13 +57,15 @@ let tools: Awaited<ReturnType<typeof listTools>>['tools']
  * Kept as ONE number rather than repeated at each call site, so adding a tool
  * fails in one place with a clear message instead of in three with three.
  */
-const EXPECTED_TOOL_COUNT = 48
+const EXPECTED_TOOL_COUNT = 51
 
 beforeEach(async () => {
   vi.clearAllMocks()
   // The build's full surface. Unset reads as off and withdraws the sandbox
   // tools, while docker-compose.yml defaults the switch on.
   vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+  // Agent in the Loop is off by default; the loop tools are part of the build.
+  vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
   tools = (await listTools()).tools
 })
 
@@ -116,6 +118,9 @@ describe('tools/list satisfies the MCP contract', () => {
       'list_recon_presets',
       'list_remediations',
       'list_scan_versions',
+      'loop_get_step',
+      'loop_submit_step',
+      'loop_wait_step',
       'mute_findings',
       'preflight_scope_check',
       'query_graph',
@@ -411,6 +416,48 @@ describe('REGRESSION: MCP_KALI_EXEC_ENABLED off withdraws the sandbox tools', ()
       expect(warn).not.toHaveBeenCalled()
     } finally {
       warn.mockRestore()
+    }
+  })
+})
+
+// =============================================================================
+// Agent in the Loop is withdrawn, not advertised-and-refusing, while it is off
+// =============================================================================
+
+describe('AGENT_IN_THE_LOOP_ENABLED off withdraws the loop tools', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const names = async () => (await listTools()).tools.map(t => t.name)
+
+  test.each(['false', '0', ''])('AGENT_IN_THE_LOOP_ENABLED=%j withdraws all three, and nothing else', async value => {
+    vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+    const on = await names()
+    vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', value)
+    const off = await names()
+    for (const n of LOOP_TOOL_NAMES) expect(off, n).not.toContain(n)
+    expect([...off].sort()).toEqual(on.filter(n => !LOOP_TOOL_NAMES.has(n)).sort())
+    expect(off).toHaveLength(EXPECTED_TOOL_COUNT - LOOP_TOOL_NAMES.size)
+  })
+
+  test('the set names only real tools', () => {
+    const advertised = new Set(tools.map(t => t.name))
+    for (const n of LOOP_TOOL_NAMES) expect(advertised.has(n), n).toBe(true)
+  })
+
+  test('every tool that needs agent:loop is in the set', () => {
+    const needsLoop = tools
+      .filter(t => toolScopes(t)?.required.includes('agent:loop'))
+      .map(t => t.name)
+    expect(needsLoop.sort()).toEqual([...LOOP_TOOL_NAMES].sort())
+  })
+
+  test('the loop tools are writes that never destroy, and only submit reaches the world', () => {
+    for (const n of LOOP_TOOL_NAMES) {
+      const a = tools.find(t => t.name === n)!.annotations!
+      expect(a.readOnlyHint, n).toBe(false)
+      expect(a.destructiveHint, n).toBe(false)
+      expect(a.idempotentHint, n).toBe(false)
+      expect(a.openWorldHint, n).toBe(n === 'loop_submit_step')
     }
   })
 })

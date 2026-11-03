@@ -238,6 +238,11 @@ export const MCP_SCOPE_COPY: Record<McpScope, ScopeCopy> = {
       'record an authorization for any document digest and widen with it. That claim is ' +
       'attributable to the token that wrote it, not verified.',
   },
+  'agent:loop': {
+    label: 'Drive the AI agent (Agent in the Loop)',
+    access: 'write',
+    blurb: 'Answer the reasoning steps of your Agent in the Loop chat sessions. RedAmon still runs every tool and asks you for every dangerous one. Hold it with read scopes only.',
+  },
   'kali:exec': {
     label: 'Shell access to the Kali sandbox',
     access: 'read-write',
@@ -322,6 +327,13 @@ export const SCOPE_GROUPS: ScopeGroup[] = [
     hint: 'Binds RedAmon to a target, and records who said it could.',
     tone: 'action',
     scopes: ['project:create', 'engagement:authorize', 'project:rescope'],
+  },
+  {
+    id: 'loop',
+    label: 'Agent in the Loop',
+    hint: 'Your own Claude Code or Codex answers the AI agent\'s reasoning steps. Hold it with read scopes only.',
+    tone: 'action',
+    scopes: ['agent:loop'],
   },
   {
     id: 'exec',

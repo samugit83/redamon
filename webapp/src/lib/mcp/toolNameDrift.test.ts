@@ -44,6 +44,8 @@ beforeAll(async () => {
   // The build's full surface. Unset reads as off and withdraws the sandbox
   // tools, while docker-compose.yml defaults the switch on.
   vi.stubEnv('MCP_KALI_EXEC_ENABLED', 'true')
+  // Agent in the Loop is off by default; the loop tools are part of the build.
+  vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
   const server = buildMcpServer(ctx)
   const client = new Client({ name: 'drift-test', version: '1.0.0' }, { capabilities: {} })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -78,6 +80,8 @@ const AGENT_FACING = [
   // update_project_scope's refusals and result note point the agent at the
   // next call (preflight_scope_check), so they go stale like any description.
   'scopeTools.ts',
+  // The loop tools' refusals and hints tell a driver what to call next.
+  'loopTools.ts',
 ]
 
 /**
@@ -88,7 +92,7 @@ const AGENT_FACING = [
  * Python settings keys and SQL columns, and a test that cries wolf is one
  * people switch off.
  */
-const TOOL_SHAPED = /\b((?:get|list|start|stop|update|create|query|run|set|cancel|queue|compare|describe|attach|preflight|tighten|kali|graph|mute|unmute|search|submit)_[a-z][a-z0-9_]{2,})\b/g
+const TOOL_SHAPED = /\b((?:get|list|start|stop|update|create|query|run|set|cancel|queue|compare|describe|attach|preflight|tighten|kali|graph|mute|unmute|search|submit|loop)_[a-z][a-z0-9_]{2,})\b/g
 
 /**
  * Comments are stripped, deliberately.
@@ -136,6 +140,8 @@ const NOT_TOOLS = new Set([
   'attach_authorization',
   // graph_summary's warning code for a lost graph (plan 09.4).
   'graph_data_missing',
+  // The refusal code of a driver token that also holds a write or exec scope.
+  'loop_token_too_broad',
 ])
 
 describe('P8: every tool named in an agent-facing string exists', () => {

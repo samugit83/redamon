@@ -167,6 +167,10 @@ const EXAMPLE_EXTRA_ARGS: Record<string, Record<string, unknown>> = {
   update_recon_preset: { settings: { katanaDepth: 3 } },
   // `changes` is required but an empty object changes nothing.
   update_project_scope: { changes: { gvmScanTargets: 'ips_only' } },
+  // A step id is 32 hex, which a YOUR_* placeholder is not; submit needs exactly
+  // one of answer or declined, neither of which the schema can require.
+  loop_get_step: { stepId: 'f'.repeat(32) },
+  loop_submit_step: { stepId: 'f'.repeat(32), answer: '{"thought": "...", "action": "complete"}' },
 }
 
 /** The example `arguments` for a tool. apiReference.test.ts calls every one of these. */
@@ -360,7 +364,7 @@ export function renderApiReference(tools: Tool[]): string {
     '',
     `> **Generated, not written.** This page is produced from the tool list the server itself returns, so it cannot describe a tool differently from how the server serves it. Do not edit it by hand: the next run overwrites it, and a unit test fails while it is out of date. See [Regenerating the API reference](MCP-Server#regenerating-the-api-reference).`,
     '',
-    `> **It describes a build, not a deployment.** It is rendered with no tool withdrawn, so a deployment using \`MCP_DISABLED_TOOLS\`, or with \`MCP_KALI_EXEC_ENABLED=false\` (which withdraws \`kali_toolbox\`, \`kali_exec\`, \`kali_output\` and \`kali_cancel\`), serves FEWER tools than are listed here. Ask the server itself with \`tools/list\` for the authoritative set on one host.`,
+    `> **It describes a build, not a deployment.** It is rendered with no tool withdrawn, so a deployment using \`MCP_DISABLED_TOOLS\`, or with \`MCP_KALI_EXEC_ENABLED=false\` (which withdraws \`kali_toolbox\`, \`kali_exec\`, \`kali_output\` and \`kali_cancel\`), serves FEWER tools than are listed here. So does a deployment with \`AGENT_IN_THE_LOOP_ENABLED\` off, the default, which withdraws \`loop_wait_step\`, \`loop_get_step\` and \`loop_submit_step\`. Ask the server itself with \`tools/list\` for the authoritative set on one host.`,
     '',
     '---',
     '',
@@ -370,7 +374,7 @@ export function renderApiReference(tools: Tool[]): string {
     '',
     `The server speaks JSON-RPC 2.0 over Streamable HTTP in stateless mode, at \`POST /api/mcp-server\`. Besides the \`Authorization\` header, every request needs \`Content-Type: application/json\` and \`Accept: application/json, text/event-stream\`. An MCP client handles all of this for you; the example calls below show the raw \`tools/call\` body for anyone calling it by hand, and each one is exercised against the server by the test that guards this page.`,
     '',
-    `Every tool below is listed by \`tools/list\` whatever permissions the token holds, unless the deployment has withdrawn it with \`MCP_DISABLED_TOOLS\` or switched the sandbox off with \`MCP_KALI_EXEC_ENABLED=false\` - a withdrawn tool is absent from the list rather than present and refusing. A call without the needed permission fails with \`${deniedExample}\`. Each tool also advertises its permissions in \`tools/list\` under \`_meta["${SCOPES_META_KEY}"]\`, and its behaviour in the standard MCP \`annotations\` (\`readOnlyHint\`, \`destructiveHint\`, \`idempotentHint\`, \`openWorldHint\`), which clients use to decide when to ask you before running it.`,
+    `Every tool below is listed by \`tools/list\` whatever permissions the token holds, unless the deployment has withdrawn it with \`MCP_DISABLED_TOOLS\`, switched the sandbox off with \`MCP_KALI_EXEC_ENABLED=false\` or left Agent in the Loop off - a withdrawn tool is absent from the list rather than present and refusing. A call without the needed permission fails with \`${deniedExample}\`. Each tool also advertises its permissions in \`tools/list\` under \`_meta["${SCOPES_META_KEY}"]\`, and its behaviour in the standard MCP \`annotations\` (\`readOnlyHint\`, \`destructiveHint\`, \`idempotentHint\`, \`openWorldHint\`), which clients use to decide when to ask you before running it.`,
     '',
     '## Tools at a glance',
     '',
