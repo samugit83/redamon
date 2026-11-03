@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, StrictSt
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import limits, staging, upload_job, upload_sessions
+from workspace_import import limits, purge, staging, upload_job, upload_sessions
 from workspace_import.errors import ImportFailure, error_body, status_for
 
 logger = logging.getLogger(__name__)
@@ -193,3 +193,17 @@ async def abort_upload_session(upload_id: str, projectId: str = Query(...)):
         upload_sessions.abort(projectId, upload_id)
     return {"aborted": True}
 
+
+@router.post("/project-purge")
+async def project_purge(request: Request):
+    """Called by the web app after it deleted a project (or a user and their
+    projects): stop the project's jobs and remove its workspace and staging."""
+    body = await parse_body(request, ProjectBody)
+    if body is None or not valid_project(body.projectId):
+        return fail("invalid_request")
+    try:
+        return await purge.purge_project(body.projectId)
+    except ImportFailure as e:
+        return failure_response(e)
+    except Exception as e:
+        return unexpected("project purge", e)
