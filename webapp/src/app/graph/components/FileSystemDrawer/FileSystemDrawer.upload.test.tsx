@@ -225,7 +225,7 @@ describe('FileSystemDrawer: upload menu', () => {
 
     const menu = openMenu()
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
-      'Upload files…', 'Upload folder…', 'Upload archive and extract…',
+      'Upload files…', 'Upload folder…', 'Upload archive and extract…', 'Import from URL…',
     ])
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()

@@ -1,0 +1,235 @@
+/* The Import from URL dialog. Everything here must fit a 320 px viewport with no
+   horizontal scroll: inputs may shrink to nothing, and long names, hosts and
+   shas wrap rather than widen the card. */
+
+.dialog {
+  max-width: 560px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.body p {
+  margin: 0;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.preset {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field > label,
+.conflict legend {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.inline {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inline > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.inline > button {
+  flex-shrink: 0;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.checking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.spinner {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.kindRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.kindLabel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.privateTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+}
+
+/* Each row's dt and dd sit directly in the grid. */
+.fact {
+  display: contents;
+}
+
+.fact dt {
+  color: var(--text-tertiary);
+}
+
+.fact dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fact code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.warnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.warnings li,
+.note,
+.warningLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+
+.warnings svg,
+.note svg,
+.warningLine svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.note {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.tokenHelp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.adviceLine {
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.adviceLine code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+
+.conflict legend {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 2px;
+}
+
+.conflict label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.warningLine {
+  width: 100%;
+  font-size: 11px;
+  color: var(--status-warning-text);
+}
+
+.error {
+  color: var(--status-error-text);
+  overflow-wrap: anywhere;
+}
+
+.disabled {
+  color: var(--text-secondary);
+}
+
+.saved {
+  font-size: 11px;
+  color: var(--text-secondary);
+}

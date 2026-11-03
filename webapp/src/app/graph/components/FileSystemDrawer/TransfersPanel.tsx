@@ -8,6 +8,8 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
+import { SETTINGS_KEYS_HREF } from '@/lib/settingsLinks'
+import { isGithubFamilyHost } from '@/lib/workspaceImport/githubHosts'
 import { isActive, type Transfer, type TransferKind } from './useTransfers'
 import { formatBytes, phaseLabel } from './transferMessages'
 import styles from './FileSystemDrawer.module.css'
@@ -25,6 +27,14 @@ function KindIcon({ kind }: { kind: TransferKind }) {
   if (kind === 'archive') return <ArchiveIcon size={12} />
   if (kind === 'import') return <LinkIcon size={12} />
   return <FileIcon size={12} />
+}
+
+// The GitHub failures a token can fix: a private repository, the hourly limit, a refused token.
+const TOKEN_FAILURES = new Set(['not_found', 'rate_limited', 'auth_failed'])
+
+function needsGithubToken(t: Transfer): boolean {
+  if (t.kind !== 'import' || !t.errorCode || !TOKEN_FAILURES.has(t.errorCode)) return false
+  return isGithubFamilyHost(t.sourceHost) || (t.sourceKind ?? '').startsWith('github-')
 }
 
 function stateLabel(t: Transfer): string {
@@ -105,7 +115,20 @@ function TransferRow({ t, onCancel, onDismiss, onOpen }: { t: Transfer } & Omit<
           Saved as <code>{t.savedPath}</code>
         </button>
       )}
-      {t.status === 'failed' && <div className={styles.transferError} role="alert">{t.error}</div>}
+      {t.status === 'failed' && (
+        <div className={styles.transferError} role="alert">
+          {t.error}
+          {needsGithubToken(t) && (
+            <>
+              {' '}
+              {/* A new tab: leaving the graph page would stop following the other transfers. */}
+              <a className={styles.transferKeysLink} href={SETTINGS_KEYS_HREF} target="_blank" rel="noopener noreferrer">
+                Open API Keys
+              </a>
+            </>
+          )}
+        </div>
+      )}
       {t.status === 'cancelled' && (
         <div className={styles.transferNote}>{t.cancelReason ? `Cancelled: ${t.cancelReason}` : 'Cancelled'}</div>
       )}

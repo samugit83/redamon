@@ -43,7 +43,13 @@ export interface Transfer {
   waiting: boolean
   savedPath?: string
   error?: string
+  /** The failed job's code, when it gave one. */
+  errorCode?: string
   cancelReason?: string
+  /** For an import: the import kind the server answered (github-repo, file, ...). */
+  sourceKind?: string
+  /** For an import: the host of its link, when the browser knows it. */
+  sourceHost?: string
 }
 
 export interface UploadRequest {
@@ -61,6 +67,8 @@ export interface JobRequest {
   name: string
   destDir: string
   jobId: string
+  sourceKind?: string
+  sourceHost?: string
 }
 
 export interface TransfersApi {
@@ -138,7 +146,8 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
     } else if (job.status === 'cancelled') {
       patch(id, { status: 'cancelled', waiting: false })
     } else {
-      patch(id, { status: 'failed', waiting: false, error: jobFailureMessage(job.status === 'interrupted' ? 'interrupted' : job.error) })
+      const code = job.status === 'interrupted' ? 'interrupted' : job.error
+      patch(id, { status: 'failed', waiting: false, error: jobFailureMessage(code), errorCode: code || undefined })
     }
   }
 
@@ -253,6 +262,7 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
       store.set(id, {
         id, projectId: request.projectId, kind: request.kind, name: request.name, destDir: request.destDir,
         status: 'processing', jobId: request.jobId, phase: 'queued', sentBytes: 0, totalBytes: 0, waiting: false,
+        sourceKind: request.sourceKind, sourceHost: request.sourceHost,
       })
       runtime.set(id, {})
       emit()

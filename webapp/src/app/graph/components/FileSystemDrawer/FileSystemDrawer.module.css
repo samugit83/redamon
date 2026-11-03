@@ -588,6 +588,17 @@
   grid-template-columns: 18px 16px 1fr auto;  /* checkbox + icon + name + actions */
 }
 
+/* Its own column, so a long name ellipsizes before the badge instead of hiding it. */
+.entry.entryImported {
+  grid-template-columns: 18px 16px 1fr auto auto;  /* checkbox + icon + name + badge + actions */
+}
+
+.importBadge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-primary);
+}
+
 .entryCheckbox {
   /* Custom-rendered checkbox (mirrors .checkbox in styles/components/inputs.css).
      Native checkboxes render unreliably at small sizes inside flex/grid cells —
@@ -807,6 +818,11 @@
 
 .transferError {
   color: var(--accent-danger, #e57373);
+}
+
+.transferKeysLink {
+  color: var(--accent-primary);
+  white-space: nowrap;
 }
 
 .transferNote {

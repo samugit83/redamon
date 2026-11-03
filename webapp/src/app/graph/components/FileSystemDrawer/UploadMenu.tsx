@@ -6,24 +6,27 @@ import {
   File as FileIcon,
   Folder as FolderIcon,
   FileArchive as ArchiveIcon,
+  Link2 as LinkIcon,
   Upload as UploadIcon,
 } from 'lucide-react'
-import { Menu, MenuItem } from '@/components/ui'
+import { Menu, MenuDivider, MenuItem } from '@/components/ui'
 import styles from './FileSystemDrawer.module.css'
 
 export interface UploadMenuProps {
   onFiles: () => void
   onFolder: () => void
   onArchive: () => void
+  onImportUrl: () => void
 }
 
 const TRIGGER = '[aria-haspopup="menu"]'
 
 /**
  * The toolbar's upload control: one click on the icon still opens the file
- * picker, and the chevron beside it opens the menu of every upload kind.
+ * picker, and the chevron beside it opens the menu of every upload kind and
+ * of the import from a URL.
  */
-export function UploadMenu({ onFiles, onFolder, onArchive }: UploadMenuProps) {
+export function UploadMenu({ onFiles, onFolder, onArchive, onImportUrl }: UploadMenuProps) {
   const wrapRef = useRef<HTMLSpanElement>(null)
 
   // Menu opens on Enter/Space but leaves focus on its trigger, and its items
@@ -67,6 +70,8 @@ export function UploadMenu({ onFiles, onFolder, onArchive }: UploadMenuProps) {
         <MenuItem icon={<FileIcon size={12} />} onClick={onFiles}>Upload files…</MenuItem>
         <MenuItem icon={<FolderIcon size={12} />} onClick={onFolder}>Upload folder…</MenuItem>
         <MenuItem icon={<ArchiveIcon size={12} />} onClick={onArchive}>Upload archive and extract…</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<LinkIcon size={12} />} onClick={onImportUrl}>Import from URL…</MenuItem>
       </Menu>
     </span>
   )

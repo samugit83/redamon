@@ -22,17 +22,20 @@ import {
   Info,
   ArrowLeft,
   Eraser,
+  GitBranch,
+  Globe,
 } from 'lucide-react'
 import { Drawer } from '@/components/ui/Drawer'
 import { useAlertModal, WikiInfoButton } from '@/components/ui'
-import { errorMessage, fetchJson, readApiError, toApiError } from '@/lib/apiError'
+import { ApiError, errorMessage, fetchJson, readApiError, toApiError } from '@/lib/apiError'
 import { buildTarBlob } from '@/lib/workspaceUpload/tar'
 import {
   ARCHIVE_ACCEPT, archiveBaseName, entriesFromFileList, snapshotDrop, walkEntries, type PickedItems,
 } from '@/lib/workspaceUpload/entries'
 import { UploadMenu } from './UploadMenu'
 import { TransfersPanel } from './TransfersPanel'
-import { useTransfers, type Transfer } from './useTransfers'
+import { ImportUrlDialog, importKindLabel, importSavesFile, isRepositoryKind, type ImportJob } from './ImportUrlDialog'
+import { isActive, useTransfers, type Transfer } from './useTransfers'
 import styles from './FileSystemDrawer.module.css'
 
 // =============================================================================
@@ -46,6 +49,22 @@ interface Entry {
   isSymlink: boolean
   size: number
   mtime: string
+  /** A folder with a verified import record: it can be re-synced. */
+  imported?: boolean
+  /** For an imported folder: the import's kind, and whether its source can be fetched again. */
+  importKind?: string
+  resyncable?: boolean
+}
+
+/** What Properties carries for an imported folder. */
+interface ImportFacts {
+  kind: string
+  host: string
+  sourcePath: string
+  ref: string
+  commit7: string
+  fetchedAt: string
+  resyncable: boolean
 }
 
 interface JobRow {
@@ -88,6 +107,13 @@ const WIDTH_STORAGE_KEY = 'redamon-filesystem-drawer-width'
 const DEFAULT_WIDTH_PX = 494
 const MIN_WIDTH_PX = 320
 const MAX_WIDTH_PX = 1200
+
+/** The API's message, plus the running job when a busy answer names it. */
+function busyAwareMessage(err: unknown, fallback: string): string {
+  const message = errorMessage(err, fallback)
+  const jobId = err instanceof ApiError && err.code === 'busy' && typeof err.body?.jobId === 'string' ? err.body.jobId : ''
+  return jobId ? `${message} Running job ${jobId.slice(0, 8)}, listed in the Jobs tab.` : message
+}
 
 function isProtectedPath(path: string): boolean {
   const norm = path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '')
@@ -190,7 +216,7 @@ export function FileSystemDrawer({
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [propertiesFor, setPropertiesFor] = useState<{
     path: string; type: string; size: number; mtime: string; mode: string;
-    sha256?: string; target?: string;
+    sha256?: string; target?: string; import?: ImportFacts;
   } | null>(null)
   const [propertiesLoading, setPropertiesLoading] = useState(false)
   const [propertiesError, setPropertiesError] = useState<string | null>(null)
@@ -202,6 +228,8 @@ export function FileSystemDrawer({
   const [filterText, setFilterText] = useState('')
   const [bulkDeletePending, setBulkDeletePending] = useState<Entry[] | null>(null)
   const [bulkActionLoading, setBulkActionLoading] = useState(false)
+
+  const [importOpen, setImportOpen] = useState(false)
 
   const [jobs, setJobs] = useState<JobRow[]>([])
   const [jobsLoading, setJobsLoading] = useState(false)
@@ -241,6 +269,7 @@ export function FileSystemDrawer({
       setPropertiesError(null)
       setSelectedPaths(new Set())
       setFilterText('')
+      setImportOpen(false)
     }
   }, [isOpen, projectId, initialPath, initialTab])
 
@@ -402,7 +431,7 @@ export function FileSystemDrawer({
       setRenamingPath(null)
       fetchEntries(currentPath)
     } catch (e) {
-      alertError(errorMessage(e, 'rename failed'), 'Rename failed')
+      alertError(busyAwareMessage(e, 'rename failed'), 'Rename failed')
     }
   }, [projectId, renameValue, currentPath, fetchEntries, alertError])
 
@@ -419,7 +448,7 @@ export function FileSystemDrawer({
       await fetchJson(url, { method: 'DELETE' }, 'delete failed')
       fetchEntries(currentPath)
     } catch (e) {
-      alertError(errorMessage(e, 'delete failed'), 'Delete failed')
+      alertError(busyAwareMessage(e, 'delete failed'), 'Delete failed')
     } finally {
       setDeletePending(null)
     }
@@ -490,7 +519,7 @@ export function FileSystemDrawer({
   }, [projectId, currentPath, fetchEntries])
 
   const transfers = useTransfers({ onDone: handleTransferDone })
-  const { addUpload } = transfers
+  const { addUpload, addJob } = transfers
   const visibleTransfers = useMemo(
     () => transfers.transfers.filter((t) => t.projectId === projectId),
     [transfers.transfers, projectId],
@@ -561,9 +590,42 @@ export function FileSystemDrawer({
     })
   }, [transfers, alertError])
 
+  // The busy answer of an import names the identical import already running;
+  // the panel may follow it already.
+  const followImport = useCallback((job: ImportJob) => {
+    if (transfers.transfers.some((t) => t.jobId === job.jobId && isActive(t.status))) return
+    addJob({
+      projectId, kind: 'import', name: job.name, destDir: job.destDir, jobId: job.jobId,
+      sourceKind: job.kind, sourceHost: job.host,
+    })
+  }, [transfers.transfers, addJob, projectId])
+
+  const handleResync = useCallback(async (entry: Entry) => {
+    const ok = await dangerConfirm(
+      <>
+        Re-sync replaces the contents of <code>{entry.name}</code> with a fresh copy from its source. Changes made
+        inside it are lost, including files written by kali shell commands while it runs; the drawer and the
+        agent&apos;s file tools are blocked until it finishes.
+      </>,
+      'Re-sync imported folder?',
+      { confirmLabel: 'Re-sync' },
+    )
+    if (!ok) return
+    try {
+      const started = await fetchJson<ImportJob>('/api/agent/workspace/import-url/resync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, path: entry.path }),
+      }, 'Could not start the re-sync')
+      followImport(started)
+    } catch (e) {
+      alertError(busyAwareMessage(e, 'Could not start the re-sync'), 'Re-sync failed')
+    }
+  }, [projectId, dangerConfirm, alertError, followImport])
+
   const handleOpenTransfer = useCallback((t: Transfer) => {
     if (!t.savedPath) return
-    const isFolder = t.kind === 'folder' || t.kind === 'archive'
+    const isFolder = t.kind === 'folder' || t.kind === 'archive' || (t.kind === 'import' && !importSavesFile(t.sourceKind))
     const parent = t.savedPath.split('/').slice(0, -1).join('/') || '.'
     setCurrentPath(isFolder ? t.savedPath : parent)
   }, [])
@@ -729,7 +791,7 @@ export function FileSystemDrawer({
         const url = `/api/agent/workspace/delete?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(e.path)}&recursive=${e.isDir}`
         await fetchJson(url, { method: 'DELETE' }, 'delete failed')
       } catch (err) {
-        failures.push(`${e.path}: ${errorMessage(err, 'delete failed')}`)
+        failures.push(`${e.path}: ${busyAwareMessage(err, 'delete failed')}`)
       }
     }
     setBulkActionLoading(false)
@@ -945,7 +1007,12 @@ export function FileSystemDrawer({
             >
               <FolderPlus size={12} />
             </button>
-            <UploadMenu onFiles={handleUploadPick} onFolder={handleFolderPick} onArchive={handleArchivePick} />
+            <UploadMenu
+              onFiles={handleUploadPick}
+              onFolder={handleFolderPick}
+              onArchive={handleArchivePick}
+              onImportUrl={() => setImportOpen(true)}
+            />
             <button
               className={styles.actionBtn}
               onClick={() => fetchEntries(currentPath)}
@@ -1093,7 +1160,7 @@ export function FileSystemDrawer({
                   <div
                     key={e.path}
                     data-name={e.name}
-                    className={`${styles.entry} ${selectedPaths.has(e.path) ? styles.entrySelected : ''} ${dropRowPath === e.path ? styles.entryDropTarget : ''}`}
+                    className={`${styles.entry} ${e.imported ? styles.entryImported : ''} ${selectedPaths.has(e.path) ? styles.entrySelected : ''} ${dropRowPath === e.path ? styles.entryDropTarget : ''}`}
                     onClick={() => e.isDir ? handleEnterDir(e.path) : openPreview(e)}
                     {...(e.isDir && !e.isSymlink ? {
                       onDragOver: (ev: React.DragEvent) => handleRowDragOver(ev, e),
@@ -1132,6 +1199,11 @@ export function FileSystemDrawer({
                         </span>
                       </span>
                     )}
+                    {e.imported && (
+                      <span className={styles.importBadge} title="Imported" role="img" aria-label="Imported">
+                        {e.importKind && !isRepositoryKind(e.importKind) ? <Globe size={12} /> : <GitBranch size={12} />}
+                      </span>
+                    )}
                     <span className={styles.entryActions}>
                       {!e.isDir && (
                         <button
@@ -1158,6 +1230,16 @@ export function FileSystemDrawer({
                       >
                         <Info size={12} />
                       </button>
+                      {e.imported && e.resyncable !== false && (
+                        <button
+                          className={styles.actionBtn}
+                          onClick={(ev) => { ev.stopPropagation(); handleResync(e) }}
+                          title="Re-sync from its source"
+                          aria-label={`Re-sync ${e.name}`}
+                        >
+                          <RefreshCw size={12} />
+                        </button>
+                      )}
                       {isProtectedPath(e.path) ? (
                         <span
                           className={styles.protectedBadge}
@@ -1395,6 +1477,38 @@ export function FileSystemDrawer({
                         <td><code>{propertiesFor.target}</code></td>
                       </tr>
                     )}
+                    {propertiesFor.import && (
+                      <>
+                        <tr>
+                          <th>Imported from</th>
+                          <td><code>{propertiesFor.import.host}{propertiesFor.import.sourcePath}</code></td>
+                        </tr>
+                        <tr><th>Source</th><td>{importKindLabel(propertiesFor.import.kind)}</td></tr>
+                        {propertiesFor.import.ref && (
+                          <tr>
+                            <th>Ref</th>
+                            <td>
+                              {propertiesFor.import.ref}
+                              {propertiesFor.import.commit7 && <> · <code>{propertiesFor.import.commit7}</code></>}
+                            </td>
+                          </tr>
+                        )}
+                        {propertiesFor.import.fetchedAt && (
+                          <tr>
+                            <th>Fetched</th>
+                            <td title={propertiesFor.import.fetchedAt}>{formatMtime(propertiesFor.import.fetchedAt)}</td>
+                          </tr>
+                        )}
+                        <tr>
+                          <th>Re-sync</th>
+                          <td>
+                            {propertiesFor.import.resyncable
+                              ? 'Available'
+                              : 'Not available: its link had a query string, which is not stored'}
+                          </td>
+                        </tr>
+                      </>
+                    )}
                   </tbody>
                 </table>
               )}
@@ -1406,6 +1520,15 @@ export function FileSystemDrawer({
             </div>
           </div>
         </div>
+      )}
+
+      {importOpen && (
+        <ImportUrlDialog
+          projectId={projectId}
+          defaultDestDir={currentPath}
+          onClose={() => setImportOpen(false)}
+          onImportJob={followImport}
+        />
       )}
 
       {/* Overwrite confirmation modal - shown when upload returns 409. */}
