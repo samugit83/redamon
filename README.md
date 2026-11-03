@@ -249,7 +249,7 @@ All lifecycle management is handled by a single script:
 
 | Command | Description |
 |---------|-------------|
-| **`./redamon.sh update`** | **Pull latest version, smart-rebuild only changed services (preserves your install-time GVM/KB choice)** |
+| **`./redamon.sh update`** | **Pull latest version, smart-rebuild only changed services (preserves your install-time GVM/KB choice), and apply a changed `.env` to the running services** |
 | `./redamon.sh up` | Start services (auto-detects GVM and KB mode from install) |
 | `./redamon.sh up dev` | Start in dev mode with hot-reload (auto-detects GVM and KB mode) |
 | `./redamon.sh down` | Stop services (preserves data) |

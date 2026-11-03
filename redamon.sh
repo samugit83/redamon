@@ -3681,6 +3681,42 @@ _map_plugin_consumers() {
     [[ " ${rebuild_core[*]-} ${restart_only[*]-} " == *" webapp "* ]] || restart_only+=(webapp)
 }
 
+# Bring every RUNNING core service onto the current .env and images. compose
+# recreates a service only when its configuration drifted, so an unchanged one
+# keeps running (and keeps its chats); a stopped one stays stopped, because an
+# update never starts what someone took down. Runs in update's own environment:
+# the GPU and plugins overlays and the caps computed for this host, which a bare
+# `docker compose` call from outside redamon.sh would not reproduce.
+_converge_running_core() {
+    local svc running=()
+    for svc in $CORE_SERVICES; do
+        _service_running "$svc" && running+=("$svc")
+    done
+    [[ ${#running[@]} -eq 0 ]] && return 0
+    docker compose up -d --no-deps "${running[@]}"
+}
+
+# An update with nothing to pull still applies a changed .env: an edit by hand,
+# or a single-host deploy's seeds (a switch such as AGENT_IN_THE_LOOP_ENABLED or
+# WORKSPACE_URL_IMPORT_ENABLED), would otherwise reach a container only at the
+# next release that rebuilds it. Secrets first, so nothing comes up with one empty.
+_update_apply_env() {
+    local svc any=false
+    for svc in $CORE_SERVICES; do
+        _service_running "$svc" && { any=true; break; }
+    done
+    [[ "$any" == true ]] || return 0
+    ensure_auth_secrets
+    mcp_server_preflight || exit 1
+    _plugins_prepare || exit 1
+    export_resource_caps
+    info "Applying the current .env to the running services..."
+    _converge_running_core
+    if _service_running webapp; then
+        plugins_converge || exit 1
+    fi
+}
+
 cmd_update() {
     # --gpu / --cpu are accepted here too, so switching the PyTorch variant does
     # not require a full `install`. Unlike install, omitting them PRESERVES the
@@ -3771,6 +3807,7 @@ cmd_update() {
 
         if [[ "$old_head" == "$new_head" ]]; then
             success "Already up to date (v$(get_version))."
+            _update_apply_env
             return
         fi
 
@@ -3925,6 +3962,11 @@ cmd_update() {
         for svc in "${rebuild_core[@]}"; do
             docker compose up -d --no-deps "$svc"
         done
+    fi
+    # The services this release did not rebuild still pick up a changed .env.
+    if [[ "$rebuild_all" != "true" ]]; then
+        export_resource_caps
+        _converge_running_core
     fi
 
     # Converge the GVM stack onto the current compose config + .env.
