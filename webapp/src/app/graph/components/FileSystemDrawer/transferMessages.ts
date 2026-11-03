@@ -1,11 +1,25 @@
 /**
  * Words for the transfers panel. A failed job reports only a code; these are
- * the agent's sentences for the codes a workspace upload or import job ends
- * with (agentic/workspace_import/errors.py), shortened for a narrow panel.
- * The code always stays in the text so a screenshot names the cause.
+ * the agent's sentences for every workspace upload and import code
+ * (agentic/workspace_import/errors.py), shortened for a narrow panel. A
+ * contract test fails when the agent gains a code this map lacks. The code
+ * always stays in the text so a screenshot names the cause.
  */
 
 const JOB_FAILURES: Record<string, string> = {
+  invalid_request: 'The request is not valid',
+  cancelled: 'The operation was cancelled',
+  too_many_uploads: 'This project already has 4 uploads in progress',
+  session_not_found: 'The upload session no longer exists (the workspace was reset or the agent restarted)',
+  offset_mismatch: 'The chunk does not continue the upload where it stands',
+  chunk_overflow: 'The chunk goes past the declared size of the upload',
+  chunk_too_large: 'The chunk is larger than the server accepts',
+  session_incomplete: 'The upload is not complete yet',
+  too_many_jobs: 'Too many uploads and imports are running on the server. Retry shortly',
+  project_exists: 'The project still exists; its workspace was not purged',
+  too_many_imports: 'This project already has 2 imports running',
+  not_imported: 'This folder has no valid import record, so it cannot be re-synced',
+  not_resyncable: 'This import cannot be re-synced: its link had a query string',
   unsafe_path: 'The archive holds a path that leaves its folder',
   too_deep: 'The archive nests folders more than 64 levels deep',
   name_too_long: 'The archive holds a name or path that is too long',

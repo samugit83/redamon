@@ -218,6 +218,27 @@ describe('FileSystemDrawer: import from URL', () => {
       .toContain(`path=${encodeURIComponent('uploads/example-repo-2')}`))
   })
 
+  test('a website copy that stopped at the page limit says so once done', async () => {
+    resolveAnswer = () => json({
+      kind: 'website', url: 'https://www.example.test/', suggestedName: 'www.example.test', host: 'www.example.test',
+      details: {
+        scopeHost: 'www.example.test', scopePath: '/',
+        defaults: { outputMode: 'raw', maxPages: 300, maxDepth: 3, respectRobots: false, englishOnly: false, externalAssets: false },
+      },
+      warnings: [], supported: true,
+    })
+    importAnswer = (body) => json({ jobId: nextJobId(), kind: 'website', destDir: body.destDir, name: body.name }, 202)
+    await renderDrawer()
+    const pending = await importLink('https://www.example.test/')
+    act(() => pending.opts.onProgress?.(job(pending.jobId, 'running', { progress: { phase: 'crawling', pages: 299, assets: 4 } })))
+    expect(within(transferRow('www.example.test')).queryByText('Stopped at the page limit')).not.toBeInTheDocument()
+    await act(async () => pending.resolve(job(pending.jobId, 'done', {
+      progress: { phase: 'done', path: 'uploads/www.example.test', pages: 300, assets: 4, stoppedBecause: 'max_pages' },
+    })))
+    await screen.findByRole('button', { name: /Saved as uploads\/www\.example\.test/ })
+    expect(within(transferRow('www.example.test')).getByText('Stopped at the page limit')).toBeInTheDocument()
+  })
+
   test('cancelling an import cancels the job', async () => {
     await renderDrawer()
     const pending = await importLink('https://github.com/example-owner/example-repo')
