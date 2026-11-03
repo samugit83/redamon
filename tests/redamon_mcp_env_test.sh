@@ -60,8 +60,9 @@ done
 echo
 echo "== ensure_auth_secrets: both switches ON, an update turns an old false on ONCE =="
 MARK='MCP_AND_LOOP_DEFAULT_ON_APPLIED=1'
-run_secrets() {   # run_secrets <dir>
-    ( cd "$REPO_ROOT" && ENVDIR="$1" bash -c '
+run_secrets() {   # run_secrets <dir>   (HOME is <dir>/home: no real ~/.redamon-deploy leaks in)
+    mkdir -p "$1/home"
+    ( cd "$REPO_ROOT" && ENVDIR="$1" HOME="$1/home" bash -c '
         set -uo pipefail
         source ./redamon.sh
         set +e
@@ -118,10 +119,19 @@ printf 'MCP_SERVER_ENABLED=false\nREDAMON_SINGLE_HOST_DEPLOY=true\n' > "$D/.env"
 run_secrets "$D"
 eq "deploy mark: MCP server stays off" "$(val "$D" MCP_SERVER_ENABLED)" "false"
 rm -rf "$D"
+# A server deployed before either key was seeded still has deploy.sh's overlay copy.
+D="$(mktemp -d)"
+printf 'MCP_SERVER_ENABLED=false\n' > "$D/.env"
+mkdir -p "$D/home/.redamon-deploy" && : > "$D/home/.redamon-deploy/docker-compose.prod.yml"
+run_secrets "$D"
+eq "deployed host known only by ~/.redamon-deploy: MCP server stays off" "$(val "$D" MCP_SERVER_ENABLED)" "false"
+eq "deployed host known only by ~/.redamon-deploy: loop switch on" "$(val "$D" AGENT_IN_THE_LOOP_ENABLED)" "true"
+rm -rf "$D"
 # Keeping it off is said, never silent (a local .env with MCP_ALLOWED_ORIGIN set by hand).
 D="$(mktemp -d)"
 printf 'MCP_SERVER_ENABLED=false\nMCP_ALLOWED_ORIGIN=https://redamon.example.org\n' > "$D/.env"
-NOTE="$( cd "$REPO_ROOT" && ENVDIR="$D" bash -c '
+mkdir -p "$D/home"
+NOTE="$( cd "$REPO_ROOT" && ENVDIR="$D" HOME="$D/home" bash -c '
     set -uo pipefail
     source ./redamon.sh
     set +e

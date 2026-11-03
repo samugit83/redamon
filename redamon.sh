@@ -1990,11 +1990,13 @@ ensure_auth_secrets() {
     # default off and refused over plain http: its MCP switch is never turned on
     # here, even by a hand-run update, and the operator is told why.
     local switched_on_once='MCP_AND_LOOP_DEFAULT_ON_APPLIED=1'
-    # REDAMON_SINGLE_HOST_DEPLOY is deploy.sh's own mark; MCP_ALLOWED_ORIGIN, which
-    # every deploy seeds too, also covers servers deployed before the mark existed.
+    # REDAMON_SINGLE_HOST_DEPLOY is deploy.sh's own mark; MCP_ALLOWED_ORIGIN (seeded
+    # since 2026-09) and the prod overlay deploy.sh keeps in ~/.redamon-deploy
+    # (since 2026-08) also cover servers deployed before the mark existed.
     local deployed="" switch value default
     [[ "$(_env_get REDAMON_SINGLE_HOST_DEPLOY "$env_file")" == "true" \
-       || -n "$(_env_get MCP_ALLOWED_ORIGIN "$env_file")" ]] && deployed=1
+       || -n "$(_env_get MCP_ALLOWED_ORIGIN "$env_file")" \
+       || -f "${HOME:-/nonexistent}/.redamon-deploy/docker-compose.prod.yml" ]] && deployed=1
     for switch in MCP_SERVER_ENABLED AGENT_IN_THE_LOOP_ENABLED; do
         default=true
         [[ -n "$deployed" && "$switch" == MCP_SERVER_ENABLED ]] && default=false
@@ -2008,7 +2010,7 @@ ensure_auth_secrets() {
             info "Turned ${switch} on (now on by default; set it to false in .env to keep it off)"
         elif [[ -n "$deployed" && "$switch" == "MCP_SERVER_ENABLED" && "$value" == "false" ]] \
              && ! grep -qxF "$switched_on_once" "$env_file" 2>/dev/null; then
-            info "MCP_SERVER_ENABLED stays false: this .env is a single-host deploy (REDAMON_SINGLE_HOST_DEPLOY or MCP_ALLOWED_ORIGIN is set). On a local install, set MCP_SERVER_ENABLED=true yourself."
+            info "MCP_SERVER_ENABLED stays false: this is a single-host deploy (REDAMON_SINGLE_HOST_DEPLOY or MCP_ALLOWED_ORIGIN in .env, or ~/.redamon-deploy). On a local install, set MCP_SERVER_ENABLED=true yourself."
         fi
     done
     grep -qxF "$switched_on_once" "$env_file" 2>/dev/null || echo "$switched_on_once" >> "$env_file"
