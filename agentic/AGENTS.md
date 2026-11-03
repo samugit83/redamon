@@ -75,6 +75,8 @@ plugin_api.py                            master-key /plugins/* routes (skill par
 skills/               Chat Skills (volume-mounted, no rebuild)
 community-skills/     Community Agent Skills (volume-mounted, no rebuild)
 cypherfix_triage/  cypherfix_codefix/    CypherFix triage + codefix agents
+workspace_import/                        folder/archive upload sessions and URL imports (staging,
+                                         safe extraction, provenance, website mirror)
 graph_db/  knowledge_base/               COPY-baked copies of the repo-root layers
 mcp_registry.py  project_settings.py     tool registry + per-project settings
 tests/                                   pytest (run via ../agentic/run_tests.sh)

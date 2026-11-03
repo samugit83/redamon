@@ -178,6 +178,8 @@ graph TD
 | Uploaded wordlists (`recon/wordlists`, ≤50 MB `.txt`) | User input | Mounted into recon containers |
 | Uploaded Nuclei templates (`mcp/nuclei-templates`, ≤1 MB `.yaml`) | User input | Executed by Nuclei |
 | Uploaded JS recon files (`js_recon_uploads/custom`, ≤10 MB) | User input | Analyzed by JS recon |
+| Agent Workspace uploads (files, folders, archives; ≤2 GiB and 50,000 entries each) | User input | Archives extracted entry by entry, never through a link or outside their folder; read by the agent |
+| Agent Workspace URL imports (GitHub and other git hosts, archives, files, website copies) | Third-party content | Fetched by the agent through the pinned SSRF transport, every redirect checked; website copies also obey the hard guardrail and the project's RoE exclusions; the agent sees signed facts about them, and their text only when it reads them |
 | RoE documents (`Project.roeDocumentData` bytes; PDF/DOCX/TXT) | User input | Parsed via pdfjs/mammoth → LLM |
 | Agent/community Chat Skills & Attack Skills (`agentic/skills`, `community-skills`, DB) | Behavior definitions | Steer agent tradecraft |
 | Knowledge Base data (`services/knowledge_base/data`, `kb_data` volume) | Reference corpus | NVD/ExploitDB/Nuclei/GTFOBins embeddings |
