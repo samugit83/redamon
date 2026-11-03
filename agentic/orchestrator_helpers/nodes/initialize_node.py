@@ -231,12 +231,18 @@ async def _scope_gate(state, llm, user_id, project_id, session_id) -> tuple[dict
     return None, updates
 
 
-def _roe_timing_warnings(now_utc: datetime) -> list[str]:
-    """Why ``now_utc`` falls outside the engagement dates or the testing window."""
+def _roe_timing_warnings(now_utc: datetime, get=None) -> list[str]:
+    """Why ``now_utc`` falls outside the engagement dates or the testing window.
+
+    ``get(key, default)`` reads the settings: this session's by default. The
+    workspace mirror passes its own project's dict, because outside a session
+    ``get_setting`` reads whichever project loaded last.
+    """
+    read = get or get_setting
     warnings = []
 
-    start_date = get_setting('ROE_ENGAGEMENT_START_DATE', '')
-    end_date = get_setting('ROE_ENGAGEMENT_END_DATE', '')
+    start_date = read('ROE_ENGAGEMENT_START_DATE', '')
+    end_date = read('ROE_ENGAGEMENT_END_DATE', '')
     if start_date:
         try:
             if now_utc.date() < datetime.strptime(start_date, '%Y-%m-%d').date():
@@ -250,14 +256,14 @@ def _roe_timing_warnings(now_utc: datetime) -> list[str]:
         except ValueError:
             pass
 
-    if get_setting('ROE_TIME_WINDOW_ENABLED', False):
-        tz_name = get_setting('ROE_TIME_WINDOW_TIMEZONE', 'UTC')
+    if read('ROE_TIME_WINDOW_ENABLED', False):
+        tz_name = read('ROE_TIME_WINDOW_TIMEZONE', 'UTC')
         try:
             now_local = now_utc.astimezone(zoneinfo.ZoneInfo(tz_name))
             day_name = now_local.strftime('%A').lower()
-            allowed_days = get_setting('ROE_TIME_WINDOW_DAYS', [])
-            start_time = get_setting('ROE_TIME_WINDOW_START_TIME', '09:00')
-            end_time = get_setting('ROE_TIME_WINDOW_END_TIME', '18:00')
+            allowed_days = read('ROE_TIME_WINDOW_DAYS', [])
+            start_time = read('ROE_TIME_WINDOW_START_TIME', '09:00')
+            end_time = read('ROE_TIME_WINDOW_END_TIME', '18:00')
 
             if day_name not in allowed_days:
                 warnings.append(f"Current day ({day_name.capitalize()}) is outside the allowed testing window.")
