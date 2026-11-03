@@ -26,6 +26,11 @@ vi.mock('@/lib/prisma', () => ({
     },
   },
 }))
+vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}) }))
+vi.mock('@/lib/session', () => ({
+  getSession: vi.fn(async () => ({ userId: 'u1', role: 'user' })),
+  getEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
+}))
 vi.mock('../graph/neo4j', () => ({
   getGraphSession: () => ({ run: vi.fn(async () => ({ records: [] })), close: vi.fn(async () => {}) }),
 }))
@@ -44,6 +49,10 @@ import * as wsBulkArchive from './workspace/bulk-archive/route'
 import * as wsUpload from './workspace/upload/route'
 import * as wsJobCancel from './workspace/jobs/[jobId]/cancel/route'
 import * as wsJobStatus from './workspace/jobs/[jobId]/route'
+import * as wsUploadCreate from './workspace/upload-sessions/route'
+import * as wsUploadChunk from './workspace/upload-sessions/[uploadId]/chunk/route'
+import * as wsUploadCommit from './workspace/upload-sessions/[uploadId]/commit/route'
+import * as wsUploadAbort from './workspace/upload-sessions/[uploadId]/route'
 import * as sessions from './sessions/route'
 import * as sessionInteract from './sessions/[id]/interact/route'
 import * as sessionKill from './sessions/[id]/kill/route'
@@ -93,6 +102,28 @@ const CASES: Case[] = [
     name: 'workspace job status',
     agentPath: `/workspace/jobs/${'a'.repeat(32)}?projectId=p1`,
     call: () => wsJobStatus.GET(new NextRequest(`${BASE}/x?projectId=p1`), { params: Promise.resolve({ jobId: 'a'.repeat(32) }) }),
+  },
+  {
+    name: 'workspace upload-session create',
+    agentPath: '/workspace/upload-sessions',
+    call: () => wsUploadCreate.POST(json('/x', { projectId: 'p1', name: 'a', size: 1, kind: 'file' })),
+  },
+  {
+    name: 'workspace upload-session chunk',
+    agentPath: `/workspace/upload-sessions/${'f'.repeat(32)}/chunk`,
+    call: () => wsUploadChunk.PUT(new NextRequest(`${BASE}/x?projectId=p1&offset=0`, { method: 'PUT', body: new Uint8Array([1]) }),
+      { params: Promise.resolve({ uploadId: 'f'.repeat(32) }) }),
+  },
+  {
+    name: 'workspace upload-session commit',
+    agentPath: `/workspace/upload-sessions/${'f'.repeat(32)}/commit`,
+    call: () => wsUploadCommit.POST(json('/x', { projectId: 'p1' }), { params: Promise.resolve({ uploadId: 'f'.repeat(32) }) }),
+  },
+  {
+    name: 'workspace upload-session abort',
+    agentPath: `/workspace/upload-sessions/${'f'.repeat(32)}?projectId=p1`,
+    call: () => wsUploadAbort.DELETE(new NextRequest(`${BASE}/x?projectId=p1`, { method: 'DELETE' }),
+      { params: Promise.resolve({ uploadId: 'f'.repeat(32) }) }),
   },
   { name: 'sessions list', agentPath: '/sessions', call: () => sessions.GET() },
   { name: 'session interact', agentPath: '/sessions/1/interact', call: () => sessionInteract.POST(json('/x', { command: 'id' }), idParams('1')) },
