@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 import os
 import re
@@ -68,19 +67,9 @@ except Exception:
     BeautifulSoup = None  # populated after requirements bump
 
 try:
-    from markdownify import markdownify as _md  # type: ignore
-except Exception:
-    _md = None
-
-try:
     import yaml  # pyyaml is already in requirements
 except Exception:
     yaml = None
-
-try:
-    from pypdf import PdfReader  # type: ignore
-except Exception:
-    PdfReader = None  # populated after requirements bump
 
 from logging_config import get_logger
 from orchestrator_helpers.fetch_guard import (
@@ -92,7 +81,23 @@ from orchestrator_helpers.fetch_guard import (
     pinned_async_transport,
 )
 from orchestrator_helpers.json_utils import normalize_content
-from orchestrator_helpers.web_sources import document_base_href, resolve_link
+# The pure helpers live in web_sources, shared with the workspace importer;
+# the private names stay importable from here for every existing caller.
+from orchestrator_helpers.web_sources import (  # noqa: F401
+    GITHUB_TOKEN_HOSTS as _GITHUB_TOKEN_HOSTS,
+    PDF_MAX_PAGES,
+    _LANG_RE,
+    document_base_href,
+    extract_pdf_pages as _extract_pdf_pages,
+    html_to_markdown as _html_to_markdown,
+    is_github_token_url as _is_github_token_url,
+    parse_sitemap_xml,
+    prefer_english as _prefer_english,
+    resolve_link,
+    rewrite_github_url as _rewrite_github_url,
+    split_github_url as _split_github_url,
+    url_host as _url_host,
+)
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 
 logger = get_logger(__name__)
@@ -104,9 +109,6 @@ logger = get_logger(__name__)
 
 CACHE_ROOT_DEFAULT = "/app/tradecraft_cache"
 USER_AGENT = "RedAmon-Tradecraft/1.0"
-# The user's GitHub token goes to these exact hosts only. Never match on a
-# substring: github-docs.attacker.example contains "github" too.
-_GITHUB_TOKEN_HOSTS = frozenset({"github.com", "api.github.com", "raw.githubusercontent.com"})
 _MAX_REDIRECTS = 5
 
 DEFAULT_TTLS_BY_TYPE: Dict[str, int] = {
@@ -130,48 +132,6 @@ NOISE_EXTENSIONS = (
 )
 
 CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE)
-
-PDF_MAX_PAGES = 200
-
-
-# =========================================================================
-# PDF helpers (sub-extractor inside Tier 1)
-# =========================================================================
-
-def _extract_pdf_pages(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[str], str]:
-    """Returns (pages_meta, page_texts, last_error).
-
-    pages_meta: [{"page": 1, "firstLine": "..."}]
-    page_texts: full text per page, aligned with pages_meta
-    """
-    if PdfReader is None:
-        return [], [], "pypdf not installed"
-    if not raw_bytes:
-        return [], [], "empty pdf body"
-    try:
-        reader = PdfReader(io.BytesIO(raw_bytes))
-    except Exception as e:
-        return [], [], f"pdf parse error: {e}"
-    pages_meta: List[Dict[str, Any]] = []
-    page_texts: List[str] = []
-    total = len(reader.pages)
-    truncated = total > PDF_MAX_PAGES
-    n = min(total, PDF_MAX_PAGES)
-    for i in range(n):
-        try:
-            text = reader.pages[i].extract_text() or ""
-        except Exception:
-            text = ""
-        first_line = ""
-        for line in (text or "").splitlines():
-            line = line.strip()
-            if line:
-                first_line = line[:80]
-                break
-        pages_meta.append({"page": i + 1, "firstLine": first_line})
-        page_texts.append(text)
-    err = f"PDF truncated at {PDF_MAX_PAGES} pages (real total: {total})" if truncated else ""
-    return pages_meta, page_texts, err
 
 
 # =========================================================================
@@ -451,40 +411,6 @@ class TradecraftCache:
 
 
 # =========================================================================
-# HTML -> markdown helpers
-# =========================================================================
-
-def _html_to_markdown(html: str) -> str:
-    """Strip nav/footer, keep article body, convert to markdown."""
-    if not html:
-        return ""
-    if BeautifulSoup is None:
-        # Conservative fallback: strip tags with regex.
-        return re.sub(r"<[^>]+>", " ", html)
-    soup = BeautifulSoup(html, "html.parser")
-    # Drop noisy elements.
-    for sel in ["nav", "footer", "header", "aside", "script", "style", "form", "iframe"]:
-        for el in soup.select(sel):
-            el.decompose()
-    # Prefer the main article container.
-    body_html = None
-    for sel in ["article", "main", ".md-content", "[role='main']", ".post-content", ".content"]:
-        el = soup.select_one(sel)
-        if el and len(el.get_text(strip=True)) > 200:
-            body_html = str(el)
-            break
-    if body_html is None:
-        body_html = str(soup.body or soup)
-    if _md is not None:
-        try:
-            return _md(body_html, heading_style="ATX")
-        except Exception:
-            pass
-    # Fallback: just strip tags.
-    return re.sub(r"<[^>]+>", " ", body_html)
-
-
-# =========================================================================
 # Tier 1 / Tier 2 fetchers
 # =========================================================================
 
@@ -509,27 +435,6 @@ class FetchResult:
             and len(self.text) >= 1
             and ("text" in self.content_type or "json" in self.content_type or "xml" in self.content_type)
         )
-
-
-def _rewrite_github_url(url: str) -> str:
-    """github.com/{owner}/{repo}/blob/{branch}/{path} -> raw.githubusercontent.com/.../{branch}/{path}"""
-    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$", url)
-    if m:
-        owner, repo, branch, path = m.groups()
-        return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    return url
-
-
-def _url_host(url: str) -> str:
-    try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return ""
-
-
-def _is_github_token_url(url: str) -> bool:
-    """True only for https URLs on a GitHub host, the one place the token belongs."""
-    return url.lower().startswith("https://") and _url_host(url) in _GITHUB_TOKEN_HOSTS
 
 
 async def fetch_tier1(
@@ -756,37 +661,6 @@ def detect_type(url: str, body: str, status: int = 200) -> str:
 # Per-type sitemap builders
 # =========================================================================
 
-_LANG_RE = re.compile(r"^/([a-z]{2}(?:-[A-Z]{2})?)/")
-
-
-def _prefer_english(urls: List[str]) -> List[str]:
-    """If sitemap entries cluster under language codes /<lang>/..., keep only /en/.
-
-    Many translated wikis (HackTricks across 20+ languages) inflate sitemaps with
-    near-duplicate entries. We detect this when >40% of paths begin with a 2-letter
-    language segment AND `/en/` is present, then filter to English only.
-    """
-    if not urls:
-        return urls
-    parsed = []
-    has_lang = 0
-    has_en = False
-    for u in urls:
-        try:
-            path = urllib.parse.urlsplit(u).path or "/"
-        except Exception:
-            continue
-        m = _LANG_RE.match(path)
-        if m:
-            has_lang += 1
-            if m.group(1) == "en":
-                has_en = True
-        parsed.append((u, path, m))
-    if has_en and has_lang > 0.4 * len(parsed):
-        return [u for (u, p, m) in parsed if m and m.group(1) == "en"]
-    return urls
-
-
 async def _fetch_sitemap_xml(url: str, max_depth: int = 2) -> List[str]:
     """Fetch sitemap.xml or sitemapindex.xml recursively. Returns flat URL list.
 
@@ -799,18 +673,14 @@ async def _fetch_sitemap_xml(url: str, max_depth: int = 2) -> List[str]:
     r = await fetch_tier1(url, expect_text=False)
     if r.status != 200 or not r.text:
         return []
-    text = r.text
-    if "<sitemapindex" in text:
-        soup = BeautifulSoup(text, "xml")
+    kind, locs = parse_sitemap_xml(r.text)
+    if kind == "index":
         urls: List[str] = []
-        for sm in soup.find_all("sitemap"):
-            loc = sm.find("loc")
-            if loc:
-                urls.extend(await _fetch_sitemap_xml(loc.get_text(strip=True), max_depth - 1))
+        for loc in locs:
+            urls.extend(await _fetch_sitemap_xml(loc, max_depth - 1))
         return urls
-    if "<urlset" in text:
-        soup = BeautifulSoup(text, "xml")
-        return [loc.get_text(strip=True) for loc in soup.find_all("loc") if loc.get_text(strip=True)]
+    if kind == "urlset":
+        return locs
     return []
 
 
@@ -865,17 +735,6 @@ async def _build_sitemap_mkdocs(base_url: str, github_token: str = "") -> Dict[s
                 continue
             nav.append({"title": title, "path": path})
     return {"nav": nav[:1000]}
-
-
-def _split_github_url(url: str) -> Optional[Tuple[str, str]]:
-    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+?)(?:/|$)", url)
-    if not m:
-        return None
-    owner, repo = m.groups()
-    # NB: use removesuffix, NOT rstrip(".git") — rstrip strips any trailing
-    # chars in the set {'.','g','i','t'}, mangling repos like "streamlit" ->
-    # "streaml" or "nuclei" -> "nucle" and 404ing the GitHub API (issue #153).
-    return owner, repo.removesuffix(".git")
 
 
 async def _build_sitemap_github_repo(base_url: str, github_token: str = "") -> Dict[str, Any]:
