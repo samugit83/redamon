@@ -1,7 +1,10 @@
 """
 Tests for prompts.base.build_workspace_layout_block().
 
-The block is rendered into every think-step system prompt by think_node.py.
+This builder is NOT on the live path: think_node puts the static
+build_workspace_rules_block() in the cached prefix and the live
+build_uploads_inbox_block() in the uncached suffix (tested in
+test_uploads_inbox_block.py). It shares _list_uploads with the live block.
 Two distinct behaviors to lock in:
 
   1. Always render notes/, tool-outputs/, jobs/ guidance + footer.

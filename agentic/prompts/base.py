@@ -6,6 +6,7 @@ Common prompts used across all attack paths.
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 from .tool_registry import TOOL_REGISTRY, visible_registry
@@ -152,8 +153,45 @@ _WORKSPACE_LAYOUT_FOOTER = (
 )
 
 
+def _prompt_safe_name(name: str, max_len: int = 120) -> str:
+    """A file or folder name made safe for one prompt line.
+
+    A name is whatever the user's upload or a third-party archive chose: a
+    newline or a control character in it would start a new prompt line of its
+    own, and a backtick would close the code span around it.
+    """
+    out = []
+    for ch in str(name):
+        if ch == "`":
+            out.append("'")
+        elif unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp"):
+            out.append("?")
+        else:
+            out.append(ch)
+    text = "".join(out)
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
+
+
+def _upload_candidates(uploads_dir: Path) -> list[tuple[Path, bool]]:
+    """(path, is_folder) for every entry the inbox lists. A folder holding an
+    `.import.json` came from a URL import: it is third-party content, listed
+    only as an imported source, never under the inbox's CHECK THESE NOW.
+    Presence is enough here: a forged file can only hide a folder."""
+    out = []
+    for p in uploads_dir.iterdir():
+        if p.is_symlink() or p.is_file():
+            out.append((p, False))
+        elif p.is_dir():
+            if not (p / ".import.json").exists():
+                out.append((p, True))
+    return out
+
+
 def _list_uploads(project_id: str, max_files: int = _UPLOADS_PROMPT_MAX_FILES) -> list[str]:
-    """Return filenames inside uploads/ for the prompt, newest first.
+    """Return names inside uploads/ for the prompt, newest first; folders end
+    in `/`.
 
     Empty list if dir doesn't exist or is empty - the layout block then
     omits the USER INBOX section entirely. Symlinks count as files (the
@@ -165,17 +203,40 @@ def _list_uploads(project_id: str, max_files: int = _UPLOADS_PROMPT_MAX_FILES) -
     if not uploads_dir.is_dir():
         return []
     try:
-        candidates = [
-            p for p in uploads_dir.iterdir()
-            if p.is_file() or p.is_symlink()
-        ]
+        candidates = _upload_candidates(uploads_dir)
         candidates.sort(
-            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            key=lambda c: c[0].stat().st_mtime if c[0].exists() else 0,
             reverse=True,
         )
     except OSError:
         return []
-    return [p.name for p in candidates[:max_files]]
+    return [_prompt_safe_name(p.name) + ("/" if is_folder else "") for p, is_folder in candidates[:max_files]]
+
+
+def _uploads_count(project_id: str) -> int:
+    try:
+        return len(_upload_candidates(_WORKSPACE_ROOT_FOR_PROMPT / project_id / "uploads"))
+    except OSError:
+        return 0
+
+
+def _items_phrase(names: list[str]) -> str:
+    """'3 items (2 files, 1 folder)'."""
+    folders = sum(1 for n in names if n.endswith("/"))
+    files = len(names) - folders
+    parts = []
+    if files:
+        parts.append(f"{files} file{'s' if files != 1 else ''}")
+    if folders:
+        parts.append(f"{folders} folder{'s' if folders != 1 else ''}")
+    n = len(names)
+    return f"{n} item{'s' if n != 1 else ''} ({', '.join(parts)})"
+
+
+_UPLOADS_READ_HINT = (
+    "Read files via fs_read / fs_glob `uploads/*`, and folders via fs_list / fs_tree; "
+    "do NOT write here."
+)
 
 
 def build_workspace_layout_block(project_id: str) -> str:
@@ -203,25 +264,17 @@ def build_workspace_layout_block(project_id: str) -> str:
     uploads = _list_uploads(project_id)
     if uploads:
         n = len(uploads)
-        plural = "s" if n != 1 else ""
         # Cap signal: if we hit the cap, there might be more.
         more_hint = ""
-        # Best-effort: list count over cap if dir actually has more.
-        try:
-            real_count = sum(
-                1 for p in (_WORKSPACE_ROOT_FOR_PROMPT / project_id / "uploads").iterdir()
-                if p.is_file() or p.is_symlink()
-            )
-            if real_count > n:
-                more_hint = f" (showing newest {n} of {real_count})"
-        except OSError:
-            pass
+        real_count = _uploads_count(project_id)
+        if real_count > n:
+            more_hint = f" (showing newest {n} of {real_count})"
         listing = "\n".join(f"  - `uploads/{name}`" for name in uploads)
         parts.append(
             f"\n- `uploads/` - USER INBOX. The user has staged "
-            f"{n} file{plural}{more_hint} for you to use. CHECK THESE NOW:\n"
+            f"{_items_phrase(uploads)}{more_hint} for you to use. CHECK THESE NOW:\n"
             f"{listing}\n"
-            f"  Read via fs_read / fs_glob `uploads/*`; do NOT write here."
+            f"  {_UPLOADS_READ_HINT}"
         )
     parts.append("\n" + _WORKSPACE_LAYOUT_FOOTER)
     return "\n".join(parts)
@@ -258,24 +311,17 @@ def build_uploads_inbox_block(project_id: str) -> str:
     if not uploads:
         return ""
     n = len(uploads)
-    plural = "s" if n != 1 else ""
     more_hint = ""
-    try:
-        real_count = sum(
-            1 for p in (_WORKSPACE_ROOT_FOR_PROMPT / project_id / "uploads").iterdir()
-            if p.is_file() or p.is_symlink()
-        )
-        if real_count > n:
-            more_hint = f" (showing newest {n} of {real_count})"
-    except OSError:
-        pass
+    real_count = _uploads_count(project_id)
+    if real_count > n:
+        more_hint = f" (showing newest {n} of {real_count})"
     listing = "\n".join(f"  - `uploads/{name}`" for name in uploads)
     return (
         f"## Workspace Inbox (uploads/)\n\n"
-        f"The user has staged {n} file{plural}{more_hint} for you to use. "
+        f"The user has staged {_items_phrase(uploads)}{more_hint} for you to use. "
         f"CHECK THESE NOW:\n"
         f"{listing}\n"
-        f"Read via fs_read / fs_glob `uploads/*`; do NOT write here."
+        f"{_UPLOADS_READ_HINT}"
     )
 
 
