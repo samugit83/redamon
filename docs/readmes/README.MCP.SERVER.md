@@ -58,6 +58,9 @@ set of recon tuning settings, and query the attack-surface graph.
 | `queue_recon` | Queue a full recon for when the host has room. | `recon:queue` |
 | `cancel_queued_scan` | Cancel a queued job, reading the update count so a lost race is not reported as success. | `recon:queue` |
 | `get_scan_status` | The other six scanners' state, masked exactly as `get_recon_status` is. | `recon:read` |
+| `loop_wait_step` | Agent in the Loop (§9): long-poll for the next step of the user's chat runs, or their status. | `agent:loop` |
+| `loop_get_step` | A page of a step the caller holds, or the whole step again (`full`). | `agent:loop` |
+| `loop_submit_step` | Answer a step (or decline it). RedAmon still applies every gate. | `agent:loop` |
 | `set_finding_verdict` | Record a durable decision (Real raises the score, False positive, Reset of an MCP decision), rescored in the same transaction. Never a decision made in the app (`decided_in_app`, absent channel = app); refused on a muted finding, during an activation, and whenever the agent cannot acknowledge `layered_publish` (an older agent image enforces neither `decided_in_app` nor publish-time honouring). | `triage:write` |
 | `get_finding_triage` | One finding's final score and the three layers behind it (rules, review, decision), detector, group, proof, run. Review text only with `includeQuotes`. | `triage:read` |
 | `get_finding_evidence` | The normalised, secret-redacted evidence bundle the built-in reviewer reads, its `evidenceHash`, reviewability and the review contract. | `triage:read` |
@@ -170,11 +173,17 @@ promising a check.
 
 ## 2. Turning it on
 
-It is **off by default**. A new authenticated inbound surface must be switched on
-deliberately, never inherited by upgrading.
+It is **on by default** for a local install, so the MCP tools and Agent in the
+Loop work out of the box: nothing answers until a person mints a token.
+`./redamon.sh install` writes `MCP_SERVER_ENABLED=true`, and `./redamon.sh update`
+turns an existing `MCP_SERVER_ENABLED=false` (written by earlier releases) on
+**once**, recording it with `MCP_AND_LOOP_DEFAULT_ON_APPLIED=1`; a `false` set after
+that is kept. A single-host deploy (`deploy.sh` marks its `.env` with `REDAMON_SINGLE_HOST_DEPLOY=true`;
+`MCP_ALLOWED_ORIGIN` covers servers deployed before that mark)
+keeps its own default, **off**, and `redamon.sh` never turns it on there.
 
 ```bash
-# 1. In .env (redamon.sh writes the switch for you on install)
+# 1. In .env (redamon.sh writes the switch for you, on)
 MCP_SERVER_ENABLED=true
 
 # 2. Apply. The webapp has NO env_file, so this variable is read from the
@@ -211,6 +220,8 @@ and a value set only in `.env` would be silently inert.
 | `MCP_RATE_COMPARE_WINDOW_MS` | `300000` | That window (5 minutes). |
 | `MCP_DISABLED_TOOLS` | (empty) | Comma-separated tool names to withdraw. They disappear from `tools/list` rather than refusing, so a client never plans around them. The per-tool alternative to taking the whole surface down; a name matching no tool is ignored. |
 | `MCP_LLM_DAILY_BUDGET` | `200` | NL queries per token per day (they spend the owner's LLM key). |
+| `AGENT_IN_THE_LOOP_ENABLED` | `true` | Agent in the Loop (§9). Written into `.env` by `redamon.sh` like `MCP_SERVER_ENABLED`, and on by default on a deploy too (inert there until the MCP server is on). Read by BOTH the webapp and the agent; off, the three `loop_*` tools are withdrawn from `tools/list` and the `loop/mcp` model is offered nowhere. Inert unless `MCP_SERVER_ENABLED` is on too. |
+| `MCP_RATE_LOOP_PER_MIN` | `120` | `loop_*` calls per token per minute. One step costs two to four calls. |
 
 > **The generated API reference describes a build, not a deployment.** It is
 > rendered from the server's own `tools/list` with no tool withdrawn, so a
@@ -428,7 +439,14 @@ commit otherwise, which is what makes "the pack covers the whole surface" a
 guarantee rather than an intention.
 
 Output is deterministic: no dates, and the version stamp is injected, so the
-same `(profile, scopes, serverUrl, style, layout)` renders byte-identical bytes.
+same `(profile, scopes, serverUrl, style, layout, client)` renders byte-identical bytes.
+
+`client` (`claude_code`, the default, or `codex`) matters only when the token holds
+`agent:loop`: the pack then adds the Agent in the Loop skill
+([`loopSkill.ts`](../../webapp/src/lib/mcp/loopSkill.ts)) with that client's
+frontmatter and connection template (`.mcp.json` and `.claude/settings.json`, or a
+`config.toml` block). The route answers `409 loop_disabled` for such a pack while the
+switch is off.
 
 **Nothing user-specific may enter the output** - no token, no project name, no
 target, no rules-of-engagement text - because a `SKILL.md` gets committed into a
@@ -913,7 +931,113 @@ against `audit_log`. Known and accepted; a minimal admin view is a follow-up.
 
 ---
 
-## 9. Related
+## 9. Agent in the Loop
+
+With `AGENT_IN_THE_LOOP_ENABLED=true`, a person may pick **Agent in the Loop**
+(`loop/mcp`) as a project's agent model. Every model call of a chat run on that
+project then becomes a **step** that the person's own MCP client (Claude Code,
+Codex) answers through the three `loop_*` tools. RedAmon keeps the loop: state,
+prompts, tools, the Rules of Engagement and phase gates, approvals, persistence
+and the UI. The setup for each client is the wiki page
+[Agent-in-the-Loop](https://github.com/samugit83/redamon/wiki/Agent-in-the-Loop);
+the code and its invariants are in `agentic/agent_in_the_loop/` and the
+`agent-in-the-loop` skill.
+
+**How a step travels.** The agent's `LoopChatModel` (the session's `current_llm`)
+opens a step in an in-memory broker and awaits its answer. The webapp tools call
+the agent's master-key `/loop/steps/{wait,get,answer}` routes with the token's
+user id, the token id, an optional client-chosen `driver` name, and the ids of
+the user's projects that a loop run can be in NOW: on a loop model, or with a chat
+running (the broker serves only those: a deleted or transferred project's steps
+never reach a driver). Leases (90 s), deadlines (15 min), a no-driver rule (5 min
+with no driver call that could serve that chat ends the run and frees the project
+lock; a driver scoped to one chat is no presence for the others, and a claim whose
+lease ran out counts as unserved), 40 000-character pages and per-driver dedup of
+unchanged prompt parts keep it bounded. A step's pages come from one rendering that
+stays fixed for that client until the step closes, so cursors always line up; a
+part counts as delivered only once the client asks for a later page or answers,
+and it is sent in full again every 10 steps. `contractVersion` (1) marks the
+step shape.
+
+**The new trust boundary.** An external process now decides the agent's next
+action, and it reads target-controlled text at every step. The controls:
+
+- **The token rule.** A token holding `agent:loop` may hold no other `write` or
+  `read-write` scope (computed from the scope copy, `loopTokenProblem`); the loop
+  tools refuse a wider token (`loop_token_too_broad`), and the token form and the
+  onboarding modal warn before minting one. Injected text cannot reach a scan,
+  a write or the shell over MCP through the driver.
+- **Only a person approves.** No MCP tool answers a phase approval, a question,
+  a dangerous-tool confirmation or a Fireteam escalation.
+- **Dangerous tools always ask a person in a loop run**, whatever the project's
+  `REQUIRE_TOOL_CONFIRMATION` says (`confirmation_required`). **Product decision
+  flagged for the owner:** this default stays until decided otherwise.
+- **The agent's `query_graph` reads in a read-only database session**, so the
+  database refuses a write the regex guard might miss; this hardens every run.
+- **A person picks the brain.** `update_recon_settings`, `create_project`,
+  presets (save and apply), project import and user defaults never set a loop
+  model (`escalation` for `agentOpenaiModel`, `not_supported` for
+  `aiPipelineModel`).
+- **Outside a chat run a loop model never waits.** Every session-less builder
+  refuses it (`loop_model_not_supported_here`); NL graph queries outside a chat
+  answer 409 `loop_model_out_of_session` (raw Cypher still works);
+  `/guardrail/check-target` treats it as no model.
+- **What leaves RedAmon.** A step is the agent's prompt: target data,
+  credentials the agent found, RoE contacts. It reaches the driver's vendor and
+  its local transcripts. The Codex template turns history off; Claude Code's
+  `cleanupPeriodDays` is documented, not set (it covers every project).
+- **RedAmon never sees the driver's Claude or OpenAI credentials** and never
+  starts the client. The pack names only `REDAMON_MCP_TOKEN`: `${...}` in Claude
+  Code's `.mcp.json`, `bearer_token_env_var` in Codex's project config.
+
+**Onboarding.** The profile `agent_in_the_loop` ticks `recon:read` and
+`agent:loop` only (no `kali:exec`, unlike every other profile). Its pack is a
+dedicated skill (the loop, the answer formats, data-not-instructions, decline)
+plus, per client, `templates/claude-mcp.json` and `templates/claude-settings.json`
+(allow the three tools, deny Bash/Edit/Write/WebFetch/WebSearch) or
+`templates/codex-config.toml` (read-only sandbox, no shell, no web search, no
+history, only the three tools, `tool_timeout_sec = 90`). Both go into the driver's
+own folder (`.mcp.json` and `.claude/settings.json`, or `.codex/config.toml`, which
+Codex reads once the folder is trusted), so the person's other sessions keep their
+settings. A token of that profile
+gets loop-specific `initialize` instructions.
+
+**Audit and attribution.** An idle `loop_wait_step` writes no audit row (a
+driver polls about 70 times an hour); a claim and an answer each write one, filed
+under the step's project with the step id, session, purpose and iteration. The
+answer, a decline's reason and the driver name are never copied into a row. The
+chat history records which token answered each decision (`answeredBy`).
+
+**Observability.** `/health` carries only `loop_enabled` (it is unauthenticated
+and the agent port is published); `GET /loop/stats` (master key) gives counts;
+`/agent-sessions/live` adds `loop_states`, which `get_project_activity` turns
+into "waiting for the external agent".
+
+**The project lock and memory.** A loop run holds `agentRunning` like any chat
+run, so presets, rescope, graph activation and queued or scheduled scans wait
+for it; an abandoned run frees it within 5 minutes. Each loop run holds one
+agent session slot for as long as it runs, even with the tab closed: the session
+cap counts live runs as well as connections.
+
+**Turning it off for good.** Set the switch off and `./redamon.sh up`. Before
+reverting the code, reset every row still on a loop model, or `parse_model_provider`
+would route `loop/mcp` to OpenAI:
+
+```sql
+UPDATE projects p
+   SET agent_openai_model = COALESCE(NULLIF(u.default_agent_model, ''), 'claude-opus-4-6'),
+       updated_at = NOW()
+  FROM users u
+ WHERE p.user_id = u.id AND p.agent_openai_model LIKE 'loop/%'
+   AND COALESCE(u.default_agent_model, '') NOT LIKE 'loop/%';
+UPDATE projects SET agent_openai_model = 'claude-opus-4-6', updated_at = NOW()
+ WHERE agent_openai_model LIKE 'loop/%';
+UPDATE users SET default_agent_model = NULL WHERE default_agent_model LIKE 'loop/%';
+```
+
+---
+
+## 10. Related
 
 - [README.MCP.md](README.MCP.md) — the outbound direction (system MCP servers + MCP Tool Plugins)
 - [README.GRAPH_DB.md](README.GRAPH_DB.md) — the attack-surface graph

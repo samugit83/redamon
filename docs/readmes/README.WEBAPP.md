@@ -551,6 +551,8 @@ another runs).
 | `PLUGIN_DATA_MAX_VALUE_BYTES` | The largest single value a plugin may store | `1048576` |
 | `PLUGIN_DATA_MAX_ROWS_PER_OWNER` | Rows one plugin may keep for one user or project | `2000` |
 | `PLUGIN_SKILL_TEXT_MAX_GROWTH` | How much larger than its factory text a whole skill may grow in an approved version (also read by the agent, which applies the same bound) | `1.5` |
+| `AGENT_IN_THE_LOOP_ENABLED` | Shows the `loop/mcp` brain in the chat model picker and registers the three `loop_*` MCP tools; must match the agent's value (both read the repo-root `.env`) | `true` |
+| `MCP_RATE_LOOP_PER_MIN` | The `loop` bucket of the MCP rate limiter, per token: the three `loop_*` tools | `120` |
 
 ---
 
@@ -668,6 +670,14 @@ When `REQUIRE_TOOL_CONFIRMATION` is enabled in Project Settings, the agent pause
 - On **Deny**: the card shows an error state and the agent re-plans with an alternative approach
 
 When the setting is disabled, an orange warning badge appears in the chat header.
+
+In an **Agent in the Loop** run (`loop/mcp`) dangerous tools always ask, whatever this setting says: the person's own agent writes the run's decisions, so a person must approve what it wants to run.
+
+#### Agent in the Loop status
+
+A run whose model is `loop/mcp` sends `loop_status` frames (`LoopStatusPayload`; never persisted; no prompt or answer text). A frame carries the run's `state` (`thinking`, `running_tool`, `awaiting_human`, `finished`, `stopped`, `error` with a `code` such as `loop_no_driver` or `loop_step_declined`), the open step if any (`open`, or `claimed` by an agent, with its purpose and iteration), and whether an agent of the user has called in during the last minute (`driver.connected`). `hooks/loopStatus.ts` turns them into the strings the drawer shows: a chip in `AgentStatusChips`, the waiting line under the loading eye in `ChatArea`, and an "answered by" note on each think card. `CONNECTED.loop_state` restores the state after a reconnect.
+
+Only the agent's own model picker (the project form's agent model and the drawer's model picker) offers `loop/mcp`, in an "Agent in the Loop" group, while the switch is on. Every other picker (AI pipeline model, Models by feature, Tradecraft, the project LLM gate) passes `excludeLoop`, and the saves behind them refuse a `loop/` id ([agentInTheLoop.ts](../../webapp/src/lib/agentInTheLoop.ts)).
 
 #### WebSocket Hook API
 

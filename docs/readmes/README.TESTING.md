@@ -149,6 +149,21 @@ through `testing/e2e/scripts/stub-llm-server.mjs`, registered as an OpenAI-compa
 the run and removed at the end, and analyses `testing/e2e/fixtures/skiller-session.json`. Each
 spec skips itself when its files are missing.
 
+### Agent in the Loop
+
+Agent in the Loop (the `loop/mcp` brain, the `agent-in-the-loop` skill) is tested at three levels:
+
+| Layer | Where | Tier |
+|---|---|---|
+| Broker, adapter, prompt document, routes | `agentic/tests/test_loop_*.py`, `test_agent_in_the_loop_settings.py`, `test_ws_session_cap.py` (the session cap counts live runs). `test_loop_flow.py` drives a whole run (guardrail, think, tool, report) through the real broker with a scripted driver | unit |
+| MCP tools, token rule, refusals, drawer, onboarding pack | `webapp/src/lib/mcp/loop*.test.ts`, `server.loopAudit.test.ts`, `src/lib/agentInTheLoop*.test.ts`, `hooks/loopStatus.test.ts`, `ChatArea.loop.test.tsx`, `ModelPicker.loopFilter.test.tsx`, `agentSessions.loop.test.ts`, `projects/import/route.loopModel.test.ts` | vitest |
+| Compose and deploy wiring | `tests/redamon_mcp_env_test.sh`, `tests/deploy_mcp_env_chain_test.sh` (the switch reaches both containers) | shell |
+| End to end | `testing/e2e/tests/agentInTheLoop.spec.ts`: a scripted driver over `/api/mcp-server` answers a real run against the `skiller_sqli_csrf` lab; needs a stack with `AGENT_IN_THE_LOOP_ENABLED=true` and `MCP_SERVER_ENABLED=true`, and skips itself otherwise | Playwright |
+
+Every MCP test that stubs `MCP_KALI_EXEC_ENABLED` also stubs `AGENT_IN_THE_LOOP_ENABLED`: both
+switches change `tools/list`, and a host whose `.env` turns one on would otherwise see a different
+tool count from the one the test pins.
+
 ### Two oracles, and only one of them runs in the gate
 
 Some unit-tier files mix hermetic checks with checks that need a live Neo4j and

@@ -129,6 +129,10 @@ Configured **per-user** in the webapp UI (`/settings`), not in `.env`.
 
 OpenAI-compatible (Ollama) providers expose an optional reasoning control in **Global Settings → LLM Providers**. The webapp persists the enabled state and selected `low`, `medium`, `high`, or `max` effort per provider. When enabled, the agent forwards the value as `reasoning_effort` through the OpenAI-compatible chat-completions API; when disabled it sends nothing, preserving the model's default. `max` is available for models that support it, while models with binary thinking may treat effort levels identically. Enabling reasoning on a model without the thinking capability makes the endpoint reject the request with a 400 (`"<model>" does not support thinking`); `retry_llm_call` self-heals this by dropping `reasoning_effort` and retrying once, so a misconfigured provider degrades gracefully instead of failing every call.
 
+**Agent in the Loop** (`loop/mcp`) is not a provider: with `AGENT_IN_THE_LOOP_ENABLED=true` it appears in the chat model picker, and every model call of a chat run becomes a step that the person's own agent (Claude Code, Codex) answers over the MCP server. It needs no provider key and works only in chat runs; every other model picker hides it and every builder outside a chat run refuses it (`loop_model_not_supported_here`). Rules for new model call sites: the `agent-in-the-loop` skill; setup: the wiki page `Agent-in-the-Loop`.
+
+Turning it off is the switch alone. Before **reverting** its code, reset every project and user row still on a `loop/` model first (the SQL block under "Turning it off for good" in [README.MCP.SERVER.md](README.MCP.SERVER.md#9-agent-in-the-loop)), or `parse_model_provider` would route `loop/mcp` to OpenAI with the user's key.
+
 ### Infrastructure
 
 | Technology | Role | Official Docs |

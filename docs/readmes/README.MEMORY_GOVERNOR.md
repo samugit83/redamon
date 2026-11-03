@@ -451,8 +451,14 @@ full value survives at reasonable RAM and only throttles hard when memory is gen
 - **Two admission caps that did not exist before** were added:
   - **Concurrent chat sessions** (`websocket_api._governed_max_sessions`, `MAX_AGENT_SESSIONS`
     default 20): byte-budgeted on `agent_session_envelope_bytes`. A genuinely new session is
-    refused (socket closed, `authenticated` left false) past the cap; reconnects to an
-    existing key always pass.
+    refused (socket closed with 1013, `authenticated` left false) past the cap. The cap
+    counts **open connections and live runs together**: a run whose browser tab closed keeps
+    all its memory, and Agent in the Loop runs are long (each step waits for a person's
+    agent) and often headless. A key with a live connection, or a verified key whose run is
+    still going, is a reconnect and always passes. The cap still budgets on the HOST's
+    memory while the agent container has its own `AGENT_MEM` limit, so on a large host it
+    can admit more sessions than `AGENT_MEM / 512 MB`: to run several loop sessions at
+    once, raise `AGENT_MEM` or lower `MAX_AGENT_SESSIONS`.
   - **Background jobs** (`job_runner._governed_max_jobs`, `MAX_BACKGROUND_JOBS` default 16):
     byte-budgeted on `background_job_envelope_bytes`. Count-and-insert is atomic under the
     registry lock.
@@ -741,7 +747,7 @@ All are optional; defaults live in code (empty/unset → default). Documented in
 
 | Var | Default | Meaning |
 |---|---|---|
-| `MAX_AGENT_SESSIONS` | `20` | ceiling on concurrent agent chat/WebSocket sessions (byte-budgeted down under pressure). |
+| `MAX_AGENT_SESSIONS` | `20` | ceiling on concurrent agent chat sessions, counting open connections and live runs together (a headless run, such as an Agent in the Loop run with its tab closed, holds a slot until it ends); byte-budgeted down under pressure. |
 | `MAX_BACKGROUND_JOBS` | `16` | ceiling on concurrent background agent jobs (byte-budgeted). |
 | `TERMINAL_MAX_SESSIONS` | `5` | max concurrent kali-sandbox PTY sessions; further reduced under pressure. |
 

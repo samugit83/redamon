@@ -431,6 +431,36 @@ sequenceDiagram
     Agent-->>User: "Found ports 22, 80, 443..."
 ```
 
+## Agent in the Loop (an External Brain)
+
+With `AGENT_IN_THE_LOOP_ENABLED=true` a person may pick `loop/mcp` as a chat's model. The
+loop above is unchanged; only its "Reasoning" calls go somewhere else: each becomes a step
+the person's own MCP client (Claude Code, Codex) claims and answers over the inbound MCP
+server, while tools, approvals and the graph stay in RedAmon.
+
+```mermaid
+sequenceDiagram
+    participant User as Person (drawer)
+    participant Agent as RedAmon agent
+    participant Broker as Step broker
+    participant MCP as Inbound MCP server
+    participant Client as Claude Code / Codex
+
+    User->>Agent: Objective
+    Agent->>Broker: think step (prompt, answer format)
+    Client->>MCP: loop_wait_step (agent:loop token)
+    MCP->>Broker: claim (owner's projects only)
+    Broker-->>Client: step, paged
+    Client->>MCP: loop_submit_step (one JSON decision)
+    MCP->>Broker: answer
+    Broker-->>Agent: decision, validated like any model's
+    Agent->>User: dangerous tool or phase change? ask the person
+    Agent->>Agent: run the tool, next think step
+```
+
+Rules and setup: [README.MCP.SERVER.md §9](README.MCP.SERVER.md#9-agent-in-the-loop) and the
+`agent-in-the-loop` skill.
+
 ## Plugin Platform
 
 Plugins are optional features installed on demand from the signed

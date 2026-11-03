@@ -739,6 +739,19 @@ Phase gating layers on top. The agent operates in three phases, `informational` 
 
 The advantage is **safe isolation between operators and projects** combined with **safe progression through escalating attack stages**. No matter how complex an engagement gets, the agent cannot accidentally read another project's data, and no matter how confidently the LLM wants to exploit, it cannot enter an active attack phase without an explicit human nod. Full details: [Security & Multi-Tenancy chapter](#security--multi-tenancy).
 
+### Agent in the Loop (an External Brain)
+
+With `AGENT_IN_THE_LOOP_ENABLED=true` a person may pick **Agent in the Loop** (`loop/mcp`) as a project's agent model. `parse_model_provider` routes `loop/` to `setup_llm`'s loop branch, which returns a `LoopChatModel` (`agentic/agent_in_the_loop/model.py`) as the session's `current_llm`. The graph, the nodes and the gates are unchanged: every call site still calls `ainvoke`. The adapter turns each call into a **step** in an in-memory `StepBroker` and awaits the answer that the person's own MCP client (Claude Code, Codex) submits through the inbound MCP server's `loop_wait_step` / `loop_get_step` / `loop_submit_step` tools ([README.MCP.SERVER.md §9](README.MCP.SERVER.md#9-agent-in-the-loop)).
+
+- **Run scopes.** `AgentOrchestrator._stream_graph` wraps every streaming graph loop (the first run and the four resume paths) in `get_broker().run_scope(user, project, session, callback, uses_loop=...)`. The adapter takes its identity from that scope, through `current_log_session_id`, never from the tenant ContextVars (`initialize_node` calls the guardrail and the classifier before any node sets them). With no live loop scope it fails at once (`LoopModelOutsideRun`): no session-less path can wait for a driver.
+- **Purposes.** Each call site sets `llm_purpose(...)`: `scope_guardrail`, `classify`, `think` (iteration, attempt), `deep_think`, `lats_expand`, `fireteam_member` (member id and name), `cypher`, `report`. The purpose decides the step's `answerFormat` (`json`, `cypher`, `markdown`, `text`).
+- **Prompts.** The think prompt's three cache tiers reach the adapter as separate blocks without `cache_control`; a part the same client (`driver` name) already received in the session is replaced by a one-line placeholder, and documents are paged at 40 000 characters.
+- **Failures.** `LoopStepNotAnswered` (15 min), `LoopNoDriver` (5 min with no driver call; frees the project lock), `LoopStepDeclined` and the rest carry `no_retry`, which `is_transient_llm_error` checks first; the classifier stops at once and uses its safe default, the guardrail stays fail-closed with its own reason, the think node and Fireteam members end with `llm_error: <class>`, the report node writes a fixed fallback with the deterministic counts. After a lost driver, every later step of the run fails at once.
+- **Status.** `StreamingCallback` notes the run's state to the broker, which pushes `loop_status` frames (sent, never persisted) to the drawer: thinking, running a tool, waiting for a person, finished, stopped, error, plus the open step and whether a driver is connected. `CONNECTED.loop_state` restores it on reconnect.
+- **Hardening.** In a loop run dangerous tools always ask a person (`confirmation_required`), and Fireteam members wait at human speed, so keep teams small in interactive use. The memory governor's session cap counts live runs as well as connections, because loop runs are long and often headless.
+
+The advantage is **a choice of brain without a fork of the loop**: RedAmon's state, tools and every gate stay the same whoever answers the steps, and a person still approves every phase change and dangerous tool. The operator setup is on the wiki page [Agent in the Loop](https://github.com/samugit83/redamon/wiki/Agent-in-the-Loop).
+
 ---
 
 ## Attack Path Classification

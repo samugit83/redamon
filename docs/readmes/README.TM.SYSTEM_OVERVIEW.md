@@ -279,7 +279,8 @@ graph LR
 
 Everything above describes two ways in: a human at a browser, and RedAmon's own
 agent reaching OUT to tools. The inbound MCP server (`/api/mcp-server`,
-`MCP_SERVER_ENABLED`, off by default) adds a third: **an external AI agent
+`MCP_SERVER_ENABLED`, on by default for a local install, off by default on a
+single-host deploy) adds a third: **an external AI agent
 reaching IN**, authenticating as one user and driving recon on their behalf.
 
 This is RedAmon's THIRD MCP mode and the three are easy to conflate:
@@ -373,6 +374,30 @@ CIDR list (`403`) must not be banned for a configuration problem.
 - **There is no audit-log viewer.** Every call is recorded, failures included -
   a revoked token presented, a scope denied, a project id that was not the
   caller's - but reading it today is a SQL query against `audit_log`.
+
+### Agent in the Loop: the external agent becomes the brain
+
+With `AGENT_IN_THE_LOOP_ENABLED=true` (on by default; needs the MCP server) a
+person may pick `loop/mcp` as a chat's model. Every model call of that run then
+becomes a step that the person's own MCP client claims with `loop_wait_step` and
+answers with `loop_submit_step`. That makes the external agent a **trust boundary
+inside the agent loop**: what it returns is parsed as the agent's own decision.
+
+| Threat | Control |
+|---|---|
+| The driver approves its own dangerous action | Dangerous tools always ask the person in a loop run, whatever `REQUIRE_TOOL_CONFIRMATION` says; no MCP tool answers an approval, a question or a tool confirmation |
+| Target text injects instructions into the driver, which then uses its token's other powers | A driver token may hold no write or exec scope besides `agent:loop` (`loop_token_too_broad`); the skill pack frames prompts as data |
+| A token drives someone else's run | A step is offered only to a token of the run's owner, for a project that user owns (the webapp sends the owned project ids on every call); every claimed step and every answer is an audit row with the project as target |
+| An automated path switches a project to an outside brain | MCP writes, presets, imports and remembered user defaults refuse or drop a `loop/` model: a person picks it in the project form |
+| A loop model is called with no run to answer it (a hang, or a revert that routes `loop/mcp` to OpenAI) | Every builder outside a chat run refuses it (`loop_model_not_supported_here`); the revert procedure resets loop rows first |
+| A driver's Cypher writes the graph | The agent's own `query_graph` runs in a READ-access Neo4j session |
+| Long headless runs exhaust memory | The session cap counts live runs as well as connections; a run with no driver for 5 minutes ends |
+
+**Residual:** the step prompt carries target data and RedAmon's prompts to a
+client RedAmon does not control, which may hold shell, web or file tools on the
+person's machine and keeps its own transcripts. The pack's client templates turn
+those tools off, but that is the person's configuration, not an enforced
+boundary.
 
 ---
 

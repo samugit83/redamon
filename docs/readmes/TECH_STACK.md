@@ -47,6 +47,7 @@ See [README.PLUGINS.md](README.PLUGINS.md) for the design and [README.PLUGIN_SDK
 | **OpenAI-Compatible** | Any OpenAI-compatible endpoint (Ollama, vLLM, Groq, etc.). Configure in Global Settings |
 | **OpenRouter** | Multi-model gateway — access 300+ models through a single API key. Configure in Global Settings |
 | **AWS Bedrock** | Managed AWS service — access foundation models (Claude, Titan, Llama, Cohere, etc.) via `langchain-aws`. Configure in Global Settings |
+| **Agent in the Loop** | Not a provider: with `AGENT_IN_THE_LOOP_ENABLED=true` the chat model `loop/mcp` hands every model call of a run to the person's own MCP client (Claude Code, Codex) over the inbound MCP server; no key needed |
 | **Tavily** | AI-powered web search used by the agent for CVE research and exploit intelligence |
 | **Model Context Protocol (MCP)** | Standardized protocol for tool integration — the agent calls security tools through MCP servers |
 | **LangChain AWS** | AWS Bedrock integration — `ChatBedrockConverse` for Bedrock foundation models |
