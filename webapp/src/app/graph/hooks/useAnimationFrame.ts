@@ -22,7 +22,7 @@ export function useAnimationFrame(
     if (!enabled) return
 
     let count = 0
-    let animationId: number
+    let animationId: number | undefined
 
     const animate = () => {
       if (count % (frameSkip + 1) === 0) {
@@ -33,10 +33,17 @@ export function useAnimationFrame(
       animationId = requestAnimationFrame(animate)
     }
 
-    animationId = requestAnimationFrame(animate)
+    const visibility = () => {
+      if (animationId !== undefined) cancelAnimationFrame(animationId)
+      animationId = document.hidden ? undefined : requestAnimationFrame(animate)
+    }
+    document.addEventListener('visibilitychange', visibility)
+    visibility()
 
     return () => {
-      cancelAnimationFrame(animationId)
+      document.removeEventListener('visibilitychange', visibility)
+      if (animationId !== undefined) cancelAnimationFrame(animationId)
+      animationId = undefined
     }
   }, [enabled, frameSkip])
 }

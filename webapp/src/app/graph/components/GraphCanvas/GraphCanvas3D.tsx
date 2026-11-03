@@ -20,6 +20,9 @@ import {
 import { TIER_CONFIG, getAdaptiveForceConfig } from '../../config/graph'
 import { hasHighSeverityNodes, isGoalFinding } from '../../utils/nodeHelpers'
 import { useAnimationFrame } from '../../hooks'
+import { useGraphRendering, type GraphInstance } from '../../hooks/useGraphRendering'
+
+const LABEL_DISTANCE_THRESHOLD = 300
 
 const ForceGraph3D = dynamic(() => import('react-force-graph-3d'), {
   ssr: false,
@@ -288,14 +291,27 @@ export function GraphCanvas3D({
   externalGraphRef,
 }: GraphCanvas3DProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graphRef = useRef<any>(null)
+  const nodeCache = useRef<Map<string, any>>(new Map())
+  const updateLabels = useCallback((graph: GraphInstance) => {
+    const cameraPos = graph.camera?.().position
+    nodeCache.current.forEach((group) => {
+      const label = group.getObjectByName('label')
+      if (label) label.visible = !!(showLabels && cameraPos && cameraPos.distanceTo(group.position) < LABEL_DISTANCE_THRESHOLD)
+    })
+  }, [showLabels])
+  const hasAnimatedNodes = useMemo(() => hasHighSeverityNodes(data.nodes) || data.nodes.some(node =>
+    !!activeChainId && node.properties?.chain_id === activeChainId &&
+    ['AttackChain', 'ChainStep', 'ChainDecision', 'ChainFailure', 'ExploitGvm', 'ChainFinding'].includes(node.type)
+  ), [data, activeChainId])
+  const hasParticles = useMemo(() => data.links.some(link => getParticleCount(link, selectedNode?.id) > 0), [data, selectedNode?.id])
+  const { graphRef, bindGraphRef, invalidate, onEngineStop, onEngineTick } = useGraphRendering(
+    hasAnimatedNodes || hasParticles, true, updateLabels,
+  )
 
   // Sync internal ref to external ref (for parent component access)
   useEffect(() => {
     if (externalGraphRef) externalGraphRef.current = graphRef.current
   })
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const nodeCache = useRef<Map<string, any>>(new Map())
   const prevThemeVersion = useRef(themeVersion)
 
   // Always use full quality -- no LOD, no tier degradation
@@ -321,13 +337,14 @@ export function GraphCanvas3D({
       const timer = setTimeout(applyControls, 500)
       return () => clearTimeout(timer)
     }
-  }, [data])
+  }, [data, graphRef])
 
   // ── Dispose all cached nodes on unmount ──
   useEffect(() => {
+    const cache = nodeCache.current
     return () => {
-      nodeCache.current.forEach(disposeGroup)
-      nodeCache.current.clear()
+      cache.forEach(disposeGroup)
+      cache.clear()
     }
   }, [])
 
@@ -338,7 +355,7 @@ export function GraphCanvas3D({
     nodeCache.current.forEach(disposeGroup)
     nodeCache.current.clear()
     graphRef.current?.refresh()
-  }, [themeVersion])
+  }, [themeVersion, graphRef])
 
   // ── Memoized nodeThreeObject -- always full quality, no LOD ──
   const fullTier = TIER_CONFIG['full']
@@ -399,34 +416,16 @@ export function GraphCanvas3D({
     })
   }, [selectedNodeId, activeChainId])
 
-  // Labels are toggled per-frame based on camera distance (see useAnimationFrame below).
-  // The showLabels flag is read there via ref so the callback identity stays stable.
-  const showLabelsRef = useRef(showLabels)
-  showLabelsRef.current = showLabels
+  useEffect(() => {
+    if (graphRef.current) updateLabels(graphRef.current)
+    invalidate()
+  }, [data, width, height, showLabels, selectedNodeId, activeChainId, themeVersion, isDark, updateLabels, invalidate, graphRef])
 
-  // ── Glow animation: iterate nodeCache, find rings by name ──
-  const hasHighSeverity = hasHighSeverityNodes(data.nodes)
-
-  // Distance threshold for label visibility in 3D (world units from camera)
-  const LABEL_DISTANCE_THRESHOLD = 300
+  useEffect(() => { invalidate(true) }, [data, invalidate])
 
   useAnimationFrame(
     (time) => {
-      const camera = graphRef.current?.camera()
-      const cameraPos = camera?.position
-
       nodeCache.current.forEach((group) => {
-        // Zoom-based label visibility: hide labels when camera is far away
-        const label = group.getObjectByName('label')
-        if (label) {
-          if (!showLabelsRef.current) {
-            label.visible = false
-          } else if (cameraPos && group.position) {
-            const dist = cameraPos.distanceTo(group.position)
-            label.visible = dist < LABEL_DISTANCE_THRESHOLD
-          }
-        }
-
         // Glow ring animation
         const glowRing = group.getObjectByName('glowRing')
         if (glowRing) {
@@ -449,7 +448,7 @@ export function GraphCanvas3D({
         }
       })
     },
-    true // always run: handles label visibility + glow animations
+    hasAnimatedNodes
   )
 
   // ── Reheat simulation + clean cache when data changes ──
@@ -477,12 +476,14 @@ export function GraphCanvas3D({
       }, ANIMATION_CONFIG.initDelay)
       return () => clearTimeout(timer)
     }
-  }, [data])
+  }, [data, graphRef])
 
   return (
     <ForceGraph3D
-      ref={graphRef}
+      ref={bindGraphRef}
       graphData={data}
+      onEngineStop={onEngineStop}
+      onEngineTick={onEngineTick}
       nodeLabel={(node) => `${(node as GraphNode).name} (${(node as GraphNode).type})`}
       nodeColor={(node) => getNodeColor(node as GraphNode)}
       nodeRelSize={BASE_SIZES.node3D}

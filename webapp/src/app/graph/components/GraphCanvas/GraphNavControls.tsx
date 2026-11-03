@@ -21,6 +21,7 @@ const ICON_SIZE = 12
 export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
   const [mode, setMode] = useState<'translate' | 'rotate'>('translate')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const resetTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>())
 
   const stopRepeat = useCallback(() => {
     if (intervalRef.current) {
@@ -29,7 +30,11 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
     }
   }, [])
 
-  useEffect(() => stopRepeat, [stopRepeat])
+  useEffect(() => () => {
+    stopRepeat()
+    resetTimersRef.current.forEach(clearTimeout)
+    resetTimersRef.current.clear()
+  }, [stopRepeat])
 
   const startRepeat = useCallback((action: () => void) => {
     action()
@@ -41,6 +46,10 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
     if (!fg) return
     const center = fg.centerAt()
     if (center) fg.centerAt(center.x + dx, center.y + dy, 150)
+  }, [graphRef])
+
+  const notifyCameraChange = useCallback(() => {
+    graphRef.current?.controls()?.dispatchEvent({ type: 'change' })
   }, [graphRef])
 
   const translate3D = useCallback((dx: number, dy: number) => {
@@ -57,7 +66,8 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
       controls.target.x += offsetX
       controls.target.y += offsetY
     }
-  }, [graphRef])
+    notifyCameraChange()
+  }, [graphRef, notifyCameraChange])
 
   const rotate3D = useCallback((dx: number, dy: number) => {
     const fg = graphRef.current
@@ -85,7 +95,8 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
     offset.z *= scale
     camera.position.copy(target).add(offset)
     camera.lookAt(target)
-  }, [graphRef])
+    notifyCameraChange()
+  }, [graphRef, notifyCameraChange])
 
   const dpad = useCallback((dx: number, dy: number) => {
     if (!is3D) {
@@ -105,6 +116,7 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
       if (camera) {
         const dir = camera.getWorldDirection(camera.position.clone().set(0, 0, 0))
         camera.position.addScaledVector(dir, -direction * ZOOM_STEP_3D)
+        notifyCameraChange()
       }
     } else {
       const currentZoom = fg.zoom()
@@ -113,24 +125,28 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
         : 1
       fg.zoom(Math.max(0.01, newZoom), 200)
     }
-  }, [graphRef, is3D])
+  }, [graphRef, is3D, notifyCameraChange])
 
   const resetView = useCallback(() => {
     const fg = graphRef.current
     if (!fg) return
     if (is3D) {
       fg.zoomToFit(400, 0)
-      setTimeout(() => {
+      notifyCameraChange()
+      const timer = setTimeout(() => {
+        resetTimersRef.current.delete(timer)
         const camera = fg.camera()
         const controls = fg.controls()
         if (camera && controls?.target) {
           camera.position.lerp(controls.target, 0.5)
+          notifyCameraChange()
         }
       }, 500)
+      resetTimersRef.current.add(timer)
     } else {
       fg.zoomToFit(400)
     }
-  }, [graphRef, is3D])
+  }, [graphRef, is3D, notifyCameraChange])
 
   const onDown = useCallback((action: () => void) => {
     return {
