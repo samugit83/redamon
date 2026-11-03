@@ -49,7 +49,7 @@ export default function ProjectsPage() {
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (await dangerConfirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+    if (await dangerConfirm('Delete this project? Its graph, scan results and agent workspace files are deleted. This action cannot be undone.')) {
       try {
         await deleteProjectMutation.mutateAsync(projectId)
         toast.success('Project deleted')

@@ -3,6 +3,7 @@ import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
+import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -168,9 +169,19 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       console.warn('Could not enumerate captured body refs before user delete:', e)
     }
 
+    // The cascade deletes the user's projects; their workspaces are on disk.
+    let projectIds: string[] = []
+    try {
+      projectIds = (await prisma.project.findMany({ where: { userId: id }, select: { id: true } })).map(p => p.id)
+    } catch (e) {
+      console.warn('Could not list projects before user delete:', e)
+    }
+
     await prisma.user.delete({
       where: { id }
     })
+
+    await Promise.allSettled(projectIds.map(pid => purgeProjectWorkspace(pid)))
 
     if (capturedBodyRefs.length > 0) {
       try {

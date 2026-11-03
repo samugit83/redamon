@@ -10,6 +10,7 @@ import { batchGroupFiles } from '@/lib/reconOutputFiles'
 import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
+import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
 import { callGraphTriage } from '@/lib/triageClient'
@@ -709,6 +710,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     await prisma.project.delete({
       where: { id }
     })
+
+    // 1a. The agent workspace (only once the row is gone: the agent acts only on
+    //     a project the web app answers 404 for).
+    await purgeProjectWorkspace(id)
 
     // 1b. GC captured body blobs this project exclusively owned (ref-counted).
     if (capturedBodyRefs.length > 0) {
