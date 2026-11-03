@@ -39,6 +39,10 @@ export interface Transfer {
   files?: number
   bytes?: number
   jobTotalBytes?: number
+  /** A website mirror: pages and assets saved so far, and why it stopped once done. */
+  pages?: number
+  assets?: number
+  stoppedBecause?: string
   /** The server answers 429 and the transfer waits to retry. */
   waiting: boolean
   savedPath?: string
@@ -141,7 +145,10 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
     const t = store.get(id)
     if (!t) return
     if (job.status === 'done') {
-      const done = patch(id, { status: 'done', waiting: false, savedPath: job.progress?.path || joinPath(t.destDir, t.name) })
+      const done = patch(id, {
+        status: 'done', waiting: false, savedPath: job.progress?.path || joinPath(t.destDir, t.name),
+        stoppedBecause: job.progress?.stoppedBecause,
+      })
       if (done) onDone(done)
     } else if (job.status === 'cancelled') {
       patch(id, { status: 'cancelled', waiting: false })
@@ -165,6 +172,8 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
           files: j.progress?.files,
           bytes: j.progress?.bytes,
           jobTotalBytes: j.progress?.totalBytes,
+          pages: j.progress?.pages,
+          assets: j.progress?.assets,
         }),
       })
       if (alive) settle(id, job)

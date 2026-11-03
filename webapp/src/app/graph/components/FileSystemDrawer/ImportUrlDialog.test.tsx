@@ -166,7 +166,7 @@ describe('ImportUrlDialog: check and preview', () => {
     expect(importButton().disabled).toBe(true)
   })
 
-  test('websites and documentation sites preview but cannot be imported', async () => {
+  test('a preview the server marks unsupported cannot be imported', async () => {
     resolveAnswer = () => json({
       kind: 'docs-site', url: 'https://docs.example.test/', suggestedName: 'docs.example.test', host: 'docs.example.test',
       details: { contentType: 'text/html' }, warnings: [], supported: false,
@@ -174,7 +174,8 @@ describe('ImportUrlDialog: check and preview', () => {
     renderDialog()
     await checkUrl('https://docs.example.test/')
     expect(screen.getByText('Documentation site')).toBeInTheDocument()
-    expect(screen.getByText('Websites and documentation sites can be previewed but not imported yet.')).toBeInTheDocument()
+    expect(screen.getByText('This link can be previewed but not imported yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Mirror options' })).not.toBeInTheDocument()
     expect(importButton().disabled).toBe(true)
   })
 
@@ -423,5 +424,115 @@ describe('ImportUrlDialog: GitHub token help', () => {
     expect(importButton().disabled).toBe(false)
     fireEvent.click(importButton())
     await waitFor(() => expect(importCalls()).toHaveLength(1))
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+const WEBSITE = {
+  kind: 'website', url: 'https://www.example.test/', suggestedName: 'www.example.test', host: 'www.example.test',
+  details: {
+    scopeHost: 'www.example.test', scopePath: '/',
+    defaults: { outputMode: 'raw', maxPages: 300, maxDepth: 3, respectRobots: false, englishOnly: false, externalAssets: false },
+  },
+  warnings: [], supported: true,
+}
+
+const DOCS_SITE = {
+  kind: 'docs-site', url: 'https://docs.example.test/guide/', suggestedName: 'docs.example.test-guide',
+  host: 'docs.example.test',
+  details: {
+    scopeHost: 'docs.example.test', scopePath: '/guide/',
+    defaults: { outputMode: 'readable', maxPages: 1000, maxDepth: 6, respectRobots: false, englishOnly: true, externalAssets: false },
+  },
+  warnings: [], supported: true,
+}
+
+const mirrorGroup = () => screen.getByRole('group', { name: 'Mirror options' })
+
+describe('ImportUrlDialog: website and documentation-site options', () => {
+  test('website shows options with raw preselected', async () => {
+    resolveAnswer = () => json(WEBSITE)
+    renderDialog()
+    await checkUrl('https://www.example.test/')
+    const group = mirrorGroup()
+    expect(within(group).getByRole('radio', { name: 'Raw files' })).toBeChecked()
+    expect(within(group).getByRole('radio', { name: 'Readable copy' })).not.toBeChecked()
+    expect((within(group).getByLabelText('Max pages') as HTMLInputElement).value).toBe('300')
+    expect((within(group).getByLabelText('Max depth') as HTMLInputElement).value).toBe('3')
+    expect(within(group).getByText(/RedAmon identifies itself as RedAmon-WorkspaceImport\/1\.0/)).toBeInTheDocument()
+    expect(screen.getByText('www.example.test/')).toBeInTheDocument()
+    expect(importButton().disabled).toBe(false)
+  })
+
+  test('docs site preselects readable and English only', async () => {
+    resolveAnswer = () => json(DOCS_SITE)
+    renderDialog()
+    await checkUrl('https://docs.example.test/guide/')
+    const group = mirrorGroup()
+    expect(within(group).getByRole('radio', { name: 'Readable copy' })).toBeChecked()
+    expect(within(group).getByRole('checkbox', { name: /English only/ })).toBeChecked()
+    expect((within(group).getByLabelText('Max pages') as HTMLInputElement).value).toBe('1000')
+  })
+
+  test('robots unchecked by default', async () => {
+    for (const answer of [WEBSITE, DOCS_SITE]) {
+      resolveAnswer = () => json(answer)
+      renderDialog()
+      await checkUrl(answer.url)
+      expect(within(mirrorGroup()).getByRole('checkbox', { name: 'Respect robots.txt' })).not.toBeChecked()
+      cleanup()
+    }
+  })
+
+  test('external assets hidden in readable mode', async () => {
+    resolveAnswer = () => json(WEBSITE)
+    renderDialog()
+    await checkUrl('https://www.example.test/')
+    const group = mirrorGroup()
+    const external = within(group).getByRole('checkbox', { name: 'Also fetch assets from other hosts' })
+    expect(external).not.toBeChecked()
+    fireEvent.click(external)
+    fireEvent.click(within(group).getByRole('radio', { name: 'Readable copy' }))
+    expect(within(group).queryByRole('checkbox', { name: 'Also fetch assets from other hosts' })).not.toBeInTheDocument()
+    fireEvent.click(importButton())
+    await waitFor(() => expect(importCalls()).toHaveLength(1))
+    expect((importCalls()[0].body!.options as Record<string, unknown>).externalAssets).toBe(false)
+  })
+
+  test('numbers clamped to ceilings', async () => {
+    resolveAnswer = () => json(WEBSITE)
+    renderDialog()
+    await checkUrl('https://www.example.test/')
+    const pages = within(mirrorGroup()).getByLabelText('Max pages') as HTMLInputElement
+    const depth = within(mirrorGroup()).getByLabelText('Max depth') as HTMLInputElement
+    fireEvent.change(pages, { target: { value: '99999' } })
+    fireEvent.blur(pages)
+    expect(pages.value).toBe('2000')
+    fireEvent.change(depth, { target: { value: '-4' } })
+    fireEvent.blur(depth)
+    expect(depth.value).toBe('0')
+    // Not blurred: still clamped when sent.
+    fireEvent.change(depth, { target: { value: '50' } })
+    fireEvent.click(importButton())
+    await waitFor(() => expect(importCalls()).toHaveLength(1))
+    expect(importCalls()[0].body!.options).toMatchObject({ maxPages: 2000, maxDepth: 10 })
+  })
+
+  test('options sent in the import body', async () => {
+    resolveAnswer = () => json(WEBSITE)
+    importAnswer = (body) => json({ jobId: 'b'.repeat(32), kind: 'website', destDir: body.destDir, name: 'www.example.test' }, 202)
+    const { onImportJob } = renderDialog()
+    await checkUrl('https://www.example.test/')
+    const group = mirrorGroup()
+    fireEvent.click(within(group).getByRole('checkbox', { name: 'Respect robots.txt' }))
+    fireEvent.click(within(group).getByRole('checkbox', { name: 'Also fetch assets from other hosts' }))
+    fireEvent.change(within(group).getByLabelText('Max pages'), { target: { value: '50' } })
+    fireEvent.click(importButton())
+    await waitFor(() => expect(importCalls()).toHaveLength(1))
+    expect(importCalls()[0].body!.options).toEqual({
+      outputMode: 'raw', maxPages: 50, maxDepth: 3, respectRobots: true, englishOnly: false, externalAssets: true,
+    })
+    expect(onImportJob).toHaveBeenCalledWith(expect.objectContaining({ kind: 'website', host: 'www.example.test' }))
   })
 })

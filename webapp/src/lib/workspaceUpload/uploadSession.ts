@@ -24,6 +24,10 @@ export interface JobProgress {
   totalBytes?: number
   /** Set when the job is done: the final project-relative path (Keep both may have renamed it). */
   path?: string
+  /** A website mirror's counts, and at the end why it stopped. */
+  pages?: number
+  assets?: number
+  stoppedBecause?: string
 }
 
 export interface WorkspaceJob {

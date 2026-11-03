@@ -44,6 +44,13 @@ const JOB_FAILURES: Record<string, string> = {
   ref_not_found: 'The branch, tag or commit in the link does not exist',
   invalid_subpath: 'The folder in the link does not exist in that branch',
   git_failed: 'The git clone failed',
+  invalid_option: 'An import option has the wrong type or value',
+  hard_blocked: 'Government, military, education and intergovernmental sites are never fetched',
+  roe_excluded: "The project's Rules of Engagement exclude this host",
+  roe_outside_window: "The project's Rules of Engagement do not allow requests to this target now",
+  robots_disallowed: "The site's robots.txt disallows this page",
+  robots_unavailable: "The site's robots.txt could not be read, so nothing was fetched",
+  nothing_saved: 'The mirror saved nothing: every page was refused, skipped or failed',
 }
 
 const CODE = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/
@@ -57,6 +64,7 @@ const PHASES: Record<string, string> = {
   queued: 'Starting',
   resolving: 'Resolving',
   downloading: 'Downloading',
+  crawling: 'Crawling',
   extracting: 'Extracting',
   placing: 'Placing',
   done: 'Finishing',
@@ -64,6 +72,18 @@ const PHASES: Record<string, string> = {
 
 export function phaseLabel(phase: string | undefined): string {
   return (phase && PHASES[phase]) || 'Processing'
+}
+
+const STOP_REASONS: Record<string, string> = {
+  max_pages: 'Stopped at the page limit',
+  max_depth: 'Stopped at the depth limit',
+  max_bytes: 'Stopped at the size limit',
+  time_budget: 'Stopped at the 30-minute limit',
+}
+
+/** Why a website mirror ended before it ran out of pages, or '' when it did not. */
+export function stopReasonLabel(reason: string | undefined): string {
+  return (reason && STOP_REASONS[reason]) || ''
 }
 
 export function formatBytes(bytes: number): string {

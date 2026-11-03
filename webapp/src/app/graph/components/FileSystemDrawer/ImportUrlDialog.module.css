@@ -233,3 +233,37 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
+
+/* Website and documentation-site options. */
+.mirrorOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.numbers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.numbers input {
+  width: 100%;
+  min-width: 0;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  cursor: pointer;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.check input {
+  margin-top: 2px;
+  flex: none;
+}

@@ -11,7 +11,7 @@ import {
 import { SETTINGS_KEYS_HREF } from '@/lib/settingsLinks'
 import { isGithubFamilyHost } from '@/lib/workspaceImport/githubHosts'
 import { isActive, type Transfer, type TransferKind } from './useTransfers'
-import { formatBytes, phaseLabel } from './transferMessages'
+import { formatBytes, phaseLabel, stopReasonLabel } from './transferMessages'
 import styles from './FileSystemDrawer.module.css'
 
 export interface TransfersPanelProps {
@@ -51,6 +51,12 @@ function progressOf(t: Transfer): { fraction: number | null; detail: string } {
     return { fraction, detail: `${formatBytes(t.sentBytes)} / ${formatBytes(t.totalBytes)}` }
   }
   const parts: string[] = []
+  if (typeof t.pages === 'number') {
+    // A crawl has no known total: counts only.
+    parts.push(`${t.pages} page${t.pages === 1 ? '' : 's'}`, `${t.assets ?? 0} asset${t.assets === 1 ? '' : 's'}`)
+    if (typeof t.bytes === 'number') parts.push(formatBytes(t.bytes))
+    return { fraction: null, detail: parts.join(' · ') }
+  }
   if (typeof t.files === 'number') parts.push(`${t.files} file${t.files === 1 ? '' : 's'}`)
   if (typeof t.bytes === 'number') {
     parts.push(t.jobTotalBytes ? `${formatBytes(t.bytes)} / ${formatBytes(t.jobTotalBytes)}` : formatBytes(t.bytes))
@@ -114,6 +120,9 @@ function TransferRow({ t, onCancel, onDismiss, onOpen }: { t: Transfer } & Omit<
         <button className={styles.transferLink} onClick={() => onOpen(t)} title={t.savedPath}>
           Saved as <code>{t.savedPath}</code>
         </button>
+      )}
+      {t.status === 'done' && stopReasonLabel(t.stoppedBecause) && (
+        <div className={styles.transferNote}>{stopReasonLabel(t.stoppedBecause)}</div>
       )}
       {t.status === 'failed' && (
         <div className={styles.transferError} role="alert">

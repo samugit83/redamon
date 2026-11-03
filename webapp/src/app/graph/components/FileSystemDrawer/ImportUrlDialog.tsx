@@ -34,6 +34,7 @@ const KIND_LABELS: Record<string, string> = {
 
 const REPOSITORY_KINDS = new Set(['github-repo', 'gitlab-repo', 'bitbucket-repo', 'codeberg-repo', 'git'])
 const SINGLE_FILE_KINDS = new Set(['github-file', 'file'])
+const MIRROR_KINDS = new Set(['website', 'docs-site'])
 
 export function importKindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind
@@ -69,6 +70,10 @@ interface Preview {
     subpath?: string
     private?: boolean
     contentType?: string
+    /** Websites and documentation sites: where the crawl stays, and the kind's options. */
+    scopeHost?: string
+    scopePath?: string
+    defaults?: Partial<MirrorOptions>
   }
   warnings: string[]
   supported: boolean
@@ -107,6 +112,37 @@ type Check =
 
 type Conflict = 'keep_both' | 'replace'
 
+/** A website mirror's options, as the import route takes them. */
+interface MirrorOptions {
+  outputMode: 'raw' | 'readable'
+  maxPages: number
+  maxDepth: number
+  respectRobots: boolean
+  englishOnly: boolean
+  externalAssets: boolean
+}
+
+// The agent clamps to the same bounds whatever is sent (workspace_import/mirror.py).
+const PAGES_BOUNDS = { min: 1, max: 2000 }
+const DEPTH_BOUNDS = { min: 0, max: 10 }
+
+function clampInt(raw: string, { min, max }: { min: number; max: number }, fallback: number): number {
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback
+}
+
+function mirrorDefaults(kind: string, d: Partial<MirrorOptions> | undefined): MirrorOptions {
+  const docs = kind === 'docs-site'
+  return {
+    outputMode: d?.outputMode === 'raw' || d?.outputMode === 'readable' ? d.outputMode : docs ? 'readable' : 'raw',
+    maxPages: typeof d?.maxPages === 'number' ? d.maxPages : docs ? 1000 : 300,
+    maxDepth: typeof d?.maxDepth === 'number' ? d.maxDepth : docs ? 6 : 3,
+    respectRobots: d?.respectRobots === true,
+    englishOnly: typeof d?.englishOnly === 'boolean' ? d.englishOnly : docs,
+    externalAssets: d?.externalAssets === true,
+  }
+}
+
 const GITHUB_TOKEN_KEY = 'githubAccessToken'
 const CHECK_FAILED = 'Could not check the link'
 const IMPORT_FAILED = 'Could not start the import'
@@ -119,7 +155,10 @@ const WARNINGS: Record<string, string> = {
 }
 
 const DISABLED_TEXT = 'URL import is turned off on this server.'
-const NOT_SUPPORTED_TEXT = 'Websites and documentation sites can be previewed but not imported yet.'
+const NOT_SUPPORTED_TEXT = 'This link can be previewed but not imported yet.'
+const MIRROR_NOTE = 'RedAmon identifies itself as RedAmon-WorkspaceImport/1.0. Copy only sites you are allowed to copy. '
+  + 'Government, military, education and intergovernmental domains, and the hosts your Rules of Engagement '
+  + 'exclude, are never fetched.'
 const ACT_AS_TEXT = 'You are acting as another user, so GitHub imports run without a token: public repositories only.'
 const NO_TOKEN_TEXT = 'No GitHub token: public repositories only, and GitHub allows this server 60 requests an hour '
   + 'without one (an import uses several). Add a token to import private repositories and lift the limit.'
@@ -174,6 +213,7 @@ function PreviewFacts({ preview }: { preview: Preview }) {
     rows.push(['Size', formatBytes(d.bytes)])
   }
   if (d.contentType) rows.push(['Type', d.contentType])
+  if (d.scopeHost) rows.push(['Scope', <code>{`${d.scopeHost}${d.scopePath ?? '/'}`}</code>])
 
   return (
     <div className={styles.card} role="group" aria-label="Preview">
@@ -197,6 +237,93 @@ function PreviewFacts({ preview }: { preview: Preview }) {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+function MirrorOptionsFields({ kind, value, onChange, pagesText, depthText, onPagesText, onDepthText }: {
+  kind: string
+  value: MirrorOptions
+  onChange: (next: MirrorOptions) => void
+  pagesText: string
+  depthText: string
+  onPagesText: (s: string) => void
+  onDepthText: (s: string) => void
+}) {
+  const ids = { output: useId(), pages: useId(), depth: useId() }
+  const set = <K extends keyof MirrorOptions>(key: K, v: MirrorOptions[K]) => onChange({ ...value, [key]: v })
+  return (
+    <div className={styles.mirrorOptions} role="group" aria-label="Mirror options">
+      <fieldset className={styles.conflict}>
+        <legend>Output</legend>
+        <label>
+          <input type="radio" name={ids.output} checked={value.outputMode === 'raw'} onChange={() => set('outputMode', 'raw')} />
+          Raw files
+        </label>
+        <label>
+          <input
+            type="radio"
+            name={ids.output}
+            checked={value.outputMode === 'readable'}
+            onChange={() => set('outputMode', 'readable')}
+          />
+          Readable copy
+        </label>
+        <p className={styles.hint}>
+          {value.outputMode === 'raw'
+            ? 'The exact pages, stylesheets, scripts and images.'
+            : 'Pages as Markdown and PDFs as text, nothing else: the lightest copy for the agent to read.'}
+        </p>
+      </fieldset>
+      <div className={styles.numbers}>
+        <div className={styles.field}>
+          <label htmlFor={ids.pages}>Max pages</label>
+          <input
+            id={ids.pages}
+            className="textInput"
+            type="number"
+            inputMode="numeric"
+            min={PAGES_BOUNDS.min}
+            max={PAGES_BOUNDS.max}
+            value={pagesText}
+            onChange={(e) => onPagesText(e.target.value)}
+            onBlur={() => onPagesText(String(clampInt(pagesText, PAGES_BOUNDS, value.maxPages)))}
+          />
+        </div>
+        <div className={styles.field}>
+          <label htmlFor={ids.depth}>Max depth</label>
+          <input
+            id={ids.depth}
+            className="textInput"
+            type="number"
+            inputMode="numeric"
+            min={DEPTH_BOUNDS.min}
+            max={DEPTH_BOUNDS.max}
+            value={depthText}
+            onChange={(e) => onDepthText(e.target.value)}
+            onBlur={() => onDepthText(String(clampInt(depthText, DEPTH_BOUNDS, value.maxDepth)))}
+          />
+        </div>
+      </div>
+      <label className={styles.check}>
+        <input type="checkbox" checked={value.respectRobots} onChange={(e) => set('respectRobots', e.target.checked)} />
+        Respect robots.txt
+      </label>
+      <label className={styles.check}>
+        <input type="checkbox" checked={value.englishOnly} onChange={(e) => set('englishOnly', e.target.checked)} />
+        {kind === 'docs-site' ? 'English only (skip translated copies)' : 'English only'}
+      </label>
+      {value.outputMode === 'raw' && (
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={value.externalAssets}
+            onChange={(e) => set('externalAssets', e.target.checked)}
+          />
+          Also fetch assets from other hosts
+        </label>
+      )}
+      <p className={styles.note}><Info size={12} /> <span>{MIRROR_NOTE}</span></p>
     </div>
   )
 }
@@ -237,6 +364,9 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
   const [importError, setImportError] = useState<ApiError | null>(null)
   const [runningJobId, setRunningJobId] = useState<string | null>(null)
   const [tokenSaved, setTokenSaved] = useState(false)
+  const [mirrorOpts, setMirrorOpts] = useState<MirrorOptions>(() => mirrorDefaults('website', undefined))
+  const [pagesText, setPagesText] = useState('')
+  const [depthText, setDepthText] = useState('')
 
   const seq = useRef(0)
   const inflight = useRef<AbortController | null>(null)
@@ -287,6 +417,12 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
       setCheck({ phase: 'preview', url: link, preview })
       if (!nameEdited.current) setName(preview.suggestedName)
       setSubpath(preview.details?.subpath ?? '')
+      if (MIRROR_KINDS.has(preview.kind)) {
+        const opts = mirrorDefaults(preview.kind, preview.details?.defaults)
+        setMirrorOpts(opts)
+        setPagesText(String(opts.maxPages))
+        setDepthText(String(opts.maxDepth))
+      }
     } catch (e) {
       if (mine !== seq.current) return
       setCheck({ phase: 'error', url: link, error: toApiError(e, CHECK_FAILED) })
@@ -332,6 +468,18 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
     || importError?.code === 'import_disabled'
   const canImport = check.phase === 'preview' && check.preview.supported && !subpathStale && !importing && !disabled
 
+  const optionsFor = (shown: Preview): Record<string, unknown> => {
+    // What the preview showed, not the field: Import is off while they differ.
+    if (shown.kind === 'github-repo') return { subpath: previewSubpath }
+    if (!MIRROR_KINDS.has(shown.kind)) return {}
+    return {
+      ...mirrorOpts,
+      maxPages: clampInt(pagesText, PAGES_BOUNDS, mirrorOpts.maxPages),
+      maxDepth: clampInt(depthText, DEPTH_BOUNDS, mirrorOpts.maxDepth),
+      externalAssets: mirrorOpts.outputMode === 'raw' && mirrorOpts.externalAssets,
+    }
+  }
+
   const startImport = async () => {
     if (check.phase !== 'preview' || !canImport) return
     const shown = check.preview
@@ -350,8 +498,7 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
           destDir: dest,
           ...(finalName ? { name: finalName } : {}),
           onConflict,
-          // What the preview showed, not the field: Import is off while they differ.
-          options: shown.kind === 'github-repo' ? { subpath: previewSubpath } : {},
+          options: optionsFor(shown),
         }),
       }, IMPORT_FAILED)
       onImportJob({ ...started, host: shown.host })
@@ -463,7 +610,7 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
           </div>
           <p className={styles.hint}>
             A repository, a folder or a file on GitHub, a gist, a GitLab, Bitbucket or Codeberg repository, a git
-            link, an archive or a file.
+            link, an archive, a file, a website or a documentation site.
           </p>
         </div>
 
@@ -508,6 +655,18 @@ export function ImportUrlDialog({ onClose, projectId, defaultDestDir, onImportJo
                         }}
                       />
                     </div>
+
+                    {MIRROR_KINDS.has(preview.kind) && (
+                      <MirrorOptionsFields
+                        kind={preview.kind}
+                        value={mirrorOpts}
+                        onChange={setMirrorOpts}
+                        pagesText={pagesText}
+                        depthText={depthText}
+                        onPagesText={setPagesText}
+                        onDepthText={setDepthText}
+                      />
+                    )}
 
                     {preview.kind === 'github-repo' && (
                       <div className={styles.field}>
