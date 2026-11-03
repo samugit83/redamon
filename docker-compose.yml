@@ -890,6 +890,19 @@ services:
       WORKSPACE_URL_IMPORT_ENABLED: ${WORKSPACE_URL_IMPORT_ENABLED:-true}
       # The scan dispatcher's disk floor: imports never take the disk below it.
       JOB_QUEUE_MIN_FREE_DISK: ${JOB_QUEUE_MIN_FREE_DISK:-10737418240}
+      # Agent in the Loop: an external MCP client answers the model calls of a
+      # chat run (agentic/agent_in_the_loop). Off by default; the webapp reads
+      # the same switch. The tunables are bounded in code (a bad value warns).
+      AGENT_IN_THE_LOOP_ENABLED: ${AGENT_IN_THE_LOOP_ENABLED:-false}
+      LOOP_STEP_DEADLINE_S: ${LOOP_STEP_DEADLINE_S:-900}
+      LOOP_LEASE_S: ${LOOP_LEASE_S:-90}
+      LOOP_WAIT_MAX_S: ${LOOP_WAIT_MAX_S:-55}
+      LOOP_PAGE_CHARS: ${LOOP_PAGE_CHARS:-40000}
+      LOOP_ANSWER_MAX_CHARS: ${LOOP_ANSWER_MAX_CHARS:-262144}
+      LOOP_MAX_OPEN_STEPS_PER_USER: ${LOOP_MAX_OPEN_STEPS_PER_USER:-16}
+      LOOP_NO_DRIVER_GRACE_S: ${LOOP_NO_DRIVER_GRACE_S:-300}
+      LOOP_DRIVER_SEEN_S: ${LOOP_DRIVER_SEEN_S:-60}
+      LOOP_STATE_TTL_S: ${LOOP_STATE_TTL_S:-3600}
       # MCP tool servers (internal docker network)
       MCP_NETWORK_RECON_URL: http://kali-sandbox:8000/sse
       MCP_NUCLEI_URL: http://kali-sandbox:8002/sse
@@ -1145,6 +1158,10 @@ services:
       # the sandbox from every token on this deployment.
       MCP_KALI_EXEC_ENABLED: ${MCP_KALI_EXEC_ENABLED:-true}
       MCP_RATE_EXEC_PER_MIN: ${MCP_RATE_EXEC_PER_MIN:-}
+      # Agent in the Loop (loop_* tools). OFF by default, and inert unless
+      # MCP_SERVER_ENABLED is on too. Must match the agent's value.
+      AGENT_IN_THE_LOOP_ENABLED: ${AGENT_IN_THE_LOOP_ENABLED:-false}
+      MCP_RATE_LOOP_PER_MIN: ${MCP_RATE_LOOP_PER_MIN:-120}
       # The deployment's own public origin, WITH the port when non-default.
       # Empty locally: the route then falls back to deriving it from the request,
       # which is correct when nothing sits in front of the app.

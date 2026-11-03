@@ -70,9 +70,12 @@ D="$(mktemp -d)"
 ' >/dev/null 2>&1 )
 hasF "$D/.env" "MCP_SERVER_ENABLED=false" "the switch is written, and written OFF"
 eq "written exactly once" "$(grep -c '^MCP_SERVER_ENABLED=' "$D/.env")" "1"
+hasF "$D/.env" "AGENT_IN_THE_LOOP_ENABLED=false" "the Agent in the Loop switch is written OFF"
+eq "loop switch written exactly once" "$(grep -c '^AGENT_IN_THE_LOOP_ENABLED=' "$D/.env")" "1"
 
 # A second run must not duplicate it, nor re-disable an operator's opt-in.
 sed -i 's/^MCP_SERVER_ENABLED=false/MCP_SERVER_ENABLED=true/' "$D/.env"
+sed -i 's/^AGENT_IN_THE_LOOP_ENABLED=false/AGENT_IN_THE_LOOP_ENABLED=true/' "$D/.env"
 ( cd "$REPO_ROOT" && ENVDIR="$D" bash -c '
     set -uo pipefail
     source ./redamon.sh
@@ -83,7 +86,23 @@ sed -i 's/^MCP_SERVER_ENABLED=false/MCP_SERVER_ENABLED=true/' "$D/.env"
 ' >/dev/null 2>&1 )
 eq "still exactly one entry" "$(grep -c '^MCP_SERVER_ENABLED=' "$D/.env")" "1"
 hasF "$D/.env" "MCP_SERVER_ENABLED=true" "an operator's opt-in is not reverted"
+eq "still exactly one loop switch" "$(grep -c '^AGENT_IN_THE_LOOP_ENABLED=' "$D/.env")" "1"
+hasF "$D/.env" "AGENT_IN_THE_LOOP_ENABLED=true" "an operator's loop opt-in is not reverted"
 rm -rf "$D"
+
+echo
+echo "== the Agent in the Loop switch reaches both services, default OFF =="
+AGENT_BLOCK="$(awk '/^  agent:/{f=1} f&&/^  [a-z_-]+:$/&&!/^  agent:/{f=0} f' "$COMPOSE")"
+for blk in AGENT_BLOCK WEBAPP_BLOCK; do
+    if grep -qE '^[[:space:]]+AGENT_IN_THE_LOOP_ENABLED: \$\{AGENT_IN_THE_LOOP_ENABLED:-false\}' <<<"${!blk}"; then
+        ok "${blk%_BLOCK} gets AGENT_IN_THE_LOOP_ENABLED, default false"
+    else
+        bad "${blk%_BLOCK} gets AGENT_IN_THE_LOOP_ENABLED" "absent or not :-false" ':${AGENT_IN_THE_LOOP_ENABLED:-false}'
+    fi
+done
+grep -qE '^[[:space:]]+MCP_RATE_LOOP_PER_MIN: ' <<<"$WEBAPP_BLOCK" \
+    && ok "MCP_RATE_LOOP_PER_MIN reaches the webapp" \
+    || bad "MCP_RATE_LOOP_PER_MIN reaches the webapp" "absent" "present"
 
 echo
 echo "== the preflight refuses to enable MCP on a fail-open agent =="

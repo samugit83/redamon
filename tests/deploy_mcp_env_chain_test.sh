@@ -60,6 +60,7 @@ MCP_SERVER_ENABLED=true
 MCP_EDGE_ALLOW_BEARER=true
 MCP_CLIENT_CIDRS=198.51.100.0/24
 MCP_LLM_DAILY_BUDGET=50
+AGENT_IN_THE_LOOP_ENABLED=true
 FIX
   ( cd "$DSH_DIR" && bash -c '
       set -uo pipefail
@@ -74,13 +75,13 @@ STAGED="$(_probe https-domain redamon.example)"
 if [[ -z "$STAGED" ]]; then
   echo "  SKIP  deploy.sh could not be sourced headlessly (its main() ran or died)"
   echo "        falling back to a static check of the key list"
-  for k in MCP_SERVER_ENABLED MCP_EDGE_ALLOW_BEARER MCP_CLIENT_CIDRS MCP_PUBLIC_ORIGIN; do
+  for k in MCP_SERVER_ENABLED MCP_EDGE_ALLOW_BEARER MCP_CLIENT_CIDRS MCP_PUBLIC_ORIGIN AGENT_IN_THE_LOOP_ENABLED; do
     awk -v k="$k" '/^build_deploy_env\(\)/,/^}/ { if ($0 ~ k) f=1 } END { exit !f }' "$DEPLOY" \
       && ok "$k is in build_deploy_env's key list" \
       || bad "$k is in build_deploy_env's key list" "absent" "present"
   done
 else
-  for kv in "MCP_SERVER_ENABLED=true" "MCP_EDGE_ALLOW_BEARER=true"; do
+  for kv in "MCP_SERVER_ENABLED=true" "MCP_EDGE_ALLOW_BEARER=true" "AGENT_IN_THE_LOOP_ENABLED=true"; do
     k="${kv%%=*}"
     got="$(grep -E "^${k}=" <<<"$STAGED" | head -1 | cut -d= -f2- | tr -d "'\"")"
     eq "$k crosses the SSH boundary with the operator's value" "$got" "${kv#*=}"
@@ -130,6 +131,11 @@ eq "re-seeding false overwrites a previous true" \
    "$(grep '^MCP_SERVER_ENABLED=' "$T/.env" | cut -d= -f2)" "false"
 eq "still exactly one entry" "$(grep -c '^MCP_SERVER_ENABLED=' "$T/.env")" "1"
 
+AGENT_IN_THE_LOOP_ENABLED=true; seed AGENT_IN_THE_LOOP_ENABLED "$AGENT_IN_THE_LOOP_ENABLED"
+grep -q '^AGENT_IN_THE_LOOP_ENABLED=' "$T/.env" || echo "AGENT_IN_THE_LOOP_ENABLED=false" >> "$T/.env"
+eq "redamon.sh does NOT clobber a seeded loop switch" \
+   "$(grep '^AGENT_IN_THE_LOOP_ENABLED=' "$T/.env" | cut -d= -f2)" "true"
+
 # A blank knob must not write an empty line that shadows the compose default.
 seed MCP_RATE_QUERY_PER_MIN ""
 grep -q '^MCP_RATE_QUERY_PER_MIN=' "$T/.env" \
@@ -146,6 +152,42 @@ for k in MCP_SERVER_ENABLED MCP_TOKEN_RETENTION_DAYS MCP_LLM_DAILY_BUDGET \
   grep -qE "^ +${k}: \\\$\{${k}" "$COMPOSE" && ok "$k reaches the webapp" \
     || bad "$k reaches the webapp" "absent from the environment block" "present"
 done
+
+echo
+echo "== hop 4: the Agent in the Loop switch reaches BOTH the agent and the webapp =="
+LOOP_SVCS="$(python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+for svc in ("agent", "webapp"):
+    env = d["services"].get(svc, {}).get("environment") or {}
+    print(svc, env.get("AGENT_IN_THE_LOOP_ENABLED", "<absent>"))
+' "$COMPOSE" 2>/dev/null)"
+if [[ -z "$LOOP_SVCS" ]]; then
+  echo "  skip  compose not parseable here (no python3 / pyyaml)"
+else
+  for svc in agent webapp; do
+    eq "$svc gets AGENT_IN_THE_LOOP_ENABLED" \
+       "$(awk -v s="$svc" '$1==s{print $2}' <<<"$LOOP_SVCS")" '${AGENT_IN_THE_LOOP_ENABLED:-false}'
+  done
+fi
+for site in cmd_init cmd_update; do
+  _end=$([[ $site == cmd_init ]] && echo cmd_update || echo cmd_status)
+  awk "/^${site}\\(\\)/,/^${_end}\\(\\)/" "$DEPLOY" | grep -q '^seed AGENT_IN_THE_LOOP_ENABLED ' \
+    && ok "$site seeds AGENT_IN_THE_LOOP_ENABLED" \
+    || bad "$site seeds AGENT_IN_THE_LOOP_ENABLED" "absent" "a seed line"
+done
+grep -qE ': "\$\{AGENT_IN_THE_LOOP_ENABLED:=false\}"' "$DEPLOY" \
+  && ok "deploy.sh defaults the loop switch to false" \
+  || bad "deploy.sh defaults the loop switch" "no default" ': "${AGENT_IN_THE_LOOP_ENABLED:=false}"'
+grep -q 'AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off' "$DEPLOY" \
+  && ok "deploy.sh warns when the loop is on without the MCP server" \
+  || bad "deploy.sh warns when the loop is on without the MCP server" "no warning" "a warn"
+awk '/AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off/{print}' "$DEPLOY" | grep -q 'warn ' \
+  && ok "that is a warn(), not a die()" \
+  || bad "that is a warn()" "die or absent" "warn"
+grep -q 'the flag did not reach the \\$svc container' "$DEPLOY" \
+  && ok "verify checks both containers received the loop switch" \
+  || bad "verify checks the loop switch" "absent" "a printenv check"
 
 # ------------------------------------------------------------ the overlay ----
 echo

@@ -1983,6 +1983,12 @@ ensure_auth_secrets() {
         echo "MCP_SERVER_ENABLED=false" >> "$env_file"
         info "Initialized MCP_SERVER_ENABLED=false (inbound MCP server off by default)"
     fi
+    # Agent in the Loop: written explicitly as false for the same reason. The agent
+    # and the webapp both read it, so it is in both compose environment blocks.
+    if ! grep -q '^AGENT_IN_THE_LOOP_ENABLED=' "$env_file" 2>/dev/null; then
+        echo "AGENT_IN_THE_LOOP_ENABLED=false" >> "$env_file"
+        info "Initialized AGENT_IN_THE_LOOP_ENABLED=false (Agent in the Loop off by default)"
+    fi
     # The plugin platform always runs, so a PLUGINS_ENABLED line left by an older
     # release only misleads whoever reads .env. Nothing reads it.
     if grep -qE '^[[:space:]]*(export[[:space:]]+)?PLUGINS_ENABLED=' "$env_file" 2>/dev/null; then

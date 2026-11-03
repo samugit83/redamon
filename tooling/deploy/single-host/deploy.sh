@@ -138,6 +138,8 @@ CERT_BASE="${LEGACY_CERT_DIR:-$SCRIPT_DIR}"
 : "${MCP_RATE_START_PER_WINDOW:=}"; : "${MCP_RATE_START_WINDOW_MS:=}"
 : "${MCP_RATE_COMPARE_PER_WINDOW:=}"; : "${MCP_RATE_COMPARE_WINDOW_MS:=}"
 : "${MCP_KALI_EXEC_ENABLED:=true}"; : "${MCP_RATE_EXEC_PER_MIN:=}"
+# Agent in the Loop rides on the MCP server: inert unless MCP_SERVER_ENABLED is on too.
+: "${AGENT_IN_THE_LOOP_ENABLED:=false}"; : "${MCP_RATE_LOOP_PER_MIN:=}"
 : "${MCP_DISABLED_TOOLS:=}"
 : "${MCP_TOKEN_PRUNE_INTERVAL:=}"
 : "${ADMIN_NAME:=}"; : "${ADMIN_EMAIL:=}"; : "${ADMIN_PASSWORD:=}"
@@ -233,6 +235,10 @@ preflight_validate() {
     if [[ "${ACCESS_MODE}" == "https-ip" && "${TLS_MODE}" != "provided" ]]; then
       warn "MCP over https-ip with a self-signed cert: most MCP clients reject the certificate. Use a real cert (TLS_MODE=provided) or a domain."
     fi
+  fi
+  # A warning, not a refusal: the switch is harmless while the server is off.
+  if is_true "${AGENT_IN_THE_LOOP_ENABLED}" && ! is_true "${MCP_SERVER_ENABLED}"; then
+    warn "AGENT_IN_THE_LOOP_ENABLED=true but MCP_SERVER_ENABLED is off: an external agent reaches its steps over the MCP server, so Agent in the Loop stays inert."
   fi
   [[ -z "${OPERATOR_ALLOW_CIDRS}" && "${GATE_MODE}" == "ip_allowlist" ]] && warn "GATE_MODE=ip_allowlist but OPERATOR_ALLOW_CIDRS is empty -> the nginx gate will allow all"
 
@@ -373,6 +379,7 @@ build_deploy_env() {
              MCP_RATE_START_PER_WINDOW MCP_RATE_START_WINDOW_MS MCP_TOKEN_PRUNE_INTERVAL \
              MCP_RATE_COMPARE_PER_WINDOW MCP_RATE_COMPARE_WINDOW_MS \
              MCP_KALI_EXEC_ENABLED MCP_RATE_EXEC_PER_MIN \
+             AGENT_IN_THE_LOOP_ENABLED MCP_RATE_LOOP_PER_MIN \
              MCP_DISABLED_TOOLS \
              MCP_PUBLIC_ORIGIN \
              ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD \
@@ -535,6 +542,8 @@ seed MCP_RATE_COMPARE_PER_WINDOW "\${MCP_RATE_COMPARE_PER_WINDOW}"
 seed MCP_RATE_COMPARE_WINDOW_MS "\${MCP_RATE_COMPARE_WINDOW_MS}"
 seed MCP_KALI_EXEC_ENABLED "\${MCP_KALI_EXEC_ENABLED}"
 seed MCP_RATE_EXEC_PER_MIN "\${MCP_RATE_EXEC_PER_MIN}"
+seed AGENT_IN_THE_LOOP_ENABLED "\${AGENT_IN_THE_LOOP_ENABLED}"
+seed MCP_RATE_LOOP_PER_MIN "\${MCP_RATE_LOOP_PER_MIN}"
 seed MCP_DISABLED_TOOLS "\${MCP_DISABLED_TOOLS}"
 seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
 # The webapp validates the request Origin against its own URL, which nginx
@@ -800,6 +809,17 @@ elif [ "\$(run_sudo ls -1 "\$osv_mp" 2>/dev/null | grep -c '^\.redamon_synced_')
 else
   success "OSV database synced: \$(run_sudo ls -1 "\$osv_mp" 2>/dev/null | sed -n 's/^\.redamon_synced_//p' | tr '\n' ' ')"
 fi
+step "Agent in the Loop switch"
+# Both services read it: the agent opens steps, the webapp serves the loop_* tools.
+if is_true "\${AGENT_IN_THE_LOOP_ENABLED:-false}"; then
+  for svc in agent webapp; do
+    v=\$(sg docker -c "docker compose exec -T \$svc printenv AGENT_IN_THE_LOOP_ENABLED" 2>/dev/null | tr -d '[:space:]')
+    if is_true "\$v"; then success "\$svc has AGENT_IN_THE_LOOP_ENABLED=true"
+    else err "AGENT_IN_THE_LOOP_ENABLED=true but the flag did not reach the \$svc container (seed/plumbing)"; rc=1; fi
+  done
+else
+  info "Agent in the Loop off (as configured)"
+fi
 step "Admin present"
 cnt=\$(sg docker -c "docker compose exec -T webapp node scripts/check-admin.mjs" 2>/dev/null | tr -d '[:space:]')
 [ "\${cnt:-0}" -ge 1 ] 2>/dev/null && success "admin count = \${cnt}" || { err "no admin user found"; rc=1; }
@@ -911,6 +931,8 @@ seed MCP_RATE_COMPARE_PER_WINDOW "\${MCP_RATE_COMPARE_PER_WINDOW}"
 seed MCP_RATE_COMPARE_WINDOW_MS "\${MCP_RATE_COMPARE_WINDOW_MS}"
 seed MCP_KALI_EXEC_ENABLED "\${MCP_KALI_EXEC_ENABLED}"
 seed MCP_RATE_EXEC_PER_MIN "\${MCP_RATE_EXEC_PER_MIN}"
+seed AGENT_IN_THE_LOOP_ENABLED "\${AGENT_IN_THE_LOOP_ENABLED}"
+seed MCP_RATE_LOOP_PER_MIN "\${MCP_RATE_LOOP_PER_MIN}"
 seed MCP_DISABLED_TOOLS "\${MCP_DISABLED_TOOLS}"
 seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
 # The webapp validates the request Origin against its own URL, which nginx
