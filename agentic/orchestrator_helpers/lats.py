@@ -26,7 +26,7 @@ import math
 import re
 from typing import Any, List, Optional
 
-from project_settings import get_setting, TOOL_MUTEX_GROUPS, DANGEROUS_TOOLS
+from project_settings import get_setting, TOOL_MUTEX_GROUPS, is_dangerous_call
 from orchestrator_helpers.error_class import is_diagnostic_failure
 from state import ExploitTree, ExploitTreeNode
 
@@ -576,7 +576,7 @@ def _wave(wave: List[ExploitTreeNode]) -> dict:
 
 
 def _is_dangerous(node: ExploitTreeNode) -> bool:
-    return node.tool_name in DANGEROUS_TOOLS
+    return is_dangerous_call(node.tool_name, node.tool_args)
 
 
 # =============================================================================

@@ -931,9 +931,10 @@ class ExploitTree(BaseModel):
         model (search_id, phase, shadow_mode, budgets, trajectory) is passed in.
         """
         try:
-            from project_settings import DANGEROUS_TOOLS
+            from project_settings import is_dangerous_call
         except Exception:
-            DANGEROUS_TOOLS = frozenset()
+            def is_dangerous_call(tool_name, tool_args=None):
+                return False
 
         def _node_view(n: "ExploitTreeNode") -> dict:
             return {
@@ -958,7 +959,7 @@ class ExploitTree(BaseModel):
                 "duration_ms": n.duration_ms,
                 "observation": n.observation_summary,
                 "reflection": n.reflection,
-                "is_dangerous": n.tool_name in DANGEROUS_TOOLS if n.tool_name else False,
+                "is_dangerous": is_dangerous_call(n.tool_name, n.tool_args) if n.tool_name else False,
                 "step_id": n.step_id,
             }
 

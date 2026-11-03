@@ -54,6 +54,18 @@ DANGEROUS_TOOLS = frozenset({
     'execute_guarddog',
 })
 
+
+def is_dangerous_call(tool_name: str | None, tool_args: Any = None) -> bool:
+    """Whether a call needs the person's confirmation: a dangerous tool, or a
+    `job_spawn` that would start one. The phase check and the RoE gate already
+    look through `job_spawn` (roe_gate._dispatched_tools); without this, any
+    dangerous tool ran unconfirmed as a background job."""
+    if tool_name in DANGEROUS_TOOLS:
+        return True
+    if tool_name == 'job_spawn' and isinstance(tool_args, dict):
+        return tool_args.get('tool_name') in DANGEROUS_TOOLS
+    return False
+
 # =============================================================================
 # FIRETEAM MUTEX GROUPS — tools with singleton state inside Kali sandbox
 # Two fireteam members cannot concurrently claim the same group.

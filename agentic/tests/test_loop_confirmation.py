@@ -1,5 +1,6 @@
 """Hardening an outside brain needs: dangerous tools always ask a person in an
-Agent in the Loop run, and the agent's own graph reads run read-only."""
+Agent in the Loop run (also when started through job_spawn), and the agent's own
+graph reads run read-only."""
 from __future__ import annotations
 
 import inspect
@@ -54,6 +55,41 @@ class ForcedConfirmation(unittest.IsolatedAsyncioTestCase):
         member_src = inspect.getsource(member_mod)
         self.assertIn('confirmation_required(get_setting("REQUIRE_TOOL_CONFIRMATION", True))', member_src)
 
+
+
+class JobSpawnNeedsConfirmation(unittest.TestCase):
+    """A dangerous tool started as a background job asks the person like a direct
+    call: the phase check and the RoE gate already look through job_spawn."""
+
+    def test_the_helper_looks_through_job_spawn(self):
+        from project_settings import is_dangerous_call
+        self.assertTrue(is_dangerous_call("execute_naabu", {"args": "-host 10.0.0.1"}))
+        self.assertTrue(is_dangerous_call("job_spawn", {"tool_name": "execute_ffuf", "args": {}}))
+        self.assertFalse(is_dangerous_call("job_spawn", {"tool_name": "query_graph", "args": {}}))
+        self.assertFalse(is_dangerous_call("job_spawn", "execute_ffuf"))
+        self.assertFalse(is_dangerous_call("job_status", {"job_id": "x"}))
+        self.assertFalse(is_dangerous_call(None))
+
+    def test_a_member_plan_with_a_spawned_scan_escalates(self):
+        from state import LLMDecision, ToolPlan, ToolPlanStep
+        decision = LLMDecision(thought="t", reasoning="r", action="plan_tools", tool_plan=ToolPlan(steps=[
+            ToolPlanStep(tool_name="job_spawn", tool_args={"tool_name": "execute_naabu", "args": {"args": "-p -"}}),
+            ToolPlanStep(tool_name="query_graph", tool_args={"question": "q"}),
+        ]))
+        self.assertTrue(member_mod._plan_has_dangerous_tool(decision))
+
+    def test_a_lats_probe_spawning_a_dangerous_tool_is_dangerous(self):
+        from orchestrator_helpers import lats
+        from state import ExploitTreeNode
+        node = ExploitTreeNode(tool_name="job_spawn", tool_args={"tool_name": "execute_curl", "args": {}})
+        self.assertTrue(lats._is_dangerous(node))
+        self.assertFalse(lats._is_dangerous(ExploitTreeNode(tool_name="job_spawn", tool_args={"tool_name": "fs_read"})))
+
+    def test_the_root_gate_uses_it_for_single_calls_and_plans(self):
+        src = inspect.getsource(think_mod.think_node)
+        self.assertIn("is_dangerous_call(decision.tool_name, decision.tool_args)", src)
+        self.assertIn("if is_dangerous_call(s.tool_name, s.tool_args)", src)
+        self.assertNotIn("in DANGEROUS_TOOLS", src)
 
 class ReadOnlyGraphQuery(unittest.IsolatedAsyncioTestCase):
     async def run_query_graph(self, generate):

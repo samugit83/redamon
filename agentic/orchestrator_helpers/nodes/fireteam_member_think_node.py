@@ -33,7 +33,7 @@ from orchestrator_helpers.productivity import (
     build_productivity_audit_section,
     downgrade_verdict_to_no_progress,
 )
-from project_settings import get_setting, get_allowed_tools_for_phase, DANGEROUS_TOOLS
+from project_settings import get_setting, get_allowed_tools_for_phase, is_dangerous_call
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 
 logger = logging.getLogger(__name__)
@@ -277,7 +277,7 @@ def _plan_has_dangerous_tool(decision: LLMDecision) -> bool:
     plan = decision.tool_plan
     if not plan or not plan.steps:
         return False
-    return any((s.tool_name or "") in DANGEROUS_TOOLS for s in plan.steps)
+    return any(is_dangerous_call(s.tool_name, s.tool_args) for s in plan.steps)
 
 
 def _build_pending_confirmation(decision: LLMDecision, state: FireteamMemberState) -> dict:
@@ -1095,7 +1095,7 @@ async def fireteam_member_think_node(
     tool_confirmation_enabled = confirmation_required(get_setting("REQUIRE_TOOL_CONFIRMATION", True))
     is_dangerous = False
     if tool_confirmation_enabled:
-        if decision.action == "use_tool" and (decision.tool_name or "") in DANGEROUS_TOOLS:
+        if decision.action == "use_tool" and is_dangerous_call(decision.tool_name, decision.tool_args):
             is_dangerous = True
         elif decision.action == "plan_tools" and _plan_has_dangerous_tool(decision):
             is_dangerous = True

@@ -54,7 +54,7 @@ from orchestrator_helpers.productivity import (
     downgrade_verdict_to_no_progress,
     is_unproductive,
 )
-from project_settings import get_setting, get_allowed_tools_for_phase, DANGEROUS_TOOLS, get_enabled_builtin_skills, get_enabled_user_skills
+from project_settings import get_setting, get_allowed_tools_for_phase, get_enabled_builtin_skills, get_enabled_user_skills, is_dangerous_call
 
 from prompts import (
     REACT_SYSTEM_PROMPT,
@@ -2212,7 +2212,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             and not updates.get("awaiting_user_question")):
 
         action = decision.action
-        if action == "use_tool" and decision.tool_name in DANGEROUS_TOOLS:
+        if action == "use_tool" and is_dangerous_call(decision.tool_name, decision.tool_args):
             updates["awaiting_tool_confirmation"] = True
             updates["tool_confirmation_pending"] = ToolConfirmationRequest(
                 mode="single",
@@ -2234,7 +2234,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     "rationale": s.rationale,
                 }
                 for s in decision.tool_plan.steps
-                if s.tool_name in DANGEROUS_TOOLS
+                if is_dangerous_call(s.tool_name, s.tool_args)
             ]
             if dangerous:
                 updates["awaiting_tool_confirmation"] = True
