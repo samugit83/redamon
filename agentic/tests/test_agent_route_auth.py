@@ -45,6 +45,7 @@ LOCKED_ROUTES = {
     ("POST", "/workspace/upload-sessions/{upload_id}/commit"),
     ("DELETE", "/workspace/upload-sessions/{upload_id}"),
     ("POST", "/workspace/project-purge"),
+    ("POST", "/workspace/import-url/resolve"),
     ("POST", "/workspace/upload"),
     ("POST", "/workspace/mkdir"),
     ("POST", "/workspace/bulk-archive"),

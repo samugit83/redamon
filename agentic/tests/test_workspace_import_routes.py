@@ -175,5 +175,119 @@ class UploadSessionRoutes(RoutesBase):
         self.assertNotIn(sentinel, r.text)
 
 
+class ResolveRoute(RoutesBase):
+    TOKEN = "TEST-SENTINEL-TOKEN-0000"
+
+    def setUp(self):
+        super().setUp()
+        import httpx
+        from workspace_import.fetch import GuardedFetcher
+        self.handler = lambda request: httpx.Response(404)
+        self.seen_tokens = []
+
+        def factory(github_token=""):
+            self.seen_tokens.append(github_token)
+
+            def handle(request):
+                return self.handler(request)
+            return GuardedFetcher(github_token=github_token, transport=httpx.MockTransport(handle),
+                                  assert_safe=lambda _u: None)
+
+        self._factory = mock.patch.object(http_routes, "fetcher_factory", factory)
+        self._factory.start()
+
+    def tearDown(self):
+        self._factory.stop()
+        super().tearDown()
+
+    def resolve(self, url, **extra):
+        return self.client.post("/workspace/import-url/resolve", json={"projectId": "p1", "url": url, **extra})
+
+    def test_resolve_answers_kind_details_and_name(self):
+        import httpx
+        self.handler = lambda r: httpx.Response(200, content=b"PK\x03\x04data",
+                                                 headers={"content-type": "application/octet-stream",
+                                                          "content-length": "9"})
+        r = self.resolve("https://files.example.test/dl/pack.zip?sig=SECRET#frag")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["kind"], body["suggestedName"], body["host"], body["supported"]),
+                         ("archive", "pack", "files.example.test", True))
+        self.assertEqual(body["details"], {"contentType": "application/octet-stream", "bytes": 9})
+
+    def test_resolve_redacts_url(self):
+        import httpx
+        self.handler = lambda r: httpx.Response(200, content=b"%PDF-1.4")
+        r = self.resolve("https://files.example.test/paper.pdf?token=SECRET")
+        self.assertEqual(r.json()["url"], "https://files.example.test/paper.pdf")
+        self.assertNotIn("SECRET", r.text)
+
+    def test_resolve_disabled_is_403(self):
+        with mock.patch.dict("os.environ", {"WORKSPACE_URL_IMPORT_ENABLED": "false"}):
+            r = self.resolve("https://github.com/o/r")
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "import_disabled"))
+        self.assertEqual(self.seen_tokens, [])
+
+    def test_resolve_timeout_code(self):
+        import httpx
+
+        def slow(request):
+            raise httpx.ReadTimeout("slow", request=request)
+        self.handler = slow
+        r = self.resolve("https://files.example.test/a.zip")
+        self.assertEqual(r.json()["code"], "timeout")
+        with mock.patch.object(http_routes, "RESOLVE_TIMEOUT_SEC", 0.01), \
+             mock.patch.object(http_routes.resolve, "inspect", new=slow_inspect):
+            r = self.resolve("https://files.example.test/a.zip")
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "timeout"))
+
+    def test_resolve_answers_codes_never_exception_text(self):
+        import httpx
+        self.handler = lambda r: httpx.Response(200, text="<!doctype html><html>Sign in</html>",
+                                                 headers={"content-type": "text/html"})
+        r = self.resolve("https://files.example.test/pack.tar.gz")
+        self.assertEqual(r.json()["code"], "unexpected_html")
+        for url, code in (("ftp://x.test/a", "unsupported_scheme"), ("https://u:p@x.test/a.zip", "credentials_in_url"),
+                          ("https://github.com/o/r/issues/3", "kind_not_supported")):
+            self.assertEqual(self.resolve(url).json()["code"], code)
+        with mock.patch.object(http_routes.resolve, "inspect", side_effect=RuntimeError("boom /secret/x")):
+            r = self.resolve("https://files.example.test/a.zip")
+        self.assertEqual((r.status_code, r.json()["code"]), (500, "internal_error"))
+        self.assertNotIn("/secret/x", r.text)
+
+    def test_github_token_reaches_the_fetcher_only(self):
+        import httpx
+        sha = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+        api = "https://api.github.com/repos/o/r"
+        answers = {api: httpx.Response(200, json={"default_branch": "main", "size": 1, "private": True}),
+                   f"{api}/commits/main": httpx.Response(200, text=sha),
+                   f"{api}/git/trees/{sha}?recursive=1": httpx.Response(200, json={"tree": [], "truncated": False})}
+        auth = []
+
+        def handler(request):
+            auth.append(request.headers.get("authorization"))
+            return answers.get(str(request.url), httpx.Response(404))
+        self.handler = handler
+        r = self.resolve("https://github.com/o/r", githubToken=self.TOKEN)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["details"]["private"], True)
+        self.assertNotIn(self.TOKEN, r.text)
+        self.assertEqual(set(auth), {f"token {self.TOKEN}"})
+
+    def test_invalid_body_never_echoes_token(self):
+        for path in ("/workspace/import-url/resolve",):
+            for body in ({"projectId": "p1", "githubToken": self.TOKEN},
+                         {"url": "https://github.com/o/r", "githubToken": self.TOKEN},
+                         {"projectId": 7, "url": "x", "githubToken": self.TOKEN}):
+                r = self.client.post(path, json=body)
+                self.assertEqual((r.status_code, r.json()["code"]), (400, "invalid_request"))
+                self.assertNotIn(self.TOKEN, r.text)
+
+
+async def slow_inspect(*_a, **_kw):
+    import asyncio
+    await asyncio.sleep(1)
+
+
 if __name__ == "__main__":
     unittest.main()

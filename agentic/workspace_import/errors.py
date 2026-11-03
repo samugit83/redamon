@@ -55,6 +55,19 @@ CODES: dict[str, tuple[int, str]] = {
     "network_error": (422, "The source could not be reached."),
     "too_many_redirects": (422, "The link redirects more than 5 times."),
     "upstream_status": (422, "The source answered with an error."),
+    # URL import
+    "import_disabled": (403, "URL import is turned off on this server."),
+    "kind_not_supported": (422, "This page cannot be imported. Link a repository, a folder, a file, a gist, an archive or a website."),
+    "rate_limited": (429, "GitHub's hourly rate limit for this server is used up. A GitHub token in Global Settings > API Keys lifts it."),
+    "auth_failed": (403, "GitHub refused the token: it may be expired or revoked."),
+    "ref_not_found": (404, "The branch, tag or commit in the link does not exist."),
+    "invalid_subpath": (404, "The folder in the link does not exist in that branch."),
+    "unexpected_html": (422, "The link answered with a web page where a file or an archive was expected (often a login or error page). Nothing was saved."),
+    "too_many_imports": (429, "This project already has 2 imports running. Wait for one to finish."),
+    "not_imported": (404, "This folder has no valid import record, so it cannot be re-synced."),
+    "not_resyncable": (422, "This import cannot be re-synced: its link had a query string, which is not stored."),
+    "redirect_refused": (422, "The git server redirected the clone, which is not allowed."),
+    "git_failed": (422, "The git clone failed."),
 }
 
 

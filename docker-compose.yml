@@ -886,6 +886,8 @@ services:
       # Must stay well under the 60 MB request cap of the Next proxy and nginx.
       WORKSPACE_UPLOAD_CHUNK_BYTES: ${WORKSPACE_UPLOAD_CHUNK_BYTES:-8388608}
       WORKSPACE_UPLOAD_SESSION_IDLE_SEC: ${WORKSPACE_UPLOAD_SESSION_IDLE_SEC:-3600}
+      # Kill switch for import-from-URL (any value but true/1/yes turns it off).
+      WORKSPACE_URL_IMPORT_ENABLED: ${WORKSPACE_URL_IMPORT_ENABLED:-true}
       # The scan dispatcher's disk floor: imports never take the disk below it.
       JOB_QUEUE_MIN_FREE_DISK: ${JOB_QUEUE_MIN_FREE_DISK:-10737418240}
       # MCP tool servers (internal docker network)

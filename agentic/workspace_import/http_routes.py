@@ -6,6 +6,7 @@ fixed sentence per code, never exception text.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -18,8 +19,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, StrictSt
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import limits, purge, staging, upload_job, upload_sessions
+from workspace_import import limits, purge, resolve, staging, upload_job, upload_sessions
 from workspace_import.errors import ImportFailure, error_body, status_for
+from workspace_import.fetch import GuardedFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,18 @@ class CreateSessionBody(_Body):
 
 class ProjectBody(_Body):
     projectId: StrictStr
+
+
+class ResolveBody(_Body):
+    projectId: StrictStr
+    url: StrictStr
+    githubToken: Optional[StrictStr] = None
+    subpath: Optional[StrictStr] = None
+
+
+RESOLVE_TIMEOUT_SEC = 20.0
+# Injectable for tests: builds the fetcher a resolve or an import uses.
+fetcher_factory = GuardedFetcher
 
 
 def valid_project(project_id: str) -> bool:
@@ -207,3 +221,32 @@ async def project_purge(request: Request):
         return failure_response(e)
     except Exception as e:
         return unexpected("project purge", e)
+
+
+# ---------------------------------------------------------------------------
+# URL import
+# ---------------------------------------------------------------------------
+
+@router.post("/import-url/resolve")
+async def resolve_import_url(request: Request):
+    """Preview: what the URL is, how big, and what will not be included."""
+    if not limits.url_import_enabled():
+        return fail("import_disabled")
+    body = await parse_body(request, ResolveBody)
+    if body is None or not valid_project(body.projectId):
+        return fail("invalid_request")
+
+    async def run():
+        async with fetcher_factory(github_token=body.githubToken or "") as fetcher:
+            return await resolve.inspect(body.url, fetcher, subpath=body.subpath)
+
+    try:
+        inspection = await asyncio.wait_for(run(), RESOLVE_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        return fail("timeout")
+    except ImportFailure as e:
+        return failure_response(e)
+    except Exception as e:
+        return unexpected("resolve import url", e)
+    return inspection.answer()
+
