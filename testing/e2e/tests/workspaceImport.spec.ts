@@ -256,3 +256,259 @@ test('leaving the graph page aborts an in-browser upload', async ({ page, contex
   expect((jobs.jobs || []).some((j: { tool_name: string }) => j.tool_name === 'workspace_upload'
     && j.args && (j.args as { name?: string }).name === 'abandoned.bin')).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// Import from a URL. octocat/Hello-World and github/gitignore are GitHub's own
+// long-lived public samples, and example.com is reserved by RFC 2606 for
+// documentation: none of them is target data.
+// ---------------------------------------------------------------------------
+
+const OFFLINE_CODES = ['network_error', 'dns_failed', 'timeout']
+const HELLO = 'https://github.com/octocat/Hello-World'
+
+async function reachable(url: string): Promise<string> {
+  const res = await api.post('/api/agent/workspace/import-url/resolve', { data: { projectId, url } })
+  if (res.ok()) return ''
+  const code = ((await res.json().catch(() => ({}))) as { code?: string }).code || `status_${res.status()}`
+  if (OFFLINE_CODES.includes(code)) return 'agent has no internet (M3)'
+  if (code === 'rate_limited') return "GitHub's hourly rate limit for this server is used up"
+  // The account's own saved token, which every GitHub request carries: replacing
+  // it in Global Settings > API Keys lets these tests run.
+  if (code === 'auth_failed') return "GitHub refuses the signed-in user's GitHub token (auth_failed)"
+  return ''
+}
+
+async function openImport(page: Page) {
+  await page.getByRole('button', { name: 'Upload options' }).click()
+  await page.getByRole('menuitem', { name: 'Import from URL…' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Import from URL' })
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+async function checkLink(dialog: import('@playwright/test').Locator, url: string) {
+  await dialog.getByLabel('Link').fill(url)
+  await dialog.getByRole('button', { name: 'Check', exact: true }).click()
+  await expect(dialog.getByRole('status', { name: 'Checking the link' })).toBeHidden({ timeout: 45_000 })
+}
+
+async function importLink(page: Page, url: string,
+  prepare?: (dialog: import('@playwright/test').Locator) => Promise<void>) {
+  const dialog = await openImport(page)
+  await checkLink(dialog, url)
+  if (prepare) await prepare(dialog)
+  await dialog.getByRole('button', { name: 'Import', exact: true }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+}
+
+async function importJobs(): Promise<{ args?: { url?: string } }[]> {
+  const res = await api.get(`/api/agent/workspace/jobs?projectId=${projectId}`)
+  const jobs = ((await res.json()).jobs || []) as { tool_name: string; args?: { url?: string } }[]
+  return jobs.filter(j => j.tool_name === 'workspace_import')
+}
+
+async function fetchedAt(path: string): Promise<string> {
+  const res = await api.get(`/api/agent/workspace/properties?projectId=${projectId}&path=${encodeURIComponent(path)}`)
+  return ((await res.json()).import?.fetchedAt as string) || ''
+}
+
+const savedExactly = (page: Page, path: string) =>
+  page.getByRole('list', { name: 'Transfers' }).getByTitle(path, { exact: true })
+
+async function resync(page: Page, name: string) {
+  const row = page.locator(`[data-name="${name}"]`).first()
+  await row.hover()
+  await row.getByRole('button', { name: `Re-sync ${name}` }).click()
+  const confirm = page.getByRole('dialog', { name: 'Re-sync imported folder?' })
+  await confirm.getByRole('button', { name: 'Re-sync', exact: true }).click()
+}
+
+test.describe('import from a URL', () => {
+  let offline = ''
+  test.beforeAll(async () => { offline = await reachable(HELLO) })
+
+  test('previews a public GitHub repository', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    const dialog = await openImport(page)
+    await checkLink(dialog, HELLO)
+    const preview = dialog.getByRole('group', { name: 'Preview' })
+    await expect(preview.getByText('GitHub repository')).toBeVisible()
+    await expect(preview.getByText('master', { exact: true })).toBeVisible()
+    await expect(preview.getByText(/^[1-9][\d,]* files? · /)).toBeVisible()
+  })
+
+  test('imports a public GitHub repository', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, HELLO)
+    await expect(savedExactly(page, 'uploads/Hello-World')).toBeVisible({ timeout: 120_000 })
+    await expect(page.locator('[data-name="Hello-World"]').first().getByTitle('Imported')).toBeVisible()
+    expect((await listing('uploads/Hello-World')).map(e => e.name)).toEqual(expect.arrayContaining(['README', '.import.json']))
+  })
+
+  test('imports only a GitHub subfolder', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, 'https://github.com/github/gitignore/tree/main/Global')
+    await expect(savedExactly(page, 'uploads/Global')).toBeVisible({ timeout: 180_000 })
+    const names = (await listing('uploads/Global')).map(e => e.name)
+    expect(names).toContain('macOS.gitignore')
+    expect(names).not.toContain('Python.gitignore')
+  })
+
+  test('imports a single file from a blob link', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, `${HELLO}/blob/master/README`)
+    await expect(savedExactly(page, 'uploads/README')).toBeVisible({ timeout: 60_000 })
+    expect((await listing('uploads')).some(e => e.name === 'README' && !e.isDir)).toBe(true)
+  })
+
+  test('keeps both on a second import', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, HELLO)
+    await expect(savedExactly(page, 'uploads/Hello-World-2')).toBeVisible({ timeout: 120_000 })
+  })
+
+  test('re-syncs an imported folder', async ({ page }) => {
+    test.skip(!!offline, offline)
+    const before = await fetchedAt('uploads/Hello-World')
+    expect(before).not.toBe('')
+    await page.waitForTimeout(1100)  // fetchedAt has one-second resolution
+    await openDrawer(page)
+    await resync(page, 'Hello-World')
+    await expect(savedExactly(page, 'uploads/Hello-World')).toBeVisible({ timeout: 120_000 })
+    expect(Date.parse(await fetchedAt('uploads/Hello-World'))).toBeGreaterThan(Date.parse(before))
+  })
+
+  test('cancels a running import', async ({ page }) => {
+    test.skip(!!offline, offline)
+    test.slow()
+    await openDrawer(page)
+    const dialog = await openImport(page)
+    await dialog.getByRole('button', { name: 'atomic-red-team' }).click()
+    await expect(dialog.getByRole('status', { name: 'Checking the link' })).toBeHidden({ timeout: 45_000 })
+    await dialog.getByRole('button', { name: 'Import', exact: true }).click()
+    const cancel = page.getByRole('button', { name: 'Cancel atomic-red-team' })
+    await cancel.click({ timeout: 30_000 })
+    await expect(page.getByRole('list', { name: 'Transfers' }).getByText('Cancelled')).toBeVisible({ timeout: 60_000 })
+    expect((await listing('uploads')).some(e => e.name.startsWith('atomic-red-team'))).toBe(false)
+  })
+
+  test('refuses private and metadata addresses', async ({ page }) => {
+    const before = (await importJobs()).length
+    await openDrawer(page)
+    const dialog = await openImport(page)
+    for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://localhost:3000/']) {
+      await checkLink(dialog, url)
+      await expect(dialog.getByRole('alert')).toContainText('private, internal or metadata address')
+      await expect(dialog.getByRole('button', { name: 'Import', exact: true })).toBeDisabled()
+    }
+    expect((await importJobs()).length).toBe(before)
+  })
+
+  test('refuses a URL with credentials', async ({ page }) => {
+    await openDrawer(page)
+    const dialog = await openImport(page)
+    await checkLink(dialog, 'https://user:pass@example.com/a.zip')
+    await expect(dialog.getByRole('alert')).toContainText('user name or password')
+  })
+
+  test('the import dialog and imported rows work at 320 px', async ({ page, context }) => {
+    await context.addInitScript(() => localStorage.setItem('redamon-filesystem-drawer-width', '320'))
+    await openDrawer(page)
+    const viewport = page.viewportSize()!
+    const dialog = await openImport(page)
+    for (const control of [dialog.getByLabel('Link'), dialog.getByRole('button', { name: 'Check', exact: true }),
+      dialog.getByRole('button', { name: 'Import', exact: true })]) {
+      const box = (await control.boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width)
+    }
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    test.skip(!!offline, offline)
+    const drawer = (await drawerBox(page))!
+    const row = page.locator('[data-name="Hello-World"]').first()
+    await row.hover()
+    for (const el of [row.getByTitle('Imported'), row.getByRole('button', { name: 'Re-sync Hello-World' })]) {
+      const b = (await el.boundingBox())!
+      expect(b.x).toBeGreaterThanOrEqual(drawer.x - 1)
+      expect(b.x + b.width).toBeLessThanOrEqual(drawer.x + drawer.width + 1)
+    }
+  })
+})
+
+test.describe('mirror a website', () => {
+  const SITE = 'https://example.com/'
+  let offline = ''
+  test.beforeAll(async () => { offline = await reachable(SITE) })
+
+  test('mirrors a website as raw files', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, SITE, async (dialog) => {
+      await expect(dialog.getByRole('radio', { name: 'Raw files' })).toBeChecked()
+    })
+    await expect(savedExactly(page, 'uploads/example.com')).toBeVisible({ timeout: 120_000 })
+    await expect(page.locator('[data-name="example.com"]').first().getByTitle('Imported')).toBeVisible()
+    expect((await listing('uploads/example.com')).map(e => e.name).sort())
+      .toEqual(expect.arrayContaining(['.import.json', '_manifest.jsonl', 'index.html']))
+  })
+
+  test('mirrors a website as a readable copy', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    await importLink(page, SITE, async (dialog) => {
+      await dialog.getByRole('radio', { name: 'Readable copy' }).check()
+    })
+    await expect(savedExactly(page, 'uploads/example.com-2')).toBeVisible({ timeout: 120_000 })
+    const names = (await listing('uploads/example.com-2')).map(e => e.name)
+    expect(names).toContain('index.md')
+    expect(names.some(n => n.endsWith('.html'))).toBe(false)
+  })
+
+  test('robots and external assets are off by default', async ({ page }) => {
+    test.skip(!!offline, offline)
+    await openDrawer(page)
+    const dialog = await openImport(page)
+    await checkLink(dialog, SITE)
+    const options = dialog.getByRole('group', { name: 'Mirror options' })
+    await expect(options.getByRole('checkbox', { name: 'Respect robots.txt' })).not.toBeChecked()
+    await expect(options.getByRole('checkbox', { name: 'Also fetch assets from other hosts' })).not.toBeChecked()
+  })
+
+  test('re-syncs a mirrored site', async ({ page }) => {
+    test.skip(!!offline, offline)
+    const before = await fetchedAt('uploads/example.com')
+    await page.waitForTimeout(1100)
+    await openDrawer(page)
+    await resync(page, 'example.com')
+    await expect(savedExactly(page, 'uploads/example.com')).toBeVisible({ timeout: 120_000 })
+    expect(Date.parse(await fetchedAt('uploads/example.com'))).toBeGreaterThan(Date.parse(before))
+  })
+
+  test('mirror options fit at 320 px', async ({ page, context }) => {
+    test.skip(!!offline, offline)
+    await context.addInitScript(() => localStorage.setItem('redamon-filesystem-drawer-width', '320'))
+    await openDrawer(page)
+    const viewport = page.viewportSize()!
+    const dialog = await openImport(page)
+    await checkLink(dialog, SITE)
+    const options = dialog.getByRole('group', { name: 'Mirror options' })
+    const controls = [
+      options.getByRole('radio', { name: 'Raw files' }), options.getByRole('radio', { name: 'Readable copy' }),
+      options.getByLabel('Max pages'), options.getByLabel('Max depth'),
+      options.getByRole('checkbox', { name: 'Respect robots.txt' }), options.getByText(/RedAmon identifies itself/),
+      dialog.getByRole('button', { name: 'Import', exact: true }),
+    ]
+    for (const control of controls) {
+      await control.scrollIntoViewIfNeeded()
+      const box = (await control.boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width)
+    }
+    expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+  })
+})
