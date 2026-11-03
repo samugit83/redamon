@@ -425,6 +425,31 @@ class DiskAndPool(MirrorBase):
         self.assertTrue(threads)
         self.assertTrue(all(t.startswith("workspace-import") for t in threads), threads)
 
+    async def test_unexpected_error_logs_frames_never_its_text(self):
+        real = mirror_mod._read_page
+        # Built at run time: a logged frame shows its source line, never the values.
+        message = "-".join(("SECRET", "IN", "MESSAGE")) + " https://example.test/?token=" + "SECRET-QUERY-VALUE"
+
+        def boom(path, final_url, *rest):
+            if final_url.endswith("/intro.html"):
+                raise RuntimeError(message)
+            return real(path, final_url, *rest)
+        with mock.patch.object(mirror_mod, "_read_page", boom), self.assertLogs("workspace_import.mirror", "ERROR") as logs:
+            with self.assertRaises(ImportFailure) as ctx:
+                await self.run_mirror()
+        self.assertEqual(ctx.exception.code, "internal_error")
+        text = "\n".join(logs.output)
+        self.assertIn("RuntimeError", text)
+        self.assertNotIn("SECRET-IN-MESSAGE", text)
+        self.assertNotIn("SECRET-QUERY-VALUE", text)
+
+    def test_readable_converter_parses_with_the_stdlib_parser(self):
+        import inspect as _inspect
+        from orchestrator_helpers import web_sources
+        source = _inspect.getsource(web_sources.html_to_markdown)
+        self.assertIn('BeautifulSoup(html, "html.parser")', source)
+        self.assertEqual(source.count("BeautifulSoup("), 1)
+
     async def test_pdf_conversion_timeout_kills_child_and_skips(self):
         # A spawned interpreter needs far longer than 1 ms to answer.
         await self.run_mirror(opts=MirrorOptions(output_mode="readable"), pdf_timeout=0.001)

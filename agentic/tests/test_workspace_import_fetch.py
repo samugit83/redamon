@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import shutil
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import httpx
 
@@ -88,6 +90,20 @@ class Redirects(FetchBase):
             await self.assertCode("blocked_address", f.probe("https://a.example.test/x"))
         self.assertEqual(calls, [("https://a.example.test/x", 0), ("https://b.example.test/y", 1)])
         self.assertEqual(len(self.seen), 1)  # the refused hop was never requested
+
+    async def test_default_transport_and_guard_are_the_pinned_ones(self):
+        seen = []
+
+        def handler(request):
+            seen.append(str(request.url))
+            return httpx.Response(200, content=b"x")
+        pinned = httpx.MockTransport(handler)
+        with mock.patch.object(fetch, "pinned_async_transport", lambda: pinned):
+            async with GuardedFetcher(assert_safe=_no_dns) as f:
+                await f.probe("https://a.example.test/x")
+        self.assertEqual(seen, ["https://a.example.test/x"])
+        self.assertIs(inspect.signature(GuardedFetcher).parameters["assert_safe"].default,
+                      fetch.assert_safe_fetch_url)
 
     async def test_per_request_policy_runs_after_the_fetchers_own(self):
         order = []

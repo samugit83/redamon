@@ -207,6 +207,48 @@ class Successful(RunnerBase):
         rec = provenance.read(self.root / "uploads/docs", project_id="p1")
         self.assertEqual(rec["source"]["subpath"], "docs")
 
+    async def test_github_preview_details_and_warnings(self):
+        async with self.world.factory() as f:
+            answer = (await resolve.inspect("https://github.com/o/r", f)).answer()
+        self.assertEqual((answer["kind"], answer["suggestedName"], answer["host"]), ("github-repo", "r", "github.com"))
+        self.assertEqual(answer["details"], {"ref": "main", "sha7": "7fd1a60", "files": 3, "bytes": 10,
+                                             "subpath": "", "private": False})
+        self.assertEqual(answer["warnings"], ["history_not_included"])
+        self.world.routes[f"{API}/git/trees/{SHA}?recursive=1"] = lambda r: httpx.Response(
+            200, json=dict(TREE, truncated=True))
+        async with self.world.factory() as f:
+            self.assertIn("tree_truncated", (await resolve.inspect("https://github.com/o/r", f)).warnings)
+
+    async def test_failure_logs_a_code_never_exception_text_or_query(self):
+        hits = {"n": 0}
+
+        def flaky(_r):
+            hits["n"] += 1  # the preview's probe passes, the job's download fails
+            if hits["n"] == 1:
+                return httpx.Response(200, content=zipb([("p/a.txt", "1")]), headers={"content-type": "application/zip"})
+            return httpx.Response(503)
+        url = "https://files.example.test/pack.zip?token=SECRET-QUERY-VALUE"
+        self.world.routes[url] = flaky
+        with self.assertLogs("workspace_import.runner", "INFO") as logs:
+            _, status = await self.do_import(url)
+        self.assertEqual(status["error"], "upstream_status")
+        line = next(l for l in logs.output if "code=upstream_status" in l)
+        self.assertIn("kind=archive", line)
+        self.assertNotIn("SECRET-QUERY-VALUE", "\n".join(logs.output))
+
+        # Built at run time: a logged frame shows its source line, never the values.
+        message = "-".join(("SECRET", "IN", "MESSAGE")) + " https://x.example.test/?token=" + "SECRET-QUERY-VALUE"
+
+        async def boom(*_a, **_k):
+            raise RuntimeError(message)
+        with mock.patch.object(runner, "_fetch_into", boom), self.assertLogs("workspace_import.runner", "INFO") as logs:
+            _, status = await self.do_import("https://files.example.test/pack.zip")
+        self.assertEqual(status["error"], "internal_error")
+        text = "\n".join(logs.output)
+        self.assertIn("code=internal_error", text)
+        self.assertNotIn("SECRET-IN-MESSAGE", text)
+        self.assertNotIn("SECRET-QUERY-VALUE", text)
+
     async def test_tree_link_with_cleared_subfolder_imports_whole_repo(self):
         # The dialog sends subpath "" when the user clears the field of a
         # /tree/<ref>/<dir> link; the route must not drop it.

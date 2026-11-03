@@ -73,6 +73,17 @@ class Resync(ResyncBase):
         code, data, _ = await self.resync("uploads/missing")
         self.assertEqual(data["code"], "not_imported")
 
+    async def test_invalid_body_never_echoed(self):
+        from starlette.requests import Request
+
+        body = b'{"projectId": "p1", "path": ["uploads"], "githubToken": "TEST-SENTINEL-TOKEN-0000"}'
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        resp = await http_routes.resync_import(Request({"type": "http", "method": "POST", "headers": []}, receive))
+        self.assertEqual((resp.status_code, json.loads(resp.body)["code"]), (400, "invalid_request"))
+        self.assertNotIn(b"TEST-SENTINEL-TOKEN-0000", resp.body)
+
     async def test_protected_path_refused(self):
         code, data, _ = await self.resync("uploads")
         self.assertEqual((code, data["code"]), (403, "protected_path"))
