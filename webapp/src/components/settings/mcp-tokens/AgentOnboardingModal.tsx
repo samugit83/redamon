@@ -404,9 +404,10 @@ export default function AgentOnboardingModal({
                 pack teaches it what to do once connected.
               </p>
               <p>
-                <strong>Not every client reads a pack.</strong> Claude Code and Claude Desktop load a{' '}
+                <strong>Not every client reads a pack.</strong> Claude Code, Claude Desktop and Codex
+                (from <code className={styles.scopeCode}>.agents/skills/</code>) load a{' '}
                 <code className={styles.scopeCode}>SKILL.md</code>. Cursor, Windsurf, Cline, Goose,
-                Gemini CLI, Codex CLI and anything built on an agent SDK do not. Those clients get a
+                Gemini CLI and anything built on an agent SDK do not. Those clients get a
                 short version of the same guidance automatically when they connect, so nothing is
                 missing and the download is a document for you to paste or adapt.
               </p>

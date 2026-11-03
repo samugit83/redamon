@@ -1213,8 +1213,8 @@ function renderLoopPack(
 /**
  * The `instructions` string sent at `initialize`.
  *
- * Required, not a follow-up: only the Claude family reads a SKILL.md. Every
- * other client (Cursor, Windsurf, Cline, Goose, Gemini CLI, Codex CLI, and
+ * Required, not a follow-up: only the Claude family and Codex read a SKILL.md.
+ * Every other client (Cursor, Windsurf, Cline, Goose, Gemini CLI, and
  * anything built on LangGraph, the OpenAI Agents SDK, CrewAI or n8n) never sees
  * the pack, so without this they get a tool list and nothing else.
  *

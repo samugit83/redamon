@@ -2,7 +2,7 @@
  * The `instructions` string the server sends at `initialize`.
  *
  * This is the ONLY onboarding most clients ever receive. Only the Claude family
- * loads a `SKILL.md`; Cursor, Windsurf, Cline, Goose, Gemini CLI, Codex CLI and
+ * and Codex load a `SKILL.md`; Cursor, Windsurf, Cline, Goose, Gemini CLI and
  * anything built on LangGraph, the OpenAI Agents SDK, CrewAI or n8n see the tool
  * list and nothing else. Without this they get thirty tool descriptions and none
  * of the judgement that spans them.
