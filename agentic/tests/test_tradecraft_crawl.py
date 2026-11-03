@@ -293,36 +293,36 @@ class TestCrawlFetchTier1First(unittest.TestCase):
     def test_uses_tier1_when_response_is_thick(self):
         from orchestrator_helpers.tradecraft_crawl import _crawl_fetch
         async def fake_http(url, timeout=15):
-            return "<html>" + ("X" * 10000) + "</html>"  # well above threshold
+            return "<html>" + ("X" * 10000) + "</html>", url  # well above threshold
         async def fake_playwright(url, mcp_manager):
             raise AssertionError("must not call playwright when tier 1 is good")
         with mock.patch("orchestrator_helpers.tradecraft_crawl._http_fetch", fake_http), \
              mock.patch("orchestrator_helpers.tradecraft_crawl._playwright_fetch", fake_playwright):
-            html, tier = run_async(_crawl_fetch("https://x.com/", None))
+            html, tier, _final = run_async(_crawl_fetch("https://x.com/", None))
         self.assertEqual(tier, 1)
         self.assertGreater(len(html), 4000)
 
     def test_falls_back_to_tier2_when_response_is_thin(self):
         from orchestrator_helpers.tradecraft_crawl import _crawl_fetch
         async def fake_http(url, timeout=15):
-            return "<html>tiny</html>"  # under threshold
+            return "<html>tiny</html>", url  # under threshold
         async def fake_playwright(url, mcp_manager):
             return "<html>" + ("R" * 5000) + "</html>"
         with mock.patch("orchestrator_helpers.tradecraft_crawl._http_fetch", fake_http), \
              mock.patch("orchestrator_helpers.tradecraft_crawl._playwright_fetch", fake_playwright):
-            html, tier = run_async(_crawl_fetch("https://x.com/", object()))
+            html, tier, _final = run_async(_crawl_fetch("https://x.com/", object()))
         self.assertEqual(tier, 2)
         self.assertIn("RRR", html)
 
     def test_returns_tier_zero_when_both_fail(self):
         from orchestrator_helpers.tradecraft_crawl import _crawl_fetch
         async def fake_http(url, timeout=15):
-            return ""
+            return "", url
         async def fake_playwright(url, mcp_manager):
             return ""
         with mock.patch("orchestrator_helpers.tradecraft_crawl._http_fetch", fake_http), \
              mock.patch("orchestrator_helpers.tradecraft_crawl._playwright_fetch", fake_playwright):
-            html, tier = run_async(_crawl_fetch("https://x.com/", object()))
+            html, tier, _final = run_async(_crawl_fetch("https://x.com/", object()))
         self.assertEqual(tier, 0)
         self.assertEqual(html, "")
 

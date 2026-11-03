@@ -434,6 +434,10 @@ flowchart TD
 
 If any single bound trips, the loop exits and returns whatever sitemap it built. The reason is shown in the UI badge: *"Crawled 27 pages, hit time budget"*.
 
+## How links on a page are resolved
+
+Relative links resolve the way a browser resolves them: against the page's final address after redirects, or against its `<base href>` when the page has one. On `https://site/a/page.html`, the link `other.html` is `https://site/a/other.html`. A redirect target counts as visited, so it is never fetched twice. A page rendered by Playwright (the thin-page fallback) resolves against the URL that was requested, because the guarded browser script does not report where redirects ended. The nav harvests of the mkdocs and gitbook builders use the same rule (`resolve_link` in `orchestrator_helpers/web_sources.py`).
+
 ## What the LLM sees per iteration
 
 For each page the loop visits, Claude gets a short prompt with:

@@ -92,6 +92,7 @@ from orchestrator_helpers.fetch_guard import (
     pinned_async_transport,
 )
 from orchestrator_helpers.json_utils import normalize_content
+from orchestrator_helpers.web_sources import document_base_href, resolve_link
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 
 logger = get_logger(__name__)
@@ -497,6 +498,8 @@ class FetchResult:
     # Set when the egress guard refused a hop. Callers must not retry the URL
     # another way: the browser fallback would follow the same redirect.
     blocked: str = ""
+    # Where redirects ended (Tier 1 only): relative links resolve against it.
+    final_url: str = ""
 
     @property
     def ok_textual(self) -> bool:
@@ -576,6 +579,7 @@ async def fetch_tier1(
                     status=resp.status_code,
                     tier=1,
                     raw_bytes=raw,
+                    final_url=str(resp.url),
                 )
             if not expect_text:
                 return FetchResult(
@@ -584,6 +588,7 @@ async def fetch_tier1(
                     status=resp.status_code,
                     tier=1,
                     raw_bytes=raw,
+                    final_url=str(resp.url),
                 )
             # Text path: convert HTML to markdown when applicable.
             # Keep raw_bytes = original bytes so callers can detect on the
@@ -598,6 +603,7 @@ async def fetch_tier1(
                 status=resp.status_code,
                 tier=1,
                 raw_bytes=raw_for_detection,
+                final_url=str(resp.url),
             )
     except UnsafeFetchURLError as e:
         logger.warning(f"[tradecraft] tier1 blocked url={url}: {e}")
@@ -849,14 +855,15 @@ async def _build_sitemap_mkdocs(base_url: str, github_token: str = "") -> Dict[s
     nav: List[Dict[str, str]] = []
     if r3.status == 200 and BeautifulSoup is not None:
         soup = BeautifulSoup(r3.text, "html.parser")
+        page_url, base_href = r3.final_url or base, document_base_href(soup)
         for a in soup.select(".md-nav__link, nav a"):
-            href = a.get("href")
-            if not href:
+            path = resolve_link(page_url, a.get("href") or "", base_href)
+            if not path:
                 continue
             title = a.get_text(strip=True)
             if not title:
                 continue
-            nav.append({"title": title, "path": urllib.parse.urljoin(base + "/", href)})
+            nav.append({"title": title, "path": path})
     return {"nav": nav[:1000]}
 
 
@@ -1033,12 +1040,13 @@ async def _build_sitemap_gitbook(base_url: str, mcp_manager=None) -> Dict[str, A
     nav = []
     if raw.status == 200 and raw.text:
         soup = BeautifulSoup(raw.text, "html.parser")
+        page_url, base_href = raw.final_url or base, document_base_href(soup)
         for a in soup.select("aside nav a, nav a, [role='navigation'] a"):
-            href = a.get("href")
+            path = resolve_link(page_url, a.get("href") or "", base_href)
             title = a.get_text(strip=True)
-            if not href or not title:
+            if not path or not title:
                 continue
-            nav.append({"title": title, "path": urllib.parse.urljoin(base + "/", href)})
+            nav.append({"title": title, "path": path})
     return {"nav": nav[:500]}
 
 

@@ -81,7 +81,7 @@ class HttpFetchRedirectGuard(unittest.TestCase):
     def _run(self, routes):
         fake = _FakeClient(routes)
         with patch("httpx.AsyncClient", return_value=fake):
-            html = asyncio.run(tradecraft_crawl._http_fetch(PUBLIC))
+            html, _final = asyncio.run(tradecraft_crawl._http_fetch(PUBLIC))
         return html, fake.calls
 
     def test_redirect_to_metadata_is_blocked(self):
@@ -122,12 +122,12 @@ class CrawlFetchNoBrowserFallbackOnBlock(unittest.TestCase):
             raise UnsafeFetchURLError("redirect to 169.254.169.254")
 
         result, browser_calls = self._crawl_fetch_with(blocked)
-        self.assertEqual(result, ("", 0))
+        self.assertEqual(result[:2], ("", 0))
         self.assertEqual(browser_calls, [])
 
     def test_thin_page_still_escalates(self):
         async def thin(_url):
-            return "<html></html>"
+            return "<html></html>", _url
 
         result, browser_calls = self._crawl_fetch_with(thin)
         self.assertEqual(browser_calls, [PUBLIC])

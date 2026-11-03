@@ -517,7 +517,7 @@ class TestAgenticCrawlBounds(unittest.TestCase):
         # empty so the loop falls back to the slow Playwright stub and the
         # 2-second budget actually has time to bite.
         async def fake_http(url, timeout=15):
-            return ""
+            return "", url
 
         with mock.patch("orchestrator_helpers.tradecraft_crawl._http_fetch", fake_http):
             result = run_async(agentic_crawl(

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from logging_config import get_logger
 from orchestrator_helpers.json_utils import normalize_content
+from orchestrator_helpers.web_sources import document_base_href, resolve_link
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 
 logger = get_logger(__name__)
@@ -109,8 +110,11 @@ def _is_private_host(host: str) -> bool:
     return False
 
 
-async def _http_fetch(url: str, timeout: int = 15, max_redirects: int = 5) -> str:
-    """Plain Tier 1 HTTP fetch, returns raw HTML or '' on failure.
+async def _http_fetch(url: str, timeout: int = 15, max_redirects: int = 5) -> Tuple[str, str]:
+    """Plain Tier 1 HTTP fetch. Returns (html, final_url), or ('', url) on failure.
+
+    The final URL (after redirects) is what relative links on the page resolve
+    against.
 
     Used by the crawl loop FIRST so static blogs / news sites / writeup pages
     get fast unencumbered fetches. Falls back to Playwright only when the
@@ -146,27 +150,27 @@ async def _http_fetch(url: str, timeout: int = 15, max_redirects: int = 5) -> st
                 if resp.is_redirect:
                     loc = resp.headers.get("location")
                     if not loc:
-                        return ""
+                        return "", url
                     current = str(resp.url.join(loc))
                     continue
                 ct = (resp.headers.get("content-type") or "").lower()
                 if resp.status_code != 200 or "html" not in ct:
-                    return ""
-                return resp.text
+                    return "", url
+                return resp.text, current
             logger.warning(f"[tradecraft] crawl too many redirects for url={url}")
-            return ""
+            return "", url
     except UnsafeFetchURLError as e:
         logger.warning(f"[tradecraft] crawl blocked SSRF url={url}: {e}")
         raise
     except Exception as e:
         logger.debug(f"[tradecraft] crawl http fetch error url={url} err={e}")
-        return ""
+        return "", url
 
 
-async def _crawl_fetch(url: str, mcp_manager, *, tier1_threshold_bytes: int = 4000) -> Tuple[str, int]:
+async def _crawl_fetch(url: str, mcp_manager, *, tier1_threshold_bytes: int = 4000) -> Tuple[str, int, str]:
     """Tier-1-first fetch for the crawl loop.
 
-    Returns (html, tier_used). Tries raw HTTP first; if response is < threshold
+    Returns (html, tier_used, final_url). Tries raw HTTP first; if response is < threshold
     bytes (likely a JS-only shell or empty body), escalates to Playwright MCP
     for full rendering. The threshold is intentionally higher than Tier 1's
     800-byte default for tradecraft fetches because crawl pages need many
@@ -178,19 +182,21 @@ async def _crawl_fetch(url: str, mcp_manager, *, tier1_threshold_bytes: int = 40
     from .fetch_guard import is_safe_fetch_url, UnsafeFetchURLError
     if not is_safe_fetch_url(url):
         logger.warning(f"[tradecraft] crawl skipping unsafe url={url}")
-        return "", 0
+        return "", 0, url
 
     try:
-        html = await _http_fetch(url)
+        html, final_url = await _http_fetch(url)
     except UnsafeFetchURLError:
         # A public URL that redirected or re-resolved into an internal address.
         # The browser would follow that same redirect, so do not fall back.
-        return "", 0
+        return "", 0, url
     if html and len(html) >= tier1_threshold_bytes:
-        return html, 1
+        return html, 1, final_url
     # Fallback to Playwright (handles SPAs, login walls, anti-bot challenges).
+    # The guarded browser script does not report where redirects ended, so
+    # links on a rendered page resolve against the requested URL.
     rendered = await _playwright_fetch(url, mcp_manager)
-    return rendered, 2 if rendered else 0
+    return rendered, 2 if rendered else 0, url
 
 
 async def _playwright_fetch(url: str, mcp_manager) -> str:
@@ -249,14 +255,13 @@ def _extract_links_and_meta(html: str, base_url: str) -> Dict[str, Any]:
     # the original document including nav, so re-soup the original HTML once
     # for href harvesting only.
     soup2 = BeautifulSoup(html or "", "html.parser")
+    base_href = document_base_href(soup2)
     links_seen: set = set()
     links: List[Dict[str, str]] = []
     for a in soup2.find_all("a", href=True):
-        href = (a.get("href") or "").strip()
-        if not href:
+        absolute = resolve_link(base_url, a.get("href") or "", base_href)
+        if absolute is None:
             continue
-        # Resolve relative
-        absolute = urllib.parse.urljoin(base_url + "/" if not base_url.endswith("/") else base_url, href)
         canon = _canonicalize(absolute)
         if canon in links_seen:
             continue
@@ -399,8 +404,8 @@ async def agentic_crawl(
 
     if llm is None:
         # Without an LLM we cannot drive the loop. Return a single-page sitemap.
-        html, _ = await _crawl_fetch(base, mcp_manager)
-        meta = _extract_links_and_meta(html, base)
+        html, _, final_url = await _crawl_fetch(base, mcp_manager)
+        meta = _extract_links_and_meta(html, final_url)
         if meta["title"] and len(meta["body_text"]) > 500:
             state.sitemap.append({"title": meta["title"], "path": base})
         return CrawlResult(
@@ -431,11 +436,13 @@ async def agentic_crawl(
         # thin / non-HTML / failed responses. Most static blogs return rich
         # HTML on Tier 1 and never need Playwright -> dramatically more
         # links per page than Playwright alone (which hits a 40k cap).
-        html, fetch_tier = await _crawl_fetch(canon, mcp_manager)
+        html, fetch_tier, final_url = await _crawl_fetch(canon, mcp_manager)
         state.pages_fetched += 1
+        # A redirect target is the same page: never fetch it a second time.
+        state.visited.add(_canonicalize(final_url))
         if not html:
             continue
-        meta = _extract_links_and_meta(html, canon)
+        meta = _extract_links_and_meta(html, final_url)
         title = meta["title"]
         body_text = meta["body_text"]
         # Add to sitemap if page has content
