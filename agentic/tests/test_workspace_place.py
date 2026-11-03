@@ -153,7 +153,11 @@ class CancelAndCrash(PlaceBase):
                 pass
             names = sorted(os.listdir(target))
             self.assertIn(names, (["old.txt"], ["README"]), f"after {steps} steps: {names}")
-        await asyncio.sleep(0.2)  # let a scheduled trash removal finish
+        # Trash removal is scheduled on the import pool; give a loaded machine time.
+        for _ in range(100):
+            if not list((self.tmp / ".staging/p1").glob("trash-*")):
+                break
+            await asyncio.sleep(0.05)
         self.assertEqual(list((self.tmp / ".staging/p1").glob("trash-*")), [])
 
     async def test_crash_after_first_rename_is_recovered_at_boot(self):
