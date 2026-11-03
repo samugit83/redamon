@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [agentic, webapp]
   auto_invoke:
     - "Adding or integrating an LLM provider"
@@ -37,7 +37,9 @@ For a non-LLM external API *tool*, use `agentic-tool-integration`.
   `claude-*` and bare OpenAI ids MUST carry a `provider/<model>` prefix, resolved by
   `parse_model_provider()` in
   [agentic/orchestrator_helpers/llm_setup.py](../../agentic/orchestrator_helpers/llm_setup.py).
-  An unprefixed id routes to the wrong provider silently.
+  An unprefixed id routes to the wrong provider silently. `loop/` is NOT a provider: it is
+  Agent in the Loop (an external MCP client answers), and every builder outside a chat
+  run refuses it (`refuse_loop_model`, the `agent-in-the-loop` skill).
 - **NEVER treat every `user_llm_providers` row as a chat LLM.** A non-chat type
   (today `jev`, the TypeSafe decision API) must be skipped by every path that
   builds a chat model, or its token is sent to the wrong host: `setup_llm`'s

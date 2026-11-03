@@ -14,6 +14,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Adding a built-in attack skill to the agent | `builtin-agent-skill` |
 | Adding a non-chat provider type, or a path that picks any provider row | `llm-provider-integration` |
 | Adding a tool the agent can call | `agentic-tool-integration` |
+| Adding an agent model call site, a retry loop, or a path that builds an LLM from a model id | `agent-in-the-loop` |
 | Adding or editing an MCP server the agent uses | `agentic-tool-integration` |
 | Adding or integrating an LLM provider | `llm-provider-integration` |
 | Changing how a triage score, review or verdict is computed or written | `priority-board-triage` |
@@ -22,6 +23,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Editing a Prisma @default, a Python settings default, or the /defaults endpoint | `project-settings-cascade` |
 | Editing agent skill classification, phase injection, or the attack-skill UI | `builtin-agent-skill` |
 | Editing model-id routing or provider credential handling | `llm-provider-integration` |
+| Editing the Agent in the Loop broker, adapter, routes or loop MCP tools | `agent-in-the-loop` |
 | Editing the Priority Board, the triage graph mixin, or the MCP triage tools | `priority-board-triage` |
 | Editing the agent tool registry, phase map, or PhaseAwareToolExecutor dispatch | `agentic-tool-integration` |
 | Editing the plugin platform: the plugins lib or routes, the plugin runner, or the Gateway | `plugin-platform` |
@@ -77,6 +79,8 @@ community-skills/     Community Agent Skills (volume-mounted, no rebuild)
 cypherfix_triage/  cypherfix_codefix/    CypherFix triage + codefix agents
 workspace_import/                        folder/archive upload sessions and URL imports (staging,
                                          safe extraction, provenance, website mirror)
+agent_in_the_loop/                       Agent in the Loop: step broker, the loop/mcp chat-model
+                                         adapter and the master-key /loop routes (`agent-in-the-loop` skill)
 graph_db/  knowledge_base/               COPY-baked copies of the repo-root layers
 mcp_registry.py  project_settings.py     tool registry + per-project settings
 tests/                                   pytest (run via ../agentic/run_tests.sh)

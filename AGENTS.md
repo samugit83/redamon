@@ -14,11 +14,13 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Action | Skill |
 | ------ | ----- |
 | Adding a node label, relationship, or property to the graph schema | `graph-db-writes` |
+| Adding an agent model call site, a retry loop, or a path that builds an LLM from a model id | `agent-in-the-loop` |
 | Adding or editing a test file in any section | `redamon-testing` |
 | Changing how a triage score, review or verdict is computed or written | `priority-board-triage` |
 | Changing how plugin services, networks or the plugins overlay are started by redamon.sh or compose | `plugin-platform` |
 | Changing test tiers, conftest.py, pytest.ini, or the runner in redamon.sh | `redamon-testing` |
 | Checking or ratcheting a coverage floor | `redamon-testing` |
+| Editing the Agent in the Loop broker, adapter, routes or loop MCP tools | `agent-in-the-loop` |
 | Editing the Priority Board, the triage graph mixin, or the MCP triage tools | `priority-board-triage` |
 | Editing the plugin platform: the plugins lib or routes, the plugin runner, or the Gateway | `plugin-platform` |
 | Investigating a red, skipped or xfailed test | `redamon-testing` |
@@ -174,3 +176,4 @@ Maintained by hand (not touched by `sync.sh`). One row per skill.
 | `mcp-server-tools` | Inbound MCP server tools: regenerate the wiki API reference, spec-accurate destructiveHint, runnable example calls | [SKILL.md](skills/mcp-server-tools/SKILL.md) |
 | `priority-board-triage` | Priority Board layers: nobody writes a score (combine_layers only), one layer per writer, never updated_at, legacy-tolerant readers | [SKILL.md](skills/priority-board-triage/SKILL.md) |
 | `plugin-platform` | Plugin platform: no plugin logic in the base, plugin services only via plugins_converge, overlay-only webapp wiring, every Gateway call re-authorized, plugins only propose | [SKILL.md](skills/plugin-platform/SKILL.md) |
+| `agent-in-the-loop` | Agent in the Loop (an external MCP client answers the agent's model calls): only inside its own run scope, never retried, refused on every session-less builder, a driver token holds read scopes only, a person picks the brain and answers every approval | [SKILL.md](skills/agent-in-the-loop/SKILL.md) |

@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [webapp]
   auto_invoke:
     - "Adding, removing or changing a tool on the inbound MCP server"
@@ -67,9 +67,14 @@ the generated reference page, never by this skill.
   lists, so a new tool's verb goes there; an op literal such as `list_muted` or `mute_many`
   in an agent-facing file then reads as an unknown tool. Wrap ops in
   [triageGraph.ts](../../webapp/src/lib/mcp/triageGraph.ts) helpers instead.
-- **Watch the `write` bucket headroom.** [apiReference.test.ts](../../webapp/src/lib/mcp/apiReference.test.ts)
-  calls every tool with ONE token inside one test, against the `write` limit (10/min by
-  default). A new write tool that overflows it must raise that test's limit, not drop a call.
+- **Watch the bucket headroom.** [apiReference.test.ts](../../webapp/src/lib/mcp/apiReference.test.ts)
+  calls every tool with ONE token inside one test. It raises the `write` and `loop` limits
+  (`MCP_RATE_WRITE_PER_MIN`, `MCP_RATE_LOOP_PER_MIN`); a new tool on a tighter bucket
+  (`exec`, `query`, `start`, `compare`) that overflows must raise that test's limit, not drop a call.
+- **A tool behind a deployment switch is withdrawn at registration, and every test that lists
+  tools stubs the switch on.** The files that stub `MCP_KALI_EXEC_ENABLED` also stub
+  `AGENT_IN_THE_LOOP_ENABLED`; a new switch joins both lists, or its tools vanish from
+  `tools/list`, the counts and the generated reference.
 - **A required ARRAY argument needs an `EXAMPLE_EXTRA_ARGS` entry.** `placeholderFor` has no
   array branch, so the generated example would name no item (`mute_findings`' `findingIds`).
 - **A new scope gates writes; reads go under an existing read scope.** Every `ScopeAccess` in
