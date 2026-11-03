@@ -26,6 +26,13 @@ import {
 import { Drawer } from '@/components/ui/Drawer'
 import { useAlertModal, WikiInfoButton } from '@/components/ui'
 import { errorMessage, fetchJson, readApiError, toApiError } from '@/lib/apiError'
+import { buildTarBlob } from '@/lib/workspaceUpload/tar'
+import {
+  ARCHIVE_ACCEPT, archiveBaseName, entriesFromFileList, snapshotDrop, walkEntries, type PickedItems,
+} from '@/lib/workspaceUpload/entries'
+import { UploadMenu } from './UploadMenu'
+import { TransfersPanel } from './TransfersPanel'
+import { useTransfers, type Transfer } from './useTransfers'
 import styles from './FileSystemDrawer.module.css'
 
 // =============================================================================
@@ -73,6 +80,9 @@ export interface FileSystemDrawerProps {
 const PROTECTED_SUBDIRS = new Set(['notes', 'tool-outputs', 'jobs', 'uploads'])
 // A bulk delete's alert names this many failed entries with their cause.
 const BULK_FAILURES_SHOWN = 5
+// Files up to this size keep the single-request upload and its overwrite
+// prompt; larger ones go through a resumable upload session.
+const SMALL_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 
 const WIDTH_STORAGE_KEY = 'redamon-filesystem-drawer-width'
 const DEFAULT_WIDTH_PX = 494
@@ -163,6 +173,8 @@ export function FileSystemDrawer({
   // Stage B state
   const [mkdirInput, setMkdirInput] = useState<string | null>(null)  // null = hidden
   const [isDragging, setIsDragging] = useState(false)
+  // The folder row a drag is over, when that row is the drop's destination.
+  const [dropRowPath, setDropRowPath] = useState<string | null>(null)
   const [uploadingCount, setUploadingCount] = useState(0)
   const [deletePending, setDeletePending] = useState<Entry | null>(null)
   const [overwritePending, setOverwritePending] = useState<{
@@ -471,17 +483,90 @@ export function FileSystemDrawer({
     }
   }, [projectId, currentPath, fetchEntries, alertError])
 
-  const handleUploadPick = useCallback(() => {
-    // Programmatic file picker - no permanent <input> in the DOM
+  // --- Transfers: folders, archives and large files ------------------------
+
+  const handleTransferDone = useCallback((t: Transfer) => {
+    if (t.projectId === projectId) fetchEntries(currentPath, true)
+  }, [projectId, currentPath, fetchEntries])
+
+  const transfers = useTransfers({ onDone: handleTransferDone })
+  const { addUpload } = transfers
+  const visibleTransfers = useMemo(
+    () => transfers.transfers.filter((t) => t.projectId === projectId),
+    [transfers.transfers, projectId],
+  )
+
+  const startUploads = useCallback((picked: PickedItems, destDir: string) => {
+    for (const folder of picked.folders) {
+      try {
+        const { blob } = buildTarBlob(folder.entries)
+        addUpload({ projectId, kind: 'folder', name: folder.name, destDir, blob })
+      } catch (e) {
+        alertError(errorMessage(e, 'Could not pack the folder'), 'Upload failed')
+      }
+    }
+    for (const file of picked.files) {
+      if (file.size <= SMALL_UPLOAD_MAX_BYTES) doUpload(file, destDir, false)
+      else addUpload({ projectId, kind: 'file', name: file.name, destDir, blob: file })
+    }
+  }, [projectId, addUpload, doUpload, alertError])
+
+  // Programmatic pickers - no permanent <input> in the DOM.
+  const openPicker = useCallback((setup: (input: HTMLInputElement) => void, onPicked: (files: File[]) => void) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.multiple = true
-    input.onchange = () => {
-      const files = Array.from(input.files || [])
-      for (const f of files) doUpload(f, currentPath, false)
-    }
+    setup(input)
+    input.onchange = () => onPicked(Array.from(input.files || []))
     input.click()
-  }, [doUpload, currentPath])
+  }, [])
+
+  const handleUploadPick = useCallback(() => {
+    openPicker(
+      (input) => { input.multiple = true },
+      (files) => startUploads({ folders: [], files }, currentPath),
+    )
+  }, [openPicker, startUploads, currentPath])
+
+  const handleFolderPick = useCallback(() => {
+    openPicker(
+      (input) => { input.webkitdirectory = true },
+      (files) => {
+        const picked = entriesFromFileList(files)
+        if (picked.folders.length === 0 && picked.files.length === 0) {
+          alertWarning(
+            'The browser sent no files for that folder. To upload an empty folder, drag it onto the drawer.',
+            'Nothing to upload',
+          )
+          return
+        }
+        startUploads(picked, currentPath)
+      },
+    )
+  }, [openPicker, startUploads, currentPath, alertWarning])
+
+  const handleArchivePick = useCallback(() => {
+    openPicker(
+      (input) => { input.accept = ARCHIVE_ACCEPT },
+      (files) => {
+        for (const file of files) {
+          addUpload({ projectId, kind: 'archive', name: archiveBaseName(file.name), destDir: currentPath, blob: file })
+        }
+      },
+    )
+  }, [openPicker, addUpload, projectId, currentPath])
+
+  const handleCancelTransfer = useCallback((t: Transfer) => {
+    transfers.cancel(t.id).catch((e) => {
+      alertError(errorMessage(e, 'Could not cancel the transfer'), 'Cancel failed')
+    })
+  }, [transfers, alertError])
+
+  const handleOpenTransfer = useCallback((t: Transfer) => {
+    if (!t.savedPath) return
+    const isFolder = t.kind === 'folder' || t.kind === 'archive'
+    const parent = t.savedPath.split('/').slice(0, -1).join('/') || '.'
+    setCurrentPath(isFolder ? t.savedPath : parent)
+  }, [])
 
   const handleConfirmOverwrite = useCallback(() => {
     if (!overwritePending) return
@@ -497,20 +582,53 @@ export function FileSystemDrawer({
       ev.preventDefault()
       ev.dataTransfer.dropEffect = 'copy'
       setIsDragging(true)
+      setDropRowPath(null)
     }
   }, [])
 
   const handleDragLeave = useCallback((ev: React.DragEvent) => {
-    // Only clear when leaving the entire drawer, not just a child element
-    if (ev.currentTarget === ev.target) setIsDragging(false)
+    // Only clear when the pointer leaves the drawer, not when it crosses
+    // between children. Safari reports no relatedTarget; the next dragover
+    // turns the overlay back on.
+    const next = ev.relatedTarget as Node | null
+    if (!next || !ev.currentTarget.contains(next)) {
+      setIsDragging(false)
+      setDropRowPath(null)
+    }
   }, [])
 
-  const handleDrop = useCallback((ev: React.DragEvent) => {
+  const dropInto = useCallback((ev: React.DragEvent, destDir: string) => {
     ev.preventDefault()
     setIsDragging(false)
-    const files = Array.from(ev.dataTransfer.files || [])
-    for (const f of files) doUpload(f, currentPath, false)
-  }, [doUpload, currentPath])
+    setDropRowPath(null)
+    // Synchronous on purpose: the browser empties dataTransfer.items once
+    // this handler returns, so the entries are taken now and walked after.
+    const snapshot = snapshotDrop(ev.dataTransfer)
+    walkEntries(snapshot).then(
+      (picked) => startUploads(picked, destDir),
+      (e) => alertError(errorMessage(e, 'Could not read the dropped items'), 'Upload failed'),
+    )
+  }, [startUploads, alertError])
+
+  const handleDrop = useCallback((ev: React.DragEvent) => {
+    dropInto(ev, currentPath)
+  }, [dropInto, currentPath])
+
+  const handleRowDragOver = useCallback((ev: React.DragEvent, entry: Entry) => {
+    if (!ev.dataTransfer.types.includes('Files')) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    ev.dataTransfer.dropEffect = 'copy'
+    setIsDragging(true)
+    setDropRowPath(entry.path)
+  }, [])
+
+  const handleRowDrop = useCallback((ev: React.DragEvent, entry: Entry) => {
+    ev.stopPropagation()
+    dropInto(ev, entry.path)
+  }, [dropInto])
+
+  const dropDestination = dropRowPath ?? currentPath
 
   // --- Preview (file row click) --------------------------------------------
 
@@ -742,26 +860,8 @@ export function FileSystemDrawer({
 
   // ---- Render -----------------------------------------------------------
 
-  return (
-    <Drawer
-      isOpen={isOpen}
-      onClose={onClose}
-      position="left"
-      mode="overlay"
-      width={`${drawerWidth}px`}
-      title="Agent Workspace"
-      headerActions={
-        <WikiInfoButton
-          target="https://github.com/samugit83/redamon/wiki/Agent-Workspace"
-          title="Open Agent Workspace wiki page"
-        />
-      }
-      resizable
-      minWidth={MIN_WIDTH_PX}
-      maxWidth={MAX_WIDTH_PX}
-      onResize={setDrawerWidth}
-      onResizeEnd={handleResizeEnd}
-    >
+  const content = (
+    <>
       <div className={styles.tabs}>
         <button
           className={`${styles.tab} ${tab === 'files' ? styles.tabActive : ''}`}
@@ -816,26 +916,28 @@ export function FileSystemDrawer({
       {tab === 'files' && previewing === null && (
         <>
           <div className={styles.breadcrumb}>
-            <button
-              className={styles.crumb}
-              onClick={() => setCurrentPath('.')}
-              title="Project root"
-            >
-              /workspace
-            </button>
-            {crumbs.map((c, i) => (
-              <span key={c.path} style={{ display: 'flex', alignItems: 'center' }}>
-                <span className={styles.crumbSep}><ChevronRight size={12} /></span>
-                <button
-                  className={styles.crumb}
-                  onClick={() => setCurrentPath(c.path)}
-                  disabled={i === crumbs.length - 1}
-                >
-                  {c.name}
-                </button>
-              </span>
-            ))}
-            <div className={styles.toolbarSpacer} />
+            {/* The trail scrolls on its own so the buttons stay in view at 320 px. */}
+            <div className={styles.crumbTrail}>
+              <button
+                className={styles.crumb}
+                onClick={() => setCurrentPath('.')}
+                title="Project root"
+              >
+                /workspace
+              </button>
+              {crumbs.map((c, i) => (
+                <span key={c.path} style={{ display: 'flex', alignItems: 'center' }}>
+                  <span className={styles.crumbSep}><ChevronRight size={12} /></span>
+                  <button
+                    className={styles.crumb}
+                    onClick={() => setCurrentPath(c.path)}
+                    disabled={i === crumbs.length - 1}
+                  >
+                    {c.name}
+                  </button>
+                </span>
+              ))}
+            </div>
             <button
               className={styles.actionBtn}
               onClick={handleMkdirToggle}
@@ -843,13 +945,7 @@ export function FileSystemDrawer({
             >
               <FolderPlus size={12} />
             </button>
-            <button
-              className={styles.actionBtn}
-              onClick={handleUploadPick}
-              title="Upload file(s) to current directory"
-            >
-              <UploadIcon size={12} />
-            </button>
+            <UploadMenu onFiles={handleUploadPick} onFolder={handleFolderPick} onArchive={handleArchivePick} />
             <button
               className={styles.actionBtn}
               onClick={() => fetchEntries(currentPath)}
@@ -892,6 +988,13 @@ export function FileSystemDrawer({
               Uploading {uploadingCount} file{uploadingCount > 1 ? 's' : ''}…
             </div>
           )}
+
+          <TransfersPanel
+            transfers={visibleTransfers}
+            onCancel={handleCancelTransfer}
+            onDismiss={(t) => transfers.dismiss(t.id)}
+            onOpen={handleOpenTransfer}
+          />
 
           {/* Stage D: filter input - hides non-matching names in current dir */}
           <div className={styles.filterRow}>
@@ -990,8 +1093,12 @@ export function FileSystemDrawer({
                   <div
                     key={e.path}
                     data-name={e.name}
-                    className={`${styles.entry} ${selectedPaths.has(e.path) ? styles.entrySelected : ''}`}
+                    className={`${styles.entry} ${selectedPaths.has(e.path) ? styles.entrySelected : ''} ${dropRowPath === e.path ? styles.entryDropTarget : ''}`}
                     onClick={() => e.isDir ? handleEnterDir(e.path) : openPreview(e)}
+                    {...(e.isDir && !e.isSymlink ? {
+                      onDragOver: (ev: React.DragEvent) => handleRowDragOver(ev, e),
+                      onDrop: (ev: React.DragEvent) => handleRowDrop(ev, e),
+                    } : {})}
                   >
                     <input
                       type="checkbox"
@@ -1152,16 +1259,11 @@ export function FileSystemDrawer({
       )}
 
       {/* Drag-drop overlay - rendered on top of whichever tab is active. */}
-      <div
-        className={`${styles.dropZone} ${isDragging ? styles.dropZoneActive : ''}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
+      <div className={`${styles.dropZone} ${isDragging ? styles.dropZoneActive : ''}`}>
         {isDragging && (
           <div className={styles.dropHint}>
             <UploadIcon size={32} />
-            <div>Drop to upload to {currentPath === '.' ? 'workspace root' : currentPath}</div>
+            <div>Drop to upload to {dropDestination === '.' ? 'workspace root' : dropDestination}</div>
           </div>
         )}
       </div>
@@ -1336,6 +1438,40 @@ export function FileSystemDrawer({
           </div>
         </div>
       )}
+    </>
+  )
+
+  return (
+    <Drawer
+      isOpen={isOpen}
+      onClose={onClose}
+      position="left"
+      mode="overlay"
+      width={`${drawerWidth}px`}
+      title="Agent Workspace"
+      headerActions={
+        <WikiInfoButton
+          target="https://github.com/samugit83/redamon/wiki/Agent-Workspace"
+          title="Open Agent Workspace wiki page"
+        />
+      }
+      resizable
+      minWidth={MIN_WIDTH_PX}
+      maxWidth={MAX_WIDTH_PX}
+      onResize={setDrawerWidth}
+      onResizeEnd={handleResizeEnd}
+    >
+      {/* Drag events land on whatever is under the pointer (the overlay
+          below never intercepts them), so the drawer-wide handlers sit on
+          an ancestor of everything and folder rows stop their own. */}
+      <div
+        className={styles.dragRoot}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {content}
+      </div>
     </Drawer>
   )
 }

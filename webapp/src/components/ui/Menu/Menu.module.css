@@ -26,8 +26,10 @@
   }
 }
 
+/* `translate`, not `transform`: the fade-in animates `transform`, which would
+   override a right-aligned menu's shift for its 150 ms and make it jump. */
 .menuRight {
-  transform: translateX(-100%);
+  translate: -100% 0;
 }
 
 .menuItem {

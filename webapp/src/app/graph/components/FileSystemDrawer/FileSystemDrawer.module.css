@@ -45,6 +45,15 @@
   white-space: nowrap;
 }
 
+.crumbTrail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+}
+
 .crumb {
   color: var(--accent-primary);
   background: none;
@@ -112,7 +121,9 @@
 }
 
 .entry:hover .entryActions,
-.job:hover .jobActions {
+.job:hover .jobActions,
+.entry:focus-within .entryActions,
+.job:focus-within .jobActions {
   opacity: 1;
 }
 
@@ -208,10 +219,6 @@
 
 /* Stage B additions */
 
-.toolbarSpacer {
-  flex: 1;
-}
-
 .mkdirRow {
   display: flex;
   align-items: center;
@@ -238,8 +245,14 @@
   opacity: 0.6;
 }
 
+/* Takes the drawer's drag events; fills the body so a drop below a short list lands too. */
+.dragRoot {
+  min-height: 100%;
+}
+
 /* Drag-and-drop overlay - covers the drawer body when dragging files over.
-   Uses pointer-events: none normally so it doesn't intercept clicks. */
+   Visual only, even while active: pointer-events stay off so the folder row
+   under the pointer still receives the drag and can be the destination. */
 .dropZone {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
@@ -248,7 +261,6 @@
 }
 
 .dropZoneActive {
-  pointer-events: auto;
   background: rgba(59, 130, 246, 0.08);
   border: 2px dashed var(--accent-primary);
 }
@@ -520,6 +532,7 @@
 
 .bulkBar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
@@ -639,4 +652,163 @@
   color: var(--text-tertiary);
   font-size: 11px;
   margin-top: 8px;
+}
+
+/* Folder row under a drag: the drop goes into it. After .entrySelected so it shows on a selected row too. */
+
+.entryDropTarget,
+.entryDropTarget:hover {
+  background: rgba(59, 130, 246, 0.12);
+  outline: 1px dashed var(--accent-primary);
+  outline-offset: -1px;
+}
+
+/* Upload control: the plain Upload button plus the chevron that opens the menu */
+
+.uploadSplit {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.uploadCaret {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 1px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.uploadCaret:hover {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+.uploadSplit [aria-haspopup='menu']:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Transfers panel: one row per upload or import, above the list. Two lines
+   per row (name + state + button, then bar or outcome) so it fits at 320 px. */
+
+.transferList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.transfer {
+  padding: 6px 12px;
+  font-size: 12px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle, transparent);
+}
+
+.transfer:last-child {
+  border-bottom: none;
+}
+
+.transferHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.transferName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.transferState {
+  flex-shrink: 0;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.transferProgress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.transferBar {
+  flex: 1;
+  min-width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.transferBarFill {
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 200ms;
+}
+
+.transferBarBusy {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.transferDetail {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.transferLink {
+  display: block;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent-primary);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transferLink:hover {
+  text-decoration: underline;
+}
+
+.transferLink code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 0 4px;
+}
+
+.transferError,
+.transferNote {
+  margin-top: 4px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.transferError {
+  color: var(--accent-danger, #e57373);
+}
+
+.transferNote {
+  color: var(--text-tertiary);
 }
