@@ -2464,12 +2464,36 @@ class PhaseAwareToolExecutor:
         # Fallback: convert to string
         return str(output)
 
+    @staticmethod
+    def _fs_busy_error(tool_name: str, args: dict) -> Optional[str]:
+        """The refusal for a write into a folder a running import is replacing,
+        or None. Checked here, at the one chokepoint every agent path reaches
+        (single tool, plan wave, fireteam member), not in each fs_* function."""
+        write_args = workspace_fs.FS_TOOL_WRITE_ARGS.get(tool_name)
+        project_id = current_project_id.get()
+        if not write_args or not project_id:
+            return None
+        for name in write_args:
+            path = args.get(name)
+            if not isinstance(path, str) or not path:
+                continue
+            try:
+                workspace_fs.check_not_busy(project_id, path)
+            except Exception as e:
+                job_id = getattr(e, "detail", "") or "unknown"
+                return (f"{path} is being replaced by a running import (job {job_id}); "
+                        f"retry when it finishes.")
+        return None
+
     async def _dispatch_fs_tool(self, tool_name: str, tool_args: dict) -> dict:
         """In-process workspace filesystem tool dispatch."""
         coro = workspace_fs.DISPATCH.get(tool_name)
         if coro is None:
             return {"success": False, "output": None, "error": f"unknown fs tool: {tool_name}"}
         args = tool_args if isinstance(tool_args, dict) else {}
+        busy_error = self._fs_busy_error(tool_name, args)
+        if busy_error:
+            return {"success": False, "output": None, "error": busy_error}
         try:
             output = await coro(**args)
         except TypeError as e:

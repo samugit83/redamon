@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from workspace_import import busy as _busy
+
 logger = logging.getLogger(__name__)
 
 
@@ -1294,6 +1296,31 @@ def download_for_project(project_id: str, path: str) -> tuple[bytes, str]:
     return full.read_bytes(), mime
 
 
+def project_relative(project_id: str, user_path: Optional[str], follow_symlinks: bool = False) -> str:
+    """`user_path` (relative or absolute) as a normalized project-relative path,
+    '.' for the root. Raises ValueError when it escapes the project."""
+    full = resolve_for_project(project_id, user_path, follow_symlinks=follow_symlinks)
+    root = (WORKSPACE_ROOT / project_id).resolve()
+    return "." if full == root else str(full.relative_to(root))
+
+
+def check_not_busy(project_id: str, user_path: Optional[str]) -> None:
+    """Refuse a mutation a running import would undo (workspace_import.busy).
+    Both the path as written and where its symlinks lead are checked; any error
+    in the check refuses."""
+    try:
+        for follow in (False, True):
+            try:
+                rel = project_relative(project_id, user_path, follow_symlinks=follow)
+            except ValueError:
+                continue
+            _busy.check_mutation(project_id, rel)
+    except Exception as e:
+        if getattr(e, "code", None) == "busy":
+            raise
+        raise _busy.ImportFailure("busy", detail="unknown") from None
+
+
 def rename_for_project(project_id: str, path: str, new_name: str) -> str:
     """Rename a single entry within its parent dir. Returns new relative path."""
     if is_protected_path(path):
@@ -1306,7 +1333,10 @@ def rename_for_project(project_id: str, path: str, new_name: str) -> str:
         raise ValueError(f"not found: {path}")
     new_full = full.parent / new_name
     # Re-validate the new path to be sure it stays in-workspace
-    resolve_for_project(project_id, str(new_full.relative_to((WORKSPACE_ROOT / project_id).resolve())))
+    new_rel = str(new_full.relative_to((WORKSPACE_ROOT / project_id).resolve()))
+    resolve_for_project(project_id, new_rel)
+    check_not_busy(project_id, path)
+    check_not_busy(project_id, new_rel)
     if new_full.exists() or new_full.is_symlink():
         raise ValueError(f"destination already exists: {new_name}")
     full.rename(new_full)
@@ -1320,6 +1350,7 @@ def delete_for_project(project_id: str, path: str, recursive: bool = False) -> N
     full = resolve_for_project(project_id, path)
     if not (full.exists() or full.is_symlink()):
         raise ValueError(f"not found: {path}")
+    check_not_busy(project_id, path)
     if full.is_dir() and not full.is_symlink():
         if not recursive:
             raise ValueError(f"{path} is a directory (pass recursive=True)")
@@ -1630,3 +1661,27 @@ DISPATCH = {
 }
 
 FS_TOOL_NAMES = frozenset(DISPATCH.keys())
+
+# For each mutating fs_* tool, the arguments that name a path it writes,
+# deletes or moves. The executor's single fs chokepoint refuses those paths
+# while a running import is replacing them (workspace_import.busy). Every
+# DISPATCH key is in exactly one of these two tables; a test enforces it, so a
+# new tool cannot skip the check silently.
+FS_TOOL_WRITE_ARGS: dict[str, tuple[str, ...]] = {
+    "fs_write": ("path",),
+    "fs_edit": ("path",),
+    "fs_multi_edit": ("path",),
+    "fs_undo_edit": ("path",),
+    "fs_chmod": ("path",),
+    "fs_delete": ("path",),
+    "fs_move": ("src", "dst"),
+    "fs_copy": ("dst",),
+    "fs_mkdir": ("path",),
+    "fs_symlink_create": ("linkname",),
+    "fs_extract": ("dest",),
+    "fs_archive": ("dest",),
+}
+FS_TOOL_READ_ONLY = frozenset({
+    "fs_read", "fs_read_many", "fs_stat", "fs_grep", "fs_glob", "fs_find", "fs_list",
+    "fs_tree", "fs_symbols", "fs_symlink_read", "fs_hash", "fs_diff",
+})

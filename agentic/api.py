@@ -46,6 +46,7 @@ from websocket_api import WebSocketManager, websocket_endpoint, MessageType
 import workspace_fs
 import job_runner
 import ws_job_emitter
+from workspace_import.errors import ImportFailure, error_body
 
 # Initialize logging with file rotation
 setup_logging(log_level=logging.INFO, log_to_console=True, log_to_file=True)
@@ -2672,6 +2673,8 @@ async def workspace_rename(req: WorkspaceRenameRequest):
     try:
         new_path = workspace_fs.rename_for_project(req.projectId, req.path, req.newName)
         return {"projectId": req.projectId, "path": new_path}
+    except ImportFailure as e:
+        return JSONResponse(content=error_body(e.code, jobId=e.detail), status_code=e.status)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2692,6 +2695,8 @@ async def workspace_delete(
     try:
         workspace_fs.delete_for_project(projectId, path, recursive)
         return {"projectId": projectId, "path": path, "deleted": True}
+    except ImportFailure as e:
+        return JSONResponse(content=error_body(e.code, jobId=e.detail), status_code=e.status)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
