@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, StrictSt
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import limits, purge, resolve, runner, staging, upload_job, upload_sessions
+from workspace_import import limits, provenance, purge, resolve, runner, staging, upload_job, upload_sessions
 from workspace_import.detect import MIRROR_KINDS
 from workspace_import.names import sanitize_name
 from workspace_import.place import POLICIES
@@ -97,6 +97,12 @@ class ImportBody(_Body):
     name: Optional[StrictStr] = None
     onConflict: StrictStr = "keep_both"
     options: dict = {}
+    githubToken: Optional[StrictStr] = None
+
+
+class ResyncBody(_Body):
+    projectId: StrictStr
+    path: StrictStr
     githubToken: Optional[StrictStr] = None
 
 
@@ -279,7 +285,7 @@ def _clean_options(options: dict) -> Optional[dict]:
 
 
 async def start_import(project_id: str, url: str, dest_dir: str, name: Optional[str], on_conflict: str,
-                       options: dict, github_token: str) -> JSONResponse:
+                       options: dict, github_token: str, *, resync: bool = False) -> JSONResponse:
     """Shared by a new import and a Re-sync: inspect on the server, then spawn."""
     try:
         dest = workspace_fs.resolve_for_project(project_id, dest_dir)
@@ -300,7 +306,7 @@ async def start_import(project_id: str, url: str, dest_dir: str, name: Optional[
         if not final_name:
             return fail("invalid_request")
         spec = runner.ImportSpec(url=url, dest_dir=dest_dir, name=final_name, on_conflict=on_conflict,
-                                 options=options)
+                                 options=options, resync=resync)
         started = await runner.start(spec, insp, project_id=project_id, github_token=github_token)
     except asyncio.TimeoutError:
         return fail("timeout")
@@ -325,3 +331,36 @@ async def import_url(request: Request):
         return fail("invalid_request")
     return await start_import(body.projectId, body.url, body.destDir, body.name, body.onConflict, options,
                               body.githubToken or "")
+
+
+@router.post("/import-url/resync")
+async def resync_import(request: Request):
+    """Fetch an imported folder again from its recorded source and replace its
+    contents. The folder is a busy target for the whole job."""
+    if not limits.url_import_enabled():
+        return fail("import_disabled")
+    body = await parse_body(request, ResyncBody)
+    if body is None or not valid_project(body.projectId):
+        return fail("invalid_request")
+    try:
+        rel = workspace_fs.project_relative(body.projectId, body.path, follow_symlinks=False)
+        folder = workspace_fs.resolve_for_project(body.projectId, rel, follow_symlinks=False)
+    except ValueError:
+        return fail("invalid_request")
+    if workspace_fs.is_protected_path(rel):
+        return fail("protected_path")
+    if folder.is_symlink() or not folder.is_dir():
+        return fail("not_imported")
+    record = provenance.read(folder, project_id=body.projectId)
+    if record is None:
+        return fail("not_imported")
+    if not record.get("resyncable"):
+        return fail("not_resyncable")
+    source = record.get("source") or {}
+    url = str(source.get("url") or "")
+    options = _clean_options(record.get("options") or {})
+    if not url or options is None:
+        return fail("not_imported")
+    parent = rel.rsplit("/", 1)[0] if "/" in rel else "."
+    return await start_import(body.projectId, url, parent, folder.name, "replace", options,
+                              body.githubToken or "", resync=True)

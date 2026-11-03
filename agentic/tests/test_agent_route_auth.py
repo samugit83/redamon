@@ -47,6 +47,7 @@ LOCKED_ROUTES = {
     ("POST", "/workspace/project-purge"),
     ("POST", "/workspace/import-url/resolve"),
     ("POST", "/workspace/import-url"),
+    ("POST", "/workspace/import-url/resync"),
     ("POST", "/workspace/upload"),
     ("POST", "/workspace/mkdir"),
     ("POST", "/workspace/bulk-archive"),

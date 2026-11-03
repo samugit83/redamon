@@ -26,12 +26,14 @@ import stat as statlib
 import subprocess
 import tarfile
 import time
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from workspace_import import busy as _busy
+from workspace_import import provenance as _provenance
 
 logger = logging.getLogger(__name__)
 
@@ -1273,13 +1275,17 @@ def list_dir_page(project_id: str, path: str = ".", limit: int = 2000) -> tuple[
     for entry in entries[:max(0, limit)]:
         try:
             st = os.stat(entry.path)
+            is_dir = _is_dir(entry)
             rows.append({
                 "name": entry.name,
                 "path": str(Path(entry.path).relative_to(root)),
-                "isDir": _is_dir(entry),
+                "isDir": is_dir,
                 "isSymlink": entry.is_symlink(),
                 "size": st.st_size,
                 "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
+                # A signed record of this project, not just a file of that name.
+                "imported": bool(is_dir and not entry.is_symlink()
+                                 and _provenance.is_imported_dir(entry.path, project_id=project_id)),
             })
         except Exception as e:
             logger.warning(f"list_dir: skipped {entry.path}: {e}")
@@ -1731,7 +1737,35 @@ def properties_for_project(project_id: str, path: str) -> dict:
         props["sha256"] = h.hexdigest()
     if full.is_symlink():
         props["target"] = os.readlink(full)
+    if kind == "dir":
+        record = _provenance.read(full, project_id=project_id)
+        if record is not None:
+            props["import"] = import_facts(record)
     return props
+
+
+def import_facts(record: dict) -> dict:
+    """What the Properties popover shows about an import, every field sanitized."""
+    source = record.get("source") if isinstance(record.get("source"), dict) else {}
+
+    def text(value, limit=200):
+        value = "" if value is None else str(value)
+        return "".join(ch if ch.isprintable() else "?" for ch in value)[:limit]
+
+    try:
+        source_path = urllib.parse.urlsplit(str(source.get("url") or "")).path
+    except ValueError:
+        source_path = ""
+    commit = text(source.get("commit"), 64)
+    return {
+        "kind": text(source.get("kind"), 40),
+        "host": text(source.get("host"), 255),
+        "sourcePath": text(source_path, 500),
+        "ref": text(source.get("ref"), 255),
+        "commit7": commit[:7],
+        "fetchedAt": text(record.get("fetchedAt"), 40),
+        "resyncable": bool(record.get("resyncable")),
+    }
 
 
 DISPATCH = {

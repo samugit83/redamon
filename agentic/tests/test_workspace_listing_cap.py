@@ -40,15 +40,20 @@ class ListingCap(unittest.TestCase):
         self.assertEqual([r["name"] for r in rows], ["adir", "Zdir", "f00.txt", "f01.txt", "f02.txt"])
         self.assertEqual(rows[0]["path"], "uploads/big/adir")
         self.assertTrue(rows[0]["isDir"])
-        # Same rows as the uncapped helper the rest of the code still uses.
-        self.assertEqual(rows, workspace_fs.list_dir_for_project("p1", "uploads/big")[:5])
+        # Same rows as the uncapped helper the rest of the code still uses, plus
+        # the page's `imported` flag.
+        self.assertEqual([{k: v for k, v in r.items() if k != "imported"} for r in rows],
+                         workspace_fs.list_dir_for_project("p1", "uploads/big")[:5])
+        self.assertEqual({r["imported"] for r in rows}, {False})
 
     def test_only_the_page_is_statted(self):
         real_stat = os.stat
         statted = []
 
         def counting(path, *a, **kw):
-            if str(path).startswith(str(self.big) + "/"):
+            # Direct children only: each listed folder is also probed for its
+            # .import.json, which is a stat one level down.
+            if os.path.dirname(str(path)) == str(self.big):
                 statted.append(os.path.basename(str(path)))
             return real_stat(path, *a, **kw)
 

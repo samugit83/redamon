@@ -45,6 +45,9 @@ class ImportSpec:
     name: str
     on_conflict: str = "keep_both"
     options: dict = field(default_factory=dict)
+    # A Re-sync replaces an existing imported folder; if that folder vanished
+    # meanwhile (deleted from the host or kali), nothing is recreated.
+    resync: bool = False
 
 
 def canonical_key(project_id: str, url: str, dest_dir: str) -> tuple[str, str, str]:
@@ -171,6 +174,16 @@ async def _fetch_into(fetcher, spec, insp, op, reservation, progress, cancel, gi
     return data, False, {"files": 1, "bytes": dl.bytes, "skipped": 0}
 
 
+def _target_present(project_id: str, spec: ImportSpec) -> bool:
+    import workspace_fs
+    try:
+        target = workspace_fs.resolve_for_project(project_id, posixpath.join(spec.dest_dir, spec.name),
+                                                  follow_symlinks=False)
+    except ValueError:
+        return False
+    return target.is_dir() and not target.is_symlink()
+
+
 def _max_entries() -> int:
     from workspace_import.limits import max_entries
     return max_entries()
@@ -213,6 +226,8 @@ async def run_import(spec: ImportSpec, insp, *, project_id: str, github_token: s
         if is_folder:
             provenance.write(staged, _record(spec, insp, stats), project_id=project_id)
         await jobs_common.ensure_project_exists(project_id)
+        if spec.resync and not _target_present(project_id, spec):
+            raise ImportFailure("destination_missing")
         progress.update(phase="placing")
         rel = await place.place(project_id, staged, spec.dest_dir, spec.name, spec.on_conflict)
         reporter.cancel()
