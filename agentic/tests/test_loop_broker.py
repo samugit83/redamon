@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent_in_the_loop import LoopSettings
 from agent_in_the_loop.broker import (
-    ENDED_STATUS_KEEP_S, MAX_DEDUP_SETS_PER_DRIVER, StepBroker, session_key,
+    DEDUP_REFRESH_STEPS, ENDED_STATUS_KEEP_S, MAX_DEDUP_SETS_PER_DRIVER, StepBroker, session_key,
 )
 from agent_in_the_loop.errors import (
     LoopCapReached, LoopNoDriver, LoopStepDeclined, LoopStepNotAnswered,
@@ -237,11 +237,21 @@ class Deadlines(BrokerCase):
         step = await self.open(scope)
         task = self.awaiting(step)
         self.clock.t += 250
-        await self.wait(projects=("other",))       # a call that claims nothing
-        self.clock.t += 250
+        await self.wait()                           # claims it: lease until +340
+        self.clock.t += 250                         # lease expired, nobody came back
         await asyncio.sleep(0.03)
-        self.assertFalse(task.done())
+        self.assertFalse(task.done())               # grace counts from the call
         self.clock.t += 60
+        with self.assertRaises(LoopNoDriver):
+            await asyncio.wait_for(task, 1)
+
+    async def test_a_claim_whose_driver_vanished_hits_the_no_driver_rule(self):
+        # The lease runs out and no driver call ever turns the step back to open.
+        scope = await self.scope()
+        step = await self.open(scope)
+        await self.wait()
+        task = self.awaiting(step)
+        self.clock.t += 301
         with self.assertRaises(LoopNoDriver):
             await asyncio.wait_for(task, 1)
 
@@ -412,13 +422,13 @@ class Scopes(BrokerCase):
         self.awaiting(step)
         await asyncio.sleep(0.02)
         self.assertFalse(rec.payloads[-1]["driver"]["connected"])
-        await self.wait(projects=("none",))
+        await self.wait()
         await asyncio.sleep(0)
         self.assertTrue(rec.payloads[-1]["driver"]["connected"])
-        self.clock.t += 61
+        self.clock.t += 91                          # past the lease and LOOP_DRIVER_SEEN_S
         await asyncio.sleep(0.03)
         self.assertFalse(rec.payloads[-1]["driver"]["connected"])
-        self.assertEqual(rec.payloads[-1]["driver"]["lastSeenSeconds"], 61)
+        self.assertEqual(rec.payloads[-1]["driver"]["lastSeenSeconds"], 91)
 
 
 class Dedup(BrokerCase):
@@ -426,7 +436,7 @@ class Dedup(BrokerCase):
         scope = await self.scope()
         first = await self.open(scope, text="iteration 1")
         await self.wait(driver="cc-a")
-        await self.broker.answer("u1", ["p1"], first.id, text="{}")
+        await self.broker.answer("u1", ["p1"], first.id, text="{}", token_id="t1", driver_name="cc-a")
         second = await self.open(scope, text="iteration 2")
         got = await self.wait(driver="cc-a")
         self.assertEqual(got["step"]["stepId"], second.id)
@@ -463,6 +473,150 @@ class Dedup(BrokerCase):
             cursor = view["page"]["nextCursor"]
         self.assertEqual(len(text), page["totalChars"])
 
+
+
+class StableRendering(BrokerCase):
+    """A cursor is an offset into one rendering: pages must always line up."""
+
+    async def big_step(self, scope, text):
+        return await self.open(scope, text=text)
+
+    def read(self, step_id, cursor, full=False, driver="cc-a"):
+        return self.broker.get("u1", ["p1"], step_id, "t1", driver, cursor, full)
+
+    async def seeded(self):
+        # A first step delivers the tier; the second, read by pages, would dedup it.
+        self.make(page_chars=1500)
+        scope = await self.scope()
+        first = await self.open(scope, text="iteration 1")
+        got = await self.wait()
+        cursor = got["step"]["page"]["nextCursor"]
+        while cursor is not None:
+            cursor = self.read(first.id, cursor)["page"]["nextCursor"]
+        await self.broker.answer("u1", ["p1"], first.id, text="{}", token_id="t1", driver_name="cc-a")
+        second = await self.open(scope, text="iteration 2 " + "y" * 3000)
+        return second
+
+    async def test_a_lease_lost_between_pages_keeps_the_same_document(self):
+        # The tier (1300 chars) ends inside page 1: once delivered, a re-render
+        # would turn it into a placeholder and shift every later cursor.
+        self.make(page_chars=1500)
+        scope = await self.scope()
+        second = await self.open(scope, text="iteration 2 " + "y" * 3000)
+        got = await self.wait()
+        text, total = got["step"]["prompt"], got["step"]["page"]["totalChars"]
+        self.clock.t += 91                      # e.g. the person approving a tool call
+        cursor = got["step"]["page"]["nextCursor"]
+        while cursor is not None:
+            view = self.read(second.id, cursor)
+            self.assertEqual(view["page"]["totalChars"], total)
+            text += view["prompt"]
+            cursor = view["page"]["nextCursor"]
+        self.assertEqual(len(text), total)
+        self.assertTrue(text.endswith("y" * 3000 + ": output one JSON object"))
+
+    async def test_full_from_the_start_then_plain_pages_stay_in_the_full_document(self):
+        second = await self.seeded()
+        await self.wait()
+        view = self.read(second.id, 0, full=True)
+        text, total = view["prompt"], view["page"]["totalChars"]
+        self.assertIn(TIER, text)
+        cursor = view["page"]["nextCursor"]
+        while cursor is not None:               # the client omits full on later pages
+            view = self.read(second.id, cursor)
+            self.assertEqual(view["page"]["totalChars"], total)
+            text += view["prompt"]
+            cursor = view["page"]["nextCursor"]
+        self.assertEqual(len(text), total)
+        self.assertNotIn("[[part", text)
+
+    async def test_full_asked_mid_document_keeps_the_rendering_the_cursor_came_from(self):
+        second = await self.seeded()
+        got = await self.wait()
+        text, total = got["step"]["prompt"], got["step"]["page"]["totalChars"]
+        cursor = got["step"]["page"]["nextCursor"]
+        while cursor is not None:
+            view = self.read(second.id, cursor, full=True)
+            self.assertEqual(view["page"]["totalChars"], total)
+            text += view["prompt"]
+            cursor = view["page"]["nextCursor"]
+        self.assertEqual(len(text), total)
+
+
+class DeliveryProof(BrokerCase):
+    """A part counts as delivered only once the client proves it received it."""
+
+    async def test_a_page_never_followed_by_a_request_or_answer_is_not_delivered(self):
+        scope = await self.scope()
+        first = await self.open(scope, text="iteration 1")
+        await self.wait()                       # served; the response may have been lost
+        self.assertEqual(self.broker.delivered_shas("s1", "t1", "cc-a"), set())
+        self.broker._steps[first.id].lease_until = 0
+        again = await self.wait()               # re-offered after the lease
+        self.assertIn(TIER, again["step"]["prompt"])
+
+    async def test_asking_for_the_next_page_proves_the_previous_one(self):
+        self.make(page_chars=1500)
+        scope = await self.scope()
+        step = await self.open(scope, text="iteration 1 " + "z" * 2000)
+        got = await self.wait()
+        self.assertIsNotNone(got["step"]["page"]["nextCursor"])
+        self.assertEqual(self.broker.delivered_shas("s1", "t1", "cc-a"), set())
+        self.broker.get("u1", ["p1"], step.id, "t1", "cc-a", got["step"]["page"]["nextCursor"], False)
+        self.assertTrue(self.broker.delivered_shas("s1", "t1", "cc-a"))
+
+    async def test_parts_are_sent_in_full_again_after_the_refresh_window(self):
+        scope = await self.scope()
+        seen_full = []
+        for i in range(DEDUP_REFRESH_STEPS + 1):
+            step = await self.open(scope, text=f"iteration {i}")
+            got = await self.wait()
+            seen_full.append(TIER in got["step"]["prompt"])
+            await self.broker.answer("u1", ["p1"], step.id, text="{}", token_id="t1", driver_name="cc-a")
+        self.assertEqual(seen_full, [True] + [False] * (DEDUP_REFRESH_STEPS - 1) + [True])
+
+
+class PresencePerSession(BrokerCase):
+    """A driver scoped to one chat is no presence for the user's other chats."""
+
+    async def test_a_scoped_driver_leaves_the_other_chat_unserved(self):
+        rec_a, rec_b = Recorder(), Recorder()
+        a = await self.scope(session="sA", callback=rec_a)
+        b = await self.scope(session="sB", callback=rec_b)
+        step_b = await self.open(b, text="chat B")
+        task_b = self.awaiting(step_b)
+        step_a = await self.open(a, text="chat A")
+        got = await self.wait(session="sA")
+        self.assertEqual(got["step"]["stepId"], step_a.id)
+        await asyncio.sleep(0.02)
+        self.assertTrue(rec_a.payloads[-1]["driver"]["connected"])
+        self.assertFalse(rec_b.payloads[-1]["driver"]["connected"])
+        for _ in range(6):                      # the driver keeps polling chat A only
+            self.clock.t += 55
+            await self.wait(session="sA")
+        with self.assertRaises(LoopNoDriver):
+            await asyncio.wait_for(task_b, 1)
+
+    async def test_an_unscoped_driver_is_presence_for_every_chat_it_can_serve(self):
+        rec_a, rec_b = Recorder(), Recorder()
+        await self.scope(session="sA", callback=rec_a)
+        b = await self.scope(session="sB", callback=rec_b)
+        await self.open(b, text="chat B")
+        await self.wait(projects=("p1",), timeout=0.01)
+        await asyncio.sleep(0.02)
+        self.assertTrue(rec_a.payloads[-1]["driver"]["connected"])
+        self.assertTrue(rec_b.payloads[-1]["driver"]["connected"])
+
+    async def test_a_driver_of_other_projects_is_no_presence(self):
+        rec = Recorder()
+        scope = await self.scope(callback=rec)
+        step = await self.open(scope)
+        task = self.awaiting(step)
+        self.clock.t += 250
+        await self.wait(projects=("other",))
+        self.clock.t += 51
+        with self.assertRaises(LoopNoDriver):
+            await asyncio.wait_for(task, 1)
 
 class Pruning(BrokerCase):
     async def test_ended_status_and_dedup_sets_are_pruned(self):

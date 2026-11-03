@@ -33,6 +33,9 @@ logger = logging.getLogger("agent_in_the_loop")
 
 ENDED_STATUS_KEEP_S = 600
 MAX_DEDUP_SETS_PER_DRIVER = 64
+# A part is sent in full again this many steps after the driver received it: an
+# interactive client compacts its context in long runs and may no longer hold it.
+DEDUP_REFRESH_STEPS = 10
 DRIVERS_SEEN_WINDOW_S = 300
 # How often an awaiting step re-checks its deadline and the no-driver rule.
 DEFAULT_POLL_S = 5.0
@@ -61,9 +64,14 @@ class Step:
     state: str = OPEN
     answered_by: dict = field(default_factory=dict)
     answer: Optional[asyncio.Future] = None
-    # The rendering for the current claim only: {full: (text, spans)}.
-    render_cache: dict = field(default_factory=dict)
-    render_for: str = ""
+    # Per claimant, the renderings it read, frozen for the step's life:
+    # {claimant: {"full" | "dedup": (text, spans), "current": mode}}. A cursor is
+    # an offset into ONE rendering, so it must never be re-rendered under it.
+    renderings: dict = field(default_factory=dict)
+    # Per claimant, pages served but not yet known to be received:
+    # [(page_end, shas, step_no)]. Committed when the claimant asks for a later
+    # page or answers; a page lost on the way never counts as delivered.
+    pending: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -118,6 +126,9 @@ class StepBroker:
         self._delivered: dict[tuple[str, str], OrderedDict] = {}
         self._last_driver_call: dict[str, float] = {}
         self._driver_seen: dict[str, float] = {}
+        # session key -> the last driver call that could serve that session. A
+        # driver scoped to one session is no presence for the user's others.
+        self._seen: dict[str, float] = {}
         self._connected: dict[str, bool] = {}
         self._answered_by: dict[str, dict] = {}
         self._bg: set[asyncio.Task] = set()
@@ -165,29 +176,46 @@ class StepBroker:
         return live[0]
 
     # ------------------------------------------------------- driver activity --
-    def driver_connected(self, user_id: str) -> tuple[bool, Optional[float]]:
+    def driver_connected(self, key: str) -> tuple[bool, Optional[float]]:
+        """Whether a driver is serving this session: a call that could reach it in
+        the last LOOP_DRIVER_SEEN_S, or a live lease on one of its steps."""
         now = self._now()
-        last = self._last_driver_call.get(user_id)
+        last = self._seen.get(key)
         seen = None if last is None else max(0.0, now - last)
         if seen is not None and seen <= self.cfg.driver_seen_s:
             return True, seen
-        leased = any(s.user_id == user_id and s.state == CLAIMED and s.lease_until > now
+        leased = any(session_key(s.user_id, s.project_id, s.session_id) == key
+                     and s.state == CLAIMED and s.lease_until > now
                      for s in self._steps.values())
         return leased, seen
 
-    def _record_driver_call(self, user_id: str, token_id: str, driver_name: Optional[str]) -> None:
+    def _record_driver_call(self, user_id: str, token_id: str, driver_name: Optional[str],
+                            project_ids: Optional[set[str]] = None,
+                            session_id: Optional[str] = None,
+                            step_key: Optional[str] = None) -> None:
+        """Record a driver call as presence for every session it could serve: the
+        user's live sessions in `project_ids` (only `session_id` when scoped), or
+        the one session of the step it reads or answers (`step_key`)."""
         now = self._now()
         self._last_driver_call[user_id] = now
         self._driver_seen[_driver_key(token_id, driver_name)] = now
+        if step_key:
+            self._seen[step_key] = now
+        if project_ids is not None:
+            for key, status in self._statuses.items():
+                if (status.user_id == user_id and status.live and status.project_id in project_ids
+                        and (not session_id or status.session_id == session_id)):
+                    self._seen[key] = now
         self._check_connected(user_id)
 
     def _check_connected(self, user_id: str) -> None:
-        connected, _ = self.driver_connected(user_id)
-        if self._connected.get(user_id) != connected:
-            self._connected[user_id] = connected
-            for status_key, status in self._statuses.items():
-                if status.user_id == user_id and status.live:
-                    self._emit(status_key)
+        for key, status in self._statuses.items():
+            if status.user_id != user_id or not status.live:
+                continue
+            connected, _ = self.driver_connected(key)
+            if self._connected.get(key) != connected:
+                self._connected[key] = connected
+                self._emit(key)
 
     # ---------------------------------------------------------- status out --
     def status_payload(self, key: str) -> Optional[dict]:
@@ -198,7 +226,7 @@ class StepBroker:
         steps = sorted((s for s in self._steps.values()
                         if session_key(s.user_id, s.project_id, s.session_id) == key
                         and s.state in LIVE_STEP_STATES), key=lambda s: s.opened_at)
-        connected, seen = self.driver_connected(status.user_id)
+        connected, seen = self.driver_connected(key)
         payload: dict = {
             "state": status.state,
             "detail": dict(status.detail),
@@ -355,8 +383,10 @@ class StepBroker:
                 now = self._now()
                 if now >= step.deadline_at:
                     self._fail(step, key, LoopStepNotAnswered)
-                if step.state == OPEN:
-                    since = max(step.opened_at, self._last_driver_call.get(step.user_id, 0.0))
+                # A claim whose lease ran out is unserved too: its driver may be gone,
+                # and only another driver call would turn it back to open.
+                if step.state == OPEN or (step.state == CLAIMED and step.lease_until <= now):
+                    since = max(step.opened_at, self._seen.get(key, 0.0))
                     if now - since >= self.cfg.no_driver_grace_s:
                         self._fail(step, key, LoopNoDriver)
                 self._check_connected(step.user_id)
@@ -386,8 +416,8 @@ class StepBroker:
 
     def _close_step(self, step: Step, state: str) -> None:
         step.state = state
-        step.render_cache.clear()
-        step.render_for = ""
+        step.renderings.clear()
+        step.pending.clear()
 
     def _log_end(self, step: Step, outcome: str) -> None:
         logger.warning(
@@ -400,9 +430,8 @@ class StepBroker:
         now = self._now()
         for step in self._steps.values():
             if step.state == CLAIMED and step.lease_until <= now:
+                # The renderings stay: the same driver may come back with a cursor.
                 step.state, step.claimed_by = OPEN, ""
-                step.render_cache.clear()
-                step.render_for = ""
                 self._emit(session_key(step.user_id, step.project_id, step.session_id))
 
     def _claimable(self, user_id: str, project_ids: set[str],
@@ -414,48 +443,83 @@ class StepBroker:
         return min(candidates, key=lambda s: s.opened_at, default=None)
 
     def _delivered_set(self, session_id: str, token_id: str,
-                       driver_name: Optional[str], create: bool = False) -> Optional[set]:
+                       driver_name: Optional[str], create: bool = False) -> Optional[dict]:
+        """A driver's dedup state for one session: {"steps": n, "shas": {sha: step_no}}."""
         if not driver_name:
             return None
         sets = self._delivered.get((token_id, driver_name))
         if sets is None:
             if not create:
-                return set()
+                return None
             sets = self._delivered[(token_id, driver_name)] = OrderedDict()
         if session_id not in sets:
             if not create:
-                return set()
-            sets[session_id] = set()
+                return None
+            sets[session_id] = {"steps": 0, "shas": {}}
             while len(sets) > MAX_DEDUP_SETS_PER_DRIVER:
                 sets.popitem(last=False)
         sets.move_to_end(session_id)
         return sets[session_id]
 
     def delivered_shas(self, session_id: str, token_id: str, driver_name: Optional[str]) -> set:
-        found = self._delivered_set(session_id, token_id, driver_name)
-        return set(found or ())
+        """The parts this driver received in its last DEDUP_REFRESH_STEPS steps."""
+        state = self._delivered_set(session_id, token_id, driver_name)
+        if not state:
+            return set()
+        return {sha for sha, step_no in state["shas"].items()
+                if state["steps"] - step_no < DEDUP_REFRESH_STEPS}
 
     def _rendering(self, step: Step, token_id: str, driver_name: Optional[str],
-                   full: bool) -> tuple[str, list[Span]]:
+                   full: bool, cursor: int) -> tuple[str, list[Span]]:
         claimant = _driver_key(token_id, driver_name)
-        if step.render_for != claimant:
-            step.render_cache.clear()
-            step.render_for = claimant
-        if full not in step.render_cache:
-            delivered = None if (full or not driver_name) else self.delivered_shas(
-                step.session_id, token_id, driver_name)
-            step.render_cache[full] = render(step.messages, delivered=delivered,
-                                             full=full or not driver_name)
-        return step.render_cache[full]
+        mine = step.renderings.get(claimant)
+        if mine is None:
+            mine = step.renderings[claimant] = {}
+            state = self._delivered_set(step.session_id, token_id, driver_name, create=True)
+            if state is not None:
+                state["steps"] += 1
+                mine["step_no"] = state["steps"]
+        mode = "full" if (full or not driver_name) else "dedup"
+        # A cursor belongs to the rendering it came from: the mode changes only at 0.
+        current = mine.get("current")
+        if current is not None and current != mode and cursor > 0:
+            mode = current
+        if mode not in mine:
+            delivered = (None if mode == "full"
+                         else self.delivered_shas(step.session_id, token_id, driver_name))
+            mine[mode] = render(step.messages, delivered=delivered, full=(mode == "full"))
+        mine["current"] = mode
+        return mine[mode]
+
+    def _commit_pending(self, step: Step, token_id: str, driver_name: Optional[str],
+                        upto: Optional[int] = None) -> None:
+        """Count as delivered the pages the claimant proved it received: those ending
+        at or before `upto` (it asked for a later page), or all of them (it answered)."""
+        claimant = _driver_key(token_id, driver_name)
+        pending = step.pending.get(claimant)
+        if not pending:
+            return
+        state = self._delivered_set(step.session_id, token_id, driver_name, create=True)
+        keep = []
+        for page_end, shas, step_no in pending:
+            if upto is None or page_end <= upto:
+                if state is not None:
+                    for sha in shas:
+                        state["shas"][sha] = step_no
+            else:
+                keep.append((page_end, shas, step_no))
+        step.pending[claimant] = keep
 
     def _view(self, step: Step, token_id: str, driver_name: Optional[str],
               cursor: int, full: bool) -> dict:
-        text, spans = self._rendering(step, token_id, driver_name, full)
+        text, spans = self._rendering(step, token_id, driver_name, full, cursor)
         chunk, next_cursor = page(text, cursor, self.cfg.page_chars)
         if driver_name and chunk:
             end = cursor + len(chunk)
-            delivered = self._delivered_set(step.session_id, token_id, driver_name, create=True)
-            delivered.update(s.sha for s in spans if cursor < s.end <= end)
+            claimant = _driver_key(token_id, driver_name)
+            step_no = step.renderings.get(claimant, {}).get("step_no", 0)
+            step.pending.setdefault(claimant, []).append(
+                (end, [s.sha for s in spans if cursor < s.end <= end], step_no))
         now = self._now()
         view = {
             "contractVersion": CONTRACT_VERSION,
@@ -506,7 +570,8 @@ class StepBroker:
                         token_id: str, driver_name: Optional[str], timeout: float,
                         full: bool = False) -> dict:
         allowed = set(project_ids)
-        self._record_driver_call(user_id, token_id, driver_name)
+        self._record_driver_call(user_id, token_id, driver_name, project_ids=allowed,
+                                 session_id=session_id)
         self._prune()
         loop = asyncio.get_running_loop()
         give_up = loop.time() + max(0.0, timeout)
@@ -538,10 +603,15 @@ class StepBroker:
         claimant = _driver_key(token_id, driver_name)
         if step.state == CLAIMED and step.claimed_by != claimant:
             return None
+        key = session_key(step.user_id, step.project_id, step.session_id)
+        self._record_driver_call(user_id, token_id, driver_name, step_key=key)
+        cursor = max(0, int(cursor))
+        # Asking for a page proves the pages before it arrived.
+        self._commit_pending(step, token_id, driver_name, upto=cursor)
         if step.state == OPEN:
-            self._emit(session_key(step.user_id, step.project_id, step.session_id))
+            self._emit(key)
         self._claim(step, token_id, driver_name)
-        return self._view(step, token_id, driver_name, max(0, int(cursor)), bool(full))
+        return self._view(step, token_id, driver_name, cursor, bool(full))
 
     async def answer(self, user_id: str, project_ids: list[str], step_id: str, *,
                      text: Optional[str] = None, declined: bool = False, reason: str = "",
@@ -554,6 +624,10 @@ class StepBroker:
             return {"ok": False, "code": "step_closed"}
         if not declined and len(text or "") > self.cfg.answer_max_chars:
             return {"ok": False, "code": "answer_too_large"}
+        key = session_key(step.user_id, step.project_id, step.session_id)
+        self._record_driver_call(user_id, token_id, driver_name, step_key=key)
+        # An answer (or a decline) proves every page this claimant read arrived.
+        self._commit_pending(step, token_id, driver_name)
         step.answered_by = dict(answered_by or {})
         if step.answered_by and step.purpose == "think":
             self._answered_by[session_key(step.user_id, step.project_id, step.session_id)] = \
@@ -586,11 +660,11 @@ class StepBroker:
                 del sets[sid]
             if not sets:
                 del self._delivered[driver]
-        for table in (self._last_driver_call, self._driver_seen):
+        for table in (self._last_driver_call, self._driver_seen, self._seen):
             for k in [k for k, t in table.items() if now - t > ttl]:
                 del table[k]
-        for user in [u for u in self._connected if u not in self._last_driver_call]:
-            del self._connected[user]
+        for key in [k for k in self._connected if k not in self._statuses]:
+            del self._connected[key]
 
     def take_answered_by(self, key: str) -> Optional[dict]:
         """Who answered the last decision step of this session, once (T23)."""
