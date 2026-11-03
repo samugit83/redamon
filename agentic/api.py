@@ -36,6 +36,10 @@ from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
                        require_master_internal_auth)
 from logging_config import setup_logging
+from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
+from agent_in_the_loop.broker import get_broker
+from agent_in_the_loop.errors import LoopModelNotSupportedHere
+from agent_in_the_loop.routes import router as loop_router
 from orchestrator import AgentOrchestrator
 from orchestrator_helpers import normalize_content
 from plugin_api import router as plugin_router
@@ -187,6 +191,8 @@ async def _request_validation_error(request, exc: RequestValidationError):
 app.include_router(plugin_router)
 # Workspace folder/archive upload sessions and URL imports.
 app.include_router(workspace_import_router)
+# Agent in the Loop: drivers claim and answer model-call steps (via the webapp).
+app.include_router(loop_router)
 
 
 # =============================================================================
@@ -203,6 +209,9 @@ class HealthResponse(BaseModel):
     fireteam_enabled: bool = False
     persistent_checkpointer: bool = False
     active_waves: int = 0
+    # Only the switch: /health is unauthenticated and the agent port is
+    # published, so loop activity counts live on the master-key /loop/stats.
+    loop_enabled: bool = False
 
 
 # =============================================================================
@@ -253,15 +262,16 @@ async def check_target_guardrail(body: GuardrailRequest):
     if not orchestrator or not orchestrator._initialized:
         return {"allowed": True, "reason": "Agent not initialized, guardrail skipped"}
 
-    # Ensure LLM is set up
-    if not orchestrator.llm:
+    # Ensure LLM is set up. An Agent in the Loop adapter counts as no LLM: it
+    # answers only inside a chat run, and this check has no driver.
+    if not orchestrator.llm or is_loop_llm(orchestrator.llm):
         if body.project_id:
             try:
                 orchestrator._apply_project_settings(body.project_id)
             except Exception as e:
                 logger.warning(f"Guardrail: failed to load project settings: {e}")
         # Still no LLM? Bootstrap with default model + user's API keys from DB
-        if not orchestrator.llm:
+        if not orchestrator.llm or is_loop_llm(orchestrator.llm):
             try:
                 from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
                 import requests as _requests
@@ -312,6 +322,8 @@ async def check_target_guardrail(body: GuardrailRequest):
             except Exception as e:
                 logger.warning(f"Guardrail: failed to bootstrap default LLM: {e}")
                 return {"allowed": True, "reason": "LLM not configured, guardrail skipped"}
+    if is_loop_llm(orchestrator.llm):
+        return {"allowed": True, "reason": "LLM not configured, guardrail skipped"}
 
     try:
         result = await check_target_allowed(
@@ -531,8 +543,17 @@ def _feature_request_error(model: str, user_id: Optional[str]) -> Optional[JSONR
     return None
 
 
+def _loop_model_refusal(model: str) -> JSONResponse:
+    """400 for a loop model on a path with no chat run (no driver can answer)."""
+    from agent_in_the_loop.errors import LoopModelNotSupportedHere
+    return _feature_error(LoopModelNotSupportedHere.code, model, 400,
+                          LoopModelNotSupportedHere.message)
+
+
 async def _build_feature_llm(feature: str, model: str, user_id: str):
     """(llm, None), or (None, the coded JSONResponse to return)."""
+    if is_loop_model(model):
+        return None, _loop_model_refusal(model)
     try:
         providers = await asyncio.to_thread(fetch_user_providers, user_id)
     except ProvidersUnreachable as exc:
@@ -649,7 +670,9 @@ def _build_llm_with_model_for_user(model_name: str, user_id: Optional[str]):
     import os
     import requests as requests_mod
     from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+    from agent_in_the_loop.errors import refuse_loop_model
 
+    refuse_loop_model(model_name)
     user_providers: list = []
     if user_id:
         webapp_url = os.environ.get('WEBAPP_URL', 'http://webapp:3000')
@@ -715,6 +738,8 @@ async def llm_ffuf_extensions(body: FfufExtensionsRequest):
 
     try:
         llm = _build_llm_with_model_for_user(body.model, body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model)
     except Exception as e:
         logger.error(f"ffuf-extensions: cannot set up LLM: {e}")
         return JSONResponse(content={"error": f"LLM not configured: {e}"}, status_code=503)
@@ -814,6 +839,8 @@ async def llm_nuclei_tags(body: NucleiTagsRequest):
 
     try:
         llm = _build_llm_with_model_for_user(body.model, body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model)
     except Exception as e:
         logger.error(f"nuclei-tags: cannot set up LLM: {e}")
         return JSONResponse(content={"error": f"LLM not configured: {e}"}, status_code=503)
@@ -926,6 +953,8 @@ async def llm_waf_classify(body: WafClassifyRequest):
 
     try:
         llm = _build_llm_with_model_for_user(body.model, body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model)
     except Exception as e:
         logger.error(f"waf-classify: cannot set up LLM: {e}")
         return JSONResponse(content={"error": f"LLM not configured: {e}"}, status_code=503)
@@ -1054,6 +1083,8 @@ async def llm_nuclei_fp_filter(body: NucleiFpFilterRequest):
 
     try:
         llm = _build_llm_with_model_for_user(body.model, body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model)
     except Exception as e:
         logger.error(f"nuclei-fp-filter: cannot set up LLM: {e}")
         return JSONResponse(content={"error": f"LLM not configured: {e}"}, status_code=503)
@@ -1187,6 +1218,8 @@ async def llm_takeover_classify(body: TakeoverClassifyRequest):
 
     try:
         llm = _build_llm_with_model_for_user(body.model, body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model)
     except Exception as e:
         logger.error(f"takeover-classify: cannot set up LLM: {e}")
         return JSONResponse(content={"error": f"LLM not configured: {e}"}, status_code=503)
@@ -1628,7 +1661,13 @@ async def live_agent_sessions(project_id: str):
     """
     if not ws_manager:
         return JSONResponse(content={"error": "agent not ready"}, status_code=503)
-    return {"project_id": project_id, "session_ids": ws_manager.live_session_ids(project_id)}
+    answer = {"project_id": project_id, "session_ids": ws_manager.live_session_ids(project_id)}
+    # Agent in the Loop runs only: what the run waits for, so a refused preset
+    # or scan can say "waiting for the external agent" (states, never ids of steps).
+    loop_states = get_broker().loop_states_for_project(project_id)
+    if loop_states:
+        answer["loop_states"] = loop_states
+    return answer
 
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
@@ -1665,6 +1704,7 @@ async def health():
         fireteam_enabled=bool(get_setting("FIRETEAM_ENABLED", False)),
         persistent_checkpointer=bool(get_setting("PERSISTENT_CHECKPOINTER", False)),
         active_waves=active_waves,
+        loop_enabled=loop_enabled(),
     )
 
 
@@ -1730,6 +1770,8 @@ def _build_llm_for_user(user_id: Optional[str]):
     model_name = (get_settings() or {}).get(
         'OPENAI_MODEL', DEFAULT_AGENT_SETTINGS.get('OPENAI_MODEL', 'claude-opus-4-6')
     )
+    if is_loop_model(model_name):
+        raise LoopModelNotSupportedHere()
     user_providers: list = []
     if user_id:
         webapp_url = os.environ.get('WEBAPP_URL', 'http://webapp:3000')
@@ -1825,10 +1867,12 @@ async def tradecraft_verify(body: TradecraftVerifyRequest):
     try:
         if body.model:
             llm = _build_llm_with_model_for_user(body.model, body.user_id)
-        elif orchestrator.llm is not None:
+        elif orchestrator.llm is not None and not is_loop_llm(orchestrator.llm):
             llm = orchestrator.llm
         else:
             llm = _build_llm_for_user(body.user_id)
+    except LoopModelNotSupportedHere:
+        return _loop_model_refusal(body.model or "")
     except Exception as e:
         logger.error(f"tradecraft verify: cannot set up LLM: {e}")
         return JSONResponse(
@@ -3222,6 +3266,12 @@ class TextToCypherRequest(BaseModel):
 # factored here so the tenant scoping and the retry policy cannot drift apart.
 
 
+LOOP_OUT_OF_SESSION_CYPHER = (
+    "This project's agent model is Agent in the Loop, which answers only inside a "
+    "chat. Natural-language graph queries need a provider model; raw Cypher still works."
+)
+
+
 class _CypherSetupError(Exception):
     """Carries the (status, safe message) to answer with, plus safe extra fields
     (a code, the provider's class and HTTP status) for the body."""
@@ -3274,6 +3324,10 @@ async def _build_cypher_manager(user_id: str, project_id: str):
             model_name = settings['OPENAI_MODEL']
     except Exception as e:
         logger.warning(f"text-to-cypher: failed to fetch project settings: {e}")
+    if is_loop_model(model_name):
+        # No chat run, so no driver can answer the generation step.
+        raise _CypherSetupError(409, LOOP_OUT_OF_SESSION_CYPHER,
+                                {"code": "loop_model_out_of_session"})
 
     user_providers = []
     try:

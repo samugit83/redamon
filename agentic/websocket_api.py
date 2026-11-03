@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from orchestrator_helpers import create_config
 from orchestrator_helpers.chat_persistence import save_chat_message, update_conversation
+from agent_in_the_loop.broker import get_broker
 
 
 def serialize_for_json(obj):
@@ -148,6 +149,9 @@ class MessageType(str, Enum):
     LATS_COMPLETE = "lats_complete"
     # Background-job lifecycle events emitted by JobRegistry
     JOB_UPDATE = "job_update"
+    # Agent in the Loop: who answers the run's model calls right now. Sent, never
+    # persisted, and only for a run whose model is the loop model.
+    LOOP_STATUS = "loop_status"
 
 
 # =============================================================================
@@ -371,10 +375,16 @@ class WebSocketManager:
             # RAM (none existed before). Reconnects to an existing key are always
             # allowed. On rejection we close the socket and leave authenticated
             # False, so the caller's existing `if not authenticated` guard applies.
-            if not collision:
+            # A run whose tab closed keeps all its memory, so live runs count
+            # as well as connections; a verified peer returning to such a run is
+            # a reconnect. Agent in the Loop runs are long and often headless.
+            live = set(self.active_connections) | {
+                k for k in list(self._active_tasks) if self.get_task(k) is not None}
+            reconnect = collision or (verified and session_key in live)
+            if not reconnect:
                 cap = _governed_max_sessions()
-                if cap is not None and len(self.active_connections) >= cap:
-                    logger.warning(f"session cap reached ({len(self.active_connections)}/{cap}); "
+                if cap is not None and len(live) >= cap:
+                    logger.warning(f"session cap reached ({len(live)}/{cap}); "
                                    f"rejecting new session {session_key}")
                     try:
                         await connection.websocket.close(
@@ -698,6 +708,19 @@ class StreamingCallback:
                 return conn
         return self._original_connection
 
+    def _loop_note(self, state: str, **detail) -> None:
+        """Tell the Agent in the Loop broker what the run is doing (no-op for
+        a provider-model run, whose scope does not use the loop)."""
+        try:
+            get_broker().note(self._session_key, state, **detail)
+        except Exception:
+            logger.debug("loop status note failed", exc_info=True)
+
+    async def on_loop_status(self, payload: dict):
+        """Agent in the Loop status for the drawer. Sent only: a status is live
+        state, and it carries no prompt or answer text."""
+        await self.connection.send_message(MessageType.LOOP_STATUS, payload)
+
     def _persist(self, msg_type: str, data: dict,
                  *, member_id_key: Optional[str] = None,
                  fireteam_id_key: Optional[str] = None):
@@ -744,6 +767,10 @@ class StreamingCallback:
             "productivity_tier": productivity_tier,
             "stall": stall,
         }
+        answered_by = get_broker().take_answered_by(self._session_key)
+        if answered_by:
+            # Which MCP token supplied this decision (display prefix and name only).
+            payload["answeredBy"] = answered_by
         await self.connection.send_message(MessageType.THINKING, payload)
         self._persist("thinking", payload)
 
@@ -775,6 +802,8 @@ class StreamingCallback:
             payload["step_id"] = step_id
         await self.connection.send_message(MessageType.TOOL_START, payload)
         self._persist("tool_start", payload)
+        if not wave_id:
+            self._loop_note("running_tool", tool=tool_name)
         # Initialize accumulator for this tool's output chunks
         # Use step_index in key to disambiguate same-name tools in a wave
         ctx_key = f"{wave_id}:{step_index}:{tool_name}" if wave_id and step_index is not None else (f"{wave_id}:{tool_name}" if wave_id else tool_name)
@@ -855,6 +884,8 @@ class StreamingCallback:
         if step_id:
             payload["step_id"] = step_id
         await self.connection.send_message(MessageType.TOOL_COMPLETE, payload)
+        if not wave_id:
+            self._loop_note("thinking")
         # Include accumulated raw output and tool_args in persisted payload
         ctx_key = f"{wave_id}:{step_index}:{tool_name}" if wave_id and step_index is not None else (f"{wave_id}:{tool_name}" if wave_id else tool_name)
         ctx = self._tool_context.pop(ctx_key, {})
@@ -875,6 +906,7 @@ class StreamingCallback:
         }
         await self.connection.send_message(MessageType.PLAN_START, payload)
         self._persist("plan_start", payload)
+        self._loop_note("running_tool", tool="plan_tools")
 
     async def on_plan_complete(self, wave_id: str, total: int, successful: int, failed: int):
         """Called when a tool plan wave finishes executing."""
@@ -886,6 +918,7 @@ class StreamingCallback:
         }
         await self.connection.send_message(MessageType.PLAN_COMPLETE, payload)
         self._persist("plan_complete", payload)
+        self._loop_note("thinking")
 
     # ---------- Fireteam events ----------
 
@@ -1072,6 +1105,7 @@ class StreamingCallback:
             "fireteam_member_awaiting_confirmation", payload,
             fireteam_id_key=wave_id, member_id_key=member_id,
         )
+        self._loop_note("awaiting_human", kind="tool_confirmation")
 
     async def on_plan_analysis(self, wave_id: str, interpretation: str,
                                actionable_findings: list, recommended_next_steps: list):
@@ -1170,6 +1204,7 @@ class StreamingCallback:
         # Deduplication is handled by emit_streaming_events via callback._emitted_approval_key
         await self.connection.send_message(MessageType.APPROVAL_REQUEST, approval_request)
         self._persist("approval_request", approval_request)
+        self._loop_note("awaiting_human", kind="approval")
         logger.info(f"Approval request sent to session {self.connection.session_id}")
 
     async def on_question_request(self, question_request: dict):
@@ -1177,6 +1212,7 @@ class StreamingCallback:
         # Deduplication is handled by emit_streaming_events via callback._emitted_question_key
         await self.connection.send_message(MessageType.QUESTION_REQUEST, question_request)
         self._persist("question_request", question_request)
+        self._loop_note("awaiting_human", kind="question")
         logger.info(f"Question request sent to session {self.connection.session_id}")
 
     async def on_tool_confirmation_request(self, confirmation_request: dict):
@@ -1184,6 +1220,7 @@ class StreamingCallback:
         # Deduplication is handled by emit_streaming_events via callback._emitted_tool_confirmation_key
         await self.connection.send_message(MessageType.TOOL_CONFIRMATION_REQUEST, confirmation_request)
         self._persist("tool_confirmation_request", confirmation_request)
+        self._loop_note("awaiting_human", kind="tool_confirmation")
         logger.info(f"Tool confirmation request sent to session {self.connection.session_id}")
 
     async def on_response(self, answer: str, iteration_count: int, phase: str, task_complete: bool, response_tier: str = "full_report"):
@@ -1217,6 +1254,8 @@ class StreamingCallback:
         payload.update(details)
         await self.connection.send_message(MessageType.ERROR, payload)
         self._persist("error", payload)
+        if not recoverable:
+            self._loop_note("error")
 
     async def on_task_complete(self, message: str, final_phase: str, total_iterations: int):
         """Called when task is complete"""
@@ -1229,6 +1268,7 @@ class StreamingCallback:
             await self.connection.send_message(MessageType.TASK_COMPLETE, payload)
             self._task_complete_sent = True
             self._persist("task_complete", payload)
+            self._loop_note("finished")
             logger.info(f"Task complete sent to session {self.connection.session_id}")
         else:
             logger.debug(f"Duplicate task_complete blocked for session {self.connection.session_id}")
@@ -1368,14 +1408,19 @@ class WebSocketHandler:
             # events emitted while its socket was down (tool_complete, STOPPED,
             # task_complete) are lost, and its DB flag lags. On every
             # (re)connect it uses this to clear or keep its spinner.
-            await connection.send_message(MessageType.CONNECTED, {
+            connected = {
                 "session_id": session_id,
                 "message": "WebSocket connection established",
                 "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 "protocol_version": 2,
                 "features": _features,
                 "agent_running": self.ws_manager.get_task(connection.get_key()) is not None,
-            })
+            }
+            # A reconnecting browser gets the Agent in the Loop status at once.
+            loop_state = get_broker().status_payload(connection.get_key())
+            if loop_state is not None:
+                connected["loop_state"] = loop_state
+            await connection.send_message(MessageType.CONNECTED, connected)
 
             logger.info(f"Session initialized: {session_id}")
 

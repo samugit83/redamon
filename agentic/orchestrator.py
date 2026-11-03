@@ -37,6 +37,8 @@ from orchestrator_helpers import (
 )
 from orchestrator_helpers.llm_setup import setup_llm, apply_project_settings
 from agent_context import current_llm
+from agent_in_the_loop.broker import get_broker
+from agent_in_the_loop import is_loop_llm
 from prompt_safety import fence_node_context
 from orchestrator_helpers.streaming import clear_stale_streaming_state, emit_streaming_events
 from orchestrator_helpers.body_sweep import sweep_session_bodies
@@ -1092,6 +1094,24 @@ class AgentOrchestrator:
     # STREAMING PUBLIC API
     # =========================================================================
 
+    async def _stream_graph(self, graph_input, config, streaming_callback,
+                            user_id: str, project_id: str, session_id: str):
+        """Run the graph with streaming inside a run scope; return the final state.
+
+        The scope lets an Agent in the Loop model open steps for this session
+        (and only while it runs), and reports the run's end state to its driver.
+        For a provider model it only registers the run.
+        """
+        uses_loop = is_loop_llm(current_llm.get() or self.llm)
+        final_state = None
+        async with get_broker().run_scope(user_id, project_id, session_id, streaming_callback,
+                                          uses_loop=uses_loop) as scope:
+            async for event in self.graph.astream(graph_input, config, stream_mode="values"):
+                final_state = event
+                scope.final_state = event
+                await emit_streaming_events(event, streaming_callback)
+        return final_state
+
     async def invoke_with_streaming(
         self,
         question: str,
@@ -1147,10 +1167,8 @@ class AgentOrchestrator:
             })
 
             # Stream graph execution
-            final_state = None
-            async for event in self.graph.astream(input_data, config, stream_mode="values"):
-                final_state = event
-                await emit_streaming_events(event, streaming_callback)
+            final_state = await self._stream_graph(
+                input_data, config, streaming_callback, user_id, project_id, session_id)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1221,10 +1239,8 @@ class AgentOrchestrator:
                 "_completed_step": None,
             }
 
-            final_state = None
-            async for event in self.graph.astream(update_data, config, stream_mode="values"):
-                final_state = event
-                await emit_streaming_events(event, streaming_callback)
+            final_state = await self._stream_graph(
+                update_data, config, streaming_callback, user_id, project_id, session_id)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1292,10 +1308,8 @@ class AgentOrchestrator:
                 "_completed_step": None,
             }
 
-            final_state = None
-            async for event in self.graph.astream(update_data, config, stream_mode="values"):
-                final_state = event
-                await emit_streaming_events(event, streaming_callback)
+            final_state = await self._stream_graph(
+                update_data, config, streaming_callback, user_id, project_id, session_id)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1368,10 +1382,8 @@ class AgentOrchestrator:
                 "_completed_step": None,
             }
 
-            final_state = None
-            async for event in self.graph.astream(update_data, config, stream_mode="values"):
-                final_state = event
-                await emit_streaming_events(event, streaming_callback)
+            final_state = await self._stream_graph(
+                update_data, config, streaming_callback, user_id, project_id, session_id)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1431,10 +1443,8 @@ class AgentOrchestrator:
                 return InvokeResponse(error="No session state to resume")
 
             # Re-invoke graph from last checkpoint with empty input
-            final_state = None
-            async for event in self.graph.astream({}, config, stream_mode="values"):
-                final_state = event
-                await emit_streaming_events(event, streaming_callback)
+            final_state = await self._stream_graph(
+                {}, config, streaming_callback, user_id, project_id, session_id)
 
             if final_state:
                 response = self._build_response(final_state)

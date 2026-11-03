@@ -34,6 +34,8 @@ from orchestrator_helpers.config import get_identifiers, is_session_config_compl
 from orchestrator_helpers.finding_guard import unrecorded_confirmations, unrecorded_note
 from orchestrator_helpers.llm_retry import retry_llm_call
 from orchestrator_helpers.llm_retry import llm_error_reason
+from agent_in_the_loop import confirmation_required, is_loop_llm
+from agent_in_the_loop.purpose import llm_purpose
 from orchestrator_helpers.productivity import (
     audit_productivity_claim,
     axis_key,
@@ -165,6 +167,54 @@ def _phase_breadcrumb_trace(state, updates, iteration, phase, *, redundant, coun
         )
     base = updates["execution_trace"] if "execution_trace" in updates else state.get("execution_trace", [])
     return base + [step.model_dump()]
+
+
+def build_system_message_content(system_prompt: str, llm, anthropic_caching: bool):
+    """The think prompt as tier blocks, or as one string with the markers removed.
+
+    Anthropic prompt caching: when the LLM is ChatAnthropic, split the
+    assembled system prompt on the THREE tier markers (CACHE_MARKERS) and emit
+    one ephemeral cache_control block per cached tier (0,1,2); the trailing
+    suffix (tier 3) is uncached. Tiers run most-static -> most-volatile, so a
+    phase/skill change only re-caches tier 2, a settings change only tiers 1-2,
+    and the eternal tier 0 keeps hitting. The API allows up to 4 breakpoints;
+    we use at most 3. Empty segments are dropped so we never send a zero-length
+    text block. langchain-anthropic>=0.3 auto-attaches the prompt-caching beta
+    header when it sees cache_control blocks. Gated on
+    ANTHROPIC_PROMPT_CACHING_ENABLED so operators can disable.
+
+    Agent in the Loop gets the same tier blocks WITHOUT cache_control: its
+    driver is sent each unchanged tier once per session instead of every step.
+    """
+    loop_tiers = is_loop_llm(llm)
+    split = (
+        ((anthropic_caching and type(llm).__name__ == 'ChatAnthropic') or loop_tiers)
+        and all(m in system_prompt for m in CACHE_MARKERS)
+    )
+    if split:
+        rest = system_prompt
+        segments = []
+        for marker in CACHE_MARKERS:
+            head, _, rest = rest.partition(marker)
+            segments.append(head)
+        segments.append(rest)  # tier 3 (uncached)
+        blocks = []
+        for i, seg in enumerate(segments):
+            text = seg.rstrip() if i == 0 else seg.strip()
+            if not text:
+                continue
+            block = {"type": "text", "text": text}
+            if i < len(CACHE_MARKERS) and not loop_tiers:  # tiers 0..2 are cached
+                block["cache_control"] = {"type": "ephemeral"}
+            blocks.append(block)
+        if blocks:
+            return blocks
+    # Caching disabled, another LLM, a marker absent, or everything empty:
+    # strip all markers so the LLM never sees a sentinel string.
+    content = system_prompt
+    for marker in CACHE_MARKERS:
+        content = content.replace(marker, "")
+    return content
 
 
 async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_creds, streaming_callbacks=None, graph_view_cyphers=None) -> dict:
@@ -392,10 +442,11 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 roe_section=_roe_section,
             )
 
-            dt_response = await llm.ainvoke([
-                SystemMessage(content=deep_think_prompt),
-                HumanMessage(content="Produce the deep think analysis JSON now."),
-            ])
+            with llm_purpose("deep_think", iteration=iteration):
+                dt_response = await llm.ainvoke([
+                    SystemMessage(content=deep_think_prompt),
+                    HumanMessage(content="Produce the deep think analysis JSON now."),
+                ])
             dt_raw = normalize_content(dt_response.content).strip()
             _dt_usage = getattr(dt_response, "usage_metadata", None) or {}
             _dt_in += int(_dt_usage.get("input_tokens", 0) or 0)
@@ -908,48 +959,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             f"(full dump suppressed; set LOG_LLM_VERBOSE=true to emit) ---"
         )
 
-    # Anthropic prompt caching: when the LLM is ChatAnthropic, split the
-    # assembled system prompt on the THREE tier markers (CACHE_MARKERS) and emit
-    # one ephemeral cache_control block per cached tier (0,1,2); the trailing
-    # suffix (tier 3) is uncached. Tiers run most-static -> most-volatile, so a
-    # phase/skill change only re-caches tier 2, a settings change only tiers 1-2,
-    # and the eternal tier 0 keeps hitting. The API allows up to 4 breakpoints;
-    # we use at most 3. Empty segments are dropped so we never send a zero-length
-    # text block. langchain-anthropic>=0.3 auto-attaches the prompt-caching beta
-    # header when it sees cache_control blocks. Gated on
-    # ANTHROPIC_PROMPT_CACHING_ENABLED so operators can disable.
-    _caching_enabled = (
-        get_setting('ANTHROPIC_PROMPT_CACHING_ENABLED', True)
-        and type(llm).__name__ == 'ChatAnthropic'
-        and all(_m in system_prompt for _m in CACHE_MARKERS)
-    )
-    if _caching_enabled:
-        _rest = system_prompt
-        _segments = []
-        for _m in CACHE_MARKERS:
-            _head, _, _rest = _rest.partition(_m)
-            _segments.append(_head)
-        _segments.append(_rest)  # tier 3 (uncached)
-        system_message_content = []
-        for _i, _seg in enumerate(_segments):
-            _text = _seg.rstrip() if _i == 0 else _seg.strip()
-            if not _text:
-                continue
-            _block = {"type": "text", "text": _text}
-            if _i < len(CACHE_MARKERS):  # tiers 0..2 are cached
-                _block["cache_control"] = {"type": "ephemeral"}
-            system_message_content.append(_block)
-        if not system_message_content:
-            # Degenerate case (everything empty) — fall back to a plain string.
-            system_message_content = system_prompt
-            for _m in CACHE_MARKERS:
-                system_message_content = system_message_content.replace(_m, "")
-    else:
-        # Caching disabled, non-Anthropic LLM, or a marker absent — strip all
-        # markers so the LLM never sees a sentinel string.
-        system_message_content = system_prompt
-        for _m in CACHE_MARKERS:
-            system_message_content = system_message_content.replace(_m, "")
+    system_message_content = build_system_message_content(
+        system_prompt, llm, get_setting('ANTHROPIC_PROMPT_CACHING_ENABLED', True))
 
     # Get LLM decision with retry on parse failures
     messages = [
@@ -975,10 +986,11 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             ))
 
         try:
-            response = await retry_llm_call(
-                llm, messages,
-                label=f"{user_id}/{project_id}/{session_id} think iter={iteration}",
-            )
+            with llm_purpose("think", iteration=iteration, attempt=attempt):
+                response = await retry_llm_call(
+                    llm, messages,
+                    label=f"{user_id}/{project_id}/{session_id} think iter={iteration}",
+                )
         except Exception as exc:
             logger.error(
                 f"[{user_id}/{project_id}/{session_id}] LLM call failed after retries: {exc}"
@@ -2195,7 +2207,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 updates["awaiting_user_question"] = True
 
     # Tool confirmation gate — only when setting enabled and no other gate active
-    if (get_setting('REQUIRE_TOOL_CONFIRMATION', True)
+    if (confirmation_required(get_setting('REQUIRE_TOOL_CONFIRMATION', True))
             and not updates.get("awaiting_user_approval")
             and not updates.get("awaiting_user_question")):
 

@@ -102,6 +102,8 @@ def parse_model_provider(model_name: str) -> tuple[str, str]:
       - "qwen/<model>"        → ("qwen", "<model>")
       - "xai/<model>"         → ("xai", "<model>")
       - "mistral/<model>"     → ("mistral", "<model>")
+      - "loop/<name>"         → ("loop", "<name>")  Agent in the Loop, not a provider:
+                                an external MCP client answers, no key is involved
       - "claude-*"            → ("anthropic", "claude-*")
       - anything else         → ("openai", "<model>")
 
@@ -130,6 +132,8 @@ def parse_model_provider(model_name: str) -> tuple[str, str]:
         return ("xai", model_name[len("xai/"):])
     elif model_name.startswith("mistral/"):
         return ("mistral", model_name[len("mistral/"):])
+    elif model_name.startswith("loop/"):
+        return ("loop", model_name[len("loop/"):])
     elif model_name.startswith("claude-"):
         return ("anthropic", model_name)
     else:
@@ -165,6 +169,15 @@ def setup_llm(
     logger.info(f"Setting up LLM: {model_name}")
 
     provider, api_model = parse_model_provider(model_name)
+
+    if provider == "loop":
+        from agent_in_the_loop import loop_enabled
+        if not loop_enabled():
+            raise ValueError(
+                "Agent in the Loop is turned off on this deployment (AGENT_IN_THE_LOOP_ENABLED)."
+            )
+        from agent_in_the_loop.model import LoopChatModel
+        return LoopChatModel()
 
     if provider == "custom":
         if not custom_llm_config:

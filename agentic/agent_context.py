@@ -31,6 +31,11 @@ current_graph_view_cypher: ContextVar[Optional[str]] = ContextVar(
 # each read their OWN model's client instead of a shared, race-prone self.llm.
 # Typed as object to keep this module import-light (no langchain dependency).
 current_llm: ContextVar[Optional[object]] = ContextVar("current_llm", default=None)
+# What the next model call is for (agent_in_the_loop.purpose.llm_purpose).
+# Read only by the Agent in the Loop adapter; the default dict is never mutated.
+current_llm_purpose: ContextVar[dict] = ContextVar(
+    "current_llm_purpose", default={"purpose": "other"},
+)
 
 
 def set_tenant_context(user_id: str, project_id: str, session_id: str = "") -> None:

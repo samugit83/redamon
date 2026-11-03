@@ -190,9 +190,12 @@ def heal_llm_param_error(
 def is_transient_llm_error(exc: BaseException) -> bool:
     """Classify an LLM-call exception as transient (worth retrying) or not.
 
-    Order: type-MRO match first (cheapest, most specific), then message
-    substring, then bare HTTP status code regex.
+    Order: an explicit ``no_retry`` marker first (an Agent in the Loop step
+    already waited minutes for a person's agent), then type-MRO match, then
+    message substring, then bare HTTP status code regex.
     """
+    if getattr(exc, "no_retry", False):
+        return False
     for base in type(exc).__mro__:
         if base.__name__ in _TRANSIENT_EXC_NAMES:
             return True

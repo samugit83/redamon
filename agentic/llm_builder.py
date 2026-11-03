@@ -137,9 +137,11 @@ def build_llm_from_providers(model: str, providers: list):
     falling back to another custom provider.
     """
     from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
+    from agent_in_the_loop.errors import refuse_loop_model
 
     if not model:
         raise ValueError("a model is required")
+    refuse_loop_model(model)
     keys = {name: (_resolve_provider_key(providers or [], name) or {})
             for name in _BUILTIN_PROVIDERS}
     bedrock = keys["bedrock"]

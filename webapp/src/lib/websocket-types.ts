@@ -73,6 +73,10 @@ export enum MessageType {
   // Background-job lifecycle (job_spawn / job_cancel), fanned out by
   // agentic/ws_job_emitter.py to every connection of the job's project.
   JOB_UPDATE = 'job_update',
+
+  // Agent in the Loop: who answers the run's model calls right now. Sent only
+  // for a run whose model is the loop model, never persisted.
+  LOOP_STATUS = 'loop_status',
 }
 
 /**
@@ -90,6 +94,8 @@ export const IGNORED_SERVER_MESSAGES: Readonly<Partial<Record<MessageType, strin
     'The drawer builds its timeline from the tool and thinking events; the step record is not displayed.',
   [MessageType.SKILL_INJECT_ACK]:
     'The drawer shows an injected chat skill when it sends it; the queue position in the ack is not displayed.',
+  [MessageType.LOOP_STATUS]:
+    'Agent in the Loop status. The drawer does not display it yet; the run\'s own events still show every step.',
 }
 
 // ---------------------------------------------------------------------------

@@ -495,6 +495,23 @@ async def fetch_bedrock_models(
 
 
 # ---------------------------------------------------------------------------
+# Agent in the Loop (not a provider: needs no key, so it is listed even when
+# the person has no provider at all)
+# ---------------------------------------------------------------------------
+LOOP_GROUP = "Agent in the Loop"
+
+
+def _loop_group() -> dict[str, list[dict]]:
+    from agent_in_the_loop import LOOP_MODEL_ID, LOOP_MODEL_LABEL, loop_enabled
+    if not loop_enabled():
+        return {}
+    return {LOOP_GROUP: [_model(
+        id=LOOP_MODEL_ID, name=LOOP_MODEL_LABEL,
+        description="Claude Code, Codex or another MCP agent answers each step",
+    )]}
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 async def fetch_all_models(
@@ -516,7 +533,7 @@ async def fetch_all_models(
     # If no providers from DB, use env var fallback with caching
     if providers is None:
         # No env-var fallback — keys come exclusively from DB providers
-        return {}
+        return _loop_group()
 
     # --- DB-driven mode: build tasks from provider configs ---
     import asyncio
@@ -588,4 +605,5 @@ async def fetch_all_models(
 
     total = sum(len(v) for v in results_db.values())
     logger.info(f"Fetched {total} models from {len(results_db)} providers (DB-driven)")
+    results_db.update(_loop_group())
     return results_db

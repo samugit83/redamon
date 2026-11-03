@@ -1486,8 +1486,10 @@ async def lats_expand(llm: Any, state: dict, node: Optional[ExploitTreeNode],
                         messages[0].get("content", ""), messages[1].get("content", ""))
         except Exception:
             pass
+    from agent_in_the_loop.purpose import llm_purpose
     try:
-        resp = await retry_llm_call(llm, messages, label="lats_expand")
+        with llm_purpose("lats_expand", node_id=node.id if node is not None else "ROOT"):
+            resp = await retry_llm_call(llm, messages, label="lats_expand")
     except Exception as exc:
         logger.warning("[lats_expand] LLM call failed: %s", exc)
         return []

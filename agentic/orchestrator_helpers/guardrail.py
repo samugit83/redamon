@@ -20,6 +20,7 @@ from orchestrator_helpers.llm_retry import (
     heal_llm_param_error,
     is_transient_llm_error,
 )
+from agent_in_the_loop.purpose import llm_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,8 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
     healed: set[str] = set()
     for attempt in range(3):
         try:
-            response = await llm.ainvoke(messages)
+            with llm_purpose("scope_guardrail", attempt=attempt):
+                response = await llm.ainvoke(messages)
         except Exception as e:
             # Self-heal (once per param): the model may reject our default
             # `temperature`/`reasoning_effort` with a permanent 400 (OpenAI

@@ -12,6 +12,8 @@ from state import (
 import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
 from orchestrator_helpers.config import get_identifiers
+from agent_in_the_loop.errors import LoopError
+from agent_in_the_loop.purpose import llm_purpose
 from prompts import (
     FINAL_REPORT_PROMPT,
     CONVERSATIONAL_RESPONSE_PROMPT,
@@ -20,6 +22,12 @@ from prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+LOOP_REPORT_FALLBACK = (
+    "**The external agent did not write the final report** ({reason}).\n\n"
+    "The steps above are saved in this conversation: {total} step(s) ran, "
+    "{successful} succeeded and {failed} failed."
+)
 
 
 async def generate_response_node(
@@ -131,14 +139,24 @@ async def generate_response_node(
             todo_list=format_todo_list(state.get("todo_list", [])),
         )
 
-    response = await llm.ainvoke([HumanMessage(content=report_prompt)])
-
-    # Fire-and-forget: update AttackChain status to completed
     trace = state.get("execution_trace", [])
     total = len(trace)
     successful = sum(1 for s in trace if s.get("success", True))
     failed = total - successful
     phases = list({s.get("phase") for s in trace if s.get("phase")})
+
+    try:
+        with llm_purpose("report"):
+            response = await llm.ainvoke([HumanMessage(content=report_prompt)])
+        report_text = normalize_content(response.content)
+    except LoopError as exc:
+        # Only an Agent in the Loop step: the run's trace is saved, so end with
+        # the deterministic counts rather than a crash at the last step.
+        logger.warning(f"Report step not answered ({exc.code}); writing the fallback report")
+        report_text = LOOP_REPORT_FALLBACK.format(
+            reason=exc.code, total=total, successful=successful, failed=failed)
+
+    # Fire-and-forget: update AttackChain status to completed
 
     chain_graph.fire_update_chain_status(
         neo4j_uri, neo4j_user, neo4j_password,
@@ -152,7 +170,7 @@ async def generate_response_node(
     )
 
     return {
-        "messages": [AIMessage(content=normalize_content(response.content))],
+        "messages": [AIMessage(content=report_text)],
         "task_complete": True,
         "completion_reason": state.get("completion_reason") or "Task completed successfully",
         "_report_generated": True,

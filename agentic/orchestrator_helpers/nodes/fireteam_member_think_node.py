@@ -25,6 +25,8 @@ from orchestrator_helpers.parsing import try_parse_llm_decision
 from orchestrator_helpers.json_utils import normalize_content, json_dumps_safe
 from orchestrator_helpers.llm_retry import retry_llm_call
 from orchestrator_helpers.llm_retry import llm_error_reason
+from agent_in_the_loop import confirmation_required
+from agent_in_the_loop.purpose import llm_purpose
 import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.productivity import (
     audit_productivity_claim,
@@ -1005,9 +1007,11 @@ async def fireteam_member_think_node(
                 ))
 
         try:
-            response = await retry_llm_call(
-                llm, llm_messages, label=f"{session_id} member {member_id}",
-            )
+            with llm_purpose("fireteam_member", member_id=member_id, member_name=member_name,
+                             iteration=current_iter + 1, attempt=attempt):
+                response = await retry_llm_call(
+                    llm, llm_messages, label=f"{session_id} member {member_id}",
+                )
         except Exception as exc:
             logger.error(
                 "[%s] member %s LLM call failed: %s", session_id, member_id, exc,
@@ -1088,7 +1092,7 @@ async def fireteam_member_think_node(
     logger.info("=" * 60)
 
     # ---- Dangerous-tool escalation ----
-    tool_confirmation_enabled = get_setting("REQUIRE_TOOL_CONFIRMATION", True)
+    tool_confirmation_enabled = confirmation_required(get_setting("REQUIRE_TOOL_CONFIRMATION", True))
     is_dangerous = False
     if tool_confirmation_enabled:
         if decision.action == "use_tool" and (decision.tool_name or "") in DANGEROUS_TOOLS:

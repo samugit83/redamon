@@ -12,6 +12,7 @@ from state import AttackPathClassification
 from prompts.classification import build_classification_prompt
 from .json_utils import normalize_content, extract_json
 from .llm_retry import heal_llm_param_error
+from agent_in_the_loop.purpose import llm_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ async def classify_attack_path(
 
     for attempt in range(max_retries):
         try:
-            response = await llm.ainvoke(messages)
+            with llm_purpose("classify", attempt=attempt):
+                response = await llm.ainvoke(messages)
             json_str = extract_json(normalize_content(response.content))
 
             if json_str:
@@ -100,6 +102,12 @@ async def classify_attack_path(
             logger.warning(f"Attempt {attempt + 1}/{max_retries}: {last_error}")
 
         except Exception as e:
+            if getattr(e, "no_retry", False):
+                # An Agent in the Loop step that was not answered: asking again
+                # would wait for the same absent driver. Take the safe default.
+                last_error = f"not retried: {type(e).__name__}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries}: {last_error}")
+                break
             # Self-heal (once per param): the model may reject our default
             # `temperature`/`reasoning_effort` with a permanent 400 (OpenAI
             # o-series, Bedrock Claude 4.x, Moonshot k3, GLM/Qwen thinking, ...).
