@@ -361,6 +361,15 @@ class WebSocketManager:
         one — that is exactly the S6 task-hijack + operator-eviction vector.
         """
         async with self.lock:
+            # The drawer's "new session" re-inits the SAME socket. disconnect()
+            # removes only the key the connection holds when it closes, so the
+            # previous key would hold a session-cap slot until the agent restarts:
+            # give it up first, and stay unauthenticated if this init is refused.
+            previous = connection.get_key()
+            if previous and self.active_connections.get(previous) is connection:
+                del self.active_connections[previous]
+            connection.authenticated = False
+
             connection.user_id = user_id
             connection.project_id = project_id
             connection.session_id = session_id

@@ -97,5 +97,45 @@ class SessionCap(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(new.authenticated)
 
 
+class SocketSwitchingSession(SessionCap):
+    """The drawer's "new session" re-inits the same socket with a new session id."""
+
+    async def reinit(self, conn, session, verified=True):
+        await self.mgr.authenticate(conn, "u", "p", session, verified=verified)
+
+    async def test_the_old_key_is_released_and_close_frees_the_slot(self):
+        conn = await self.connect("a")
+        await self.reinit(conn, "b")
+        self.assertTrue(conn.authenticated)
+        self.assertEqual(set(self.mgr.active_connections), {"u:p:b"})
+        await self.mgr.disconnect(conn)
+        self.assertEqual(self.mgr.active_connections, {})
+
+    async def test_many_new_sessions_on_one_socket_never_fill_the_cap(self):
+        conn = await self.connect("s0")
+        for i in range(1, 10):
+            await self.reinit(conn, f"s{i}")
+            self.assertTrue(conn.authenticated, f"re-init {i} was refused")
+        other = await self.connect("x")
+        self.assertTrue(other.authenticated)
+
+    async def test_the_old_sessions_run_still_holds_its_slot(self):
+        conn = await self.connect("a")
+        self.headless_run("a")
+        await self.reinit(conn, "b")
+        new = await self.connect("c")
+        self.assertFalse(new.authenticated)
+        self.assertEqual(new.websocket.close_code, 1013)
+
+    async def test_a_refused_reinit_leaves_the_socket_unauthenticated(self):
+        conn = await self.connect("a")
+        await self.connect("b")
+        self.headless_run("c")
+        await self.reinit(conn, "d")
+        self.assertFalse(conn.authenticated)
+        self.assertIsNone(conn.get_key())
+        self.assertNotIn("u:p:a", self.mgr.active_connections)
+
+
 if __name__ == "__main__":
     unittest.main()

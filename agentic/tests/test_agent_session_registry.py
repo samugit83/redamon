@@ -10,6 +10,7 @@ and answers 503 (the webapp then stays busy) before the manager exists.
 Run in-container: ./agentic/run_tests.sh tests/test_agent_session_registry.py
 """
 import asyncio
+import inspect
 import importlib.util
 import os
 import re
@@ -182,7 +183,10 @@ class WebappConsumerContract(unittest.TestCase):
     def test_path_method_param_and_key_match_the_consumer(self):
         path, param = self._consumer(r"`(/[\w/-]+)\?(\w+)=\$\{encodeURIComponent\(projectId\)\}`")
         (method,) = self._consumer(r"method: '(\w+)'")
-        (key,) = self._consumer(r"\(await res\.json\(\)\)\?\.(\w+)")
+        (key,) = self._consumer(r"ids = body\?\.(\w+)")
+        (loop_key,) = self._consumer(r"loopStates = body\?\.(\w+)")
+        self.assertIn(f'answer["{loop_key}"]', inspect.getsource(api.live_agent_sessions),
+                      "the webapp reads loop states under a key the endpoint never writes")
 
         route = next((r for r in api.app.routes if getattr(r, "path", "") == path), None)
         self.assertIsNotNone(route, f"the webapp calls {path}, which the agent does not serve")
