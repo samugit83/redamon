@@ -2,9 +2,12 @@
 
 import React from 'react'
 import { X, Loader2 } from 'lucide-react'
+import { WikiInfoButton } from '@/components/ui/WikiInfoButton'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import { formatContextLength } from './modelUtils'
 import type { ModelOption } from './modelUtils'
 import { formatModelDisplay } from './phaseConfig'
+import { LOOP_WIKI_URL } from './hooks/loopStatus'
 import styles from './AIAssistantDrawer.module.css'
 
 interface ModelPickerModalProps {
@@ -93,6 +96,9 @@ export function ModelPickerModal({
                         <span className={styles.modelListOptionName}>{model.name}</span>
                         {model.context_length && (
                           <span className={styles.modelListOptionCtx}>{formatContextLength(model.context_length)}</span>
+                        )}
+                        {isLoopModel(model.id) && (
+                          <WikiInfoButton target={LOOP_WIKI_URL} className={styles.modelListOptionWiki} />
                         )}
                       </div>
                       {model.description && (

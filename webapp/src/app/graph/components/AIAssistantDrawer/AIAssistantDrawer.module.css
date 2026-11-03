@@ -601,6 +601,11 @@
   margin-top: 1px;
 }
 
+.modelListOptionWiki {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .title {
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);

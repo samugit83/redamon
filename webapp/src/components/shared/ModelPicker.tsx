@@ -7,6 +7,9 @@ import {
   formatContextLength,
   getDisplayName,
 } from '@/app/graph/components/AIAssistantDrawer/modelUtils'
+import { LOOP_WIKI_URL } from '@/app/graph/components/AIAssistantDrawer/hooks/loopStatus'
+import { WikiInfoButton } from '@/components/ui/WikiInfoButton'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import { formatApiError, toApiError } from '@/lib/apiError'
 import styles from '@/components/projects/ProjectForm/ProjectForm.module.css'
 import { MODELS_LOAD_FAILED, fetchModelOptions } from './modelOptions'
@@ -182,6 +185,9 @@ export function ModelPicker({
                       <span className={styles.modelOptionName}>{model.name}</span>
                       {model.context_length && (
                         <span className={styles.modelOptionCtx}>{formatContextLength(model.context_length)}</span>
+                      )}
+                      {isLoopModel(model.id) && (
+                        <WikiInfoButton target={LOOP_WIKI_URL} className={styles.modelOptionWiki} />
                       )}
                     </div>
                     {model.description && (
