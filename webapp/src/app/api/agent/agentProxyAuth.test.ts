@@ -43,6 +43,7 @@ import * as wsMkdir from './workspace/mkdir/route'
 import * as wsBulkArchive from './workspace/bulk-archive/route'
 import * as wsUpload from './workspace/upload/route'
 import * as wsJobCancel from './workspace/jobs/[jobId]/cancel/route'
+import * as wsJobStatus from './workspace/jobs/[jobId]/route'
 import * as sessions from './sessions/route'
 import * as sessionInteract from './sessions/[id]/interact/route'
 import * as sessionKill from './sessions/[id]/kill/route'
@@ -87,6 +88,11 @@ const CASES: Case[] = [
     name: 'workspace job cancel',
     agentPath: '/workspace/jobs/j1/cancel',
     call: () => wsJobCancel.POST(new NextRequest(`${BASE}/x?projectId=p1`, { method: 'POST' }), { params: Promise.resolve({ jobId: 'j1' }) }),
+  },
+  {
+    name: 'workspace job status',
+    agentPath: `/workspace/jobs/${'a'.repeat(32)}?projectId=p1`,
+    call: () => wsJobStatus.GET(new NextRequest(`${BASE}/x?projectId=p1`), { params: Promise.resolve({ jobId: 'a'.repeat(32) }) }),
   },
   { name: 'sessions list', agentPath: '/sessions', call: () => sessions.GET() },
   { name: 'session interact', agentPath: '/sessions/1/interact', call: () => sessionInteract.POST(json('/x', { command: 'id' }), idParams('1')) },
