@@ -131,9 +131,9 @@ export const TRUFFLEHOG_KEY_FIELDS: (CredentialField & { source: string })[] = [
  */
 export const SHARED_SCANNER_KEY_FIELDS: CredentialField[] = [
   {
-    name: 'githubAccessToken', label: 'GitHub Secret Hunt Token', source: 'github-secret-hunt',
+    name: 'githubAccessToken', label: 'GitHub Access Token', source: 'github-secret-hunt',
     signupUrl: 'https://github.com/settings/tokens',
-    hint: 'Required for GitHub Secret Hunt, which searches public GitHub for secrets mentioning your target. Also used by Tradecraft Lookup to fetch a resource from GitHub. A read-only token is enough; unauthenticated GitHub search is rate-limited to the point of being unusable. Also used by Workspace URL import, to import private GitHub repositories and to lift GitHub\'s limit of 60 requests an hour for unauthenticated use.',
+    hint: 'One github.com token for three features. Required for GitHub Secret Hunt, which searches public GitHub for secrets mentioning your target: unauthenticated GitHub search is rate-limited to the point of being unusable. Optional for Tradecraft Lookup, which fetches resources from GitHub with it, and for Workspace URL import, where it imports private GitHub repositories and lifts GitHub\'s limit of 60 requests an hour without a token. A read-only token is enough; importing a private repository needs the repo scope (classic token) or read access to Contents (fine-grained token).',
   },
   {
     name: 'supplyChainGithubToken', label: 'Supply Chain GitHub Token', source: 'supply-chain',
@@ -248,16 +248,18 @@ export function trufflehogKeyGroups(): KeyGroupSpec[] {
  * reads it. Secret Hunt cannot run at all without its token; Supply Chain only
  * needs one for a private repository.
  */
-const GITHUB_GROUPS: { source: string; label: string; requirement: CredentialRequirement }[] = [
-  { source: 'github-secret-hunt', label: 'GitHub Secret Hunt', requirement: 'required' },
-  { source: 'supply-chain', label: 'Supply Chain', requirement: 'conditional' },
-  { source: 'github-enterprise', label: 'GitHub Enterprise', requirement: 'optional' },
+const GITHUB_GROUPS: { source: string; label: string; requirement: CredentialRequirement; alsoUsedBy: string[] }[] = [
+  // The requirement is Secret Hunt's; the two others work without the token,
+  // so the row names them beside it rather than under a "Required" of its own.
+  { source: 'github-secret-hunt', label: 'GitHub Secret Hunt', requirement: 'required',
+    alsoUsedBy: ['Tradecraft Lookup', 'Workspace URL import'] },
+  { source: 'supply-chain', label: 'Supply Chain', requirement: 'conditional', alsoUsedBy: [] },
+  { source: 'github-enterprise', label: 'GitHub Enterprise', requirement: 'optional', alsoUsedBy: [] },
 ]
 
 export function githubKeyGroups(): KeyGroupSpec[] {
   return GITHUB_GROUPS.map(spec => ({
     ...spec,
-    alsoUsedBy: [],
     fields: SHARED_SCANNER_KEY_FIELDS
       .filter(f => f.source === spec.source)
       .map(f => ({ ...f, requirement: spec.requirement })),

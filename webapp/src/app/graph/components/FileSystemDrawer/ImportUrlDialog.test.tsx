@@ -109,7 +109,7 @@ async function checkUrl(url: string) {
 }
 
 const importButton = () => screen.getByRole('button', { name: 'Import' }) as HTMLButtonElement
-const tokenEditor = () => screen.queryByLabelText('GitHub Secret Hunt Token')
+const tokenEditor = () => screen.queryByLabelText('GitHub Access Token')
 
 const NO_TOKEN_NOTE = /No GitHub token: public repositories only, and GitHub allows this server 60 requests an hour/
 const ACT_AS_NOTE = 'You are acting as another user, so GitHub imports run without a token: public repositories only.'
@@ -321,7 +321,7 @@ describe('ImportUrlDialog: GitHub token help', () => {
     await checkUrl(OWNER_REPO)
     expect(await screen.findByText(NO_TOKEN_NOTE)).toBeInTheDocument()
     expect(tokenEditor()).toBeInTheDocument()
-    expect(screen.getByText('This is the token Global Settings lists as GitHub Secret Hunt Token.')).toBeInTheDocument()
+    expect(screen.getByText('This is the token Global Settings lists as GitHub Access Token.')).toBeInTheDocument()
     expect(screen.getByText('Optional')).toBeInTheDocument()
   })
 

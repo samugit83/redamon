@@ -27,7 +27,7 @@ describe('buildTemplate', () => {
   test('names every field the way Settings labels it', () => {
     const t = buildTemplate({}, {})
     const keyFields = Object.keys(t.keys)
-    expect(keyFields).toContain('GitHub Secret Hunt Token')
+    expect(keyFields).toContain('GitHub Access Token')
     expect(keyFields).toContain('Supply Chain GitHub Token')
     expect(keyFields).toContain('Shodan API Key')
     expect(keyFields).toContain('Tavily API Key')
@@ -68,7 +68,7 @@ describe('buildTemplate', () => {
 
   test('defaults missing fields to empty string', () => {
     const t = buildTemplate({}, {})
-    expect(t.keys['GitHub Secret Hunt Token']).toBe('')
+    expect(t.keys['GitHub Access Token']).toBe('')
   })
 
   test('includes instructions string', () => {
@@ -1088,11 +1088,19 @@ describe('template covers the form exactly', () => {
     expect(result.tunneling.ngrokAuthtoken).toBe('ng_legacy')
   })
 
+  test('a template filled in under a renamed label still imports', () => {
+    const result = validateAndParse(JSON.stringify({ keys: { 'GitHub Secret Hunt Token': 'ghp_before_rename' } }), 500)
+    expect(isValidationError(result)).toBe(false)
+    if (isValidationError(result)) return
+    expect(result.keys).toEqual({ githubAccessToken: 'ghp_before_rename' })
+    expect(Object.keys(buildTemplate({}, {}).keys)).not.toContain('GitHub Secret Hunt Token')
+  })
+
   test('a label-named template imports to the right columns', () => {
     const filled = JSON.stringify({
       keys: {
         'Secret Multiscanner GitHub Token': 'ghp_multi',
-        'GitHub Secret Hunt Token': 'ghp_hunt',
+        'GitHub Access Token': 'ghp_hunt',
         'Supply Chain GitHub Token': 'ghp_sc',
       },
       tunneling: { 'ngrok Auth Token': 'ng_new' },

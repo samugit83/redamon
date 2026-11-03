@@ -135,7 +135,12 @@ function labelIndex(fields: readonly string[]): Map<string, string> {
   return index
 }
 
-const KEY_BY_TEMPLATE_NAME = labelIndex(ALLOWED_KEY_FIELDS)
+/** A label a key had before it was renamed: a template filled in under it still imports. */
+const RENAMED_KEY_LABELS: Record<string, string> = {
+  'GitHub Secret Hunt Token': 'githubAccessToken',
+}
+
+const KEY_BY_TEMPLATE_NAME = new Map([...labelIndex(ALLOWED_KEY_FIELDS), ...Object.entries(RENAMED_KEY_LABELS)])
 const TUNNEL_BY_TEMPLATE_NAME = labelIndex(ALLOWED_TUNNEL_FIELDS)
 
 const ALLOWED_ROTATION_SET = new Set<string>(ROTATION_TOOL_NAMES)

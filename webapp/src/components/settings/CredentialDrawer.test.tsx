@@ -179,11 +179,19 @@ describe('CredentialDrawer: GitHub & Supply Chain', () => {
 
   test('Secret Hunt and Supply Chain are separate keys, not one shared box', () => {
     renderGithub()
-    const hunt = screen.getByLabelText('GitHub Secret Hunt Token')
+    const hunt = screen.getByLabelText('GitHub Access Token')
     const supply = screen.getByLabelText('Supply Chain GitHub Token')
     expect(hunt).not.toBe(supply)
     expect(document.getElementById('github-keys-github-secret-hunt')).toBeDefined()
     expect(document.getElementById('github-keys-supply-chain')).toBeDefined()
+  })
+
+  test('the GitHub Access Token row names the features that use it without requiring it', () => {
+    renderGithub()
+    const row = document.getElementById('github-keys-github-secret-hunt')!
+    expect(row.textContent).toContain('GitHub Access Token')
+    expect(row.textContent).toContain('+ Tradecraft Lookup, Workspace URL import')
+    expect(row.textContent).toContain('Required for GitHub Secret Hunt')
   })
 
   test('typing one token does not write the other', () => {
