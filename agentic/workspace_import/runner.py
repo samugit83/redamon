@@ -1,4 +1,4 @@
-"""The URL import job: download (or clone), extract, sign provenance, place.
+"""The URL import job: download, clone or mirror, extract, sign provenance, place.
 
 It runs as a `workspace_import` job that takes no governed background-job
 slot. The GitHub token lives only in this job's closure: never in its args,
@@ -80,7 +80,7 @@ def _strip_top(subpath: str = ""):
     return keep
 
 
-def _record(spec: ImportSpec, insp, stats: dict) -> dict:
+def _record(spec: ImportSpec, insp, stats: dict, options: Optional[dict] = None) -> dict:
     source = {"url": redact_url(spec.url), "kind": insp.kind, "host": insp.host}
     if insp.repo is not None:
         source.update(owner=insp.repo.owner, repo=insp.repo.repo, ref=insp.repo.ref, commit=insp.repo.sha,
@@ -93,7 +93,7 @@ def _record(spec: ImportSpec, insp, stats: dict) -> dict:
         source.update(repo=insp.parts.get("repo"), commit=insp.parts.get("commit", ""))
     return {
         "source": source,
-        "options": dict(spec.options),
+        "options": dict(spec.options if options is None else options),
         "fetchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "stats": stats,
         # A query is never stored (it can hold a token), so the URL could not be fetched again.
@@ -174,6 +174,29 @@ async def _fetch_into(fetcher, spec, insp, op, reservation, progress, cancel, gi
     return data, False, {"files": 1, "bytes": dl.bytes, "skipped": 0}
 
 
+async def _mirror_into(spec: ImportSpec, insp, op, reservation, progress, cancel, project_id: str):
+    """Crawl a website or documentation site into `op/out`, under the
+    project's own RoE (loaded once for this job). Returns (folder, stats,
+    the options as recorded)."""
+    from workspace_import import mirror, mirror_rules
+
+    opts = mirror.MirrorOptions.for_kind(insp.kind, spec.options, total_cap=max_bytes())
+    settings = await mirror_rules.load_settings(project_id)
+    rules = mirror_rules.rules_for(spec.url, settings, now_utc=datetime.now(timezone.utc))
+    progress.update(phase="crawling", pages=0, assets=0, bytes=0, queued=0, skipped=0)
+    out = op / "out"
+    stats = await mirror.mirror(
+        spec.url, out, opts,
+        # A site never gets the GitHub token, whatever host it links to.
+        fetcher_factory=lambda: fetcher_factory(github_token=""),
+        roe_excluded=rules.roe_excluded, cancel_event=cancel, progress=progress,
+        grow=jobs_common.ReservationGrower(reservation),
+        still_exists=lambda: jobs_common.ensure_project_exists(project_id),
+        concurrency=rules.concurrency, gap_for=rules.gap_for,
+    )
+    return out, stats.record(), opts.record()
+
+
 def _target_present(project_id: str, spec: ImportSpec) -> bool:
     import workspace_fs
     try:
@@ -213,27 +236,38 @@ async def run_import(spec: ImportSpec, insp, *, project_id: str, github_token: s
     reservation = None
     log_url = redact_url(spec.url)
     try:
-        if insp.kind in MIRROR_KINDS:
-            raise ImportFailure("kind_not_supported")
         op = staging.new_op_dir(project_id, "imp")
-        expected = insp.repo.bytes if insp.repo is not None and not insp.repo.truncated else \
-            int(insp.details.get("bytes") or 0)
-        factor = 1 if insp.kind in ("github-file", "file") else 2
-        reservation = staging.reserve(op.name, expected * factor, project_id=project_id)
-        async with fetcher_factory(github_token=github_token) as fetcher:
-            staged, is_folder, stats = await _fetch_into(fetcher, spec, insp, op, reservation, progress,
-                                                         cancel, github_token)
+        options = None
+        if insp.kind in MIRROR_KINDS:
+            reservation = staging.reserve(op.name, 0, project_id=project_id)
+            staged, stats, options = await _mirror_into(spec, insp, op, reservation, progress, cancel, project_id)
+            is_folder = True
+        else:
+            expected = insp.repo.bytes if insp.repo is not None and not insp.repo.truncated else \
+                int(insp.details.get("bytes") or 0)
+            factor = 1 if insp.kind in ("github-file", "file") else 2
+            reservation = staging.reserve(op.name, expected * factor, project_id=project_id)
+            async with fetcher_factory(github_token=github_token) as fetcher:
+                staged, is_folder, stats = await _fetch_into(fetcher, spec, insp, op, reservation, progress,
+                                                             cancel, github_token)
         if is_folder:
-            provenance.write(staged, _record(spec, insp, stats), project_id=project_id)
+            provenance.write(staged, _record(spec, insp, stats, options), project_id=project_id)
         await jobs_common.ensure_project_exists(project_id)
         if spec.resync and not _target_present(project_id, spec):
             raise ImportFailure("destination_missing")
         progress.update(phase="placing")
         rel = await place.place(project_id, staged, spec.dest_dir, spec.name, spec.on_conflict)
         reporter.cancel()
-        await jobs_common.report_done({"phase": "done", "path": rel, "files": stats["files"], "bytes": stats["bytes"]})
+        crawl = {k: stats[k] for k in ("pages", "assets", "skipped", "stoppedBecause")} \
+            if "stoppedBecause" in stats else {}
+        await jobs_common.report_done({"phase": "done", "path": rel, "files": stats["files"], "bytes": stats["bytes"],
+                                       **crawl})
+        extra = "".join(f" {k}={v}" for k, v in crawl.items())
         logger.info(f"[workspace-import] done project={project_id} job={job_id} kind={insp.kind} url={log_url} "
-                    f"path={rel} files={stats['files']} bytes={stats['bytes']}")
+                    f"path={rel} files={stats['files']} bytes={stats['bytes']}{extra}")
+        if crawl:
+            return {"success": True, "output": f"Saved as {rel}: {crawl['pages']} pages, {crawl['assets']} assets, "
+                                               f"{stats['bytes']} bytes (stopped: {crawl['stoppedBecause']})."}
         return {"success": True, "output": f"Saved as {rel}: {stats['files']} files, {stats['bytes']} bytes."}
     except asyncio.CancelledError:
         cancel.set()

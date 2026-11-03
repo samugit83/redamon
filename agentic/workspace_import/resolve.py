@@ -9,6 +9,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from orchestrator_helpers.hard_guardrail import is_hard_blocked
 from workspace_import import github
 from workspace_import.detect import (
     FORGE_KINDS, MIRROR_KINDS, Classified, classify_probe, classify_url, is_html, suggested_name,
@@ -32,10 +33,9 @@ class Inspection:
     repo: Optional[github.RepoInfo] = None
     forge: Any = None
     probe: Any = None
-
-    @property
-    def supported(self) -> bool:
-        return self.kind not in MIRROR_KINDS
+    # Every kind this version detects can be imported; the field stays for a
+    # kind that could only be previewed.
+    supported: bool = True
 
     def answer(self) -> dict:
         return {"kind": self.kind, "url": redact_url(self.url), "suggestedName": self.name, "host": self.host,
@@ -87,6 +87,11 @@ async def inspect(url: str, fetcher, *, subpath: Optional[str] = None) -> Inspec
         return Inspection(url, kind, parts, suggested_name(kind, parts), host,
                           warnings=["history_not_included", "submodules_not_included"])
 
+    if kind is None or kind in MIRROR_KINDS:
+        # A site root is almost surely a site: refuse a protected host without
+        # sending it even the classification probe.
+        if (urllib.parse.urlsplit(url).path or "/") == "/" and is_hard_blocked(host)[0]:
+            raise ImportFailure("hard_blocked")
     target = github.raw_file_url(parts) if kind == "github-file" else url
     probe = await fetcher.probe(target)
     if probe.status == 404:
@@ -99,6 +104,8 @@ async def inspect(url: str, fetcher, *, subpath: Optional[str] = None) -> Inspec
         raise ImportFailure("unexpected_html")
     if kind is None:
         kind = classify_probe(url, probe)
+    if kind in MIRROR_KINDS:
+        return _mirror_inspection(url, kind, parts, host, probe)
     from workspace_import.fetch import disposition_filename
     disposition = disposition_filename(probe.headers.get("content-disposition"))
     length = probe.headers.get("content-length", "")
@@ -109,3 +116,20 @@ async def inspect(url: str, fetcher, *, subpath: Optional[str] = None) -> Inspec
     return Inspection(url, kind, parts, suggested_name(kind, parts, url=url, final_url=probe.final_url,
                                                        disposition=disposition), host,
                       details=details, warnings=warnings, probe=probe)
+
+
+def _mirror_inspection(url: str, kind: str, parts: dict, host: str, probe) -> Inspection:
+    """A website or documentation site: the scope the crawl will keep to and
+    the kind's default options. A protected host (at the link or after its
+    redirects) is refused here, before any crawl."""
+    from workspace_import.mirror import DEFAULTS
+
+    final = probe.final_url or url
+    final_host = url_host(final)
+    if is_hard_blocked(host)[0] or is_hard_blocked(final_host)[0]:
+        raise ImportFailure("hard_blocked")
+    path = urllib.parse.urlsplit(final).path or "/"
+    details = {"scopeHost": final_host, "scopePath": path[: path.rfind("/") + 1] or "/",
+               "defaults": dict(DEFAULTS[kind])}
+    return Inspection(url, kind, parts, suggested_name(kind, parts, url=url, final_url=final), host,
+                      details=details, probe=probe)

@@ -23,8 +23,8 @@ from fastapi.testclient import TestClient
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import (busy, executor, http_routes, place, project_check, provenance, resolve, runner,
-                              staging)
+from workspace_import import (busy, executor, http_routes, mirror, mirror_rules, place, project_check, provenance,
+                              resolve, runner, staging)
 from workspace_import.errors import ImportFailure
 from workspace_import.fetch import GuardedFetcher
 
@@ -317,15 +317,132 @@ class Refusals(RunnerBase):
         self.assertTrue(self.staging_empty())
         self.assertEqual(staging.reserved_total(), 0)
 
-    async def test_website_kind_not_supported_yet(self):
+    async def test_website_import_runs_mirror_and_writes_provenance(self):
+        # By design (R-URL-1): websites were refused before the mirror existed.
+        with mock.patch.object(mirror_rules, "fetch_agent_settings", lambda *_a, **_k: {"ROE_ENABLED": False}):
+            started, status = await self.do_import("https://www.example.test/")
+        self.assertEqual(started["kind"], "website")
+        self.assertEqual(status["status"], "done", status)
+        path = status["progress"]["path"]
+        self.assertEqual(path, "uploads/www.example.test")
+        self.assertEqual(self.tree(path), [".import.json", "_manifest.jsonl", "index.html"])
+        self.assertEqual((status["progress"]["pages"], status["progress"]["stoppedBecause"]), (1, "complete"))
+        rec = provenance.read(self.root / path, project_id="p1")
+        self.assertEqual(rec["source"]["kind"], "website")
+        self.assertEqual(rec["options"], mirror.MirrorOptions.for_kind("website", None, total_cap=GIB).record())
+        self.assertEqual((rec["stats"]["pages"], rec["stats"]["stoppedBecause"]), (1, "complete"))
+        self.assertTrue(rec["resyncable"])
+        self.assertTrue(self.staging_empty())
+        self.assertEqual(staging.reserved_total(), 0)
+
+
+class Mirrors(RunnerBase):
+    def setUp(self):
+        super().setUp()
+        self.settings = {"p1": {"ROE_ENABLED": False}, "p2": {"ROE_ENABLED": False}}
+        self.loaded: list[str] = []
+
+        def fetch(project_id, _url, **kw):
+            self.loaded.append(project_id)
+            assert kw == {"include_skill_overrides": False}
+            value = self.settings[project_id]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        self._settings_patch = mock.patch.object(mirror_rules, "fetch_agent_settings", fetch)
+        self._settings_patch.start()
+        self.world.routes["https://www.example.test/"] = lambda r: httpx.Response(
+            200, content=b'<html><body><a href="guide.html">Guide</a><p>Home text.</p></body></html>',
+            headers={"content-type": "text/html"})
+        self.world.routes["https://www.example.test/guide.html"] = lambda r: httpx.Response(
+            200, content=b"<html><body><h1>Guide</h1><p>Guide text.</p></body></html>",
+            headers={"content-type": "text/html"})
+
+    async def asyncTearDown(self):
+        self._settings_patch.stop()
+        await super().asyncTearDown()
+
+    async def test_resync_of_mirror_reuses_options(self):
+        _, status = await self.do_import("https://www.example.test/", options={"outputMode": "readable", "maxPages": 5})
+        self.assertEqual(status["status"], "done", status)
+        path = status["progress"]["path"]
+        self.assertEqual(self.tree(path), [".import.json", "_manifest.jsonl", "guide.md", "index.md"])
+        (self.root / path / "index.md").write_text("edited")
+        body = json.dumps({"projectId": "p1", "path": path}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        from starlette.requests import Request
+        resp = await http_routes.resync_import(Request({"type": "http", "method": "POST", "headers": []}, receive))
+        self.assertEqual(resp.status_code, 202, resp.body)
+        status = await job_runner.get_registry().wait("p1", json.loads(resp.body)["jobId"], 10)
+        self.assertEqual(status["status"], "done", status)
+        self.assertEqual(self.tree(path), [".import.json", "_manifest.jsonl", "guide.md", "index.md"])
+        self.assertIn("Home text.", (self.root / path / "index.md").read_text())
+        rec = provenance.read(self.root / path, project_id="p1")
+        self.assertEqual((rec["options"]["outputMode"], rec["options"]["maxPages"]), ("readable", 5))
+
+    async def test_resolve_refuses_hard_blocked_site_root_without_request(self):
+        blocked = lambda host: (host == "blocked.example.test", "")
+        with mock.patch.object(resolve, "is_hard_blocked", blocked):
+            async with self.world.factory() as f:
+                with self.assertRaises(ImportFailure) as ctx:
+                    await resolve.inspect("https://blocked.example.test/", f)
+                self.assertEqual(ctx.exception.code, "hard_blocked")
+                self.assertEqual(self.world.seen, [])
+                # Not a site root: the one classification probe goes out, then the refusal.
+                self.world.routes["https://blocked.example.test/docs/"] = self.world.routes["https://www.example.test/"]
+                with self.assertRaises(ImportFailure) as ctx:
+                    await resolve.inspect("https://blocked.example.test/docs/", f)
+                self.assertEqual(ctx.exception.code, "hard_blocked")
+                self.assertEqual(len(self.world.seen), 1)
+
+    async def test_resolve_answers_scope_and_defaults(self):
         async with self.world.factory() as f:
             insp = await resolve.inspect("https://www.example.test/", f)
-        self.assertEqual(insp.kind, "website")
-        self.assertFalse(insp.supported)
-        spec = runner.ImportSpec(url="https://www.example.test/", dest_dir="uploads", name="site")
-        started = await runner.start(spec, insp, project_id="p1", github_token="")
-        status = await job_runner.get_registry().wait("p1", started["jobId"], 5)
-        self.assertEqual(status["error"], "kind_not_supported")
+        answer = insp.answer()
+        self.assertTrue(answer["supported"])
+        self.assertEqual(answer["details"]["scopeHost"], "www.example.test")
+        self.assertEqual(answer["details"]["scopePath"], "/")
+        self.assertEqual(answer["details"]["defaults"]["outputMode"], "raw")
+
+    async def test_repo_imports_never_load_settings(self):
+        _, status = await self.do_import("https://github.com/o/r")
+        self.assertEqual(status["status"], "done", status)
+        self.assertEqual(self.loaded, [])
+
+    async def test_settings_failure_fails_the_mirror_closed(self):
+        self.settings["p1"] = ConnectionError("webapp down")
+        _, status = await self.do_import("https://www.example.test/")
+        self.assertEqual(status["error"], "settings_unavailable")
+        self.assertFalse(any("www.example.test" in str(r.url) for r in self.world.seen[1:]))
+        self.assertTrue(self.staging_empty())
+
+    async def test_two_projects_mirror_concurrently_each_with_own_roe(self):
+        self.settings["p1"] = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": ["other.example.test"]}
+        self.settings["p2"] = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": ["www.example.test"]}
+        workspace_fs.resolve_for_project("p2", ".")
+        async with self.world.factory() as f:
+            insp = await resolve.inspect("https://www.example.test/", f)
+        jobs = []
+        for pid in ("p1", "p2"):
+            spec = runner.ImportSpec(url="https://www.example.test/", dest_dir="uploads", name="site")
+            jobs.append((pid, (await runner.start(spec, insp, project_id=pid, github_token=""))["jobId"]))
+        reg = job_runner.get_registry()
+        done = {pid: await reg.wait(pid, job, 10) for pid, job in jobs}
+        self.assertEqual(done["p1"]["status"], "done", done["p1"])
+        self.assertEqual(done["p2"]["error"], "roe_excluded")
+        self.assertEqual(sorted(self.loaded), ["p1", "p2"])
+
+    async def test_invalid_mirror_option_refused_by_the_route(self):
+        body = json.dumps({"projectId": "p1", "url": "https://www.example.test/", "destDir": "uploads",
+                           "options": {"maxPages": "lots"}}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        from starlette.requests import Request
+        resp = await http_routes.import_url(Request({"type": "http", "method": "POST", "headers": []}, receive))
+        self.assertEqual((resp.status_code, json.loads(resp.body)["code"]), (400, "invalid_option"))
 
 
 class Stored(RunnerBase):

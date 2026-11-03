@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, StrictInt, StrictSt
 import job_runner
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import limits, provenance, purge, resolve, runner, staging, upload_job, upload_sessions
+from workspace_import import limits, mirror, provenance, purge, resolve, runner, staging, upload_job, upload_sessions
 from workspace_import.detect import MIRROR_KINDS
 from workspace_import.names import sanitize_name
 from workspace_import.place import POLICIES
@@ -106,7 +106,8 @@ class ResyncBody(_Body):
     githubToken: Optional[StrictStr] = None
 
 
-IMPORT_OPTION_KEYS = ("subpath",)
+REPO_OPTION_KEYS = ("subpath",)
+IMPORT_OPTION_KEYS = REPO_OPTION_KEYS + mirror.OPTION_KEYS
 RESOLVE_TIMEOUT_SEC = 20.0
 # Injectable for tests: builds the fetcher a resolve or an import uses.
 fetcher_factory = GuardedFetcher
@@ -277,6 +278,12 @@ def _clean_options(options: dict) -> Optional[dict]:
     for key, value in (options or {}).items():
         if key not in IMPORT_OPTION_KEYS:
             continue
+        if key in mirror.OPTION_KEYS:
+            # Typed by MirrorOptions once the kind is known (invalid_option).
+            if not isinstance(value, (str, int, bool)) or (isinstance(value, str) and len(value) > 64):
+                return None
+            out[key] = value
+            continue
         if not isinstance(value, str) or len(value) > 1024:
             return None
         # An empty subpath is kept: for a /tree/<ref>/<dir> link it means the
@@ -301,8 +308,12 @@ async def start_import(project_id: str, url: str, dest_dir: str, name: Optional[
 
     try:
         insp = await asyncio.wait_for(inspect(), RESOLVE_TIMEOUT_SEC)
+        # Only the options of the kind the server found are kept, and stored.
         if insp.kind in MIRROR_KINDS:
-            raise ImportFailure("kind_not_supported")
+            options = {k: v for k, v in options.items() if k in mirror.OPTION_KEYS}
+            mirror.MirrorOptions.for_kind(insp.kind, options, total_cap=limits.max_bytes())
+        else:
+            options = {k: v for k, v in options.items() if k in REPO_OPTION_KEYS}
         final_name = sanitize_name(name, fallback="") if name else insp.name
         if not final_name:
             return fail("invalid_request")
