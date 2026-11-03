@@ -7,6 +7,7 @@ import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels
 import { readFeatureModelCode } from '@/lib/llmFeatures'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { isChatProvider } from '@/lib/llmProviderKinds'
+import { isLoopModel } from '@/lib/agentInTheLoop'
 import { builtinSendsTemperature, customSendsTemperature, rejectsTemperature } from '@/lib/llmTemperature'
 
 // ---------------------------------------------------------------------------
@@ -285,6 +286,15 @@ export async function POST(request: NextRequest) {
 
     if (!prompt || !prompt.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 })
+    }
+
+    // Agent in the Loop answers only inside a chat run; resolveModel would route
+    // it to OpenAI with the user's key.
+    if (isLoopModel(model)) {
+      return featureModelErrorResponse('model_unavailable', 'preset_generator', {
+        model,
+        error: 'Agent in the Loop answers only inside a chat run. Choose a provider model for preset generation.',
+      })
     }
 
     const resolved = resolveModel(model)

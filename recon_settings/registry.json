@@ -719,7 +719,7 @@
    "group": "llm",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Model used by the agent. Configure providers in Global Settings.",
+   "meaning": "Model used by the agent. Configure providers in Global Settings. It may also be Agent in the Loop (`loop/mcp`), where your own Claude Code or Codex answers each step; only a person selects that, in the project form, and MCP writes cannot set it.",
    "optional": false,
    "phase": "standalone",
    "prisma_type": "String",

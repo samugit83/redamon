@@ -228,3 +228,15 @@ describe('a provider refusal in the log', () => {
     logged.mockRestore()
   })
 })
+
+describe('Agent in the Loop is never the generator model', () => {
+  test('a saved loop model is refused before any provider is called', async () => {
+    saved('loop/mcp')
+    const res = await generate({ prompt: 'stealthy' })
+    expect(res.status).toBe((await import('@/lib/llmFeatures')).FEATURE_MODEL_STATUS.model_unavailable)
+    const body = await res.json()
+    expect(body.code).toBe('model_unavailable')
+    expect(body.error).toMatch(/Agent in the Loop answers only inside a chat run/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

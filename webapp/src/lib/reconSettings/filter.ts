@@ -37,6 +37,26 @@ import {
   type RegistryField,
 } from './registry'
 import { validateValue } from './validators'
+import { isLoopModel } from '@/lib/agentInTheLoop'
+
+/**
+ * A model value no MCP write may set, and why. A token must not choose the
+ * brain it could then drive (the reason mirrors mcpKaliExecEnabled's
+ * 'escalation'); the recon AI hooks run outside any chat, where no external
+ * agent can answer.
+ */
+export function loopModelRefusal(key: string, value: unknown): string | null {
+  if (!isLoopModel(value)) return null
+  if (key === 'agentOpenaiModel') {
+    return `'${key}' cannot be set to Agent in the Loop over MCP (escalation): only a person ` +
+      'selects Agent in the Loop, in the project form.'
+  }
+  if (key === 'aiPipelineModel') {
+    return `'${key}' cannot be Agent in the Loop (not_supported): the recon AI hooks run ` +
+      'outside any chat, where no external agent can answer. Pick a provider model.'
+  }
+  return null
+}
 
 /**
  * update   an existing project's settings (update_recon_settings)
@@ -233,7 +253,7 @@ export function filterReconSettings(
       }
     }
 
-    const refusal = explainRefusal(key, spec, mode)
+    const refusal = explainRefusal(key, spec, mode) ?? loopModelRefusal(key, value)
     if (refusal) return { ok: false, key, error: refusal }
 
     const problem = validateValue(key, spec, value, options.projectId)

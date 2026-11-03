@@ -1193,7 +1193,10 @@ fields:
     validator: free_text
     group: llm
     meaning: >-
-      Model used by the agent. Configure providers in Global Settings.
+      Model used by the agent. Configure providers in Global Settings. It may
+      also be Agent in the Loop (`loop/mcp`), where your own Claude Code or
+      Codex answers each step; only a person selects that, in the project
+      form, and MCP writes cannot set it.
   agentPayloadUseHttps:
     tool: agent
     runtime_key: null

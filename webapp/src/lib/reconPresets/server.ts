@@ -23,6 +23,16 @@ import {
 import { DENY_REASON_DOC } from '@/lib/reconSettings/filter'
 import { field, type RegistryField } from '@/lib/reconSettings/registry'
 import { validateValue } from '@/lib/reconSettings/validators'
+import { isLoopModel } from '@/lib/agentInTheLoop'
+
+/**
+ * A preset is applied by people who often do not read it, so it must not
+ * choose the brain: a loop model is refused on save over MCP, dropped from a UI
+ * save or an import, and never written by an apply (applyPresetSettings).
+ */
+const LOOP_MODEL_KEYS: ReadonlySet<string> = new Set(['agentOpenaiModel', 'aiPipelineModel'])
+const PRESET_LOOP_REFUSAL =
+  'cannot be Agent in the Loop: a preset cannot choose it; a person selects it in the project form'
 import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { JEV_VERIFY_FAILED, jevSwitchedOn, validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 
@@ -92,6 +102,7 @@ function exclusionReason(key: string, spec: RegistryField): string {
  * may only name a built-in preset.
  */
 function checkPresetValue(key: string, spec: RegistryField, value: unknown, projectId?: string): string | null {
+  if (LOOP_MODEL_KEYS.has(key) && isLoopModel(value)) return PRESET_LOOP_REFUSAL
   if (value === null && spec.optional) return null
   if (key === 'reconPresetId') {
     return typeof value === 'string' && getPresetById(value)
@@ -174,7 +185,16 @@ export function presetSettingsForStorage(
   if (Buffer.byteLength(JSON.stringify(settings), 'utf8') > PRESET_MAX_BYTES) {
     return { ok: false, error: `A preset is at most ${PRESET_MAX_BYTES / 1024} KiB` }
   }
-  return { ok: true, settings, dropped: ignoredKeys.length }
+  // Saved from a loop project's form: keep the preset, without the brain. An
+  // apply then keeps each project's own model (KEPT_WHEN_ABSENT).
+  let dropped = ignoredKeys.length
+  for (const key of LOOP_MODEL_KEYS) {
+    if (isLoopModel(settings[key])) {
+      delete settings[key]
+      dropped += 1
+    }
+  }
+  return { ok: true, settings, dropped }
 }
 
 export type ResolvedPreset =
