@@ -134,6 +134,8 @@ class Resync(ResyncBase):
         (self.root / "uploads/plain").mkdir()
         rows = {r["name"]: r for r in workspace_fs.list_dir_page("p1", "uploads", 100)[0]}
         self.assertEqual((rows["r"]["imported"], rows["plain"]["imported"]), (True, False))
+        self.assertEqual((rows["r"]["importKind"], rows["r"]["resyncable"]), ("github-repo", True))
+        self.assertNotIn("importKind", rows["plain"])
 
     async def test_properties_show_sanitized_import_facts(self):
         path = await self.imported()

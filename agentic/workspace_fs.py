@@ -1276,17 +1276,24 @@ def list_dir_page(project_id: str, path: str = ".", limit: int = 2000) -> tuple[
         try:
             st = os.stat(entry.path)
             is_dir = _is_dir(entry)
-            rows.append({
+            # A signed record of this project, not just a file of that name.
+            record = _provenance.read(entry.path, project_id=project_id) \
+                if is_dir and not entry.is_symlink() and os.path.isfile(os.path.join(entry.path, _provenance.FILENAME)) \
+                else None
+            row = {
                 "name": entry.name,
                 "path": str(Path(entry.path).relative_to(root)),
                 "isDir": is_dir,
                 "isSymlink": entry.is_symlink(),
                 "size": st.st_size,
                 "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
-                # A signed record of this project, not just a file of that name.
-                "imported": bool(is_dir and not entry.is_symlink()
-                                 and _provenance.is_imported_dir(entry.path, project_id=project_id)),
-            })
+                "imported": record is not None,
+            }
+            if record is not None:
+                facts = import_facts(record)
+                row["importKind"] = facts["kind"]
+                row["resyncable"] = facts["resyncable"]
+            rows.append(row)
         except Exception as e:
             logger.warning(f"list_dir: skipped {entry.path}: {e}")
     return rows, len(entries)

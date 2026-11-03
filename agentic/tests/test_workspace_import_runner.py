@@ -207,6 +207,16 @@ class Successful(RunnerBase):
         rec = provenance.read(self.root / "uploads/docs", project_id="p1")
         self.assertEqual(rec["source"]["subpath"], "docs")
 
+    async def test_tree_link_with_cleared_subfolder_imports_whole_repo(self):
+        # The dialog sends subpath "" when the user clears the field of a
+        # /tree/<ref>/<dir> link; the route must not drop it.
+        self.assertEqual(http_routes._clean_options({"subpath": ""}), {"subpath": ""})
+        self.assertEqual(http_routes._clean_options({"subpath": "/docs/"}), {"subpath": "docs"})
+        _, status = await self.do_import("https://github.com/o/r/tree/main/docs", options={"subpath": ""})
+        self.assertEqual(status["status"], "done", status)
+        self.assertEqual(status["progress"]["path"], "uploads/r")
+        self.assertIn("README", self.tree("uploads/r"))
+
     async def test_subfolder_tarball_strategy_only_subtree(self):
         self.world.routes[f"{API}/git/trees/{SHA}?recursive=1"] = lambda r: httpx.Response(
             200, json=dict(TREE, truncated=True))

@@ -279,8 +279,9 @@ def _clean_options(options: dict) -> Optional[dict]:
             continue
         if not isinstance(value, str) or len(value) > 1024:
             return None
-        if value.strip("/"):
-            out[key] = value.strip("/")
+        # An empty subpath is kept: for a /tree/<ref>/<dir> link it means the
+        # whole repository, which is what the dialog's preview then showed.
+        out[key] = value.strip("/")
     return out
 
 
