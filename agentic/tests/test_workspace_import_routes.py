@@ -142,6 +142,17 @@ class UploadSessionRoutes(RoutesBase):
         r = self.client.delete("/workspace/upload-sessions/not-an-id", params={"projectId": "p1"})
         self.assertEqual(r.status_code, 200)
 
+    def test_folder_over_the_entry_cap_is_refused_before_anything_is_staged(self):
+        with mock.patch.dict("os.environ", {"WORKSPACE_IMPORT_MAX_ENTRIES": "10"}):
+            r = self.create(kind="folder", name="tree", size=4096, entries=11)
+            self.assertEqual(r.status_code, 413, r.text)
+            self.assertEqual(r.json()["code"], "too_many_entries")
+            self.assertEqual(upload_sessions._sessions, {})
+            self.assertEqual(staging.reserved_total(), 0)
+            staged = self.tmp / ".staging" / "p1"
+            self.assertFalse(staged.exists() and any(staged.iterdir()))
+            self.assertEqual(self.create(kind="folder", name="tree", size=4096, entries=10).status_code, 201)
+
     def test_chunk_over_cap_refused_before_reading(self):
         uid = self.create(size=100).json()["uploadId"]
         with mock.patch.dict("os.environ", {"WORKSPACE_UPLOAD_CHUNK_BYTES": "4"}):

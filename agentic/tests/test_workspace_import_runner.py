@@ -12,6 +12,7 @@ import time
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -498,6 +499,30 @@ class Mirrors(RunnerBase):
         self.assertEqual(done["p2"]["error"], "roe_excluded")
         self.assertEqual(sorted(self.loaded), ["p1", "p2"])
 
+    async def test_engagement_ending_mid_copy_stops_it_and_keeps_what_was_saved(self):
+        self.settings["p1"] = {"ROE_ENABLED": True, "TARGET_DOMAIN": "example.test"}
+        home = self.world.routes["https://www.example.test/"]
+
+        def home_then_engagement_ends(r):
+            # The settings dict is the job's own; this is midnight passing the end date.
+            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            self.settings["p1"]["ROE_ENGAGEMENT_END_DATE"] = yesterday
+            return home(r)
+        async with self.world.factory() as f:
+            insp = await resolve.inspect("https://www.example.test/", f)
+        # Armed after the resolve probe, so the job starts inside the window.
+        self.world.routes["https://www.example.test/"] = home_then_engagement_ends
+        spec = runner.ImportSpec(url="https://www.example.test/", dest_dir="uploads", name=insp.name,
+                                 options={"outputMode": "readable"})
+        started = await runner.start(spec, insp, project_id="p1", github_token="")
+        status = await job_runner.get_registry().wait("p1", started["jobId"], 10)
+        self.assertEqual(status["status"], "done", status)
+        self.assertEqual(status["progress"]["stoppedBecause"], "roe_window")
+        self.assertEqual(self.tree(status["progress"]["path"]), [".import.json", "_manifest.jsonl", "index.md"])
+        self.assertNotIn("https://www.example.test/guide.html", [str(r.url) for r in self.world.seen])
+        rec = provenance.read(self.root / status["progress"]["path"], project_id="p1")
+        self.assertEqual(rec["stats"]["stoppedBecause"], "roe_window")
+
     async def test_invalid_mirror_option_refused_by_the_route(self):
         body = json.dumps({"projectId": "p1", "url": "https://www.example.test/", "destDir": "uploads",
                            "options": {"maxPages": "lots"}}).encode()
@@ -646,6 +671,25 @@ class DiskAndPool(RunnerBase):
         with mock.patch.object(runner, "safe_extract", spy):
             await self.do_import("https://files.example.test/pack.zip")
         self.assertTrue(names and names[0].startswith("test-import"))
+
+    async def test_archive_link_extracting_past_free_disk_is_insufficient_storage(self):
+        # 150 MiB of zeros deflates to a few hundred KiB: the download's
+        # reservation (twice the archive) says nothing about the extraction.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zf.open("bomb/zeros.bin", "w") as w:
+                for _ in range(150):
+                    w.write(bytes(1024 * 1024))
+        archive = buf.getvalue()
+        self.assertLess(len(archive), 1024 * 1024)
+        self.world.routes["https://files.example.test/zeros.zip"] = lambda r: httpx.Response(
+            200, content=archive, headers={"content-type": "application/zip"})
+        self.free = 100 * 1024 * 1024  # room for one 64 MiB growth step, not two
+        _, status = await self.do_import("https://files.example.test/zeros.zip")
+        self.assertEqual(status["error"], "insufficient_storage", status)
+        self.assertEqual(os.listdir(self.root / "uploads"), [])
+        self.assertEqual(staging.reserved_total(), 0)
+        self.assertTrue(self.staging_empty())
 
 
 class CrossFeature(RunnerBase):

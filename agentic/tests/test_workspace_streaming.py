@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 import api
 import workspace_fs
 from llm_guard import require_configured_master_auth
-from workspace_import import executor, staging
+from workspace_import import busy, executor, staging
 
 
 class StreamingBase(unittest.TestCase):
@@ -192,8 +192,43 @@ class Listing(StreamingBase):
         self.assertEqual(r.status_code, 422)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class BusyFolders(StreamingBase):
+    """A Re-sync swaps its whole folder at the end, so an upload or a new
+    folder inside it meanwhile would vanish; the routes refuse both and name
+    the job holding the folder."""
+
+    JOB = "ab" * 16
+
+    def setUp(self):
+        super().setUp()
+        busy.register("p1", self.JOB, target="uploads/site", dest_dir="uploads")
+        self.addCleanup(busy.clear)
+
+    def test_upload_into_a_busy_folder_is_409_busy_with_the_holder(self):
+        r = self.client.post("/workspace/upload", data={"projectId": "p1", "path": "uploads/site/css"},
+                             files={"file": ("new.css", b"p{}")})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["code"], "busy")
+        self.assertEqual(r.json()["jobId"], self.JOB)
+        self.assertFalse((self.root / "uploads/site/css/new.css").exists())
+        r = self.client.post("/workspace/upload", data={"projectId": "p1", "path": "uploads", "overwrite": "true"},
+                             files={"file": ("site", b"x")})
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "busy"))
+        self.assertTrue((self.root / "uploads/site").is_dir())
+
+    def test_new_folder_inside_a_busy_folder_is_409_busy_with_the_holder(self):
+        r = self.client.post("/workspace/mkdir", json={"projectId": "p1", "path": "uploads/site/new"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["code"], "busy")
+        self.assertEqual(r.json()["jobId"], self.JOB)
+        self.assertFalse((self.root / "uploads/site/new").exists())
+
+    def test_a_sibling_of_the_busy_folder_is_not_busy(self):
+        r = self.client.post("/workspace/upload", data={"projectId": "p1", "path": "uploads"},
+                             files={"file": ("other.txt", b"o")})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/workspace/mkdir", json={"projectId": "p1", "path": "uploads/other"})
+        self.assertEqual(r.status_code, 200, r.text)
 
 
 class DescriptorOwnership(unittest.TestCase):
@@ -244,3 +279,7 @@ class DescriptorOwnership(unittest.TestCase):
         body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
         self.assertEqual(body, self.file.read_bytes())
         self.assertClosed(fd)
+
+
+if __name__ == "__main__":
+    unittest.main()
