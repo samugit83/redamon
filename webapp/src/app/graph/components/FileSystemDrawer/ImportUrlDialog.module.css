@@ -267,3 +267,8 @@
   margin-top: 2px;
   flex: none;
 }
+
+/* A hint under radios takes its own line, so it never reads as the last radio's label. */
+.conflict .hint {
+  flex-basis: 100%;
+}
