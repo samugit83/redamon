@@ -1,0 +1,79 @@
+"""Failure codes for workspace uploads and URL imports.
+
+Every expected failure is a code with a fixed sentence. Exception text never
+reaches a response, a job's meta or the log: it can carry paths, URLs with
+temporary tokens in their query, or an upstream's own words.
+
+Stdlib only: workspace_fs imports busy.py, which imports this module.
+"""
+from __future__ import annotations
+
+import errno
+from typing import Optional
+
+CODES: dict[str, tuple[int, str]] = {
+    "invalid_request": (400, "The request is not valid."),
+    "internal_error": (500, "Something went wrong on the server. Check the agent log."),
+    "not_found": (404, "Not found."),
+    "cancelled": (409, "The operation was cancelled."),
+    "busy": (409, "A running import is replacing this folder. Retry when it finishes."),
+    # Archives
+    "unsafe_path": (422, "The archive holds a path that leaves its folder (absolute, '..' or NUL)."),
+    "too_deep": (422, "The archive nests folders more than 64 levels deep."),
+    "name_too_long": (422, "The archive holds a name longer than 255 bytes, or a path longer than 4096 bytes."),
+    "too_many_entries": (413, "The archive holds more entries than the server allows."),
+    "too_large": (413, "The content is larger than the server allows."),
+    "conflicting_entries": (422, "The archive holds a file and a folder with the same path."),
+    "unsupported_archive": (422, "The file is not a zip, tar, tar.gz, tar.bz2, tar.xz or gz archive."),
+    "corrupt_archive": (422, "The archive is damaged or truncated."),
+    "empty_archive": (422, "The archive holds nothing to extract."),
+    # Disk and placement
+    "insufficient_storage": (413, "Not enough free disk space on the server for this operation."),
+    "protected_path": (403, "That folder is part of the workspace layout and cannot be replaced."),
+    "conflict_type": (409, "A file and a folder cannot replace each other."),
+    "name_exhausted": (409, "Too many entries with that name already exist in the folder."),
+    "exists": (409, "An entry with that name already exists in the folder."),
+    "destination_missing": (409, "The destination folder no longer exists."),
+}
+
+
+class ImportFailure(Exception):
+    """An expected failure, carried as a code.
+
+    `detail` is for the server log only (already redacted by the caller); it
+    never goes into a response.
+    """
+
+    def __init__(self, code: str, *, status: Optional[int] = None, detail: str = ""):
+        if code not in CODES:
+            raise ValueError(f"unknown workspace import code: {code}")
+        super().__init__(code)
+        self.code = code
+        self.status = status or CODES[code][0]
+        self.detail = detail
+
+    def __str__(self) -> str:
+        return self.code
+
+
+def error_body(code: str, **extra) -> dict:
+    """The JSON body of a failed request: the fixed sentence plus the code."""
+    status_sentence = CODES.get(code) or CODES["internal_error"]
+    body = {"error": status_sentence[1], "code": code if code in CODES else "internal_error"}
+    body.update(extra)
+    return body
+
+
+def status_for(code: str) -> int:
+    return (CODES.get(code) or CODES["internal_error"])[0]
+
+
+_DISK_FULL_ERRNOS = {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}
+
+
+def map_os_error(e: BaseException) -> Optional[ImportFailure]:
+    """A full disk or quota is the user's to fix, so it gets its own code;
+    every other OSError is the caller's internal_error."""
+    if isinstance(e, OSError) and e.errno in _DISK_FULL_ERRNOS:
+        return ImportFailure("insufficient_storage")
+    return None
