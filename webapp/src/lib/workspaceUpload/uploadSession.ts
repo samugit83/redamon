@@ -165,6 +165,44 @@ function asApiError(err: unknown, fallback: string): unknown {
   return toApiError(err, fallback)
 }
 
+// This tab's sessions that are neither committed nor known to be deleted. A
+// keepalive DELETE sent while the page unloads can be lost; the next drawer
+// mount in this tab deletes what is left. sessionStorage, not localStorage: it
+// is per tab, so a sweep never touches another tab's live upload.
+const OPEN_UPLOADS_KEY = 'redamon-workspace-open-uploads'
+
+interface OpenUpload { projectId: string; uploadId: string }
+
+function readOpen(): OpenUpload[] {
+  try {
+    const list = JSON.parse(sessionStorage.getItem(OPEN_UPLOADS_KEY) || '[]')
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.uploadId === 'string' && typeof e.projectId === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function writeOpen(list: OpenUpload[]): void {
+  try {
+    sessionStorage.setItem(OPEN_UPLOADS_KEY, JSON.stringify(list.slice(-50)))
+  } catch {
+    // storage unavailable or full: the server's idle sweep is the backstop
+  }
+}
+
+function rememberOpen(projectId: string, uploadId: string): void {
+  writeOpen([...readOpen().filter((e) => e.uploadId !== uploadId), { projectId, uploadId }])
+}
+
+function forgetOpen(uploadId: string): void {
+  writeOpen(readOpen().filter((e) => e.uploadId !== uploadId))
+}
+
+/** Delete this tab's sessions an earlier page left behind. Call on mount. */
+export function sweepAbandonedUploads(): void {
+  for (const e of readOpen()) deleteUploadSession(e.projectId, e.uploadId)
+}
+
 /** `promise`, or an AbortError as soon as `signal` aborts (then `onAbandon` runs once). */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbandon: () => void): Promise<T> {
   if (!signal) return promise
@@ -186,7 +224,9 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, o
 export function deleteUploadSession(projectId: string, uploadId: string): void {
   const url = `${SESSIONS_URL}/${encodeURIComponent(uploadId)}?projectId=${encodeURIComponent(projectId)}`
   try {
-    fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {})
+    fetch(url, { method: 'DELETE', keepalive: true })
+      .then((res) => { if (res.ok) forgetOpen(uploadId) })
+      .catch(() => {})
   } catch {
     // fetch can throw synchronously while the page is being torn down.
   }
@@ -332,6 +372,7 @@ export async function uploadBlob(opts: UploadBlobOptions): Promise<UploadResult>
   const { uploadId, chunkSize } = await untilAborted(creating, signal, () => {
     creating.then((c) => deleteUploadSession(projectId, c.uploadId), () => {})
   })
+  rememberOpen(projectId, uploadId)
   let open = true
   const close = () => {
     if (!open) return
@@ -346,13 +387,17 @@ export async function uploadBlob(opts: UploadBlobOptions): Promise<UploadResult>
     if (signal?.aborted) throw abortError()
     const jobId = await commitSession(opts, uploadId, patience)
     open = false
+    forgetOpen(uploadId)
     return { jobId, uploadId }
   } catch (err) {
     if (signal?.aborted) {
       close()
       throw abortError()
     }
-    if (err instanceof TransferCancelledError) open = false
+    if (err instanceof TransferCancelledError) {
+      open = false
+      forgetOpen(uploadId)
+    }
     close()
     throw err
   } finally {

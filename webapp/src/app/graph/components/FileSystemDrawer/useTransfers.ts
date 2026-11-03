@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, fetchJson } from '@/lib/apiError'
 import {
-  isAbortError, TransferCancelledError, uploadBlob, waitForJob,
+  isAbortError, sweepAbandonedUploads, TransferCancelledError, uploadBlob, waitForJob,
   type ConflictPolicy, type UploadKind, type WorkspaceJob,
 } from '@/lib/workspaceUpload/uploadSession'
 import { jobFailureMessage } from './transferMessages'
@@ -214,6 +214,8 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
   return {
     attach() {
       alive = true
+      // Sessions an earlier page of this tab could not delete as it closed.
+      sweepAbandonedUploads()
     },
 
     dispose() {

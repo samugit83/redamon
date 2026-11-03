@@ -1,7 +1,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ApiError } from '@/lib/apiError'
 import {
-  SESSION_SWEPT_REASON, TransferCancelledError, uploadBlob, waitForJob,
+  SESSION_SWEPT_REASON, TransferCancelledError, sweepAbandonedUploads, uploadBlob, waitForJob,
   type UploadBlobOptions, type WorkspaceJob,
 } from './uploadSession'
 
@@ -179,6 +179,37 @@ describe('uploadBlob', () => {
     expect(calls.filter((c) => c.method === 'DELETE')[0].url)
       .toBe(`/api/agent/workspace/upload-sessions/${UPLOAD_ID}?projectId=p1`)
     expect(chunkCalls()).toHaveLength(0)
+  })
+
+  test('a session whose delete never landed is deleted on the next mount', async () => {
+    // A page that unloads mid-upload may lose its keepalive DELETE; the tab
+    // remembers the session and the next drawer mount deletes it.
+    sessionStorage.clear()
+    routes.chunk = () => new Promise<Response>(() => {})
+    routes.remove = () => new Promise<Response>(() => {})  // the unload swallowed it
+    const controller = new AbortController()
+    const upload = track(uploadBlob(options(new Blob(['abcdefgh']), { signal: controller.signal })))
+    await vi.waitFor(() => expect(chunkCalls()).toHaveLength(1))
+    controller.abort()
+    await vi.waitFor(() => expect(upload.done).toBe(true))
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+
+    routes.remove = () => json({ aborted: true })
+    sweepAbandonedUploads()
+    const deletes = calls.filter((c) => c.method === 'DELETE')
+    expect(deletes).toHaveLength(2)
+    expect(deletes[1].url).toBe(`/api/agent/workspace/upload-sessions/${UPLOAD_ID}?projectId=p1`)
+    await vi.waitFor(() => expect(sessionStorage.getItem('redamon-workspace-open-uploads')).toBe('[]'))
+    sweepAbandonedUploads()
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(2)
+  })
+
+  test('a committed or confirmed-deleted session is forgotten', async () => {
+    sessionStorage.clear()
+    await uploadBlob(options(new Blob(['abcdefgh'])))
+    expect(JSON.parse(sessionStorage.getItem('redamon-workspace-open-uploads') || '[]')).toEqual([])
+    sweepAbandonedUploads()
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
   })
 
   test('reports progress', async () => {
