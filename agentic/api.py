@@ -46,6 +46,7 @@ from websocket_api import WebSocketManager, websocket_endpoint, MessageType
 import workspace_fs
 import job_runner
 import ws_job_emitter
+from workspace_import import downloads as _ws_downloads
 from workspace_import import staging as _ws_staging
 from workspace_import.errors import ImportFailure, error_body
 from workspace_import.http_routes import reset_project_imports, router as workspace_import_router
@@ -2605,13 +2606,19 @@ async def download_file(
 async def workspace_list(
     projectId: str = Query(..., description="Project UUID"),
     path: str = Query(".", description="Subdir relative to /workspace/<projectId>/"),
+    limit: int = Query(2000, ge=1, le=10000, description="Entries returned at most"),
 ):
-    """Directory listing as structured JSON for the drawer Files tab."""
+    """Directory listing as structured JSON for the drawer Files tab.
+
+    Capped: the drawer polls this every 5 s and an imported folder can hold
+    tens of thousands of entries. `total` and `truncated` say what was left out.
+    """
     if not projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     try:
-        entries = workspace_fs.list_dir_for_project(projectId, path)
-        return {"projectId": projectId, "path": path, "entries": entries}
+        entries, total = workspace_fs.list_dir_page(projectId, path, limit)
+        return {"projectId": projectId, "path": path, "entries": entries,
+                "total": total, "truncated": total > len(entries)}
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2646,25 +2653,21 @@ async def workspace_download(
     projectId: str = Query(...),
     path: str = Query(...),
 ):
-    """Stream file bytes directly from the bind-mount (no kali_shell round-trip)."""
+    """Stream file bytes directly from the bind-mount (no kali_shell round-trip).
+
+    Streams the descriptor that was checked (open_download_for_project), never
+    a path reopened later, and always as an attachment with nosniff.
+    """
     if not projectId:
         return Response(content="projectId required", status_code=400)
     try:
-        content_bytes, mime = workspace_fs.download_for_project(projectId, path)
+        fd, size, mime, filename = workspace_fs.open_download_for_project(projectId, path)
     except ValueError as e:
         return Response(content=str(e), status_code=400)
     except Exception as e:
         logger.error(f"/workspace/download failed: {e}")
         return Response(content=str(e), status_code=500)
-    filename = os.path.basename(path) or "download"
-    return Response(
-        content=content_bytes,
-        media_type=mime,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(content_bytes)),
-        },
-    )
+    return _ws_downloads.stream_fd(fd, size, mime, filename)
 
 
 class WorkspaceRenameRequest(BaseModel):
@@ -2833,22 +2836,18 @@ async def workspace_bulk_archive(req: WorkspaceBulkArchiveRequest):
     if not req.projectId:
         return Response(content="projectId required", status_code=400)
     try:
-        archive_bytes, filename = workspace_fs.bulk_archive_for_project(
-            req.projectId, req.paths, format=req.format, archive_name=req.archiveName,
+        resolved, filename = workspace_fs.prepare_bulk_archive(
+            req.projectId, req.paths, req.format, req.archiveName,
         )
     except ValueError as e:
         return Response(content=str(e), status_code=400)
     except Exception as e:
         logger.error(f"/workspace/bulk-archive failed: {e}")
         return Response(content=str(e), status_code=500)
-    mime = "application/gzip" if req.format == "tar.gz" else "application/zip"
-    return Response(
-        content=archive_bytes,
-        media_type=mime,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(archive_bytes)),
-        },
+    return await _ws_downloads.archive_response(
+        req.projectId, resolved,
+        lambda f: workspace_fs.write_bulk_archive(f, resolved, req.format),
+        filename, req.format,
     )
 
 
@@ -2863,22 +2862,16 @@ async def workspace_archive_download(
     if not projectId:
         return Response(content="projectId required", status_code=400)
     try:
-        archive_bytes, filename = workspace_fs.archive_dir_for_project(
-            projectId, path, format=format,
-        )
+        src, name, filename = workspace_fs.prepare_dir_archive(projectId, path, format)
     except ValueError as e:
         return Response(content=str(e), status_code=400)
     except Exception as e:
         logger.error(f"/workspace/archive-download failed: {e}")
         return Response(content=str(e), status_code=500)
-    mime = "application/gzip" if format == "tar.gz" else "application/zip"
-    return Response(
-        content=archive_bytes,
-        media_type=mime,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(archive_bytes)),
-        },
+    return await _ws_downloads.archive_response(
+        projectId, [src],
+        lambda f: workspace_fs.write_dir_archive(f, src, name, format),
+        filename, format,
     )
 
 
