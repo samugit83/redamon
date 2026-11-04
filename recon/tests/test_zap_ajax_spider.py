@@ -237,10 +237,49 @@ def test_zap_heap_is_sized_from_the_container_not_the_host(monkeypatch):
     """zap.sh sizes -Xmx from MemTotal on cgroup v2, so the heap must be pinned."""
     zap = _load_zap_module()
 
-    monkeypatch.setattr(zap, "_zap_container_bytes", lambda: 2 * 1024 ** 3)
+    monkeypatch.setattr(zap, "_zap_container_bytes", lambda: 3 * 1024 ** 3)
     heap = zap._zap_heap_mb()
 
-    assert heap == 1024, f"2 GiB container -> 1 GiB heap, got {heap}"
+    # 3 GiB x 0.9 safety - 1200 MB browser reserve - 300 MB JVM overhead.
+    assert heap == 1264, f"3 GiB container -> 1264 MB heap, got {heap}"
+
+
+def test_zap_heap_leaves_room_for_firefox_in_the_same_cgroup(monkeypatch):
+    """The heap plus Firefox must fit the ceiling, or the kernel kills the JVM.
+
+    Firefox headless is not one process: firefox-esr plus several Isolated Web
+    Content children measured 0.82-1.20 GiB. A heap taken as a fraction of the
+    ceiling ignored that and produced 1.87 GiB of demand inside a 2 GiB cgroup,
+    which is why every seed died with exit 137.
+    """
+    zap = _load_zap_module()
+
+    for gib in (2, 3, 4, 8):
+        ceiling = gib * 1024 ** 3
+        heap = zap._zap_heap_mb(ceiling)
+        planned = heap + zap._ZAP_JVM_OVERHEAD_MB + zap._ZAP_BROWSER_RESERVE_MB
+        assert planned * 1024 ** 2 < ceiling, (
+            f"{gib} GiB container: heap {heap} MB + JVM overhead + Firefox reserve "
+            f"= {planned} MB, which does not fit"
+        )
+
+
+def test_zap_heap_grows_with_the_container(monkeypatch):
+    """A bigger ceiling must buy a bigger heap, not just more headroom."""
+    zap = _load_zap_module()
+
+    small = zap._zap_heap_mb(3 * 1024 ** 3)
+    large = zap._zap_heap_mb(6 * 1024 ** 3)
+
+    assert large > small, f"6 GiB heap {large} MB must exceed 3 GiB heap {small} MB"
+
+
+def test_zap_heap_is_clamped_at_both_ends(monkeypatch):
+    """Too small a ceiling degrades to the floor instead of an OOM kill."""
+    zap = _load_zap_module()
+
+    assert zap._zap_heap_mb(512 * 1024 ** 2) == zap._ZAP_HEAP_MIN_MB
+    assert zap._zap_heap_mb(64 * 1024 ** 3) == zap._ZAP_HEAP_MAX_MB
 
 
 def test_zap_heap_falls_back_when_the_governor_is_unavailable(monkeypatch):
@@ -252,4 +291,64 @@ def test_zap_heap_falls_back_when_the_governor_is_unavailable(monkeypatch):
 
     # _zap_heap_mb takes the ceiling as an argument, so a governor failure in
     # the caller cannot make the heap calculation raise into the crawl.
-    assert zap._zap_heap_mb(zap._DEFAULT_ZAP_CONTAINER_BYTES) == 1024
+    assert zap._zap_heap_mb(zap._DEFAULT_ZAP_CONTAINER_BYTES) == zap._ZAP_HEAP_MIN_MB
+
+
+def test_zap_container_passes_the_ceiling_it_sized_the_heap_from(monkeypatch):
+    """--memory and -Xmx must come from one number, or they disagree again.
+
+    The heap was once derived from the governor's guess while the broker clamped
+    the container to a smaller value, so the JVM was sized for headroom it never
+    had. Passing the ceiling on the command line makes the two agree by
+    construction.
+    """
+    zap = _load_zap_module()
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.setdefault("cmds", []).append(list(cmd))
+        return Result()
+
+    monkeypatch.setattr(zap.subprocess, "run", fake_run)
+    monkeypatch.setattr(zap, "_zap_container_bytes", lambda: 3 * 1024 ** 3)
+
+    zap.run_zap_ajax_spider(
+        ["https://example.com/"],          # target_urls
+        "ghcr.io/zaproxy/zaproxy:stable",  # docker_image
+        ["example.com"],                   # allowed_hosts
+        [],                                # custom_headers
+        [],                                # exclude_patterns
+        1000,                              # max_urls
+        10,                                # max_duration
+        5,                                 # max_crawl_depth
+        0,                                 # max_crawl_states
+        1,                                 # number_of_browsers
+        "firefox-headless",                # browser_id
+        1000,                              # event_wait
+        1000,                              # reload_wait
+        True,                              # click_default_elems
+        True,                              # click_elems_once
+        False,                             # random_inputs
+        True,                              # logout_avoidance
+        "Strict",                          # scope_check
+    )
+
+    cmds = captured.get("cmds") or []
+    assert cmds, "the crawl must spawn a container"
+    cmd = cmds[0]
+
+    assert "--memory" in cmd, "the container must be spawned with an explicit ceiling"
+    mem = str(cmd[cmd.index("--memory") + 1])
+    assert mem == str(3 * 1024 ** 3), (
+        f"--memory {mem} must be the ceiling the heap was sized from"
+    )
+
+    xmx = next((a for a in cmd if a.startswith("-Xmx")), "")
+    assert xmx == f"-Xmx{zap._zap_heap_mb(3 * 1024 ** 3)}m", (
+        f"-Xmx {xmx} must match the ceiling"
+    )

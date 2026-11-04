@@ -28,13 +28,19 @@ ZAP_ENVELOPE_TOOL = "zap_ajax"
 _URL_RE = re.compile(r"https?://[^\s\"'<>,]+", re.IGNORECASE)
 _DEBUG_ENV = "REDAMON_ZAP_AJAX_DEBUG"
 
-# A ZAP Ajax container is a JVM plus a headless Firefox sharing one cgroup. Heap
-# gets _ZAP_HEAP_FRACTION of the container ceiling; the rest covers Firefox, the
-# JVM's metaspace and native memory, and the OS page cache.
-_ZAP_HEAP_FRACTION = 0.5
+# A ZAP Ajax container is a JVM plus a headless Firefox sharing one cgroup.
+# Firefox's footprint does NOT scale with the container, so the heap cannot be a
+# fraction of it: at 50% of a 2 GiB container the pair measured 1.87 GiB live
+# (java 1.05 GiB + the firefox-esr and Isolated Web Content children 0.82 GiB),
+# which is 93% of the ceiling, and the kernel SIGKILLed the JVM on every crawl.
+# Reserve what Firefox and the JVM's non-heap memory actually cost, then give
+# the JVM whatever is left.
+_ZAP_BROWSER_RESERVE_MB = 1200   # firefox-esr + content processes, measured 0.82 GiB with room to grow
+_ZAP_JVM_OVERHEAD_MB = 300       # metaspace, thread stacks, native allocations above -Xmx
+_ZAP_SAFETY_FRACTION = 0.9       # never plan to use the whole cgroup: page cache needs some
 _ZAP_HEAP_MIN_MB = 512
 _ZAP_HEAP_MAX_MB = 3072
-_DEFAULT_ZAP_CONTAINER_BYTES = 2147483648  # 2 GiB, what the broker injects
+_DEFAULT_ZAP_CONTAINER_BYTES = 2147483648  # 2 GiB, the floor when the governor is unavailable
 
 # A browser crawl of every discovered endpoint never finishes in scan time: each
 # seed is a fresh ZAP container for up to maxDuration. Cap the seeds per run so a
@@ -578,19 +584,27 @@ def run_zap_ajax_spider(
         # seeds per crawl pile up until the host is out of memory -- which is
         # what then looks like "the scan froze".
         container_name = f"redamon-zap-ajax-{uuid.uuid4().hex[:12]}"
+        # The ceiling this container gets, decided HERE and passed with --memory,
+        # so the JVM's -Xmx below is sized from a limit that actually exists.
+        # Before this the heap was derived from the governor's guess (2.25 GiB
+        # for a tool with no envelope of its own) while the broker clamped the
+        # container to 2 GiB -- so the JVM was sized for 2.25 GiB of headroom it
+        # never had, and the kernel killed it (exit 137) on every crawl.
+        container_bytes = _zap_container_bytes()
         cmd = [
             "docker", "run", "--rm", "--net=host", "--name", container_name,
+            "--memory", str(container_bytes),
             *_docker_user_args(),
             "-v", f"{work_dir}:/zap/wrk",
             docker_image,
             "zap.sh", "-cmd",
             # zap.sh reads the *host* MemTotal on cgroup v2 (it still looks for
             # the v1 /sys/fs/cgroup/memory/memory.stat), so it sizes the heap at
-            # a quarter of 64 GB = -Xmx16029m inside a 2 GB container. The JVM
+            # a quarter of 64 GB = -Xmx16029m inside a small container. The JVM
             # then fails thread/heap allocation against the real limit. Passed
             # after `zap.sh` because zap.sh itself parses it and overrides its
             # own calculation.
-            f"-Xmx{_zap_heap_mb()}m",
+            f"-Xmx{_zap_heap_mb(container_bytes)}m",
             "-port", str(proxy_port), "-autorun", f"/zap/wrk/{plan_name}",
         ]
         failed = False
@@ -814,12 +828,19 @@ def _zap_heap_mb(container_bytes: int | None = None) -> int:
     memory.stat, which does not exist on a cgroup v2 host -- so inside a 2 GB
     container it asked for a quarter of the host's 64 GB (-Xmx16029m). The JVM
     is then killed, or fails thread and heap allocation against the real limit,
-    which is why seeds "timed out" while doing nothing. Size the heap from the
-    container instead, leaving room for Firefox, which the Ajax Spider runs as
-    a child process in the same cgroup.
+    which is why seeds "timed out" while doing nothing.
+
+    The heap is what is LEFT after Firefox and the JVM's own non-heap memory
+    are reserved, not a fraction of the ceiling. A fraction is wrong here
+    because Firefox's cost does not scale with the container: at 50% of 2 GiB
+    the pair measured 1.87 GiB live and the kernel SIGKILLed the JVM (exit 137)
+    on every seed of a real crawl. Reserving first makes a too-small ceiling
+    fail as a small heap instead of an OOM kill, and gives a large ceiling a
+    heap that actually fits.
     """
     limit = int(container_bytes or _zap_container_bytes())
-    heap_mb = int((limit * _ZAP_HEAP_FRACTION) // (1024 * 1024))
+    usable_mb = int(limit * _ZAP_SAFETY_FRACTION) // (1024 * 1024)
+    heap_mb = usable_mb - _ZAP_BROWSER_RESERVE_MB - _ZAP_JVM_OVERHEAD_MB
     return max(_ZAP_HEAP_MIN_MB, min(_ZAP_HEAP_MAX_MB, heap_mb))
 
 
