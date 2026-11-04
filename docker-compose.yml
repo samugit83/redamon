@@ -421,8 +421,18 @@ services:
       DOCKER_BROKER_ALLOWED_BIND_PREFIXES: /tmp/redamon,${PWD:-/home/samuele/Progetti didattici/redamon}
       DOCKER_BROKER_ALLOWED_VOLUMES: nuclei-templates
       # Memory governor (Part 4d): hard memory cap injected into every sibling
-      # tool container (katana/nuclei/httpx/...). Default ~2g; PIDS 0 = unset.
-      BROKER_TOOL_MEM_BYTES: ${BROKER_TOOL_MEM_BYTES:-2g}
+      # tool container (katana/nuclei/httpx/...). Default ~3g; PIDS 0 = unset.
+      #
+      # This is a CEILING, not a reservation: the broker only clamps a request
+      # down (services/docker_broker/broker.py: "if cur == 0 or cur >
+      # BROKER_TOOL_MEM"), so it must be >= the largest container_cap() the
+      # governor can hand out, or it silently overrides the governor and tools
+      # get less than they were sized for. The largest cap today is zap_ajax
+      # (2 GiB envelope x CONTAINER_CAP_HEADROOM 1.5 = 3 GiB); _default is
+      # 2.25 GiB. At the previous 2g default both were clamped below what the
+      # governor computed, which is how the ZAP Ajax Spider JVM ended up sized
+      # for a ceiling it never had and was OOM-killed (exit 137) mid-crawl.
+      BROKER_TOOL_MEM_BYTES: ${BROKER_TOOL_MEM_BYTES:-3g}
       # D1: fork-bomb ceiling injected into every sibling tool container
       # (katana/nuclei/httpx/...). Was 0 (unlimited); 512 is generous per tool.
       BROKER_TOOL_PIDS: ${BROKER_TOOL_PIDS:-512}
