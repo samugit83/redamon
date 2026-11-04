@@ -317,7 +317,7 @@ class OrchestratorFrames(unittest.TestCase):
         [err] = cb.errors
         self.assertEqual(err, {"message": "The agent run failed", "recoverable": False,
                                "code": "agent_run_failed", "error_class": "RateLimitError",
-                               "provider_status": 429})
+                               "provider_status": 429, "provider_error_kind": "rate_limited"})
         self.assertEqual(resp.error, "The agent run failed")
 
 

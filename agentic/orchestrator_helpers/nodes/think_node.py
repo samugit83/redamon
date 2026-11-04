@@ -443,10 +443,14 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             )
 
             with llm_purpose("deep_think", iteration=iteration):
-                dt_response = await llm.ainvoke([
-                    SystemMessage(content=deep_think_prompt),
-                    HumanMessage(content="Produce the deep think analysis JSON now."),
-                ])
+                dt_response = await retry_llm_call(
+                    llm,
+                    [
+                        SystemMessage(content=deep_think_prompt),
+                        HumanMessage(content="Produce the deep think analysis JSON now."),
+                    ],
+                    label=f"{user_id}/{project_id}/{session_id} deep_think iter={iteration}",
+                )
             dt_raw = normalize_content(dt_response.content).strip()
             _dt_usage = getattr(dt_response, "usage_metadata", None) or {}
             _dt_in += int(_dt_usage.get("input_tokens", 0) or 0)

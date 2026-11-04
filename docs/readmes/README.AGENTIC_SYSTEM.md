@@ -4409,7 +4409,7 @@ This chapter describes *how the platform stays alive when individual components 
 
 For **LLM response parsing**, the platform uses a multi-layered fallback ladder. The LLM is instructed to emit JSON that conforms to the `LLMDecision` Pydantic schema; if the JSON is malformed, the parser tries to extract whatever fields it can; if validation still fails, a preprocessing step removes the most common error sources (empty optional objects, malformed nested structures); if validation still fails after preprocessing, a fallback `LLMDecision(action=complete, error=<details>)` is constructed so the graph terminates cleanly rather than crashing. The retry budget for parse failures is `LLM_PARSE_MAX_RETRIES` (default 3).
 
-For **Metasploit output cleaning**, the persistent msfconsole process emits ANSI escape sequences, control characters, and garbled echo lines that confuse the agent if passed through raw. A dedicated cleaning pipeline strips ANSI codes, normalises carriage returns, removes control characters, filters echo lines, and uses timing-based output detection (waiting for a quiet period) to determine when a command is truly complete rather than just paused. For **Neo4j query failures**, the text-to-Cypher pipeline retries up to `CYPHER_MAX_RETRIES` (default 3) times, attaching the previous error message as additional context so the LLM can correct its query. For **MCP server connection issues**, the `MCPToolsManager.get_tools()` method uses exponential backoff to handle the case where the Kali sandbox container is still starting up when the agent comes online. The sections below detail each of these mechanisms.
+For **Metasploit output cleaning**, the persistent msfconsole process emits ANSI escape sequences, control characters, and garbled echo lines that confuse the agent if passed through raw. A dedicated cleaning pipeline strips ANSI codes, normalises carriage returns, removes control characters, filters echo lines, and uses timing-based output detection (waiting for a quiet period) to determine when a command is truly complete rather than just paused. For **Neo4j query failures**, the text-to-Cypher pipeline retries up to `CYPHER_MAX_RETRIES` (default 3) times, attaching the previous error message as additional context so the LLM can correct its query. For **MCP server connection issues**, the `MCPToolsManager.get_tools()` method uses exponential backoff to handle the case where the Kali sandbox container is still starting up when the agent comes online. For **model provider errors**, every chat-run model call waits out a provider's rate limit (HTTP 429) for up to `LLM_RATE_LIMIT_MAX_WAIT_S` and fails at once on a 429 that waiting cannot fix. The sections below detail each of these mechanisms.
 
 ### LLM Response Parsing
 
@@ -4469,6 +4469,22 @@ flowchart TB
     style CHECK fill:#5a5a5a,color:#fff,stroke:#2d2d2d
     style RETRY_CHECK fill:#5a5a5a,color:#fff,stroke:#2d2d2d
 ```
+
+### Model Provider Errors and Rate Limits
+
+Every model call of a chat run goes through `orchestrator_helpers/llm_retry.py`, for every provider: think, Deep Think, the final summary, Fireteam members, LATS and text-to-Cypher through `retry_llm_call`; the scope guardrail and the attack-path classifier through `ainvoke_through_rate_limits`, inside their own loops. CypherFix triage and codefix and the report narratives use `retry_llm_call` too.
+
+A provider's HTTP 429 is classified by `llm_builder.provider_error_kind`, from the status the error carries (so Bedrock's `ThrottlingException`, whose text names no status, counts too), its class, or its text:
+
+| Kind | Meaning | What happens |
+|------|---------|--------------|
+| `rate_limited` | The account's per-minute window is full | Waited out: the provider's own hint (`Retry-After`, `retry-after-ms`, OpenAI's `x-ratelimit-reset-*`, "try again in 6s", Gemini's `retryDelay`), else 4, 8, 16, 32, 32 s with jitter, up to `LLM_RATE_LIMIT_MAX_WAIT_S` (default 120 s) per call, counted in wall-clock time from the call's start, so the time the provider SDK spends on its own retries counts too. These waits do not count against `max_attempts`. |
+| `quota_exhausted` | No credit (`insufficient_quota`), a daily quota, Moonshot's account quota, Zhipu's "Insufficient balance" | Not retried: no wait clears it |
+| `request_too_large` | One request bigger than the per-minute token limit | Not retried |
+
+Other transient errors (connection, timeout, 5xx, also read from the error's status) keep 3 attempts with 1 s and 2 s waits. An Agent in the Loop error is never retried (`no_retry`). The SDKs' own quick retries (OpenAI 2, Anthropic 5) run inside each attempt.
+
+While a call waits, the drawer replaces its loading word with a countdown ("Provider rate limit: retrying the summary in 16 s"). It is a `rate_limit_wait` WebSocket frame, sent and never saved; the orchestrator installs the listener (`agent_context.current_llm_wait_listener`) around the graph. When a call gives up, its error carries `provider_error_kind` and `rate_limit_waited_s` next to the class and status (`provider_error_details`), and the drawer says what to do for each kind. A summary that still fails does not fail the run: the report node writes a fixed fallback with the step counts and the cause.
 
 ---
 

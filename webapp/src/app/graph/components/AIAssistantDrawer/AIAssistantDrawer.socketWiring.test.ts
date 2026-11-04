@@ -25,6 +25,14 @@ describe('AIAssistantDrawer agent socket wiring', () => {
     expect(socketCall).toMatch(/runActive:\s*isLoading,/)
   })
 
+  test('a provider rate-limit wait reaches the chat, and ends with the run', () => {
+    const handlerCall = src.slice(src.indexOf('useWebSocketHandler({'), src.indexOf('useAgentWebSocket({'))
+    const chatArea = src.slice(src.indexOf('<ChatArea'), src.indexOf('/>', src.indexOf('<ChatArea')))
+    expect(src).toContain('useRateLimitWait(isLoading, sessionId)')
+    expect(handlerCall).toMatch(/\bsetRateLimitWait,/)
+    expect(chatArea).toContain('rateLimitWord={rateLimitWord}')
+  })
+
   test('every (re)connect reconciles with the server-reported run state', () => {
     expect(socketCall).toContain('agentRunning: payload?.agent_running')
     expect(socketCall).toContain('clientRunning: isLoadingRef.current')

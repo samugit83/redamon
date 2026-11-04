@@ -120,9 +120,18 @@ class Report(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(out["task_complete"])
         chain.assert_called_once()
 
-    async def test_any_other_error_still_raises(self):
-        with self.assertRaises(RuntimeError):
-            await self.run_report(FailingLLM(RuntimeError("provider down")))
+    async def test_any_other_error_writes_the_provider_fallback(self):
+        # The work is done and saved: a failed summary ends the run with the
+        # counts, not with an error (test_llm_rate_limits covers the 429 cases).
+        llm = FailingLLM(RuntimeError("provider down"))
+        out, chain = await self.run_report(llm)
+        text = out["messages"][0].content
+        self.assertIn("The final summary could not be written**: RuntimeError.", text)
+        self.assertIn("2 step(s) ran, 1 succeeded and 1 failed", text)
+        self.assertNotIn("provider down", text)
+        self.assertEqual(llm.calls, 1)
+        self.assertTrue(out["task_complete"])
+        chain.assert_called_once()
 
     async def test_a_normal_answer_is_unchanged(self):
         llm = mock.MagicMock()

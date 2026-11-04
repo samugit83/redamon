@@ -12,6 +12,8 @@ from state import (
 import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
 from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.llm_retry import describe_llm_failure, retry_llm_call
+from logging_config import redact_text
 from agent_in_the_loop.errors import LoopError
 from agent_in_the_loop.purpose import llm_purpose
 from prompts import (
@@ -27,6 +29,13 @@ LOOP_REPORT_FALLBACK = (
     "**The external agent did not write the final report** ({reason}).\n\n"
     "The steps above are saved in this conversation: {total} step(s) ran, "
     "{successful} succeeded and {failed} failed."
+)
+
+PROVIDER_REPORT_FALLBACK = (
+    "**The final summary could not be written**: {reason}.\n\n"
+    "The steps above are saved in this conversation: {total} step(s) ran, "
+    "{successful} succeeded and {failed} failed. Ask for the summary again "
+    "once the provider accepts calls."
 )
 
 
@@ -147,7 +156,10 @@ async def generate_response_node(
 
     try:
         with llm_purpose("report"):
-            response = await llm.ainvoke([HumanMessage(content=report_prompt)])
+            response = await retry_llm_call(
+                llm, [HumanMessage(content=report_prompt)],
+                label=f"{user_id}/{project_id}/{session_id} report",
+            )
         report_text = normalize_content(response.content)
     except LoopError as exc:
         # Only an Agent in the Loop step: the run's trace is saved, so end with
@@ -155,6 +167,15 @@ async def generate_response_node(
         logger.warning(f"Report step not answered ({exc.code}); writing the fallback report")
         report_text = LOOP_REPORT_FALLBACK.format(
             reason=exc.code, total=total, successful=successful, failed=failed)
+    except Exception as exc:
+        # The provider still refused after retry_llm_call's waits (a rate limit
+        # that did not clear, an empty quota, a 5xx). The work is done and its
+        # steps are saved: a failed summary must not turn the run into an error.
+        logger.error(
+            f"[{user_id}/{project_id}/{session_id}] Report call failed; writing the "
+            f"fallback report: {type(exc).__name__}: {redact_text(str(exc))}")
+        report_text = PROVIDER_REPORT_FALLBACK.format(
+            reason=describe_llm_failure(exc), total=total, successful=successful, failed=failed)
 
     # Fire-and-forget: update AttackChain status to completed
 

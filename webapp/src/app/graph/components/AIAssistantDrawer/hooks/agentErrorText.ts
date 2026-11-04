@@ -16,6 +16,17 @@ export interface AgentErrorPayload {
   error_class?: unknown
   provider_status?: unknown
   http_status?: unknown
+  /** Which kind of provider 429 it was (llm_builder.provider_error_kind). */
+  provider_error_kind?: unknown
+  /** How long the agent waited for the rate limit to clear before giving up. */
+  rate_limit_waited_s?: unknown
+}
+
+/** What a person can do about each kind of 429: they differ, and the status alone does not say. */
+const KIND_HINTS: Record<string, string> = {
+  rate_limited: "The model provider's rate limit did not clear. Send the message again in a minute, or use a plan or model with a higher limit.",
+  quota_exhausted: 'The model provider account has no credit or quota left. Add credit, or pick another model.',
+  request_too_large: "The request is larger than the provider's per-minute limit for this account. Use a plan or model with a higher limit.",
 }
 
 const httpStatus = (v: unknown): number | null =>
@@ -31,7 +42,15 @@ export function agentErrorText(payload: AgentErrorPayload | null | undefined, fa
   if (provider) parts.push(`provider HTTP ${provider}`)
   const http = httpStatus(p.http_status)
   if (http) parts.push(`HTTP ${http}`)
-  return parts.length ? `${message} (${parts.join(' · ')})` : message
+  const waited = p.rate_limit_waited_s
+  if (typeof waited === 'number' && Number.isInteger(waited) && waited > 0 && waited <= 86_400) {
+    parts.push(`waited ${waited} s`)
+  }
+  const text = parts.length ? `${message} (${parts.join(' · ')})` : message
+  const hint = typeof p.provider_error_kind === 'string' && Object.hasOwn(KIND_HINTS, p.provider_error_kind)
+    ? KIND_HINTS[p.provider_error_kind]
+    : null
+  return hint ? `${text}. ${hint}` : text
 }
 
 /** The one-time "chat is not being saved" notice: shown, but it does not end the run. */

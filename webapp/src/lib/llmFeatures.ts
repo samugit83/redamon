@@ -215,6 +215,13 @@ export function readFeatureModelCode(body: unknown): FeatureModelCode | null {
 
 const PROVIDER_CLASS = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 
+/** The kinds of a provider 429 (agentic llm_builder.provider_error_kind): waiting fixes only the first. */
+const PROVIDER_ERROR_KIND_WORDS: Record<string, string> = {
+  rate_limited: 'rate limited, try again in a minute',
+  quota_exhausted: 'no credit or quota left on the provider account',
+  request_too_large: "request over the provider's per-minute limit",
+}
+
 /**
  * "RateLimitError · provider HTTP 429" from the safe provider facts an agent
  * answer carries (`error_class`, `provider_status`; camelCase once a route has
@@ -227,6 +234,12 @@ export function providerFailureDetail(body: unknown): string {
   const parts: string[] = []
   if (facts.errorClass) parts.push(facts.errorClass)
   if (facts.providerStatus) parts.push(`provider HTTP ${facts.providerStatus}`)
+  const kind = body && typeof body === 'object'
+    ? (body as Record<string, unknown>).provider_error_kind ?? (body as Record<string, unknown>).providerErrorKind
+    : undefined
+  if (typeof kind === 'string' && Object.hasOwn(PROVIDER_ERROR_KIND_WORDS, kind)) {
+    parts.push(PROVIDER_ERROR_KIND_WORDS[kind])
+  }
   return parts.join(' · ')
 }
 

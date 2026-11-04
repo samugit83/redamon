@@ -61,7 +61,7 @@ class Wired(unittest.TestCase):
     def test_think_and_deep_think(self):
         src = inspect.getsource(think_mod.think_node)
         self.assert_wrapped(src, "think", "await retry_llm_call(")
-        self.assert_wrapped(src, "deep_think", "await llm.ainvoke(")
+        self.assert_wrapped(src, "deep_think", "await retry_llm_call(")
 
     def test_fireteam_member(self):
         src = inspect.getsource(member_mod)

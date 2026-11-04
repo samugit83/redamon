@@ -36,7 +36,7 @@ from orchestrator_helpers import (
     get_config_values,
 )
 from orchestrator_helpers.llm_setup import setup_llm, apply_project_settings
-from agent_context import current_llm
+from agent_context import current_llm, current_llm_wait_listener
 from agent_in_the_loop.broker import get_broker
 from agent_in_the_loop import is_loop_llm
 from prompt_safety import fence_node_context
@@ -1104,12 +1104,19 @@ class AgentOrchestrator:
         """
         uses_loop = is_loop_llm(current_llm.get() or self.llm)
         final_state = None
-        async with get_broker().run_scope(user_id, project_id, session_id, streaming_callback,
-                                          uses_loop=uses_loop) as scope:
-            async for event in self.graph.astream(graph_input, config, stream_mode="values"):
-                final_state = event
-                scope.final_state = event
-                await emit_streaming_events(event, streaming_callback)
+        # Every node and Fireteam member runs in a task created inside astream,
+        # so it inherits this listener and a rate-limit wait reaches the drawer.
+        listener = current_llm_wait_listener.set(
+            getattr(streaming_callback, "on_rate_limit_wait", None))
+        try:
+            async with get_broker().run_scope(user_id, project_id, session_id, streaming_callback,
+                                              uses_loop=uses_loop) as scope:
+                async for event in self.graph.astream(graph_input, config, stream_mode="values"):
+                    final_state = event
+                    scope.final_state = event
+                    await emit_streaming_events(event, streaming_callback)
+        finally:
+            current_llm_wait_listener.reset(listener)
         return final_state
 
     async def invoke_with_streaming(

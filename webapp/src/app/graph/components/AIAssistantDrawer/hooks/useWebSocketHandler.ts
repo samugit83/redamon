@@ -23,6 +23,7 @@ import type { ChatItem, Message, FileDownloadItem, Phase, FireteamItem, Fireteam
 import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } from '../AgentTimeline'
 import { findToolCardIndex, settleRunningTools } from './toolCardState'
 import { agentErrorText, isPersistFailedNotice, type AgentErrorPayload } from './agentErrorText'
+import { endsRateLimitWait, rateLimitWaitFromPayload, type RateLimitWait } from './rateLimitWait'
 import {
   handleFireteamDeployed,
   handleFireteamMemberStarted,
@@ -74,6 +75,8 @@ interface WebSocketHandlerDeps {
   onGraphMutation?: () => void
   // Agent in the Loop: the live status of a loop run (never persisted).
   setLoopStatus?: (status: LoopStatusPayload | null) => void
+  // A model call waiting for the provider's rate limit (never persisted).
+  setRateLimitWait?: (wait: RateLimitWait | null) => void
 }
 
 export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
@@ -88,7 +91,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
     awaitingQuestionRef, isProcessingQuestion,
     awaitingToolConfirmationRef, isProcessingToolConfirmation,
     pendingApprovalToolId, pendingApprovalWaveId,
-    onGraphMutation, setLoopStatus,
+    onGraphMutation, setLoopStatus, setRateLimitWait,
   } = deps
 
   // Use a ref to avoid recreating the callback when todoList changes
@@ -112,6 +115,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
   }, [])
 
   const handleWebSocketMessage = useCallback((message: ServerMessage) => {
+    if (endsRateLimitWait(message.type)) setRateLimitWait?.(null)
     // A server message with no case here must be listed, with its reason, in
     // IGNORED_SERVER_MESSAGES (websocket-types.ts).
     switch (message.type) {
@@ -120,6 +124,10 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
 
       case MessageType.LOOP_STATUS:
         setLoopStatus?.(message.payload as LoopStatusPayload)
+        break
+
+      case MessageType.RATE_LIMIT_WAIT:
+        setRateLimitWait?.(rateLimitWaitFromPayload(message.payload, Date.now()))
         break
 
       case MessageType.THINKING: {

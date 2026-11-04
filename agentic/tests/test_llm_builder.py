@@ -205,7 +205,8 @@ class TestProviderErrorDetails:
         wrapper = RuntimeError("langchain wrapper")
         wrapper.__cause__ = RateLimitError("sk-live-123 is over quota")
         assert llm_builder.provider_error_details(wrapper) == {
-            "error_class": "RateLimitError", "provider_status": 429}
+            "error_class": "RateLimitError", "provider_status": 429,
+            "provider_error_kind": "rate_limited"}
 
     def test_the_message_never_appears(self):
         details = llm_builder.provider_error_details(RateLimitError("key sk-live-123"))

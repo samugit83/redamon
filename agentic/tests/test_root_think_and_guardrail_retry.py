@@ -87,9 +87,9 @@ class RootThinkNodeRetryWiringTests(unittest.TestCase):
 
     def test_bare_ainvoke_no_longer_called_directly_in_main_loop(self):
         """The main reasoning loop must NOT have `await llm.ainvoke` —
-        only `await retry_llm_call(llm, ...)`. The deep-think branch is
-        already wrapped in its own try/except (non-blocking), so it's
-        permitted to keep its direct ainvoke call.
+        only `await retry_llm_call(llm, ...)`. Deep Think goes through
+        retry_llm_call too, so a rate limit does not silently skip it
+        (test_loop_purpose_labels pins that call).
 
         We slice the source to the parse-retry-loop region and assert
         ``await llm.ainvoke`` is absent there.

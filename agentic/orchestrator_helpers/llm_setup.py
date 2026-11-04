@@ -45,6 +45,26 @@ def _anthropic_supports_temperature(model_id: str) -> bool:
     return not any(model_id.startswith(p) for p in ANTHROPIC_NO_TEMPERATURE_PREFIXES)
 
 
+def _anthropic_sdk_refuses_sampling() -> bool:
+    """True when the installed `anthropic` SDK sends API version 2026-10-21.
+
+    The SDK picks the version: 2.0.0 and later send `anthropic-version:
+    2026-10-21`, on which every model answers `temperature`, `top_p` or `top_k`
+    with a 400 ("temperature: Extra inputs are not permitted"); 1.x sends
+    2023-06-01, where the lists above decide. The webapp's preset generator
+    sends 2023-06-01 itself, so those lists stay its rule too.
+    """
+    import anthropic
+    try:
+        return int(str(anthropic.__version__).split(".")[0]) >= 2
+    except ValueError:
+        return True
+
+
+def _anthropic_sends_temperature(model_id: str) -> bool:
+    return not _anthropic_sdk_refuses_sampling() and _anthropic_supports_temperature(model_id)
+
+
 # OpenAI reasoning families accept only the default temperature (1) and reject
 # 0 with HTTP 400 "Only the default (1) value is supported". Matched by prefix
 # so dated/variant ids (gpt-6-luna, o3-mini-2025-01-31) are covered. Like the
@@ -214,7 +234,7 @@ def setup_llm(
                 # user value win, so we keep only the configurable one).
                 max_retries=5,
             )
-            if _anthropic_supports_temperature(anth_model):
+            if _anthropic_sends_temperature(anth_model):
                 anth_kwargs["temperature"] = custom_llm_config.get("temperature", 0)
             llm = ChatAnthropic(**anth_kwargs)
         elif ptype == "bedrock":
@@ -439,7 +459,7 @@ def setup_llm(
             max_retries=5,
             default_request_timeout=300.0,
         )
-        if _anthropic_supports_temperature(api_model):
+        if _anthropic_sends_temperature(api_model):
             anth_kwargs["temperature"] = 0
         llm = ChatAnthropic(**anth_kwargs)
 

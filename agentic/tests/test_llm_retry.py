@@ -333,6 +333,11 @@ _PROVIDER_TEMPERATURE_ERRORS = {
     "anthropic_direct": (
         "temperature is deprecated for this model"
     ),
+    # API version 2026-10-21 (anthropic SDK 2.x), every model, observed 2026-11.
+    "anthropic_api_2026_10_21": (
+        "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'temperature: Extra inputs are not permitted'}, 'request_id': 'req_x'}"
+    ),
 }
 
 # Provider errors that are NOT about temperature and MUST NOT be falsely healed.
@@ -341,6 +346,7 @@ _NON_TEMPERATURE_ERRORS = {
     "model_not_found": "Error code: 404 - model `foo` does not exist",
     "context_window": "max_tokens: 50000 exceeded model context window",
     "content_filter": "content was blocked by the safety filter",
+    "another_extra_input": "top_k: Extra inputs are not permitted",
 }
 
 

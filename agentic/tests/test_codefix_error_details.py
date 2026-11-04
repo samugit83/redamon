@@ -220,6 +220,32 @@ class TestThePullRequestAndTheModel:
         assert LEAK not in str(error)
 
 
+def test_a_rate_limited_model_call_is_waited_out():
+    from langchain_core.messages import AIMessage
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class Model:
+        calls = 0
+
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, _messages):
+            Model.calls += 1
+            if Model.calls == 1:
+                raise RateLimitError("Rate limit reached. Please try again in 2s.")
+            return AIMessage(content="done")
+
+    orch = _orchestrator()
+    orch.llm_client = Model()
+    with mock.patch("orchestrator_helpers.llm_retry.asyncio.sleep", new=mock.AsyncMock()):
+        result = asyncio.run(orch._call_llm("system", [{"role": "user", "content": "fix it"}]))
+    assert result["content"] == [{"type": "text", "text": "done"}]
+    assert Model.calls == 2
+
+
 async def _drive_loop(orch):
     """Run `run()` past the clone with every outside call stubbed."""
     async def settings(_project_id):
