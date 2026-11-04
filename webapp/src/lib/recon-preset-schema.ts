@@ -42,6 +42,8 @@ export const reconPresetSchema = z.object({
   crtshMaxResults: int,
   hackerTargetEnabled: bool,
   hackerTargetMaxResults: int,
+  jsmonEnabled: bool,
+  jsmonMaxResults: int,
   knockpyReconEnabled: bool,
   knockpyReconMaxResults: int,
   subfinderEnabled: bool,
@@ -647,6 +649,8 @@ export const RECON_PARAMETER_CATALOG = `
 - crtshMaxResults: integer
 - hackerTargetEnabled: boolean - Query HackerTarget
 - hackerTargetMaxResults: integer
+- jsmonEnabled: boolean - Query Subdomains by Jsmon (passive subdomain API with 5.4B+ subdomains, requires API key)
+- jsmonMaxResults: integer
 - knockpyReconEnabled: boolean - Run Knockpy
 - knockpyReconMaxResults: integer
 - subfinderEnabled: boolean - Run Subfinder

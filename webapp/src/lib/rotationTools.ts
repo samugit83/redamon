@@ -35,6 +35,7 @@ export const ROTATION_TOOLS = [
   { tool: 'driftnet', field: 'driftnetApiKey', label: 'Driftnet' },
   { tool: 'wpscan', field: 'wpscanApiToken', label: 'WPScan' },
   { tool: 'pdcp', field: 'pdcpApiKey', label: 'PDCP' },
+  { tool: 'jsmon', field: 'jsmonApiKey', label: 'Jsmon Subdomains' },
 ] as const
 
 export type RotationToolName = (typeof ROTATION_TOOLS)[number]['tool']

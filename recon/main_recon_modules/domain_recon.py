@@ -1,12 +1,12 @@
 """
 Subdomain Discovery & DNS Resolution - Unified OSINT tool
 Discovers subdomains using crt.sh (crt.name when crt.sh gives no answer),
-HackerTarget, Subfinder, Amass, and Knockpy.
+HackerTarget, Subdomains by Jsmon, Subfinder, Amass, and Knockpy.
 Resolves full DNS records (A, AAAA, MX, NS, TXT, SOA, CNAME) for domain and all subdomains.
 Outputs a single JSON report.
 
 Parallelization:
-- All 5 discovery tools run concurrently via ThreadPoolExecutor (fan-out/fan-in)
+- All 6 discovery tools run concurrently via ThreadPoolExecutor (fan-out/fan-in)
 - DNS resolution runs concurrently across subdomains (configurable worker count)
 """
 
@@ -698,6 +698,106 @@ def query_hackertarget(domain: str, settings: dict = None) -> dict:
     except Exception as e:
         print(f"[!][HackerTarget] Error: {e}")
         _source_record("hackertarget", _outcome("TRANSIENT"), detail=type(e).__name__)
+    finally:
+        session.close()
+
+    return sourced
+
+
+def query_jsmon(domain: str, settings: dict = None) -> dict:
+    """Query Subdomains by Jsmon API for subdomains.
+
+    Thread-safe: creates its own requests.Session.
+
+    Returns dict {subdomain: set_of_sources} for per-source attribution.
+    """
+    if settings is None:
+        settings = {}
+
+    if not settings.get('JSMON_ENABLED', True):
+        print("[-][Jsmon] Disabled — skipping")
+        return {}
+
+    if _source_skipped("jsmon", "Jsmon"):
+        return {}
+
+    try:
+        from recon.helpers import circuit_breaker as cb
+        key_pool = cb.KeyPool(
+            settings.get("JSMON_KEY_ROTATOR"),
+            (settings.get("JSMON_API_KEY", "") or "").strip(),
+            label="Jsmon",
+        )
+    except Exception:  # noqa: BLE001
+        key_pool = None
+
+    api_key = ""
+    if key_pool and getattr(key_pool, "has_keys", False):
+        api_key = (key_pool.current_key or "").strip()
+    else:
+        api_key = (settings.get("JSMON_API_KEY", "") or "").strip()
+
+    if not api_key:
+        print("[-][Jsmon] No API key — skipping")
+        return {}
+
+    sourced = {}
+    session = requests.Session()
+    try:
+        print(f"[*][Jsmon] Querying subdomain API for {domain}...")
+        resp = session.get(
+            f"https://subdomains.jsmon.sh/api/domain/{domain}",
+            headers={"Api-Key": api_key},
+            timeout=30,
+        )
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except ValueError:
+                print("[!][Jsmon] Invalid JSON response")
+                _source_record("jsmon", _outcome("TRANSIENT"), detail="bad JSON")
+                return sourced
+
+            subs = set()
+            for s in data.get("subdomains", []):
+                s = s.strip().lower()
+                if s and (s == domain or s.endswith("." + domain)):
+                    subs.add(s)
+
+            max_results = settings.get('JSMON_MAX_RESULTS', 5000)
+            if len(subs) > max_results:
+                subs = set(sorted(subs)[:max_results])
+                print(f"[*][Jsmon] Capped at {max_results} results")
+
+            print(f"[+][Jsmon] Found {len(subs)} subdomains")
+            for s in subs:
+                sourced.setdefault(s, set()).add("jsmon")
+            _source_record("jsmon", _outcome("OK" if subs else "NO_DATA"))
+
+        elif resp.status_code == 401:
+            print("[!][Jsmon] Invalid API key — source paused")
+            _source_record("jsmon", _outcome("FATAL"), detail="HTTP 401")
+
+        elif resp.status_code == 404:
+            print(f"[-][Jsmon] No subdomains known for {domain}")
+            _source_record("jsmon", _outcome("NO_DATA"), detail="HTTP 404")
+
+        elif resp.status_code == 429:
+            print("[!][Jsmon] Rate-limited — source degraded, not empty")
+            _source_record("jsmon", _outcome("RATE_LIMIT"), detail="HTTP 429")
+
+        elif resp.status_code == 403:
+            print("[!][Jsmon] Plan restriction (quota or feature gate) — source degraded")
+            _source_record("jsmon", _outcome("RATE_LIMIT"), detail="HTTP 403")
+
+        else:
+            print(f"[!][Jsmon] HTTP {resp.status_code} — source failed (degraded, not empty)")
+            _source_record("jsmon", _outcome("TRANSIENT"), detail=f"HTTP {resp.status_code}")
+
+    except Exception as e:
+        print(f"[!][Jsmon] Error: {e}")
+        _source_record("jsmon", _outcome("TRANSIENT"), detail=type(e).__name__)
     finally:
         session.close()
 
@@ -1503,6 +1603,8 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
                 ("CRTSH_MAX_RESULTS", "crt.sh"),
                 ("HACKERTARGET_ENABLED", "HackerTarget"),
                 ("HACKERTARGET_MAX_RESULTS", "HackerTarget"),
+                ("JSMON_ENABLED", "Jsmon"),
+                ("JSMON_MAX_RESULTS", "Jsmon"),
                 ("KNOCKPY_RECON_ENABLED", "Knockpy"),
                 ("KNOCKPY_RECON_MAX_RESULTS", "Knockpy"),
                 ("SUBFINDER_ENABLED", "Subfinder"),
@@ -1526,12 +1628,13 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
             ],
         )
 
-    # Subdomain Discovery — fan-out all 5 tools in parallel
-    print(f"[*][Discovery] Launching 5 discovery tools in parallel...")
-    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="discovery") as executor:
+    # Subdomain Discovery — fan-out all 6 tools in parallel
+    print(f"[*][Discovery] Launching 6 discovery tools in parallel...")
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="discovery") as executor:
         futures = {
             executor.submit(query_crtsh, domain, settings): "crtsh",
             executor.submit(query_hackertarget, domain, settings): "hackertarget",
+            executor.submit(query_jsmon, domain, settings): "jsmon",
             executor.submit(run_subfinder, domain, settings): "subfinder",
             executor.submit(run_amass, domain, settings): "amass",
             executor.submit(run_knockpy, domain, bruteforce, settings): "knockpy",
@@ -1544,8 +1647,8 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
                 discovery_results[label] = future.result()
             except Exception as e:
                 print(f"[!][{label}] Failed: {e}")
-                # crtsh/hackertarget return dict, others return set
-                discovery_results[label] = {} if label in ("crtsh", "hackertarget") else set()
+                # crtsh/hackertarget/jsmon return dict, others return set
+                discovery_results[label] = {} if label in ("crtsh", "hackertarget", "jsmon") else set()
 
     print(f"[+][Discovery] All discovery tools complete — merging results")
 
@@ -1556,6 +1659,8 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
     for s, sources in discovery_results.get("crtsh", {}).items():
         sourced_subs.setdefault(s, set()).update(sources)
     for s, sources in discovery_results.get("hackertarget", {}).items():
+        sourced_subs.setdefault(s, set()).update(sources)
+    for s, sources in discovery_results.get("jsmon", {}).items():
         sourced_subs.setdefault(s, set()).update(sources)
     for s in discovery_results.get("subfinder", set()):
         sourced_subs.setdefault(s, set()).add("subfinder")

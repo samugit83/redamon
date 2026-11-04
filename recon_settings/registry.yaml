@@ -201,6 +201,14 @@ tools:
     module: "recon.main_recon_modules.domain_recon"
     partial_recon_module: "subdomain_discovery"
     form_section: "SubdomainDiscoverySection"
+  jsmon:
+    title: "Subdomains by Jsmon"
+    phase: domain_discovery
+    traffic: passive
+    enabled_key: "JSMON_ENABLED"
+    module: "recon.main_recon_modules.domain_recon"
+    partial_recon_module: "subdomain_discovery"
+    form_section: "SubdomainDiscoverySection"
   hakrawler:
     title: "hakrawler"
     phase: resource_enum
@@ -3791,6 +3799,31 @@ fields:
     governor: { model: budget, family: osint_result, floor: 100 }
     meaning: >-
       Maximum subdomains taken from the HackerTarget API in one pass.
+  jsmonEnabled:
+    tool: jsmon
+    runtime_key: "JSMON_ENABLED"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Whether the Subdomains by Jsmon passive source runs. Two levels: this flag
+      decides whether the tool runs inside its phase, and scanModules decides
+      whether the phase runs at all.
+  jsmonMaxResults:
+    tool: jsmon
+    runtime_key: "JSMON_MAX_RESULTS"
+    unit: count
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 1, max: 50000 }
+    stealth: { ceiling: 100 }
+    governor: { model: budget, family: osint_result, floor: 100 }
+    meaning: >-
+      Maximum subdomains taken from the Subdomains by Jsmon API in one pass.
   hakrawlerCustomHeaders:
     tool: hakrawler
     runtime_key: "HAKRAWLER_CUSTOM_HEADERS"
@@ -11219,6 +11252,16 @@ runtime_only:
       the webapp derives on every GET, then re-validated by recon (charset and
       its own Public Suffix List). A batch with no usable group, or a target
       that is a public suffix, refuses the run. Never configured.
+  JSMON_API_KEY:
+    source: user_account
+    tool: jsmon
+    unit: none
+    roe_capped: false
+    secret: true
+    meaning: >-
+      The user's own API key for Subdomains by Jsmon, fetched per scan from the
+      user account. Never a project column, so it is not reachable from any
+      project-scoped surface.
   SECURITYTRAILS_API_KEY:
     source: user_account
     tool: osint_enrichment

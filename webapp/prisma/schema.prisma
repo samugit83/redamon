@@ -245,6 +245,7 @@ model UserSettings {
   pdcpApiKey       String  @default("") @map("pdcp_api_key")
   securitytrailsApiKey String @default("") @map("securitytrails_api_key")
   viewdnsApiKey    String  @default("") @map("viewdns_api_key")
+  jsmonApiKey      String  @default("") @map("jsmon_api_key")
 
   // Tunneling & Infrastructure
   // STRIDE I19: tunnels must be explicitly enabled by the operator; a saved
@@ -1275,6 +1276,8 @@ model Project {
   crtshMaxResults                       Int      @default(5000)  @map("crtsh_max_results")
   hackerTargetEnabled                   Boolean  @default(true)  @map("hacker_target_enabled")
   hackerTargetMaxResults                Int      @default(5000)  @map("hacker_target_max_results")
+  jsmonEnabled                          Boolean  @default(true)  @map("jsmon_enabled")
+  jsmonMaxResults                       Int      @default(5000)  @map("jsmon_max_results")
   knockpyReconEnabled                   Boolean  @default(true)  @map("knockpy_recon_enabled")
   knockpyReconMaxResults                Int      @default(5000)  @map("knockpy_recon_max_results")
   subfinderEnabled                      Boolean  @default(true)  @map("subfinder_enabled")

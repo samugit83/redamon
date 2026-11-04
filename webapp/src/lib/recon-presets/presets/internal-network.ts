@@ -61,6 +61,7 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
     crtshMaxResults: 10000,
     hackerTargetEnabled: false,
     hackerTargetMaxResults: 10000,
+    jsmonEnabled: false,
     knockpyReconEnabled: false,
     knockpyReconMaxResults: 10000,
     subfinderEnabled: false,

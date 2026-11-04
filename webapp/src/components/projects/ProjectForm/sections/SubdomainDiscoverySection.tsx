@@ -192,6 +192,32 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
 
             <div className={styles.toggleRowCompact}>
               <div className={styles.toggleRowCompactInfo}>
+                <span className={styles.toggleLabelLg}>Subdomains by Jsmon</span>
+                <p className={styles.toggleDescription}>
+                  Passive subdomain intelligence API with 5.4B+ subdomains (requires API key)
+                </p>
+              </div>
+              {data.jsmonEnabled && (
+                <>
+                  <span className={styles.toggleRowCompactLabel}>Max</span>
+                  <input
+                    type="number"
+                    className={`textInput ${styles.toggleRowCompactInput}`}
+                    value={data.jsmonMaxResults}
+                    onChange={(e) => updateField('jsmonMaxResults', parseInt(e.target.value) || 5000)}
+                    min={1}
+                    max={50000}
+                  />
+                </>
+              )}
+              <Toggle
+                checked={data.jsmonEnabled}
+                onChange={(checked) => updateField('jsmonEnabled', checked)}
+              />
+            </div>
+
+            <div className={styles.toggleRowCompact}>
+              <div className={styles.toggleRowCompactInfo}>
                 <span className={styles.toggleLabelLg}>Subfinder</span>
                 <p className={styles.toggleDescription}>
                   Passive subdomain enumeration using 50+ online sources (certificate logs, DNS databases, web archives)
