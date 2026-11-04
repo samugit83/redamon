@@ -1,11 +1,9 @@
 /**
  * Import and the Jev engine flags.
  *
- * Import KEEPS a bundle's engine choices and warns, instead of refusing: a
- * bundle exported from an account with a Jev token must still import on an
- * account without one. The warning names each hook that will use its static
- * fallback until the importer adds a token. The warning lookup never fails an
- * import that already succeeded.
+ * Import keeps hook choices but strips account-scoped provider ids. Every
+ * enabled hook warns about static fallback until the imported project selects
+ * a provider, even when the importer already owns a Jev configuration.
  *
  * @vitest-environment node
  */
@@ -13,7 +11,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import JSZip from 'jszip'
 
-const h = vi.hoisted(() => ({ createProject: vi.fn(), tokenCount: vi.fn() }))
+const h = vi.hoisted(() => ({ createProject: vi.fn(), providerFind: vi.fn() }))
 
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'importer', role: 'user' }),
@@ -22,7 +20,7 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     project: { create: (...a: unknown[]) => h.createProject(...a) },
     engagementAuthorization: { create: vi.fn() },
-    userLlmProvider: { count: (...a: unknown[]) => h.tokenCount(...a) },
+    userLlmProvider: { findFirst: (...a: unknown[]) => h.providerFind(...a) },
   },
 }))
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: vi.fn() }))
@@ -47,49 +45,60 @@ async function bundle(project: Record<string, unknown>): Promise<NextRequest> {
 beforeEach(() => {
   vi.clearAllMocks()
   h.createProject.mockResolvedValue({ id: 'new', name: 'imported' })
-  h.tokenCount.mockResolvedValue(0)
+  h.providerFind.mockResolvedValue(null)
 })
 
 describe('importing a bundle whose hooks run on Jev', () => {
-  test('the engine choice is kept and each hook is named in a warning when the importer has no token', async () => {
-    const res = await POST(await bundle({ ffufAiUseJev: true, takeoverAiUseJev: true }))
+  test('the engine choice is kept and each hook is named in a warning when the importer has no provider selection', async () => {
+    const res = await POST(await bundle({ ffufAiUseJev: true, takeoverAiUseJev: true, jevProviderId: 'exported-selection' }))
     expect(res.status).toBe(200)
     const created = h.createProject.mock.calls[0][0].data
     expect(created.ffufAiUseJev).toBe(true)
     expect(created.takeoverAiUseJev).toBe(true)
+    expect(created).not.toHaveProperty('jevProviderId')
     const { warnings } = await res.json()
     expect(warnings).toHaveLength(2)
     expect(warnings[0]).toContain('ffufAiUseJev')
     expect(warnings[1]).toContain('takeoverAiUseJev')
     expect(warnings.join(' ')).toContain('static fallback')
-    expect(h.tokenCount).toHaveBeenCalledWith({ where: { userId: 'importer', providerType: 'jev' } })
+    expect(warnings.join(' ')).toContain('select a Jev provider')
+    expect(h.providerFind).not.toHaveBeenCalled()
   })
 
-  test('with a token there is nothing to warn about', async () => {
-    h.tokenCount.mockResolvedValue(1)
-    const res = await POST(await bundle({ wafAiUseJev: true }))
+  test('an account provider does not suppress warnings or restore exported selection ids', async () => {
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    const res = await POST(await bundle({ wafAiUseJev: true, jevProviderId: 'jev-selected' }))
     expect(res.status).toBe(200)
-    expect((await res.json()).warnings).toEqual([])
+    const { warnings } = await res.json()
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('wafAiUseJev (WAF classification)')
+    expect(warnings[0]).toContain('static fallback')
+    expect(h.createProject.mock.calls[0][0].data).not.toHaveProperty('jevProviderId')
+    expect(h.providerFind).not.toHaveBeenCalled()
   })
 
-  test('a failed token lookup does not fail the import: it becomes one warning', async () => {
-    h.tokenCount.mockRejectedValue(new Error('db down'))
+  test('a provider lookup configured to fail is never attempted during import', async () => {
+    h.providerFind.mockRejectedValue(new Error('db down'))
     const res = await POST(await bundle({ nucleiTagsAiUseJev: true }))
     expect(res.status).toBe(200)
     const { warnings } = await res.json()
     expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('nucleiTagsAiUseJev (Nuclei tag selection)')
     expect(h.createProject).toHaveBeenCalled()
+    expect(h.providerFind).not.toHaveBeenCalled()
   })
 
-  test('a bundle with no Jev hook has an empty warnings list and no lookup', async () => {
-    const res = await POST(await bundle({ ffufAiUseJev: false }))
+  test('a bundle with no Jev hook still strips its selection without warning or lookup', async () => {
+    const res = await POST(await bundle({ ffufAiUseJev: false, jevProviderId: 'exported-selection' }))
+    expect(res.status).toBe(200)
     expect((await res.json()).warnings).toEqual([])
-    expect(h.tokenCount).not.toHaveBeenCalled()
+    expect(h.createProject.mock.calls[0][0].data).not.toHaveProperty('jevProviderId')
+    expect(h.providerFind).not.toHaveBeenCalled()
   })
 })
 
 describe('importing a bundle with a Jev-only hook on', () => {
-  test('the flag is kept and named in a warning when the importer has no token', async () => {
+  test('the flag is kept and named in a warning when the importer has no provider selection', async () => {
     const res = await POST(await bundle({ hakrawlerJevSeedOrder: true }))
     expect(res.status).toBe(200)
     expect(h.createProject.mock.calls[0][0].data.hakrawlerJevSeedOrder).toBe(true)

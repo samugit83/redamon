@@ -249,19 +249,24 @@ describe('POST llm-providers/[providerId]/test - TypeSafe Jev lock', () => {
   }
   const sentToAgent = () => JSON.parse(fetchMock.mock.calls[0][1].body as string)
 
-  test('a stored Jev row cannot be redirected by the body', async () => {
-    mockFindFirst.mockResolvedValue(JEV_ROW)
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
-    await POST(post({
-      providerType: 'openai_compatible', baseUrl: 'http://evil.example/v1',
-      defaultHeaders: { 'X-Leak': '1' }, modelIdentifier: 'gpt-4o', apiKey: '••••••••_key',
-    }), params('u1', 'jev1'))
-    expect(sentToAgent()).toMatchObject({
-      providerType: 'jev', baseUrl: '', defaultHeaders: {}, modelIdentifier: 'jev-1.13.0',
-      apiKey: 'apikey_stored_key',
-    })
+  test.each(['jev', 'jev_openrouter'])('a stored %s row cannot be redirected by type changes', async providerType => {
+    mockFindFirst.mockResolvedValue({ ...JEV_ROW, providerType })
+    const res = await POST(post({ providerType: 'openai_compatible', apiKey: '••••••••_key' }), params('u1', 'jev1'))
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
-
+  test.each(['jev', 'jev_openrouter'])('saved %s ignores transport overrides and requested billing', async providerType => {
+    mockFindFirst.mockResolvedValue({ ...JEV_ROW, providerType, baseUrl: 'https://legacy-evil.example' })
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    await POST(post({ baseUrl: 'https://evil.example', modelIdentifier: 'chat', defaultHeaders: { leak: 'yes' }, timeout: 1000, sslVerify: false, testMode: 'capability', apiKey: '••••••••_key' }), params('u1', 'jev1'))
+    expect(sentToAgent()).toMatchObject({ providerType, apiKey: 'apikey_stored_key', baseUrl: providerType === 'jev' ? 'https://api.typesafe.ai' : 'https://openrouter.ai/api/v1', modelIdentifier: providerType === 'jev' ? 'jev-1.13.0' : 'typesafe/jev-1.13', defaultHeaders: {}, timeout: 5, sslVerify: true, testMode: 'key' })
+  })
+  test.each(['jev', 'jev_openrouter'])('unsaved %s tests pin transport and never bill', async providerType => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    await POST(post({ providerType, apiKey: 'synthetic-key', baseUrl: 'https://evil.example', testMode: 'capability', sslVerify: false }), params('u1', 'unsaved'))
+    expect(sentToAgent()).toMatchObject({ providerType, defaultHeaders: {}, timeout: 5, sslVerify: true, testMode: 'key' })
+    expect(sentToAgent().baseUrl).not.toContain('evil.example')
+  })
   test('a freshly typed Jev key is the one tested', async () => {
     mockFindFirst.mockResolvedValue(JEV_ROW)
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
@@ -272,8 +277,9 @@ describe('POST llm-providers/[providerId]/test - TypeSafe Jev lock', () => {
   test('a stored chat key can never be tested as Jev', async () => {
     mockFindFirst.mockResolvedValue({ ...JEV_ROW, providerType: 'openai', apiKey: 'sk-stored' })
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
-    await POST(post({ providerType: 'jev', apiKey: '••••••••ored' }), params('u1', 'jev1'))
-    expect(sentToAgent().providerType).toBe('openai')
+    const res = await POST(post({ providerType: 'jev', apiKey: '••••••••ored' }), params('u1', 'jev1'))
+    expect(res.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

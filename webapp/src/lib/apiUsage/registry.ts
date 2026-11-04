@@ -39,7 +39,7 @@ import { travisciProbe } from './providers/sources/travis'
 import { awsProbe } from './providers/sources/awsSts'
 import { gcpProbe } from './providers/sources/gcpServiceAccount'
 import { huggingfaceProbe } from './providers/sources/huggingface'
-import { openrouterProbe } from './providers/llm/openrouter'
+import { openrouterProbe, jevOpenrouterProbe } from './providers/llm/openrouter'
 import { deepseekProbe } from './providers/llm/deepseek'
 import { kimiProbe } from './providers/llm/moonshot'
 import { xaiProbe } from './providers/llm/xai'
@@ -112,6 +112,7 @@ export const LLM_PROBES: Readonly<Record<string, ProbeDef>> = {
   bedrock: bedrockProbe,
   openai_compatible: openaiCompatibleProbe,
   jev: jevProbe,
+  jev_openrouter: jevOpenrouterProbe,
 }
 
 /**

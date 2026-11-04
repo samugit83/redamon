@@ -11,6 +11,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 import { FfufSection } from './FfufSection'
+import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
 import { HttpxSection } from './HttpxSection'
 import { HakrawlerSection } from './HakrawlerSection'
 import { ResourceEnumAiSection } from './ResourceEnumAiSection'
@@ -31,7 +32,9 @@ const CASES = [
 
 function mount(Section: (typeof CASES)[number]['Section'], data: Data) {
   const updateField = vi.fn()
-  render(<Section data={data as never} updateField={updateField as never} mode="create" />)
+  render(<JevSelectionProvider ownerUserId="u1" selectedProviderId={typeof data.jevProviderId === 'string' ? data.jevProviderId : null}>
+    <Section data={data as never} updateField={updateField as never} mode="create" />
+  </JevSelectionProvider>)
   const group = screen.getByRole('group', { name: 'Jev hook' })
   return { updateField, off: within(group).getByRole('button', { name: 'Off' }),
            jev: within(group).getByRole('button', { name: 'Jev' }) }
@@ -40,17 +43,25 @@ function mount(Section: (typeof CASES)[number]['Section'], data: Data) {
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true, status: 200,
-    json: async () => [{ id: 'j', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }],
+    json: async () => [{ id: 'j', name: 'Synthetic Jev', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }],
   })))
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe.each(CASES)('$name', ({ Section, field, extra }) => {
   test('the control writes its own field', async () => {
-    const { jev, updateField } = mount(Section, { aiInPipeline: true, [field]: false, ...extra })
+    const { jev, updateField } = mount(Section, { aiInPipeline: true, jevProviderId: 'j', [field]: false, ...extra })
     await waitFor(() => expect(jev).toBeEnabled())
     fireEvent.click(jev)
     expect(updateField).toHaveBeenCalledWith(field, true)
+  })
+
+  test('legacy null selection does not enable Jev even when account credentials exist', async () => {
+    const { jev, updateField } = mount(Section, { aiInPipeline: true, jevProviderId: null, [field]: false, ...extra })
+    await waitFor(() => expect(jev).toHaveAttribute('title', expect.stringContaining('Select a Jev provider')))
+    expect(jev).toBeDisabled()
+    fireEvent.click(jev)
+    expect(updateField).not.toHaveBeenCalled()
   })
 
   test('it shows the stored value', () => {

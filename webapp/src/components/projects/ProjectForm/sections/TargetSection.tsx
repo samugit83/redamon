@@ -880,7 +880,7 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
                   </div>
                   <div className={aiStyles.column}>
                     <span className={styles.fieldLabel}>Jev engine</span>
-                    <JevTokenPanel userId={userId} />
+                    <JevTokenPanel userId={userId} onSelect={id => updateField('jevProviderId', id)} />
                   </div>
                 </div>
 

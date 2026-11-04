@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest, requireUserAccess } from '@/lib/session'
+import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { internalError } from '@/lib/routeErrors'
 
@@ -87,10 +88,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // would send the stored token to any base URL, and turning a chat key into
     // Jev would send that key to TypeSafe.
     const bodyType = body.providerType as string | undefined
-    const touchesJev = existing.providerType === 'jev' || bodyType === 'jev'
+    const touchesJev = isJevProvider(existing) || isJevProvider({ providerType: bodyType ?? '' })
     if (touchesJev && bodyType !== undefined && bodyType !== existing.providerType) {
       return NextResponse.json(
-        { error: 'The provider type of a TypeSafe AI (Jev) token cannot be changed' },
+        { error: 'The backend of a Jev provider cannot be changed' },
         { status: 400 },
       )
     }
@@ -106,7 +107,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     for (const field of secretFields) {
       if (field in updateData) {
         const val = updateData[field] as string
-        if (val.startsWith('••••')) {
+        if (typeof val === 'string' && val.startsWith('••••')) {
           updateData[field] = existing[field]
         }
       }
@@ -122,14 +123,20 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       updateData.reasoningEffort = 'high'
     }
 
-    // A Jev row keeps its pinned model, name and empty endpoint: the key is the
-    // only field an update can write.
-    if (existing.providerType === 'jev') {
+    if (isJevProvider(existing)) {
+      if (body.apiKey !== undefined && typeof body.apiKey !== 'string') {
+        return NextResponse.json({ error: 'apiKey must be a string' }, { status: 400 })
+      }
       const apiKey = typeof updateData.apiKey === 'string' ? updateData.apiKey.trim() : undefined
       if (apiKey === '') {
         return NextResponse.json({ error: 'apiKey is required for TypeSafe AI (Jev)' }, { status: 400 })
       }
+      if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim())) {
+        return NextResponse.json({ error: 'name is required for Jev' }, { status: 400 })
+      }
       for (const field of Object.keys(updateData)) delete updateData[field]
+      Object.assign(updateData, jevPinnedConfig(existing.providerType))
+      if (body.name !== undefined) updateData.name = body.name.trim()
       if (apiKey !== undefined) updateData.apiKey = apiKey
     }
 
@@ -159,11 +166,22 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Provider not found' }, { status: 404 })
     }
 
-    await prisma.userLlmProvider.delete({
-      where: { id: providerId },
+    const affectedProjects = await prisma.$transaction(async tx => {
+      // Prisma moves updatedAt so an open project form cannot restore the deleted selection.
+      const cleared = await tx.project.updateMany({
+        where: { jevProviderId: providerId },
+        data: { jevProviderId: null },
+      })
+      await tx.userLlmProvider.delete({ where: { id: providerId } })
+      return cleared.count
     })
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({
+      success: true, affectedProjects,
+      warning: affectedProjects > 0
+        ? `${affectedProjects} project(s) no longer have a Jev provider selected. Their Jev hooks will use deterministic fallbacks.`
+        : null,
+    })
   } catch (error) {
     return internalError(error, 'Failed to delete LLM provider')
   }

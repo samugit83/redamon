@@ -1,111 +1,130 @@
-/**
- * JevTokenPanel: the TypeSafe Jev token next to the AI Model picker.
- *
- * With no token it offers the same input as Global Settings, so the token can be
- * added without leaving the project form. With a token it only confirms it. The
- * other half of the contract is that saving here reaches every engine switch on
- * the page at once: one form holds several lookups, and a token added in one must
- * not leave the others reading "no token" until a reload.
- *
- * Run: npx vitest run src/components/projects/ProjectForm/JevTokenPanel.test.tsx
- */
+import { useState } from 'react'
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within, renderHook } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { JevSelectionProvider, useHasJevProvider, notifyJevProviderChanged } from '@/hooks/useHasJevProvider'
+import { JevTokenPanel } from './JevTokenPanel'
+import { JevEngineControl } from './JevEngineControl'
 
-vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'user-1' }) }))
-vi.mock('@/components/ui', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn() }),
-  useAlertModal: () => ({ alert: vi.fn(), alertError: vi.fn(), alertWarning: vi.fn(), confirm: vi.fn(), dangerConfirm: vi.fn() }),
+vi.mock('@/components/settings/LlmProviderForm', () => ({
+  LlmProviderForm: ({ onSave, userId }: { onSave: () => void; userId: string }) =>
+    <button type="button" onClick={onSave}>Save account configuration for {userId}</button>,
 }))
 
-import { JevTokenPanel } from './JevTokenPanel'
-import { useHasJevProvider } from '@/hooks/useHasJevProvider'
-
-const JEV_ROW = { id: 'jev1', providerType: 'jev', apiKey: '••••••••c0de', modelIdentifier: 'jev-1.13.0' }
-
-let providers: unknown
-let providersStatus: number
+const DIRECT = { id: 'direct', name: 'Synthetic direct', providerType: 'jev', apiKey: 'masked', modelIdentifier: 'jev-1.13.0' }
+const ROUTER = { ...DIRECT, id: 'router', name: 'Synthetic routed', providerType: 'jev_openrouter', modelIdentifier: 'typesafe/jev-1.13' }
+let rows: unknown
+let responseStatus: number
 const fetchMock = vi.fn()
 
-function json(status: number, body: unknown) {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
-}
-
 beforeEach(() => {
-  providers = [{ id: 'p1', providerType: 'anthropic' }]
-  providersStatus = 200
-  fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
-    const method = init?.method ?? 'GET'
-    if (url === '/api/agent/health') return json(200, { status: 'healthy' })
-    if (url === '/api/users/user-1/llm-providers' && method === 'GET') return json(providersStatus, providers)
-    if (url === '/api/users/user-1/llm-providers' && method === 'POST') {
-      providers = [...(providers as unknown[]), JEV_ROW]
-      return json(201, JEV_ROW)
-    }
-    return json(404, {})
-  })
+  rows = [DIRECT, ROUTER]
+  responseStatus = 200
+  fetchMock.mockReset().mockImplementation(async () => new Response(JSON.stringify(rows), { status: responseStatus }))
   vi.stubGlobal('fetch', fetchMock)
 })
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
+function OtherSectionControl() {
+  return <JevEngineControl value={false} enabled jevStatus={useHasJevProvider()} onSelect={() => {}} />
+}
 
-const panel = () => screen.getByTestId('jev-token-panel')
+function Form({ initial = null, owner = 'owner-1', actor = 'owner-1' }: {
+  initial?: string | null; owner?: string | null; actor?: string | null
+}) {
+  const [selected, setSelected] = useState(initial)
+  return <JevSelectionProvider ownerUserId={owner} selectedProviderId={selected} ownerUnavailable={!owner}>
+    <JevTokenPanel userId={actor} onSelect={setSelected} />
+    <OtherSectionControl />
+    <output data-testid="selection">{selected ?? 'null'}</output>
+  </JevSelectionProvider>
+}
 
-describe('JevTokenPanel', () => {
-  test('no token: the same Jev input as Global Settings, with no Cancel and no type picker', async () => {
-    render(<JevTokenPanel userId="user-1" />)
-    const input = await within(panel()).findByPlaceholderText('apikey_...')
-    expect(input).toHaveAttribute('type', 'password')
-    expect(within(panel()).getByText('Not added')).toBeInTheDocument()
-    expect(within(panel()).getByRole('link', { name: /Get API key/ }))
-      .toHaveAttribute('href', 'https://console.typesafe.ai/keys')
-    expect(within(panel()).getByRole('button', { name: 'Test Connection' })).toBeInTheDocument()
-    expect(within(panel()).queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Choose Provider Type')).not.toBeInTheDocument()
+const select = () => screen.getByRole('combobox', { name: 'Jev provider' })
+
+describe('project Jev provider picker', () => {
+  test('new and legacy null projects require an explicit selection despite multiple configured entries', async () => {
+    render(<Form />)
+    await screen.findByRole('combobox', { name: 'Jev provider' })
+    expect(select()).toHaveValue('')
+    expect(screen.getByText('Not selected')).toBeInTheDocument()
+    expect(screen.getByText(/No Jev provider is selected for this project/)).toHaveTextContent('scan start is not blocked')
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()
+    expect(screen.getByRole('option', { name: /Synthetic direct · TypeSafe · jev-1.13.0/ })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Synthetic routed · OpenRouter · typesafe\/jev-1.13/ })).toBeInTheDocument()
   })
 
-  test('a token: only a confirmation, with the masked key and the pinned model, and no input', async () => {
-    providers = [JEV_ROW]
-    render(<JevTokenPanel userId="user-1" />)
-    const ok = await screen.findByTestId('jev-token-connected')
-    expect(ok).toHaveTextContent('Your Jev token is included')
-    expect(ok).toHaveTextContent('••••••••c0de')
-    expect(ok).toHaveTextContent('jev-1.13.0')
-    expect(within(panel()).getByText('Connected')).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('apikey_...')).not.toBeInTheDocument()
-    // Manage opens Global Settings in a new tab, so unsaved project edits survive.
-    const manage = within(ok).getByRole('link', { name: /Manage/ })
-    expect(manage).toHaveAttribute('href', '/settings?tab=providers')
-    expect(manage).toHaveAttribute('target', '_blank')
+  test('unsaved selection and clear update every section control without another lookup', async () => {
+    render(<Form />)
+    await screen.findByRole('combobox', { name: 'Jev provider' })
+    fireEvent.change(select(), { target: { value: 'router' } })
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeEnabled()
+    expect(screen.getByTestId('selection')).toHaveTextContent('router')
+    expect(screen.getByTestId('jev-provider-selected')).toHaveTextContent('OpenRouter')
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    expect(screen.getByTestId('jev-provider-selected')).toHaveTextContent('do not confirm live model access')
+    fireEvent.change(select(), { target: { value: '' } })
+    expect(screen.getByTestId('selection')).toHaveTextContent('null')
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  test('a failed lookup says so with a Retry, and never offers the input as if there were no token', async () => {
-    providersStatus = 500
-    render(<JevTokenPanel userId="user-1" />)
-    await within(panel()).findByText(/Couldn.t check your Jev token/)
-    expect(screen.queryByPlaceholderText('apikey_...')).not.toBeInTheDocument()
-    providersStatus = 200
-    providers = [JEV_ROW]
-    fireEvent.click(within(panel()).getByRole('button', { name: /Retry/ }))
-    await screen.findByTestId('jev-token-connected')
+  test('deleting the selected entry warns without selecting another account entry or clearing unsaved state', async () => {
+    render(<Form initial="direct" />)
+    await screen.findByTestId('jev-provider-selected')
+    rows = [ROUTER]
+    notifyJevProviderChanged()
+    await screen.findByText(/The selected Jev configuration was deleted/)
+    expect(select()).toHaveValue('direct')
+    expect(screen.getByTestId('selection')).toHaveTextContent('direct')
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()
+    fireEvent.change(select(), { target: { value: '' } })
+    expect(screen.getByTestId('selection')).toHaveTextContent('null')
   })
 
-  test('saving the token here turns the panel into the confirmation AND reaches the other lookups on the page', async () => {
-    render(<JevTokenPanel userId="user-1" />)
-    const other = renderHook(() => useHasJevProvider())      // e.g. the FFuf section's engine switch
-    await waitFor(() => expect(other.result.current).toBe('no'))
+  test('adding an account configuration refreshes all hooks but never selects the saved entry', async () => {
+    rows = []
+    render(<Form />)
+    await screen.findByText('The project owner has no Jev configurations.')
+    fireEvent.click(screen.getByRole('button', { name: 'Add Jev configuration' }))
+    rows = [DIRECT]
+    fireEvent.click(screen.getByRole('button', { name: 'Save account configuration for owner-1' }))
+    await screen.findByRole('option', { name: /Synthetic direct/ })
+    expect(select()).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()
+    expect(screen.getByTestId('selection')).toHaveTextContent('null')
+    expect(screen.getByRole('link', { name: /Manage/ })).toHaveAttribute('target', '_blank')
+  })
 
-    fireEvent.change(await screen.findByPlaceholderText('apikey_...'), { target: { value: 'apikey_abc_def' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save token' }))
+  test('loading and lookup error are not reported as missing configurations; retry retains selection', async () => {
+    responseStatus = 503
+    rows = { error: 'Lookup unavailable', code: 'P2024' }
+    render(<Form initial="direct" />)
+    expect(screen.getByText(/Loading the project owner/)).toBeInTheDocument()
+    expect(screen.queryByText('Not selected')).not.toBeInTheDocument()
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('P2024 · HTTP 503')
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add Jev configuration' })).not.toBeInTheDocument()
+    responseStatus = 200
+    rows = [DIRECT]
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }))
+    await screen.findByTestId('jev-provider-selected')
+    expect(select()).toHaveValue('direct')
+  })
 
-    await screen.findByTestId('jev-token-connected')
-    await waitFor(() => expect(other.result.current).toBe('yes'))
-    const post = fetchMock.mock.calls.find(([u, i]) => u === '/api/users/user-1/llm-providers' && (i as RequestInit)?.method === 'POST')!
-    expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({
-      providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def', modelIdentifier: 'jev-1.13.0',
-    })
+  test('a shared/admin view lists the known project owner, never the actor’s configurations or add form', async () => {
+    render(<Form owner="project-owner" actor="actor" initial="direct" />)
+    await screen.findByTestId('jev-provider-selected')
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/users/project-owner/llm-providers')
+    expect(screen.queryByRole('button', { name: 'Add Jev configuration' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Manage/ })).not.toBeInTheDocument()
+  })
+
+  test('an unknown project owner has a safe limited state and does not load actor configs', () => {
+    render(<Form owner={null} actor="actor" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('unavailable in this view')
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

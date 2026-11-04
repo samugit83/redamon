@@ -10,6 +10,7 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { RouteExposureSection } from './RouteExposureSection'
+import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
 
 vi.mock('../NodeInfoTooltip', () => ({ NodeInfoTooltip: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
@@ -168,13 +169,18 @@ describe('RouteExposureSection Jev rows', () => {
   function stubJevProvider() {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200,
-      json: async () => [{ id: 'j', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }],
+      json: async () => [{ id: 'j', name: 'Selected direct Jev', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }],
     })))
   }
 
   test('each of the three controls writes its own field', async () => {
     stubJevProvider()
-    const { updateField } = renderSection({ routeExposureEnabled: true, aiInPipeline: true })
+    const updateField = vi.fn()
+    render(
+      <JevSelectionProvider ownerUserId="u1" selectedProviderId="j">
+        <RouteExposureSection data={{ routeExposureEnabled: true, aiInPipeline: true } as never} updateField={updateField as never} />
+      </JevSelectionProvider>,
+    )
     const groups = screen.getAllByRole('group', { name: 'Jev hook' })
     expect(groups).toHaveLength(3)
     for (const [i, field] of FIELDS.entries()) {

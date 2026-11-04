@@ -36,7 +36,7 @@ _BUILTIN_PROVIDERS = ("openai", "anthropic", "openrouter", "bedrock", "deepseek"
 #: them: `setup_llm`'s custom branch would build ChatOpenAI with no base URL
 #: and send the token to api.openai.com. Twin of the webapp's
 #: NON_CHAT_PROVIDER_TYPES in webapp/src/lib/llmProviderKinds.ts.
-NON_CHAT_PROVIDER_TYPES = frozenset({"jev"})
+NON_CHAT_PROVIDER_TYPES = frozenset({"jev", "jev_openrouter"})
 
 #: The provider types that can serve a `custom/<id>` model.
 CUSTOM_PROVIDER_TYPES = ("openai_compatible", "bedrock_custom", "ollama_local")

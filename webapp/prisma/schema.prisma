@@ -93,6 +93,7 @@ model UserLlmProvider {
   id              String   @id @default(cuid())
   userId          String   @map("user_id")
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jevProjects     Project[] @relation("ProjectJevProvider")
 
   // "openai" | "anthropic" | "openrouter" | "bedrock" | "openai_compatible"
   providerType    String   @map("provider_type")
@@ -460,6 +461,8 @@ model Project {
   targetGuardrailEnabled      Boolean  @default(true) @map("target_guardrail_enabled")
   aiInPipeline                Boolean  @default(false) @map("ai_in_pipeline")
   aiPipelineModel             String   @default("claude-opus-4-6") @map("ai_pipeline_model")
+  jevProviderId               String?  @map("jev_provider_id")
+  jevProvider                 UserLlmProvider? @relation("ProjectJevProvider", fields: [jevProviderId], references: [id], onDelete: SetNull)
 
   // ========== RECON PRESET ==========
   reconPresetId               String?  @map("recon_preset_id")
@@ -1516,6 +1519,7 @@ model Project {
   // because a replace must not destroy the contract earlier scans ran under.
   roeDocumentRevisions              RoeDocumentRevision[]
 
+  @@index([jevProviderId])
   @@map("projects")
 }
 

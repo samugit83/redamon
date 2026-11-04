@@ -30,8 +30,12 @@ CUSTOM = {"id": "prov-custom", "providerType": "openai_compatible", "apiKey": "k
           "baseUrl": "http://llm.example.com/v1", "modelIdentifier": "m-c"}
 
 
-def test_chat_providers_drops_the_jev_row():
-    assert llm_builder.chat_providers([JEV, ANTHROPIC, CUSTOM]) == [ANTHROPIC, CUSTOM]
+@pytest.mark.parametrize("provider_type", ["jev", "jev_openrouter"])
+def test_chat_providers_drops_the_jev_row(provider_type):
+    row = dict(JEV, providerType=provider_type)
+    assert llm_builder.chat_providers([row, ANTHROPIC, CUSTOM]) == [ANTHROPIC, CUSTOM]
+    assert llm_builder.exact_custom_provider([row], "custom/prov-jev") is None
+    assert llm_builder.custom_provider_or_fallback([row], "custom/prov-gone") is None
 
 
 def test_chat_providers_tolerates_none_and_junk():
@@ -66,12 +70,13 @@ def test_an_exact_custom_id_wins_over_the_fallback():
 # setup_llm: the last line of defence for every exact-id path
 # ---------------------------------------------------------------------------
 
-def test_setup_llm_refuses_a_jev_config_before_building_any_client():
+@pytest.mark.parametrize("provider_type", ["jev", "jev_openrouter"])
+def test_setup_llm_refuses_a_jev_config_before_building_any_client(provider_type):
     from orchestrator_helpers import llm_setup
     with patch.object(llm_setup, "ChatOpenAI") as chat_openai, \
             patch.object(llm_setup, "ChatAnthropic") as chat_anthropic:
         with pytest.raises(ValueError) as err:
-            llm_setup.setup_llm("custom/prov-jev", custom_llm_config=JEV)
+            llm_setup.setup_llm("custom/prov-jev", custom_llm_config=dict(JEV, providerType=provider_type))
     chat_openai.assert_not_called()
     chat_anthropic.assert_not_called()
     assert JEV_KEY not in str(err.value)

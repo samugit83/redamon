@@ -74,6 +74,9 @@ export function presetNameKey(name: string): string {
  * A caller told only "not allowed" goes looking for the wrong fix.
  */
 function exclusionReason(key: string, spec: RegistryField): string {
+  if (spec.validator === 'provider_reference') {
+    return `'${key}' is an account-scoped provider selection. Select it explicitly on the receiving project.`
+  }
   if (spec.mcp === 'create_only') {
     return `'${key}' is part of the engagement scope, which a preset never carries: a preset ` +
       'loaded into another project would re-point it. It is fixed at creation by create_project.'
@@ -414,15 +417,15 @@ export async function validateApplication(
   if (crossField) return { key: '', error: crossField }
   if ('attackSkillConfig' in application.data) application.data.attackSkillConfig = nextRow.attackSkillConfig
 
-  // A saved preset may name an engine flag. Switching a hook onto Jev needs a
-  // token on the project OWNER's account, and the row selected for an apply is
-  // limited to readable fields, so the owner is looked up here, only when a
-  // switch-on is actually in play. The key stays '' so the caller does not tell
-  // the person to re-save the preset: the fix is a token, not a different preset.
+  // Presets cannot choose an account-scoped provider. A switch-on uses the
+  // receiving project's explicit selection, bound to its owner. The empty key
+  // tells the caller to configure the project rather than rewrite the preset.
   if (jevSwitchedOn(currentRow, application.data).length > 0) {
     let owner: string | null = null
     try {
-      owner = (await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } }))?.userId ?? null
+      const project = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true, jevProviderId: true } })
+      owner = project?.userId ?? null
+      currentRow = { ...currentRow, jevProviderId: project?.jevProviderId ?? null }
     } catch {
       return { key: '', error: JEV_VERIFY_FAILED.replace(/\.$/, '') }
     }

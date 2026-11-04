@@ -25,7 +25,7 @@ interface JevEngineControlProps {
  * The LLM | Jev engine switch under a recon AI hook, or the Off | Jev switch of
  * a Jev-only hook (`variant="jevOnly"`). Both follow the same rules.
  *
- * It never auto-resets a stored `true`: a project whose owner lost the token
+ * It never auto-resets a stored `true`: a project with no valid selected provider
  * keeps the choice (the hook falls back to its static list at scan time), and a
  * badge says so. Switching a disabled-but-selected Jev back to LLM is allowed.
  * The server (validateJevEngineChange) is the authority on a switch-on.
@@ -38,18 +38,20 @@ export function JevEngineControl({
   const loading = jevStatus === 'loading'
   const error = jevStatus === 'error'
 
-  // Jev cannot be CHOSEN when the owner has no token; but a stored true stays.
-  const jevButtonDisabled = !enabled || loading || (noToken && !value)
+  // A failed lookup must not invite a switch-on without a validated selection.
+  const jevButtonDisabled = !enabled || loading || (jevStatus !== 'yes' && !value)
 
   const jevTitle = !enabled
     ? disabledHint ?? 'Enable "AI in Pipeline" in the Target tab to choose an engine.'
     : loading
-    ? 'Checking whether you have a Jev token…'
+    ? 'Checking the project’s selected Jev provider…'
     : noToken
-    ? 'No TypeSafe Jev token on your account. Add one in Settings → LLM Providers.'
+    ? 'Select a Jev provider in Target → AI in Pipeline. Manage configurations in Settings → LLM Providers.'
+    : error
+    ? 'The selected Jev provider could not be checked. Retry in the Target tab.'
     : jevOnly
-    ? 'Run this hook on TypeSafe Jev.'
-    : 'Answer this hook with TypeSafe Jev instead of the LLM.'
+    ? 'Run this hook on the project’s selected Jev provider.'
+    : 'Answer this hook with the project’s selected Jev provider instead of the LLM.'
 
   return (
     <div className={styles.wrap}>
@@ -79,12 +81,12 @@ export function JevEngineControl({
       </div>
       {error && (
         <span className={styles.note} role="status">
-          <AlertTriangle size={12} /> Couldn&apos;t check your Jev token
+          <AlertTriangle size={12} /> Couldn&apos;t check the selected Jev provider; failed calls use deterministic fallbacks
         </span>
       )}
       {value && noToken && (
         <span className={styles.badge}>
-          No Jev token: this hook uses its static fallback
+          No valid Jev selection: this hook uses its static fallback
         </span>
       )}
     </div>

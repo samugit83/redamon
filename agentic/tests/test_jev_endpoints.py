@@ -97,7 +97,7 @@ def _fresh_rate_limit():
 
 
 def _owner_ok():
-    return patch("jev_client.verify_owner", AsyncMock(return_value=None))
+    return patch("jev_client.selected_provider_id", AsyncMock(return_value="p-jev"))
 
 
 def _providers(rows):
@@ -138,7 +138,7 @@ def test_empty_user_or_project_is_422(client, path, body):
 
 def test_owner_mismatch_is_403_and_no_token_is_fetched(client):
     import jev_client
-    with patch("jev_client.verify_owner", AsyncMock(side_effect=jev_client.JevError("jev_forbidden"))), \
+    with patch("jev_client.selected_provider_id", AsyncMock(side_effect=jev_client.JevError("jev_forbidden"))), \
             _providers([JEV_ROW]) as fetch:
         resp = _post(client, "/jev/nuclei-tags", NUCLEI_BODY)
     assert resp.status_code == 403
@@ -148,7 +148,7 @@ def test_owner_mismatch_is_403_and_no_token_is_fetched(client):
 
 def test_webapp_unreachable_in_owner_check_is_503(client):
     import jev_client
-    with patch("jev_client.verify_owner", AsyncMock(side_effect=jev_client.JevError("jev_unavailable"))):
+    with patch("jev_client.selected_provider_id", AsyncMock(side_effect=jev_client.JevError("jev_unavailable"))):
         resp = _post(client, "/jev/nuclei-tags", NUCLEI_BODY)
     assert resp.status_code == 503
     assert resp.json()["error_type"] == "jev_unavailable"
@@ -163,6 +163,26 @@ def test_no_jev_row_is_503_not_configured(client):
         resp = _post(client, "/jev/nuclei-tags", NUCLEI_BODY)
     assert resp.status_code == 503
     assert resp.json()["error_type"] == "jev_not_configured"
+
+
+def test_null_selection_rejects_before_fetching_credentials_even_with_body_override(client):
+    import jev_client
+    with patch("jev_client._fetch_project", return_value={"userId": "u1", "jevProviderId": None}), \
+            _providers([JEV_ROW]) as fetch, patch("jev_client.system_one", AsyncMock()) as inference:
+        resp = _post(client, "/jev/nuclei-tags", {**NUCLEI_BODY, "jevProviderId": "p-jev"})
+    assert resp.status_code == 503 and resp.json()["error_type"] == "jev_not_configured"
+    fetch.assert_not_called()
+    inference.assert_not_called()
+
+
+def test_selection_is_loaded_from_persisted_project_not_request(client):
+    selected = {**JEV_ROW, "id": "persisted", "providerType": "jev_openrouter"}
+    with patch("jev_client._fetch_project", return_value={"userId": "u1", "jevProviderId": "persisted"}), \
+            _providers([JEV_ROW, selected]), patch("jev_hooks.nuclei_tags", AsyncMock(return_value={"tags": ["cve"]})) as hook:
+        resp = _post(client, "/jev/nuclei-tags", {**NUCLEI_BODY, "jevProviderId": "p-jev"})
+    assert resp.status_code == 200
+    assert hook.await_args.args[0].provider_id == "persisted"
+    assert hook.await_args.args[0].provider_type == "jev_openrouter"
 
 
 def test_providers_unreachable_is_503_unavailable(client):
@@ -186,7 +206,8 @@ def test_nuclei_success_returns_tags_and_never_leaks_the_key(client):
     assert resp.status_code == 200
     assert "cve" in resp.json()["tags"]
     # The token is the one passed to the client, and never appears in the body.
-    assert s1.await_args.args[0] == CANARY
+    assert s1.await_args.args[0].api_key == CANARY
+    assert s1.await_args.args[0].provider_id == "p-jev"
     assert CANARY not in resp.text
 
 
@@ -274,18 +295,19 @@ def test_serialized_more_blobs_than_the_bound_is_422(client):
 
 
 def test_owner_binding_runs_before_the_token_fetch(client):
-    """verify_owner is awaited before any provider is read."""
+    """selected_provider_id is awaited before any provider is read."""
     order = []
     import jev_client
 
     async def owner(*a, **k):
         order.append("owner")
+        return "p-jev"
 
     def providers(*a, **k):
         order.append("providers")
         return [JEV_ROW]
 
-    with patch("jev_client.verify_owner", owner), patch("llm_builder.fetch_user_providers", providers), \
+    with patch("jev_client.selected_provider_id", owner), patch("llm_builder.fetch_user_providers", providers), \
             patch("jev_client.system_one", AsyncMock(return_value={"model": "x", "answers": {
                 "tag_0": {"type": "noul", "noul": 0.1}, "tag_1": {"type": "noul", "noul": 0.1},
                 "tag_2": {"type": "noul", "noul": 0.1}}})):
@@ -384,7 +406,7 @@ def test_the_token_is_never_logged_or_returned(client, caplog, path, body, name,
 def test_the_token_is_never_logged_on_the_owner_mismatch_path(client, caplog, path, body):
     import jev_client
     caplog.set_level(logging.DEBUG)
-    with patch("jev_client.verify_owner", AsyncMock(side_effect=jev_client.JevError("jev_forbidden"))), \
+    with patch("jev_client.selected_provider_id", AsyncMock(side_effect=jev_client.JevError("jev_forbidden"))), \
             _providers([JEV_ROW]) as fetch:
         resp = _post(client, path, body)
     assert resp.status_code == 403

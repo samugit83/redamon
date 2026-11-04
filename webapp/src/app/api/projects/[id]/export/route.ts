@@ -208,6 +208,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       roeDocumentData: _roeDocBinary,
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       roeEnabled: _roeEnabledDerived,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      jevProviderId: _accountScopedJevProvider,
       ...projectWithoutBinary
     } = project
     const projectExport = {
