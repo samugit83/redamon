@@ -528,6 +528,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS = settings.get('ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS', [])
     ZAP_AJAX_SPIDER_MAX_URLS = settings.get('ZAP_AJAX_SPIDER_MAX_URLS', 1000)
     ZAP_AJAX_SPIDER_PARALLELISM = settings.get('ZAP_AJAX_SPIDER_PARALLELISM', 1)
+    ZAP_AJAX_SPIDER_MAX_SEEDS = settings.get('ZAP_AJAX_SPIDER_MAX_SEEDS', 250)
 
     # Arjun settings
     ARJUN_ENABLED = settings.get('ARJUN_ENABLED', False)
@@ -1309,6 +1310,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
             logout_avoidance=ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE,
             scope_check=ZAP_AJAX_SPIDER_SCOPE_CHECK,
             parallelism=ZAP_AJAX_SPIDER_PARALLELISM,
+            max_seeds=ZAP_AJAX_SPIDER_MAX_SEEDS,
         )
 
         if zap_ajax_urls:

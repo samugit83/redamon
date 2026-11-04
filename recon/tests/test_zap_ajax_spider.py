@@ -189,3 +189,67 @@ def test_zap_ajax_allocates_non_default_proxy_port():
     assert isinstance(port, int)
     assert 0 < port < 65536
     assert port != 8080
+
+
+def test_plan_gives_passive_scan_its_own_smaller_budget():
+    """The passive-scan wait is a queue drain, not a second crawl."""
+    zap = _load_zap_module()
+
+    plan = zap.build_zap_ajax_automation_plan(
+        seed_url="https://app.example.com/",
+        export_file_name="export.txt",
+        max_duration=30,
+    )
+
+    spider_budget = plan.split('type: "spiderAjax"')[1].split("maxDuration: ")[1].split("\n")[0]
+    passive_budget = plan.split('type: "passiveScan-wait"')[1].split("maxDuration: ")[1].split("\n")[0]
+
+    assert int(spider_budget) == 30
+    assert int(passive_budget) == zap.PASSIVE_SCAN_MAX_MINUTES
+    assert int(passive_budget) < int(spider_budget)
+
+
+def test_seed_timeout_covers_spider_plus_passive_pass():
+    """A seed's wall clock is spider + passive drain + startup, not spider alone."""
+    zap = _load_zap_module()
+
+    timeout = zap._zap_seed_timeout(30)
+
+    assert timeout > 30 * 60
+    assert timeout >= (30 + zap.PASSIVE_SCAN_MAX_MINUTES) * 60
+
+
+def test_reflected_payload_inside_a_path_is_not_a_browser_seed():
+    """A catch-all host turns one reflected payload into thousands of seeds."""
+    zap = _load_zap_module()
+
+    assert zap._bundled_zap_seed_path(
+        "http://api.example.com:8080/%5Cu003e%5Cu003cfigcaption%5Cu003eButtercup"
+    )
+    assert zap._bundled_zap_seed_path("http://api.example.com/%3Cscript%3E")
+    assert not zap._bundled_zap_seed_path("http://api.example.com/api/v1/users")
+    assert not zap._bundled_zap_seed_path("http://api.example.com/a?b=1")
+    # a real path that happens to mention the word is left alone
+    assert not zap._bundled_zap_seed_path("http://api.example.com/docs/figcaption")
+
+
+def test_zap_heap_is_sized_from_the_container_not_the_host(monkeypatch):
+    """zap.sh sizes -Xmx from MemTotal on cgroup v2, so the heap must be pinned."""
+    zap = _load_zap_module()
+
+    monkeypatch.setattr(zap, "_zap_container_bytes", lambda: 2 * 1024 ** 3)
+    heap = zap._zap_heap_mb()
+
+    assert heap == 1024, f"2 GiB container -> 1 GiB heap, got {heap}"
+
+
+def test_zap_heap_falls_back_when_the_governor_is_unavailable(monkeypatch):
+    def boom():
+        raise RuntimeError("no governor")
+
+    zap = _load_zap_module()
+    monkeypatch.setattr(zap, "_zap_container_bytes", boom)
+
+    # _zap_heap_mb takes the ceiling as an argument, so a governor failure in
+    # the caller cannot make the heap calculation raise into the crawl.
+    assert zap._zap_heap_mb(zap._DEFAULT_ZAP_CONTAINER_BYTES) == 1024

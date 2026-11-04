@@ -413,6 +413,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS': [],
     'ZAP_AJAX_SPIDER_MAX_URLS': 1000,
     'ZAP_AJAX_SPIDER_PARALLELISM': 3,
+    'ZAP_AJAX_SPIDER_MAX_SEEDS': 250,
 
     # GAU Passive URL Discovery
     'GAU_ENABLED': False,
@@ -1773,6 +1774,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS'] = project.get('zapAjaxSpiderExcludePatterns', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS'])
     settings['ZAP_AJAX_SPIDER_MAX_URLS'] = project.get('zapAjaxSpiderMaxUrls', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_MAX_URLS'])
     settings['ZAP_AJAX_SPIDER_PARALLELISM'] = project.get('zapAjaxSpiderParallelism', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_PARALLELISM'])
+    settings['ZAP_AJAX_SPIDER_MAX_SEEDS'] = project.get('zapAjaxSpiderMaxSeeds', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_MAX_SEEDS'])
 
     # Hakrawler Web Crawler
     settings['HAKRAWLER_ENABLED'] = project.get('hakrawlerEnabled', DEFAULT_SETTINGS['HAKRAWLER_ENABLED'])

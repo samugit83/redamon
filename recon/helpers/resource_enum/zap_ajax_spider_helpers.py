@@ -24,12 +24,44 @@ from recon.helpers.docker_helpers import pull_image_or_use_local
 
 SOURCE_NAME = "zap_ajax_spider"
 ZAP_CONTEXT_NAME = "redamon-zap-ajax-context"
+ZAP_ENVELOPE_TOOL = "zap_ajax"
 _URL_RE = re.compile(r"https?://[^\s\"'<>,]+", re.IGNORECASE)
 _DEBUG_ENV = "REDAMON_ZAP_AJAX_DEBUG"
+
+# A ZAP Ajax container is a JVM plus a headless Firefox sharing one cgroup. Heap
+# gets _ZAP_HEAP_FRACTION of the container ceiling; the rest covers Firefox, the
+# JVM's metaspace and native memory, and the OS page cache.
+_ZAP_HEAP_FRACTION = 0.5
+_ZAP_HEAP_MIN_MB = 512
+_ZAP_HEAP_MAX_MB = 3072
+_DEFAULT_ZAP_CONTAINER_BYTES = 2147483648  # 2 GiB, what the broker injects
+
+# A browser crawl of every discovered endpoint never finishes in scan time: each
+# seed is a fresh ZAP container for up to maxDuration. Cap the seeds per run so a
+# target that produces 100k endpoints still completes; 0 disables the cap.
+ZAP_MAX_SEEDS_DEFAULT = 250
 
 
 def _has_control_chars(value: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in value)
+
+
+def _bundled_zap_seed_path(url: str) -> bool:
+    """True when a URL is a path *stuffed inside another path*.
+
+    A catch-all / reflective host echoes whatever path you ask for, so a
+    discovered endpoint like `/static/js/..%5Cu003e%3Cfigcaption%3E` gets
+    re-emitted as a whole new "path" by ffuf/katana/ZAP. Seeding those back into
+    a browser crawl multiplies one dead seed into thousands: every one of them
+    is a distinct string, so neither de-duplication nor the out-of-scope filter
+    can collapse them, and each still costs a full per-seed ZAP run. Detected
+    as an encoded angle-bracket/quote sequence, which is what a reflected
+    payload leaves behind and what a real server path essentially never has.
+    """
+    lowered = str(url).lower()
+    return any(token in lowered for token in (
+        "%5cu003e", "%5cu003c", "%3c", "%3e", "\\u003e", "\\u003c",
+    ))
 
 
 def _is_valid_header_parts(raw_name: str, name: str, value: str) -> bool:
@@ -173,7 +205,11 @@ def build_zap_ajax_automation_plan(
         '  - type: "passiveScan-wait"',
         '    name: "redamon-zap-passive-scan"',
         "    parameters:",
-        f"      maxDuration: {int(max_duration)}",
+        # The crawl budget is the spider's; the pass that drains what it already
+        # found needs its own, much smaller, ceiling. Reusing maxDuration here
+        # doubled the seed's wall time and made the caller's per-seed timeout
+        # fire on a crawl that had actually finished.
+        f"      maxDuration: {_zap_passive_minutes(max_duration)}",
         '  - type: "export"',
         '    name: "redamon-zap-ajax-export"',
         "    parameters:",
@@ -399,12 +435,14 @@ def run_zap_ajax_spider(
     logout_avoidance,
     scope_check,
     parallelism=1,
+    max_seeds=ZAP_MAX_SEEDS_DEFAULT,
 ) -> tuple[List[str], Dict]:
     """Run ZAP Ajax Spider for seed URLs and return filtered discovered URLs."""
     allowed = {str(host).lower() for host in (allowed_hosts or []) if host}
     seeds = []
     invalid_seed_urls = 0
     out_of_scope_seed_urls = 0
+    bundled_path_seed_urls = 0
     dropped_seed_urls = []
     for target_url in target_urls or []:
         url = str(target_url).strip()
@@ -427,10 +465,16 @@ def run_zap_ajax_spider(
                 "url": _safe_url_detail(url),
             })
             continue
+        if _bundled_zap_seed_path(url):
+            bundled_path_seed_urls += 1
+            continue
         seeds.append(url)
 
     if out_of_scope_seed_urls:
         print(f"[!][ZAP Ajax] Skipping {out_of_scope_seed_urls} out-of-scope seed URL(s)")
+    if bundled_path_seed_urls:
+        print(f"[!][ZAP Ajax] Skipping {bundled_path_seed_urls} seed URL(s) carrying "
+              f"a reflected payload inside the path")
 
     headers, invalid_headers = parse_zap_ajax_header_lines(custom_headers or [])
     masked_headers = [
@@ -449,6 +493,7 @@ def run_zap_ajax_spider(
         "seeds_failed": 0,
         "invalid_seed_urls": invalid_seed_urls,
         "out_of_scope_seed_urls": out_of_scope_seed_urls,
+        "bundled_path_seed_urls": bundled_path_seed_urls,
         "failed_seeds": 0,
         "invalid_headers": len(invalid_headers),
         "masked_headers": masked_headers,
@@ -476,6 +521,22 @@ def run_zap_ajax_spider(
         metadata.update(filter_meta)
         _scope.finish("resource_enum", host_source="resource_enum")
         return filtered, metadata
+
+    # One seed costs one ZAP container for up to its full crawl budget, so the
+    # seed list is the phase's wall clock. Unbounded, a 100k-endpoint target (an
+    # SPA behind a catch-all, or `base_urls_and_endpoints` over a big graph) is
+    # days of crawling and looks exactly like a hung scan. Keep the cap over the
+    # seeds that survive the filters, cheapest-host-first is not attempted: the
+    # caller's ordering already puts base URLs before endpoint paths.
+    capped_seeds = _cap_zap_seeds(seeds, max_seeds)
+    if len(capped_seeds) != len(seeds):
+        metadata["seeds_dropped_by_cap"] = len(seeds) - len(capped_seeds)
+        metadata["seed_cap"] = int(max_seeds)
+        print(f"[!][ZAP Ajax] Capping seeds at {int(max_seeds)} "
+              f"({len(seeds) - len(capped_seeds)} dropped) - raise ZAP_AJAX_SPIDER_MAX_SEEDS to crawl more")
+        seeds = capped_seeds
+        metadata["seed_urls"] = len(seeds)
+        metadata["seeds_attempted"] = len(seeds)
 
     work_dir = Path(f"/tmp/redamon/zap_ajax_{uuid.uuid4().hex[:8]}")
     work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -510,12 +571,27 @@ def run_zap_ajax_spider(
         _chmod_best_effort(plan_path, 0o600)
 
         proxy_port = _allocate_zap_proxy_port()
+        # A name so a timed-out seed can be killed: `subprocess.run` on timeout
+        # kills only the local `docker run` CLI, and the container it started is
+        # left running. Each abandoned ZAP JVM is a ~700 MB Firefox+Java pair
+        # that never exits (its plan already succeeded), so a couple of timed-out
+        # seeds per crawl pile up until the host is out of memory -- which is
+        # what then looks like "the scan froze".
+        container_name = f"redamon-zap-ajax-{uuid.uuid4().hex[:12]}"
         cmd = [
-            "docker", "run", "--rm", "--net=host",
+            "docker", "run", "--rm", "--net=host", "--name", container_name,
             *_docker_user_args(),
             "-v", f"{work_dir}:/zap/wrk",
             docker_image,
-            "zap.sh", "-cmd", "-port", str(proxy_port), "-autorun", f"/zap/wrk/{plan_name}",
+            "zap.sh", "-cmd",
+            # zap.sh reads the *host* MemTotal on cgroup v2 (it still looks for
+            # the v1 /sys/fs/cgroup/memory/memory.stat), so it sizes the heap at
+            # a quarter of 64 GB = -Xmx16029m inside a 2 GB container. The JVM
+            # then fails thread/heap allocation against the real limit. Passed
+            # after `zap.sh` because zap.sh itself parses it and overrides its
+            # own calculation.
+            f"-Xmx{_zap_heap_mb()}m",
+            "-port", str(proxy_port), "-autorun", f"/zap/wrk/{plan_name}",
         ]
         failed = False
         try:
@@ -523,7 +599,7 @@ def run_zap_ajax_spider(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=int(max_duration) * 60 + 180,
+                timeout=_zap_seed_timeout(max_duration),
             )
             failed = result.returncode != 0
             if failed:
@@ -549,6 +625,11 @@ def run_zap_ajax_spider(
                 error = None
         except subprocess.TimeoutExpired:
             failed = True
+            # subprocess.run already killed the `docker run` CLI; the container
+            # it launched survives that, so kill it by name. Without this every
+            # timed-out seed leaks a ~700 MB ZAP JVM plus a Firefox for the rest
+            # of the host's uptime, and a few of them exhaust memory.
+            _kill_zap_container(container_name)
             print(f"[!][ZAP Ajax] Seed timed out: {_safe_url_detail(seed_url)}")
             error = {
                 "type": "timeout",
@@ -680,6 +761,116 @@ def _allocate_zap_proxy_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+# The passive-scan wait is a queue drain, not a crawl: it only has to let ZAP
+# process what the spider already fetched. Giving it the crawl's own maxDuration
+# doubles every seed's wall time for no extra coverage.
+PASSIVE_SCAN_MAX_MINUTES = 2
+
+
+def _zap_passive_minutes(max_duration: int) -> int:
+    return max(1, min(int(max_duration), PASSIVE_SCAN_MAX_MINUTES))
+
+
+def _zap_seed_timeout(max_duration: int) -> int:
+    """Wall-clock budget for one seed's `docker run`, in seconds.
+
+    The plan runs spiderAjax for up to `max_duration` minutes and then the
+    passive-scan wait for its own budget, so a timeout of `max_duration * 60 +
+    180` cut the seed off before the plan could finish and counted a healthy
+    crawl as a failure.
+    """
+    return (int(max_duration) + _zap_passive_minutes(max_duration)) * 60 + 180
+
+
+def _zap_container_bytes() -> int:
+    """Memory ceiling to give one ZAP container, in bytes.
+
+    The resource governor owns the per-tool envelope so a spawn from the recon
+    container agrees with what the broker and the orchestrator budget for the
+    same tool. Falling back to a fixed 1.5 GB keeps this working when the
+    governor is unavailable.
+    """
+    try:
+        try:
+            from graph_db import resource_governor as rg
+        except ImportError:
+            import resource_governor as rg  # noqa: F401 - alt sys.path (tests)
+        envelope = rg.tool_container_envelope(ZAP_ENVELOPE_TOOL)
+        cap = rg.container_cap(envelope)
+        value = cap or envelope
+        if value and value > 0:
+            return int(value)
+    except Exception:  # noqa: BLE001 - no governor: use the fixed envelope
+        pass
+    return _DEFAULT_ZAP_CONTAINER_BYTES
+
+
+def _zap_heap_mb(container_bytes: int | None = None) -> int:
+    """JVM heap for one ZAP container, sized from that container's ceiling.
+
+    zap.sh derives -Xmx from MemTotal -- it only consults the cgroup **v1**
+    memory.stat, which does not exist on a cgroup v2 host -- so inside a 2 GB
+    container it asked for a quarter of the host's 64 GB (-Xmx16029m). The JVM
+    is then killed, or fails thread and heap allocation against the real limit,
+    which is why seeds "timed out" while doing nothing. Size the heap from the
+    container instead, leaving room for Firefox, which the Ajax Spider runs as
+    a child process in the same cgroup.
+    """
+    limit = int(container_bytes or _zap_container_bytes())
+    heap_mb = int((limit * _ZAP_HEAP_FRACTION) // (1024 * 1024))
+    return max(_ZAP_HEAP_MIN_MB, min(_ZAP_HEAP_MAX_MB, heap_mb))
+
+
+def _cap_zap_seeds(seeds: List[str], max_seeds) -> List[str]:
+    """Trim the seed list to the configured cap, spreading the pick across hosts.
+
+    A cap applied to the raw list would take the first N strings, which for
+    `base_urls_and_endpoints` means every endpoint of the first host and nothing
+    of the rest. Round-robin by host so a capped crawl still covers the estate.
+    """
+    try:
+        limit = int(max_seeds)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0 or len(seeds) <= limit:
+        return list(seeds)
+
+    by_host: Dict[str, List[str]] = {}
+    for url in seeds:
+        host = (urlparse(url).netloc or "").lower()
+        by_host.setdefault(host, []).append(url)
+
+    picked: List[str] = []
+    cursor = {host: 0 for host in by_host}
+    hosts = sorted(by_host)
+    while len(picked) < limit:
+        progressed = False
+        for host in hosts:
+            if len(picked) >= limit:
+                break
+            index = cursor[host]
+            if index < len(by_host[host]):
+                picked.append(by_host[host][index])
+                cursor[host] = index + 1
+                progressed = True
+        if not progressed:
+            break
+    return picked
+
+
+def _kill_zap_container(name: str) -> None:
+    """Remove one ZAP container by name. Never raises, never blocks a scan."""
+    if not name:
+        return
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup must not fail the seed
+        print(f"[!][ZAP Ajax] Could not remove container {name}: {type(exc).__name__}")
 
 
 def _tail_text(value: str | None, max_chars: int = 4000) -> str:
