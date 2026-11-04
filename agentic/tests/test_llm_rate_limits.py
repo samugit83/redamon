@@ -168,6 +168,14 @@ class ProviderErrorKindTests(unittest.TestCase):
                 self.assertEqual(provider_error_kind(exc), kind)
                 self.assertFalse(is_transient_llm_error(exc))
 
+    def test_a_402_payment_required_is_no_credit(self):
+        # DeepSeek's answer for an account with no balance, seen live.
+        exc = StatusError(402, "Error code: 402 - Insufficient Balance (request_id: x)")
+        self.assertEqual(provider_error_kind(exc), "quota_exhausted")
+        self.assertFalse(is_transient_llm_error(exc))
+        self.assertEqual(describe_llm_failure(exc),
+                         "no credit or quota left on the model provider account, provider HTTP 402")
+
     def test_bedrock_throttling_was_not_transient_before(self):
         # Regression: its text names no status and no rate-limit phrase the old
         # classifier knew, so not even the think step retried it.

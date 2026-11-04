@@ -4479,7 +4479,7 @@ A provider's HTTP 429 is classified by `llm_builder.provider_error_kind`, from t
 | Kind | Meaning | What happens |
 |------|---------|--------------|
 | `rate_limited` | The account's per-minute window is full | Waited out: the provider's own hint (`Retry-After`, `retry-after-ms`, OpenAI's `x-ratelimit-reset-*`, "try again in 6s", Gemini's `retryDelay`), else 4, 8, 16, 32, 32 s with jitter, up to `LLM_RATE_LIMIT_MAX_WAIT_S` (default 120 s) per call, counted in wall-clock time from the call's start, so the time the provider SDK spends on its own retries counts too. These waits do not count against `max_attempts`. |
-| `quota_exhausted` | No credit (`insufficient_quota`), a daily quota, Moonshot's account quota, Zhipu's "Insufficient balance" | Not retried: no wait clears it |
+| `quota_exhausted` | No credit (`insufficient_quota`), a daily quota, Moonshot's account quota, Zhipu's "Insufficient balance", and any HTTP 402 (DeepSeek's "Insufficient Balance", OpenRouter's credits) | Not retried: no wait clears it |
 | `request_too_large` | One request bigger than the per-minute token limit | Not retried |
 
 Other transient errors (connection, timeout, 5xx, also read from the error's status) keep 3 attempts with 1 s and 2 s waits. An Agent in the Loop error is never retried (`no_retry`). The SDKs' own quick retries (OpenAI 2, Anthropic 5) run inside each attempt.

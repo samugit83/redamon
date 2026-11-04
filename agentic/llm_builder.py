@@ -270,7 +270,8 @@ def provider_error_kind(exc: BaseException):
 
     `rate_limited` clears by waiting. `quota_exhausted` (no credit, a daily
     quota) and `request_too_large` (one request over the per-minute limit)
-    never do. A fixed word, so it may reach the browser where the text may not.
+    never do. A 402 is `quota_exhausted` too: DeepSeek and OpenRouter answer
+    "no credit" with Payment Required instead of a 429. A fixed word, so it may reach the browser where the text may not.
     An Agent in the Loop error is never one: it is not a provider's answer.
     """
     if getattr(exc, "no_retry", False):
@@ -289,6 +290,8 @@ def provider_error_kind(exc: BaseException):
             limited = True
         texts.append(str(current).lower())
     text = " ".join(texts)
+    if status == 402:
+        return "quota_exhausted"
     # The words decide only when no status does: a 400 or 403 that mentions a
     # rate limit is that status's error, and waiting two minutes would not fix it.
     if not limited and (status is not None
