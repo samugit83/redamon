@@ -22,6 +22,22 @@ RETIRED_DOMAIN_RUN_PROPS = ("target", "filtered_mode", "wildcard_mode", "subdoma
                             "modules_executed", "anonymous_mode", "bruteforce_mode", "scan_type")
 
 
+def _unrecognized_quiet_session(driver):
+    """A session that does not log UNRECOGNIZED notifications (01N52).
+
+    `ip_mode` is written only by an IP-mode scan, so on a database that never
+    ran one Neo4j does not know the key and warns on every read of it, though
+    `coalesce(d.ip_mode, false)` handles the absence on purpose. Scoped to the
+    one query that reads it, so a real typo elsewhere still warns.
+    """
+    try:
+        from neo4j import NotificationDisabledClassification
+    except ImportError:  # pragma: no cover - an older driver logs the warning
+        return driver.session()
+    return driver.session(notifications_disabled_classifications=[
+        NotificationDisabledClassification.UNRECOGNIZED])
+
+
 def _merge_unique(existing: list, new: list) -> list:
     out = list(existing)
     for item in new:
@@ -176,7 +192,7 @@ class DomainMixin:
         related = sorted({str(n).strip().lower() for n in related or [] if str(n).strip()})
         if not related:
             return []
-        with self.driver.session() as session:
+        with _unrecognized_quiet_session(self.driver) as session:
             record = session.run(
                 """
                 MATCH (d:Domain {user_id: $uid, project_id: $pid})

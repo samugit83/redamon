@@ -81,6 +81,16 @@ class TestQuery(unittest.TestCase):
         from graph_db import Neo4jClient
         self.assertIs(Neo4jClient.legacy_domain_nodes, DomainMixin.legacy_domain_nodes)
 
+    def test_the_absent_ip_mode_key_logs_no_warning(self):
+        # A database that never ran an IP-mode scan has no `ip_mode` key, and
+        # Neo4j's 01N52 notification otherwise floods every partial-recon log.
+        from neo4j import NotificationDisabledClassification
+        client, _ = _mock_client([])
+        client.legacy_domain_nodes('u', 'p', [], ['acme.test'])
+        self.assertEqual(
+            client.driver.session.call_args.kwargs['notifications_disabled_classifications'],
+            [NotificationDisabledClassification.UNRECOGNIZED])
+
     def test_no_related_name_sends_no_query(self):
         client, session = _mock_client(['x'])
         self.assertEqual(client.legacy_domain_nodes('u', 'p', ['a.test'], []), [])
