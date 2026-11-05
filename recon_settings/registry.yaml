@@ -2571,8 +2571,8 @@ fields:
     meaning: >-
       Engine for the FFuf extension picker: false uses the LLM in aiPipelineModel,
       true uses TypeSafe AI Jev (model jev-1.13.0). Takes effect only when
-      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev token
-      on the project owner's account; without one the hook uses its static
+      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev provider
+      selected for the project (jevProviderId); without one the hook uses its static
       fallback. Jev picks only from a fixed 40-extension catalog.
   ffufAutoCalibrate:
     tool: ffuf
@@ -2676,8 +2676,8 @@ fields:
       Jev, per discovered directory, whether it is likely to hold sensitive,
       administrative or application content, and FFuf fuzzes the directories Jev
       ranks highest. Takes effect only when aiInPipeline is true, and
-      aiInPipeline does not reset it. Needs a Jev token on the project owner's
-      account; without one the random pick is used. Jev only ranks the
+      aiInPipeline does not reset it. Needs a Jev provider selected for the project
+      (jevProviderId); without one the random pick is used. Jev only ranks the
       directories the crawl found, and the cap keeps the same number either way.
       Jev's pick is kept in the recon output next to the deterministic one.
   ffufMatchCodes:
@@ -3897,7 +3897,7 @@ fields:
       likely to have a rich web application surface, and Hakrawler crawls the
       promising hosts first, so under hakrawlerMaxUrls they are reached before
       the cap. Takes effect only when aiInPipeline is true, and aiInPipeline does
-      not reset it. Needs a Jev token on the project owner's account; without one
+      not reset it. Needs a Jev provider selected for the project (jevProviderId); without one
       the alphabetical order is used. Ordering only: every seed stays in the
       list, and partial recon keeps the alphabetical order. Jev's order is kept
       in the recon output next to the alphabetical one.
@@ -4118,8 +4118,8 @@ fields:
       domain, a default install page, a placeholder or an error page, and calls
       it an app otherwise. A deterministic pre-filter supplies the label for any
       page Jev gives no answer for. Takes effect only when aiInPipeline is true,
-      and aiInPipeline does not reset it. Needs a Jev token on the project
-      owner's account; without one only the pre-filter labels. The label is
+      and aiInPipeline does not reset it. Needs a Jev provider selected for the
+      project (jevProviderId); without one only the pre-filter labels. The label is
       written onto the page's Endpoint in the graph (page_class) and changes
       nothing about what is scanned. No traffic to the target: at most 300
       distinct pages per scan, within 60 seconds.
@@ -6264,8 +6264,8 @@ fields:
     meaning: >-
       Engine for the Nuclei tag selector: false uses the LLM in aiPipelineModel,
       true uses TypeSafe AI Jev (model jev-1.13.0). Takes effect only when
-      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev token
-      on the project owner's account; without one the hook uses its static
+      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev provider
+      selected for the project (jevProviderId); without one the hook uses its static
       fallback.
   nucleiAutoUpdateTemplates:
     tool: nuclei
@@ -7232,8 +7232,8 @@ fields:
       asks nothing, true asks whether it describes a transient failure that a
       second run could fix. The deterministic checks always run and record such
       a result as a coverage gap whatever this says. Takes effect only when
-      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev token
-      on the project owner's account. At most 20 questions per run, with header
+      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev provider
+      selected for the project (jevProviderId). At most 20 questions per run, with header
       values redacted. The verdict (transient or permanent, with its confidence)
       is kept in the recon output next to the coverage gap; no tool is re-run.
   roeAllowAccountLockout:
@@ -8210,7 +8210,7 @@ fields:
       route_jev_privacy. It never drops a floor route and never invents one, and
       when Jev cannot answer the order is the deterministic one. Takes effect only
       when aiInPipeline and routeExposureEnabled are both true, and aiInPipeline does
-      not reset it. Needs a Jev token on the project owner's account. At most 400 routes
+      not reset it. Needs a Jev provider selected for the project (jevProviderId). At most 400 routes
       per scan, sent as path, method, a closed category and four flags.
   routeExposureJevWallCheck:
     tool: route_exposure
@@ -8230,7 +8230,7 @@ fields:
       confidence 70 or more) last in the order the agent confirms; it never drops a
       lead. The page body reaches Jev masked and capped. Takes effect only when
       aiInPipeline and routeExposureEnabled are both true, and aiInPipeline does not
-      reset it. Needs a Jev token on the project owner's account. At most 100 pages
+      reset it. Needs a Jev provider selected for the project (jevProviderId). At most 100 pages
       per scan, 4 per call, within a 60-second budget.
   routeExposureJevAssess:
     tool: route_exposure
@@ -8251,7 +8251,7 @@ fields:
       a lead Jev reads as public content at confidence 70 or more last. It never
       drops a lead and never rewrites its route class. Takes effect only when
       aiInPipeline and routeExposureEnabled are both true, and aiInPipeline does not
-      reset it. Needs a Jev token on the project owner's account. At most 200 leads
+      reset it. Needs a Jev provider selected for the project (jevProviderId). At most 200 leads
       per scan, one Jev request each, 4 per call, within a
       60-second budget.
   scaIntelCorrelationEnabled:
@@ -8809,7 +8809,7 @@ fields:
       signatures matched. It never drops a candidate and never changes the
       format the signatures matched. Takes effect only when aiInPipeline and
       serializedScanEnabled are both true, and aiInPipeline does not reset it.
-      Needs a Jev token on the project owner's account; without one, or for a
+      Needs a Jev provider selected for the project (jevProviderId); without one, or for a
       blob Jev cannot answer, the candidates stand exactly as the signatures
       flagged them. No traffic to the target: at most 200 distinct blobs per
       scan, request-side ones first, within a 60-second budget checked between
@@ -9543,8 +9543,8 @@ fields:
     meaning: >-
       Engine for the takeover disambiguator: false uses the LLM in aiPipelineModel,
       true uses TypeSafe AI Jev (model jev-1.13.0). Takes effect only when
-      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev token
-      on the project owner's account; without one the hook uses its static
+      aiInPipeline is true, and aiInPipeline does not reset it. Needs a Jev provider
+      selected for the project (jevProviderId); without one the hook uses its static
       fallback.
   takeoverCertValidationEnabled:
     tool: takeover
@@ -10464,8 +10464,8 @@ fields:
     meaning: >-
       Engine for the WAF classifier: false uses the LLM in aiPipelineModel, true
       uses TypeSafe AI Jev (model jev-1.13.0). Takes effect only when aiInPipeline
-      is true, and aiInPipeline does not reset it. Needs a Jev token on the
-      project owner's account; without one the hook uses its static fallback.
+      is true, and aiInPipeline does not reset it. Needs a Jev provider selected for
+      the project (jevProviderId); without one the hook uses its static fallback.
     form_section: "SecurityChecksSection"
   wappalyzerAutoUpdate:
     tool: wappalyzer
