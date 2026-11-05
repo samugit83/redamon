@@ -1,0 +1,44 @@
+# RedAmon ZAP Ajax Spider lab: routes only a browser can find, a reflective
+# catch-all, and a third host for the seed cap. Start it with
+# `docker compose up -d`; drive the scan with e2e_zap_ajax.py.
+#
+# 192.88.95.0/24 sits in the deprecated 6to4 relay prefix, like the other recon
+# labs: Python's SSRF guard counts it as global, so the JS fetchers accept it.
+# Scans run with host networking and reach the lab over the bridge route; no
+# host port is published and nothing leaves the host.
+
+name: redamon-zap-ajax-lab
+
+x-web: &web
+  image: nginx:alpine
+  restart: unless-stopped
+  mem_limit: 64m
+  pids_limit: 64
+  cpus: 0.5
+  read_only: true
+  tmpfs: ["/var/cache/nginx", "/var/run", "/tmp"]
+
+services:
+  spa:
+    <<: *web
+    container_name: zaplab-spa
+    volumes: ["./site:/usr/share/nginx/html:ro", "./nginx/spa.conf:/etc/nginx/conf.d/default.conf:ro"]
+    networks: { lab: { ipv4_address: 192.88.95.10 } }
+
+  catchall:
+    <<: *web
+    container_name: zaplab-catchall
+    volumes: ["./nginx/catchall.conf:/etc/nginx/conf.d/default.conf:ro"]
+    networks: { lab: { ipv4_address: 192.88.95.11 } }
+
+  spa-b:
+    <<: *web
+    container_name: zaplab-spa-b
+    volumes: ["./site:/usr/share/nginx/html:ro", "./nginx/spa.conf:/etc/nginx/conf.d/default.conf:ro"]
+    networks: { lab: { ipv4_address: 192.88.95.12 } }
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config: [{ subnet: 192.88.95.0/24 }]
