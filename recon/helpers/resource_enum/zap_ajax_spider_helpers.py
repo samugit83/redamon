@@ -537,12 +537,19 @@ def run_zap_ajax_spider(
     seed_cap = _effective_seed_cap(max_seeds)
     capped_seeds = _cap_zap_seeds(seeds, seed_cap)
     if len(capped_seeds) != len(seeds):
-        # A host that lost every seed was not re-checked this run: note it, so
-        # the run reports partial coverage and the prune keeps its endpoints.
+        # A host that lost every seed was not crawled by ZAP this run, though
+        # the other crawlers reached it: record it for this source only, with
+        # the cap as the reason, so the run reports partial coverage and the
+        # prune keeps that host's endpoints (js_recon's file cap does the same).
         dropped_hosts = ({_cb.host_key(s) for s in seeds}
-                         - {_cb.host_key(s) for s in capped_seeds})
-        for host in dropped_hosts:
-            _scope.note_host_skipped(host)
+                         - {_cb.host_key(s) for s in capped_seeds}) - {""}
+        if dropped_hosts:
+            try:
+                _cb.note_degraded("resource_enum", hosts=sorted(dropped_hosts),
+                                  host_source="resource_enum", source_only_hosts=True,
+                                  reason=f"ZAP seed cap ({seed_cap})")
+            except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+                pass
         metadata["seeds_dropped_by_cap"] = len(seeds) - len(capped_seeds)
         metadata["hosts_dropped_by_cap"] = len(dropped_hosts)
         metadata["seed_cap"] = seed_cap

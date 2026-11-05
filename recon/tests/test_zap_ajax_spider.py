@@ -476,22 +476,27 @@ def test_the_seed_cap_gives_every_host_its_base_url_before_any_second_seed(monke
     assert meta["seed_cap"] == 10
 
 
-def test_hosts_the_cap_leaves_out_are_counted_and_noted_as_skipped(monkeypatch):
-    """A host the cap left uncrawled was not re-checked, so the run must say so
-    (and the prune must keep its endpoints) instead of treating it as clean."""
+def test_hosts_the_cap_leaves_out_are_recorded_with_the_cap_as_the_reason(monkeypatch):
+    """A host the cap left uncrawled was not re-checked by ZAP, so the run must
+    say so (and the prune must keep its endpoints) instead of treating it as
+    clean, and must not call it unreachable: the other crawlers reached it."""
     from recon.helpers import circuit_breaker
 
     zap = _load_zap_module()
     monkeypatch.setattr(zap.subprocess, "run", _DockerRecorder())
-    noted = []
-    monkeypatch.setattr(circuit_breaker.ReportScope, "note_host_skipped",
-                        lambda self, key: noted.append(key))
+    notes = []
+    monkeypatch.setattr(circuit_breaker, "note_degraded", lambda module, **kw: notes.append((module, kw)))
     seeds = [f"https://h{i:02d}.example.com/" for i in range(12)]
 
     _, meta = _run_spider(zap, seeds, max_seeds=10)
 
     assert meta["hosts_dropped_by_cap"] == 2
-    assert sorted(noted) == ["h10.example.com:443", "h11.example.com:443"]
+    assert notes == [("resource_enum", {
+        "hosts": ["h10.example.com:443", "h11.example.com:443"],
+        "host_source": "resource_enum",
+        "source_only_hosts": True,
+        "reason": "ZAP seed cap (10)",
+    })]
 
 
 def test_a_zero_or_invalid_seed_cap_falls_back_to_the_default_not_to_no_cap(monkeypatch):
