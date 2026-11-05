@@ -77,6 +77,10 @@ export enum MessageType {
   // Agent in the Loop: who answers the run's model calls right now. Sent only
   // for a run whose model is the loop model, never persisted.
   LOOP_STATUS = 'loop_status',
+
+  // A model call waits for the provider's rate limit to clear before its next
+  // try. Sent only, never persisted.
+  RATE_LIMIT_WAIT = 'rate_limit_wait',
 }
 
 /**
@@ -403,6 +407,13 @@ export interface LoopStatusPayload {
   sinceSeconds: number
 }
 
+/** A rate-limit wait: `seconds` before retry number `retry` of a `purpose` call. */
+export interface RateLimitWaitPayload {
+  seconds: number
+  retry: number
+  purpose: string
+}
+
 export interface ThinkingPayload {
   iteration: number
   phase: string
@@ -525,6 +536,10 @@ export interface ErrorPayload {
   error_class?: string
   /** The model provider's HTTP status, when the failure came from it. */
   provider_status?: number
+  /** A provider 429's kind: rate_limited, quota_exhausted or request_too_large. */
+  provider_error_kind?: string
+  /** Seconds the agent waited for the rate limit to clear before giving up. */
+  rate_limit_waited_s?: number
   http_status?: number
   /** The invalid frame's field paths, never their values. */
   fields?: string[]

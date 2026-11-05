@@ -717,7 +717,8 @@ class CodeFixOrchestrator:
             for t in CODEFIX_TOOLS
         ])
 
-        response = await llm.ainvoke(lc_messages)
+        from orchestrator_helpers.llm_retry import retry_llm_call
+        response = await retry_llm_call(llm, lc_messages, label="cypherfix codefix")
 
         result = {
             "content": (

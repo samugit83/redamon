@@ -2379,8 +2379,8 @@ async def test_llm_provider(body: LlmProviderTestRequest):
         elif ptype == "anthropic":
             # Connection check uses a current, valid alias (no date suffix).
             # Dated snapshots like claude-sonnet-4-20250514 are deprecated and 404
-            # once retired. claude-opus-4-6 still accepts the temperature param.
-            llm = setup_llm("claude-opus-4-6", anthropic_api_key=body.apiKey)
+            # once retired.
+            llm = setup_llm("claude-opus-5", anthropic_api_key=body.apiKey)
         elif ptype == "openrouter":
             llm = setup_llm("openrouter/openai/gpt-4o-mini", openrouter_api_key=body.apiKey)
         elif ptype == "deepseek":
@@ -2522,9 +2522,10 @@ async def test_llm_provider(body: LlmProviderTestRequest):
         from orchestrator_helpers.llm_retry import retry_llm_call
         # Same self-heal as the agent loop: a model that rejects `temperature` or
         # `reasoning_effort` is retried once without it instead of failing the test.
+        # A test button answers at once, so a rate limit is reported, not waited out.
         response = await retry_llm_call(
             llm, [HumanMessage(content="Say hello in one sentence.")],
-            label="provider-test", max_attempts=1,
+            label="provider-test", max_attempts=1, rate_limit_budget_s=0,
         )
         from orchestrator_helpers import normalize_content
         text = normalize_content(response.content).strip()

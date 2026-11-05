@@ -152,6 +152,9 @@ class MessageType(str, Enum):
     # Agent in the Loop: who answers the run's model calls right now. Sent, never
     # persisted, and only for a run whose model is the loop model.
     LOOP_STATUS = "loop_status"
+    # A model call is waiting for the provider's rate limit to clear before its
+    # next try. Sent, never persisted: a pause, not part of the conversation.
+    RATE_LIMIT_WAIT = "rate_limit_wait"
 
 
 # =============================================================================
@@ -729,6 +732,12 @@ class StreamingCallback:
         """Agent in the Loop status for the drawer. Sent only: a status is live
         state, and it carries no prompt or answer text."""
         await self.connection.send_message(MessageType.LOOP_STATUS, payload)
+
+    async def on_rate_limit_wait(self, seconds: int, retry: int, purpose: str = "other"):
+        """The run waits `seconds` for the provider's rate limit before retry
+        number `retry` of a `purpose` model call (think, report, ...). Sent only."""
+        await self.connection.send_message(
+            MessageType.RATE_LIMIT_WAIT, {"seconds": seconds, "retry": retry, "purpose": purpose})
 
     def _persist(self, msg_type: str, data: dict,
                  *, member_id_key: Optional[str] = None,

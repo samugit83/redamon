@@ -758,25 +758,26 @@ Cypher Query:"""
         from agent_in_the_loop.purpose import llm_purpose
         llm = current_llm.get() or self.llm
         with llm_purpose("cypher"):
-            call = retry_llm_call(
-                llm,
-                prompt,
-                label="query_graph text-to-cypher",
-            )
             # An Agent in the Loop step has its own deadline (LOOP_STEP_DEADLINE_S):
-            # a person's agent may well need more than two minutes.
+            # a person's agent may well need more than two minutes. The timeout
+            # bounds each attempt, not the waits for a provider's rate limit
+            # between them, which would otherwise read as a slow model.
             timeout = 0 if is_loop_llm(llm) else _cypher_generation_timeout()
-            if timeout:
-                try:
-                    response = await asyncio.wait_for(call, timeout)
-                except asyncio.TimeoutError:
-                    raise CypherGenerationTimeout(
-                        f"Cypher generation exceeded {timeout:g}s "
-                        f"(CYPHER_GENERATION_TIMEOUT). The configured model is too "
-                        f"slow for this question; simplify it or switch model."
-                    )
-            else:
-                response = await call
+            try:
+                response = await retry_llm_call(
+                    llm,
+                    prompt,
+                    label="query_graph text-to-cypher",
+                    attempt_timeout_s=timeout or None,
+                )
+            except asyncio.TimeoutError:
+                if not timeout:
+                    raise
+                raise CypherGenerationTimeout(
+                    f"Cypher generation exceeded {timeout:g}s "
+                    f"(CYPHER_GENERATION_TIMEOUT). The configured model is too "
+                    f"slow for this question; simplify it or switch model."
+                )
         from orchestrator_helpers.json_utils import normalize_content
         return self._extract_cypher_from_response(normalize_content(response.content))
 

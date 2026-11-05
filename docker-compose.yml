@@ -890,6 +890,9 @@ services:
       WORKSPACE_URL_IMPORT_ENABLED: ${WORKSPACE_URL_IMPORT_ENABLED:-true}
       # The scan dispatcher's disk floor: imports never take the disk below it.
       JOB_QUEUE_MIN_FREE_DISK: ${JOB_QUEUE_MIN_FREE_DISK:-10737418240}
+      # Seconds one model call waits, in total, for a provider's rate limit (429)
+      # to clear before it fails; 0 turns the waiting off (llm_retry.py).
+      LLM_RATE_LIMIT_MAX_WAIT_S: ${LLM_RATE_LIMIT_MAX_WAIT_S:-120}
       # Agent in the Loop: an external MCP client answers the model calls of a
       # chat run (agentic/agent_in_the_loop). On by default; the webapp reads
       # the same switch. The tunables are bounded in code (a bad value warns).

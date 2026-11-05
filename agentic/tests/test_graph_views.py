@@ -373,10 +373,14 @@ class TestCypherGenerationTimeout(unittest.TestCase):
     def test_slow_generation_raises_timeout(self):
         self._set_env("0.05")
         started = asyncio.Event()
+        bounds = []
 
-        async def _hang(llm, prompt, label=None):
+        async def _hang(llm, prompt, label=None, attempt_timeout_s=None):
+            # retry_llm_call bounds each attempt (so a rate-limit wait between
+            # attempts is not read as a slow model); emulate that here.
+            bounds.append(attempt_timeout_s)
             started.set()
-            await asyncio.sleep(30)
+            await asyncio.wait_for(asyncio.sleep(30), attempt_timeout_s)
             raise AssertionError("should have been cancelled")
 
         async def _run():
@@ -387,11 +391,14 @@ class TestCypherGenerationTimeout(unittest.TestCase):
             asyncio.run(_run())
         self.assertIn("0.05s", str(ctx.exception))
         self.assertTrue(started.is_set(), "the LLM call should have been started")
+        self.assertEqual(bounds, [0.05])
 
     def test_fast_generation_is_not_timed_out(self):
         self._set_env("30")
+        bounds = []
 
-        async def _fast(llm, prompt, label=None):
+        async def _fast(llm, prompt, label=None, attempt_timeout_s=None):
+            bounds.append(attempt_timeout_s)
             return types.SimpleNamespace(content="MATCH (p:Package) RETURN p LIMIT 10")
 
         async def _run():
@@ -399,11 +406,14 @@ class TestCypherGenerationTimeout(unittest.TestCase):
                 return await self._manager()._generate_cypher("count the packages")
 
         self.assertEqual(asyncio.run(_run()), "MATCH (p:Package) RETURN p LIMIT 10")
+        self.assertEqual(bounds, [30.0])
 
     def test_disabled_timeout_still_returns(self):
         self._set_env("0")
+        bounds = []
 
-        async def _fast(llm, prompt, label=None):
+        async def _fast(llm, prompt, label=None, attempt_timeout_s=None):
+            bounds.append(attempt_timeout_s)
             return types.SimpleNamespace(content="MATCH (p:Package) RETURN p LIMIT 10")
 
         async def _run():
@@ -411,6 +421,7 @@ class TestCypherGenerationTimeout(unittest.TestCase):
                 return await self._manager()._generate_cypher("count the packages")
 
         self.assertEqual(asyncio.run(_run()), "MATCH (p:Package) RETURN p LIMIT 10")
+        self.assertEqual(bounds, [None], "0 means no bound at all")
 
 
 if __name__ == '__main__':

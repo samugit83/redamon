@@ -124,10 +124,12 @@ async def generate_report_narratives(
     condensed = _condense_for_llm(data)
 
     try:
-        response = await llm.ainvoke([
+        # The webapp waits 300 s for the narratives, room for a rate-limit wait.
+        from orchestrator_helpers.llm_retry import retry_llm_call
+        response = await retry_llm_call(llm, [
             SystemMessage(content=REPORT_SYSTEM_PROMPT),
             HumanMessage(content="Security assessment data:\n" + wrap_untrusted(json.dumps(condensed, indent=2), "GRAPH_DATA") + "\n\nGenerate the report section narratives."),
-        ])
+        ], label="report narratives")
 
         from orchestrator_helpers import normalize_content
         content = normalize_content(response.content).strip()

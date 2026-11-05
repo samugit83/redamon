@@ -128,6 +128,25 @@ describe('agent ERROR frames show their cause (G-5, G-54, note 8)', () => {
       .toBe('Internal error')
   })
 
+  test('a 429 says which kind it was and what to do', () => {
+    const base = { message: 'The agent run failed', code: 'agent_run_failed', error_class: 'OpenAIRateLimitError', provider_status: 429 }
+    expect(agentErrorText({ ...base, provider_error_kind: 'rate_limited', rate_limit_waited_s: 118 }))
+      .toBe("The agent run failed (agent_run_failed · OpenAIRateLimitError · provider HTTP 429 · waited 118 s). The model provider's rate limit did not clear. Send the message again in a minute, or use a plan or model with a higher limit.")
+    expect(agentErrorText({ ...base, provider_error_kind: 'quota_exhausted' }))
+      .toBe('The agent run failed (agent_run_failed · OpenAIRateLimitError · provider HTTP 429). The model provider account has no credit or quota left. Add credit, or pick another model.')
+    expect(agentErrorText({ ...base, provider_error_kind: 'request_too_large' }))
+      .toMatch(/\. The request is larger than the provider's per-minute limit for this account\./)
+  })
+
+  test('an unknown kind or a malformed wait adds nothing', () => {
+    const base = { message: 'The agent run failed', code: 'agent_run_failed', error_class: 'RateLimitError', provider_status: 429 }
+    for (const extra of [{ provider_error_kind: 'toString' }, { provider_error_kind: '<b>' },
+      { rate_limit_waited_s: -3 }, { rate_limit_waited_s: 1.5 }, { rate_limit_waited_s: '118' }]) {
+      expect(agentErrorText({ ...base, ...extra }))
+        .toBe('The agent run failed (agent_run_failed · RateLimitError · provider HTTP 429)')
+    }
+  })
+
   function handler() {
     let items: unknown[] = []
     const setChatItems = vi.fn((v: unknown) => { items = typeof v === 'function' ? (v as (p: unknown[]) => unknown[])(items) : v as unknown[] })

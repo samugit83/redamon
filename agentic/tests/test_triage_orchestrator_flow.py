@@ -690,12 +690,29 @@ class _RefusingLLM:
         raise self.error
 
 
+class _RateLimitedOnce:
+    """A provider whose first call meets a full per-minute window, then answers."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, _messages):
+        from langchain_core.messages import AIMessage
+        self.calls += 1
+        if self.calls == 1:
+            raise _RateLimited("Rate limit reached for key sk-live-123")
+        return AIMessage(content="[]")
+
+
 class TestAFailedReviewIsReported(unittest.TestCase):
     """G-6: a run whose reviews all failed used to complete looking clean."""
 
     def test_the_complete_event_counts_failed_batches_with_the_provider_status(self):
+        import unittest.mock as mock
         h = Harness(llm=_RefusingLLM(_RateLimited("quota for key sk-live-123")))
-        h.run(dict(REVIEW_SETTINGS))
+        # No rate-limit waiting: every review fails at its first refusal.
+        with mock.patch.dict(os.environ, {"LLM_RATE_LIMIT_MAX_WAIT_S": "0"}):
+            h.run(dict(REVIEW_SETTINGS))
         self.assertEqual(h.client.finished["status"], "completed")
         self.assertGreaterEqual(h.callback.completed["review_failed"], 1)
         self.assertEqual(h.callback.completed["provider_status"], 429)
@@ -703,6 +720,17 @@ class TestAFailedReviewIsReported(unittest.TestCase):
         self.assertNotIn("sk-live-123", json.dumps(h.callback.completed))
         self.assertEqual(h.client.finished["summary"]["review_failed"],
                          h.callback.completed["review_failed"])
+
+    def test_a_rate_limit_that_clears_is_waited_out_not_reported(self):
+        import unittest.mock as mock
+        from orchestrator_helpers.llm_retry import RateLimitWaiter
+        llm = _RateLimitedOnce()
+        h = Harness(llm=llm)
+        with mock.patch.object(RateLimitWaiter, "next_wait_s", return_value=0.0):
+            h.run(dict(REVIEW_SETTINGS))
+        self.assertGreaterEqual(llm.calls, 2)
+        self.assertEqual(h.callback.completed.get("review_failed", 0), 0)
+        self.assertNotIn("provider_status", h.callback.completed)
 
     def test_a_model_that_could_not_be_set_up_is_reported(self):
         h = Harness(llm=None)

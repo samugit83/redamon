@@ -1209,6 +1209,12 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 | `AGENT_PORT` | `8090` | Host port for the agent API (maps to internal :8080) |
 | `RECON_ORCH_PORT` | `8010` | Host port for the recon orchestrator |
 
+### Model provider rate limits (agent)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_RATE_LIMIT_MAX_WAIT_S` | `120` | Seconds one model call waits, in total, for a provider's rate limit (HTTP 429) to clear before it gives up. Limits are counted per minute, so keep it above 60; `0` fails at the first 429. A 429 that waiting cannot fix (no credit, a daily quota, one request over the limit) is never waited for. See README.AGENTIC_SYSTEM, *Model Provider Errors and Rate Limits*. |
+
 ### Agent Workspace uploads and URL import (agent)
 
 Read by the agent with safe fallbacks: a size or count that is not a positive integer falls back to its default, so a typo can never disable a cap. Every one has a compose default; `.env` needs none of them.

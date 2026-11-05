@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from state import AttackPathClassification
 from prompts.classification import build_classification_prompt
 from .json_utils import normalize_content, extract_json
-from .llm_retry import heal_llm_param_error
+from .llm_retry import RateLimitWaiter, ainvoke_through_rate_limits, heal_llm_param_error
 from agent_in_the_loop.purpose import llm_purpose
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,14 @@ async def classify_attack_path(
 
     last_error = None
     healed: set[str] = set()
+    # Its 100 ms backoff suits a bad answer, not a full rate-limit window; one
+    # waiter for every attempt keeps that wait bounded.
+    rate_limits = RateLimitWaiter("classify attack path")
 
     for attempt in range(max_retries):
         try:
             with llm_purpose("classify", attempt=attempt):
-                response = await llm.ainvoke(messages)
+                response = await ainvoke_through_rate_limits(llm, messages, waiter=rate_limits)
             json_str = extract_json(normalize_content(response.content))
 
             if json_str:

@@ -36,6 +36,12 @@ current_llm: ContextVar[Optional[object]] = ContextVar("current_llm", default=No
 current_llm_purpose: ContextVar[dict] = ContextVar(
     "current_llm_purpose", default={"purpose": "other"},
 )
+# The chat run's StreamingCallback.on_rate_limit_wait, set around the graph by
+# the orchestrator: a model call that waits for a provider's rate limit says so
+# in the drawer (orchestrator_helpers.llm_retry). None outside a chat run.
+current_llm_wait_listener: ContextVar[Optional[object]] = ContextVar(
+    "current_llm_wait_listener", default=None,
+)
 
 
 def set_tenant_context(user_id: str, project_id: str, session_id: str = "") -> None:

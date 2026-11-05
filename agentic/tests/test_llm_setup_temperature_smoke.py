@@ -78,5 +78,35 @@ class SetupLlmTemperatureSmokeTests(unittest.TestCase):
         self.assertIsNone(llm.temperature)
 
 
+class AnthropicApiVersionTests(unittest.TestCase):
+    """anthropic 2.x sends API version 2026-10-21, on which every model answers
+    `temperature` with a 400 ("temperature: Extra inputs are not permitted").
+    claude-opus-4-6, the default agent model, failed every call that way."""
+
+    def _sent_temperature(self, llm):
+        """The temperature the request JSON carries. langchain-anthropic moves it
+        into `extra_body` for SDK 2.x, which still sends it."""
+        from langchain_core.messages import HumanMessage
+        payload = llm._get_request_payload([HumanMessage(content="hi")])
+        return payload.get("temperature", (payload.get("extra_body") or {}).get("temperature"))
+
+    def test_anthropic_calls_send_no_temperature_on_api_version_2026_10_21(self):
+        import anthropic
+        if int(anthropic.__version__.split(".")[0]) < 2:
+            self.skipTest(f"anthropic {anthropic.__version__} still sends 2023-06-01")
+        custom = {"providerType": "anthropic", "apiKey": "fake", "modelIdentifier": "claude-sonnet-4-6"}
+        for llm in (setup_llm("claude-opus-4-6", anthropic_api_key="fake"),
+                    setup_llm("claude-haiku-4-5", anthropic_api_key="fake"),
+                    setup_llm("custom/row1", custom_llm_config=custom)):
+            with self.subTest(model=llm.model):
+                self.assertIsNone(self._sent_temperature(llm))
+
+    def test_an_sdk_on_2023_06_01_keeps_the_per_model_rule(self):
+        from unittest import mock
+        with mock.patch("anthropic.__version__", "1.9.0"):
+            self.assertEqual(self._sent_temperature(setup_llm("claude-opus-4-6", anthropic_api_key="fake")), 0)
+            self.assertIsNone(self._sent_temperature(setup_llm("claude-opus-5", anthropic_api_key="fake")))
+
+
 if __name__ == "__main__":
     unittest.main()

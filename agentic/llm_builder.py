@@ -63,6 +63,30 @@ _BAD_KEY_MARKERS = ("API_KEY_INVALID", "API key not valid")
 #: which also covers transient-looking request errors, so the message decides.
 _BAD_MODEL_ID_MARKER = "model identifier is invalid"
 
+#: A provider telling us to slow down. The status decides when the error
+#: carries one; the class names and phrases catch the ones whose status sits
+#: where we do not look (Gemini's RESOURCE_EXHAUSTED, Qwen's Throttling.*).
+_RATE_LIMIT_CLASS_NAMES = frozenset({
+    "RateLimitError", "ModelRateLimitError", "ThrottlingException",
+    "TooManyRequests", "ResourceExhausted",
+})
+_RATE_LIMIT_PHRASES = (
+    "rate limit", "rate_limit", "too many requests", "throttl",
+    "resource_exhausted", "resource has been exhausted",
+)
+#: AWS names its throttling in the error code, whatever status it sends.
+_AWS_THROTTLING_CODES = frozenset({"ThrottlingException", "TooManyRequestsException"})
+#: A 429 that no wait clears, each tied to a provider's real answer: OpenAI's
+#: `insufficient_quota` (no credit left), Moonshot's `exceeded_current_quota_error`,
+#: Zhipu's 1113 "Insufficient balance", and a daily quota (Gemini's
+#: `...PerDay...` quota ids, OpenAI's "requests per day", OpenRouter's
+#: `free-models-per-day`), which resets tomorrow, not within a minute.
+_QUOTA_EXHAUSTED_PHRASES = ("insufficient_quota", "exceeded_current_quota", "insufficient balance")
+_DAILY_QUOTA = re.compile(r"per[-_ ]?day")
+#: OpenAI's 429 for one request bigger than the account's whole per-minute
+#: token limit: it can never fit, however long we wait.
+_REQUEST_TOO_LARGE_PHRASE = "request too large"
+
 
 class ProvidersUnreachable(RuntimeError):
     """The user's provider list could not be loaded from the webapp."""
@@ -221,6 +245,65 @@ def _http_status_of(exc: BaseException):
     return status if 100 <= status <= 599 else None
 
 
+def _cause_chain(exc: BaseException):
+    """The exception, then what it wraps: LangChain wraps the SDK error, which
+    wraps the HTTP response, so a status can sit two levels down."""
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def provider_status(exc: BaseException):
+    """The first HTTP status found along the cause chain, or None."""
+    for current in _cause_chain(exc):
+        status = _http_status_of(current)
+        if status is not None:
+            return status
+    return None
+
+
+def provider_error_kind(exc: BaseException):
+    """Which kind of 429 a failed model call was, or None when it was not one.
+
+    `rate_limited` clears by waiting. `quota_exhausted` (no credit, a daily
+    quota) and `request_too_large` (one request over the per-minute limit)
+    never do. A 402 is `quota_exhausted` too: DeepSeek and OpenRouter answer
+    "no credit" with Payment Required instead of a 429. A fixed word, so it may reach the browser where the text may not.
+    An Agent in the Loop error is never one: it is not a provider's answer.
+    """
+    if getattr(exc, "no_retry", False):
+        return None
+    limited = False
+    status = None
+    texts = []
+    for current in _cause_chain(exc):
+        current_status = _http_status_of(current)
+        status = status if status is not None else current_status
+        response = getattr(current, "response", None)
+        aws_code = ((response.get("Error") or {}).get("Code")
+                    if isinstance(response, dict) else None)
+        if current_status == 429 or aws_code in _AWS_THROTTLING_CODES or any(
+                base.__name__ in _RATE_LIMIT_CLASS_NAMES for base in type(current).__mro__):
+            limited = True
+        texts.append(str(current).lower())
+    text = " ".join(texts)
+    if status == 402:
+        return "quota_exhausted"
+    # The words decide only when no status does: a 400 or 403 that mentions a
+    # rate limit is that status's error, and waiting two minutes would not fix it.
+    if not limited and (status is not None
+                        or not any(phrase in text for phrase in _RATE_LIMIT_PHRASES)):
+        return None
+    if any(phrase in text for phrase in _QUOTA_EXHAUSTED_PHRASES) or _DAILY_QUOTA.search(text):
+        return "quota_exhausted"
+    if _REQUEST_TOO_LARGE_PHRASE in text:
+        return "request_too_large"
+    return "rate_limited"
+
+
 def provider_error_details(exc: BaseException) -> dict:
     """What a person may see of a provider failure: its class and HTTP status.
 
@@ -228,21 +311,29 @@ def provider_error_details(exc: BaseException) -> dict:
     when it is unknown. The SDK's message is never included: a 401 body can quote
     part of the key and a 400 the prompt. The class is the one that carried the
     status (LangChain and the SDKs wrap it), else the outermost one.
+
+    A 429 adds `provider_error_kind` (see provider_error_kind), and a call that
+    waited for a rate limit to clear adds `rate_limit_waited_s`, set on the
+    exception by orchestrator_helpers.llm_retry when it gave up.
     """
-    seen = set()
-    current = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    out = {}
+    for current in _cause_chain(exc):
         status = _http_status_of(current)
         if status is not None:
+            out["provider_status"] = status
             name = type(current).__name__
-            out = {"provider_status": status}
-            if _SAFE_CLASS_NAME.match(name):
-                out["error_class"] = name
-            return out
-        current = current.__cause__ or current.__context__
-    name = type(exc).__name__
-    return {"error_class": name} if _SAFE_CLASS_NAME.match(name) else {}
+            break
+    else:
+        name = type(exc).__name__
+    if _SAFE_CLASS_NAME.match(name):
+        out["error_class"] = name
+    kind = provider_error_kind(exc)
+    if kind:
+        out["provider_error_kind"] = kind
+    waited = getattr(exc, "rate_limit_waited_s", None)
+    if isinstance(waited, int) and not isinstance(waited, bool) and waited > 0:
+        out["rate_limit_waited_s"] = waited
+    return out
 
 
 def log_provider_error(feature: str, model: str, exc: BaseException) -> None:

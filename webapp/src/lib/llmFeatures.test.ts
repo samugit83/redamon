@@ -17,6 +17,7 @@ import {
   getLlmFeature,
   isFeatureId,
   modelAllowedForFeature,
+  providerFailureDetail,
   readFeatureModelCode,
   type FeatureModelCode,
 } from './llmFeatures'
@@ -115,6 +116,17 @@ describe('error contract', () => {
     expect(featureModelMessage('agent_unreachable')).toBe("The agent service isn't running")
     expect(featureModelMessage('agent_timeout')).toBe('The model took too long, try again')
     expect(featureModelMessage('agent_outdated')).toBe('The agent is older than the webapp: rebuild it')
+  })
+
+  test('a provider failure names its class, status and kind of 429', () => {
+    expect(providerFailureDetail({ error_class: 'RateLimitError', provider_status: 429 }))
+      .toBe('RateLimitError · provider HTTP 429')
+    expect(providerFailureDetail({ error_class: 'RateLimitError', provider_status: 429, provider_error_kind: 'quota_exhausted' }))
+      .toBe('RateLimitError · provider HTTP 429 · no credit or quota left on the provider account')
+    expect(providerFailureDetail({ errorClass: 'ClientError', providerStatus: 429, providerErrorKind: 'rate_limited' }))
+      .toBe('ClientError · provider HTTP 429 · rate limited, try again in a minute')
+    expect(providerFailureDetail({ provider_status: 429, provider_error_kind: 'constructor' }))
+      .toBe('provider HTTP 429')
   })
 
   test('readFeatureModelCode reads a known code only', () => {

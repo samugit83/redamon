@@ -17,6 +17,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from orchestrator_helpers.json_utils import normalize_content, extract_json
 from orchestrator_helpers.llm_retry import (
+    RateLimitWaiter,
+    ainvoke_through_rate_limits,
     heal_llm_param_error,
     is_transient_llm_error,
 )
@@ -218,10 +220,14 @@ async def _invoke_guardrail(llm: Any, user_prompt: str) -> dict[str, Any]:
     # failed after 3 attempts" error message in place of the real cause.
     last_transient: BaseException | None = None
     healed: set[str] = set()
+    # The guardrail is the first call of a run and fails closed: a rate limit
+    # it gave up on in seconds would block the whole chat. Shared by all three
+    # attempts, so the wait stays bounded.
+    rate_limits = RateLimitWaiter("scope guardrail")
     for attempt in range(3):
         try:
             with llm_purpose("scope_guardrail", attempt=attempt):
-                response = await llm.ainvoke(messages)
+                response = await ainvoke_through_rate_limits(llm, messages, waiter=rate_limits)
         except Exception as e:
             # Self-heal (once per param): the model may reject our default
             # `temperature`/`reasoning_effort` with a permanent 400 (OpenAI

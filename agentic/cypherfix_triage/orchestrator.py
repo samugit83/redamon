@@ -1342,7 +1342,10 @@ class TriageOrchestrator:
                 for t in tools
             ])
 
-        response = await llm.ainvoke(lc_messages)
+        # Review and fix-item batches run three at a time, the likeliest to
+        # meet the provider's per-minute limit; a refused batch stays math-only.
+        from orchestrator_helpers.llm_retry import retry_llm_call
+        response = await retry_llm_call(llm, lc_messages, label=f"cypherfix triage {self.project_id}")
 
         result = {
             "content": (

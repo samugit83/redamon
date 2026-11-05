@@ -34,6 +34,7 @@ import { ConnectionStatus, type ConnectedPayload, type LoopStatusPayload } from 
 import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useOptionalProject } from '@/providers/ProjectProvider'
 import { loopDisplay } from './hooks/loopStatus'
+import { useRateLimitWait } from './hooks/rateLimitWait'
 import { useConversations } from '@/hooks/useConversations'
 import { useChatPersistence } from '@/hooks/useChatPersistence'
 import { useToast } from '@/components/ui'
@@ -115,6 +116,8 @@ export function AIAssistantDrawer({
     groupedChatItems,
     resetChatState,
   } = useChatState()
+  // A model call waiting for the provider's rate limit, with its countdown.
+  const { setRateLimitWait, rateLimitWord } = useRateLimitWait(isLoading, sessionId)
   const isLoadingRef = useRef(isLoading)
   isLoadingRef.current = isLoading
 
@@ -287,6 +290,7 @@ export function AIAssistantDrawer({
     pendingApprovalToolId, pendingApprovalWaveId,
     onGraphMutation: onRefetchGraph,
     setLoopStatus,
+    setRateLimitWait,
   })
 
   const {
@@ -612,6 +616,7 @@ export function AIAssistantDrawer({
         handleTimelineToolConfirmation={guardedToolConfirmation}
         handleToolStop={handleToolStop}
         loop={loop}
+        rateLimitWord={rateLimitWord}
       />
 
       <ApprovalDialog
