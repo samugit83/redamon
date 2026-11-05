@@ -164,7 +164,8 @@
         "json_object",
         "attack_skill_config",
         "github_name",
-        "github_repo_list"
+        "github_repo_list",
+        "provider_reference"
       ]
     },
     "read_deny_reason": {

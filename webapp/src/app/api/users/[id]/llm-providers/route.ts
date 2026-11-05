@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { requireUserExists, isForeignKeyViolation } from '@/lib/userScopedWrite'
-import { JEV_MODEL, JEV_PROVIDER_NAME } from '@/lib/llmProviderKinds'
+import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { internalError } from '@/lib/routeErrors'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
-
-class JevAlreadySaved extends Error {}
 
 function maskSecret(value: string): string {
   if (!value || value.length <= 4) return value ? '••••' : ''
@@ -97,19 +94,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const body = await request.json()
 
     const { providerType, name } = body
-    if (!providerType || !name) {
+    if (typeof providerType !== 'string' || !providerType || typeof name !== 'string' || !name.trim()) {
       return NextResponse.json(
         { error: 'providerType and name are required' },
         { status: 400 }
       )
     }
 
-    // A Jev token is one per user and pinned: its model, URL and headers are
-    // never the caller's to choose, so the key can only ever go to TypeSafe.
-    const isJev = providerType === 'jev'
+    const isJev = isJevProvider({ providerType })
     if (isJev) {
       if (typeof body.apiKey !== 'string' || !body.apiKey.trim()) {
-        return NextResponse.json({ error: 'apiKey is required for TypeSafe AI (Jev)' }, { status: 400 })
+        return NextResponse.json({ error: 'apiKey is required for Jev' }, { status: 400 })
       }
     }
 
@@ -138,10 +133,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const data = {
         userId: id,
         providerType,
-        name: isJev ? JEV_PROVIDER_NAME : name,
+        name: name.trim(),
         apiKey: isJev ? body.apiKey.trim() : body.apiKey || '',
-        baseUrl: isJev ? '' : body.baseUrl || '',
-        modelIdentifier: isJev ? JEV_MODEL : body.modelIdentifier || '',
+        baseUrl: body.baseUrl || '',
+        modelIdentifier: body.modelIdentifier || '',
         defaultHeaders: isJev ? {} : body.defaultHeaders || {},
         timeout: body.timeout ?? 120,
         temperature: body.temperature ?? 0,
@@ -153,32 +148,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         awsAccessKeyId: body.awsAccessKeyId || '',
         awsSecretKey: body.awsSecretKey || '',
         awsBearerToken: body.awsBearerToken || '',
+        ...(isJev ? jevPinnedConfig(providerType as 'jev' | 'jev_openrouter') : {}),
     }
 
-    let provider
-    if (isJev) {
-      // One token per user is a rule over a COUNT, and there is no unique index to
-      // hold it (a user may have many rows of the other types). Count and create are
-      // therefore one Serializable transaction: two concurrent saves would otherwise
-      // both read 0 and both create. The loser fails with a serialization error.
-      try {
-        provider = await prisma.$transaction(async tx => {
-          const existingJev = await tx.userLlmProvider.count({ where: { userId: id, providerType: 'jev' } })
-          if (existingJev > 0) throw new JevAlreadySaved()
-          return tx.userLlmProvider.create({ data })
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
-      } catch (e) {
-        if (e instanceof JevAlreadySaved || (e as { code?: string })?.code === 'P2034') {
-          return NextResponse.json(
-            { error: 'A TypeSafe AI (Jev) token is already saved. Edit it instead of adding another.' },
-            { status: 409 },
-          )
-        }
-        throw e
-      }
-    } else {
-      provider = await prisma.userLlmProvider.create({ data })
-    }
+    const provider = await prisma.userLlmProvider.create({ data })
 
     return NextResponse.json(
       maskProvider(provider as unknown as Record<string, unknown>),

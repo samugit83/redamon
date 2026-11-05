@@ -364,6 +364,7 @@ describe('LlmProviderForm Jev branch', () => {
     render(<LlmProviderForm userId="user-1" onSave={vi.fn()} onCancel={vi.fn()} />)
     expect(screen.getByText('Choose Provider Type')).toBeInTheDocument()
     expect(screen.queryByText(/TypeSafe/)).not.toBeInTheDocument()
+    expect(screen.queryByText('OpenRouter (Jev)')).not.toBeInTheDocument()
     expect(screen.getByText('OpenAI')).toBeInTheDocument()
   })
 
@@ -374,7 +375,8 @@ describe('LlmProviderForm Jev branch', () => {
     expect(screen.queryByRole('button', { name: 'Change type' })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('apikey_...')).toBeInTheDocument()
     expect(screen.getByTestId('jev-model')).toHaveTextContent('jev-1.13.0')
-    expect(screen.queryByText('Display Name')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Display Name' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Jev backend' })).toBeEnabled()
     expect(screen.queryByText(/Base URL/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Temperature/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Get API key/ })).toHaveAttribute(
@@ -397,7 +399,7 @@ describe('LlmProviderForm Jev branch', () => {
     expect(url).toBe('/api/users/user-1/llm-providers')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({
-      providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def', modelIdentifier: 'jev-1.13.0',
+      providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def', testMode: 'key',
     })
     await waitFor(() => expect(onSave).toHaveBeenCalled())
   })
@@ -407,7 +409,7 @@ describe('LlmProviderForm Jev branch', () => {
     render(<LlmProviderForm userId="user-1" provider={JEV_ROW} onSave={vi.fn()} onCancel={vi.fn()} />)
 
     fireEvent.change(screen.getByPlaceholderText('apikey_...'), { target: { value: 'apikey_new_key' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Check key (free)' }))
     await waitFor(() => expect(providerCalls(fetchMock)).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }))
     await waitFor(() => expect(providerCalls(fetchMock)).toHaveLength(2))
@@ -420,7 +422,7 @@ describe('LlmProviderForm Jev branch', () => {
     for (const init of [testInit, saveInit]) {
       const body = JSON.parse(init.body as string)
       expect(body).toEqual({
-        providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_new_key', modelIdentifier: 'jev-1.13.0',
+        providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_new_key', testMode: 'key',
       })
     }
   })
@@ -452,7 +454,7 @@ describe('LlmProviderForm inside another <form>', () => {
     const fetchMock = mockFetch({ provider: { ok: true, status: 200, json: async () => ({ success: true }) } })
     const outerSubmit = inOuterForm()
     fireEvent.change(screen.getByPlaceholderText('apikey_...'), { target: { value: 'apikey_abc_def' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Check key (free)' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save token' }))
     await waitFor(() => expect(providerCalls(fetchMock)).toHaveLength(2))
     expect(outerSubmit).not.toHaveBeenCalled()
@@ -475,7 +477,7 @@ describe('LlmProviderForm inside another <form>', () => {
     expect(screen.queryByText(/Add TypeSafe AI \(Jev\) Provider/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('jev-model')).not.toBeInTheDocument()
-    const test = screen.getByRole('button', { name: 'Test Connection' })
+    const test = screen.getByRole('button', { name: 'Check key (free)' })
     expect(test.parentElement).toContainElement(screen.getByRole('button', { name: 'Save token' }))
   })
 
@@ -485,5 +487,31 @@ describe('LlmProviderForm inside another <form>', () => {
     expect(screen.getByText(/Add TypeSafe AI \(Jev\) Provider/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.getByTestId('jev-model')).toHaveTextContent('jev-1.13.0')
+  })
+})
+
+describe('Jev named OpenRouter forms', () => {
+  beforeEach(cleanup)
+  afterEach(cleanup)
+  test('create picker changes backend, resets key and submits the edited name', async () => {
+    const fetchMock = mockFetch({})
+    render(<LlmProviderForm userId="user-1" lockedType="jev" onSave={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('apikey_...'), { target: { value: 'typesafe-key' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Jev backend' }), { target: { value: 'jev_openrouter' } })
+    expect(screen.getByLabelText('OpenRouter Jev API key')).toHaveValue('')
+    expect(screen.getByTestId('jev-model')).toHaveTextContent('typesafe/jev-1.13')
+    expect(screen.getByRole('link', { name: /Get API key/ })).toHaveAttribute('href', 'https://openrouter.ai/settings/keys')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Display Name' }), { target: { value: 'Recon staging' } })
+    fireEvent.change(screen.getByLabelText('OpenRouter Jev API key'), { target: { value: 'openrouter-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Provider' }))
+    await waitFor(() => expect(providerCalls(fetchMock)).toHaveLength(1))
+    expect(JSON.parse(String(providerCalls(fetchMock)[0][1]?.body))).toEqual({ providerType: 'jev_openrouter', name: 'Recon staging', apiKey: 'openrouter-key', testMode: 'key' })
+  })
+  test('saved backend is locked but name stays editable', () => {
+    mockFetch({})
+    render(<LlmProviderForm userId="user-1" provider={{ ...PROVIDER, providerType: 'jev_openrouter' }} onSave={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.getByRole('combobox', { name: 'Jev backend' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Display Name' })).toBeEnabled()
+    expect(screen.getByText(/does not prove billed Jev decision access/)).toBeInTheDocument()
   })
 })

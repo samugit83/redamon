@@ -76,9 +76,10 @@ export const PROVIDER_TYPES = [
   { id: 'mistral', name: 'Mistral AI', description: 'Mistral models - open-weight and commercial.', Icon: SiMistral as ProviderIcon, apiKeyUrl: 'https://console.mistral.ai/api-keys/' },
   { id: 'bedrock', name: 'AWS Bedrock', description: 'AWS Bedrock foundation models', Icon: FaAws as ProviderIcon, apiKeyUrl: 'https://console.aws.amazon.com/iam/home#/security_credentials' },
   { id: 'openai_compatible', name: 'OpenAI-Compatible', description: 'Any OpenAI-compatible endpoint (Ollama, vLLM, Groq, etc.)', Icon: LuSettings as ProviderIcon, apiKeyUrl: '' },
+  { id: 'jev_openrouter', name: 'OpenRouter (Jev)', description: 'Native Jev typed decision API via OpenRouter (not chat)', Icon: SiOpenrouter as ProviderIcon, apiKeyUrl: 'https://openrouter.ai/settings/keys' },
   { id: 'jev', name: 'TypeSafe AI (Jev)', description: 'Typed decision API used by recon AI hooks', Icon: SiTypeSafe as ProviderIcon, apiKeyUrl: 'https://console.typesafe.ai/keys' },
 ] as const
 
 export type ProviderType = typeof PROVIDER_TYPES[number]['id']
 
-export { NON_CHAT_PROVIDER_TYPES, isChatProvider, JEV_MODEL, JEV_PROVIDER_NAME } from './llmProviderKinds'
+export { NON_CHAT_PROVIDER_TYPES, isChatProvider, JEV_MODEL, JEV_PROVIDER_NAME, JEV_OPENROUTER_MODEL, JEV_BACKENDS, isJevProvider } from './llmProviderKinds'

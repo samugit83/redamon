@@ -255,23 +255,28 @@ describe('POST /api/users/[id]/llm-providers - TypeSafe Jev', () => {
     defaultHeaders: { 'X-Leak': '1' },
   }
 
-  test('a second Jev token is refused with 409 and nothing is written', async () => {
+  test.each(['jev', 'jev_openrouter'])('multiple named %s entries are allowed', async providerType => {
     mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })
-    mockCount.mockResolvedValue(1)
-    const res = await POST(postReq('victim', JEV_BODY), params('victim'))
-    expect(res.status).toBe(409)
-    expect(mockCount).toHaveBeenCalledWith({ where: { userId: 'victim', providerType: 'jev' } })
-    expect(mockCreate).not.toHaveBeenCalled()
+    mockCount.mockResolvedValue(3)
+    const res = await POST(postReq('victim', { ...JEV_BODY, providerType, name: 'Second entry' }), params('victim'))
+    expect(res.status).toBe(201)
+    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockCreate.mock.calls[0][0].data).toMatchObject({
+      name: 'Second entry', providerType,
+      baseUrl: providerType === 'jev' ? 'https://api.typesafe.ai' : 'https://openrouter.ai/api/v1',
+      modelIdentifier: providerType === 'jev' ? 'jev-1.13.0' : 'typesafe/jev-1.13',
+      defaultHeaders: {}, timeout: 5, sslVerify: true,
+    })
   })
 
-  test('model, name, base URL and headers are forced; the key is trimmed', async () => {
+  test('model, transport and headers are forced; name is editable and key trimmed', async () => {
     mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })
     const res = await POST(postReq('victim', JEV_BODY), params('victim'))
     expect(res.status).toBe(201)
     const data = mockCreate.mock.calls[0][0].data
     expect(data).toMatchObject({
-      userId: 'victim', providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def',
-      baseUrl: '', modelIdentifier: 'jev-1.13.0', defaultHeaders: {},
+      userId: 'victim', providerType: 'jev', name: 'whatever', apiKey: 'apikey_abc_def',
+      baseUrl: 'https://api.typesafe.ai', modelIdentifier: 'jev-1.13.0', defaultHeaders: {}, timeout: 5, sslVerify: true,
     })
   })
 
@@ -290,34 +295,7 @@ describe('POST /api/users/[id]/llm-providers - TypeSafe Jev', () => {
   })
 })
 
-describe('POST /api/users/[id]/llm-providers - the one-token rule holds under concurrency', () => {
-  const JEV_BODY = { providerType: 'jev', name: 'x', apiKey: 'apikey_abc_def' }
-
-  test('REGRESSION (duplicate token race): the count and the create are one Serializable transaction', async () => {
-    // A count followed by a create is check-then-act: two concurrent saves both read 0
-    // and both create, and there is no unique index to stop the second.
-    mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })
-    const res = await POST(postReq('victim', JEV_BODY), params('victim'))
-    expect(res.status).toBe(201)
-    expect(mockTransaction).toHaveBeenCalledTimes(1)
-    expect(mockTransaction.mock.calls[0][1]).toEqual({ isolationLevel: 'Serializable' })
-  })
-
-  test('REGRESSION: the loser of the race gets 409 (a serialization failure), not a 500', async () => {
-    mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })
-    mockTransaction.mockRejectedValue(Object.assign(new Error('write conflict'), { code: 'P2034' }))
-    const res = await POST(postReq('victim', JEV_BODY), params('victim'))
-    expect(res.status).toBe(409)
-    expect((await res.json()).error).toMatch(/already saved/)
-  })
-
-  test('an unrelated database failure is still a 500, not a misleading 409', async () => {
-    mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })
-    mockTransaction.mockRejectedValue(new Error('connection lost'))
-    const res = await POST(postReq('victim', JEV_BODY), params('victim'))
-    expect(res.status).toBe(500)
-  })
-
+describe('POST /api/users/[id]/llm-providers - safe database failures', () => {
   test('a database failure answers its Prisma code, never the message', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     mockGetSession.mockResolvedValue({ userId: 'victim', role: 'user' })

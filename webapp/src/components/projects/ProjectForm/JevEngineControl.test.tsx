@@ -11,7 +11,7 @@
  *
  *   enabled=false (AI in Pipeline off)  value kept, both buttons disabled
  *   loading                             Jev disabled, nothing written
- *   error                               both enabled, warning shown
+ *   error                               switch-on disabled, warning shown
  *   no token, value false               Jev disabled, tooltip points to Settings
  *   no token, value true                Jev stays selected, badge, LLM selectable
  *   yes                                 both enabled
@@ -35,8 +35,8 @@ function mount(over: Partial<{ value: boolean; enabled: boolean; jevStatus: JevP
   }
 }
 
-const BADGE = /No Jev token: this hook uses its static fallback/
-const WARNING = /Couldn't check your Jev token/
+const BADGE = /No valid Jev selection: this hook uses its static fallback/
+const WARNING = /Couldn't check the selected Jev provider/
 
 describe('with a token', () => {
   test('both engines are selectable and the stored choice is shown', () => {
@@ -100,10 +100,10 @@ describe('while the token lookup is unresolved', () => {
     expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
   })
 
-  test('error: both stay enabled (the server decides), with a warning, and no "no token" badge', () => {
+  test('error: switch-on is disabled until selected-provider validation recovers, with a warning, and no "no token" badge', () => {
     const { llm, jev } = mount({ value: false, jevStatus: 'error' })
     expect(llm).toBeEnabled()
-    expect(jev).toBeEnabled()
+    expect(jev).toBeDisabled()
     expect(screen.getByText(WARNING)).toBeInTheDocument()
     expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
   })
@@ -172,7 +172,7 @@ describe('the Jev-only variant (Off | Jev)', () => {
 
   test('with a token, Jev switches the hook on', () => {
     const { jev, onSelect } = mountJevOnly()
-    expect(jev).toHaveAttribute('title', 'Run this hook on TypeSafe Jev.')
+    expect(jev).toHaveAttribute('title', 'Run this hook on the project’s selected Jev provider.')
     fireEvent.click(jev)
     expect(onSelect).toHaveBeenCalledWith(true)
   })

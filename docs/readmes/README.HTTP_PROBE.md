@@ -456,7 +456,7 @@ HTTPX_FILTER_CODES = ["404", "403", "500", "502", "503"]
 | `HTTP_PROBE_AI_FAVICON_HASH_ENABLED` | `bool` | `True` | Match the favicon hash against known AI frontends |
 | `HTTP_PROBE_AI_TITLE_DETECTION_ENABLED` | `bool` | `True` | Match the page title against AI frontends |
 | `HTTP_PROBE_AI_WAPPALYZER_ENABLED` | `bool` | `True` | Match the response body (up to 512 KB) against AI body fingerprints |
-| `HTTPX_JEV_PAGE_TYPE` | `bool` | `False` | With `AI_IN_PIPELINE` on, label each page (login wall, parked domain, default install, placeholder, error page, app) with TypeSafe AI Jev |
+| `HTTPX_JEV_PAGE_TYPE` | `bool` | `False` | With `AI_IN_PIPELINE` on, label each page (login wall, parked domain, default install, placeholder, error page, app) with native Jev 1.13 through the project's selected TypeSafe or OpenRouter Jev configuration |
 
 The catalogues live in `recon/helpers/ai_signal_catalog.py`. A match sets
 `is_ai_framework_detected`, `ai_framework_name`, `ai_framework_category` and,

@@ -3,7 +3,7 @@ import prisma from '@/lib/prisma'
 /**
  * Every per-hook Jev field. The first four are engine switches on an LLM hook
  * (`true` answers it with Jev instead of the LLM); the rest switch on a Jev-only
- * hook that has no LLM twin. Either way `true` needs the owner's Jev token.
+ * hook that has no LLM twin. A new switch-on needs an explicit owner-owned Jev selection.
  */
 export const JEV_ENGINE_FIELDS = [
   'ffufAiUseJev',
@@ -26,11 +26,12 @@ export type JevEngineField = typeof JEV_ENGINE_FIELDS[number]
  * A Prisma `select` for every field above. A writer that judges a switch-on
  * against the stored row must read all of them: a field it leaves out reads as
  * undefined, so a stored true counts as a switch-on and every save is refused once
- * the owner has no token.
+ * the project's selected provider is unavailable.
  */
-export const JEV_ENGINE_SELECT = Object.fromEntries(
-  JEV_ENGINE_FIELDS.map(k => [k, true]),
-) as { [K in JevEngineField]: true }
+export const JEV_ENGINE_SELECT = {
+  ...Object.fromEntries(JEV_ENGINE_FIELDS.map(k => [k, true])),
+  jevProviderId: true,
+} as { [K in JevEngineField | 'jevProviderId']: true }
 
 export const JEV_HOOK_LABEL: Record<JevEngineField, string> = {
   ffufAiUseJev: 'FFuf extensions',
@@ -47,7 +48,7 @@ export const JEV_HOOK_LABEL: Record<JevEngineField, string> = {
   routeExposureJevAssess: 'route exposure lead assessment',
 }
 
-export const JEV_VERIFY_FAILED = "Couldn't verify your Jev token, try again."
+export const JEV_VERIFY_FAILED = "Couldn't verify the project's Jev provider, try again."
 
 type Row = Record<string, unknown> | null | undefined
 
@@ -57,21 +58,9 @@ export function jevSwitchedOn(before: Row, next: Row): JevEngineField[] {
 }
 
 /**
- * Refuses a write that switches a hook onto Jev (an engine switch to Jev, or a
- * Jev-only hook turned on) when the project owner has no Jev token. Returns the error message, or null when the write may proceed.
- *
- * It refuses only a SWITCH-ON, never "any true value": the project form sends
- * every field on every save, so a rule over "any true" would block every save of
- * a project whose owner later deleted the token, including saves that touch
- * nothing to do with Jev. A stored true is left alone; at scan time the hook
- * falls back to its static list.
- *
- * `ownerUserId` is the project's owner, not the acting user: recon resolves
- * credentials from the owner.
- *
- * Fails closed. A lookup that throws, or a missing owner, is a refusal; the
- * missing-owner case matters because Prisma ignores `userId: undefined` in a
- * `where`, which would count every user's Jev row and wrongly allow the write.
+ * Judge the merged selection against the project owner, never the actor.
+ * Existing unconfigured hooks may keep falling back during unrelated saves;
+ * switching a hook on or changing its non-null provider requires validation.
  */
 export async function validateJevEngineChange(
   before: Row,
@@ -79,46 +68,34 @@ export async function validateJevEngineChange(
   ownerUserId: string | null | undefined,
 ): Promise<string | null> {
   const on = jevSwitchedOn(before, next)
-  if (on.length === 0) return null
+  const selectionWritten = !!next && Object.prototype.hasOwnProperty.call(next, 'jevProviderId')
+  const selection = selectionWritten ? next?.jevProviderId : before?.jevProviderId
+  const selectionChanged = selectionWritten && selection !== (before?.jevProviderId ?? null)
+  if (on.length === 0 && !selectionChanged) return null
   if (!ownerUserId) return JEV_VERIFY_FAILED
-
-  let tokens: number
+  // Clearing is intentional fallback, but cannot simultaneously switch on a new hook.
+  if (selection === null && on.length === 0) return null
+  if (typeof selection !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(selection)) {
+    const named = on.map(k => `${k} (${JEV_HOOK_LABEL[k]})`).join(', ')
+    return `Can't use Jev${named ? ` for ${named}` : ''}: select an explicit Jev provider for this project. ` +
+      'Add a TypeSafe or OpenRouter Jev configuration in Settings → LLM Providers, then select it in the project.'
+  }
   try {
-    tokens = await prisma.userLlmProvider.count({
-      where: { userId: ownerUserId, providerType: 'jev' },
+    const provider = await prisma.userLlmProvider.findFirst({
+      where: { id: selection, userId: ownerUserId, providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
     })
+    if (provider) return null
   } catch {
     return JEV_VERIFY_FAILED
   }
-  if (tokens > 0) return null
-
-  const named = on.map(k => `${k} (${JEV_HOOK_LABEL[k]})`).join(', ')
-  return `Can't use Jev for ${named}: the project owner has no TypeSafe AI (Jev) token. Add one in Settings → LLM Providers.`
+  return 'The selected Jev provider is unavailable or does not belong to the project owner. ' +
+    'Select an owner-owned TypeSafe or OpenRouter Jev configuration in the project.'
 }
 
-/**
- * Warnings for an imported project that arrives with hooks set to Jev. Import
- * keeps the bundle's values, because refusing would make a bundle exported from
- * an account with a token unimportable anywhere else; the warning names each
- * hook that will use its static fallback until the importer adds a token.
- *
- * Never throws: a warning must not fail an import that already succeeded.
- */
-export async function jevImportWarnings(row: Row, importerUserId: string | null | undefined): Promise<string[]> {
-  const on = JEV_ENGINE_FIELDS.filter(k => row?.[k] === true)
-  if (on.length === 0 || !importerUserId) return []
-
-  let tokens: number
-  try {
-    tokens = await prisma.userLlmProvider.count({ where: { userId: importerUserId, providerType: 'jev' } })
-  } catch {
-    return [
-      `${on.map(k => JEV_HOOK_LABEL[k]).join(', ')}: set to use Jev, and your Jev token could not be ` +
-      'checked. A hook with no token uses its static fallback.',
-    ]
-  }
-  if (tokens > 0) return []
-  return on.map(k =>
-    `${k} (${JEV_HOOK_LABEL[k]}) is set to use Jev, but your account has no TypeSafe AI (Jev) token: ` +
-    'this hook uses its static fallback until you add one in Settings → LLM Providers.')
+/** Import keeps hook intent but never replays an account-scoped provider id. */
+export async function jevImportWarnings(row: Row, _importerUserId: string | null | undefined): Promise<string[]> {
+  return JEV_ENGINE_FIELDS.filter(k => row?.[k] === true).map(k =>
+    `${k} (${JEV_HOOK_LABEL[k]}) is set to use Jev: this hook uses its static fallback until you ` +
+    'select a Jev provider for the imported project. Provider selections do not travel with exports.')
 }

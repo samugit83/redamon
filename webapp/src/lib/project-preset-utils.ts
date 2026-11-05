@@ -63,6 +63,7 @@ export const PRESET_EXCLUDED_FIELDS: ReadonlySet<string> = new Set([
   ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),
   ...fieldsWhere(f => f.deny_reason === 'upload-managed').map(f => f.key),
   ...fieldsWhere(f => f.read_deny_reason === 'credential').map(f => f.key),
+  ...fieldsWhere(f => f.validator === 'provider_reference').map(f => f.key),
   // A preset that does not name one of these resets it to its default, and the
   // default of `mcpKaliExecEnabled` is ON: carrying it let applying any preset
   // quietly re-enable the MCP sandbox a person had switched off.

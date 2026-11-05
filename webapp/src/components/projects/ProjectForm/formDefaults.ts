@@ -7,6 +7,7 @@ import type { Project } from '@prisma/client'
  */
 export const MINIMAL_DEFAULTS: Partial<Project> = {
   name: '',
+  jevProviderId: null,
   description: '',
   targetDomain: '',
   subdomainList: [],

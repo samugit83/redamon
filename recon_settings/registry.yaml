@@ -1346,6 +1346,23 @@ fields:
       Model identifier for the AI hooks in recon (e.g. "claude-opus-4-6",
       "claude-haiku-4-5-20251001"). Independent of agentOpenaiModel.
     form_section: "TargetSection"
+  jevProviderId:
+    tool: pipeline_ai
+    runtime_key: null
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: settable
+    roe_parse: deny
+    validator: provider_reference
+    group: llm
+    meaning: >-
+      Explicit owner-owned Jev configuration shared by all Jev hooks. Supports
+      TypeSafe and OpenRouter native Jev 1.13. Null means unconfigured and uses
+      deterministic fallbacks. This account-scoped selection is never portable
+      in exports or presets and never carries credentials to recon.
+    form_section: "TargetSection"
   aiSurfaceReconCacheEnabled:
     tool: ai_surface_recon
     runtime_key: "AI_SURFACE_RECON_CACHE_ENABLED"

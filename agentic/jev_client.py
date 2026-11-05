@@ -1,11 +1,10 @@
-"""The only code that talks to TypeSafe AI (Jev).
+"""The only native Jev transport (direct TypeSafe or Jev-only OpenRouter).
 
-Recon never sees the Jev token: it calls the agent's `/jev/*` endpoints, which
-load the project owner's token and call TypeSafe through this module.
+Recon never sees credentials: `/jev/*` resolves the owner's exact selected
+provider from persisted project state. Null selection uses recon's fallbacks.
 
-- The base URL is a constant, never user-configurable, so there is no SSRF
-  surface and the token can only ever be sent to api.typesafe.ai. Redirects are
-  not followed.
+- Backend origins/models are constants, never user-configurable. Immutable
+  provider contexts keep each token bound to its backend. No redirects.
 - Every failure raises `JevError` with a fixed message. The httpx exception
   text, the key and the state never appear in it: recon prints agent error
   bodies into the recon drawer.
@@ -14,6 +13,8 @@ load the project owner's token and call TypeSafe through this module.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
+import json
 import logging
 import math
 import os
@@ -26,29 +27,58 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.typesafe.ai"
-
-#: Pinned, not the `jev-latest` alias: the recon thresholds are calibrated
-#: against this version, so moving to a newer one is a deliberate edit.
+# Recon thresholds are calibrated against this version, never a drifting alias.
 JEV_MODEL = "jev-1.13.0"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+OPENROUTER_MODEL = "typesafe/jev-1.13"
+# The native SDK documents a slower, less accurate long-context mode above ~32k.
+OPENROUTER_BODY_LIMIT = 32_000
+_OPENROUTER_MODEL_RE = re.compile(r"typesafe/jev-1\.13(?:-\d{8})?")
+
+
+@dataclass(frozen=True)
+class JevProvider:
+    """One validated request's immutable routing; the secret is never repr'd."""
+
+    provider_type: str
+    api_key: str = field(repr=False)
+    provider_id: str = ""
+
+    def __post_init__(self):
+        if not isinstance(self.provider_type, str) or self.provider_type not in {"jev", "jev_openrouter"}:
+            raise JevError("jev_not_configured")
+        _auth_headers(self.api_key)
+
+    @property
+    def base_url(self) -> str:
+        return OPENROUTER_BASE_URL if self.provider_type == "jev_openrouter" else BASE_URL
+
+    @property
+    def wire_model(self) -> str:
+        return OPENROUTER_MODEL if self.provider_type == "jev_openrouter" else JEV_MODEL
+
+
+def _provider(value: JevProvider | str) -> JevProvider:
+    # Key-only callers are legacy direct-transport fixtures, never API resolution.
+    return value if isinstance(value, JevProvider) else JevProvider("jev", value)
 
 TIMEOUT_S = 5.0
 OWNER_CACHE_TTL_S = 300
 _WEBAPP_TIMEOUT_S = 10.0
 
-_MODEL_RE = re.compile(r"^jev-\d+\.\d+\.\d+$")
 #: Printable ASCII with no whitespace. A CR/LF in a header value makes httpx
 #: raise an error that quotes the value, which would put the key in a log.
 _KEY_RE = re.compile(r"[\x21-\x7e]{8,512}")
 
 ERROR_MESSAGES = {
-    "jev_auth": "TypeSafe rejected the Jev API key",
-    "jev_no_credit": "The TypeSafe account has no credit left",
-    "jev_bad_request": "TypeSafe refused the request",
-    "jev_rate_limited": "TypeSafe rate limit reached",
-    "jev_overloaded": "TypeSafe is unavailable",
-    "jev_timeout": "TypeSafe did not answer in time",
-    "jev_bad_response": "TypeSafe returned an unexpected answer",
-    "jev_not_configured": "No Jev token on the project owner's account",
+    "jev_auth": "The Jev backend rejected the API key",
+    "jev_no_credit": "The Jev backend account has no credit left",
+    "jev_bad_request": "The Jev backend refused the request or its size",
+    "jev_rate_limited": "Jev backend rate limit reached",
+    "jev_overloaded": "The Jev backend is unavailable",
+    "jev_timeout": "The Jev backend did not answer in time",
+    "jev_bad_response": "The Jev backend returned an unexpected answer",
+    "jev_not_configured": "No valid Jev provider selected for this project",
     "jev_unavailable": "The Jev token could not be loaded",
     "jev_forbidden": "The project does not belong to this user",
 }
@@ -95,12 +125,33 @@ def _auth_headers(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
 
 
-async def _request(method: str, path: str, key: str, payload: dict | None = None):
-    headers = _auth_headers(key)
+def _body(provider: JevProvider, payload: dict) -> bytes:
+    try:
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        raise JevError("jev_bad_request") from None
+    if provider.provider_type == "jev_openrouter" and len(body) >= OPENROUTER_BODY_LIMIT:
+        raise JevError("jev_bad_request")
+    return body
+
+
+def validate_request_size(provider: JevProvider | str, state, questions: dict) -> None:
+    provider = _provider(provider)
+    _body(provider, {"model": provider.wire_model, "state": state, "questions": questions})
+
+
+async def _request(method: str, path: str, key: JevProvider | str, payload: dict | None = None):
+    provider = _provider(key)
+    headers = _auth_headers(provider.api_key)
+    kwargs = {}
+    if payload is not None:
+        kwargs["content"] = _body(provider, payload)
+        headers["Content-Type"] = "application/json"
     try:
         async with httpx.AsyncClient(headers=headers, timeout=TIMEOUT_S,
                                      follow_redirects=False) as client:
-            resp = await client.request(method, f"{BASE_URL}{path}", json=payload)
+            resp = await client.request(method, f"{provider.base_url}{path}", **kwargs)
     except httpx.HTTPError:
         # Timeouts and connection errors alike; the exception text is dropped.
         raise JevError("jev_timeout") from None
@@ -116,22 +167,41 @@ async def _request(method: str, path: str, key: str, payload: dict | None = None
 
 
 async def list_models(key: str) -> list[str]:
-    """The model names the key can use. Free: spends no credit."""
-    data = await _request("GET", "/v1/models", key)
+    """The direct TypeSafe model list. Free: spends no credit."""
+    data = await _request("GET", "/v1/models", JevProvider("jev", key))
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, list):
         raise JevError("jev_bad_response")
     return [m["name"] for m in models if isinstance(m, dict) and isinstance(m.get("name"), str)]
 
 
+def _is_finite(value) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _is_unit(value) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and 0.0 <= value <= 1.0)
+    return _is_finite(value) and 0.0 <= value <= 1.0
 
 
 def _valid_answer(question: dict, answer) -> bool:
     if not isinstance(answer, dict) or answer.get("type") != question.get("type"):
         return False
+    if "confidence" in answer and not _is_unit(answer["confidence"]):
+        return False
+    if "probabilities" in answer:
+        probabilities = answer["probabilities"]
+        criteria = question.get("criteria") or {}
+        if question["type"] == "score":
+            criteria = {str(i) for i in range(len(criteria))}
+        if (not isinstance(probabilities, dict)
+                or any(not isinstance(name, str) or name not in criteria or not _is_unit(value)
+                       for name, value in probabilities.items())):
+            return False
     qtype = question["type"]
     if qtype == "noul":
         return _is_unit(answer.get("noul"))
@@ -143,24 +213,30 @@ def _valid_answer(question: dict, answer) -> bool:
                 and _is_unit(answer.get("confidence")))
     if qtype == "score":
         score = answer.get("score")
-        return (isinstance(score, (int, float)) and not isinstance(score, bool)
-                and math.isfinite(score) and _is_unit(answer.get("confidence")))
+        return (_is_finite(score) and 0 <= score <= len(question["criteria"]) - 1
+                and _is_unit(answer.get("confidence")))
     return False
 
 
-async def system_one(key: str, model: str, state, questions: dict) -> dict:
+async def system_one(key: JevProvider | str, model: str, state, questions: dict) -> dict:
     """Ask `questions` about `state`. Returns `{"model", "answers"}`.
 
     Every question must come back with an answer of its own type and in range
     (a Choice must name one of its own options), or the whole call fails with
     `jev_bad_response`: callers never see a partial answer set.
     """
-    if not isinstance(model, str) or not _MODEL_RE.match(model):
+    provider = _provider(key)
+    if model != JEV_MODEL:
         raise JevError("jev_bad_request")
-    if not isinstance(questions, dict) or not questions:
+    if (not isinstance(questions, dict) or not questions
+            or any(not isinstance(q, dict) or q.get("type") not in {"noul", "choice", "score"}
+                   or (q.get("type") == "choice" and not isinstance(q.get("criteria"), dict))
+                   or (q.get("type") == "score" and
+                       (not isinstance(q.get("criteria"), list) or not 2 <= len(q["criteria"]) <= 10))
+                   for q in questions.values())):
         raise JevError("jev_bad_request")
-    data = await _request("POST", "/v1/systemone", key,
-                          {"model": model, "state": state, "questions": questions})
+    data = await _request("POST", "/v1/systemone", provider,
+                          {"model": provider.wire_model, "state": state, "questions": questions})
     answers = data.get("answers") if isinstance(data, dict) else None
     if not isinstance(answers, dict):
         raise JevError("jev_bad_response")
@@ -168,8 +244,16 @@ async def system_one(key: str, model: str, state, questions: dict) -> dict:
         if not _valid_answer(question, answers.get(name)):
             raise JevError("jev_bad_response")
     returned_model = data.get("model")
+    if (provider.provider_type == "jev_openrouter"
+            and (not isinstance(returned_model, str)
+                 or not _OPENROUTER_MODEL_RE.fullmatch(returned_model))):
+        raise JevError("jev_bad_response")
+    if provider.provider_type == "jev" and returned_model != JEV_MODEL:
+        raise JevError("jev_bad_response")
+    logger.info("jev backend=%s canonical_model=%s wire_model=%s",
+                provider.provider_type, JEV_MODEL, returned_model)
     return {
-        "model": returned_model if isinstance(returned_model, str) else "",
+        "model": returned_model,
         "answers": {name: answers[name] for name in questions},
     }
 
@@ -182,8 +266,8 @@ _OWNER_CACHE_MAX = 1024
 _owner_cache: dict[tuple[str, str], float] = {}
 
 
-def _fetch_project_owner(project_id: str) -> str | None:
-    """The project's userId, None when it does not exist. Raises on any other failure."""
+def _fetch_project(project_id: str) -> dict | None:
+    """Trusted persisted state, fetched fresh to observe selection/owner changes."""
     import requests
 
     webapp_url = os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
@@ -193,8 +277,48 @@ def _fetch_project_owner(project_id: str) -> str | None:
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
-    owner = resp.json().get("userId")
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise JevError("jev_unavailable")
+    return data
+
+
+def _fetch_project_owner(project_id: str) -> str | None:
+    data = _fetch_project(project_id)
+    owner = data.get("userId") if data else None
     return owner if isinstance(owner, str) else None
+
+
+async def selected_provider_id(project_id: str, user_id: str) -> str:
+    """Bind ownership and selection from ONE fresh trusted project snapshot.
+
+    Never consult the owner cache here: revoked ownership or cleared selection
+    must be effective for the next request, before any credential is read.
+    """
+    try:
+        project = await asyncio.to_thread(_fetch_project, project_id)
+    except Exception:
+        raise JevError("jev_unavailable") from None
+    if not project or project.get("userId") != user_id:
+        raise JevError("jev_forbidden")
+    selected = project.get("jevProviderId")
+    if not isinstance(selected, str) or not selected:
+        raise JevError("jev_not_configured")
+    return selected
+
+
+def resolve_provider(providers: list, selected_id: str, owner_id: str) -> JevProvider:
+    """Resolve exactly one row from the trusted owner's credential list."""
+    if not isinstance(selected_id, str) or not selected_id:
+        raise JevError("jev_not_configured")
+    matches = [row for row in providers or []
+               if isinstance(row, dict) and row.get("id") == selected_id]
+    if len(matches) != 1:
+        raise JevError("jev_not_configured")
+    row = matches[0]
+    if row.get("userId", owner_id) != owner_id:
+        raise JevError("jev_not_configured")
+    return JevProvider(row.get("providerType"), row.get("apiKey"), selected_id)
 
 
 async def verify_owner(project_id: str, user_id: str) -> None:
@@ -221,10 +345,39 @@ async def verify_owner(project_id: str, user_id: str) -> None:
     _owner_cache[cache_key] = now + OWNER_CACHE_TTL_S
 
 
-def pick_jev_key(providers: list) -> str | None:
-    """The key on the user's Jev provider row (the oldest, if there are two)."""
-    for row in providers or []:
-        if isinstance(row, dict) and row.get("providerType") == "jev":
-            key = row.get("apiKey")
-            return key if isinstance(key, str) and key else None
-    return None
+async def test_provider(provider: JevProvider, *, capability: bool = False) -> dict:
+    """Free evidence by default; a typed synthetic call ONLY with explicit consent.
+
+    OpenRouter catalog metadata plus authentication is not a guarantee of paid
+    inference access. The proof label deliberately does not claim otherwise.
+    """
+    if capability:
+        questions = {
+            "ping": {"type": "noul", "instructions": "Is this a synthetic test?"},
+            "kind": {"type": "choice", "instructions": "Select the test kind.",
+                     "criteria": {"synthetic": "Synthetic test", "other": "Other"}},
+            "score": {"type": "score", "instructions": "How clearly synthetic is this test?",
+                      "criteria": ["Not a synthetic test", "Clearly a synthetic test"]},
+        }
+        result = await system_one(provider, JEV_MODEL, {"kind": "synthetic test"}, questions)
+        return {"success": True, "model": JEV_MODEL, "wire_model": result["model"],
+                "proof": "typed_capability", "billed": True,
+                "response_text": "Pinned Jev typed capability verified (billed synthetic call)."}
+    if provider.provider_type == "jev":
+        models = await list_models(provider.api_key)
+        if JEV_MODEL not in models:
+            raise JevError("jev_bad_response")
+        return {"success": True, "model": JEV_MODEL,
+                "proof": "key_and_model_listing", "billed": False,
+                "response_text": "TypeSafe accepted the key and lists Jev 1.13.0; inference not tested (free)."}
+    key_data = await _request("GET", "/v1/key", provider)
+    if not isinstance(key_data, dict) or not isinstance(key_data.get("data"), dict):
+        raise JevError("jev_bad_response")
+    metadata = await _request("GET", f"/v1/models/{OPENROUTER_MODEL}/endpoints", provider)
+    data = metadata.get("data") if isinstance(metadata, dict) else None
+    if (not isinstance(data, dict) or data.get("id") != OPENROUTER_MODEL
+            or not isinstance(data.get("endpoints"), list) or not data["endpoints"]):
+        raise JevError("jev_bad_response")
+    return {"success": True, "model": JEV_MODEL, "wire_model": OPENROUTER_MODEL,
+            "proof": "key_and_model_metadata", "billed": False,
+            "response_text": "OpenRouter accepted the key and publishes Jev 1.13 endpoints; inference access not tested (free)."}
