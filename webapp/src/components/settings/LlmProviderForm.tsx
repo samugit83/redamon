@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui'
 import { useAgentHealth } from '@/hooks/useAgentHealth'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
-import { PROVIDER_TYPES, OPENAI_COMPAT_PRESETS, NON_CHAT_PROVIDER_TYPES, JEV_MODEL, JEV_PROVIDER_NAME } from '@/lib/llmProviderPresets'
+import { PROVIDER_TYPES, OPENAI_COMPAT_PRESETS, NON_CHAT_PROVIDER_TYPES, JEV_MODEL, JEV_BACKENDS, isJevProvider } from '@/lib/llmProviderPresets'
 import type { ProviderType } from '@/lib/llmProviderPresets'
 import { REASONING_EFFORTS } from '@/lib/llmReasoning'
 import { fetchJson, readApiError, toApiError } from '@/lib/apiError'
@@ -25,7 +25,7 @@ interface LlmProviderFormProps {
    * Opens a new provider of this type with no type picker. Non-chat types
    * (Jev) are only reachable this way: the generic picker never lists them.
    */
-  lockedType?: 'jev'
+  lockedType?: 'jev' | 'jev_openrouter'
   /**
    * Rendered inside another panel (the project form's AI panel): no frame, no
    * title, no Cancel, and the pinned-model block shortened to a hint, because the
@@ -80,8 +80,8 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
   const toast = useToast()
   const [form, setForm] = useState<ProviderData>(() => ({
     ...EMPTY_PROVIDER,
-    ...(lockedType === 'jev' && !provider
-      ? { providerType: 'jev', name: JEV_PROVIDER_NAME, modelIdentifier: JEV_MODEL }
+    ...(lockedType && !provider
+      ? { providerType: lockedType, name: JEV_BACKENDS[lockedType].name, modelIdentifier: JEV_BACKENDS[lockedType].modelIdentifier }
       : {}),
     ...(provider || {}),
     defaultHeaders: provider?.defaultHeaders || {},
@@ -153,11 +153,9 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
     })
   }, [])
 
-  // A Jev row carries only its key: the server pins the model and refuses any
-  // base URL or header, so none is sent.
   const requestBody = useCallback(
-    () => form.providerType === 'jev'
-      ? { providerType: 'jev', name: JEV_PROVIDER_NAME, apiKey: form.apiKey, modelIdentifier: JEV_MODEL }
+    () => isJevProvider(form)
+      ? { providerType: form.providerType, name: form.name, apiKey: form.apiKey, testMode: 'key' }
       : form,
     [form],
   )
@@ -259,7 +257,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
   const isKeyBased = ['openai', 'anthropic', 'openrouter', 'deepseek', 'gemini', 'glm', 'kimi', 'qwen', 'xai', 'mistral'].includes(ptype)
   const isBedrock = ptype === 'bedrock'
   const isCompat = ptype === 'openai_compatible'
-  const isJev = ptype === 'jev'
+  const isJev = isJevProvider(form)
   const apiKeyUrl = providerDef?.apiKeyUrl
   const apiKeyLinkLabel = isBedrock ? 'Get AWS credentials' : 'Get API key'
   const saveButton = (
@@ -269,7 +267,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
       disabled={
         saving ||
         !isDirty ||
-        !form.name ||
+        !form.name.trim() ||
         (!isCompat && !form.apiKey && !isBedrock) ||
         (isBedrock && bedrockAuth === 'iam' && (!form.awsAccessKeyId || !form.awsSecretKey)) ||
         (isBedrock && bedrockAuth === 'bearer' && !form.awsBearerToken) ||
@@ -303,15 +301,30 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
         </a>
       )}
 
-      {/* Name (a Jev row is always named after the provider: one per user) */}
-      {!isJev && (
+      {isJev && (
+        <div className="formGroup">
+          <label className="formLabel" htmlFor="jev-backend">Jev backend</label>
+          <select id="jev-backend" className="selectInput" value={ptype} disabled={isEditing}
+            onChange={e => {
+              const type = e.target.value as 'jev' | 'jev_openrouter'
+              setForm(prev => ({ ...prev, providerType: type, apiKey: '', modelIdentifier: JEV_BACKENDS[type].modelIdentifier }))
+              setTestResult(null)
+            }}>
+            {Object.entries(JEV_BACKENDS).map(([type, backend]) => <option key={type} value={type}>{backend.name}</option>)}
+          </select>
+          <span className="formHint">The backend is locked after saving. Create a separate named entry to use another backend.</span>
+        </div>
+      )}
+      {(
         <div className="formGroup">
           <label className="formLabel formLabelRequired">Display Name</label>
           <input
             className="textInput"
             value={form.name}
             onChange={e => updateForm('name', e.target.value)}
-            placeholder="e.g., My OpenAI Key"
+            onKeyDown={e => { if (embedded && e.key === 'Enter') e.preventDefault() }}
+            aria-label="Display Name"
+            placeholder={isJev ? "e.g., Recon Jev production" : "e.g., My OpenAI Key"}
           />
         </div>
       )}
@@ -328,8 +341,8 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
               onChange={e => updateForm('apiKey', e.target.value)}
               // Inside the project form, Enter would submit the whole project.
               onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
-              aria-label={isJev ? 'TypeSafe Jev API key' : 'API key'}
-              placeholder={isJev ? 'apikey_...' : 'sk-...'}
+              aria-label={isJev ? `${ptype === 'jev_openrouter' ? 'OpenRouter' : 'TypeSafe'} Jev API key` : 'API key'}
+              placeholder={ptype === 'jev' ? 'apikey_...' : 'sk-...'}
             />
             <button
               className={styles.secretToggle}
@@ -345,7 +358,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
       {isJev && !embedded && (
         <div className="formGroup">
           <label className="formLabel">Model</label>
-          <div className={styles.readonlyValue} data-testid="jev-model">{JEV_MODEL}</div>
+          <div className={styles.readonlyValue} data-testid="jev-model">{JEV_BACKENDS[ptype as 'jev' | 'jev_openrouter'].modelIdentifier}</div>
           <span className="formHint">
             Pinned: the recon AI hooks are calibrated against this version.
           </span>
@@ -601,6 +614,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
         </>
       )}
 
+      {isJev && <p className="formHint">Free key/model metadata check only. It does not prove billed Jev decision access or available credit.</p>}
       {/* Test connection */}
       {agentHealth.status === 'offline' && (
         <div className={styles.agentOfflineBanner} role="status">
@@ -625,7 +639,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
             : undefined}
         >
           {testing ? <Loader2 size={14} className={styles.spin} /> : null}
-          {testing ? 'Testing...' : 'Test Connection'}
+          {testing ? 'Testing...' : isJev ? 'Check key (free)' : 'Test Connection'}
         </button>
         {embedded && saveButton}
         {testResult && (

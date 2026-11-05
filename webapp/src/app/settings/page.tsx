@@ -17,7 +17,7 @@ import McpTokensTab from '@/components/settings/mcp-tokens/McpTokensTab'
 import type { ProviderData } from '@/components/settings/LlmProviderForm'
 import { TradecraftResourceForm } from '@/components/settings/TradecraftResourceForm'
 import { TradecraftResourceList } from '@/components/settings/TradecraftResourceList'
-import { PROVIDER_TYPES, isChatProvider } from '@/lib/llmProviderPresets'
+import { PROVIDER_TYPES, isChatProvider, isJevProvider } from '@/lib/llmProviderPresets'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { useAlertModal, useToast, WikiInfoButton, Toggle } from '@/components/ui'
 import { TrafficMindProjectMatrix } from '@/components/traffic/TrafficMindProjectMatrix'
@@ -33,6 +33,7 @@ import { ApiUsageLlmChip } from '@/components/settings/api-usage/ApiUsageLlmChip
 import { llmInventoryHint } from '@/lib/apiUsage/inventory'
 import { FeatureModelsSection } from '@/components/settings/FeatureModelsSection'
 import { AgentSkillsTab } from '@/components/settings/AgentSkillsTab'
+import { notifyJevProviderChanged } from '@/hooks/useHasJevProvider'
 import { JevProviderSection } from '@/components/settings/JevProviderSection'
 import { actionFailedText, failureText, saveWarningLines } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
@@ -225,6 +226,7 @@ export default function SettingsPage() {
   const [showProviderForm, setShowProviderForm] = useState(false)
   const [editingProvider, setEditingProvider] = useState<ProviderData | null>(null)
   const [jevFormOpen, setJevFormOpen] = useState(false)
+  const [editingJevProvider, setEditingJevProvider] = useState<ProviderData | null>(null)
 
   // User Settings
   const [settings, setSettings] = useState<UserSettings>(EMPTY_SETTINGS)
@@ -467,7 +469,7 @@ export default function SettingsPage() {
 
   // Jev is not a chat provider: it has its own section and never counts as an LLM.
   const chatProviders = useMemo(() => providers.filter(isChatProvider), [providers])
-  const jevProvider = useMemo(() => providers.find(p => p.providerType === 'jev') ?? null, [providers])
+  const jevProviders = useMemo(() => providers.filter(isJevProvider), [providers])
   const providerFormOpen = showProviderForm || !!editingProvider || jevFormOpen
 
   // Fetch user settings
@@ -577,7 +579,10 @@ export default function SettingsPage() {
         toast.error((await readApiError(resp, 'Failed to delete provider')).message)
         return
       }
+      const result = await resp.json() as { affectedProjects?: number; warning?: string | null }
+      notifyJevProviderChanged()
       toast.success('Provider deleted')
+      if (result.warning) await showAlert(result.warning)
     } catch (err) {
       console.error('Failed to delete provider:', err)
       toast.error(failureText('Failed to delete provider', err))
@@ -1134,22 +1139,24 @@ export default function SettingsPage() {
         {!showProviderForm && !editingProvider && (
           <JevProviderSection
             userId={userId}
-            provider={jevProvider}
+            providers={jevProviders}
+            editingProvider={editingJevProvider}
             loading={providersLoading}
             error={!!providersError}
             errorText={providersError ?? undefined}
             onRetry={retryProviders}
             formOpen={jevFormOpen}
-            onOpenForm={() => setJevFormOpen(true)}
+            onOpenForm={provider => { setEditingJevProvider(provider); setJevFormOpen(true) }}
             onFormDone={saved => {
               setJevFormOpen(false)
-              if (saved) fetchProviders()
+              setEditingJevProvider(null)
+              if (saved) { fetchProviders(); notifyJevProviderChanged() }
             }}
             onDelete={id => deleteProvider(
-              id, 'Delete your Jev token? Recon hooks set to the Jev engine will use their static fallback.')}
+              id, 'Delete this Jev provider? All projects selecting it will be cleared and their Jev hooks will use deterministic fallbacks.')}
             onDirtyChange={setChildDirty}
-            usageChip={jevProvider?.id
-              ? <ApiUsageLlmChip report={apiUsage.meta?.report} providerId={jevProvider.id} hint={llmUsageHints[jevProvider.id]} />
+            usageChip={provider => provider.id
+              ? <ApiUsageLlmChip report={apiUsage.meta?.report} providerId={provider.id} hint={llmUsageHints[provider.id]} />
               : null}
           />
         )}

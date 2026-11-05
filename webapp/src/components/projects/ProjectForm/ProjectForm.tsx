@@ -13,6 +13,7 @@ import { ipModeRoot, resolveProjectRoots } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
 import { useProject } from '@/providers/ProjectProvider'
+import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
 import useReconStatus from '@/hooks/useReconStatus'
 import { useScanControls } from '@/hooks/useScanControls'
 import { ScanActions } from '@/components/scans/ScanActions'
@@ -121,7 +122,7 @@ const WorkflowView = dynamic(
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
 interface ProjectFormProps {
-  initialData?: Partial<ProjectFormData> & { id?: string }
+  initialData?: Partial<ProjectFormData> & { id?: string; userId?: string }
   /** Resolves to the saved row when there is one, so the form can adopt its `updatedAt`. */
   onSubmit: (data: ProjectFormData & { roeFile?: File | null }) => Promise<unknown>
   /** Save without navigating away (used by workflow modal save button) */
@@ -366,6 +367,7 @@ export function ProjectForm({
   const [formData, setFormData] = useState<ProjectFormData>(() => ({
     ...MINIMAL_DEFAULTS,
     ...withoutDerived(initialData as Record<string, unknown>),
+    jevProviderId: mode === 'create' ? null : initialData?.jevProviderId ?? null,
   } as ProjectFormData))
 
   // Dirty tracking: baseline = the last saved/loaded formData. Edit mode adopts
@@ -677,6 +679,8 @@ export function ProjectForm({
           ...defaults,
           ...prev,
           ...initialData,
+          // Account-scoped configuration is never inherited from defaults or a copied row.
+          jevProviderId: prev.jevProviderId ?? null,
           agentOpenaiModel: seeded.agentOpenaiModel,
           aiPipelineModel: seeded.aiPipelineModel,
         }) as ProjectFormData
@@ -1224,6 +1228,11 @@ export function ProjectForm({
   }
 
   return (
+    <JevSelectionProvider
+      ownerUserId={mode === 'create' ? userId : initialData?.userId ?? null}
+      ownerUnavailable={mode === 'edit' && !initialData?.userId}
+      selectedProviderId={formData.jevProviderId ?? null}
+    >
     <form onSubmit={handleSubmit} className={styles.form}>
       <div className={styles.header}>
         <h1 className={styles.title}>
@@ -1764,6 +1773,7 @@ export function ProjectForm({
         onDownloadSupplyChainJSON={() => projectId && window.open(`/api/supply-chain/${projectId}/download`, '_blank')}
       />
     </form>
+    </JevSelectionProvider>
   )
 }
 

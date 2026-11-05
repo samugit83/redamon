@@ -1,49 +1,54 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
-import { useProject } from '@/providers/ProjectProvider'
+import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { isJevProvider } from '@/lib/llmProviderKinds'
+import { readApiError, toApiError } from '@/lib/apiError'
 
 export type JevProviderStatus = 'loading' | 'yes' | 'no' | 'error'
 
-/** The masked Jev row, as the providers GET returns it to a browser. */
+/** Masked account configuration; credential presence does not prove live Jev access. */
 export interface JevProviderRow {
   id: string
+  name: string
+  providerType: string
   apiKey: string
   modelIdentifier: string
 }
 
-const CHANGED_EVENT = 'redamon:jev-provider-changed'
+interface JevSelectionState {
+  status: JevProviderStatus
+  lookupStatus: 'loading' | 'ready' | 'error' | 'limited'
+  provider: JevProviderRow | null
+  providers: JevProviderRow[]
+  selectedProviderId: string | null
+  ownerUserId: string | null
+  error: string | null
+  refresh: () => void
+}
 
-/**
- * Tell every mounted Jev lookup that the token was added, replaced or removed.
- *
- * One form holds several lookups (the Target AI panel and each tool section with a Jev hook);
- * without this, saving the token in one would leave the others reading "no token"
- * until the page reloads.
- */
+const CHANGED_EVENT = 'redamon:jev-provider-changed'
+const JevSelectionContext = createContext<JevSelectionState | null>(null)
+
 export function notifyJevProviderChanged(): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(CHANGED_EVENT))
 }
 
-/**
- * The acting user's TypeSafe Jev token: whether there is one, the masked row, and a
- * way to look again.
- *
- * A failed fetch is 'error', never 'no': telling a user "you have no token" when
- * the lookup actually failed would push them to re-add a token they already have.
- * Don't copy ShodanSection's hook, which reports a failed fetch as "no key".
- *
- * This is a convenience signal for the form only; the server
- * (validateJevEngineChange) is the authority on whether a switch-on is allowed.
- */
-export function useJevProvider(): {
-  status: JevProviderStatus
-  provider: JevProviderRow | null
-  refresh: () => void
-} {
-  const { userId } = useProject()
-  const [status, setStatus] = useState<JevProviderStatus>('loading')
-  const [provider, setProvider] = useState<JevProviderRow | null>(null)
+/** One owner lookup shared by every hook, including unsaved project selections. */
+export function JevSelectionProvider({
+  ownerUserId, selectedProviderId, ownerUnavailable = false, children,
+}: {
+  ownerUserId: string | null
+  selectedProviderId: string | null
+  ownerUnavailable?: boolean
+  children: ReactNode
+}) {
+  const [lookup, setLookup] = useState<{
+    ownerUserId: string | null
+    nonce: number
+    status: 'loading' | 'ready' | 'error'
+    providers: JevProviderRow[]
+    error: string | null
+  }>({ ownerUserId: null, nonce: 0, status: 'loading', providers: [], error: null })
   const [nonce, setNonce] = useState(0)
   const refresh = useCallback(() => setNonce(n => n + 1), [])
 
@@ -53,41 +58,52 @@ export function useJevProvider(): {
   }, [refresh])
 
   useEffect(() => {
-    if (!userId) {
-      setStatus('loading')
-      return
-    }
+    if (!ownerUserId) return
     let cancelled = false
-    setStatus('loading')
     ;(async () => {
       try {
-        const resp = await fetch(`/api/users/${userId}/llm-providers`)
-        if (!resp.ok) {
-          if (!cancelled) setStatus('error')
-          return
-        }
-        const rows = await resp.json()
-        if (cancelled) return
-        // A 200 that is not a list (an error payload, a proxy page) tells us
-        // nothing about the account, so it is a failed lookup, not "no token".
-        if (!Array.isArray(rows)) {
-          setStatus('error')
-          return
-        }
-        const jev = rows.find((r: { providerType?: string }) => r?.providerType === 'jev') ?? null
-        setProvider(jev)
-        setStatus(jev ? 'yes' : 'no')
-      } catch {
-        if (!cancelled) setStatus('error')
+        const response = await fetch(`/api/users/${ownerUserId}/llm-providers`)
+        if (!response.ok) throw await readApiError(response, 'Could not load the project owner’s Jev configurations')
+        const rows: unknown = await response.json()
+        if (!Array.isArray(rows)) throw new Error('Invalid Jev configuration lookup response')
+        const providers = rows.filter((row): row is JevProviderRow =>
+          row !== null && typeof row === 'object' && typeof row.id === 'string' &&
+          typeof row.providerType === 'string' &&
+          typeof row.name === 'string' && typeof row.apiKey === 'string' && typeof row.modelIdentifier === 'string' &&
+          isJevProvider(row))
+        if (!cancelled) setLookup({ ownerUserId, nonce, status: 'ready', providers, error: null })
+      } catch (error) {
+        if (!cancelled) setLookup({ ownerUserId, nonce, status: 'error', providers: [],
+          error: toApiError(error, 'Could not load Jev configurations').message })
       }
     })()
     return () => { cancelled = true }
-  }, [userId, nonce])
+  }, [ownerUserId, nonce])
 
-  return { status, provider, refresh }
+  // Never show a previous owner's configurations, even for the render before an effect runs.
+  const lookupStatus = ownerUnavailable ? 'limited'
+    : !ownerUserId || lookup.ownerUserId !== ownerUserId || lookup.nonce !== nonce ? 'loading'
+    : lookup.status
+  const providers = lookupStatus === 'ready' ? lookup.providers : []
+  const provider = providers.find(row => row.id === selectedProviderId && typeof row.apiKey === 'string' && row.apiKey.trim()) ?? null
+  const status: JevProviderStatus = lookupStatus === 'loading' ? 'loading'
+    : lookupStatus === 'error' || lookupStatus === 'limited' ? 'error'
+    : provider ? 'yes' : 'no'
+
+  return createElement(JevSelectionContext.Provider, { value: {
+    status, lookupStatus, provider, providers, selectedProviderId, ownerUserId,
+    error: lookupStatus === 'error' ? lookup.error : null, refresh,
+  } }, children)
 }
 
-/** Whether the acting user has a Jev token. See useJevProvider. */
+/** No implicit acting-user/first-row fallback outside a project selection scope. */
+export function useJevProvider(): JevSelectionState {
+  return useContext(JevSelectionContext) ?? {
+    status: 'error', lookupStatus: 'limited', provider: null, providers: [],
+    selectedProviderId: null, ownerUserId: null, error: null, refresh: () => {},
+  }
+}
+
 export function useHasJevProvider(): JevProviderStatus {
   return useJevProvider().status
 }

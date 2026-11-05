@@ -146,7 +146,7 @@ def test_a_redirect_is_not_followed():
     assert len(seen) == 1
 
 
-@pytest.mark.parametrize("model", ["jev-latest", "jev-preview", "gpt-4o", "jev-1.13", "../x", "", None])
+@pytest.mark.parametrize("model", ["jev-latest", "jev-preview", "jev-1.14.0", "gpt-4o", "jev-1.13", "../x", "", None])
 def test_a_model_that_is_not_a_pinned_version_is_refused_before_any_request(model):
     seen: list = []
     with _transport(_ok({}), seen):
@@ -320,14 +320,13 @@ def test_fetch_project_owner_reads_user_id_and_maps_404_to_none():
             jev_client._fetch_project_owner("p1")
 
 
-def test_pick_jev_key():
-    rows = [{"providerType": "anthropic", "apiKey": "sk"},
-            {"providerType": "jev", "apiKey": KEY},
-            {"providerType": "jev", "apiKey": "newer"}]
-    assert jev_client.pick_jev_key(rows) == KEY
-    assert jev_client.pick_jev_key([{"providerType": "jev", "apiKey": ""}]) is None
-    assert jev_client.pick_jev_key([{"providerType": "openai", "apiKey": "x"}]) is None
-    assert jev_client.pick_jev_key(None) is None
+def test_resolve_exact_jev_provider_without_first_row_fallback():
+    rows = [{"id": "first", "providerType": "jev", "apiKey": "first-key"},
+            {"id": "selected", "providerType": "jev", "apiKey": KEY}]
+    assert jev_client.resolve_provider(rows, "selected", "u1").api_key == KEY
+    for selected in ("missing", "", None):
+        with pytest.raises(JevError):
+            jev_client.resolve_provider(rows, selected, "u1")
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +348,7 @@ def _post_test(client, **body):
 
 
 def test_provider_test_lists_models_and_never_builds_a_chat_model(client):
-    with patch.object(jev_client, "list_models", AsyncMock(return_value=["jev-latest"])) as lm, \
+    with patch.object(jev_client, "list_models", AsyncMock(return_value=["jev-1.13.0"])) as lm, \
             patch("orchestrator_helpers.llm_setup.setup_llm") as setup:
         resp = _post_test(client, baseUrl="http://evil.example")
     assert resp.status_code == 200

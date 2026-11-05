@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
+import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -67,7 +68,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       // body can never redirect the token; for any other row it can never turn
       // the key into a Jev test.
       const LOCKED_FOR_JEV = new Set(['providerType', 'baseUrl', 'defaultHeaders', 'modelIdentifier'])
-      const storedIsJev = provider.providerType === 'jev'
+      const storedIsJev = isJevProvider(provider)
+      if (body.providerType !== undefined && body.providerType !== provider.providerType
+        && (storedIsJev || isJevProvider({ providerType: body.providerType }))) {
+        return NextResponse.json({ success: false, error: 'The backend of a Jev provider cannot be changed' }, { status: 400 })
+      }
       config = { ...(provider as unknown as Record<string, unknown>) }
       for (const [key, value] of Object.entries(body)) {
         if (SECRET_FIELDS.has(key) && isMasked(value)) {
@@ -75,9 +80,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           continue
         }
         if (storedIsJev && LOCKED_FOR_JEV.has(key)) continue
-        if (!storedIsJev && key === 'providerType' && value === 'jev') continue
         config[key] = value
       }
+    }
+
+    if (isJevProvider({ providerType: String(config.providerType) })) {
+      const type = config.providerType as 'jev' | 'jev_openrouter'
+      config = { ...config, ...jevPinnedConfig(type), testMode: 'key' }
     }
 
     // Proxy to agent test endpoint. The AGENT does the live call to the

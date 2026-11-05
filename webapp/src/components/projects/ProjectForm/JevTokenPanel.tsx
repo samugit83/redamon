@@ -1,79 +1,94 @@
 'use client'
 
-import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from 'lucide-react'
+import { useId, useState } from 'react'
+import { AlertTriangle, ExternalLink, Loader2, RefreshCw } from 'lucide-react'
 import { LlmProviderForm } from '@/components/settings/LlmProviderForm'
 import { SiTypeSafe } from '@/components/icons/ProviderBrandIcons'
-import { JEV_MODEL } from '@/lib/llmProviderKinds'
-import { notifyJevProviderChanged, useJevProvider } from '@/hooks/useHasJevProvider'
+import { JEV_MODEL, JEV_OPENROUTER_MODEL } from '@/lib/llmProviderKinds'
+import { notifyJevProviderChanged, useJevProvider, type JevProviderRow } from '@/hooks/useHasJevProvider'
 import styles from './AiPipelinePanel.module.css'
 
 const SETTINGS_URL = '/settings?tab=providers'
 
-/**
- * The TypeSafe Jev token, next to the AI Model picker in the Target AI panel.
- *
- * Without a token it offers the same input as Global Settings, so a person can add
- * one without leaving the project form; with one it only confirms it is there. The
- * token belongs to the account, not the project: saving here is the same as saving
- * it in Global Settings, and every engine switch on the page picks it up at once.
- */
-export function JevTokenPanel({ userId }: { userId: string | null }) {
-  const { status, provider, refresh } = useJevProvider()
+function label(provider: JevProviderRow): string {
+  const backend = provider.providerType === 'jev_openrouter' ? 'OpenRouter' : 'TypeSafe'
+  const model = provider.providerType === 'jev_openrouter' ? JEV_OPENROUTER_MODEL : JEV_MODEL
+  return `${provider.name || backend} · ${backend} · ${model}`
+}
+
+/** Account configuration is separate from the project's explicit, nullable selection. */
+export function JevTokenPanel({ userId, onSelect }: {
+  userId: string | null
+  onSelect: (providerId: string | null) => void
+}) {
+  const { status, lookupStatus, provider, providers, selectedProviderId, ownerUserId, error, refresh } = useJevProvider()
+  const [adding, setAdding] = useState(false)
+  const selectId = useId()
+  const canManage = !!ownerUserId && ownerUserId === userId && lookupStatus === 'ready'
+  const missing = !!selectedProviderId && !providers.some(row => row.id === selectedProviderId)
 
   return (
     <div className={styles.tokenPanel} data-testid="jev-token-panel">
       <div className={styles.tokenHead}>
         <span className={styles.tokenIcon} aria-hidden="true"><SiTypeSafe size={16} /></span>
-        <span className={styles.tokenTitle}>TypeSafe AI (Jev)</span>
-        {status === 'yes' && <span className={`${styles.chip} ${styles.chipOk}`}>Connected</span>}
-        {status === 'no' && <span className={styles.chip}>Not added</span>}
+        <label className={styles.tokenTitle} htmlFor={selectId}>Jev provider</label>
+        {status === 'yes' && <span className={`${styles.chip} ${styles.chipOk}`}>Selected</span>}
+        {status === 'no' && <span className={styles.chip}>{missing ? 'Unavailable' : 'Not selected'}</span>}
       </div>
 
-      {status === 'loading' && (
-        <div className={styles.tokenNote}>
-          <Loader2 size={12} className={styles.spin} /> Checking your Jev token…
-        </div>
+      {lookupStatus === 'loading' && (
+        <div className={styles.tokenNote}><Loader2 size={12} className={styles.spin} /> Loading the project owner&apos;s Jev configurations…</div>
       )}
-
-      {status === 'error' && (
+      {lookupStatus === 'limited' && (
         <div className={styles.tokenNote} role="alert">
-          <AlertTriangle size={12} /> Couldn&apos;t check your Jev token.
-          <button type="button" className={styles.linkButton} onClick={refresh}>
-            <RefreshCw size={11} /> Retry
-          </button>
+          <AlertTriangle size={12} /> The project owner&apos;s Jev configurations are unavailable in this view. No account configuration will be selected automatically.
+        </div>
+      )}
+      {lookupStatus === 'error' && (
+        <div className={styles.tokenNote} role="alert">
+          <AlertTriangle size={12} /> Couldn&apos;t load the project owner&apos;s Jev configurations. {error}
+          <button type="button" className={styles.linkButton} onClick={refresh}><RefreshCw size={11} /> Retry</button>
         </div>
       )}
 
-      {status === 'no' && userId && (
+      {lookupStatus === 'ready' && (
         <>
-          <p className={styles.tokenIntro}>
-            Optional. Lets the FFuf, Nuclei, WAF and takeover hooks run on Jev instead of
-            the LLM, and turns on the Jev-only hooks below. Saved to your account, like in
-            Global Settings.
-          </p>
-          <LlmProviderForm
-            userId={userId}
-            lockedType="jev"
-            embedded
-            onSave={notifyJevProviderChanged}
-            onCancel={() => {}}
-          />
+          <select id={selectId} className="selectInput" value={selectedProviderId ?? ''}
+            onChange={event => onSelect(event.target.value || null)}>
+            <option value="">Not configured — deterministic fallback</option>
+            {missing && <option value={selectedProviderId!} disabled>Selected configuration unavailable</option>}
+            {providers.map(row => <option key={row.id} value={row.id} disabled={!row.apiKey?.trim()}>{label(row)}</option>)}
+          </select>
+          {status === 'no' && (
+            <p className={styles.tokenIntro} role="alert">
+              {missing ? 'The selected Jev configuration was deleted or is unavailable.' : selectedProviderId ? 'The selected Jev configuration has no saved credential.' : 'No Jev provider is selected for this project.'}
+              {' '}Jev hooks use deterministic fallbacks; scan start is not blocked. Select a configuration explicitly, including for existing projects.
+            </p>
+          )}
+          {provider && (
+            <p className={styles.tokenIntro} data-testid="jev-provider-selected">
+              {label(provider)}. Shared by every Jev hook in this project. Saved credentials do not confirm live model access; failed calls use deterministic fallbacks.
+            </p>
+          )}
+          {providers.length === 0 && <p className={styles.tokenIntro}>The project owner has no Jev configurations.</p>}
         </>
       )}
 
-      {status === 'yes' && provider && (
-        <div className={styles.connected} data-testid="jev-token-connected">
-          <CheckCircle2 size={16} className={styles.connectedIcon} />
-          <div className={styles.connectedText}>
-            <span className={styles.connectedLine}>Your Jev token is included</span>
-            <span className={styles.connectedMeta}>
-              <span className={styles.mono}>{provider.apiKey}</span> · {provider.modelIdentifier || JEV_MODEL}
-            </span>
+      {selectedProviderId && lookupStatus !== 'ready' && (
+        <button type="button" className={styles.linkButton} onClick={() => onSelect(null)}>Clear Jev selection</button>
+      )}
+
+      {canManage && (
+        <>
+          <div className={styles.tokenNote}>
+            <button type="button" className={styles.linkButton} onClick={() => setAdding(value => !value)}>
+              {adding ? 'Close add form' : 'Add Jev configuration'}
+            </button>
+            <a className={styles.manageLink} href={SETTINGS_URL} target="_blank" rel="noopener noreferrer">Manage <ExternalLink size={11} /></a>
           </div>
-          <a className={styles.manageLink} href={SETTINGS_URL} target="_blank" rel="noopener noreferrer">
-            Manage <ExternalLink size={11} />
-          </a>
-        </div>
+          {adding && <LlmProviderForm userId={ownerUserId!} lockedType="jev" embedded
+            onSave={() => { setAdding(false); notifyJevProviderChanged() }} onCancel={() => setAdding(false)} />}
+        </>
       )}
     </div>
   )

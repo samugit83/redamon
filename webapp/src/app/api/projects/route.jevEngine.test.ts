@@ -2,7 +2,7 @@
  * POST /api/projects and the Jev engine flags.
  *
  * A new project starts with every engine on the LLM, so any engine flag in the
- * body is a switch-on and needs a Jev token on the CREATING user's account. The
+ * body is a switch-on and needs an explicit creator-owned Jev selection. The
  * flags must also survive into the create call: the route passes a column
  * through only if the generated Prisma client lists it.
  *
@@ -13,7 +13,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 const mockUserFindUnique = vi.fn()
 const mockProjectCreate = vi.fn()
 const mockProjectUpdate = vi.fn()
-const mockTokenCount = vi.fn()
+const mockProviderFind = vi.fn()
 
 vi.mock('@/lib/prisma', () => ({
   default: {
@@ -22,7 +22,7 @@ vi.mock('@/lib/prisma', () => ({
       create: (...a: unknown[]) => mockProjectCreate(...a),
       update: (...a: unknown[]) => mockProjectUpdate(...a),
     },
-    userLlmProvider: { count: (...a: unknown[]) => mockTokenCount(...a) },
+    userLlmProvider: { findFirst: (...a: unknown[]) => mockProviderFind(...a) },
   },
 }))
 vi.mock('@/app/api/graph/neo4j', () => ({
@@ -51,54 +51,75 @@ beforeEach(() => {
   mockUserFindUnique.mockResolvedValue({ id: 'user-1' })
   mockProjectCreate.mockResolvedValue({ id: 'p1', name: 'test' })
   mockProjectUpdate.mockResolvedValue({})
-  mockTokenCount.mockResolvedValue(0)
+  mockProviderFind.mockResolvedValue(null)
 })
 
 describe('the generated client knows every Jev column', () => {
   test.each(['ffufAiUseJev', 'nucleiTagsAiUseJev', 'wafAiUseJev', 'takeoverAiUseJev',
     'ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
-    'serializedScanJevRank'])(
+    'serializedScanJevRank', 'jevProviderId'])(
     '%s is a Project scalar', name => {
       expect(Object.values(Prisma.ProjectScalarFieldEnum)).toContain(name)
     })
 })
 
 describe('POST: a new project asking for the Jev engine', () => {
-  test('with a token on the creating account the flag reaches the create call', async () => {
-    mockTokenCount.mockResolvedValue(1)
-    const res = await POST(postReq({ ...base, ffufAiUseJev: true }))
+  test('with an explicit provider selection on the creating account the flag reaches the create call', async () => {
+    mockProviderFind.mockResolvedValue({ id: 'jev-selected' })
+    const res = await POST(postReq({ ...base, ffufAiUseJev: true, jevProviderId: 'jev-selected' }))
     expect(res.status).toBeLessThan(400)
-    expect(mockProjectCreate.mock.calls[0][0].data.ffufAiUseJev).toBe(true)
-    expect(mockTokenCount).toHaveBeenCalledWith({ where: { userId: 'user-1', providerType: 'jev' } })
+    expect(mockProjectCreate.mock.calls[0][0].data).toMatchObject({ ffufAiUseJev: true, jevProviderId: 'jev-selected' })
+    expect(mockProviderFind).toHaveBeenCalledWith({ where: { id: 'jev-selected', userId: 'user-1', providerType: { in: ['jev', 'jev_openrouter'] } }, select: { id: true } })
   })
 
-  test('without a token it is refused and no project is created', async () => {
+  test('without a provider selection it is refused and no project is created', async () => {
     const res = await POST(postReq({ ...base, wafAiUseJev: true }))
     expect(res.status).toBe(400)
     expect((await res.json()).error).toContain('wafAiUseJev')
     expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 
-  test('it fails closed when the lookup throws', async () => {
-    mockTokenCount.mockRejectedValue(new Error('db down'))
-    const res = await POST(postReq({ ...base, takeoverAiUseJev: true }))
+  test('an account provider cannot enable a hook with a null project selection', async () => {
+    mockProviderFind.mockResolvedValue({ id: 'jev-selected' })
+    const res = await POST(postReq({ ...base, wafAiUseJev: true, jevProviderId: null }))
     expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('select an explicit Jev provider')
+    expect(mockProviderFind).not.toHaveBeenCalled()
     expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 
-  test('the form sends every engine flag as false: that is not a switch-on and needs no token', async () => {
+  test('an unavailable or foreign selected provider cannot create a project', async () => {
+    const res = await POST(postReq({ ...base, ffufAiUseJev: true, jevProviderId: 'jev-selected' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not belong to the project owner')
+    expect(mockProviderFind).toHaveBeenCalledWith({
+      where: { id: 'jev-selected', userId: 'user-1', providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
+    })
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('it fails closed when the lookup throws', async () => {
+    mockProviderFind.mockRejectedValue(new Error('db down'))
+    const res = await POST(postReq({ ...base, takeoverAiUseJev: true, jevProviderId: 'jev-selected' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Couldn't verify the project's Jev provider, try again.")
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('the form sends every engine flag as false: that is not a switch-on and needs no provider selection', async () => {
     const res = await POST(postReq({
       ...base, ffufAiUseJev: false, nucleiTagsAiUseJev: false, wafAiUseJev: false, takeoverAiUseJev: false,
     }))
     expect(res.status).toBeLessThan(400)
-    expect(mockTokenCount).not.toHaveBeenCalled()
+    expect(mockProviderFind).not.toHaveBeenCalled()
   })
 })
 
 describe('POST: a new project turning on a Jev-only hook', () => {
   test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
     'serializedScanJevRank'])(
-    '%s without a token is refused and no project is created', async (field) => {
+    '%s without a provider selection is refused and no project is created', async (field) => {
       const res = await POST(postReq({ ...base, [field]: true }))
       expect(res.status).toBe(400)
       expect((await res.json()).error).toContain(field)
@@ -107,7 +128,7 @@ describe('POST: a new project turning on a Jev-only hook', () => {
 
   test.each(['true', 'TRUE'])('the string "%s" is a switch-on too', async (value) => {
     // The body is coerced to booleans after it is read; judging the raw body let a
-    // string through to a project created with the flag on and no token.
+    // string through to a project created with the flag on and no provider selection.
     const res = await POST(postReq({ ...base, serializedScanJevRank: value }))
     expect(res.status).toBe(400)
     expect((await res.json()).error).toContain('serializedScanJevRank')
@@ -120,6 +141,6 @@ describe('POST: a new project turning on a Jev-only hook', () => {
       hakrawlerJevSeedOrder: false, serializedScanJevRank: false,
     }))
     expect(res.status).toBeLessThan(400)
-    expect(mockTokenCount).not.toHaveBeenCalled()
+    expect(mockProviderFind).not.toHaveBeenCalled()
   })
 })

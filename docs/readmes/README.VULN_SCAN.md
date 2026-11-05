@@ -428,7 +428,7 @@ fuzz        - Fuzzing templates (excluded by default)
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `NUCLEI_AI_TAGS` | `bool` | `False` | Let an LLM replace `NUCLEI_TAGS` with a subset that fits the technologies and Server headers http_probe found (detection pass only) |
-| `NUCLEI_TAGS_AI_USE_JEV` | `bool` | `False` | Use TypeSafe AI Jev instead of the LLM for the tag selector |
+| `NUCLEI_TAGS_AI_USE_JEV` | `bool` | `False` | Use native Jev 1.13 through the project's selected TypeSafe or OpenRouter Jev configuration instead of the LLM for the tag selector |
 | `NUCLEI_AI_RESPONSE_FILTER` | `bool` | `False` | Ask the LLM whether a suspicious-status response (403/406/418/429/503/451) to an injection template is a block page |
 
 The AI-in-pipeline switch (`AI_IN_PIPELINE`) turns `NUCLEI_AI_TAGS`, `NUCLEI_AI_RESPONSE_FILTER` and the security checks' `WAF_AI_CLASSIFIER` on or off together; the model is `AI_PIPELINE_MODEL`. When the AI is unavailable, the user's tags and the static filter are used.

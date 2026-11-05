@@ -54,6 +54,14 @@ const ABSENT_FROM_BACKEND_DEFAULTS = [
 // ============================================================
 
 describe('PRESET_EXCLUDED_FIELDS', () => {
+  test('Jev provider selections never travel or overwrite the receiving selection', () => {
+    expect(PRESET_EXCLUDED_FIELDS.has('jevProviderId')).toBe(true)
+    expect(extractPresetSettings({ jevProviderId: 'owner-provider' })).not.toHaveProperty('jevProviderId')
+    const applied = applyPresetSettings(
+      { jevProviderId: 'receiving-provider' }, { jevProviderId: 'foreign-provider' }, {})
+    expect(applied.jevProviderId).toBe('receiving-provider')
+  })
+
   test('is a Set', () => {
     expect(PRESET_EXCLUDED_FIELDS).toBeInstanceOf(Set)
   })
@@ -74,6 +82,7 @@ describe('PRESET_EXCLUDED_FIELDS', () => {
       ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),
       ...fieldsWhere(f => f.deny_reason === 'upload-managed').map(f => f.key),
       ...fieldsWhere(f => f.read_deny_reason === 'credential').map(f => f.key),
+      ...fieldsWhere(f => f.validator === 'provider_reference').map(f => f.key),
       ...fieldsWhere(f => f.deny_reason === 'escalation' || f.deny_reason === 'not-tuning').map(f => f.key),
       ...bookkeeping.map(f => f.key),
       ...fieldsWhere(f => f.deny_reason === 'secret').map(f => f.key),

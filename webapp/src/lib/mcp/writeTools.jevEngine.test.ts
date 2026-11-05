@@ -1,10 +1,9 @@
 /**
  * update_recon_settings and the Jev engine flags.
  *
- * The project form checks the owner's Jev token in the browser, but the MCP
- * writer is the other door onto the same column, so it enforces the same rule on
- * the server: a switch-on needs a token on the project owner's account, a stored
- * `true` never blocks an unrelated write, and a failed lookup refuses.
+ * The MCP writer requires an explicit owner-owned Jev selection for a switch-on
+ * or a changed non-null provider id. A legacy stored `true` never blocks an
+ * unrelated write, and a failed provider lookup refuses.
  *
  * Over MCP the token's user must be the project's owner (a mismatch is always a
  * hard deny), so the acting account and the owner are the same here; the check
@@ -17,7 +16,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 const h = vi.hoisted(() => ({
   findProject: vi.fn(),
   updateManyProjects: vi.fn(),
-  tokenCount: vi.fn(),
+  providerFind: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -26,7 +25,7 @@ vi.mock('@/lib/prisma', () => ({
       findUnique: (...a: unknown[]) => h.findProject(...a),
       updateMany: (...a: unknown[]) => h.updateManyProjects(...a),
     },
-    userLlmProvider: { count: (...a: unknown[]) => h.tokenCount(...a) },
+    userLlmProvider: { findFirst: (...a: unknown[]) => h.providerFind(...a) },
     jobQueue: { findMany: async () => [] },
     projectAuthProfile: { findUnique: async () => null },
     fireteamSettingsAudit: { createMany: async () => ({}) },
@@ -60,54 +59,99 @@ beforeEach(() => {
   vi.clearAllMocks()
   __resetRateLimiter()
   stored = {
-    id: 'p1', userId: 'owner', updatedAt: READ_AT,
+    id: 'p1', userId: 'owner', updatedAt: READ_AT, jevProviderId: null,
     ffufAiUseJev: false, nucleiTagsAiUseJev: false, wafAiUseJev: false, takeoverAiUseJev: false,
   }
   h.findProject.mockImplementation(async () => ({ ...stored }))
   h.updateManyProjects.mockResolvedValue({ count: 1 })
-  h.tokenCount.mockResolvedValue(0)
+  h.providerFind.mockResolvedValue(null)
 })
 
 describe('update_recon_settings: a switch onto Jev', () => {
-  test('with a token on the owner\'s account it is written', async () => {
-    h.tokenCount.mockResolvedValue(1)
+  test('with an explicit provider selection on the owner\'s account it is written', async () => {
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    stored.jevProviderId = 'jev-selected'
     const r = await updateReconSettings(ctx(), 'p1', { ffufAiUseJev: true })
     expect(r.projectId).toBe('p1')
     expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ ffufAiUseJev: true })
   })
 
-  test('the lookup is for the stored owner and the jev provider type', async () => {
-    h.tokenCount.mockResolvedValue(1)
+  test('the lookup is for the stored selection, owner and both Jev provider types', async () => {
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    stored.jevProviderId = 'jev-selected'
     await updateReconSettings(ctx(), 'p1', { wafAiUseJev: true })
-    expect(h.tokenCount).toHaveBeenCalledWith({ where: { userId: 'owner', providerType: 'jev' } })
+    expect(h.providerFind).toHaveBeenCalledWith({ where: { id: 'jev-selected', userId: 'owner', providerType: { in: ['jev', 'jev_openrouter'] } }, select: { id: true } })
   })
 
-  test('without a token it is refused, naming the field, and nothing is written', async () => {
+  test('without a provider selection it is refused, naming the field, and nothing is written', async () => {
     await expect(updateReconSettings(ctx(), 'p1', { nucleiTagsAiUseJev: true }))
-      .rejects.toThrow(/nucleiTagsAiUseJev.*no TypeSafe AI \(Jev\) token/s)
+      .rejects.toThrow(/nucleiTagsAiUseJev.*select an explicit Jev provider/s)
     expect(h.updateManyProjects).not.toHaveBeenCalled()
   })
 
   test('it fails closed when the lookup throws', async () => {
-    h.tokenCount.mockRejectedValue(new Error('db down'))
+    h.providerFind.mockRejectedValue(new Error('db down'))
+    stored.jevProviderId = 'jev-selected'
     await expect(updateReconSettings(ctx(), 'p1', { ffufAiUseJev: true }))
-      .rejects.toThrow("Couldn't verify your Jev token, try again.")
+      .rejects.toThrow("Couldn't verify the project's Jev provider, try again.")
+    expect(h.updateManyProjects).not.toHaveBeenCalled()
+  })
+})
+
+describe('update_recon_settings: provider selection changes', () => {
+  test('a changed non-null selection is validated and written even without a switch-on', async () => {
+    stored.jevProviderId = 'jev-before'
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    await updateReconSettings(ctx(), 'p1', { jevProviderId: 'jev-selected' })
+    expect(h.providerFind).toHaveBeenCalledWith({
+      where: { id: 'jev-selected', userId: 'owner', providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
+    })
+    expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ jevProviderId: 'jev-selected' })
+  })
+
+  test('a changed unavailable selection is refused even with legacy enabled hooks', async () => {
+    stored.ffufAiUseJev = true
+    stored.jevProviderId = 'jev-before'
+    await expect(updateReconSettings(ctx(), 'p1', { jevProviderId: 'jev-selected' }))
+      .rejects.toThrow('does not belong to the project owner')
+    expect(h.providerFind).toHaveBeenCalledWith({
+      where: { id: 'jev-selected', userId: 'owner', providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
+    })
+    expect(h.updateManyProjects).not.toHaveBeenCalled()
+  })
+
+  test('clearing a selection permits static fallback for an already enabled hook', async () => {
+    stored.ffufAiUseJev = true
+    stored.jevProviderId = 'jev-before'
+    await updateReconSettings(ctx(), 'p1', { jevProviderId: null })
+    expect(h.providerFind).not.toHaveBeenCalled()
+    expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ jevProviderId: null })
+  })
+
+  test('an account provider cannot enable a hook with a null selection', async () => {
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    await expect(updateReconSettings(ctx(), 'p1', { ffufAiUseJev: true, jevProviderId: null }))
+      .rejects.toThrow('select an explicit Jev provider')
+    expect(h.providerFind).not.toHaveBeenCalled()
     expect(h.updateManyProjects).not.toHaveBeenCalled()
   })
 })
 
 describe('update_recon_settings: a stored Jev choice is not a reason to refuse', () => {
-  test('an unchanged true with no token still allows an unrelated write', async () => {
+  test('an unchanged true with no provider selection still allows an unrelated write', async () => {
     stored.ffufAiUseJev = true
     const r = await updateReconSettings(ctx(), 'p1', { ffufAiUseJev: true, naabuThreads: 25 })
     expect(r.projectId).toBe('p1')
-    expect(h.tokenCount).not.toHaveBeenCalled()
+    expect(h.providerFind).not.toHaveBeenCalled()
+    expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ ffufAiUseJev: true, naabuThreads: 25 })
   })
 
-  test('switching back to the LLM needs no token', async () => {
+  test('switching back to the LLM needs no provider selection', async () => {
     stored.wafAiUseJev = true
     await updateReconSettings(ctx(), 'p1', { wafAiUseJev: false })
-    expect(h.tokenCount).not.toHaveBeenCalled()
+    expect(h.providerFind).not.toHaveBeenCalled()
     expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ wafAiUseJev: false })
   })
 })
@@ -115,14 +159,15 @@ describe('update_recon_settings: a stored Jev choice is not a reason to refuse',
 describe('update_recon_settings: turning on a Jev-only hook', () => {
   test.each(['ffufJevBasePaths', 'httpxJevPageType', 'resourceEnumJevToolHealth', 'hakrawlerJevSeedOrder',
     'serializedScanJevRank'])(
-    '%s without a token is refused and nothing is written', async (field) => {
+    '%s without a provider selection is refused and nothing is written', async (field) => {
       await expect(updateReconSettings(ctx(), 'p1', { [field]: true }))
-        .rejects.toThrow(new RegExp(`${field}.*no TypeSafe AI \\(Jev\\) token`, 's'))
+        .rejects.toThrow(new RegExp(`${field}.*select an explicit Jev provider`, 's'))
       expect(h.updateManyProjects).not.toHaveBeenCalled()
     })
 
-  test('with a token it is written', async () => {
-    h.tokenCount.mockResolvedValue(1)
+  test('with an explicit provider selection it is written', async () => {
+    h.providerFind.mockResolvedValue({ id: 'jev-selected' })
+    stored.jevProviderId = 'jev-selected'
     await updateReconSettings(ctx(), 'p1', { ffufJevBasePaths: true })
     expect(h.updateManyProjects.mock.calls[0][0].data).toEqual({ ffufJevBasePaths: true })
   })

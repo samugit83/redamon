@@ -1295,8 +1295,8 @@ class _JevPreambleError(Exception):
         self.response = response
 
 
-async def _jev_preamble(user_id: str, project_id: str) -> str:
-    """Return the project owner's Jev token, or raise `_JevPreambleError`.
+async def _jev_preamble(user_id: str, project_id: str):
+    """Return the selected immutable Jev provider, or raise `_JevPreambleError`.
 
     Order matters: the caller's ids are validated, the project is bound to its owner
     (fail closed), and only then is the token loaded, so a mismatched project never
@@ -1312,7 +1312,7 @@ async def _jev_preamble(user_id: str, project_id: str) -> str:
 
     # Owner binding, fail closed: the project must belong to this user.
     try:
-        await jev_client.verify_owner(project_id, user_id)
+        selected_id = await jev_client.selected_provider_id(project_id, user_id)
     except jev_client.JevError as e:
         status = 403 if e.error_type == "jev_forbidden" else 503
         raise _JevPreambleError(JSONResponse(
@@ -1322,10 +1322,10 @@ async def _jev_preamble(user_id: str, project_id: str) -> str:
         providers = await asyncio.to_thread(fetch_user_providers, user_id)
     except ProvidersUnreachable:
         raise _JevPreambleError(_jev_failure(jev_client.JevError("jev_unavailable")))
-    key = jev_client.pick_jev_key(providers)
-    if not key:
-        raise _JevPreambleError(_jev_failure(jev_client.JevError("jev_not_configured")))
-    return key
+    try:
+        return jev_client.resolve_provider(providers, selected_id, user_id)
+    except jev_client.JevError as e:
+        raise _JevPreambleError(_jev_failure(e))
 
 
 def _log_jev(endpoint: str, user_id: str, project_id: str, n_questions: int,
@@ -1353,16 +1353,18 @@ async def _run_jev(endpoint: str, user_id: str, project_id: str, n_questions: in
         result = await coro(key)
     except jev_hooks.JevError as e:
         _log_jev(endpoint, user_id, project_id, n_questions, jev_hooks.JEV_MODEL,
-                 int((_time.monotonic() - started) * 1000), f"error_type={e.error_type}")
+                 int((_time.monotonic() - started) * 1000),
+                 f"backend={key.provider_type} error_type={e.error_type}")
         return _jev_failure(e)
     except Exception as e:                                        # noqa: BLE001
         # Anything unclassified still has to be a fixed 503 that recon's breaker can
         # name. The class is logged, never the message: it can carry request state.
         _log_jev(endpoint, user_id, project_id, n_questions, jev_hooks.JEV_MODEL,
-                 int((_time.monotonic() - started) * 1000), f"error={type(e).__name__}")
+                 int((_time.monotonic() - started) * 1000),
+                 f"backend={key.provider_type} error={type(e).__name__}")
         return _jev_failure(jev_hooks.JevError("jev_bad_response"))
     _log_jev(endpoint, user_id, project_id, n_questions, jev_hooks.JEV_MODEL,
-             int((_time.monotonic() - started) * 1000), "ok")
+             int((_time.monotonic() - started) * 1000), f"backend={key.provider_type} ok")
     return result
 
 
@@ -2355,6 +2357,7 @@ class LlmProviderTestRequest(BaseModel):
     awsAccessKeyId: str = ""
     awsSecretKey: str = ""
     awsBearerToken: str = ""
+    testMode: Literal["key", "capability"] = "key"
 
 
 _JEV_TEST_ERRORS = {
@@ -2499,23 +2502,17 @@ async def test_llm_provider(body: LlmProviderTestRequest):
                 "custom/provider-test",
                 custom_llm_config=body.model_dump(),
             )
-        elif ptype == "jev":
-            # Not a chat provider: listing models proves the key without
-            # spending credit, and the key only ever goes to api.typesafe.ai.
+        elif ptype in {"jev", "jev_openrouter"}:
             import jev_client
             try:
-                await jev_client.list_models(body.apiKey)
+                provider = jev_client.JevProvider(ptype, body.apiKey)
+                return await jev_client.test_provider(
+                    provider, capability=body.testMode == "capability")
             except jev_client.JevError as e:
+                error = _JEV_TEST_ERRORS.get(e.error_type, e.message) if ptype == "jev" else e.message
                 return JSONResponse(
-                    content={"success": False,
-                             "error": _JEV_TEST_ERRORS.get(e.error_type, e.message)},
-                    status_code=400,
+                    content={"success": False, "error": error}, status_code=400,
                 )
-            return {
-                "success": True,
-                "model": jev_client.JEV_MODEL,
-                "response_text": f"TypeSafe accepted the key (model {jev_client.JEV_MODEL}).",
-            }
         else:
             return JSONResponse(
                 content={"success": False, "error": f"Unknown provider type: {ptype}"},

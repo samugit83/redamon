@@ -116,3 +116,17 @@ export const openrouterProbe: ProbeDef = {
   endpoint: 'GET openrouter.ai/api/v1/key',
   run: async ctx => parse(await ctx.http(request(ctx.key)), ctx.now),
 }
+
+/** Jev-only entries share billing metadata, never TypeSafe probes or inference calls. */
+export const jevOpenrouterProbe: ProbeDef = {
+  ...openrouterProbe,
+  id: 'llm-jev-openrouter',
+  service: 'jev_openrouter',
+  label: 'OpenRouter (Jev)',
+  costNote: 'Free key billing metadata only; does not prove Jev decision access',
+  docsUrl: 'https://openrouter.ai/docs/guides/community/typesafe-sdk',
+  run: async ctx => {
+    const result = parse(await ctx.http(request(ctx.key)), ctx.now)
+    return { ...result, notes: [...(result.notes ?? []), 'OpenRouter key billing metadata only; Jev decision access is not checked'] }
+  },
+}

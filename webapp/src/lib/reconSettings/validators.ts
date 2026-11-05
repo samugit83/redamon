@@ -296,6 +296,10 @@ function checkScalar(validator: string, value: unknown, ctx: ValidationContext):
       return typeof value === 'string' && /^[0-9,\s-]{0,2000}$/.test(value)
         ? null
         : 'must be a port list or range such as "80,443,8000-8100"'
+    case 'provider_reference':
+      return value === null || (typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value))
+        ? null
+        : 'must be null or a Jev provider configuration id'
     case 'free_text':
       if (typeof value !== 'string') return 'must be a string'
       if (value.includes('\0')) return 'must not contain a NUL byte'

@@ -1,17 +1,17 @@
 /**
  * The server-side check behind the LLM | Jev engine switch.
  *
- * The form's own token lookup is a convenience; this is the authority. It
- * refuses a SWITCH-ON to Jev when the project owner has no Jev token, and
- * nothing else: a stored `true` must never block an unrelated save.
+ * The form's provider lookup is a convenience; this is the authority. A new
+ * switch-on or a changed selection requires an explicit owner-owned Jev row;
+ * a stored `true` without a selection must not block an unrelated save.
  *
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 
-const mockCount = vi.fn()
+const mockProvider = vi.fn()
 vi.mock('@/lib/prisma', () => ({
-  default: { userLlmProvider: { count: (...a: unknown[]) => mockCount(...a) } },
+  default: { userLlmProvider: { findFirst: (...a: unknown[]) => mockProvider(...a) } },
 }))
 
 import {
@@ -20,7 +20,7 @@ import {
 } from './jevEngine'
 
 beforeEach(() => {
-  mockCount.mockReset().mockResolvedValue(0)
+  mockProvider.mockReset().mockResolvedValue(null)
 })
 
 describe('jevSwitchedOn', () => {
@@ -71,21 +71,59 @@ describe('jevSwitchedOn', () => {
 })
 
 describe('validateJevEngineChange', () => {
+  test('selecting a provider validates ownership even with every hook disabled', async () => {
+    const error = await validateJevEngineChange(null, { jevProviderId: 'foreign-provider' }, 'owner')
+    expect(error).toContain('does not belong')
+    expect(mockProvider).toHaveBeenCalledWith({
+      where: { id: 'foreign-provider', userId: 'owner', providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
+    })
+  })
+
+  test('changing provider with an already enabled hook is checked', async () => {
+    expect(await validateJevEngineChange(
+      { wafAiUseJev: true, jevProviderId: 'old-provider' },
+      { jevProviderId: 'missing-provider' }, 'owner')).toContain('unavailable')
+  })
+
+  test('clearing a selected provider permits intentional fallback', async () => {
+    expect(await validateJevEngineChange(
+      { wafAiUseJev: true, jevProviderId: 'provider-1' }, { jevProviderId: null }, 'owner')).toBeNull()
+    expect(mockProvider).not.toHaveBeenCalled()
+  })
+
+  test('a partial switch-on uses the persisted explicit selection', async () => {
+    mockProvider.mockResolvedValue({ id: 'provider-1' })
+    expect(await validateJevEngineChange(
+      { jevProviderId: 'provider-1' }, { wafAiUseJev: true }, 'owner')).toBeNull()
+  })
+
+  test('a malformed provider reference is rejected before any database lookup', async () => {
+    expect(await validateJevEngineChange(null, { jevProviderId: 'bad/id' }, 'owner')).toContain('explicit')
+    expect(mockProvider).not.toHaveBeenCalled()
+  })
+
+  test('having account providers does not configure a legacy project', async () => {
+    mockProvider.mockResolvedValue({ id: 'provider-1' })
+    expect(await validateJevEngineChange(null, { wafAiUseJev: true }, 'owner')).toContain('explicit')
+    expect(mockProvider).not.toHaveBeenCalled()
+  })
+
   test('no switch-on: allowed, and the database is not touched', async () => {
     expect(await validateJevEngineChange({ ffufAiUseJev: true }, { ffufAiUseJev: true, name: 'x' }, 'owner')).toBeNull()
-    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockProvider).not.toHaveBeenCalled()
   })
 
   test('a stored true does not block a save when the owner lost the token (the form sends every field)', async () => {
-    mockCount.mockResolvedValue(0)
+    mockProvider.mockResolvedValue(null)
     const stored = { ffufAiUseJev: true, wafAiUseJev: true }
     expect(await validateJevEngineChange(stored, { ...stored, katanaDepth: 3 }, 'owner')).toBeNull()
   })
 
   test('a switch-on with a token is allowed, and the lookup is for the OWNER and the jev type', async () => {
-    mockCount.mockResolvedValue(1)
-    expect(await validateJevEngineChange({ ffufAiUseJev: false }, { ffufAiUseJev: true }, 'owner-1')).toBeNull()
-    expect(mockCount).toHaveBeenCalledWith({ where: { userId: 'owner-1', providerType: 'jev' } })
+    mockProvider.mockResolvedValue({ id: 'provider-1' })
+    expect(await validateJevEngineChange({ ffufAiUseJev: false }, { ffufAiUseJev: true, jevProviderId: 'provider-1' }, 'owner-1')).toBeNull()
+    expect(mockProvider).toHaveBeenCalledWith({ where: { id: 'provider-1', userId: 'owner-1', providerType: { in: ['jev', 'jev_openrouter'] } }, select: { id: true } })
   })
 
   test('a switch-on without a token is refused, naming each field and where to add one', async () => {
@@ -112,23 +150,23 @@ describe('validateJevEngineChange', () => {
   })
 
   test('FAILS CLOSED when the lookup throws', async () => {
-    mockCount.mockRejectedValue(new Error('db down'))
-    expect(await validateJevEngineChange(null, { ffufAiUseJev: true }, 'owner')).toBe(JEV_VERIFY_FAILED)
+    mockProvider.mockRejectedValue(new Error('db down'))
+    expect(await validateJevEngineChange(null, { ffufAiUseJev: true, jevProviderId: 'provider-1' }, 'owner')).toBe(JEV_VERIFY_FAILED)
   })
 
   test('FAILS CLOSED with no owner: Prisma ignores userId:undefined and would count anyone\'s token', async () => {
-    mockCount.mockResolvedValue(5)
+    mockProvider.mockResolvedValue({ id: 'foreign-provider' })
     for (const owner of [undefined, null, '']) {
       expect(await validateJevEngineChange(null, { ffufAiUseJev: true }, owner)).toBe(JEV_VERIFY_FAILED)
     }
-    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockProvider).not.toHaveBeenCalled()
   })
 })
 
 describe('jevImportWarnings', () => {
   test('no Jev hook, no warning, no lookup', async () => {
     expect(await jevImportWarnings({ ffufAiUseJev: false }, 'u')).toEqual([])
-    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockProvider).not.toHaveBeenCalled()
   })
 
   test('hooks on Jev and no token: one warning per hook, values untouched', async () => {
@@ -141,15 +179,16 @@ describe('jevImportWarnings', () => {
     expect(row).toEqual({ ffufAiUseJev: true, takeoverAiUseJev: true })
   })
 
-  test('hooks on Jev and a token: nothing to warn about', async () => {
-    mockCount.mockResolvedValue(1)
-    expect(await jevImportWarnings({ wafAiUseJev: true }, 'importer')).toEqual([])
+  test('even an existing account provider is never selected implicitly on import', async () => {
+    mockProvider.mockResolvedValue({ id: 'provider-1' })
+    expect(await jevImportWarnings({ wafAiUseJev: true }, 'importer')).toHaveLength(1)
+    expect(mockProvider).not.toHaveBeenCalled()
   })
 
   test('never throws: a failed lookup becomes one warning', async () => {
-    mockCount.mockRejectedValue(new Error('db down'))
+    mockProvider.mockRejectedValue(new Error('db down'))
     const warnings = await jevImportWarnings({ wafAiUseJev: true }, 'importer')
     expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('could not be')
+    expect(warnings[0]).toContain('select a Jev provider')
   })
 })

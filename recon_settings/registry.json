@@ -5875,6 +5875,25 @@
    "type": "boolean",
    "unit": "none"
   },
+  "jevProviderId": {
+   "default": null,
+   "form_section": "TargetSection",
+   "group": "llm",
+   "has_default": false,
+   "mcp": "settable",
+   "meaning": "Explicit owner-owned Jev configuration shared by all Jev hooks. Supports TypeSafe and OpenRouter native Jev 1.13. Null means unconfigured and uses deterministic fallbacks. This account-scoped selection is never portable in exports or presets and never carries credentials to recon.",
+   "optional": true,
+   "phase": "standalone",
+   "prisma_type": "String",
+   "roe_capped": false,
+   "roe_parse": "deny",
+   "runtime_key": null,
+   "tool": "pipeline_ai",
+   "traffic": "none",
+   "type": "string",
+   "unit": "none",
+   "validator": "provider_reference"
+  },
   "jsReconAiSdkDetectionEnabled": {
    "default": true,
    "form_section": "JsReconSection",

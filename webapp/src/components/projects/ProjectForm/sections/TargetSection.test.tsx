@@ -11,6 +11,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 import { TargetSection } from './TargetSection'
+import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
 import { groupHostsByScanRoot } from '@/lib/domainBatch'
 
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
@@ -31,10 +32,11 @@ const BASE: Data = {
 function renderSection(initial: Partial<Data> = {}) {
   let data: Data = { ...BASE, ...initial }
   const updateField = vi.fn((k: string, v: unknown) => { data[k] = v; rerender() })
-  const view = render(<TargetSection data={data as never} updateField={updateField as never} mode="create" />)
-  function rerender() {
-    view.rerender(<TargetSection data={{ ...data } as never} updateField={updateField as never} mode="create" />)
-  }
+  const draw = () => <JevSelectionProvider ownerUserId="u1" selectedProviderId={typeof data.jevProviderId === 'string' ? data.jevProviderId : null}>
+    <TargetSection data={{ ...data } as never} updateField={updateField as never} mode="create" />
+  </JevSelectionProvider>
+  const view = render(draw())
+  function rerender() { view.rerender(draw()) }
   return { get data() { return data }, updateField, textarea: () => screen.getByPlaceholderText(/sub1\.domain1\.com/) }
 }
 
@@ -304,7 +306,7 @@ describe('the AI in Pipeline panel', () => {
   const JEV_ONLY = ['httpxJevPageType', 'ffufJevBasePaths', 'hakrawlerJevSeedOrder', 'resourceEnumJevToolHealth',
     'serializedScanJevRank', 'routeExposureJevRank', 'routeExposureJevWallCheck', 'routeExposureJevAssess']
   const AI_ON: Data = {
-    domainBatchMode: false, aiInPipeline: true,
+    domainBatchMode: false, aiInPipeline: true, jevProviderId: 'j',
     ffufAiExtensions: true, nucleiAiTags: false, wafAiClassifier: true, nucleiAiResponseFilter: true,
     takeoverAiClassifier: true,
     ffufAiUseJev: false, nucleiTagsAiUseJev: false, wafAiUseJev: true, takeoverAiUseJev: false,
@@ -316,7 +318,7 @@ describe('the AI in Pipeline panel', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
       ok: true, status: 200,
-      json: async () => url.includes('llm-providers') ? [{ id: 'j', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }] : {},
+      json: async () => url.includes('llm-providers') ? [{ id: 'j', name: 'Synthetic Jev', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }] : {},
     })))
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -326,6 +328,25 @@ describe('the AI in Pipeline panel', () => {
     const panel = await screen.findByTestId('jev-token-panel')
     const row = screen.getByText('AI Model').closest('div')!.parentElement!
     expect(row).toContainElement(panel)
+  })
+
+  test('selecting and clearing a provider writes the project field and changes all hook gates immediately', async () => {
+    const s = renderSection({ ...AI_ON, jevProviderId: null })
+    const picker = await screen.findByRole('combobox', { name: 'Jev provider' })
+    const ffuf = within(screen.getByTestId('ai-hook-ffufAiExtensions')).getByRole('button', { name: 'Jev' })
+    const hakrawler = within(screen.getByTestId('ai-hook-hakrawlerJevSeedOrder')).getByRole('button', { name: 'Jev' })
+    expect(ffuf).toBeDisabled()
+    expect(hakrawler).toBeDisabled()
+    fireEvent.change(picker, { target: { value: 'j' } })
+    expect(s.updateField).toHaveBeenLastCalledWith('jevProviderId', 'j')
+    expect(ffuf).toBeEnabled()
+    expect(hakrawler).toBeEnabled()
+    fireEvent.change(picker, { target: { value: '' } })
+    expect(s.updateField).toHaveBeenLastCalledWith('jevProviderId', null)
+    expect(ffuf).toBeDisabled()
+    expect(hakrawler).toBeDisabled()
+    expect(s.data.wafAiUseJev).toBe(true)
+    expect(s.data.httpxJevPageType).toBe(true)
   })
 
   test('each hook is ONE card holding its label, summary, toggle and engine', () => {
@@ -421,7 +442,7 @@ describe('target modes: AI in Pipeline everywhere, Domain Verification never on 
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
       ok: true, status: 200,
-      json: async () => url.includes('llm-providers') ? [{ id: 'j', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }] : {},
+      json: async () => url.includes('llm-providers') ? [{ id: 'j', name: 'Synthetic Jev', providerType: 'jev', apiKey: '••••c0de', modelIdentifier: 'jev-1.13.0' }] : {},
     })))
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -452,7 +473,7 @@ describe('target modes: AI in Pipeline everywhere, Domain Verification never on 
   test('ip: a hook\'s Jev engine can be picked once the hook is on', async () => {
     const s = renderSection({
       ipMode: true, domainBatchMode: false, targetIps: ['172.25.0.92'],
-      aiInPipeline: true, ffufAiExtensions: true, ffufAiUseJev: false,
+      aiInPipeline: true, ffufAiExtensions: true, ffufAiUseJev: false, jevProviderId: 'j',
     })
     const jev = within(screen.getByTestId('ai-hook-ffufAiExtensions')).getByRole('button', { name: 'Jev' })
     await waitFor(() => expect(jev).toBeEnabled())

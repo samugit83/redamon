@@ -41,7 +41,7 @@ For a non-LLM external API *tool*, use `agentic-tool-integration`.
   Agent in the Loop (an external MCP client answers), and every builder outside a chat
   run refuses it (`refuse_loop_model`, the `agent-in-the-loop` skill).
 - **NEVER treat every `user_llm_providers` row as a chat LLM.** A non-chat type
-  (today `jev`, the TypeSafe decision API) must be skipped by every path that
+  (`jev` for TypeSafe and `jev_openrouter` for native Jev on OpenRouter) must be skipped by every path that
   builds a chat model, or its token is sent to the wrong host: `setup_llm`'s
   custom branch builds `ChatOpenAI(api_key=<row key>)` with no base URL, which is
   api.openai.com. Add the type to `NON_CHAT_PROVIDER_TYPES` in BOTH twins
@@ -52,11 +52,14 @@ For a non-LLM external API *tool*, use `agentic-tool-integration`.
   back to "the first provider" (`custom_provider_or_fallback` falls back only to
   custom-capable types). `setup_llm` also refuses a non-chat type outright.
 - **A non-chat provider's endpoint is a constant, and its type is locked.**
-  `agentic/jev_client.py` is the only code that talks to `api.typesafe.ai`: a fixed
-  base URL, no redirects, fixed error texts. On the webapp, POST forces model,
-  URL and headers and allows one row per user; PUT and the test route refuse a
-  type change in either direction and ignore a body-supplied URL/headers for a
-  stored row, so a stored token can never be re-pointed at another host.
+  `agentic/jev_client.py` owns the fixed TypeSafe and OpenRouter System One
+  endpoints: pinned Jev 1.13, no redirects, retries or provider failover, and fixed
+  error texts. POST forces model, URL and headers; multiple named Jev rows per
+  account are allowed. PUT and the test route refuse a type change and ignore
+  body-supplied URL/headers for a stored row, so a token cannot be re-pointed.
+  Every project explicitly selects its owner's Jev row via `jevProviderId`;
+  null never means the first row. Legacy/unconfigured projects use deterministic
+  fallbacks until a selection is saved. Imports and presets never carry this id.
 - **ALWAYS register the provider in the webapp provider-type registry** and
   **propagate the key kwarg into every LLM call site.** A provider registered but
   not propagated builds a client with no credentials. The guide enumerates all
