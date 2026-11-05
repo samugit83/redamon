@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.6.2] - 2026-11-05
+
+### Added
+
+- **A red icon marks an unattended Agent in the Loop run.** When a loop run has "Require Tool Confirmation" off, a red shield sits next to the chat's **Agent in the Loop** chip. Hovering it explains the risk: dangerous tools run without asking you, any process holding the driver token answers the steps, text written by the target can steer your agent, and Anthropic and OpenAI expect unattended automation to use an API key rather than a subscription login. The icon follows the run's own setting, which the agent sends with the run's loop status, so it is right after a reload too. Rebuild `agent` and `webapp`.
+
+### Changed
+
+- **Agent in the Loop follows "Require Tool Confirmation".** A loop run made every dangerous tool wait for you even with the switch off, so it could never run unattended. It now follows the switch like any other model: with it off, a dangerous tool your agent picks (nmap, nuclei, curl, metasploit, hydra, kali shell and the others) runs at once, Fireteam members included, with no one confirming it. Phase approvals (when on), the scope guardrail and the Rules of Engagement still apply, no MCP tool can answer an approval or a confirmation, and a driver token still holds read permissions only. This replaces the 7.6.0 rule that a loop run always asks. The Agent in the Loop skill now tells your agent that a dangerous tool it picks may run at once; export the onboarding pack again (Global Settings > MCP Server, **Export onboarding** on the token) to get the new wording. Rebuild `agent` and `webapp`.
+
 ## [7.6.1] - 2026-11-04
 
 ### Fixed
