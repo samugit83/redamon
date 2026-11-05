@@ -377,6 +377,7 @@ describe('LlmProviderForm Jev branch', () => {
     expect(screen.getByTestId('jev-model')).toHaveTextContent('jev-1.13.0')
     expect(screen.getByRole('textbox', { name: 'Display Name' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Jev backend' })).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: 'Jev backend' })).toHaveClass('select')
     expect(screen.queryByText(/Base URL/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Temperature/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Get API key/ })).toHaveAttribute(

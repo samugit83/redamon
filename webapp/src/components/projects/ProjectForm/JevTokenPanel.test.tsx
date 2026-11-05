@@ -46,6 +46,8 @@ describe('project Jev provider picker', () => {
     render(<Form />)
     await screen.findByRole('combobox', { name: 'Jev provider' })
     expect(select()).toHaveValue('')
+    // The shared form-field style: an undefined class left the browser's default control.
+    expect(select()).toHaveClass('select')
     expect(screen.getByText('Not selected')).toBeInTheDocument()
     expect(screen.getByText(/No Jev provider is selected for this project/)).toHaveTextContent('scan start is not blocked')
     expect(screen.getByRole('button', { name: 'Jev' })).toBeDisabled()

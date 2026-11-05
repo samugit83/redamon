@@ -75,7 +75,7 @@ export function JevTokenPanel({ userId, onSelect }: {
         <>
           <select
             id={selectId}
-            className="selectInput"
+            className="select"
             value={selectedProviderId ?? ''}
             onChange={event => onSelect(event.target.value || null)}
           >

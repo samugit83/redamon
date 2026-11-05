@@ -306,7 +306,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
       {isJev && (
         <div className="formGroup">
           <label className="formLabel" htmlFor="jev-backend">Jev backend</label>
-          <select id="jev-backend" className="selectInput" value={ptype} disabled={isEditing}
+          <select id="jev-backend" className="select" value={ptype} disabled={isEditing}
             onChange={e => {
               const type = e.target.value as 'jev' | 'jev_openrouter'
               setForm(prev => ({ ...prev, providerType: type, apiKey: '', modelIdentifier: JEV_BACKENDS[type].modelIdentifier }))
