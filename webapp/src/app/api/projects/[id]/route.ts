@@ -487,7 +487,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Supply-chain input becomes a `git clone` argument in the scan container,
     // fireteam carries a rule over two fields, and a switch onto the Jev engine
-    // needs the owner's Jev token: all validated server-side, because a direct
+    // needs a selected Jev provider of the owner: all validated server-side, because a direct
     // PUT bypasses the form's own checks. The same guards as the RoE routes.
     const guardError = await guardProjectWrite({
       existing: existing as ({ userId: string } & Record<string, unknown>) | null,

@@ -67,8 +67,9 @@ that toggles it, use `project-settings-cascade`.
   it.** `aiInPipeline` forces each per-hook AI flag; the `{tool}AiUseJev` engine
   fields stay OUT of `apply_ai_pipeline_overrides`, are in `KEPT_WHEN_ABSENT`
   (`webapp/src/lib/project-preset-utils.ts`) so a preset apply does not reset
-  them, and a switch-ON is refused server-side unless the project OWNER has a Jev
-  token (`validateJevEngineChange`, every write path, fail closed). Give a hook a
+  them, and a switch-ON is refused server-side unless the project's
+  `jevProviderId` names a Jev row (TypeSafe or OpenRouter) on the project OWNER's
+  account (`validateJevEngineChange`, every write path, fail closed). Give a hook a
   Jev engine only when a wrong answer cannot drop a finding: the Nuclei
   false-positive filter deletes findings from target-controlled bytes and has no
   Jev engine.

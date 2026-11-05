@@ -5,7 +5,7 @@
  * caller, because what a caller may write differs: the settings form writes any
  * settable column, a RoE document only what the registry lets a document write.
  * What must NOT differ is what comes after: the rules over several fields, the
- * owner's Jev token for a switch onto the Jev engine, and the fireteam audit.
+ * owner-owned Jev provider a switch onto the Jev engine needs, and the fireteam audit.
  * They lived inline in the PUT, so a second writer that forgot one of them was
  * a way around it; `projectWriteGuards.test.ts` holds every caller to this file.
  */
@@ -31,7 +31,7 @@ export async function guardProjectWrite(args: {
   })
   if (crossFieldError) return crossFieldError
 
-  // A switch onto the Jev engine needs a Jev token on the OWNER's account.
+  // A switch onto the Jev engine needs a selected Jev provider on the OWNER's account.
   if (existing) {
     const jevError = await validateJevEngineChange(existing as never, updateData, existing.userId)
     if (jevError) return jevError

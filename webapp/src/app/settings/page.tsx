@@ -221,7 +221,7 @@ export default function SettingsPage() {
   // LLM Providers
   const [providers, setProviders] = useState<ProviderData[]>([])
   const [providersLoading, setProvidersLoading] = useState(true)
-  // A failed fetch must not read as "no providers" (or "no Jev token"); holds the cause to show.
+  // A failed fetch must not read as "no providers" (or "no Jev providers"); holds the cause to show.
   const [providersError, setProvidersError] = useState<string | null>(null)
   const [showProviderForm, setShowProviderForm] = useState(false)
   const [editingProvider, setEditingProvider] = useState<ProviderData | null>(null)

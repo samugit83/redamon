@@ -255,16 +255,16 @@ describe('POST llm-providers/[providerId]/test - TypeSafe Jev lock', () => {
     expect(res.status).toBe(400)
     expect(fetchMock).not.toHaveBeenCalled()
   })
-  test.each(['jev', 'jev_openrouter'])('saved %s ignores transport overrides and requested billing', async providerType => {
+  test.each(['jev', 'jev_openrouter'])('saved %s ignores transport overrides', async providerType => {
     mockFindFirst.mockResolvedValue({ ...JEV_ROW, providerType, baseUrl: 'https://legacy-evil.example' })
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
-    await POST(post({ baseUrl: 'https://evil.example', modelIdentifier: 'chat', defaultHeaders: { leak: 'yes' }, timeout: 1000, sslVerify: false, testMode: 'capability', apiKey: '••••••••_key' }), params('u1', 'jev1'))
-    expect(sentToAgent()).toMatchObject({ providerType, apiKey: 'apikey_stored_key', baseUrl: providerType === 'jev' ? 'https://api.typesafe.ai' : 'https://openrouter.ai/api/v1', modelIdentifier: providerType === 'jev' ? 'jev-1.13.0' : 'typesafe/jev-1.13', defaultHeaders: {}, timeout: 5, sslVerify: true, testMode: 'key' })
+    await POST(post({ baseUrl: 'https://evil.example', modelIdentifier: 'chat', defaultHeaders: { leak: 'yes' }, timeout: 1000, sslVerify: false, apiKey: '••••••••_key' }), params('u1', 'jev1'))
+    expect(sentToAgent()).toMatchObject({ providerType, apiKey: 'apikey_stored_key', baseUrl: providerType === 'jev' ? 'https://api.typesafe.ai' : 'https://openrouter.ai/api/v1', modelIdentifier: providerType === 'jev' ? 'jev-1.13.0' : 'typesafe/jev-1.13', defaultHeaders: {}, timeout: 5, sslVerify: true })
   })
-  test.each(['jev', 'jev_openrouter'])('unsaved %s tests pin transport and never bill', async providerType => {
+  test.each(['jev', 'jev_openrouter'])('unsaved %s tests pin transport', async providerType => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
-    await POST(post({ providerType, apiKey: 'synthetic-key', baseUrl: 'https://evil.example', testMode: 'capability', sslVerify: false }), params('u1', 'unsaved'))
-    expect(sentToAgent()).toMatchObject({ providerType, defaultHeaders: {}, timeout: 5, sslVerify: true, testMode: 'key' })
+    await POST(post({ providerType, apiKey: 'synthetic-key', baseUrl: 'https://evil.example', sslVerify: false }), params('u1', 'unsaved'))
+    expect(sentToAgent()).toMatchObject({ providerType, defaultHeaders: {}, timeout: 5, sslVerify: true })
     expect(sentToAgent().baseUrl).not.toContain('evil.example')
   })
   test('a freshly typed Jev key is the one tested', async () => {

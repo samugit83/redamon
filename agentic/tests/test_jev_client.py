@@ -261,44 +261,7 @@ def test_list_models_malformed_is_a_bad_response():
 # Owner binding
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def _clear_owner_cache():
-    jev_client._owner_cache.clear()
-    yield
-    jev_client._owner_cache.clear()
-
-
-def test_owner_match_passes_and_is_cached():
-    with patch.object(jev_client, "_fetch_project_owner", return_value="u1") as fetch:
-        _run(jev_client.verify_owner("p1", "u1"))
-        _run(jev_client.verify_owner("p1", "u1"))
-    assert fetch.call_count == 1
-
-
-def test_owner_mismatch_is_forbidden_and_not_cached():
-    with patch.object(jev_client, "_fetch_project_owner", return_value="someone-else") as fetch:
-        for _ in range(2):
-            with pytest.raises(JevError) as err:
-                _run(jev_client.verify_owner("p1", "u1"))
-            assert err.value.error_type == "jev_forbidden"
-    assert fetch.call_count == 2
-
-
-def test_a_missing_project_is_forbidden():
-    with patch.object(jev_client, "_fetch_project_owner", return_value=None):
-        with pytest.raises(JevError) as err:
-            _run(jev_client.verify_owner("p-gone", "u1"))
-    assert err.value.error_type == "jev_forbidden"
-
-
-def test_an_unreachable_webapp_is_unavailable():
-    with patch.object(jev_client, "_fetch_project_owner", side_effect=ConnectionError("down")):
-        with pytest.raises(JevError) as err:
-            _run(jev_client.verify_owner("p1", "u1"))
-    assert err.value.error_type == "jev_unavailable"
-
-
-def test_fetch_project_owner_reads_user_id_and_maps_404_to_none():
+def test_fetch_project_quotes_the_id_and_maps_404_to_none():
     class _Resp:
         def __init__(self, status, body):
             self.status_code, self._body = status, body
@@ -310,14 +273,20 @@ def test_fetch_project_owner_reads_user_id_and_maps_404_to_none():
         def json(self):
             return self._body
 
-    with patch("requests.get", return_value=_Resp(200, {"userId": "u1"})) as get:
-        assert jev_client._fetch_project_owner("p/1") == "u1"
+    row = {"userId": "u1", "jevProviderId": "p-jev"}
+    with patch("requests.get", return_value=_Resp(200, row)) as get:
+        assert jev_client._fetch_project("p/1") == row
     assert get.call_args.args[0].endswith("/api/projects/p%2F1")
     with patch("requests.get", return_value=_Resp(404, {})):
-        assert jev_client._fetch_project_owner("p1") is None
+        assert jev_client._fetch_project("p1") is None
     with patch("requests.get", return_value=_Resp(500, {})):
         with pytest.raises(RuntimeError):
-            jev_client._fetch_project_owner("p1")
+            jev_client._fetch_project("p1")
+    # A 200 that is not an object (a proxy page, a list) is not a project.
+    with patch("requests.get", return_value=_Resp(200, ["not", "a", "project"])):
+        with pytest.raises(JevError) as err:
+            jev_client._fetch_project("p1")
+    assert err.value.error_type == "jev_unavailable"
 
 
 def test_resolve_exact_jev_provider_without_first_row_fallback():

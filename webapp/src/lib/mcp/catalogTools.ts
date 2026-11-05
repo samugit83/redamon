@@ -164,12 +164,14 @@ const NOTES = [
     'At scan start aiInPipeline forces every per-hook AI flag to its own value; it does not touch ' +
     'the engine fields. A *UseJev flag only switches which engine answers (false = the LLM in ' +
     'aiPipelineModel, true = TypeSafe Jev), and switching one ON is refused unless the project ' +
-    'owner has a Jev token. preflight_scope_check reports each hook\'s effective engine.',
+    'selects a Jev provider (jevProviderId) on its owner\'s account. preflight_scope_check reports ' +
+    'each hook\'s effective engine.',
   'Jev-only hooks have TWO levels: aiInPipeline, then the hook\'s own *Jev* flag (ffufJevBasePaths, ' +
     'httpxJevPageType, resourceEnumJevToolHealth, hakrawlerJevSeedOrder, serializedScanJevRank, ' +
     'routeExposureJevRank, routeExposureJevWallCheck, routeExposureJevAssess). ' +
     'They have no LLM engine, aiInPipeline does not set or reset them, and switching one ON is ' +
-    'refused unless the project owner has a Jev token. Page types, base paths and seed order take ' +
+    'refused unless the project selects a Jev provider (jevProviderId) on its owner\'s account. ' +
+    'Page types, base paths and seed order take ' +
     'effect from Jev\'s answers (page-type labels land on the Endpoint, FFuf fuzzes Jev\'s ' +
     'directories, Hakrawler crawls Jev\'s host order, and each serialized-object candidate gets ' +
     'Jev\'s deser_jev_format and deser_jev_exploitability, the order the deserialization skill ' +

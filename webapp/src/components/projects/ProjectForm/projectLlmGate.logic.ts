@@ -49,7 +49,7 @@ export function needsModelGate(
 /**
  * Whether the hard provider gate must block creation: true when the user has no
  * chat LLM provider configured. Callers pass the parsed list; anything that
- * isn't an array counts as missing. A non-chat row (a TypeSafe Jev token) does
+ * isn't an array counts as missing. A non-chat row (a Jev provider) does
  * not count: no agent or pipeline model can run on it.
  */
 export function hasNoConfiguredProvider(providers: unknown): boolean {

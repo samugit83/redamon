@@ -49,6 +49,7 @@ export type TableName =
   | 'chatMessage'
   | 'userAttackSkill'
   | 'userProjectPreset'
+  | 'userLlmProvider'
   | 'auditLog'
 
 interface TableSpec {
@@ -143,13 +144,14 @@ const TABLES: Record<TableName, TableSpec> = {
     }),
   },
   userProjectPreset: { pk: 'id', uniques: {}, defaults: () => ({ description: '' }) },
+  userLlmProvider: { pk: 'id', uniques: {}, defaults: () => ({}) },
   auditLog: { pk: 'id', uniques: {}, defaults: () => ({ actorId: null, targetId: null, before: null, after: null, source: 'api' }) },
 }
 const HAS_UPDATED_AT: TableName[] = [
   'pluginInstall', 'pluginData', 'pluginOverride', 'pluginPlatformState', 'conversation', 'userSettings', 'userAttackSkill',
 ]
 const HAS_CREATED_AT: TableName[] = [
-  'pluginInstall', 'pluginData', 'pluginOverride', 'conversation', 'chatMessage', 'userAttackSkill', 'auditLog',
+  'pluginInstall', 'pluginData', 'pluginOverride', 'conversation', 'chatMessage', 'userAttackSkill', 'userLlmProvider', 'auditLog',
 ]
 
 /** The name key of userSkillNames.ts (NFC, JavaScript's whitespace set), for tests. */

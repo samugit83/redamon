@@ -399,7 +399,7 @@ describe('LlmProviderForm Jev branch', () => {
     expect(url).toBe('/api/users/user-1/llm-providers')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({
-      providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def', testMode: 'key',
+      providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_abc_def',
     })
     await waitFor(() => expect(onSave).toHaveBeenCalled())
   })
@@ -422,7 +422,7 @@ describe('LlmProviderForm Jev branch', () => {
     for (const init of [testInit, saveInit]) {
       const body = JSON.parse(init.body as string)
       expect(body).toEqual({
-        providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_new_key', testMode: 'key',
+        providerType: 'jev', name: 'TypeSafe AI (Jev)', apiKey: 'apikey_new_key',
       })
     }
   })
@@ -505,7 +505,7 @@ describe('Jev named OpenRouter forms', () => {
     fireEvent.change(screen.getByLabelText('OpenRouter Jev API key'), { target: { value: 'openrouter-key' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save Provider' }))
     await waitFor(() => expect(providerCalls(fetchMock)).toHaveLength(1))
-    expect(JSON.parse(String(providerCalls(fetchMock)[0][1]?.body))).toEqual({ providerType: 'jev_openrouter', name: 'Recon staging', apiKey: 'openrouter-key', testMode: 'key' })
+    expect(JSON.parse(String(providerCalls(fetchMock)[0][1]?.body))).toEqual({ providerType: 'jev_openrouter', name: 'Recon staging', apiKey: 'openrouter-key' })
   })
   test('saved backend is locked but name stays editable', () => {
     mockFetch({})

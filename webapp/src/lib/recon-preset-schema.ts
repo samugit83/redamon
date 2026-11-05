@@ -725,7 +725,7 @@ export const RECON_PARAMETER_CATALOG = `
 - httpxProbeHash: string - Hash algo: "md5", "sha256", etc.
 - httpxIncludeResponse: boolean - Store full response body
 - httpxIncludeResponseHeaders: boolean
-- httpxJevPageType: boolean - Label each probed URL (app, login_only, parked, default, placeholder, error) with TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev token on the owner's account. Jev's label is written onto the page's Endpoint in the graph (page_class) and changes nothing about what is scanned. Default false.
+- httpxJevPageType: boolean - Label each probed URL (app, login_only, parked, default, placeholder, error) with TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId). Jev's label is written onto the page's Endpoint in the graph (page_class) and changes nothing about what is scanned. Default false.
 - httpxProbeAsn: boolean
 - httpxProbeCdn: boolean
 - httpxPaths: string[] - Additional URL paths to probe
@@ -760,7 +760,7 @@ export const RECON_PARAMETER_CATALOG = `
 - resourceEnumAiRagPathFlagEnabled: boolean - Stamp Endpoint.is_ai_rag_ingest=true for known RAG paths (OpenAI Vector Stores, Pinecone /vectors/upsert, Weaviate /v1/objects, Qdrant /collections/.../points). Ambiguous paths (/upload, /search, /query) only fire when parent BaseURL is AI-tagged.
 - resourceEnumAiParamInjectableFlagEnabled: boolean - Stamp Parameter.is_ai_prompt_injectable=true on AI-classified endpoints when the parameter name matches the prompt-injection catalogue (prompt, messages, system, contents, inputs, arguments, etc.)
 - resourceEnumAiToolArgPathEnabled: boolean - Reserved for the future ai_surface_recon central module - resolves Parameter.ai_tool_arg_path against discovered OpenAPI / ai-plugin.json / MCP tools/list specs. No-op today.
-- resourceEnumJevToolHealth: boolean - Ask TypeSafe AI Jev (jev-1.13.0) whether a collection tool's empty result with unexplained error output was a transient failure. Only when aiInPipeline=true; needs a Jev token on the owner's account. The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Default false.
+- resourceEnumJevToolHealth: boolean - Ask TypeSafe AI Jev (jev-1.13.0) whether a collection tool's empty result with unexplained error output was a transient failure. Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId). The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Default false.
 
 ## AI Surface Recon (central module, ACTIVE)
 - aiSurfaceReconEnabled: boolean - Master toggle. Active protocol-aware AI/LLM/MCP fingerprinting that runs after resource_enum. Benign shape-probes only (1-token chat ping, MCP handshake, read-only GETs) against hosts already showing an AI signal.
@@ -831,7 +831,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - hakrawlerIncludeSubs: boolean - Include subdomains
 - hakrawlerInsecure: boolean - Skip TLS verification
 - hakrawlerParallelism: integer - Parallel crawler instances
-- hakrawlerJevSeedOrder: boolean - Order Hakrawler's seeds by a TypeSafe AI Jev (jev-1.13.0) score per host instead of alphabetically. Only when aiInPipeline=true; needs a Jev token on the owner's account. Ordering only: Hakrawler crawls the hosts Jev ranks highest first. Default false.
+- hakrawlerJevSeedOrder: boolean - Order Hakrawler's seeds by a TypeSafe AI Jev (jev-1.13.0) score per host instead of alphabetically. Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId). Ordering only: Hakrawler crawls the hosts Jev ranks highest first. Default false.
 
 ## JavaScript Analysis - jsluice
 - jsluiceEnabled: boolean - Run jsluice JS analyzer (active tool, sends HTTP requests)
@@ -857,7 +857,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 
 ## Serialized object scan (passive, in-memory)
 - serializedScanEnabled: boolean - Scan the response headers, Set-Cookie and enumerated parameters the pipeline already holds for serialized-object signatures (native Java, polymorphic JSON/XML/YAML, PHP, Python pickle, .NET BinaryFormatter/ViewState, Ruby Marshal, Hessian). Passive and in-memory: no extra traffic, never deserializes. Writes info-severity :Vulnerability candidates the agent's deserialization skill confirms out of band. Best paired with the HTTP capture proxy (TrafficMind) so the agent has request-side traffic to confirm against. Good fit for web-app and API presets.
-- serializedScanJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0), per distinct flagged blob, which serialization format it is and how likely it is to be an attacker-reachable sink, to rank the serialized-object candidates for the agent. Only when aiInPipeline=true and serializedScanEnabled=true; needs a Jev token on the owner's account. Annotates and ranks only: never drops a candidate. Default false.
+- serializedScanJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0), per distinct flagged blob, which serialization format it is and how likely it is to be an attacker-reachable sink, to rank the serialized-object candidates for the agent. Only when aiInPipeline=true and serializedScanEnabled=true; needs a Jev provider selected for the project (jevProviderId). Annotates and ranks only: never drops a candidate. Default false.
 
 ## JavaScript Analysis - JS Recon (deep)
 - jsReconEnabled: boolean - Run deep JS analysis. This flag alone switches it on (no scanModules entry); it reads the JS URLs from resource_enum and http_probe
@@ -938,8 +938,8 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - ffufSmartFuzzMaxBasePaths: integer - Max crawler-discovered base paths smart fuzz runs the whole wordlist under, per target (1-50). Each one multiplies the request count
 - ffufParallelism: integer - Targets fuzzed in parallel
 - ffufAiExtensions: boolean - When true, FFuf file extensions are picked per-target by AI from response headers (requires aiInPipeline=true). The static ffufExtensions list is ignored.
-- ffufAiUseJev: boolean - Engine for the FFuf extension picker: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev token on the owner's account, else the hook uses its static fallback. Jev picks only from a fixed 40-extension catalog.
-- ffufJevBasePaths: boolean - Rank the smart-fuzz base paths with TypeSafe AI Jev (jev-1.13.0) instead of the random pick, per discovered directory. Only when aiInPipeline=true; needs a Jev token on the owner's account. Same number of paths either way; FFuf fuzzes the directories Jev ranks highest. Default false.
+- ffufAiUseJev: boolean - Engine for the FFuf extension picker: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId), else the hook uses its static fallback. Jev picks only from a fixed 40-extension catalog.
+- ffufJevBasePaths: boolean - Rank the smart-fuzz base paths with TypeSafe AI Jev (jev-1.13.0) instead of the random pick, per discovered directory. Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId). Same number of paths either way; FFuf fuzzes the directories Jev ranks highest. Default false.
 
 ## Parameter Discovery - Arjun
 - arjunEnabled: boolean - Run Arjun parameter discovery
@@ -1011,7 +1011,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - nucleiScanAllIps: boolean
 - nucleiInteractsh: boolean - Out-of-band interaction detection
 - nucleiAiTags: boolean - Use AI to prune the Nuclei tag list based on detected tech stack (requires aiInPipeline=true). Replaces the static nucleiTags list with a tech-aware subset chosen by the LLM at scan time. Default false.
-- nucleiTagsAiUseJev: boolean - Engine for the Nuclei tag selector: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev token on the owner's account, else the hook uses its static fallback.
+- nucleiTagsAiUseJev: boolean - Engine for the Nuclei tag selector: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId), else the hook uses its static fallback.
 - nucleiAiResponseFilter: boolean - Use AI to classify Nuclei response bodies as WAF/rate-limit block pages when the static keyword list misses (requires aiInPipeline=true). Augments is_false_positive(); kicks in only on suspicious status codes (403/406/418/429/503) so cost stays bounded. Default false.
 
 ## Subdomain Takeover (Subjack + Nuclei takeover templates)
@@ -1033,7 +1033,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - takeoverManualReviewAutoPublish: boolean - Publish manual_review findings into the main Vulnerability stream (default false)
 - takeoverCertValidationEnabled: boolean - Use certificate evidence (issuer/SAN/name-match) to score takeovers, incl. hosts with no CNAME. Reads httpx 443 certs (tlsx off) or more (tlsx on). Default true.
 - takeoverAiClassifier: boolean - Use AI to disambiguate takeover findings from WAF "no host" block pages that match the same static fingerprint (requires aiInPipeline=true). For each finding the scanner probes the host, short-circuits on third-party vendor tokens, and otherwise asks the LLM to classify the body. AI-flagged collisions get score -40 (lands in manual_review). Default false.
-- takeoverAiUseJev: boolean - Engine for the takeover disambiguator: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev token on the owner's account, else the hook uses its static fallback.
+- takeoverAiUseJev: boolean - Engine for the takeover disambiguator: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId), else the hook uses its static fallback.
 - baddnsEnabled: boolean - Run the BadDNS sidecar (AGPL-3.0, isolated Docker container). Requires "docker compose --profile tools build baddns-scanner". Default false.
 - baddnsDockerImage: string - BadDNS image name. Default "redamon-baddns:latest" (built locally from baddns_scan/Dockerfile)
 - baddnsModules: string[] - Subset of BadDNS modules to run. Valid: cname, ns, mx, txt, spf, dmarc, wildcard, nsec, references, zonetransfer. (MTA-STS exists in baddns 2.1.0 but is not CLI-addressable due to an upstream validator regex bug -- omit.) Default: ["cname","ns","mx","txt","spf"]
@@ -1109,7 +1109,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - routeExposureGitWalk: boolean - After an exposed .git/HEAD, fetch the ref and one commit object and inflate it bounded to prove reconstructability; stores only the proof, never the tree or blobs. Default true.
 - routeExposureCrossHost: boolean - Try a path that hit on one host against other in-scope hosts with the same technology or title, at most 50. Default false.
 - routeExposureCorsRider: boolean - On a personalised, sensitive logged-in route, resend with crafted Origin headers to detect a credentialed reflected origin; headers only, never a body. Default true.
-- routeExposureJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0) whether each route is meant only for logged-in, internal or admin callers; its answer fills the request budget after the always-requested floor (private-looking routes first) and is saved on each lead. Only when aiInPipeline=true and routeExposureEnabled=true; needs a Jev token on the owner's account. Never cuts a floor route. Default false.
+- routeExposureJevRank: boolean - Ask TypeSafe AI Jev (jev-1.13.0) whether each route is meant only for logged-in, internal or admin callers; its answer fills the request budget after the always-requested floor (private-looking routes first) and is saved on each lead. Only when aiInPipeline=true and routeExposureEnabled=true; needs a Jev provider selected for the project (jevProviderId). Never cuts a floor route. Default false.
 - routeExposureJevWallCheck: boolean - Ask Jev whether an HTML lead the deterministic page check kept is really a login wall, error page or placeholder; the page class is saved on the lead and a wall at confidence >= 70 is confirmed last. Never drops a lead. Same gating and token rule. Default false.
 - routeExposureJevAssess: boolean - Ask Jev which kind of route each lead is and how sensitive its answer is, from the evidence alone (never the route class or a value); both are saved on the lead and the agent confirms the most sensitive first, public content last. Never drops a lead or rewrites its route class. Same gating and token rule. Default false.
 - routeExposureCacheRider: boolean - On a personalised, sensitive logged-in route, check whether the answer is cacheable to an anonymous visitor; never plants or fetches from cache. Default true.
@@ -1136,7 +1136,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - securityCheckIpApiExposed: boolean
 - securityCheckWafBypass: boolean
 - wafAiClassifier: boolean - Use AI to classify WAF/CDN presence from response headers/body/latency when the static check misses (requires aiInPipeline=true). Augments _has_cdn_markers and check_waf_bypass; AI-detected bypasses are tagged detection_method=ai_classifier (jev_classifier when wafAiUseJev is on). Default false.
-- wafAiUseJev: boolean - Engine for the WAF classifier: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev token on the owner's account, else the hook uses its static fallback.
+- wafAiUseJev: boolean - Engine for the WAF classifier: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId), else the hook uses its static fallback.
 - securityCheckTlsExpiringSoon: boolean
 - securityCheckTlsExpiryDays: integer - Days threshold
 - securityCheckTlsExpired: boolean - Flag already-expired certificates (high). Derived from cert data, zero network cost. Default true.

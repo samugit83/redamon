@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({
   findUniqueAuthorization: vi.fn(),
   findManyAuthorization: vi.fn(),
   countAuthorization: vi.fn(),
-  tokenCount: vi.fn(),
+  jevProvider: vi.fn(),
   findFirstScanJob: vi.fn(),
   transaction: vi.fn(),
   busy: vi.fn(),
@@ -49,7 +49,7 @@ vi.mock('@/lib/prisma', () => {
       count: (...a: unknown[]) => h.countAuthorization(...a),
     },
     scanJob: { findFirst: (...a: unknown[]) => h.findFirstScanJob(...a) },
-    userLlmProvider: { count: (...a: unknown[]) => h.tokenCount(...a) },
+    userLlmProvider: { findFirst: (...a: unknown[]) => h.jevProvider(...a) },
     $transaction: (fn: (tx: unknown) => unknown) => h.transaction(fn, client),
   }
   return { default: client }
@@ -104,37 +104,38 @@ describe('preflight_scope_check: the effective engine of each AI hook', () => {
     }
   })
 
-  test('the serialized-object ranking reports Jev with a token and its fallback without one', async () => {
+  const SELECTED = { jevProviderId: 'jev-1' }
+  const NOT_SELECTED = "jev → static fallback (no Jev provider selected for the project)"
+  const NOT_OWNED = "jev → static fallback (the selected Jev provider is not on the owner's account)"
+
+  test('the serialized-object ranking reports Jev with a selected provider and its fallback without one', async () => {
     h.findProject.mockResolvedValue(projectRow({
-      aiInPipeline: true, serializedScanEnabled: true, serializedScanJevRank: true }))
-    h.tokenCount.mockResolvedValue(1)
+      aiInPipeline: true, serializedScanEnabled: true, serializedScanJevRank: true, ...SELECTED }))
+    h.jevProvider.mockResolvedValue({ id: 'jev-1' })
     expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess)
       .toEqual({ hook: 'serialized_assess', kind: 'enable', engine: 'jev', effective: 'jev' })
-    h.tokenCount.mockResolvedValue(0)
-    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess.effective)
-      .toBe('jev → static fallback (no Jev token on the owner\'s account)')
+    h.jevProvider.mockResolvedValue(null)
+    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess.effective).toBe(NOT_OWNED)
   })
 
   test('the serialized-object ranking is off while its scan is off, whatever its switch', async () => {
     // The scan defaults off, and with it off recon never reaches the ranking.
-    h.tokenCount.mockResolvedValue(1)
+    h.jevProvider.mockResolvedValue({ id: 'jev-1' })
     h.findProject.mockResolvedValue(projectRow({
-      aiInPipeline: true, serializedScanEnabled: false, serializedScanJevRank: true }))
+      aiInPipeline: true, serializedScanEnabled: false, serializedScanJevRank: true, ...SELECTED }))
     expect(byHook(await preflightScopeCheck(ctx(), 'p1')).serialized_assess)
       .toEqual({ hook: 'serialized_assess', kind: 'enable', engine: 'jev',
                  effective: 'off (serializedScanEnabled is false)' })
   })
 
-  test('a Jev-only hook switched on runs on Jev with a token, or its fallback without one', async () => {
-    h.tokenCount.mockResolvedValue(1)
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, httpxJevPageType: true }))
+  test('a Jev-only hook switched on runs on Jev with a selection, or its fallback without one', async () => {
+    h.jevProvider.mockResolvedValue({ id: 'jev-1' })
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, httpxJevPageType: true, ...SELECTED }))
     let r = await preflightScopeCheck(ctx(), 'p1')
     expect(byHook(r).page_type).toMatchObject({ kind: 'enable', engine: 'jev', effective: 'jev' })
-    h.tokenCount.mockResolvedValue(0)
     h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, hakrawlerJevSeedOrder: true }))
     r = await preflightScopeCheck(ctx(), 'p1')
-    expect(byHook(r).crawl_seed_order.effective).toBe(
-      "jev → static fallback (no Jev token on the owner's account)")
+    expect(byHook(r).crawl_seed_order.effective).toBe(NOT_SELECTED)
   })
 
   test('a Jev-only hook is off when aiInPipeline is off, whatever its flag says', async () => {
@@ -144,44 +145,57 @@ describe('preflight_scope_check: the effective engine of each AI hook', () => {
   })
 
   test('aiInPipeline off means every hook is off, whatever the engine field says', async () => {
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: false, ffufAiUseJev: true }))
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: false, ffufAiUseJev: true, ...SELECTED }))
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(byHook(r).ffuf_extensions).toMatchObject({ engine: 'jev', effective: 'off' })
     expect(r.aiHooks.every(x => x.effective === 'off')).toBe(true)
-    expect(h.tokenCount).not.toHaveBeenCalled()
+    expect(h.jevProvider).not.toHaveBeenCalled()
   })
 
-  test('a hook on Jev with a token on the owner\'s account runs on Jev', async () => {
-    h.tokenCount.mockResolvedValue(1)
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, wafAiUseJev: true }))
+  test("a hook on Jev runs on Jev when the project's selection is on the owner's account", async () => {
+    h.jevProvider.mockResolvedValue({ id: 'jev-1' })
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, wafAiUseJev: true, ...SELECTED }))
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(byHook(r).waf_classification).toMatchObject({ engine: 'jev', effective: 'jev' })
-    expect(h.tokenCount).toHaveBeenCalledWith({ where: { userId: 'owner', providerType: 'jev' } })
+    // The exact row the agent resolves: this project's selection, the owner's, either backend.
+    expect(h.jevProvider).toHaveBeenCalledWith({
+      where: { id: 'jev-1', userId: 'owner', providerType: { in: ['jev', 'jev_openrouter'] } },
+      select: { id: true },
+    })
   })
 
-  test('a hook on Jev with no token is reported as its static fallback', async () => {
+  test('a hook on Jev with no provider selected is its static fallback, even with rows on the account', async () => {
+    // The agent never falls back to "the owner's first Jev row", so neither does the report.
+    h.jevProvider.mockResolvedValue({ id: 'some-row' })
     h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, nucleiTagsAiUseJev: true }))
     const r = await preflightScopeCheck(ctx(), 'p1')
-    expect(byHook(r).nuclei_tags.effective).toBe("jev → static fallback (no Jev token on the owner's account)")
+    expect(byHook(r).nuclei_tags.effective).toBe(NOT_SELECTED)
     expect(byHook(r).ffuf_extensions.effective).toBe('llm')
+    expect(h.jevProvider).not.toHaveBeenCalled()
   })
 
-  test('a failed token count is reported as unverified, never as a guess', async () => {
-    h.tokenCount.mockRejectedValue(new Error('db down'))
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, takeoverAiUseJev: true }))
+  test("a selection that is not on the owner's account is its static fallback", async () => {
+    h.jevProvider.mockResolvedValue(null)
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, ffufAiUseJev: true, ...SELECTED }))
+    expect(byHook(await preflightScopeCheck(ctx(), 'p1')).ffuf_extensions.effective).toBe(NOT_OWNED)
+  })
+
+  test('a failed lookup is reported as unverified, never as a guess', async () => {
+    h.jevProvider.mockRejectedValue(new Error('db down'))
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, takeoverAiUseJev: true, ...SELECTED }))
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(byHook(r).takeover_disambiguation.effective).toContain('could not check')
   })
 
-  test('all hooks on the LLM never touch the token table', async () => {
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true }))
+  test('all hooks on the LLM never touch the provider table', async () => {
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, ...SELECTED }))
     await preflightScopeCheck(ctx(), 'p1')
-    expect(h.tokenCount).not.toHaveBeenCalled()
+    expect(h.jevProvider).not.toHaveBeenCalled()
   })
 
   test('the response carries counts and engines only: never a token, key or provider row', async () => {
-    h.tokenCount.mockResolvedValue(1)
-    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, ffufAiUseJev: true }))
+    h.jevProvider.mockResolvedValue({ id: 'jev-1' })
+    h.findProject.mockResolvedValue(projectRow({ aiInPipeline: true, ffufAiUseJev: true, ...SELECTED }))
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(JSON.stringify(r.aiHooks)).not.toMatch(/apikey|api_key|apiKey|token":/i)
   })
@@ -236,7 +250,7 @@ beforeEach(() => {
   h.findUniqueAuthorization.mockResolvedValue(null)
   h.findManyAuthorization.mockResolvedValue([])
   h.countAuthorization.mockResolvedValue(0)
-  h.tokenCount.mockResolvedValue(0)
+  h.jevProvider.mockResolvedValue(null)
   h.findFirstScanJob.mockResolvedValue(null)
   h.updateProject.mockResolvedValue({})
   h.updateManyProject.mockResolvedValue({ count: 1 })

@@ -11,9 +11,11 @@
  */
 export const NON_CHAT_PROVIDER_TYPES: ReadonlySet<string> = new Set(['jev', 'jev_openrouter'])
 
-export type JevProviderType = 'jev' | 'jev_openrouter'
+/** The Jev backends. Twin of the `JevProvider` check in agentic/jev_client.py. */
+export const JEV_PROVIDER_TYPES = ['jev', 'jev_openrouter'] as const
+export type JevProviderType = typeof JEV_PROVIDER_TYPES[number]
 export const isJevProvider = (p: { providerType: string }): p is { providerType: JevProviderType } =>
-  p.providerType === 'jev' || p.providerType === 'jev_openrouter'
+  (JEV_PROVIDER_TYPES as readonly string[]).includes(p.providerType)
 
 export const isChatProvider = (p: { providerType: string }): boolean =>
   !NON_CHAT_PROVIDER_TYPES.has(p.providerType)

@@ -123,6 +123,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       updateData.reasoningEffort = 'high'
     }
 
+    // A Jev row keeps its backend and that backend's pinned model, URL and headers:
+    // its name and key are the only fields an update can write.
     if (isJevProvider(existing)) {
       if (body.apiKey !== undefined && typeof body.apiKey !== 'string') {
         return NextResponse.json({ error: 'apiKey must be a string' }, { status: 400 })
@@ -167,10 +169,12 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     }
 
     const affectedProjects = await prisma.$transaction(async tx => {
-      // Prisma moves updatedAt so an open project form cannot restore the deleted selection.
+      // updatedAt is moved explicitly (updateMany does not guarantee it), so a project
+      // form opened before the delete gets a stale-save refusal instead of writing
+      // the deleted selection back.
       const cleared = await tx.project.updateMany({
         where: { jevProviderId: providerId },
-        data: { jevProviderId: null },
+        data: { jevProviderId: null, updatedAt: new Date() },
       })
       await tx.userLlmProvider.delete({ where: { id: providerId } })
       return cleared.count

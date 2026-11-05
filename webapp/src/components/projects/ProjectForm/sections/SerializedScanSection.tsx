@@ -103,7 +103,7 @@ export function SerializedScanSection({ data, updateField, onRun }: SerializedSc
                 'Jev is asked, per distinct flagged blob, which serialization format it is and how ' +
                 'likely it is to be an attacker-reachable sink. Both land on the candidate, and the ' +
                 "agent's deserialization skill confirms the most reachable first. It never drops a " +
-                'candidate or changes the format the signatures matched; without a Jev token, or for ' +
+                'candidate or changes the format the signatures matched; without a Jev provider selected, or for ' +
                 'a blob Jev cannot answer, the candidates stay exactly as the signatures flagged ' +
                 'them. Same switch as in the Target tab AI panel. ' +
                 (!data.aiInPipeline ? 'Enable "AI in Pipeline" in the Target tab to use this.' : '')

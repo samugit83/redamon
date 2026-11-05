@@ -164,14 +164,14 @@ describe('validateJevEngineChange', () => {
 })
 
 describe('jevImportWarnings', () => {
-  test('no Jev hook, no warning, no lookup', async () => {
-    expect(await jevImportWarnings({ ffufAiUseJev: false }, 'u')).toEqual([])
+  test('no Jev hook, no warning, no lookup', () => {
+    expect(jevImportWarnings({ ffufAiUseJev: false })).toEqual([])
     expect(mockProvider).not.toHaveBeenCalled()
   })
 
-  test('hooks on Jev and no token: one warning per hook, values untouched', async () => {
+  test('hooks on Jev: one warning per hook, values untouched', () => {
     const row = { ffufAiUseJev: true, takeoverAiUseJev: true }
-    const warnings = await jevImportWarnings(row, 'importer')
+    const warnings = jevImportWarnings(row)
     expect(warnings).toHaveLength(2)
     expect(warnings[0]).toContain('ffufAiUseJev')
     expect(warnings[1]).toContain('takeoverAiUseJev')
@@ -179,16 +179,17 @@ describe('jevImportWarnings', () => {
     expect(row).toEqual({ ffufAiUseJev: true, takeoverAiUseJev: true })
   })
 
-  test('even an existing account provider is never selected implicitly on import', async () => {
+  test('even an existing account provider is never selected implicitly on import', () => {
     mockProvider.mockResolvedValue({ id: 'provider-1' })
-    expect(await jevImportWarnings({ wafAiUseJev: true }, 'importer')).toHaveLength(1)
+    expect(jevImportWarnings({ wafAiUseJev: true })).toHaveLength(1)
     expect(mockProvider).not.toHaveBeenCalled()
   })
 
-  test('never throws: a failed lookup becomes one warning', async () => {
+  test('makes no lookup, so a database failure cannot fail an import', () => {
     mockProvider.mockRejectedValue(new Error('db down'))
-    const warnings = await jevImportWarnings({ wafAiUseJev: true }, 'importer')
+    const warnings = jevImportWarnings({ wafAiUseJev: true })
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain('select a Jev provider')
+    expect(mockProvider).not.toHaveBeenCalled()
   })
 })

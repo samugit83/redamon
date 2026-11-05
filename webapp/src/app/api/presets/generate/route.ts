@@ -306,7 +306,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Chat providers only: a non-chat row (the Jev token) is never a model to call, and
+    // Chat providers only: a non-chat row (a Jev provider) is never a model to call, and
     // `custom/<id>` accepts any row id, so without this the token would be posted to
     // whatever base URL such a row held.
     const providers = (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)

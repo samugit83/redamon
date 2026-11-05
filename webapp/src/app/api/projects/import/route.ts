@@ -874,9 +874,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Kept as imported, not refused: a bundle exported from an account with a
-    // Jev token must still import elsewhere. The warning says what will fall back.
+    // Jev provider must still import elsewhere. The warning says what will fall back.
     const warnings = [
-      ...await jevImportWarnings(projectFields, userId),
+      ...jevImportWarnings(projectFields),
       // Serialized scan on without the capture proxy: warn, never block (§4.1).
       ...validateSerializedScanChange(null, projectFields),
       ...(pluginFiles.length

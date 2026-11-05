@@ -153,9 +153,11 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
     })
   }, [])
 
+  // A Jev row carries only its backend, name and key: the server pins the model and
+  // refuses any base URL or header, so none is sent.
   const requestBody = useCallback(
     () => isJevProvider(form)
-      ? { providerType: form.providerType, name: form.name, apiKey: form.apiKey, testMode: 'key' }
+      ? { providerType: form.providerType, name: form.name, apiKey: form.apiKey }
       : form,
     [form],
   )

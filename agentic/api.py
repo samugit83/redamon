@@ -2357,7 +2357,6 @@ class LlmProviderTestRequest(BaseModel):
     awsAccessKeyId: str = ""
     awsSecretKey: str = ""
     awsBearerToken: str = ""
-    testMode: Literal["key", "capability"] = "key"
 
 
 _JEV_TEST_ERRORS = {
@@ -2503,11 +2502,12 @@ async def test_llm_provider(body: LlmProviderTestRequest):
                 custom_llm_config=body.model_dump(),
             )
         elif ptype in {"jev", "jev_openrouter"}:
+            # Not a chat provider: a free key and model check, never a billed
+            # call, and the key only ever goes to its backend's fixed origin.
             import jev_client
             try:
                 provider = jev_client.JevProvider(ptype, body.apiKey)
-                return await jev_client.test_provider(
-                    provider, capability=body.testMode == "capability")
+                return await jev_client.test_provider(provider)
             except jev_client.JevError as e:
                 error = _JEV_TEST_ERRORS.get(e.error_type, e.message) if ptype == "jev" else e.message
                 return JSONResponse(

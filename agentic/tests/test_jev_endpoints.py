@@ -78,14 +78,6 @@ def _post(client, path, body):
 
 
 @pytest.fixture(autouse=True)
-def _clear_owner_cache():
-    import jev_client
-    jev_client._owner_cache.clear()
-    yield
-    jev_client._owner_cache.clear()
-
-
-@pytest.fixture(autouse=True)
 def _fresh_rate_limit():
     """Every request here is user u1, and the per-user bucket holds 60: a file this
     size would otherwise start answering 429 halfway through, for reasons unrelated

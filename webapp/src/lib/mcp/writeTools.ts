@@ -291,8 +291,8 @@ export async function updateReconSettings(
   // The cross-field check normalized the user-skill toggles in nextRow (foreign ids dropped).
   if ('attackSkillConfig' in filtered.data) filtered.data.attackSkillConfig = nextRow.attackSkillConfig
 
-  // A switch onto the Jev engine needs a Jev token on the project OWNER's
-  // account (not the token's user): recon resolves credentials from the owner.
+  // A switch onto the Jev engine needs a selected Jev provider on the project OWNER's
+  // account (not the token's user): the agent resolves the key from the owner.
   const jevError = await validateJevEngineChange(
     before as Record<string, unknown>, filtered.data, before.userId)
   if (jevError) throw new McpToolError(jevError, 'setting_rejected')

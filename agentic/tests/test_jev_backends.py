@@ -134,6 +134,71 @@ def test_item_batches_are_preflighted_before_any_call(monkeypatch):
     call.assert_not_called()
 
 
+def _sizes(seen):
+    return [len(req.content) for req in seen]
+
+
+def test_openrouter_splits_a_full_base_path_batch_under_the_budget():
+    """400 paths is FFUF_BASE_PATHS_MAX: about 125 KB as one request, so it must split."""
+    paths = [f"api/v{i % 3}/internal/resource_{i:04d}/export" for i in range(400)]
+    seen = []
+    with transport(answer, seen):
+        out = run(jev_hooks.ffuf_base_paths(OR, paths, 10))
+    assert len(seen) > 2
+    assert max(_sizes(seen)) < jc.OPENROUTER_BODY_LIMIT
+    assert len(out["scores"]) == 400 and len(out["ranked"]) == 10
+    asked = [name for req in seen for name in json.loads(req.content)["questions"]]
+    assert sorted(asked) == sorted(f"path_{i}" for i in range(400))
+
+
+def test_direct_typesafe_keeps_its_count_based_batches():
+    paths = [f"api/v{i % 3}/internal/resource_{i:04d}/export" for i in range(400)]
+    direct = jc.JevProvider("jev", "synthetic-direct-key")
+    seen = []
+    with transport(lambda req: answer(req, jc.JEV_MODEL), seen):
+        run(jev_hooks.ffuf_base_paths(direct, paths, 10))
+    assert [len(json.loads(req.content)["questions"]) for req in seen] == [200, 200]
+
+
+def test_openrouter_splits_crawl_seed_hosts_under_the_budget():
+    hosts = [{"hostname": f"h{i:03d}.app.example.test", "title": "Customer portal - sign in",
+              "server": "nginx", "status_code": 200} for i in range(120)]
+    seen = []
+    with transport(answer, seen):
+        out = run(jev_hooks.crawl_seed_order(OR, hosts))
+    assert len(seen) > 1
+    assert max(_sizes(seen)) < jc.OPENROUTER_BODY_LIMIT
+    assert len(out["scores"]) == 120
+
+
+def test_openrouter_splits_questions_when_the_shared_state_is_large():
+    """`_ask` re-sends the state with every chunk, so the questions are split."""
+    state = {"headers": "h" * 20_000}
+    questions = {f"q{i}": {"type": "noul", "instructions": f"Question {i} " + "w" * 300}
+                 for i in range(60)}
+    seen = []
+    with transport(answer, seen):
+        answers = run(jev_hooks._ask(OR, state, questions))
+    assert set(answers) == set(questions)
+    assert len(seen) > 1
+    assert max(_sizes(seen)) < jc.OPENROUTER_BODY_LIMIT
+    assert all(json.loads(req.content)["state"] == state for req in seen)
+
+
+@pytest.mark.parametrize("model,ok", [("jev-1.13.0", True), ("jev-1.13.0-20261001", True),
+                                      ("jev-1.14.0", False), ("jev-1.13.0-free", False),
+                                      ("", False), (None, False)])
+def test_direct_typesafe_accepts_only_the_pinned_version(model, ok):
+    direct = jc.JevProvider("jev", "synthetic-direct-key")
+    with transport(lambda req: answer(req, model), []):
+        if ok:
+            assert run(jc.system_one(direct, jc.JEV_MODEL, "synthetic", Q))["model"] == model
+        else:
+            with pytest.raises(jc.JevError) as err:
+                run(jc.system_one(direct, jc.JEV_MODEL, "synthetic", Q))
+            assert err.value.error_type == "jev_bad_response"
+
+
 def test_failed_later_batch_never_returns_partial_answers(monkeypatch):
     monkeypatch.setattr(jev_hooks, "JEV_MAX_QUESTIONS_PER_CALL", 1)
     good = {"model": jc.OPENROUTER_MODEL, "answers": {"first": {"type": "noul", "noul": 1}}}
@@ -281,23 +346,22 @@ def test_openrouter_test_default_is_free_key_and_specific_metadata_only(client):
     setup.assert_not_called()
 
 
-def test_capability_requires_explicit_test_mode_and_uses_typed_native_call(client):
-    result = {"model": "typesafe/jev-1.13-20260917", "answers": {}}
-    with patch.object(jc, "system_one", AsyncMock(return_value=result)) as inference:
-        response = post_test(client, testMode="capability")
-    assert response.status_code == 200
-    assert response.json()["proof"] == "typed_capability" and response.json()["billed"] is True
-    context, model, state, questions = inference.await_args.args
-    assert context.provider_type == "jev_openrouter" and context.api_key == KEY
-    assert model == jc.JEV_MODEL
-    assert {q["type"] for q in questions.values()} == {"noul", "choice", "score"}
-    assert state == {"kind": "synthetic test"}
-
-
-def test_invalid_test_mode_cannot_trigger_inference(client):
-    with patch.object(jc, "system_one", AsyncMock()) as inference:
-        assert post_test(client, testMode="yes").status_code == 422
+@pytest.mark.parametrize("provider_type", ["jev", "jev_openrouter"])
+def test_no_request_field_can_turn_the_provider_test_into_a_billed_call(client, provider_type):
+    """The test is always the free check: no body field asks for a decision call."""
+    def free(req):
+        if req.url.path.endswith("/v1/models"):
+            return httpx.Response(200, json={"models": [{"name": jc.JEV_MODEL}]})
+        if req.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {"label": "synthetic"}})
+        return httpx.Response(200, json={"data": {"id": jc.OPENROUTER_MODEL, "endpoints": [{}]}})
+    seen = []
+    with transport(free, seen), patch.object(jc, "system_one", AsyncMock()) as inference:
+        response = post_test(client, providerType=provider_type, testMode="capability",
+                             capability=True, billed=True)
+    assert response.status_code == 200 and response.json()["billed"] is False
     inference.assert_not_called()
+    assert all(req.method == "GET" for req in seen)
 
 
 def test_direct_free_proof_requires_the_pinned_model(client):

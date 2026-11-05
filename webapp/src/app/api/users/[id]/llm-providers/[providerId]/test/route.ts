@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
-import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
+import { isJevProvider, jevPinnedConfig, type JevProviderType } from '@/lib/llmProviderKinds'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -84,9 +84,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    // Saved or unsaved, a Jev test always runs against the backend's pinned transport.
     if (isJevProvider({ providerType: String(config.providerType) })) {
-      const type = config.providerType as 'jev' | 'jev_openrouter'
-      config = { ...config, ...jevPinnedConfig(type), testMode: 'key' }
+      config = { ...config, ...jevPinnedConfig(config.providerType as JevProviderType) }
     }
 
     // Proxy to agent test endpoint. The AGENT does the live call to the

@@ -61,22 +61,49 @@ def _noul(instructions: str, *, true: str = "", false: str = "") -> dict:
     return q
 
 
+def _fits(key: jev_client.JevProvider | str, state, questions: dict) -> bool:
+    """Whether one request stays under the backend's body budget (always, with none)."""
+    if not isinstance(key, jev_client.JevProvider):
+        return True
+    limit = jev_client.body_limit(key)
+    return limit is None or jev_client.request_size(key, state, questions) < limit
+
+
+def _preflight(key: jev_client.JevProvider | str, requests: list[tuple[Any, dict]]) -> None:
+    """Refuse the hook before any request is sent if one of them cannot be sent.
+
+    A batch is only too large when a single item or the shared state alone
+    exceeds the budget, and failing then, before spending, keeps the hook
+    all-or-nothing instead of paying for answers it would have to discard.
+    """
+    if isinstance(key, jev_client.JevProvider):
+        for state, chunk in requests:
+            jev_client.validate_request_size(key, state, chunk)
+
+
 async def _ask(key: jev_client.JevProvider | str, state, questions: dict) -> dict:
     """One or more sequential requests, same state, all-or-nothing.
+
+    A chunk closes at JEV_MAX_QUESTIONS_PER_CALL questions or, on a backend with
+    a body budget (OpenRouter), before the request would reach it: the state is
+    re-sent with every chunk, so the questions are what gets split.
 
     Splitting is sequential (never concurrent) so one scan cannot burst the
     per-account rate. If any request fails the whole hook fails: a partial
     answer set would silently narrow coverage.
     """
-    names = list(questions)
+    chunks: list[dict] = []
+    chunk: dict[str, Any] = {}
+    for name, question in questions.items():
+        grown = {**chunk, name: question}
+        if chunk and (len(grown) > JEV_MAX_QUESTIONS_PER_CALL or not _fits(key, state, grown)):
+            chunks.append(chunk)
+            grown = {name: question}
+        chunk = grown
+    if chunk:
+        chunks.append(chunk)
+    _preflight(key, [(state, c) for c in chunks])
     answers: dict[str, Any] = {}
-    chunks = [{n: questions[n] for n in names[i:i + JEV_MAX_QUESTIONS_PER_CALL]}
-              for i in range(0, len(names), JEV_MAX_QUESTIONS_PER_CALL)]
-    if isinstance(key, jev_client.JevProvider):
-        # Check ALL batches before spending: oversized later state must not buy
-        # partial decisions that the hook cannot safely return.
-        for chunk in chunks:
-            jev_client.validate_request_size(key, state, chunk)
     for chunk in chunks:
         result = await jev_client.system_one(key, JEV_MODEL, state, chunk)
         answers.update(result["answers"])
@@ -272,9 +299,9 @@ async def _ask_items(key: jev_client.JevProvider | str, shared: dict, items: dic
     and many questions, and wrong here: a scan's worth of items would exceed the
     request limit. `items` maps an item id to its state; `questions` maps the same
     id to that item's questions. A chunk closes at JEV_MAX_QUESTIONS_PER_CALL
-    questions or _ITEM_STATE_CHARS of item state, whichever comes first (an item
-    larger than the budget goes alone; the per-field clips bound it).
-    Sequential and all-or-nothing, like `_ask`.
+    questions, _ITEM_STATE_CHARS of item state, or the backend's body budget
+    (OpenRouter), whichever comes first (an item larger than the budget goes
+    alone; the per-field clips bound it). Sequential and all-or-nothing, like `_ask`.
     """
     answers: dict[str, Any] = {}
     chunk_items: dict[str, Any] = {}
@@ -291,7 +318,9 @@ async def _ask_items(key: jev_client.JevProvider | str, shared: dict, items: dic
         size = len(json.dumps(item_state))
         if chunk_questions and (
                 len(chunk_questions) + len(item_questions) > JEV_MAX_QUESTIONS_PER_CALL
-                or chunk_chars + size > _ITEM_STATE_CHARS):
+                or chunk_chars + size > _ITEM_STATE_CHARS
+                or not _fits(key, {**shared, "items": {**chunk_items, item_id: item_state}},
+                             {**chunk_questions, **item_questions})):
             flush()
             chunk_items, chunk_questions, chunk_chars = {}, {}, 0
         chunk_items[item_id] = item_state
@@ -299,9 +328,7 @@ async def _ask_items(key: jev_client.JevProvider | str, shared: dict, items: dic
         chunk_chars += size
     if chunk_questions:
         flush()
-    if isinstance(key, jev_client.JevProvider):
-        for state, chunk in requests:
-            jev_client.validate_request_size(key, state, chunk)
+    _preflight(key, requests)
     for state, chunk in requests:
         result = await jev_client.system_one(key, JEV_MODEL, state, chunk)
         answers.update(result["answers"])

@@ -387,7 +387,7 @@ export async function POST(request: NextRequest) {
     }
 
     // A new project starts with every engine on the LLM, so any Jev flag in the
-    // body is a switch-on and needs a Jev token on the creating user's account.
+    // body is a switch-on and needs a Jev provider of the creating user selected.
     // Judged on the coerced values: the string "true" becomes true above, and
     // checking the raw body let it through.
     const jevError = await validateJevEngineChange(null, sanitizedParams, userId)

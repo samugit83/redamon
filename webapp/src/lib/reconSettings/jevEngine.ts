@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma'
+import { JEV_PROVIDER_TYPES } from '@/lib/llmProviderKinds'
 
 /**
  * Every per-hook Jev field. The first four are engine switches on an LLM hook
@@ -58,9 +59,22 @@ export function jevSwitchedOn(before: Row, next: Row): JevEngineField[] {
 }
 
 /**
- * Judge the merged selection against the project owner, never the actor.
- * Existing unconfigured hooks may keep falling back during unrelated saves;
- * switching a hook on or changing its non-null provider requires validation.
+ * Refuses a write that switches a hook onto Jev, or selects a Jev provider, unless
+ * the selection names a Jev row on the project OWNER's account. Returns the error
+ * message, or null when the write may proceed.
+ *
+ * It refuses only a SWITCH-ON or a changed selection, never "any true value": the
+ * project form sends every field on every save, so a rule over "any true" would block
+ * every save of a project whose provider was later deleted, including saves that touch
+ * nothing to do with Jev. A stored true is left alone; at scan time the hook falls
+ * back to its static list.
+ *
+ * `ownerUserId` is the project's owner, not the acting user: the agent resolves the
+ * selected row from the owner's providers.
+ *
+ * Fails closed. A lookup that throws, or a missing owner, is a refusal; the
+ * missing-owner case matters because Prisma ignores `userId: undefined` in a
+ * `where`, which would match any user's row and wrongly allow the write.
  */
 export async function validateJevEngineChange(
   before: Row,
@@ -82,7 +96,7 @@ export async function validateJevEngineChange(
   }
   try {
     const provider = await prisma.userLlmProvider.findFirst({
-      where: { id: selection, userId: ownerUserId, providerType: { in: ['jev', 'jev_openrouter'] } },
+      where: { id: selection, userId: ownerUserId, providerType: { in: [...JEV_PROVIDER_TYPES] } },
       select: { id: true },
     })
     if (provider) return null
@@ -93,8 +107,13 @@ export async function validateJevEngineChange(
     'Select an owner-owned TypeSafe or OpenRouter Jev configuration in the project.'
 }
 
-/** Import keeps hook intent but never replays an account-scoped provider id. */
-export async function jevImportWarnings(row: Row, _importerUserId: string | null | undefined): Promise<string[]> {
+/**
+ * Warnings for an imported project that arrives with hooks set to Jev. Import keeps
+ * the bundle's values, because refusing would make a bundle exported from an account
+ * with a provider unimportable anywhere else. A provider id is account-scoped and
+ * never travels, so every such hook uses its static fallback until one is selected.
+ */
+export function jevImportWarnings(row: Row): string[] {
   return JEV_ENGINE_FIELDS.filter(k => row?.[k] === true).map(k =>
     `${k} (${JEV_HOOK_LABEL[k]}) is set to use Jev: this hook uses its static fallback until you ` +
     'select a Jev provider for the imported project. Provider selections do not travel with exports.')

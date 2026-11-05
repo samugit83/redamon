@@ -29,11 +29,28 @@ interface JevSelectionState {
 const CHANGED_EVENT = 'redamon:jev-provider-changed'
 const JevSelectionContext = createContext<JevSelectionState | null>(null)
 
+/**
+ * Tell the mounted Jev lookup that a configuration was added, replaced or removed.
+ *
+ * The project form's Target panel can add one inline, and Settings can delete one;
+ * without this, every engine switch on the page would keep reading the old list
+ * until the page reloads.
+ */
 export function notifyJevProviderChanged(): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(CHANGED_EVENT))
 }
 
-/** One owner lookup shared by every hook, including unsaved project selections. */
+/**
+ * The project owner's Jev configurations and the project's (possibly unsaved)
+ * selection, looked up once for every Jev control in the form.
+ *
+ * A failed lookup is 'error', never 'no': telling a user "nothing is selected" when
+ * the lookup actually failed would push them to re-add a configuration they already
+ * have. Don't copy ShodanSection's hook, which reports a failed fetch as "no key".
+ *
+ * This is a convenience signal for the form only; the server
+ * (validateJevEngineChange) is the authority on whether a switch-on is allowed.
+ */
 export function JevSelectionProvider({
   ownerUserId, selectedProviderId, ownerUnavailable = false, children,
 }: {
@@ -65,6 +82,8 @@ export function JevSelectionProvider({
         const response = await fetch(`/api/users/${ownerUserId}/llm-providers`)
         if (!response.ok) throw await readApiError(response, 'Could not load the project owner’s Jev configurations')
         const rows: unknown = await response.json()
+        // A 200 that is not a list (an error payload, a proxy page) tells us nothing
+        // about the account, so it is a failed lookup, not "no configurations".
         if (!Array.isArray(rows)) throw new Error('Invalid Jev configuration lookup response')
         const providers = rows.filter((row): row is JevProviderRow =>
           row !== null && typeof row === 'object' && typeof row.id === 'string' &&
@@ -85,7 +104,8 @@ export function JevSelectionProvider({
     : !ownerUserId || lookup.ownerUserId !== ownerUserId || lookup.nonce !== nonce ? 'loading'
     : lookup.status
   const providers = lookupStatus === 'ready' ? lookup.providers : []
-  const provider = providers.find(row => row.id === selectedProviderId && typeof row.apiKey === 'string' && row.apiKey.trim()) ?? null
+  const provider = providers.find(row =>
+    row.id === selectedProviderId && typeof row.apiKey === 'string' && row.apiKey.trim()) ?? null
   const status: JevProviderStatus = lookupStatus === 'loading' ? 'loading'
     : lookupStatus === 'error' || lookupStatus === 'limited' ? 'error'
     : provider ? 'yes' : 'no'

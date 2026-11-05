@@ -35,6 +35,7 @@ services:
         node scripts/apply-plugin-constraints.mjs || echo "[plugins] constraint script failed"
         node scripts/clamp-triage-review-budget.mjs
         node scripts/backfill-user-skill-toggles.mjs
+        node scripts/backfill-jev-provider-selection.mjs
         npm run dev
     volumes:
       - ./webapp:/app

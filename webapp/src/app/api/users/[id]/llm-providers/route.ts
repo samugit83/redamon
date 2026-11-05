@@ -101,6 +101,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       )
     }
 
+    // A Jev row's model, URL and headers are pinned by its backend (jevPinnedConfig),
+    // never the caller's to choose, so the key can only go to that backend's fixed
+    // origin. A user may hold several named rows; each project selects one explicitly.
     const isJev = isJevProvider({ providerType })
     if (isJev) {
       if (typeof body.apiKey !== 'string' || !body.apiKey.trim()) {

@@ -62,6 +62,7 @@ import { filterReconSettings, reconSettingsSelect } from '@/lib/reconSettings/fi
 import { fieldsWhere, field, loadRegistry } from '@/lib/reconSettings/registry'
 import { checkHeader, isInsideProjectFileRoot } from '@/lib/reconSettings/validators'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
+import { JEV_PROVIDER_TYPES } from '@/lib/llmProviderKinds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 
 // --- create_project -----------------------------------------------------------------
@@ -382,7 +383,7 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
   }
 
   // A new project starts with every engine on the LLM, so a Jev flag in the
-  // settings is a switch-on and needs a Jev token on the creating account.
+  // settings is a switch-on and needs a Jev provider of the creating account selected.
   const jevError = await validateJevEngineChange(null, data, ctx.token.userId)
   if (jevError) throw new McpToolError(jevError, 'setting_rejected')
 
@@ -643,24 +644,29 @@ const AI_HOOKS = [
  * `aiInPipeline` forces every per-hook AI flag to its own value at scan start
  * and never touches the Jev fields, so with it off every hook is off, and with
  * it on the Jev field alone decides: an engine hook is on the LLM or on Jev, an
- * enable hook is off or on Jev. A hook on Jev runs only if the project owner has
- * a Jev token; otherwise it uses its static fallback, which is what this
- * reports. Over MCP the token's user IS the owner (a mismatch is a hard deny),
- * so the owner's rows are counted with it. The token itself is never read: a
- * count is all this needs, and the secret has no business here.
+ * enable hook is off or on Jev. A hook on Jev runs only if the project selects a
+ * Jev provider (`jevProviderId`, TypeSafe or OpenRouter) that is still on the
+ * owner's account, exactly the row the agent resolves; otherwise it uses its
+ * static fallback, which is what this reports. Over MCP the token's user IS the
+ * owner (a mismatch is a hard deny), so the selection is looked up among that
+ * user's rows. Only the row's existence is read: the key has no business here.
  */
 async function resolveAiHooks(row: Record<string, unknown>, ownerUserId: string) {
   const aiOn = row.aiInPipeline === true
   const wantsJev = AI_HOOKS.some(h => row[h.engineField] === true)
+  const selected = typeof row.jevProviderId === 'string' && row.jevProviderId ? row.jevProviderId : null
 
-  let ownerHasToken: boolean | null = null
-  if (aiOn && wantsJev) {
+  // null: the lookup failed, so nothing is claimed either way.
+  let jev: 'ready' | 'unselected' | 'unavailable' | null = 'unselected'
+  if (aiOn && wantsJev && selected) {
     try {
-      ownerHasToken = (await prisma.userLlmProvider.count({
-        where: { userId: ownerUserId, providerType: 'jev' },
-      })) > 0
+      const provider = await prisma.userLlmProvider.findFirst({
+        where: { id: selected, userId: ownerUserId, providerType: { in: [...JEV_PROVIDER_TYPES] } },
+        select: { id: true },
+      })
+      jev = provider ? 'ready' : 'unavailable'
     } catch {
-      ownerHasToken = null
+      jev = null
     }
   }
 
@@ -673,9 +679,11 @@ async function resolveAiHooks(row: Record<string, unknown>, ownerUserId: string)
     if (!aiOn) effective = 'off'
     else if (!onJev) effective = engine
     else if (requires && row[requires] !== true) effective = `off (${requires} is false)`
-    else if (ownerHasToken === true) effective = 'jev'
-    else if (ownerHasToken === false) effective = 'jev → static fallback (no Jev token on the owner\'s account)'
-    else effective = 'jev (could not check the owner\'s Jev token)'
+    else if (jev === 'ready') effective = 'jev'
+    else if (jev === 'unselected') effective = 'jev → static fallback (no Jev provider selected for the project)'
+    else if (jev === 'unavailable') {
+      effective = 'jev → static fallback (the selected Jev provider is not on the owner\'s account)'
+    } else effective = 'jev (could not check the project\'s Jev provider)'
     return { hook, kind, engine, effective }
   })
 }

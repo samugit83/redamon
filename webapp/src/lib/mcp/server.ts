@@ -2141,7 +2141,7 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'asks for and the one that will run. An `engine` hook asks for llm or jev; an `enable` ' +
         'hook (Jev-only) asks for off or jev. Every hook is off when ' +
         'aiInPipeline is off, and a hook on Jev reads as its static fallback when the project ' +
-        'owner has no Jev token.\n\n' +
+        'selects no Jev provider (jevProviderId), or one no longer on the owner\'s account.\n\n' +
         '`scope.scopeGroups` is the scope the scan runs, derived from the saved targets: one ' +
         'group per scan root, `enumerate` (subdomain discovery) or `exact` (only the listed ' +
         'hosts), and whether the root itself is a target. `scope.invalidEntries` lists saved ' +

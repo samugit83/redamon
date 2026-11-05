@@ -214,7 +214,7 @@ describe('Jev backend protection and deletion', () => {
     mockProjectUpdateMany.mockResolvedValue({ count: 2 })
     const res = await DELETE(del(), params('victim', 'p1'))
     expect(res.status).toBe(200)
-    expect(mockProjectUpdateMany).toHaveBeenCalledWith({ where: { jevProviderId: 'p1' }, data: { jevProviderId: null } })
+    expect(mockProjectUpdateMany).toHaveBeenCalledWith({ where: { jevProviderId: 'p1' }, data: { jevProviderId: null, updatedAt: expect.any(Date) } })
     expect(mockProjectUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(mockDelete.mock.invocationCallOrder[0])
     expect(await res.json()).toMatchObject({ success: true, affectedProjects: 2, warning: expect.stringContaining('fallbacks') })
   })

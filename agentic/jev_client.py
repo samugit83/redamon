@@ -19,7 +19,6 @@ import logging
 import math
 import os
 import re
-import time
 import urllib.parse
 
 import httpx
@@ -31,9 +30,17 @@ BASE_URL = "https://api.typesafe.ai"
 JEV_MODEL = "jev-1.13.0"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_MODEL = "typesafe/jev-1.13"
-# The native SDK documents a slower, less accurate long-context mode above ~32k.
+#: OpenRouter runs a request above about 32,000 bytes of text in TypeSafe's
+#: long-context mode, which it documents as slower and less accurate than the
+#: mode the recon thresholds were calibrated in. It is not a size limit: the
+#: hooks split their batches below it (`body_limit`), and only a single item
+#: that cannot fit on its own is refused.
 OPENROUTER_BODY_LIMIT = 32_000
+#: Both backends answer with the version they served, optionally as a dated
+#: snapshot (OpenRouter documents `typesafe/jev-1.13-20260917`). Any other
+#: version means the calibration no longer holds, so the answer is refused.
 _OPENROUTER_MODEL_RE = re.compile(r"typesafe/jev-1\.13(?:-\d{8})?")
+_DIRECT_MODEL_RE = re.compile(r"jev-1\.13\.0(?:-\d{8})?")
 
 
 @dataclass(frozen=True)
@@ -63,7 +70,6 @@ def _provider(value: JevProvider | str) -> JevProvider:
     return value if isinstance(value, JevProvider) else JevProvider("jev", value)
 
 TIMEOUT_S = 5.0
-OWNER_CACHE_TTL_S = 300
 _WEBAPP_TIMEOUT_S = 10.0
 
 #: Printable ASCII with no whitespace. A CR/LF in a header value makes httpx
@@ -79,7 +85,7 @@ ERROR_MESSAGES = {
     "jev_timeout": "The Jev backend did not answer in time",
     "jev_bad_response": "The Jev backend returned an unexpected answer",
     "jev_not_configured": "No valid Jev provider selected for this project",
-    "jev_unavailable": "The Jev token could not be loaded",
+    "jev_unavailable": "The project's Jev provider could not be loaded",
     "jev_forbidden": "The project does not belong to this user",
 }
 
@@ -125,13 +131,29 @@ def _auth_headers(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
 
 
-def _body(provider: JevProvider, payload: dict) -> bytes:
+def _serialize(payload: dict) -> bytes:
     try:
-        body = json.dumps(payload, ensure_ascii=False, allow_nan=False,
+        return json.dumps(payload, ensure_ascii=False, allow_nan=False,
                           separators=(",", ":")).encode("utf-8")
     except (TypeError, ValueError, UnicodeError, OverflowError):
         raise JevError("jev_bad_request") from None
-    if provider.provider_type == "jev_openrouter" and len(body) >= OPENROUTER_BODY_LIMIT:
+
+
+def body_limit(provider: JevProvider | str) -> int | None:
+    """The request-body budget the hooks must batch under, or None for no budget."""
+    return OPENROUTER_BODY_LIMIT if _provider(provider).provider_type == "jev_openrouter" else None
+
+
+def request_size(provider: JevProvider | str, state, questions: dict) -> int:
+    """Bytes of the System One body exactly as `_request` would send it."""
+    provider = _provider(provider)
+    return len(_serialize({"model": provider.wire_model, "state": state, "questions": questions}))
+
+
+def _body(provider: JevProvider, payload: dict) -> bytes:
+    body = _serialize(payload)
+    limit = body_limit(provider)
+    if limit is not None and len(body) >= limit:
         raise JevError("jev_bad_request")
     return body
 
@@ -248,7 +270,9 @@ async def system_one(key: JevProvider | str, model: str, state, questions: dict)
             and (not isinstance(returned_model, str)
                  or not _OPENROUTER_MODEL_RE.fullmatch(returned_model))):
         raise JevError("jev_bad_response")
-    if provider.provider_type == "jev" and returned_model != JEV_MODEL:
+    if (provider.provider_type == "jev"
+            and (not isinstance(returned_model, str)
+                 or not _DIRECT_MODEL_RE.fullmatch(returned_model))):
         raise JevError("jev_bad_response")
     logger.info("jev backend=%s canonical_model=%s wire_model=%s",
                 provider.provider_type, JEV_MODEL, returned_model)
@@ -261,10 +285,6 @@ async def system_one(key: JevProvider | str, model: str, state, questions: dict)
 # ---------------------------------------------------------------------------
 # Owner binding: a /jev/* caller names a project and a user; both must match.
 # ---------------------------------------------------------------------------
-
-_OWNER_CACHE_MAX = 1024
-_owner_cache: dict[tuple[str, str], float] = {}
-
 
 def _fetch_project(project_id: str) -> dict | None:
     """Trusted persisted state, fetched fresh to observe selection/owner changes."""
@@ -283,17 +303,11 @@ def _fetch_project(project_id: str) -> dict | None:
     return data
 
 
-def _fetch_project_owner(project_id: str) -> str | None:
-    data = _fetch_project(project_id)
-    owner = data.get("userId") if data else None
-    return owner if isinstance(owner, str) else None
-
-
 async def selected_provider_id(project_id: str, user_id: str) -> str:
     """Bind ownership and selection from ONE fresh trusted project snapshot.
 
-    Never consult the owner cache here: revoked ownership or cleared selection
-    must be effective for the next request, before any credential is read.
+    Deliberately uncached: a revoked ownership or a cleared selection must take
+    effect on the next request, before any credential is read.
     """
     try:
         project = await asyncio.to_thread(_fetch_project, project_id)
@@ -321,48 +335,12 @@ def resolve_provider(providers: list, selected_id: str, owner_id: str) -> JevPro
     return JevProvider(row.get("providerType"), row.get("apiKey"), selected_id)
 
 
-async def verify_owner(project_id: str, user_id: str) -> None:
-    """Raise unless `project_id` belongs to `user_id`. Fails closed.
+async def test_provider(provider: JevProvider) -> dict:
+    """A free check of the key and the pinned model. Spends no credit.
 
-    A mismatch (or a project that does not exist) is `jev_forbidden`; a webapp
-    that cannot answer is `jev_unavailable`. Only a match is cached.
+    Authentication plus catalog metadata does not prove the account can pay for
+    a decision call, so the result never claims that.
     """
-    cache_key = (project_id, user_id)
-    now = time.monotonic()
-    if _owner_cache.get(cache_key, 0.0) > now:
-        return
-    try:
-        owner = await asyncio.to_thread(_fetch_project_owner, project_id)
-    except Exception:                                             # noqa: BLE001
-        raise JevError("jev_unavailable") from None
-    if owner is None or owner != user_id:
-        raise JevError("jev_forbidden")
-    if len(_owner_cache) >= _OWNER_CACHE_MAX:
-        for stale in [k for k, expiry in _owner_cache.items() if expiry <= now]:
-            del _owner_cache[stale]
-        if len(_owner_cache) >= _OWNER_CACHE_MAX:
-            _owner_cache.clear()
-    _owner_cache[cache_key] = now + OWNER_CACHE_TTL_S
-
-
-async def test_provider(provider: JevProvider, *, capability: bool = False) -> dict:
-    """Free evidence by default; a typed synthetic call ONLY with explicit consent.
-
-    OpenRouter catalog metadata plus authentication is not a guarantee of paid
-    inference access. The proof label deliberately does not claim otherwise.
-    """
-    if capability:
-        questions = {
-            "ping": {"type": "noul", "instructions": "Is this a synthetic test?"},
-            "kind": {"type": "choice", "instructions": "Select the test kind.",
-                     "criteria": {"synthetic": "Synthetic test", "other": "Other"}},
-            "score": {"type": "score", "instructions": "How clearly synthetic is this test?",
-                      "criteria": ["Not a synthetic test", "Clearly a synthetic test"]},
-        }
-        result = await system_one(provider, JEV_MODEL, {"kind": "synthetic test"}, questions)
-        return {"success": True, "model": JEV_MODEL, "wire_model": result["model"],
-                "proof": "typed_capability", "billed": True,
-                "response_text": "Pinned Jev typed capability verified (billed synthetic call)."}
     if provider.provider_type == "jev":
         models = await list_models(provider.api_key)
         if JEV_MODEL not in models:
