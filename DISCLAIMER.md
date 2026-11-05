@@ -33,6 +33,7 @@ By using this software, you acknowledge and agree that:
    - Computer Fraud and Abuse Act (CFAA) - United States
    - Computer Misuse Act 1990 - United Kingdom
    - Directive 2013/40/EU - European Union
+   - Article 615-ter of the Codice Penale (unauthorized access to a computer system) - Italy
    - And similar laws in other jurisdictions
 4. **Violations can result in severe civil and criminal penalties**, including fines and imprisonment
 
