@@ -742,6 +742,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
     ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS = settings.get("ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS", [])
     ZAP_AJAX_SPIDER_MAX_URLS = settings.get("ZAP_AJAX_SPIDER_MAX_URLS", 1000)
     ZAP_AJAX_SPIDER_PARALLELISM = settings.get("ZAP_AJAX_SPIDER_PARALLELISM", 1)
+    ZAP_AJAX_SPIDER_MAX_SEEDS = settings.get("ZAP_AJAX_SPIDER_MAX_SEEDS", 250)
 
     print(f"[*][ZAP Ajax] Docker image: {ZAP_AJAX_SPIDER_DOCKER_IMAGE}")
     print(f"[*][ZAP Ajax] Seed mode: {ZAP_AJAX_SPIDER_SEED_MODE}")
@@ -813,6 +814,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
         logout_avoidance=ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE,
         scope_check=ZAP_AJAX_SPIDER_SCOPE_CHECK,
         parallelism=ZAP_AJAX_SPIDER_PARALLELISM,
+        max_seeds=ZAP_AJAX_SPIDER_MAX_SEEDS,
     )
     print(f"[+][Partial Recon] ZAP Ajax Spider found {len(zap_ajax_urls)} URLs")
 

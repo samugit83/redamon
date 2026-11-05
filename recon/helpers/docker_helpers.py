@@ -74,8 +74,13 @@ def pull_image_or_use_local(docker_image: str, label: str, *,
     return False
 
 
-def _kill_container(name: str) -> None:
-    """`docker kill` a named container. Never raises."""
+def kill_container(name: str) -> None:
+    """`docker kill` a named container. Never raises.
+
+    Needed after `subprocess.run(["docker", "run", ...], timeout=...)` times out:
+    the timeout kills only the docker CLI, and the container keeps running. A
+    container started with `--rm` is removed by the daemon once killed.
+    """
     try:
         subprocess.run(["docker", "kill", name],
                        capture_output=True, text=True, timeout=15, check=False)
@@ -209,7 +214,7 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
                     timeout=600  # 10 minutes for initial download
                 )
             except subprocess.TimeoutExpired:
-                _kill_container(updater)
+                kill_container(updater)
                 # Stopped mid-write, the volume can hold half-updated templates
                 # that fail to load, so Nuclei is skipped (its findings kept)
                 # rather than run on them.

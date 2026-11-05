@@ -356,8 +356,10 @@ flowchart LR
    filtered socket, so the recon container's own `mem_limit` cannot reach them. The broker
    is the only choke point every sibling-create request passes through. After its security
    `validate_create` passes, it injects `HostConfig.Memory` (`BROKER_TOOL_MEM_BYTES`, default
-   2 GB) into the create body, re-serialises it, and rewrites `Content-Length` before
-   forwarding. The injection is strictly additive, it never relaxes a deny rule.
+   3 GB) into the create body, re-serialises it, and rewrites `Content-Length` before
+   forwarding. A tool that asks for less keeps its own value; one that asks for more is
+   lowered, so the default must cover the largest `container_cap()` a tool requests (the
+   ZAP Ajax Spider's 3 GiB). The injection is strictly additive, it never relaxes a deny rule.
 4. **The dirty supply-chain analyzer** (`scanners/supply_chain_common/analyzer_dispatch.py`): the odd
    one out, because it is spawned from **three** processes, the orchestrator (Docker SDK),
    the recon container and the L1 scan container (both shelling out through the broker
@@ -792,7 +794,7 @@ Each is computed at spawn from the RAM-scaled envelope × headroom, clamped to
 
 | Var | Default | Meaning |
 |---|---|---|
-| `BROKER_TOOL_MEM_BYTES` | `2g` | hard memory cap injected into every sibling tool container (katana/nuclei/…). |
+| `BROKER_TOOL_MEM_BYTES` | `3g` | hard memory cap injected into every sibling tool container (katana/nuclei/…). Only lowers a request, so it must be ≥ the largest tool `container_cap()` (ZAP Ajax Spider: 3 GiB). |
 | `BROKER_TOOL_PIDS` | `512` (D1) | PIDs limit injected into every sibling tool container (was `0`/unlimited); `0` disables. Parsed defensively (a bad value can't crash the broker). |
 
 ### Startup gate & zram (redamon.sh)

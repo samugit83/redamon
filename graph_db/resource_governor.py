@@ -350,6 +350,13 @@ _FALLBACK_PROFILE = {
         # Secret Multiscanner's (that image is shared), so mem_calibrate does
         # not size it from the other tool's runs.
         "trufflehog_js": 805_306_368,
+        # ZAP Ajax Spider runs a JVM and a headless Firefox in ONE cgroup: on a
+        # real crawl the JVM held 1.05 GiB and firefox-esr with its content
+        # processes another 0.82-1.20 GiB. 2 GiB is that measured PEAK, so
+        # container_cap() (x1.5) gives the 3 GiB the pair needs. The broker's
+        # BROKER_TOOL_MEM_BYTES must be at least that, or it clamps the
+        # container below the limit ZAP's heap was sized for.
+        "zap_ajax": 2_147_483_648,
         "_default": 1_500_000_000,
     },
     "scan_job_envelope_bytes": {

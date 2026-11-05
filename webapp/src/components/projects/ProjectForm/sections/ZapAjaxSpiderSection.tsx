@@ -120,6 +120,21 @@ export function ZapAjaxSpiderSection({ data, updateField, onRun }: ZapAjaxSpider
 
               <div className={styles.fieldRow}>
                 <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Max Seeds</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.zapAjaxSpiderMaxSeeds}
+                    onChange={(e) => updateField('zapAjaxSpiderMaxSeeds', parseInt(e.target.value) || 250)}
+                    min={1}
+                    max={100000}
+                  />
+                  <span className={styles.fieldHint}>Most seed URLs crawled per run; each is a full browser crawl, so this bounds the phase&apos;s duration. Over the cap, every host keeps its base URL first</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Max Crawl Depth</label>
                   <input
                     type="number"

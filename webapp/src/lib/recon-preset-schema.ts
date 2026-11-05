@@ -220,6 +220,7 @@ export const reconPresetSchema = z.object({
   zapAjaxSpiderExcludePatterns: strArr,
   zapAjaxSpiderMaxUrls: int,
   zapAjaxSpiderParallelism: int,
+  zapAjaxSpiderMaxSeeds: int,
 
   // -- Web Crawling: Hakrawler --
   hakrawlerEnabled: bool,
@@ -821,6 +822,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - zapAjaxSpiderExcludePatterns: string[] - Regex patterns to exclude from Ajax crawling
 - zapAjaxSpiderMaxUrls: integer - Max in-scope URLs to ingest
 - zapAjaxSpiderParallelism: integer - Seeds crawled simultaneously
+- zapAjaxSpiderMaxSeeds: integer - Max seed URLs crawled per run (each is a full browser crawl), picked round-robin by host
 
 ## Web Crawling - Hakrawler
 - hakrawlerEnabled: boolean

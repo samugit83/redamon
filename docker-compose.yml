@@ -421,8 +421,12 @@ services:
       DOCKER_BROKER_ALLOWED_BIND_PREFIXES: /tmp/redamon,${PWD:-/home/samuele/Progetti didattici/redamon}
       DOCKER_BROKER_ALLOWED_VOLUMES: nuclei-templates
       # Memory governor (Part 4d): hard memory cap injected into every sibling
-      # tool container (katana/nuclei/httpx/...). Default ~2g; PIDS 0 = unset.
-      BROKER_TOOL_MEM_BYTES: ${BROKER_TOOL_MEM_BYTES:-2g}
+      # tool container (katana/nuclei/httpx/...). A CEILING, not a reservation:
+      # the broker only lowers a request, so it must be >= the largest
+      # container_cap() a tool asks for (zap_ajax: 2 GiB envelope x 1.5 = 3 GiB)
+      # or that tool runs below the limit it was sized for.
+      # tests/test_resource_governor.py pins this default against the governor.
+      BROKER_TOOL_MEM_BYTES: ${BROKER_TOOL_MEM_BYTES:-3g}
       # D1: fork-bomb ceiling injected into every sibling tool container
       # (katana/nuclei/httpx/...). Was 0 (unlimited); 512 is generous per tool.
       BROKER_TOOL_PIDS: ${BROKER_TOOL_PIDS:-512}

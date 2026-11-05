@@ -2900,6 +2900,7 @@ class TestRunZapAjaxSpider(unittest.TestCase):
             "ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS": [],
             "ZAP_AJAX_SPIDER_MAX_URLS": 1000,
             "ZAP_AJAX_SPIDER_PARALLELISM": 1,
+            "ZAP_AJAX_SPIDER_MAX_SEEDS": 7,
             "SUBDOMAIN_LIST": ["."],
         }
 
@@ -3153,6 +3154,7 @@ class TestRunZapAjaxSpider(unittest.TestCase):
         self.assertEqual(kwargs.get("browser_id"), "firefox-headless")
         self.assertEqual(kwargs.get("scope_check"), "Strict")
         self.assertEqual(kwargs.get("max_urls"), 1000)
+        self.assertEqual(kwargs.get("max_seeds"), 7)
 
 
 class TestIsHostInScope(unittest.TestCase):

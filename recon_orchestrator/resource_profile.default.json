@@ -13,6 +13,7 @@
   "tool_container_envelope_bytes": {
     "supply_chain_analyzer": 1073741824,
     "trufflehog_js": 805306368,
+    "zap_ajax": 2147483648,
     "_default": 1500000000
   },
   "scan_job_envelope_bytes": {

@@ -629,5 +629,40 @@ class TestJsReconTruffleHogEnvelopes(GovernorTestBase):
         self.assertGreater(g.scan_job_envelope("partial_recon:JsRecon"), g.scan_job_envelope("partial_recon"))
 
 
+class TestBrokerCeilingCoversToolCaps(GovernorTestBase):
+    """The broker only LOWERS a sibling tool's --memory (inject_limits), so its
+    compose default must cover every container_cap() a tool asks for. Below it,
+    a tool sized for its cap runs short: the ZAP Ajax Spider's heap is computed
+    for its cap, and a smaller container OOM-kills the JVM on every seed."""
+
+    def _compose_broker_default(self):
+        import re
+        with open(os.path.join(ROOT, 'docker-compose.yml')) as fh:
+            m = re.search(r"BROKER_TOOL_MEM_BYTES:\s*\$\{BROKER_TOOL_MEM_BYTES:-([0-9.]+)([kmgt]?)\}",
+                          fh.read(), re.IGNORECASE)
+        self.assertIsNotNone(m, "no BROKER_TOOL_MEM_BYTES default in docker-compose.yml")
+        mult = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}[m.group(2).lower()]
+        return int(float(m.group(1)) * mult)
+
+    def test_the_compose_default_covers_the_largest_tool_cap(self):
+        from unittest import mock
+        # Pin the per-container clamp so the answer does not depend on host RAM.
+        with mock.patch.dict(os.environ, {"PER_CONTAINER_MAX": str(64 * GB)}):
+            os.environ.pop("CONTAINER_CAP_HEADROOM", None)
+            caps = {tool: g.container_cap(env)
+                    for tool, env in _F["tool_container_envelope_bytes"].items()}
+        largest_tool, largest = max(caps.items(), key=lambda kv: kv[1])
+        self.assertGreaterEqual(
+            self._compose_broker_default(), largest,
+            f"BROKER_TOOL_MEM_BYTES default is below {largest_tool}'s container_cap ({largest} bytes)")
+
+    def test_zap_ajax_is_capped_at_3_gib(self):
+        from unittest import mock
+        self.assertEqual(g.tool_container_envelope("zap_ajax"), 2 * GB)
+        with mock.patch.dict(os.environ, {"PER_CONTAINER_MAX": str(64 * GB)}):
+            os.environ.pop("CONTAINER_CAP_HEADROOM", None)
+            self.assertEqual(g.container_cap(g.tool_container_envelope("zap_ajax")), 3 * GB)
+
+
 if __name__ == "__main__":
     unittest.main()

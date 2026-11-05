@@ -10978,6 +10978,21 @@ fields:
     meaning: >-
       How long the ZAP Ajax Spider may crawl one seed, in MINUTES rather than
       seconds.
+  zapAjaxSpiderMaxSeeds:
+    tool: zap
+    runtime_key: "ZAP_AJAX_SPIDER_MAX_SEEDS"
+    unit: count
+    phase: resource_enum
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 1, max: 100000 }
+    group: unbounded
+    meaning: >-
+      The most seed URLs zap crawls in one run. Each seed is its own browser crawl
+      of up to the max duration, so this bounds the phase's wall clock. Over the
+      cap, seeds are picked round-robin by host: every host gets its base URL
+      before any host gets a second seed.
   zapAjaxSpiderMaxUrls:
     tool: zap
     runtime_key: "ZAP_AJAX_SPIDER_MAX_URLS"

@@ -15513,6 +15513,27 @@
    "type": "int",
    "unit": "minutes"
   },
+  "zapAjaxSpiderMaxSeeds": {
+   "bounds": {
+    "min": 1,
+    "max": 100000
+   },
+   "default": 250,
+   "form_section": "ZapAjaxSpiderSection",
+   "group": "unbounded",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "The most seed URLs zap crawls in one run. Each seed is its own browser crawl of up to the max duration, so this bounds the phase's wall clock. Over the cap, seeds are picked round-robin by host: every host gets its base URL before any host gets a second seed.",
+   "optional": false,
+   "phase": "resource_enum",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "ZAP_AJAX_SPIDER_MAX_SEEDS",
+   "tool": "zap",
+   "traffic": "active",
+   "type": "int",
+   "unit": "count"
+  },
   "zapAjaxSpiderMaxUrls": {
    "bounds": {
     "min": 1,
