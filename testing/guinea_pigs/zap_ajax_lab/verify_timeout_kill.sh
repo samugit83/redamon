@@ -11,7 +11,10 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 curl -fsS -o /dev/null --max-time 5 http://192.88.95.10/ \
   || { echo "[!] lab is down: run 'docker compose up -d' in $HERE"; exit 2; }
 
-docker run --rm \
+# -i: the check is the heredoc below, read from stdin. Without it the container
+# gets an empty script, runs nothing and exits 0, so the verdict lines are
+# required as well.
+out="$(docker run --rm -i \
   -v redamon_broker_socket:/var/run/broker \
   -e DOCKER_HOST=unix:///var/run/broker/docker.sock \
   -v /tmp/redamon:/tmp/redamon \
@@ -37,3 +40,6 @@ print(f"  {'PASS' if ok_timeout else 'FAIL'}  the seed timed out after {elapsed:
 print(f"  {'PASS' if ok_clean else 'FAIL'}  no ZAP container left behind {left if left else ''}")
 sys.exit(0 if ok_timeout and ok_clean else 1)
 PY
+)" || { echo "$out"; exit 1; }
+echo "$out"
+[ "$(grep -c '^  PASS' <<<"$out")" -eq 2 ] || { echo "[!] the check did not report both verdicts"; exit 1; }
