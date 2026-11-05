@@ -969,9 +969,14 @@ action, and it reads target-controlled text at every step. The controls:
   a write or the shell over MCP through the driver.
 - **Only a person approves.** No MCP tool answers a phase approval, a question,
   a dangerous-tool confirmation or a Fireteam escalation.
-- **Dangerous tools always ask a person in a loop run**, whatever the project's
-  `REQUIRE_TOOL_CONFIRMATION` says (`confirmation_required`). **Product decision
-  flagged for the owner:** this default stays until decided otherwise.
+- **Dangerous tools follow the project's `REQUIRE_TOOL_CONFIRMATION`**, as in a
+  provider run (default on). The owner chose this so a loop run can be left
+  unattended. Turned off, no person confirms a dangerous tool the driver picks
+  (phase approvals, when on, and the scope and RoE checks still apply), so the
+  drawer marks such a run: the `loop_status` frame carries
+  `toolConfirmation: false`, and a red risk icon next to the Agent in the Loop
+  chip explains the risk on hover. The driver's view and the step do not carry
+  the flag.
 - **The agent's `query_graph` reads in a read-only database session**, so the
   database refuses a write the regex guard might miss; this hardens every run.
 - **A person picks the brain.** `update_recon_settings`, `create_project`,

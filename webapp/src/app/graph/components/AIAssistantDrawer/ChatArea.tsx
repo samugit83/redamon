@@ -258,7 +258,9 @@ export function ChatArea({
         <div className={styles.todoWidgetContainer}>
           <TodoListWidget
             items={todoList}
-            headerRight={showAgentStatus ? <AgentStatusChips {...agentStatus} loopActive={loop?.chip} /> : undefined}
+            headerRight={showAgentStatus ? (
+              <AgentStatusChips {...agentStatus} loopActive={loop?.chip} loopUnattended={loop?.unattended} />
+            ) : undefined}
           />
         </div>
       )}

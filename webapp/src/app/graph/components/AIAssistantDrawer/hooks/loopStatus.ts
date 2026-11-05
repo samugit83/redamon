@@ -11,7 +11,17 @@ export const LOOP_SETTINGS_URL = '/settings?tab=mcp-tokens'
 export const LOOP_CHIP_LABEL = 'Agent in the Loop'
 export const LOOP_CHIP_TOOLTIP =
   'Claude Code, Codex or another MCP agent is answering each step. Approvals stay with you, ' +
-  'and dangerous tools always ask you.'
+  'and dangerous tools ask you while the project\'s "Require Tool Confirmation" is on.'
+
+export const LOOP_UNATTENDED_LABEL = 'Unattended: dangerous tools run without your confirmation'
+export const LOOP_UNATTENDED_TOOLTIP =
+  'Unattended run: "Require Tool Confirmation" is off for this project. The external agent ' +
+  'answering this chat (Claude Code, Codex, or any process holding its MCP token) runs ' +
+  'dangerous tools such as kali_shell, metasploit, hydra and nmap without asking you. It ' +
+  'reads text written by the target at every step, and that text can steer it. No person ' +
+  'confirms a dangerous action before it reaches the target. Anthropic and OpenAI expect ' +
+  'unattended automation to use an API key, not a subscription login. Turn the switch back on ' +
+  'in the project settings to confirm each dangerous tool.'
 
 export const LOOP_FIRST_USE =
   'No agent is connected. Start Claude Code or Codex with the Agent in the Loop skill and say ' +
@@ -43,10 +53,12 @@ export interface LoopDisplay {
   statusWord: string | null
   /** The run uses Agent in the Loop: show the chip. */
   chip: boolean
+  /** The run's tool confirmation is off: mark the chip with the risk icon. */
+  unattended: boolean
   notices: LoopNotice[]
 }
 
-const NONE: LoopDisplay = { statusWord: null, chip: false, notices: [] }
+const NONE: LoopDisplay = { statusWord: null, chip: false, unattended: false, notices: [] }
 
 function errorNotice(detail: LoopStatusPayload['detail']): LoopNotice | null {
   switch (detail.code) {
@@ -74,6 +86,8 @@ export function loopDisplay(
   opts: { actingAs?: boolean } = {},
 ): LoopDisplay {
   if (!status) return NONE
+  // Strictly false: an agent that predates the field sends nothing, and says nothing.
+  const unattended = status.toolConfirmation === false
   const notices: LoopNotice[] = []
   let statusWord: string | null = null
   const step = status.step
@@ -82,7 +96,7 @@ export function loopDisplay(
     const notice = errorNotice(status.detail ?? {})
     if (notice) notices.push(notice)
   } else if (status.state === 'finished' || status.state === 'stopped') {
-    return { statusWord: null, chip: true, notices: [] }
+    return { statusWord: null, chip: true, unattended, notices: [] }
   } else if (step?.state === 'claimed') {
     const purpose = PURPOSE_LABEL[step.purpose] ?? step.purpose
     statusWord = step.iteration != null
@@ -100,7 +114,7 @@ export function loopDisplay(
   if (opts.actingAs && status.state !== 'error') {
     notices.push({ tone: 'info', text: LOOP_ACT_AS })
   }
-  return { statusWord, chip: true, notices }
+  return { statusWord, chip: true, unattended, notices }
 }
 
 /** "answered via laptop (rdmn_mcp_ab12…)" for a thinking card, or null. */

@@ -46,8 +46,12 @@ metadata:
   [phase.py](../../agentic/orchestrator_helpers/phase.py) is the example).
 - **A new model call site gets an `llm_purpose(...)` label**, or its step reaches the driver
   as `other` with a `text` answer format ([purpose.py](../../agentic/agent_in_the_loop/purpose.py)).
-- **Dangerous tools always ask a person in a loop run.** Read the setting through
-  `confirmation_required(get_setting('REQUIRE_TOOL_CONFIRMATION', True))`, never directly.
+- **A loop run follows the project's `REQUIRE_TOOL_CONFIRMATION`, and an unattended run
+  shows it.** The gates read the setting as in a provider run; `_stream_graph` passes it to
+  `run_scope(tool_confirmation=...)`, the drawer's `loop_status` carries it as
+  `toolConfirmation`, and `false` puts a red risk icon next to the Agent in the Loop chip
+  ([loopStatus.ts](../../webapp/src/app/graph/components/AIAssistantDrawer/hooks/loopStatus.ts)).
+  It stays out of the driver's view and the step (a step change bumps `contractVersion`).
 - **Only a person answers approvals, questions and dangerous-tool confirmations.** No MCP
   tool may answer them ([loopTools.ts](../../webapp/src/lib/mcp/loopTools.ts)).
 - **A driver token holds no write or exec scope besides `agent:loop`.** Compute it from
@@ -69,7 +73,7 @@ metadata:
 
 | Concern | File |
 | --- | --- |
-| Switch, tunables, `is_loop_model`, `is_loop_llm`, `confirmation_required` | `agentic/agent_in_the_loop/__init__.py` |
+| Switch, tunables, `is_loop_model`, `is_loop_llm` | `agentic/agent_in_the_loop/__init__.py` |
 | Steps, leases, deadlines, no-driver rule, dedup, pruning | `agentic/agent_in_the_loop/broker.py` |
 | Run scope around every streaming graph loop | `AgentOrchestrator._stream_graph` in `agentic/orchestrator.py` |
 | MCP tools, client, driver-token rule | `webapp/src/lib/mcp/loopTools.ts`, `loopClient.ts`, `loopScopes.ts` |

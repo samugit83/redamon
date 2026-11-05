@@ -80,21 +80,6 @@ def _bounded_int(key: str, default: int, lo: int, hi: int) -> int:
     return value
 
 
-def confirmation_required(setting: bool) -> bool:
-    """Whether a dangerous tool must wait for a person.
-
-    In an Agent in the Loop run the "model" is any process holding a driver
-    token, and the human confirmation is the only code-enforced brake on a
-    dangerous tool, so it applies whatever REQUIRE_TOOL_CONFIRMATION says.
-    Provider-model runs keep the project setting.
-    """
-    from agent_context import current_log_session_id
-    from .broker import get_broker
-    if get_broker().scope_for_session(current_log_session_id.get()) is not None:
-        return True
-    return bool(setting)
-
-
 def settings() -> LoopSettings:
     """Read the tunables. A bad value logs one warning and uses the default."""
     values = {attr: _bounded_int(*spec) for attr, spec in _TUNABLES.items()}

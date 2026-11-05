@@ -405,6 +405,9 @@ export interface LoopStatusPayload {
   driver: { connected: boolean; lastSeenSeconds: number | null }
   openSteps: number
   sinceSeconds: number
+  /** The run's REQUIRE_TOOL_CONFIRMATION; false means dangerous tools run without asking.
+   *  An agent built before this field omits it, and the drawer then shows no risk icon. */
+  toolConfirmation?: boolean
 }
 
 /** A rate-limit wait: `seconds` before retry number `retry` of a `purpose` call. */

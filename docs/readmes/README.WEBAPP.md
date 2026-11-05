@@ -671,7 +671,7 @@ When `REQUIRE_TOOL_CONFIRMATION` is enabled in Project Settings, the agent pause
 
 When the setting is disabled, an orange warning badge appears in the chat header.
 
-In an **Agent in the Loop** run (`loop/mcp`) dangerous tools always ask, whatever this setting says: the person's own agent writes the run's decisions, so a person must approve what it wants to run.
+An **Agent in the Loop** run (`loop/mcp`) follows this setting too. Turned off, a dangerous tool the external agent picks runs with no person checking it, so the chat drawer puts a red risk icon next to the run's *Agent in the Loop* chip; hovering it explains the risk (`LOOP_UNATTENDED_TOOLTIP` in `hooks/loopStatus.ts`).
 
 #### Agent in the Loop status
 

@@ -364,7 +364,28 @@ class Scopes(BrokerCase):
         claimed = [p for p in rec.payloads if p.get("step", {}).get("state") == "claimed"]
         self.assertEqual(claimed[0]["step"], {"stepId": step.id, "state": "claimed",
                                               "purpose": "think", "iteration": 2})
-        self.assertEqual(set(rec.payloads[0]), {"state", "detail", "driver", "openSteps", "sinceSeconds"})
+        self.assertEqual(set(rec.payloads[0]), {"state", "detail", "driver", "openSteps", "sinceSeconds",
+                                                "toolConfirmation"})
+
+    async def test_each_run_reports_its_own_tool_confirmation(self):
+        key = session_key("u1", "p1", "s1")
+        await self.scope(session="default")
+        self.assertIs(self.broker.status_payload(session_key("u1", "p1", "default"))["toolConfirmation"], True)
+        async with self.broker.run_scope("u1", "p1", "s1", None, uses_loop=True, tool_confirmation=False):
+            self.assertIs(self.broker.status_payload(key)["toolConfirmation"], False)
+        # The ended run keeps its value until the next run of the session replaces it.
+        self.assertIs(self.broker.status_payload(key)["toolConfirmation"], False)
+        async with self.broker.run_scope("u1", "p1", "s1", None, uses_loop=True, tool_confirmation=True):
+            self.assertIs(self.broker.status_payload(key)["toolConfirmation"], True)
+
+    async def test_the_driver_view_does_not_carry_tool_confirmation(self):
+        cm = self.broker.run_scope("u1", "p1", "s1", None, uses_loop=True, tool_confirmation=False)
+        await cm.__aenter__()
+        self.addAsyncCleanup(cm.__aexit__, None, None, None)
+        got = await self.wait()
+        self.assertTrue(got["sessions"])
+        for session in got["sessions"]:
+            self.assertNotIn("toolConfirmation", session)
 
     async def test_scope_for_session(self):
         self.assertIsNone(self.broker.scope_for_session("s1"))

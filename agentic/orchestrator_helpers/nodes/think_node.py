@@ -34,7 +34,7 @@ from orchestrator_helpers.config import get_identifiers, is_session_config_compl
 from orchestrator_helpers.finding_guard import unrecorded_confirmations, unrecorded_note
 from orchestrator_helpers.llm_retry import retry_llm_call
 from orchestrator_helpers.llm_retry import llm_error_reason
-from agent_in_the_loop import confirmation_required, is_loop_llm
+from agent_in_the_loop import is_loop_llm
 from agent_in_the_loop.purpose import llm_purpose
 from orchestrator_helpers.productivity import (
     audit_productivity_claim,
@@ -2211,7 +2211,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 updates["awaiting_user_question"] = True
 
     # Tool confirmation gate — only when setting enabled and no other gate active
-    if (confirmation_required(get_setting('REQUIRE_TOOL_CONFIRMATION', True))
+    if (get_setting('REQUIRE_TOOL_CONFIRMATION', True)
             and not updates.get("awaiting_user_approval")
             and not updates.get("awaiting_user_question")):
 

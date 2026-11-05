@@ -85,6 +85,9 @@ class SessionStatus:
     live: bool = True
     ended_at: float = 0.0
     steps_answered: int = 0
+    # The run's REQUIRE_TOOL_CONFIRMATION: off, dangerous tools run on the
+    # driver's word alone, and the drawer marks the chip with a risk icon.
+    tool_confirmation: bool = True
 
 
 @dataclass
@@ -234,6 +237,7 @@ class StepBroker:
                        "lastSeenSeconds": None if seen is None else int(seen)},
             "openSteps": len(steps),
             "sinceSeconds": int(max(0.0, now - status.since)),
+            "toolConfirmation": status.tool_confirmation,
         }
         if steps:
             shown = next((s for s in steps if s.state == CLAIMED), steps[0])
@@ -284,13 +288,14 @@ class StepBroker:
     # ----------------------------------------------------------- run scopes --
     @asynccontextmanager
     async def run_scope(self, user_id: str, project_id: str, session_id: str,
-                        callback: Any, *, uses_loop: bool):
+                        callback: Any, *, uses_loop: bool, tool_confirmation: bool = True):
         key = session_key(user_id, project_id, session_id)
         scope = RunScope(key, user_id, project_id, session_id, uses_loop, callback)
         self._scopes.setdefault(key, []).append(scope)
         if uses_loop:
             self._statuses[key] = SessionStatus(user_id, project_id, session_id,
-                                                state="thinking", since=self._now())
+                                                state="thinking", since=self._now(),
+                                                tool_confirmation=bool(tool_confirmation))
             self._emit(key)
         outcome, detail = "finished", {}
         try:

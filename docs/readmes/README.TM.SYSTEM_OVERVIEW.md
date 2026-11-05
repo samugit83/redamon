@@ -385,7 +385,7 @@ inside the agent loop**: what it returns is parsed as the agent's own decision.
 
 | Threat | Control |
 |---|---|
-| The driver approves its own dangerous action | Dangerous tools always ask the person in a loop run, whatever `REQUIRE_TOOL_CONFIRMATION` says; no MCP tool answers an approval, a question or a tool confirmation |
+| The driver approves its own dangerous action | No MCP tool answers an approval, a question or a tool confirmation; dangerous tools ask the person while `REQUIRE_TOOL_CONFIRMATION` is on. Turning it off is the person's accepted risk (an unattended run): the drawer marks the run with a red risk icon (`loop_status.toolConfirmation: false`) |
 | Target text injects instructions into the driver, which then uses its token's other powers | A driver token may hold no write or exec scope besides `agent:loop` (`loop_token_too_broad`); the skill pack frames prompts as data |
 | A token drives someone else's run | A step is offered only to a token of the run's owner, for a project that user owns (the webapp sends the owned project ids on every call); every claimed step and every answer is an audit row with the project as target |
 | An automated path switches a project to an outside brain | MCP writes, presets, imports and remembered user defaults refuse or drop a `loop/` model: a person picks it in the project form |

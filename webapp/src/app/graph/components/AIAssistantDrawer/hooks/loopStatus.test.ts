@@ -13,12 +13,12 @@ const openStep = { stepId: 'a'.repeat(32), state: 'open', purpose: 'think', iter
 
 describe('loopDisplay', () => {
   test('no status: nothing, no chip', () => {
-    expect(loopDisplay(null)).toEqual({ statusWord: null, chip: false, notices: [] })
+    expect(loopDisplay(null)).toEqual({ statusWord: null, chip: false, unattended: false, notices: [] })
   })
 
   test('an open step with a connected driver: waiting, no notice', () => {
     const d = loopDisplay(base({ step: openStep, openSteps: 1 }))
-    expect(d).toEqual({ statusWord: 'Waiting for your agent…', chip: true, notices: [] })
+    expect(d).toEqual({ statusWord: 'Waiting for your agent…', chip: true, unattended: false, notices: [] })
   })
 
   test('an open step with no driver: the first-use notice with links, then back once it connects', () => {
@@ -43,7 +43,7 @@ describe('loopDisplay', () => {
 
   test('awaiting a person: nothing new, the approval UI is already on screen', () => {
     expect(loopDisplay(base({ state: 'awaiting_human', detail: { kind: 'approval' } })))
-      .toEqual({ statusWord: null, chip: true, notices: [] })
+      .toEqual({ statusWord: null, chip: true, unattended: false, notices: [] })
   })
 
   test.each([
@@ -61,6 +61,17 @@ describe('loopDisplay', () => {
     for (const state of ['finished', 'stopped']) {
       expect(loopDisplay(base({ state, step: openStep })).statusWord).toBeNull()
     }
+  })
+
+  test('tool confirmation off marks the run unattended, in every state', () => {
+    for (const state of ['thinking', 'running_tool', 'awaiting_human', 'error', 'finished', 'stopped']) {
+      expect(loopDisplay(base({ state, toolConfirmation: false })).unattended).toBe(true)
+      expect(loopDisplay(base({ state, toolConfirmation: true })).unattended).toBe(false)
+    }
+  })
+
+  test('an agent that does not send toolConfirmation is not marked', () => {
+    expect(loopDisplay(base({ step: openStep })).unattended).toBe(false)
   })
 
   test('under act-as the notice says whose agent answers', () => {

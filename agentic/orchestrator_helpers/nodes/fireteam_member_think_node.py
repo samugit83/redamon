@@ -25,7 +25,6 @@ from orchestrator_helpers.parsing import try_parse_llm_decision
 from orchestrator_helpers.json_utils import normalize_content, json_dumps_safe
 from orchestrator_helpers.llm_retry import retry_llm_call
 from orchestrator_helpers.llm_retry import llm_error_reason
-from agent_in_the_loop import confirmation_required
 from agent_in_the_loop.purpose import llm_purpose
 import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.productivity import (
@@ -1092,7 +1091,7 @@ async def fireteam_member_think_node(
     logger.info("=" * 60)
 
     # ---- Dangerous-tool escalation ----
-    tool_confirmation_enabled = confirmation_required(get_setting("REQUIRE_TOOL_CONFIRMATION", True))
+    tool_confirmation_enabled = get_setting("REQUIRE_TOOL_CONFIRMATION", True)
     is_dangerous = False
     if tool_confirmation_enabled:
         if decision.action == "use_tool" and is_dangerous_call(decision.tool_name, decision.tool_args):

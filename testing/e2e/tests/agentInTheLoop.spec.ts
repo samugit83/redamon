@@ -27,6 +27,7 @@ const MASTER_KEY = envValue('INTERNAL_API_KEY')
 const AGENT_URL = `http://localhost:${envValue('AGENT_PORT') || '8090'}`
 const STATE_PATH = join(tmpdir(), `redamon-e2e-aitl-${process.pid}.json`)
 const OBJECTIVE = 'AitL e2e: fingerprint the lab web server'
+const UNATTENDED_ICON = 'Unattended: dangerous tools run without your confirmation'
 
 test.use({ trace: 'off', storageState: async ({}, use) => use(STATE_PATH) })
 test.describe.configure({ mode: 'serial' })
@@ -144,6 +145,8 @@ test('1. happy path: a confirmed tool, a phase approval, the report', async ({ p
   await expect(page.locator('[class*="AgentStatusChips-module"]').getByText('Agent in the Loop', { exact: true }))
     .toBeVisible({ timeout: 30_000 })
   await expect(page.getByText('Waiting for your agent…')).toBeVisible()
+  // Tool confirmation is on (the default), so the run is not marked unattended.
+  await expect(page.getByRole('img', { name: UNATTENDED_ICON })).toHaveCount(0)
 
   const think1 = await d.firstThink()
   expect(think1.contractVersion).toBe(1)
@@ -158,7 +161,7 @@ test('1. happy path: a confirmed tool, a phase approval, the report', async ({ p
   expect(health).not.toHaveProperty('open_steps')
 
   await d.submit(think1.stepId, ANSWERS.curl)
-  // execute_curl is a dangerous tool: a loop run always asks the person.
+  // execute_curl is a dangerous tool, and this project keeps tool confirmation on.
   await page.getByRole('button', { name: 'Allow' }).first().click({ timeout: 60_000 })
   await expect(page.getByText('execute_curl').first()).toBeVisible()
 
@@ -292,16 +295,21 @@ test('10. deleting the project mid-run stops it', async ({ page }) => {
   expect(after.sessions.filter((s: Step) => s.projectId === doomed)).toEqual([])
 })
 
-test('12. dangerous tools always ask in a loop run, whatever the project setting', async ({ page }) => {
-  const lax = await createLoopProject(`e2e AitL no-confirm ${Date.now()}`, { requireToolConfirmation: false })
+test('12. tool confirmation off: the loop run is unattended, and the chat marks it', async ({ page }) => {
+  // The Prisma column: the projects API drops a key it does not know.
+  const lax = await createLoopProject(`e2e AitL no-confirm ${Date.now()}`, { agentRequireToolConfirmation: false })
   const d = new Driver(api, driveToken)
   await openChat(page, lax)
   await send(page, d, lax)
+  const risk = page.getByRole('img', { name: UNATTENDED_ICON })
+  await expect(risk).toBeVisible({ timeout: 30_000 })
+  await expect(risk).toHaveAttribute('title', /"Require Tool Confirmation" is off/)
   const think1 = await d.firstThink()
   await d.submit(think1.stepId, ANSWERS.curl)
-  await expect(page.getByRole('button', { name: 'Deny' }).first()).toBeVisible({ timeout: 60_000 })
-  await page.getByRole('button', { name: 'Deny' }).first().click()
-  const think2 = await d.next()
+  // No one is asked: the next step arrives with the real lab answer from execute_curl.
+  const think2 = await d.next(180_000)
+  expect(think2.fullPrompt).toContain('HTTP/1')
+  await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0)
   await d.submit(think2.stepId, ANSWERS.complete)
   await d.finish()
 })

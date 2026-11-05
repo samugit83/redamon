@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import orchestrator as orchestrator_mod
+import project_settings
 import websocket_api
 from agent_context import current_llm
 from agent_in_the_loop import LoopSettings, broker as broker_mod
@@ -111,6 +112,26 @@ class ScopeCase(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertEqual(self.broker.status_payload("u:p:s")["state"], "stopped")
+
+    async def test_the_frame_carries_the_runs_tool_confirmation(self):
+        for setting in (False, True):
+            with self.subTest(setting=setting):
+                token = project_settings._settings_ctx.set({"REQUIRE_TOOL_CONFIRMATION": setting})
+                try:
+                    _, ws = await self.stream(FakeGraph([{"task_complete": True}]), LoopChatModel())
+                finally:
+                    project_settings._settings_ctx.reset(token)
+                frames = _loop_frames(ws)
+                self.assertTrue(frames)
+                self.assertEqual({f["toolConfirmation"] for f in frames}, {setting})
+
+    async def test_a_project_without_the_setting_reports_confirmation_on(self):
+        token = project_settings._settings_ctx.set({})
+        try:
+            _, ws = await self.stream(FakeGraph([{"task_complete": True}]), LoopChatModel())
+        finally:
+            project_settings._settings_ctx.reset(token)
+        self.assertEqual({f["toolConfirmation"] for f in _loop_frames(ws)}, {True})
 
     async def test_a_provider_run_sends_no_loop_frame(self):
         llm = mock.MagicMock()

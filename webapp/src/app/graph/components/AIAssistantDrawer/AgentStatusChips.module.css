@@ -84,3 +84,12 @@
 .latsIdle {
   opacity: 0.55;
 }
+
+/* --- Agent in the Loop with tool confirmation off --- */
+.unattended {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: #ef4444;
+  cursor: help;
+}

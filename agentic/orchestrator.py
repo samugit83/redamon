@@ -1109,8 +1109,9 @@ class AgentOrchestrator:
         listener = current_llm_wait_listener.set(
             getattr(streaming_callback, "on_rate_limit_wait", None))
         try:
-            async with get_broker().run_scope(user_id, project_id, session_id, streaming_callback,
-                                              uses_loop=uses_loop) as scope:
+            async with get_broker().run_scope(
+                    user_id, project_id, session_id, streaming_callback, uses_loop=uses_loop,
+                    tool_confirmation=bool(get_setting('REQUIRE_TOOL_CONFIRMATION', True))) as scope:
                 async for event in self.graph.astream(graph_input, config, stream_mode="values"):
                     final_state = event
                     scope.final_state = event
