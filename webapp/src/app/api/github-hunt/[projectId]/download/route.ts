@@ -7,7 +7,7 @@ import path from 'path'
 import { internalError } from '@/lib/routeErrors'
 
 // Path to GitHub hunt output directory (mounted volume or local path)
-const GITHUB_HUNT_OUTPUT_PATH = process.env.GITHUB_HUNT_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/github_secret_hunt/output'
+const GITHUB_HUNT_OUTPUT_PATH = process.env.GITHUB_HUNT_OUTPUT_PATH || '/data/github-hunt-output'
 
 interface RouteParams {
   params: Promise<{ projectId: string }>

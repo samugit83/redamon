@@ -204,6 +204,16 @@ file is never an Endpoint.
 URLScan, ParamSpider) and no live tool saw; js_recon leaves their JS out when
 `JS_RECON_INCLUDE_ARCHIVED_JS` is off.
 
+Archive URLs go through the quarantine first (`recon/helpers/url_leaks.py`): a URL
+carrying a one-time link, a secret, a state-changing value or a web-shell trace
+never reaches `discovered_urls`, and the Endpoint it would have made is written
+`quarantined` (no `full_url`, no parameter values). The remaining archive values
+are masked before they enter the lists DAST reads. urlscan's addresses join
+`by_base_url` only on bases that are live in this scan
+(`recon/helpers/resource_enum/urlscan_helpers.py`), before OpenAPI, so a
+Swagger address urlscan saw seeds the OpenAPI step; every source writes the same
+`Endpoint.category` and `Parameter.type` words (`classification.py`).
+
 **Default Exclude Patterns:**
 
 ```python
@@ -301,10 +311,13 @@ GAU_BLACKLIST_EXTENSIONS = [
     "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "avif",
     "css", "woff", "woff2", "ttf", "eot", "otf",
     "mp3", "mp4", "avi", "mov", "wmv", "flv", "webm",
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-    "zip", "rar", "7z", "tar", "gz"
 ]
 ```
+
+Images, fonts and media only: archived documents, exports and archives (pdf,
+xlsx, zip...) are kept so the URL quarantine and URLScan's sensitive-file checks
+see them. A project saved with the older default (which also dropped them) keeps
+its own list.
 
 ### 4. URL Verification
 

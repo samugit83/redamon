@@ -34,6 +34,8 @@ Integrate **[TOOL_NAME]** into the RedAmon recon pipeline.
 
    If the tool has an official Docker image, prefer Docker-in-Docker. If it's a simple API, use HTTP calls. Only use direct subprocess if the tool is a pip package already in the container.
 
+   **A tool that returns URLs someone else recorded** (an archive, a search index, a scan history like URLScan, GAU, ParamSpider) must treat every URL as untrusted and possibly secret: run them through the quarantine (`recon/helpers/url_leaks.py`, `inspect_url` / `split_quarantined`) before anything requests or stores them, store them masked, keep a third party's URLs as their origin only, and write a recorded address as history (`HISTORICALLY_RESOLVED_TO` with a `source`), never as current DNS. A name it finds joins the scan only through `merge_group_hosts`' or `merge_discovered_hostnames`' gates. Its findings are "seen", never confirmed, and go through one writer with tenant-scoped ids (see `update_graph_from_urlscan_findings`).
+
 3. **Identify the pipeline phase** — Read `recon/main.py` to understand the phase structure. Determine which phase the tool belongs to and where its results feed into.
 
 4. **Settings multi-layer flow** — a new setting is described ONCE and joined everywhere else. Three of the layers this list used to name are GENERATED now; hand-editing one is undone by the next build.

@@ -7,7 +7,7 @@ import path from 'path'
 import { internalError } from '@/lib/routeErrors'
 
 // Path to GVM scan output directory (mounted volume or local path)
-const GVM_OUTPUT_PATH = process.env.GVM_OUTPUT_PATH || '/home/samuele/Progetti didattici/RedAmon/gvm_scan/output'
+const GVM_OUTPUT_PATH = process.env.GVM_OUTPUT_PATH || '/data/gvm-output'
 
 interface RouteParams {
   params: Promise<{ projectId: string }>

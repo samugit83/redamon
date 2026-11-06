@@ -160,6 +160,14 @@ const NOTES = [
     'leads for the agent (needs_agent_confirmation true, severity info, hidden from reports until ' +
     'confirmed) and findings a signature proves (real severity). It runs whenever active scanning ' +
     'runs, with no scanModules phase of its own, and sends GET and HEAD only.',
+  'urlscanEnabled reads public urlscan.io history only; RedAmon never submits a urlscan scan. ' +
+    'Its findings (Vulnerability source urlscan_leak: leaked one-time links, sensitive files, ' +
+    'open redirects, problem and takeover pages; Secret source urlscan) are "seen on urlscan", ' +
+    'never confirmed by RedAmon, never agent leads, and at most high. An Endpoint with ' +
+    'quarantined true (a leaked link, a secret in its URL) is never a request target and has no ' +
+    'full_url. Without a urlscan key: the last 30 days only, 100 visits per search, at most 1,000 ' +
+    'read. urlscanMaxSearches caps the searches per scan for every caller; Origin Discovery\'s ' +
+    'urlscan source adds at most 3, and is skipped whenever urlscanEnabled is false.',
   'AI hooks have THREE levels: aiInPipeline, then the per-hook AI flag, then the *UseJev engine. ' +
     'At scan start aiInPipeline forces every per-hook AI flag to its own value; it does not touch ' +
     'the engine fields. A *UseJev flag only switches which engine answers (false = the LLM in ' +

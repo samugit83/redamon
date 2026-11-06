@@ -1927,6 +1927,7 @@ not so you can query for one.
 - `(s:Subdomain)-[:WAF_BYPASS_VIA]->(i:IP)` - Subdomain can bypass WAF via direct IP
 - `(s:Subdomain)-[:HAS_ORIGIN {method, confidence, origin_source}]->(i:IP)` - the real origin server behind the CDN/WAF fronting this Subdomain, discovered by origin_discovery. The IP carries `origin_confirmed: true`, `is_origin_candidate: true`, `origin_discovery_method` (subdomain/email_record/cert_san/favicon_hash/passive_dns/ip_history/file_hash/file_name), `origin_source` (shodan/censys/fofa/zoomeye/otx/virustotal/securitytrails/viewdns/crtsh/dns/urlscan_history/urlscan_hash/urlscan_filename), `origin_confidence` (0-100), `origin_for` (the fronted host), `cdn_fronting` (the CDN name). The exposure is also a `Vulnerability {type: 'waf_bypass', source: 'origin_discovery'}` linked to the IP via `HAS_VULNERABILITY`.
 - Typical query: "show discovered origin IPs behind a CDN" → `MATCH (s:Subdomain)-[:HAS_ORIGIN]->(i:IP) RETURN s.name AS fronted_host, i.address AS origin_ip, i.origin_discovery_method, i.origin_confidence, i.cdn_fronting`
+- Typical query: "which origins were found through urlscan?" → `MATCH (s:Subdomain)-[r:HAS_ORIGIN]->(i:IP) WHERE r.origin_source STARTS WITH 'urlscan' RETURN s.name AS fronted_host, i.address AS origin_ip, r.origin_source, r.confidence`
 
 **NOTE:** Vulnerability nodes store CVE IDs as properties (`cves` list for nuclei, `cve_ids` list for GVM), NOT as relationships to CVE nodes. To find CVEs for a vulnerability, use the property: `v.cves` or `v.cve_ids`.
 

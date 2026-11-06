@@ -634,7 +634,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 
 | Group | Modules | Parallelism | Dependencies |
 |-------|---------|-------------|--------------|
-| **GROUP 1** | WHOIS + Subdomain Discovery + URLScan | 3 parallel tasks | Only needs `root_domain` |
+| **GROUP 1** | WHOIS + Subdomain Discovery + URLScan | 3 parallel tasks | Only needs `root_domain`. URLScan's recent host names join the merged host list (`merge_group_hosts`, `extra_hosts`) through the late-name gates; its findings are written right after discovery |
 | *Discovery* | crt.sh + HackerTarget + Subfinder + Amass + Knockpy | 5 parallel tools | Part of GROUP 1 |
 | *Puredns* | Wildcard filtering (validates against public resolvers) | Sequential | After discovery fan-in, before DNS |
 | *DNS* | DNS resolution for all subdomains | 20 parallel workers | After puredns filtering |
@@ -642,6 +642,8 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 3** | Shodan Enrichment + Port Scan (Naabu) | 2 parallel tasks | Needs IPs from GROUP 1 + GROUP 2b |
 | **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | 7 parallel tasks | Needs IPs/domains from GROUP 1; runs concurrently with GROUP 3 |
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
+| *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`) | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
+| *Takeover verdict* | Which deleted-service pages urlscan recorded still describe their host, from this scan's DNS and live pages (`main_recon_modules/urlscan_takeover.py`) | Sequential; DNS only, through the `dns:takeover-verdict` breaker | After GROUP 4, outside the httpx step; before Phase A, whose Subdomain Takeover reads `urlscan.takeover_hosts` |
 | *IP attribution* | Tags every IP `shared_edge` / `dedicated` / `unknown` (`main_recon_modules/ip_attribution.py`), then writes the Shodan CVEs and the Netlas data GROUP 3/3b held back | Sequential; the TLS handshakes without SNI in a small pool, paced at the RoE ceiling | After GROUP 4 and the certificate SAN feedback; before GROUP 5 and 6. Runs if `IP_ATTRIBUTION_ENABLED` |
 | **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
 | **GROUP 5b** | JS Recon Scanner (250+ regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks; optionally TruffleHog in a hardened sidecar, its keys merged one per key) | 5 analyzers parallel per file (TruffleHog in its own worker, on its own running-time budget) | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |

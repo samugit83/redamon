@@ -113,6 +113,9 @@ describe('the fields that must never be returned', () => {
       pathTraversalValidateSecretsEnabled:
         'a boolean feature toggle: whether the agent checks a secret it found in ' +
         'an exposed file with its provider. It holds no secret of ours.',
+      urlscanSecretsInUrls:
+        'a boolean feature toggle: whether URLScan reports the secrets written in ' +
+        'URLs public urlscan visits recorded (stored masked). It holds no secret of ours.',
     }
     const leaky = columns.filter(
       c => /Token|ApiKey|Secret|Password|Credential/i.test(c) && isReadableProjectField(c)
