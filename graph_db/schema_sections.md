@@ -90,7 +90,7 @@ Additional properties present on this node type, not yet described:
 - status_codes (list[int]): all unique HTTP status codes seen e.g. [200, 301, 404]
 - http_live_url_count (int): count of URLs with status < 500
 - http_probed_at (datetime): when last HTTP-probed
-- source (string): discovery source ("crt.sh", "hackertarget", "knockpy", "shodan_rdns", "shodan_dns", "urlscan", "fofa", "otx_passive_dns", "censys_rdns", "uncover")
+- source (string): discovery source ("crt.sh", "hackertarget", "knockpy", "shodan_rdns", "shodan_dns", "urlscan", "fofa", "otx_passive_dns", "censys_rdns", "uncover"; "tlsx", "certificate_san" or "js_recon" for a name a later step added). A urlscan name seen recently is resolved and scanned like a discovered one (URLScan's Inject settings); one the scan did not resolve stays status "unverified"
 - is_wildcard_zone (boolean), wildcard_ips (list[string]): set only on a subdomain that is itself a zone the wildcard control checked (a scan root below its org, or a parent with many discovered names), with the same meaning as on Domain
 Additional properties present on this node type, not yet described:
 - actual_ip (string)

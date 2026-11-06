@@ -2977,7 +2977,10 @@ fields:
     validator: free_text
     group: not-tuning
     meaning: >-
-      File extensions to skip, e.g. [".jpg", ".css"]
+      File extensions GAU drops from the archived URLs, e.g. ["jpg", "css"]. The
+      default skips images, fonts and media only, so archived documents, exports
+      and backups (pdf, xlsx, zip...) reach the URL quarantine and the sensitive
+      file checks. A project saved with the older default keeps its own list.
   gauDetectMethods:
     tool: gau
     runtime_key: "GAU_DETECT_METHODS"
@@ -10369,6 +10372,37 @@ fields:
       records a coverage gap and keeps the earlier urlscan findings. Without a
       key urlscan allows 30 searches a minute; the free plan allows 1,000 a day,
       shared by every scan, scheduled ones included.
+  urlscanInjectMaxAgeDays:
+    tool: urlscan
+    runtime_key: "URLSCAN_INJECT_MAX_AGE_DAYS"
+    unit: count
+    phase: domain_discovery
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 1, max: 3650 }
+    meaning: >-
+      Days: a host name urlscan saw under the scan root in the last this-many days
+      joins the scan like a discovered subdomain (resolved, port-scanned, probed,
+      crawled, scanned). Older names stay in the graph as unverified history only.
+      Applies only where subdomain discovery runs: never in filtered mode, in an
+      EXACT group or with discovery off; the group scope, the RoE, the wildcard
+      check and the address guards still apply, and a name urlscan showed as a
+      deleted-service page never joins.
+  urlscanMaxInjectedHosts:
+    tool: urlscan
+    runtime_key: "URLSCAN_MAX_INJECTED_HOSTS"
+    unit: count
+    phase: domain_discovery
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 0, max: 5000 }
+    meaning: >-
+      The most urlscan host names that join one scan per domain, newest first; 0
+      adds none (urlscan names then stay in the graph as unverified history only).
+      Each name that joins is resolved and actively scanned like a discovered
+      subdomain.
   urlscanLeakedLinks:
     tool: urlscan
     runtime_key: "URLSCAN_LEAKED_LINKS"

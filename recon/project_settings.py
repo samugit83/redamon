@@ -422,12 +422,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'GAU_MAX_URLS': 50000,
     'GAU_TIMEOUT': 60,
     'GAU_THREADS': 5,
+    # Images, fonts and media only: archived documents, exports and backups
+    # must reach urlscan's file checks and the URL quarantine (F4).
     'GAU_BLACKLIST_EXTENSIONS': [
         'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'avif',
         'css', 'woff', 'woff2', 'ttf', 'eot', 'otf',
         'mp3', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm',
-        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-        'zip', 'rar', '7z', 'tar', 'gz',
     ],
     'GAU_YEAR_RANGE': [],
     'GAU_VERBOSE': False,
@@ -724,6 +724,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'URLSCAN_ENABLED': True,
     'URLSCAN_MAX_RESULTS': 10000,
     'URLSCAN_MAX_SEARCHES': 60,
+    'URLSCAN_INJECT_MAX_AGE_DAYS': 90,
+    'URLSCAN_MAX_INJECTED_HOSTS': 200,
     'URLSCAN_LEAKED_LINKS': True,
     'URLSCAN_SECRETS_IN_URLS': True,
     'URLSCAN_SENSITIVE_FILES': True,
@@ -2046,6 +2048,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['URLSCAN_ENABLED'] = project.get('urlscanEnabled', DEFAULT_SETTINGS['URLSCAN_ENABLED'])
     settings['URLSCAN_MAX_RESULTS'] = project.get('urlscanMaxResults', DEFAULT_SETTINGS['URLSCAN_MAX_RESULTS'])
     settings['URLSCAN_MAX_SEARCHES'] = project.get('urlscanMaxSearches', DEFAULT_SETTINGS['URLSCAN_MAX_SEARCHES'])
+    settings['URLSCAN_INJECT_MAX_AGE_DAYS'] = project.get('urlscanInjectMaxAgeDays', DEFAULT_SETTINGS['URLSCAN_INJECT_MAX_AGE_DAYS'])
+    settings['URLSCAN_MAX_INJECTED_HOSTS'] = project.get('urlscanMaxInjectedHosts', DEFAULT_SETTINGS['URLSCAN_MAX_INJECTED_HOSTS'])
     settings['URLSCAN_LEAKED_LINKS'] = project.get('urlscanLeakedLinks', DEFAULT_SETTINGS['URLSCAN_LEAKED_LINKS'])
     settings['URLSCAN_SECRETS_IN_URLS'] = project.get('urlscanSecretsInUrls', DEFAULT_SETTINGS['URLSCAN_SECRETS_IN_URLS'])
     settings['URLSCAN_SENSITIVE_FILES'] = project.get('urlscanSensitiveFiles', DEFAULT_SETTINGS['URLSCAN_SENSITIVE_FILES'])

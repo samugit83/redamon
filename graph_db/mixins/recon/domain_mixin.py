@@ -342,10 +342,14 @@ class DomainMixin:
                     # A scan root below its org is a Subdomain of the org, marked
                     # as the root it is (D-16); the org apex keeps today's shape.
                     is_scan_root = subdomain == root_domain and root_domain != org_domain
+                    # A name another source found (urlscan, a certificate SAN,
+                    # uncover, JS Recon) keeps it: first writer only.
+                    source = subdomain_info.get("source") if isinstance(subdomain_info.get("source"), str) else None
                     session.run(
                         """
                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
                         SET s.is_scan_root = CASE WHEN $is_scan_root THEN true ELSE s.is_scan_root END,
+                            s.source = coalesce(s.source, $source),
                             s.has_dns_records = $has_records,
                             s.status = coalesce(s.status, $status),
                             s.discovered_at = coalesce(s.discovered_at, datetime()),
@@ -360,6 +364,7 @@ class DomainMixin:
                         name=subdomain, user_id=user_id, project_id=project_id,
                         has_records=has_records, status=status,
                         ai_service_hint=ai_service_hint, is_scan_root=is_scan_root,
+                        source=source,
                     )
                     stats["subdomains_created"] += 1
                     if ai_service_hint:

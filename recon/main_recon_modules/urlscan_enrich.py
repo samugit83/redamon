@@ -16,6 +16,7 @@ redirect search and Origin Discovery's file-fingerprint search.
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -400,6 +401,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             ("URLSCAN_ENABLED", "Toggle"),
             ("URLSCAN_MAX_RESULTS", "Limits"),
             ("URLSCAN_MAX_SEARCHES", "Limits"),
+            ("URLSCAN_INJECT_MAX_AGE_DAYS", "Names that join the scan"),
+            ("URLSCAN_MAX_INJECTED_HOSTS", "Names that join the scan"),
             ("URLSCAN_REDIRECT_SEARCH", "Outbound redirects"),
             ("URLSCAN_LEAKED_LINKS", "Leak detection"),
             ("URLSCAN_SECRETS_IN_URLS", "Leak detection"),
@@ -478,6 +481,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     domain_age_days = None
     apex_domain_age_days = None
     external_domain_entries = []  # Collect out-of-scope domains for situational awareness
+    host_last_seen: dict = {}
 
     for result in results:
         page = result.get("page", {})
@@ -538,6 +542,11 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         ip_in_scope = bool(host_in_scope and page_ip and scope.ip_ok(page_ip))
         if ip_in_scope:
             ips.add(page_ip)
+        # When each target host was last seen, for F1 (a recent name joins the scan).
+        for seen_url in (page_url, task.get("url") or ""):
+            seen_host = _extract_domain_from_url(seen_url, domain) if seen_url else None
+            if seen_host and seen_host != domain and scope.host_ok(seen_host):
+                host_last_seen[seen_host] = max(host_last_seen.get(seen_host, ""), scan_time or "")
 
         # Track domain age (in-scope only — foreign domain ages are irrelevant)
         if is_in_scope:
@@ -631,6 +640,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "findings": findings + redirect["findings"],
         "problem_pages": problem_pages,
         "takeover_pages": takeover_pages,
+        "host_last_seen": host_last_seen,
         "url_secrets": url_secrets,
         "redirect_entries": redirect["redirect_entries"],
         "redirect_start_hosts": redirect["start_hosts"],
@@ -658,6 +668,44 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     urlscan_scope.finish("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES, payload=urlscan_data)
     combined_result["urlscan"] = urlscan_data
     return combined_result
+
+
+DEFAULT_INJECT_MAX_AGE_DAYS = 90
+DEFAULT_MAX_INJECTED_HOSTS = 200
+
+
+def injectable_hosts(urlscan_data: dict, settings: dict, now: Optional[datetime] = None) -> list:
+    """F1: the target host names urlscan saw recently enough to join this
+    scan, newest first, at most URLSCAN_MAX_INJECTED_HOSTS. A name whose
+    deleted-service page item 5 matched is left out: its verdict comes after
+    httpx, and probing a parked name is no discovery. merge_group_hosts then
+    applies the group scope, the RoE, the syntax, the wildcard check and the
+    address guards."""
+    settings = settings or {}
+    try:
+        cap = int(settings.get("URLSCAN_MAX_INJECTED_HOSTS", DEFAULT_MAX_INJECTED_HOSTS))
+        max_age = int(settings.get("URLSCAN_INJECT_MAX_AGE_DAYS", DEFAULT_INJECT_MAX_AGE_DAYS))
+    except (TypeError, ValueError):
+        return []
+    if cap <= 0 or not isinstance(urlscan_data, dict):
+        return []
+    now = now or datetime.now(timezone.utc)
+    takeover = {str(p.get("host") or "").lower() for p in urlscan_data.get("takeover_pages") or []
+                if isinstance(p, dict)}
+    recent = []
+    for host, when in (urlscan_data.get("host_last_seen") or {}).items():
+        if not isinstance(host, str) or host.lower() in takeover:
+            continue
+        try:
+            seen = datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        if (now - seen).days <= max_age:
+            recent.append((seen, host.lower()))
+    recent.sort(key=lambda item: (-item[0].timestamp(), item[1]))
+    return [host for _seen, host in recent[:cap]]
 
 
 def _coverage(results: SearchResults, max_results: int) -> dict:

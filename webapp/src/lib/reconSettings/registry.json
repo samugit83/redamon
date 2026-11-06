@@ -3328,25 +3328,13 @@
     "mov",
     "wmv",
     "flv",
-    "webm",
-    "pdf",
-    "doc",
-    "docx",
-    "xls",
-    "xlsx",
-    "ppt",
-    "pptx",
-    "zip",
-    "rar",
-    "7z",
-    "tar",
-    "gz"
+    "webm"
    ],
    "form_section": "GauSection",
    "group": "not-tuning",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "File extensions to skip, e.g. [\".jpg\", \".css\"]",
+   "meaning": "File extensions GAU drops from the archived URLs, e.g. [\"jpg\", \"css\"]. The default skips images, fonts and media only, so archived documents, exports and backups (pdf, xlsx, zip...) reach the URL quarantine and the sensitive file checks. A project saved with the older default keeps its own list.",
    "optional": false,
    "phase": "resource_enum",
    "prisma_type": "String[]",
@@ -14506,6 +14494,26 @@
    "type": "boolean",
    "unit": "none"
   },
+  "urlscanInjectMaxAgeDays": {
+   "bounds": {
+    "min": 1,
+    "max": 3650
+   },
+   "default": 90,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Days: a host name urlscan saw under the scan root in the last this-many days joins the scan like a discovered subdomain (resolved, port-scanned, probed, crawled, scanned). Older names stay in the graph as unverified history only. Applies only where subdomain discovery runs: never in filtered mode, in an EXACT group or with discovery off; the group scope, the RoE, the wildcard check and the address guards still apply, and a name urlscan showed as a deleted-service page never joins.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_INJECT_MAX_AGE_DAYS",
+   "tool": "urlscan",
+   "traffic": "active",
+   "type": "int",
+   "unit": "count"
+  },
   "urlscanLeakedLinks": {
    "default": true,
    "form_section": "UrlscanSection",
@@ -14521,6 +14529,26 @@
    "traffic": "passive",
    "type": "boolean",
    "unit": "none"
+  },
+  "urlscanMaxInjectedHosts": {
+   "bounds": {
+    "min": 0,
+    "max": 5000
+   },
+   "default": 200,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "The most urlscan host names that join one scan per domain, newest first; 0 adds none (urlscan names then stay in the graph as unverified history only). Each name that joins is resolved and actively scanned like a discovered subdomain.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_MAX_INJECTED_HOSTS",
+   "tool": "urlscan",
+   "traffic": "active",
+   "type": "int",
+   "unit": "count"
   },
   "urlscanMaxResults": {
    "bounds": {

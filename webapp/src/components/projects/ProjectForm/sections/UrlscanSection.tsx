@@ -142,6 +142,41 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                 </div>
               </div>
 
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Scan names seen in the last (days)</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.urlscanInjectMaxAgeDays ?? 90}
+                    onChange={(e) => updateField('urlscanInjectMaxAgeDays', parseInt(e.target.value) || 90)}
+                    min={1}
+                    max={3650}
+                  />
+                  <span className={styles.fieldHint}>
+                    Host names urlscan saw this recently join the scan like discovered subdomains:
+                    resolved, port-scanned and probed. Only where subdomain discovery runs.
+                  </span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Max urlscan names added per scan</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.urlscanMaxInjectedHosts ?? 200}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value)
+                      updateField('urlscanMaxInjectedHosts', Number.isNaN(n) ? 200 : n)
+                    }}
+                    min={0}
+                    max={5000}
+                  />
+                  <span className={styles.fieldHint}>
+                    Newest first. 0 adds none: urlscan names then stay in the graph as history only.
+                  </span>
+                </div>
+              </div>
+
               <UrlscanToggle
                 checked={data.urlscanRedirectSearch ?? false}
                 onChange={(checked) => updateField('urlscanRedirectSearch', checked)}

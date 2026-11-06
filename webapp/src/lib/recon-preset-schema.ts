@@ -605,6 +605,8 @@ export const reconPresetSchema = z.object({
   urlscanEnabled: bool,
   urlscanMaxResults: int,
   urlscanMaxSearches: int,
+  urlscanInjectMaxAgeDays: int,
+  urlscanMaxInjectedHosts: int,
   urlscanLeakedLinks: bool,
   urlscanSecretsInUrls: bool,
   urlscanSensitiveFiles: bool,
@@ -1225,6 +1227,8 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - urlscanEnabled: boolean - URLScan.io
 - urlscanMaxResults: integer - visits read per domain; capped at 10000 with a key, 1000 without
 - urlscanMaxSearches: integer - urlscan searches one scan may send, across every domain
+- urlscanInjectMaxAgeDays: integer - days: urlscan host names seen within this window join the scan like discovered subdomains (default 90)
+- urlscanMaxInjectedHosts: integer - the most urlscan host names joining one scan per domain, newest first; 0 adds none (default 200)
 - urlscanLeakedLinks: boolean - findings for the target's leaked password-reset, invite, payment and login links seen on urlscan (never opened)
 - urlscanSecretsInUrls: boolean - Secrets for passwords, API keys, tokens and JWTs written in URLs seen on urlscan, stored masked
 - urlscanSensitiveFiles: boolean - findings for sensitive files (.env, .git, dumps, backups, keys, logs, installers, debug consoles) seen on urlscan
