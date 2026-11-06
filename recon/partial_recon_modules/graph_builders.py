@@ -7,7 +7,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.helpers import (
-    _classify_ip, allowed_hosts_for, include_root_for, org_for_root, project_scan_roots, root_for_host,
+    _classify_ip, allowed_hosts_for, include_root_for, org_for_root, project_scan_roots, roe_excluded,
+    root_for_host,
 )
 
 #: A path known only from an API specification is requested with GET or HEAD
@@ -256,6 +257,8 @@ class _GraphScope:
         a root itself even when its group leaves it out (the tools that never
         honoured Include Root)."""
         h = (host or "").strip().strip(".").lower()
+        if roe_excluded(h):
+            return None
         if not self.scoped:
             root = record_root or root_for_host(h, self.roots)
             return root if root is not None and _host_allowed(root, h, self.allowed) else None
@@ -268,6 +271,8 @@ class _GraphScope:
         return root if _host_allowed(root, h, self.allowed) else None
 
     def keeps(self, host, record_root=None) -> bool:
+        if roe_excluded(host):
+            return False
         if not self.scoped:
             # A host under no root (IP mode's dashed names) was always kept.
             root = record_root or root_for_host(host, self.roots)
@@ -412,6 +417,8 @@ def graph_url_scope(session, user_id: str, project_id: str, domains, domain_grou
         host = (host or "").strip().lower()
         if not host:
             return True
+        if roe_excluded(host):
+            return False
         if scope.scoped:
             if scope.root_of(host, apex=apex_filter) is not None:
                 return True
@@ -571,6 +578,8 @@ def _build_recon_data_from_graph(domains, user_id: str, project_id: str,
         return recon_data
 
     def _add_ip(ips: dict, addr: str, version) -> None:
+        if roe_excluded(addr):
+            return
         bucket = _classify_ip(addr, version)
         if addr not in ips[bucket]:
             ips[bucket].append(addr)
@@ -749,6 +758,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
             for record in apex_records:
                 root = record["root"]
                 ip_addr = record["ip"]
+                if roe_excluded(ip_addr):
+                    continue
                 bucket = _classify_ip(ip_addr, record["version"])
                 if root == primary:
                     if ip_addr not in recon_data["dns"]["domain"]["ips"][bucket]:
@@ -779,6 +790,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 if not scope.keeps(subdomain, record["root"]):
                     continue
                 ip_addr = record["ip"]
+                if roe_excluded(ip_addr):
+                    continue
                 bucket = _classify_ip(ip_addr, record["version"])
                 sub_ips = _dns_entry(subdomain)["ips"]
                 if ip_addr not in sub_ips[bucket]:
@@ -835,6 +848,8 @@ def _build_http_probe_data_from_graph(domains, user_id: str, project_id: str,
         return recon_data
 
     def _add_ip(ips: dict, addr: str, version) -> None:
+        if roe_excluded(addr):
+            return
         bucket = _classify_ip(addr, version)
         if addr not in ips[bucket]:
             ips[bucket].append(addr)
@@ -991,6 +1006,8 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
             entry["asn"] = asn
 
     def _add_ip(ips: dict, addr: str, version) -> None:
+        if roe_excluded(addr):
+            return
         bucket = _classify_ip(addr, version)
         if addr not in ips[bucket]:
             ips[bucket].append(addr)

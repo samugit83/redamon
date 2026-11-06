@@ -485,8 +485,9 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
         # Discovery can list the root itself (a SAN, a passive source); with
         # Root off it is not a target, so it never reaches a scan.
         discovered_subs.remove(root_domain)
+    roe_excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
     for host in target_info.get("full_subdomains") or []:
-        if host not in discovered_subs:
+        if host not in discovered_subs and not (roe_excluded and _is_roe_excluded(host, roe_excluded)):
             discovered_subs.append(host)
 
     discovered_dns = dict((recon_result or {}).get("dns") or {})
@@ -552,7 +553,15 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
             resolved.pop(host, None)
         discovered_dns["subdomains"] = resolved
 
-    status_map = (recon_result or {}).get("subdomain_status_map") or {}
+    status_map = dict((recon_result or {}).get("subdomain_status_map") or {})
+    if roe_excluded:
+        # The list was filtered above, but discovery's DNS map (and a later
+        # resolve) still hold the excluded hosts with their IPs, and the port
+        # scan, nuclei, takeover and the security checks read that map.
+        merged = {"subdomains": discovered_subs, "dns": discovered_dns,
+                  "subdomain_status_map": status_map}
+        _drop_roe_excluded_subdomains(merged, roe_excluded)
+        discovered_subs = merged["subdomains"]
     return {
         "subdomains": discovered_subs,
         "dns": discovered_dns,
@@ -2879,7 +2888,7 @@ def _note_legacy_unrun_sources() -> None:
 
 
 def _drop_roe_excluded_subdomains(domain_result: dict, excluded: list) -> None:
-    """Remove RoE-excluded hosts from a loaded recon file, wherever it lists them."""
+    """Remove RoE-excluded hosts from a loaded recon file or a live merge, wherever it lists them."""
     subs = (domain_result.get('dns') or {}).get('subdomains') or {}
     status_map = domain_result.get('subdomain_status_map') or {}
     listed = domain_result.get('subdomains') or []
@@ -2892,7 +2901,7 @@ def _drop_roe_excluded_subdomains(domain_result: dict, excluded: list) -> None:
     domain_result['subdomains'] = [h for h in listed if h not in dropped]
     if 'subdomain_count' in domain_result:
         domain_result['subdomain_count'] = len(domain_result['subdomains'])
-    print(f"[RoE] Removed {len(dropped)} excluded subdomain(s) from loaded recon file")
+    print(f"[RoE] Removed {len(dropped)} excluded subdomain(s) from the DNS data")
 
 
 def _write_legacy_domain_nodes(domain_result: dict) -> None:

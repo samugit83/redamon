@@ -173,6 +173,28 @@ def project_scan_roots() -> list:
     return list(_PROJECT_SCAN_ROOTS)
 
 
+# The run's RoE exclusions, set once by partial_recon._prepare_scope. The graph
+# builders read hosts and IPs straight from Neo4j and receive no settings, so
+# without this an excluded host (or an IP in an excluded CIDR) that an earlier
+# run wrote would become a partial run's target.
+_RUN_ROE_EXCLUDED: list = []
+
+
+def set_run_roe(settings: dict) -> None:
+    global _RUN_ROE_EXCLUDED
+    settings = settings or {}
+    excluded = settings.get("ROE_EXCLUDED_HOSTS") if settings.get("ROE_ENABLED") else None
+    _RUN_ROE_EXCLUDED = [e for e in (excluded or []) if isinstance(e, str) and e.strip()]
+
+
+def roe_excluded(host_or_ip) -> bool:
+    """True when the run's RoE excludes this host name or IP."""
+    if not _RUN_ROE_EXCLUDED or not host_or_ip:
+        return False
+    from recon.helpers.roe_scope import _is_roe_excluded
+    return _is_roe_excluded(str(host_or_ip), _RUN_ROE_EXCLUDED)
+
+
 def root_orgs(roots) -> dict:
     """{scan root: org} for create_user_input_node, which attaches a UserInput
     to the org of the root its first host sits under."""

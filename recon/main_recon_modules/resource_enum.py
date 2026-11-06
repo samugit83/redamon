@@ -1423,11 +1423,11 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         if GAU_VERIFY_URLS and gau_urls_to_process:
             verified_urls = verify_gau_urls(
                 gau_urls_to_process,
-                GAU_VERIFY_DOCKER_IMAGE,
-                GAU_VERIFY_TIMEOUT,
-                GAU_VERIFY_RATE_LIMIT,
-                GAU_VERIFY_THREADS,
-                GAU_VERIFY_ACCEPT_STATUS
+                docker_image=GAU_VERIFY_DOCKER_IMAGE,
+                threads=GAU_VERIFY_THREADS,
+                timeout=GAU_VERIFY_TIMEOUT,
+                rate_limit=GAU_VERIFY_RATE_LIMIT,
+                accept_status=GAU_VERIFY_ACCEPT_STATUS,
             )
 
         # Detect HTTP methods for GAU URLs using OPTIONS probe

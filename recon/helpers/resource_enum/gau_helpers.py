@@ -401,14 +401,15 @@ def verify_gau_urls(
             "-rl", str(rate_limit),
         ]
 
+        # A URL counts as verified only when httpx says so: on a timeout the
+        # lines httpx already wrote are kept, and nothing else is.
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
-            print("[!][GAU] URL verification timeout")
-            return set(urls)
+            print("[!][GAU] URL verification timeout: keeping only the URLs verified so far")
         except Exception as e:
             print(f"[!][GAU] URL verification error: {e}")
-            return set(urls)
+            return set()
 
         # Parse results
         live_urls = set()

@@ -55,6 +55,7 @@ from recon.partial_recon_modules.helpers import (
     run_exit_code,
     scope_roots,
     set_project_scope,
+    set_run_roe,
     settings_project_roots,
     settings_scope_groups,
 )
@@ -220,6 +221,7 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     # Every scan root of the project and its org, for the builders' longest-
     # root rule and the writers' org attach (the graph names a Domain after the org).
     set_project_scope(settings_scope_groups(settings))
+    set_run_roe(settings)
     config["ip_mode"] = bool(settings.get("IP_MODE"))
     config["batch_mode"] = bool(settings.get("DOMAIN_BATCH_MODE"))
     config["settings_overrides"] = _allowlist_overrides(config.get("settings_overrides"))

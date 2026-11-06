@@ -1586,3 +1586,57 @@ def test_nuclei_fixture_is_valid_json():
             continue
         obj = json.loads(line)
         assert "template-id" in obj and "info" in obj
+
+
+class TestB02TakeoverAppliesTheRoe:
+    """B02: an RoE-excluded name never reaches subjack or nuclei, whether the
+    recon dict carries scope groups (full run), a `domains` list (partial run,
+    which skips the group scope) or neither (a legacy file)."""
+
+    ROE = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": ["excluded.example.test"]}
+
+    def _recon(self, **extra):
+        recon = {
+            "domain": "example.test",
+            "dns": {"subdomains": {
+                "app.example.test": {"has_records": True},
+                "excluded.example.test": {"has_records": True},
+                "deep.excluded.example.test": {"has_records": True},
+            }},
+            "http_probe": {"by_url": {
+                "https://app.example.test/": {"status_code": 200},
+                "https://excluded.example.test/": {"status_code": 200},
+            }},
+        }
+        recon.update(extra)
+        return recon
+
+    @pytest.mark.parametrize("extra", [{}, {"domains": ["example.test"]}])
+    def test_b02_collectors_drop_excluded_names(self, extra):
+        from recon.main_recon_modules import subdomain_takeover as runner
+        names = runner._collect_subdomains(self._recon(**extra), self.ROE)
+        urls = runner._collect_alive_urls(self._recon(**extra), self.ROE)
+        assert "app.example.test" in names
+        assert not {"excluded.example.test", "deep.excluded.example.test"} & set(names)
+        assert urls == ["https://app.example.test/"]
+
+    def test_roe_off_keeps_them(self):
+        from recon.main_recon_modules import subdomain_takeover as runner
+        names = runner._collect_subdomains(self._recon(), {"ROE_ENABLED": False, **{
+            "ROE_EXCLUDED_HOSTS": self.ROE["ROE_EXCLUDED_HOSTS"]}})
+        assert "excluded.example.test" in names
+
+    @pytest.mark.parametrize("extra", [{}, {"domains": ["example.test"]}])
+    def test_b02_excluded_name_never_reaches_the_scanners(self, monkeypatch, extra):
+        from recon.main_recon_modules import subdomain_takeover as runner
+        seen = {}
+        monkeypatch.setattr(runner, "_run_subjack",
+                            lambda subdomains, work_dir, settings: seen.setdefault("subjack", subdomains) and [])
+        monkeypatch.setattr(runner, "_run_nuclei_takeover",
+                            lambda urls, work_dir, settings, **kw: seen.setdefault("nuclei", urls) and [])
+        runner.run_subdomain_takeover(self._recon(**extra), settings={
+            **self.ROE, "SUBDOMAIN_TAKEOVER_ENABLED": True, "SUBJACK_ENABLED": True,
+            "NUCLEI_TAKEOVERS_ENABLED": True, "BADDNS_ENABLED": False,
+            "TAKEOVER_CNAME_VALIDATION_ENABLED": False})
+        assert "excluded.example.test" not in seen["subjack"]
+        assert all("excluded.example.test" not in u for u in seen["nuclei"])

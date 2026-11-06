@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A host the Rules of Engagement exclude is no longer scanned through the DNS map.** Discovery's subdomain list was filtered, but its DNS map kept the excluded host with its records and IPs, and the port scan, the httpx DNS fallback, nuclei, the takeover module and the security checks read that map. The excluded hosts now leave the map too (one prune shared with the loaded-file path). Partial recon applies the RoE as well: the graph builders now drop excluded host names and IPs in excluded ranges that an earlier run wrote.
+- **Subdomain Takeover applies the Rules of Engagement in every mode.** subjack and the nuclei takeover templates could reach an excluded host, and partial runs skipped the scope check entirely.
+- **GAU's URL verification uses your settings.** Its arguments were passed in the wrong order, so httpx ran with 5 threads, a 100 s timeout and 50 requests/s whatever you set; and when verification timed out every URL was kept as verified. It now keeps only the URLs httpx confirmed.
+
 ## [7.6.2] - 2026-11-05
 
 ### Added
