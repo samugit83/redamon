@@ -72,6 +72,23 @@ def _shodan_base_overrides() -> dict:
             if (os.environ.get(k) or "").strip()}
 
 
+#: The urlscan lab's hooks: a fake urlscan (it receives the project's urlscan key)
+#: and an extra CDN edge prefix.
+URLSCAN_LAB_HOOKS = ("URLSCAN_API_BASE", "REDAMON_LAB_CDN_PREFIXES")
+
+
+def _urlscan_lab_overrides(project_id: str) -> dict:
+    """The urlscan lab hooks, forwarded only into the scans of the projects named in
+    REDAMON_LAB_PROJECT_IDS. Empty or unset reaches nobody: every other scan this
+    orchestrator starts while the lab runs (another user's, a scheduled one) keeps
+    the real urlscan and the real CDN list, and its key never reaches the fake."""
+    listed = {p.strip() for p in (os.environ.get("REDAMON_LAB_PROJECT_IDS") or "").split(",")
+              if p.strip()}
+    if not project_id or str(project_id).strip() not in listed:
+        return {}
+    return {k: os.environ[k] for k in URLSCAN_LAB_HOOKS if (os.environ.get(k) or "").strip()}
+
+
 #: The memory-governor knobs graph_db/resource_governor.py reads inside the recon
 #: container, where the ratio model scales recon's parallelism (rg.scaled in
 #: recon/project_settings.py). compose forwards them to this service only.
@@ -1213,6 +1230,7 @@ class ContainerManager:
                     # the grace this orchestrator waits before its SIGKILL.
                     "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
+                    **_urlscan_lab_overrides(project_id),
                     **_governor_overrides(),
                     "RECON_RUN_ID": recon_run_id,
                     # Scan Timeline telemetry only (see start_recon docstring).
@@ -2527,6 +2545,7 @@ class ContainerManager:
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
                     "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
+                    **_urlscan_lab_overrides(project_id),
                     **_governor_overrides(),
                     "UPDATE_GRAPH_DB": "true",
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",

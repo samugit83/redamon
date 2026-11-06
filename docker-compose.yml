@@ -574,6 +574,12 @@ services:
       # Test labs only: point Shodan / InternetDB at a stub API. Leave unset.
       SHODAN_API_BASE: ${SHODAN_API_BASE:-}
       SHODAN_INTERNETDB_BASE: ${SHODAN_INTERNETDB_BASE:-}
+      # urlscan lab only (testing/guinea_pigs/urlscan_lab): a fake urlscan and an
+      # extra CDN edge prefix, forwarded ONLY into the scans of the projects listed
+      # in REDAMON_LAB_PROJECT_IDS. Leave all three unset in a deployment.
+      URLSCAN_API_BASE: ${URLSCAN_API_BASE:-}
+      REDAMON_LAB_CDN_PREFIXES: ${REDAMON_LAB_CDN_PREFIXES:-}
+      REDAMON_LAB_PROJECT_IDS: ${REDAMON_LAB_PROJECT_IDS:-}
       # Scan Timeline — Scan Scheduler worker (plan Section 7.2). It ticks here
       # (the orchestrator owns admission + spawn) and asks the webapp to run each
       # due schedule through the same start path a manual scan uses. Listed

@@ -19,6 +19,7 @@ Features:
   - URL path discovery (for Phase B endpoint creation)
 """
 import logging
+import os
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -26,7 +27,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-URLSCAN_API_BASE = "https://urlscan.io/api/v1"
+# Lets the urlscan lab stand a fake urlscan in. Unset in any real deployment:
+# whatever it names receives the project's urlscan API key.
+URLSCAN_API_BASE = (os.environ.get("URLSCAN_API_BASE") or "").strip() or "https://urlscan.io/api/v1"
 
 
 class RateLimitedResults(list):

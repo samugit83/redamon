@@ -36,6 +36,7 @@ with different keys, a weekly Azure file under a new name, an HTML page).
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from typing import Iterable, Mapping, Optional
 
@@ -247,8 +248,27 @@ def _edge_networks() -> list:
     live = _cloudflare_networks_cache
     if isinstance(live, list) and live:
         return [(net, "cloudflare") for net in live] + [
-            (net, cdn) for net, cdn in _static_edge_networks if cdn != "cloudflare"]
-    return _static_edge_networks
+            (net, cdn) for net, cdn in _static_edge_networks if cdn != "cloudflare"] + _lab_edge_networks()
+    return _static_edge_networks + _lab_edge_networks()
+
+
+def _lab_edge_networks() -> list:
+    """[(network, 'cloudflare')] for REDAMON_LAB_CDN_PREFIXES (comma-separated CIDRs).
+
+    The urlscan lab's edge sits on a test subnet no real CDN publishes, so a full
+    run would never see its hosts as fronted. Unset in any real deployment; the
+    orchestrator forwards it only to the projects listed in REDAMON_LAB_PROJECT_IDS.
+    """
+    nets = []
+    for entry in (os.environ.get("REDAMON_LAB_CDN_PREFIXES") or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            nets.append((ipaddress.ip_network(entry, strict=False), "cloudflare"))
+        except ValueError:
+            continue
+    return nets
 
 
 def edge_cdn_for_ip(ip) -> Optional[str]:
