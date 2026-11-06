@@ -1,0 +1,9 @@
+; Run T only, and only while the host routes ~herokuapp.com to the lab DNS:
+; brokenapp serves Heroku's "No such app", liveapp a normal page, every other
+; name (ghostapp included) is NXDOMAIN. Both addresses are the lab's web host.
+$ORIGIN herokuapp.com.
+$TTL 30
+@                   IN SOA  ns1.uslab.test. hostmaster.uslab.test. 1 3600 600 86400 30
+@                   IN NS   ns1.uslab.test.
+brokenapp           IN A    192.88.97.10
+liveapp             IN A    192.88.97.10

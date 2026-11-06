@@ -1,0 +1,30 @@
+# Authoritative only. There is no `.` block and no `forward`, so a query for any
+# other name is REFUSED: the lab DNS can never resolve, or leak, a real name.
+# gen_lab.py copies this folder into generated/dns (the folder the container
+# mounts) with a fresh SOA serial; `reload` picks up a regenerated zone.
+
+uslab.test:53 {
+    file /etc/coredns/uslab.test.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+uslab-other.test:53 {
+    file /etc/coredns/uslab-other.test.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+# Run T only. The host routes ~herokuapp.com here just while UL_TAKEOVER_DNS=1
+# (host_dns_enable.sh); otherwise nothing ever asks this block.
+herokuapp.com:53 {
+    file /etc/coredns/herokuapp.com.db {
+        reload 5s
+    }
+    log
+    errors
+}

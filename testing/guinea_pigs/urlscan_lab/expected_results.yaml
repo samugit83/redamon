@@ -1,0 +1,777 @@
+# Expected results of the urlscan lab: one block per matrix ID of plan §11.
+# Checked by validate_urlscan_lab.py (PASS / FAIL per ID, exit 1 on any FAIL).
+#
+# A block names the runs it is checked on (run_lab.py RUNS: A, A2, A-p2, B, P,
+# A-off, I, T, A-429, A-429p2, A-400, A-nohttpx, A-openapi, A-noorigin,
+# A-budget, unlisted, baseline, baseline-after). Every check is evaluated for
+# each of those runs unless it carries its own `runs:`.
+#
+# Assertion kinds (nested_wildcard_lab's, over a value list `v`):
+#   equals    the set of v equals the list        superset  v contains every item
+#   disjoint  v contains none of the items        true      exactly one row, v is true
+#   count     the number of rows                  min / max the number of rows, bounded
+# Value sources:
+#   cypher: <read-only Cypher returning column v; $pid is the run's project>
+#   recon_json: <dotted path into the run's recon JSON>   (a list, a dict's keys, or a scalar)
+# Lab kinds:
+#   hits:        {container, method, host, uri_regex, count|min|max}   over the run's hit logs
+#                (container "*" = every lab host; uri is the raw request target, path + query)
+#   urlscan_log: {query_regex, key_sent, search_after, count|min|max}  over the fake's search log
+#   no_token:    [T1, ...]  none of the planted values in any graph property of the project,
+#                in its recon JSON files, in the hit logs, or in the scan containers' logs
+#   scan_log:    {regex, count|min|max}  over the recon container's log of the run
+#   compare:     {cypher, same|subset|disjoint: [run, run]}  the v sets of two runs
+#   container_env: {absent|present: [...]}  lab hook NAMES on the run's scan container
+#   mcp:         {tool, args, contains: [...]}  text an MCP tool answers ($pid in args)
+#   local: check_fixtures | unit: <test> | manual: <where>   (reported, not asserted here)
+# A row with `see: [IDs]` passes when those rows pass on its runs.
+#
+# Placeholders, replaced at check time and regex-escaped in *_regex fields:
+# <<T1>> .. <<T4>>, <<K1>>, <<J1>>, <<J2>> (the planted values, generated/tokens.json)
+# and <<WWW_JS_SHA>>, <<WWW_JS_NAME>>, <<SHOP_JS_SHA>>, <<DECOY_JS_NAME>> (generated/lab.json).
+# Path tokens are stored as {token} (plan S1); a quarantined endpoint keeps its masked path.
+
+version: 1
+
+rows:
+
+  # ------------------------------------------------------------------ Safety (§0) and the lab itself
+
+  - id: L-01
+    step: 0
+    proves: the fake answers in urlscan's format
+    checks:
+      - local: check_fixtures
+      - unit: recon/tests/test_urlscan_lab_fixtures.py
+      - unit: "recon/tests/test_urlscan_format_live.py (live tier: run it with the live tier; it skips offline, reported as skipped)"
+
+  - id: L-02
+    step: 0
+    proves: the lab-only overrides are inert by default
+    checks:
+      - unit: recon/tests/test_urlscan_lab_hooks.py
+      - unit: recon_orchestrator/tests/test_lab_overrides.py
+
+  - id: L-03
+    step: 0
+    proves: "today's behaviour is reproduced (run A on HEAD, kept as the baseline project)"
+    runs: [baseline]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid}) WHERE s.discovered_by = 'urlscan' OR s.source = 'urlscan' RETURN s.name AS v"
+        superset: [legacy.uslab.test]
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test( |$)', count: 1}
+      - recon_json: urlscan.results_count
+        equals: [100]
+
+  - id: S-01
+    step: 3
+    proves: leaked links are never requested
+    runs: [A, B, P]
+    checks:
+      - hits: {container: "*", uri_regex: '<<T1>>|<<T2>>|<<T3>>|<<T4>>|<<J1>>|<<J2>>|<<K1>>', count: 0}
+
+  - id: S-02
+    step: 3
+    proves: state-changing links are never requested
+    runs: [A, P]
+    checks:
+      - hits: {container: uslab-web, host: app.uslab.test, uri_regex: '^/unsubscribe\?.*=.', count: 0}
+
+  - id: S-03
+    step: 3
+    proves: the web-shell host + path is never requested
+    runs: [A, P]
+    checks:
+      - hits: {container: uslab-web, host: files.uslab.test, uri_regex: '^/shell\.php', count: 0}
+
+  - id: S-04
+    step: 3
+    proves: quarantined endpoints are flagged in the graph
+    runs: [A]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.quarantined = true RETURN e.baseurl + e.path AS v"
+        superset:
+          - https://auth.uslab.test/reset
+          - "https://auth.uslab.test/password/reset/{token}"
+          - "https://app.uslab.test/invite/{token}"
+          - https://app.uslab.test/unsubscribe
+          - https://app.uslab.test/api/data
+          - https://app.uslab.test/x
+          - "https://auth.uslab.test/auth/magic/{token}"
+          - https://files.uslab.test/shell.php
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.quarantined = true AND e.full_url IS NOT NULL RETURN e.path AS v"
+        count: 0
+      - cypher: "MATCH (e:Endpoint {project_id: $pid})-[:HAS_PARAMETER]->(p:Parameter {project_id: $pid}) WHERE e.quarantined = true AND (p.sample_value IS NOT NULL OR size(coalesce(p.sample_values, [])) > 0) RETURN p.name AS v"
+        count: 0
+
+  - id: S-05
+    step: 3
+    proves: partial readers skip them (Nuclei DAST, SecurityChecks, RouteExposure, JsRecon)
+    runs: [P]
+    checks:
+      - hits: {container: "*", uri_regex: '<<T1>>|<<T2>>|<<T3>>|<<T4>>|<<J1>>|<<J2>>|<<K1>>', count: 0}
+      - hits: {container: uslab-web, host: files.uslab.test, uri_regex: '^/shell\.php', count: 0}
+
+  - id: S-06
+    step: 4
+    proves: no raw value is stored anywhere
+    runs: [A, B, P]
+    checks:
+      - no_token: [T1, T2, T3, T4, J1, J2, K1]
+
+  - id: S-07
+    step: 4
+    proves: old IPs are history, not DNS
+    runs: [A, P]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'app.uslab.test'})-[r:HISTORICALLY_RESOLVED_TO]->(i:IP {project_id: $pid, address: '192.88.97.98'}) RETURN r.source = 'urlscan' AND r.first_seen IS NOT NULL AND r.last_seen IS NOT NULL AS v"
+        "true": true
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:RESOLVES_TO]->(i:IP {project_id: $pid, address: '192.88.97.98'}) RETURN s.name AS v"
+        count: 0
+      - hits: {container: uslab-oldip, count: 0}
+
+  - id: S-08
+    step: 5
+    proves: finding IDs are per tenant and stable
+    checks:
+      - compare:
+          cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.id AS v"
+          same: [A, A2]
+      - compare:
+          cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.id AS v"
+          disjoint: [A, A-p2]
+      - compare:
+          cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.type + '|' + coalesce(v.link_kind, v.file_kind, v.family, '') AS v"
+          same: [A, A-p2]
+
+  - id: S-09
+    step: 5
+    proves: a rate-limited run keeps earlier findings (A2, then A-429 in the same project)
+    checks:
+      - compare:
+          cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.id AS v"
+          subset: [A2, A-429]
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test( |$)', min: 1}
+        runs: [A-429]
+      - cypher: "MATCH (d:Domain {project_id: $pid, name: 'uslab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'urlscan' AS v"
+        "true": true
+        runs: [A-429]
+
+  - id: S-10
+    step: 5
+    proves: the findings are written with httpx off
+    runs: [A-nohttpx]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.type AS v"
+        superset: [leaked_one_time_link, sensitive_file_seen]
+
+  - id: S-11
+    step: 2
+    proves: the search budget (urlscanMaxSearches 2, after A-429 in the same project)
+    runs: [A-budget]
+    checks:
+      - urlscan_log: {query_regex: '.', count: 2}
+      - cypher: "MATCH (d:Domain {project_id: $pid, name: 'uslab.test'}) RETURN toLower(coalesce(d.recon_coverage_gaps, '')) CONTAINS 'budget' AS v"
+        "true": true
+      - compare:
+          cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' RETURN v.id AS v"
+          subset: [A2, A-budget]
+
+  - id: L-04
+    step: 0
+    proves: the lab hooks reach only lab projects
+    runs: [unlisted]
+    checks:
+      - urlscan_log: {query_regex: '.', count: 0}
+      - container_env: {absent: [URLSCAN_API_BASE, REDAMON_LAB_CDN_PREFIXES]}
+
+  - id: D-01
+    step: 4
+    proves: "the backfill (the baseline project of step 0, collected again after ./redamon.sh update)"
+    runs: [baseline-after]
+    checks:
+      - no_token: [T1, T2, T3, T4, J1, J2, K1]
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'app.uslab.test'})-[r:RESOLVES_TO]->(i:IP {project_id: $pid, address: '192.88.97.98'}) RETURN r.source AS v"
+        equals: [legacy_unknown]
+      - manual: "run the backfill job a second time; its log reports 0 changes (tooling/scripts/urlscan_backfill.py)"
+
+  # ------------------------------------------------------------------ Items
+
+  - id: I1-01
+    step: 9
+    proves: the redirect search runs and is exact
+    runs: [A]
+    checks:
+      - urlscan_log: {query_regex: '^task\.apexDomain:uslab\.test AND NOT page\.apexDomain:uslab\.test$', search_after: false, count: 1}
+
+  - id: I1-02
+    step: 9
+    proves: open redirect proven by the visit
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'app.uslab.test'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type = 'open_redirect_seen' AND v.source = 'urlscan_leak' RETURN v.param_name + '|' + v.destination_domain AS v"
+        equals: ["url|outsider.uslab-other.test"]
+
+  - id: I1-03
+    step: 9
+    proves: sign-in flows are not open redirects
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'auth.uslab.test'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type = 'open_redirect_seen' RETURN v.id AS v"
+        count: 0
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type = 'open_redirect_seen' RETURN v.param_name AS v"
+        equals: [url]
+
+  - id: I1-04
+    step: 9
+    proves: the other site is only a label
+    runs: [A]
+    checks:
+      - cypher: "MATCH (x:ExternalDomain {project_id: $pid, domain: 'outsider.uslab-other.test'}) RETURN 'urlscan_redirect' IN coalesce(x.sources, []) AS v"
+        "true": true
+      - cypher: "MATCH (x:ExternalDomain {project_id: $pid, domain: 'outsider.uslab-other.test'}) UNWIND coalesce(x.redirect_to_urls, []) AS u RETURN u AS v"
+        equals: ["https://outsider.uslab-other.test"]
+      - hits: {container: uslab-outsider, count: 0}
+
+  - id: I1-05
+    step: 9
+    proves: it runs when the main search is empty (the main search answers 400)
+    runs: [A-400]
+    checks:
+      - urlscan_log: {query_regex: '^task\.apexDomain:uslab\.test AND NOT page\.apexDomain:uslab\.test$', min: 1}
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type = 'open_redirect_seen' RETURN v.param_name AS v"
+        superset: [url]
+
+  - id: I1-06
+    step: 9
+    proves: partial urlscan gives the same shape, written additively
+    runs: [P]
+    checks:
+      - see: [I1-02]
+      - cypher: "MATCH (x:ExternalDomain {project_id: $pid, domain: 'outsider.uslab-other.test'}) RETURN 'urlscan_redirect' IN coalesce(x.sources, []) AS v"
+        "true": true
+      - cypher: "MATCH (d:Domain {project_id: $pid})-[:HAS_EXTERNAL_DOMAIN]->(x:ExternalDomain {project_id: $pid, domain: 'outsider.uslab-other.test'}) RETURN x.domain AS v"
+        count: 1
+
+  - id: I2-01
+    step: 6
+    proves: leaked one-time links become findings
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND v.type = 'leaked_one_time_link' RETURN s.name + '|' + v.link_kind AS v"
+        superset: ["auth.uslab.test|password_reset", "app.uslab.test|invite", "auth.uslab.test|login_link"]
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'auth.uslab.test'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type = 'leaked_one_time_link' AND v.link_kind = 'password_reset' RETURN v.masked_url AS v"
+        count: 2
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type = 'leaked_one_time_link' AND NOT (coalesce(v.masked_url, '') CONTAINS '***' OR coalesce(v.masked_url, '') CONTAINS '{token}') RETURN v.id AS v"
+        count: 0
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type = 'leaked_one_time_link' AND (v.link_count IS NULL OR v.urlscan_scan_id IS NOT NULL) RETURN v.id AS v"
+        count: 0
+
+  - id: I2-02
+    step: 6
+    proves: secrets in URLs become Secrets
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:HAS_SECRET]->(x:Secret {project_id: $pid}) WHERE x.source = 'urlscan' RETURN s.name + '|' + x.secret_type + '|' + x.param_name AS v"
+        superset: ["app.uslab.test|api_key|apikey", "app.uslab.test|jwt|jwt"]
+      - cypher: "MATCH (x:Secret {project_id: $pid}) WHERE x.source = 'urlscan' AND x.value_hmac IS NULL AND x.value_length IS NULL RETURN x.id AS v"
+        count: 0
+      - cypher: "MATCH (x:Secret {project_id: $pid}) WHERE x.source = 'urlscan' AND x.param_name = 'jwt' RETURN x.jwt_alg + '|' + toString(x.jwt_expired) AS v"
+        equals: ["HS256|true"]
+
+  - id: I2-03
+    step: 6
+    proves: negatives stay quiet
+    runs: [A]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND any(t IN ['utm_source', 'page=', 'session=', '/promo', '/list', '/account'] WHERE coalesce(v.masked_url, v.url, '') CONTAINS t) RETURN v.id AS v"
+        count: 0
+      - cypher: "MATCH (x:Secret {project_id: $pid}) WHERE x.source = 'urlscan' AND x.param_name IN ['utm_source', 'utm_medium', 'page', 'session'] RETURN x.param_name AS v"
+        count: 0
+
+  - id: I3-01
+    step: 7
+    proves: sensitive files become findings
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND v.type = 'sensitive_file_seen' RETURN s.name + '|' + v.file_kind AS v"
+        superset: ["files.uslab.test|env", "files.uslab.test|vcs", "app.uslab.test|db_dump", "files.uslab.test|web_shell_trace", "files.uslab.test|memory_dump"]
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type = 'sensitive_file_seen' AND v.file_kind = 'web_shell_trace' AND v.urlscan_scan_id IS NOT NULL RETURN v.id AS v"
+        count: 0
+
+  - id: I3-02
+    step: 7
+    proves: Route Exposure proves the live ones
+    runs: [A]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'route_exposure' AND coalesce(v.baseurl, '') = 'https://files.uslab.test' RETURN v.exposure_kind + '|' + v.path AS v"
+        superset: ["env_file|/.env", "vcs_exposure|/.git/config"]
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'route_exposure' AND coalesce(v.path, '') = '/backup.sql' RETURN v.id AS v"
+        count: 0
+      - hits: {container: uslab-web, host: files.uslab.test, uri_regex: '^/\.env$', min: 1}
+
+  - id: I3-03
+    step: 7
+    proves: documents are listed, not reported
+    runs: [A]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.document_type IS NOT NULL RETURN e.path + '|' + e.document_type AS v"
+        superset: ["/docs/invoice-2026.pdf|pdf", "/export.csv|csv"]
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND any(t IN ['invoice-2026.pdf', 'export.csv'] WHERE coalesce(v.url, v.masked_url, '') CONTAINS t) RETURN v.id AS v"
+        count: 0
+
+  - id: I3-04
+    step: 7
+    proves: partial Route Exposure uses the right request
+    runs: [P]
+    checks:
+      - hits: {container: uslab-web, host: files.uslab.test, method: GET, uri_regex: '^/actuator/heapdump', count: 0}
+      - hits: {container: uslab-web, host: files.uslab.test, method: HEAD, uri_regex: '^/actuator/heapdump', min: 1}
+
+  - id: I4-01
+    step: 8
+    proves: urlscan addresses get labels
+    runs: [A]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.path IN ['/oidc/callback', '/saml/acs', '/admin/users'] RETURN e.path + '|' + coalesce(e.category, '') AS v"
+        superset: ["/oidc/callback|authentication", "/saml/acs|authentication", "/admin/users|admin"]
+      - cypher: "MATCH (p:Parameter {project_id: $pid}) WHERE (p.endpoint_path = '/api/v1/items' AND p.name = 'next') OR (p.endpoint_path = '/search' AND p.name = 'page') RETURN p.name + '|' + coalesce(p.type, '') AS v"
+        superset: ["next|url", "page|integer"]
+      - cypher: "MATCH (p:Parameter {project_id: $pid}) WHERE p.endpoint_path = '/api/v1/items' AND p.name = 'next' RETURN coalesce(p.category, '') AS v"
+        superset: [redirect_params]
+
+  - id: I4-02
+    step: 8
+    proves: titles label pages, and the label survives the GROUP 5 write
+    runs: [A]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid, baseurl: 'https://auth.uslab.test', path: '/'}) RETURN coalesce(e.category, '') AS v"
+        equals: [authentication]
+
+  - id: I4-03
+    step: 8
+    proves: a Swagger UI title seeds OpenAPI when auto-discover is on
+    runs: [A-openapi]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.path STARTS WITH '/api/v2/widgets' AND any(k IN keys(e) WHERE k STARTS WITH 'openapi_') RETURN e.path AS v"
+        min: 1
+
+  - id: I4-04
+    step: 8
+    proves: partial urlscan labels too
+    runs: [P]
+    checks:
+      - see: [I4-01]
+
+  - id: I5-01
+    step: 10
+    proves: problem pages from urlscan's history
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND v.type IN ['open_console_seen', 'debug_page_seen', 'installer_seen', 'dev_server_seen', 'directory_listing_seen', 'defaced_page_seen', 'test_certificate_seen'] RETURN s.name + '|' + v.type AS v"
+        superset:
+          - "jupyter.uslab.test|open_console_seen"
+          - "debug.uslab.test|debug_page_seen"
+          - "install.uslab.test|installer_seen"
+          - "debug.uslab.test|dev_server_seen"
+          - "files.uslab.test|directory_listing_seen"
+          - "hacked.uslab.test|defaced_page_seen"
+          - "staging.uslab.test|test_certificate_seen"
+          - "ingress.uslab.test|test_certificate_seen"
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'urlscan_leak' AND toLower(coalesce(v.severity, '')) = 'critical' RETURN v.type AS v"
+        count: 0
+
+  - id: I5-02
+    step: 10
+    proves: the same, live; separate nodes from the urlscan ones
+    runs: [A]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'security_check' AND v.type IN ['open_console', 'debug_page', 'unfinished_installer', 'dev_server', 'directory_listing', 'defaced_page', 'takeover_error_page', 'test_certificate'] RETURN coalesce(v.hostname, v.host, '') + '|' + v.type AS v"
+        superset:
+          - "jupyter.uslab.test|open_console"
+          - "debug.uslab.test|debug_page"
+          - "install.uslab.test|unfinished_installer"
+          - "debug.uslab.test|dev_server"
+          - "files.uslab.test|directory_listing"
+          - "hacked.uslab.test|defaced_page"
+          - "staging.uslab.test|test_certificate"
+          - "ingress.uslab.test|test_certificate"
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['security_check', 'urlscan_leak'] WITH v.id AS id, count(*) AS n WHERE n > 1 RETURN id AS v"
+        count: 0
+
+  - id: I5-03
+    step: 10
+    proves: negatives stay quiet (blog post titled Hacked by, gunicorn, the 401 Jupyter)
+    runs: [A]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type IN ['defaced_page', 'defaced_page_seen', 'dev_server', 'dev_server_seen'] AND coalesce(v.hostname, v.host, v.url, v.matched_at, '') CONTAINS 'blog.uslab.test' RETURN v.type AS v"
+        count: 0
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'blog.uslab.test'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type IN ['defaced_page_seen', 'dev_server_seen'] RETURN v.type AS v"
+        count: 0
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type IN ['open_console', 'open_console_seen'] AND coalesce(v.url, v.matched_at, '') CONTAINS 'lab-locked' RETURN v.id AS v"
+        count: 0
+
+  - id: I5-04
+    step: 10
+    proves: live checks in partial recon
+    runs: [P]
+    checks:
+      - see: [I5-02]
+
+  - id: I5-05
+    step: 10
+    proves: live checks in IP mode, and urlscan never runs there
+    runs: [I]
+    checks:
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source = 'security_check' RETURN v.type AS v"
+        superset: [directory_listing, dev_server, test_certificate]
+      - urlscan_log: {query_regex: '.', count: 0}
+
+  - id: I5-06
+    step: 10
+    proves: takeover outcomes (run T, UL_TAKEOVER_DNS=1)
+    runs: [T]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type = 'takeover_page_seen' RETURN s.name + '|' + v.outcome + '|' + toLower(v.severity) AS v"
+        superset: ["brokenapp-cname.uslab.test|possible_takeover|medium", "gone.uslab.test|possible_takeover|medium"]
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid}) WHERE v.type IN ['takeover_page_seen', 'takeover_error_page'] AND coalesce(v.hostname, v.host, v.url, v.matched_at, '') CONTAINS 'healthy.uslab.test' RETURN v.id AS v"
+        count: 0
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'healthy.uslab.test'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid}) WHERE v.type IN ['takeover_page_seen', 'takeover_error_page'] RETURN v.id AS v"
+        count: 0
+
+  - id: I5-07
+    step: 10
+    proves: scores (run A with the Priority Board run, --triage)
+    runs: [A]
+    checks:
+      - cypher: "MATCH (c:Vulnerability {project_id: $pid}) WHERE c.type IN ['open_console', 'open_console_seen'] WITH max(c.triage_math_score) AS console MATCH (h:Vulnerability {project_id: $pid}) WHERE h.source = 'security_check' AND toLower(h.type) CONTAINS 'missing' WITH console, max(h.triage_math_score) AS header RETURN console IS NOT NULL AND header IS NOT NULL AND console > header AS v"
+        "true": true
+
+  - id: I7-01
+    step: 12
+    proves: clue 1 with a key
+    runs: [B]
+    checks:
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'}) RETURN coalesce(i.origin_confirmed, false) AND i.origin_for = 'www.uslab.test' AS v"
+        "true": true
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid, type: 'waf_bypass'}) WHERE v.origin_source = 'urlscan_history' RETURN v.urlscan_seen_at IS NOT NULL AS v"
+        superset: [true]
+
+  - id: I7-02
+    step: 12
+    proves: clue 1 without a key (30-day limit), clue 2 finds it
+    runs: [A]
+    checks:
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'}) RETURN coalesce(i.origin_source, '') AS v"
+        disjoint: [urlscan_history]
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'}) RETURN coalesce(i.origin_source, '') AS v"
+        superset: [urlscan_hash]
+
+  - id: I7-03
+    step: 12
+    proves: clue 2
+    runs: [A, B]
+    checks:
+      - urlscan_log: {query_regex: '^hash:<<WWW_JS_SHA>>$', min: 1}
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid, type: 'waf_bypass'}) RETURN v.file_match AS v"
+        superset: [true]
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'}) RETURN coalesce(i.origin_confirmed, false) AND i.origin_source = 'urlscan_hash' AS v"
+        "true": true
+        runs: [A]
+
+  - id: I7-04
+    step: 12
+    proves: the decoy is rejected
+    runs: [A, B]
+    checks:
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.42'}) RETURN coalesce(i.origin_confirmed, false) AS v"
+        disjoint: [true]
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.42'})-[:HAS_VULNERABILITY]->(v:Vulnerability {project_id: $pid, type: 'waf_bypass'}) RETURN v.file_match AS v"
+        disjoint: [true]
+
+  - id: I7-05
+    step: 12
+    proves: strangers and shared files
+    runs: [A]
+    checks:
+      - hits: {container: uslab-outsider, count: 0}
+      - cypher: "MATCH (n {project_id: $pid}) WHERE n.name = 'mirror.uslab-other.test' OR n.domain = 'mirror.uslab-other.test' OR n.address = '192.88.97.43' RETURN labels(n)[0] AS v"
+        count: 0
+      - urlscan_log: {query_regex: '^hash:<<SHOP_JS_SHA>>$', min: 1}
+      - scan_log: {regex: '(?i)shared file', min: 1}
+
+  - id: I7-06
+    step: 12
+    proves: the search limit
+    runs: [A]
+    checks:
+      - urlscan_log: {query_regex: '^(hash|filename):', max: 3}
+
+  - id: I7-07
+    step: 12
+    proves: the switch and URLScan off
+    runs: [A-off, A-noorigin]
+    checks:
+      - urlscan_log: {query_regex: '^(hash|filename):', count: 0}
+      - cypher: "MATCH (i:IP {project_id: $pid}) WHERE coalesce(i.origin_source, '') STARTS WITH 'urlscan' RETURN i.address AS v"
+        count: 0
+
+  - id: I7-08
+    step: 12
+    proves: partial Origin Discovery (typed www.uslab.test)
+    runs: [P]
+    checks:
+      - cypher: "MATCH (i:IP {project_id: $pid, address: '192.88.97.41'}) RETURN coalesce(i.origin_confirmed, false) AND i.origin_source IN ['urlscan_hash', 'urlscan_history'] AS v"
+        "true": true
+      - urlscan_log: {query_regex: '^hash:<<WWW_JS_SHA>>$', min: 1}
+
+  # ------------------------------------------------------------------ Bugs (§6)
+
+  - id: B01
+    step: 1
+    proves: an RoE-excluded host is never scanned
+    runs: [A, P]
+    checks:
+      - hits: {container: uslab-excluded, count: 0}
+      - cypher: "MATCH (b:BaseURL {project_id: $pid}) WHERE b.host = 'excluded.uslab.test' RETURN b.url AS v"
+        count: 0
+
+  - id: B02
+    step: 1
+    proves: takeover respects the RoE
+    runs: [A, T]
+    checks:
+      - hits: {container: uslab-excluded, count: 0}
+      - scan_log: {regex: '(?i)(subjack|takeover|nuclei)[^\n]*excluded\.uslab\.test', count: 0}
+
+  - id: B03
+    step: 4
+    proves: old IPs are not current DNS (partial Httpx, Nuclei)
+    runs: [P]
+    checks:
+      - see: [S-07]
+
+  - id: "B04, B05"
+    step: 3
+    proves: DAST never requests leaked links
+    runs: [A, P]
+    checks:
+      - see: [S-01, S-05]
+
+  - id: B06
+    step: 3
+    proves: no_rate_limiting is narrow, and still runs on auth/login
+    runs: [A, P]
+    checks:
+      - hits: {container: uslab-web, host: auth.uslab.test, method: POST, uri_regex: '^/(reset|password/reset|auth/magic)', count: 0}
+      - hits: {container: uslab-web, method: POST, uri_regex: '^/(invite|unsubscribe|api/data|x|go|authorize)(/|\?|$)', count: 0}
+      - hits: {container: uslab-web, host: auth.uslab.test, method: POST, uri_regex: '^/login', min: 1}
+        runs: [A]
+
+  - id: B07
+    step: 3
+    proves: partial Route Exposure reads no tokens
+    runs: [P]
+    checks:
+      - see: [S-05]
+
+  - id: "B10, B15"
+    step: 4
+    proves: no secret in clear, no sample_value on urlscan Parameters
+    runs: [A]
+    checks:
+      - see: [S-06]
+      - cypher: "MATCH (p:Parameter {project_id: $pid}) WHERE p.sample_value IS NOT NULL RETURN p.name AS v"
+        count: 0
+
+  - id: B11
+    step: 4
+    proves: no urlscan IP node for an out-of-scope page or an excluded host
+    runs: [A]
+    checks:
+      - cypher: "MATCH (i:IP {project_id: $pid}) WHERE i.address IN ['192.88.97.99', '192.88.97.20', '192.88.97.43'] RETURN i.address AS v"
+        count: 0
+
+  - id: B12
+    step: 5
+    proves: urlscan's TLS details are written
+    runs: [A]
+    checks:
+      - cypher: "MATCH (b:BaseURL {project_id: $pid}) WHERE b.urlscan_tls_issuer IS NOT NULL AND b.urlscan_tls_valid_days IS NOT NULL AND b.urlscan_tls_valid_from IS NOT NULL AND b.urlscan_tls_age_days IS NOT NULL RETURN b.host AS v"
+        superset: [app.uslab.test]
+
+  - id: "B13, B17"
+    step: 4
+    proves: "urlscan-only names are unverified until DNS, with source 'urlscan'"
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'promo.uslab.test'}) RETURN coalesce(s.status, '') + '|' + coalesce(s.source, '') AS v"
+        equals: ["unverified|urlscan"]
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'legacy.uslab.test'}) RETURN coalesce(s.source, '') AS v"
+        equals: [urlscan]
+
+  - id: B14
+    step: 5
+    proves: the enrichment writer runs outside httpx
+    runs: [A-nohttpx]
+    checks:
+      - see: [S-10]
+      - cypher: "MATCH (b:BaseURL {project_id: $pid}) WHERE b.urlscan_title IS NOT NULL RETURN b.host AS v"
+        min: 1
+
+  - id: B16
+    step: 8
+    proves: /docs/ and /docs are one Endpoint
+    runs: [A]
+    checks:
+      - cypher: "MATCH (e:Endpoint {project_id: $pid, baseurl: 'https://docs.uslab.test'}) WHERE e.path IN ['/docs', '/docs/'] RETURN e.path AS v"
+        count: 1
+
+  - id: B19
+    step: 5
+    proves: partial ExternalDomain shape
+    runs: [P]
+    checks:
+      - see: [I1-06]
+
+  - id: B20-B24
+    step: 8
+    proves: labels
+    runs: [A]
+    checks:
+      - see: [I4-01]
+
+  - id: B26
+    step: 8
+    proves: the SSRF skill's queries use real properties
+    checks:
+      - unit: "agentic tests for ssrf_prompts (hermetic: every property the queries read is declared and written)"
+      - manual: "optional: run the rewritten SSRF recon queries through query_graph on the A project; they return rows"
+
+  - id: "B27, F1"
+    step: 11
+    proves: urlscan-only names are scanned
+    runs: [A]
+    checks:
+      - hits: {container: uslab-web, host: legacy.uslab.test, min: 1}
+      - cypher: "MATCH (b:BaseURL {project_id: $pid}) WHERE b.host = 'legacy.uslab.test' RETURN b.url AS v"
+        min: 1
+
+  - id: "B28, F2"
+    step: 11
+    proves: late names get IPs
+    runs: [A]
+    checks:
+      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'san-only.uslab.test'})-[:RESOLVES_TO]->(i:IP {project_id: $pid}) RETURN i.address AS v"
+        superset: [192.88.97.10]
+      - cypher: "MATCH (b:BaseURL {project_id: $pid}) WHERE b.host = 'san-only.uslab.test' RETURN b.url AS v"
+        min: 1
+
+  - id: "B29, F3, B35"
+    step: 2
+    proves: "every visit the plan allows: 3 pages of 100 without a key, 1 search with one, and a 429 on page 2 keeps page 1"
+    checks:
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test$', count: 3}
+        runs: [A]
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test$', search_after: true, count: 2}
+        runs: [A]
+      - recon_json: urlscan.entries
+        count: 250
+        runs: [A]
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test$', count: 1}
+        runs: [B]
+      - recon_json: urlscan.entries
+        count: 100
+        runs: [A-429p2]
+      - cypher: "MATCH (d:Domain {project_id: $pid, name: 'uslab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'urlscan' AS v"
+        "true": true
+        runs: [A-429p2]
+
+  - id: B30
+    step: 9
+    proves: redirects are downloaded
+    runs: [A]
+    checks:
+      - see: [I1-01]
+
+  - id: B36
+    step: 2
+    proves: the keyed main query has no redundant wildcard
+    runs: [B]
+    checks:
+      - urlscan_log: {query_regex: '\*\.', count: 0}
+      - urlscan_log: {query_regex: '^page\.domain:uslab\.test$', key_sent: true, min: 1}
+
+  # ------------------------------------------------------------------ Settings, UI, schema, MCP, docs
+
+  - id: U-01
+    step: each
+    proves: every new switch has its default and reaches the scan
+    runs: [A]
+    checks:
+      - unit: "settings drift tests (Prisma, Python, registry, presets agree)"
+      - scan_log: {regex: 'URLSCAN_REDIRECT_SEARCH', min: 1}
+      - scan_log: {regex: 'URLSCAN_LEAKED_LINKS', min: 1}
+      - scan_log: {regex: 'URLSCAN_SENSITIVE_FILES', min: 1}
+      - scan_log: {regex: 'URLSCAN_PROBLEM_PAGES', min: 1}
+      - scan_log: {regex: 'URLSCAN_MAX_SEARCHES', min: 1}
+
+  - id: U-02
+    step: each
+    proves: the UI texts and states
+    checks:
+      - manual: "ui_checklist.md, sections URLScan, Origin Discovery, Security Checks"
+      - unit: "webapp vitest for UrlscanSection, OriginDiscoverySection, SecurityChecksSection"
+
+  - id: U-03
+    step: 10
+    proves: the Red Zone tabs
+    checks:
+      - manual: "ui_checklist.md, section Red Zone (on the A project)"
+
+  - id: U-04
+    step: "3, 4"
+    proves: the partial window's counts exclude quarantined endpoints and .98
+    checks:
+      - manual: "ui_checklist.md, section Partial recon window (on the A project)"
+
+  - id: U-05
+    step: 4
+    proves: the webapp's current-DNS readers do not count .98
+    checks:
+      - manual: "ui_checklist.md, section Current-DNS readers (on the A project)"
+
+  - id: M-01
+    step: each
+    proves: the schema is declared
+    checks:
+      - unit: recon/tests/test_graph_writes_documented.py
+      - unit: "recon/tests/test_schema_catalog.py (live part: run it against the stack after A)"
+
+  - id: M-02
+    step: each
+    proves: MCP sees it
+    runs: [A]
+    checks:
+      - mcp: {tool: graph_schema, args: {}, contains: [quarantined, HISTORICALLY_RESOLVED_TO, urlscan_leak, leaked_one_time_link, value_hmac]}
+      - mcp: {tool: list_findings, args: {projectId: $pid}, contains: [leaked_one_time_link, sensitive_file_seen]}
+
+  - id: M-03
+    step: each
+    proves: the agent can query it
+    checks:
+      - manual: "ui_checklist.md, section Agent chat: 'show the leaked one-time links' returns I2-01's findings"
+
+  - id: M-04
+    step: 13
+    proves: docs are current
+    checks:
+      - unit: tests/test_docs_not_stale.py
+      - manual: "npm run docs:mcp leaves redamon.wiki/MCP-API-Reference.md unchanged"
+
+  - id: M-05
+    step: 13
+    proves: external agents are told
+    runs: [A]
+    checks:
+      - mcp: {tool: describe_recon_settings, args: {}, contains: ["30 days"]}

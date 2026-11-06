@@ -1,0 +1,6 @@
+; Run T only: appended to the uslab.test zone by `gen_lab.py --takeover`
+; (UL_TAKEOVER_DNS=1 ./up.sh). Never served while ~herokuapp.com is not routed
+; to the lab DNS: the host would then resolve these targets on the internet.
+brokenapp-cname     IN CNAME brokenapp.herokuapp.com.
+gone                IN CNAME ghostapp.herokuapp.com.
+healthy             IN CNAME liveapp.herokuapp.com.

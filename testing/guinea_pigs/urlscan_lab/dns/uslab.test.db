@@ -1,0 +1,32 @@
+; uslab.test - the urlscan lab's target. Not DNSSEC-signed.
+; legacy is in DNS but only urlscan's visits name it (F1); san-only only in
+; app's certificate (F2); promo has no record (a phishing visit, never resolves).
+$ORIGIN uslab.test.
+$TTL 60
+@                   IN SOA  ns1.uslab.test. hostmaster.uslab.test. 1 3600 600 86400 60
+@                   IN NS   ns1.uslab.test.
+@                   IN A    192.88.97.10
+ns1                 IN A    192.88.97.53
+
+; in-scope sites on uslab-web, one virtual host and one certificate each
+app                 IN A    192.88.97.10
+auth                IN A    192.88.97.10
+files               IN A    192.88.97.10
+docs                IN A    192.88.97.10
+jupyter             IN A    192.88.97.10
+debug               IN A    192.88.97.10
+install             IN A    192.88.97.10
+hacked              IN A    192.88.97.10
+blog                IN A    192.88.97.10
+staging             IN A    192.88.97.10
+ingress             IN A    192.88.97.10
+legacy              IN A    192.88.97.10
+san-only            IN A    192.88.97.10
+
+; RoE-excluded: must receive 0 requests
+excluded            IN A    192.88.97.20
+
+; behind the CDN-like edge; the origin (.41) and the decoy (.42) have no name
+www                 IN A    192.88.97.40
+shop                IN A    192.88.97.40
+edge                IN A    192.88.97.40

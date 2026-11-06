@@ -1,0 +1,4 @@
+# Planted tokens, certificates, fixtures, hit logs and run evidence: random per
+# generation and lab-only. Never commit them; compare by hash.
+generated/
+__pycache__/

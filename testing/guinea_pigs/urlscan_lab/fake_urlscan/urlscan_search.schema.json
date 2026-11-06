@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "urlscan.io search API answer, from the anonymous captures of 6 Nov 2026 (plan section 10.1). Optional fields are ABSENT, never null: every type below rejects null except _score. page.redirected also takes https-only (http to https on the same host), seen by the live format test on 6 Nov 2026 and missing from the plan table. Checked by schema_check.py, a stdlib subset validator: only the keywords it lists may appear here.",
+  "type": "object",
+  "required": ["results", "total", "took", "has_more"],
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task", "page", "_id", "sort", "result"],
+        "properties": {
+          "submitter": {"type": "object"},
+          "canonical": {
+            "type": "object",
+            "properties": {
+              "task": {"type": "object", "properties": {"url": {"type": "string"}}},
+              "page": {"type": "object", "properties": {"url": {"type": "string"}}}
+            }
+          },
+          "task": {
+            "type": "object",
+            "required": ["visibility", "method", "domain", "apexDomain", "time", "uuid", "url"],
+            "properties": {
+              "visibility": {"type": "string", "enum": ["public", "unlisted", "private"]},
+              "method": {"type": "string"},
+              "domain": {"type": "string"},
+              "apexDomain": {"type": "string"},
+              "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"},
+              "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+              "url": {"type": "string", "pattern": "^[a-z]+://"},
+              "tags": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "uniqIPs": {"type": "integer", "minimum": 0},
+              "uniqCountries": {"type": "integer", "minimum": 0},
+              "dataLength": {"type": "integer", "minimum": 0},
+              "encodedDataLength": {"type": "integer", "minimum": 0},
+              "requests": {"type": "integer", "minimum": 0}
+            }
+          },
+          "page": {
+            "type": "object",
+            "required": ["url", "domain", "apexDomain"],
+            "properties": {
+              "url": {"type": "string", "pattern": "^[a-z]+://"},
+              "domain": {"type": "string"},
+              "apexDomain": {"type": "string"},
+              "ip": {"type": "string"},
+              "asn": {"type": "string", "pattern": "^AS[0-9]+$"},
+              "asnname": {"type": "string"},
+              "country": {"type": "string"},
+              "ptr": {"type": "string"},
+              "server": {"type": "string"},
+              "status": {"type": "string", "pattern": "^[0-9]{3}$"},
+              "title": {"type": "string"},
+              "mimeType": {"type": "string"},
+              "language": {"type": "string"},
+              "redirected": {"type": "string", "enum": ["off-domain", "sub-domain", "same-domain", "https-only"]},
+              "tlsIssuer": {"type": "string"},
+              "tlsValidDays": {"type": "integer"},
+              "tlsAgeDays": {"type": "integer"},
+              "tlsValidFrom": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"},
+              "domainAgeDays": {"type": "integer"},
+              "apexDomainAgeDays": {"type": "integer"},
+              "umbrellaRank": {"type": "integer"}
+            }
+          },
+          "labels": {"type": "array"},
+          "verdicts": {"type": "object"},
+          "_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "_score": {"type": ["null", "number"]},
+          "sort": {"type": "array", "minItems": 2, "maxItems": 2, "items": [{"type": "integer"}, {"type": "string"}]},
+          "result": {"type": "string", "pattern": "^https?://[^/]+/api/v1/result/[0-9a-f-]{36}/$"},
+          "screenshot": {"type": "string", "pattern": "^https?://[^/]+/screenshots/[0-9a-f-]{36}\\.png$"}
+        }
+      }
+    },
+    "total": {"type": "integer", "minimum": 0},
+    "took": {"type": "integer", "minimum": 0},
+    "has_more": {"type": "boolean"},
+    "search_date_limit_days": {"type": "integer", "minimum": 1}
+  },
+  "definitions": {
+    "error": {
+      "type": "object",
+      "required": ["message", "status", "errors"],
+      "properties": {
+        "message": {"type": "string"},
+        "status": {"type": "integer"},
+        "errors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["title", "detail", "status"],
+            "properties": {
+              "title": {"type": "string"},
+              "detail": {"type": "string"},
+              "status": {"type": "integer"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

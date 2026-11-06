@@ -1,0 +1,10 @@
+; uslab-other.test - the "other site": redirect destinations and a stranger
+; that loaded www's file. Out of scope: uslab-outsider must receive 0 requests.
+$ORIGIN uslab-other.test.
+$TTL 60
+@                   IN SOA  ns1.uslab-other.test. hostmaster.uslab-other.test. 1 3600 600 86400 60
+@                   IN NS   ns1.uslab-other.test.
+@                   IN A    192.88.97.99
+ns1                 IN A    192.88.97.53
+outsider            IN A    192.88.97.99
+mirror              IN A    192.88.97.99

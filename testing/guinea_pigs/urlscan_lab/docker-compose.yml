@@ -1,0 +1,154 @@
+# RedAmon urlscan lab: a fake urlscan.io and the guinea-pig hosts behind it.
+#
+#   ./up.sh      generate, check the fixtures, start, route the lab zones (README)
+#   ./down.sh    refuse while the orchestrator still carries a lab hook, then stop
+#
+# Every content file the containers read is in generated/ (gen_lab.py): sites,
+# certificates, the DNS zones, the fixtures. The hit logs are written back there.
+#
+# 192.88.97.0/24 is public address space, like the other recon labs' prefixes:
+# recon's Python SSRF guard refuses private, loopback and TEST-NET ranges, and
+# Python counts this prefix as global (up.sh asserts it in the recon image).
+# Scans run with host networking and reach the lab over this bridge; no host
+# port is published. While the bridge is down the prefix routes to the
+# internet, which is why up.sh and run_lab.py check the route before anything.
+
+name: uslab
+
+x-caps: &caps
+  # A separate compose project: redamon.sh's resource caps and memory governor
+  # never see it, so each service carries its own small limits.
+  mem_limit: 128m
+  pids_limit: 128
+  cpus: 0.5
+  restart: unless-stopped
+
+x-pyhost: &pyhost
+  <<: *caps
+  image: python:3.12-slim
+  read_only: true
+  # The invoking user (up.sh exports it), so the hit logs on the host stay theirs.
+  user: "${USLAB_UID:-1000}:${USLAB_GID:-1000}"
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+  command: ["python", "-u", "/lab/server.py", "--site", "/site/site.json", "--certs", "/certs", "--logs", "/logs"]
+
+services:
+
+  dns:
+    <<: *caps
+    image: coredns/coredns:1.11.3@sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e
+    container_name: uslab-dns
+    command: ["-conf", "/etc/coredns/Corefile"]
+    # A directory bind, not a file bind: a file is bound by inode, so a
+    # regenerated zone would stay invisible until the container is recreated.
+    volumes:
+      - ./generated/dns:/etc/coredns:ro
+    networks:
+      lab: { ipv4_address: 192.88.97.53 }
+
+  urlscan:
+    <<: *pyhost
+    container_name: uslab-urlscan
+    command: ["python", "-u", "/lab/server.py", "--fixtures", "/fixtures/visits.json", "--port", "80",
+              "--log-dir", "/logs"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      USLAB_PUBLIC_BASE: "http://192.88.97.30"
+      USLAB_LAB_KEY: "lab-key"
+    volumes:
+      - ./fake_urlscan:/lab:ro
+      - ./generated/fixtures:/fixtures:ro
+      - ./generated/logs/uslab-urlscan:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.30 }
+
+  web:
+    <<: *pyhost
+    container_name: uslab-web
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/web:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-web:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.10 }
+
+  excluded:
+    <<: *pyhost
+    container_name: uslab-excluded
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/excluded:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-excluded:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.20 }
+
+  edge:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: uslab-edge
+    command: ["nginx", "-c", "/etc/nginx/lab/nginx.conf", "-g", "daemon off;"]
+    volumes:
+      - ./edge:/etc/nginx/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-edge:/logs
+    depends_on: [origin]
+    networks:
+      lab: { ipv4_address: 192.88.97.40 }
+
+  origin:
+    <<: *pyhost
+    container_name: uslab-origin
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/origin:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-origin:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.41 }
+
+  decoy:
+    <<: *pyhost
+    container_name: uslab-decoy
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/decoy:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-decoy:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.42 }
+
+  oldip:
+    <<: *pyhost
+    container_name: uslab-oldip
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/oldip:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-oldip:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.98 }
+
+  outsider:
+    <<: *pyhost
+    container_name: uslab-outsider
+    volumes:
+      - ./web:/lab:ro
+      - ./generated/sites/outsider:/site:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/uslab-outsider:/logs
+    networks:
+      lab: { ipv4_address: 192.88.97.99 }
+
+networks:
+  lab:
+    name: redamon_uslab
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.88.97.0/24
+          gateway: 192.88.97.1
