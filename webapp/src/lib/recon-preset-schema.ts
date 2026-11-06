@@ -588,6 +588,7 @@ export const reconPresetSchema = z.object({
   originDiscoveryKeyless: bool,
   originDiscoveryScanners: bool,
   originDiscoveryPassiveDns: bool,
+  originDiscoveryUrlscan: bool,
   originDiscoveryMaxCandidates: int,
   originDiscoveryMaxSearchCalls: int,
   originDiscoveryThreshold: int,
@@ -1203,6 +1204,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - originDiscoveryKeyless: boolean - Non-CDN subdomains + SPF/MX + crt.sh (no key needed)
 - originDiscoveryScanners: boolean - Favicon/cert pivots via Shodan/Censys/FOFA/ZoomEye/OTX/VirusTotal (each uses its own key)
 - originDiscoveryPassiveDns: boolean - SecurityTrails + ViewDNS DNS history
+- originDiscoveryUrlscan: boolean - Origin Discovery's urlscan source: old addresses from urlscan visits and the visits that loaded the site's own build file (at most 3 searches per scan); skipped while URLScan is off. Default true.
 - originDiscoveryMaxCandidates: integer - Cap on probed candidate IPs per fronted host
 - originDiscoveryMaxSearchCalls: integer - Per-scan budget of keyed scanner-search calls
 - originDiscoveryThreshold: integer - Weighted-similarity confidence (0-100) needed to confirm an origin

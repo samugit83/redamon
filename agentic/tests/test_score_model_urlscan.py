@@ -91,12 +91,36 @@ class TestPageContentChecks(unittest.TestCase):
         self.assertFalse(sm._is_exploitable_class(dangling, klass))
 
 
+class TestOriginFileMatch(unittest.TestCase):
+    """Item 7: an origin that served the site's own build file outranks a
+    page-only match at the same confidence, whichever writer created the node."""
+
+    def _origin(self, source="origin_discovery", **kw):
+        return {"id": "x", "label": "Vulnerability", "source": source, "type": "waf_bypass",
+                "severity": "high", "name": "Origin Server Exposed (CDN Bypass)",
+                "confidence_score": 72, **kw}
+
+    def test_file_match_scores_above_a_page_match(self):
+        page = sm.confidence(self._origin(), sm.ProjectFacts()).value
+        same_file = sm.confidence(self._origin(file_match=True), sm.ProjectFacts()).value
+        self.assertEqual((page, same_file), (0.75, 0.9))
+        self.assertGreater(sm.score(self._origin(file_match=True)).risk, sm.score(self._origin()).risk)
+
+    def test_keyed_on_the_type_not_the_source(self):
+        node = self._origin(source="security_check", file_match=True)
+        self.assertEqual(sm.confidence(node, sm.ProjectFacts()).value, 0.9)
+        self.assertNotEqual(sm.confidence(self._origin(file_match=False), sm.ProjectFacts()).value, 0.9)
+
+
 class TestFactQueries(unittest.TestCase):
     def _query(self, name):
         return next(q["query"] for q in FINDING_QUERIES if q["name"] == name)
 
     def test_the_takeover_outcome_reaches_the_scorer(self):
         self.assertIn("v.outcome AS outcome", self._query("vulnerabilities"))
+
+    def test_the_file_match_reaches_the_scorer(self):
+        self.assertIn("v.file_match AS file_match", self._query("vulnerabilities"))
 
     def test_the_kind_reaches_the_scorer(self):
         self.assertIn("coalesce(v.link_kind, v.file_kind, v.problem, v.provider, v.family) AS finding_kind",

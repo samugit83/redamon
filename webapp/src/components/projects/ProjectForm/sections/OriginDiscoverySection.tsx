@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronDown, Globe, Play } from 'lucide-react'
+import { ChevronDown, Globe, Info, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
@@ -27,6 +27,7 @@ interface KeyStatus {
   virusTotal: boolean
   securitytrails: boolean
   viewdns: boolean
+  urlscan: boolean
 }
 
 export function OriginDiscoverySection({ data, updateField, onRun }: OriginDiscoverySectionProps) {
@@ -49,13 +50,14 @@ export function OriginDiscoverySection({ data, updateField, onRun }: OriginDisco
             virusTotal:     !!settings.virusTotalApiKey,
             securitytrails: !!settings.securitytrailsApiKey,
             viewdns:        !!settings.viewdnsApiKey,
+            urlscan:        !!settings.urlscanApiKey,
           })
         }
       })
       // Fail to "no keys" rather than flicker — the keyless group still works.
       .catch(() => setKeyStatus({
         shodan: false, censys: false, fofa: false, zoomEye: false,
-        otx: false, virusTotal: false, securitytrails: false, viewdns: false,
+        otx: false, virusTotal: false, securitytrails: false, viewdns: false, urlscan: false,
       }))
   }, [userId])
 
@@ -116,6 +118,12 @@ export function OriginDiscoverySection({ data, updateField, onRun }: OriginDisco
             with a HAS_ORIGIN link and reported as a WAF-bypass exposure. Every candidate is dropped if
             it points anywhere private/internal before it is ever probed.
           </p>
+          {data.httpxEnabled === false && (
+            <p className={styles.fieldHint}>
+              <Info size={12} /> httpx is off: in a full scan no host is known to be behind a CDN, so Origin
+              Discovery finds nothing. Partial recon still works on hosts you enter by hand.
+            </p>
+          )}
 
           {data.originDiscoveryEnabled && (
           <>
@@ -174,6 +182,33 @@ export function OriginDiscoverySection({ data, updateField, onRun }: OriginDisco
               <Toggle
                 checked={data.originDiscoveryPassiveDns}
                 onChange={(checked) => updateField('originDiscoveryPassiveDns', checked)}
+              />
+            </div>
+
+            <div className={styles.toggleRow} style={data.urlscanEnabled ? undefined : { opacity: 0.5 }}>
+              <div>
+                <span className={styles.toggleLabel}>urlscan history and file fingerprint</span>
+                <p className={styles.toggleDescription}>
+                  Two clues from urlscan.io. Old addresses: the IPs urlscan saw for your hosts before they
+                  moved behind the CDN, taken from the visits the URLScan module already downloaded (no extra
+                  search). Same file: RedAmon downloads your site&apos;s own JavaScript file, takes its
+                  fingerprint and asks urlscan where else that exact file was seen (1 search per file, at most
+                  3 per scan). Only bare IPs and your own hosts are kept, and each one is checked live like
+                  every other source. RedAmon only searches urlscan; it never submits a new scan.
+                  {!data.urlscanEnabled && ' Disabled while URLScan is off.'}
+                </p>
+                {data.urlscanEnabled && (data.originDiscoveryUrlscan ?? true) && (
+                  <p className={styles.fieldHint} style={{ marginTop: '4px' }}>
+                    {keyStatus === null ? 'Checking configured keys...' : keyStatus.urlscan
+                      ? 'urlscan key set.'
+                      : 'No urlscan key: only the last 30 days. Add a key in Global Settings to reach older addresses.'}
+                  </p>
+                )}
+              </div>
+              <Toggle
+                checked={data.originDiscoveryUrlscan ?? true}
+                onChange={(checked) => updateField('originDiscoveryUrlscan', checked)}
+                disabled={!data.urlscanEnabled}
               />
             </div>
           </div>

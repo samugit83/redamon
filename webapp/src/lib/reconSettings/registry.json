@@ -9565,6 +9565,23 @@
    "type": "int",
    "unit": "seconds"
   },
+  "originDiscoveryUrlscan": {
+   "default": true,
+   "form_section": "OriginDiscoverySection",
+   "group": "egress",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "urlscan history and file fingerprint: two clues from urlscan.io, run first. Old addresses: the IPs public urlscan visits recorded for a fronted host, from the visits the URLScan module already downloaded (no search; in partial recon from the graph's urlscan history). Same file: the host's own build JavaScript file is downloaded once, fingerprinted (SHA256) and searched on urlscan (hash:, then filename: when the hash search finds nothing; at most 3 searches per scan, counted against urlscanMaxSearches and the module's search budget); only bare IPs and in-scope hosts are kept, and a file more than 5 other domains loaded is ignored as shared. Every suspect is checked live like any other. Skipped while URLScan is off. RedAmon never submits a urlscan scan.",
+   "optional": false,
+   "phase": "http_probe",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "ORIGIN_DISCOVERY_URLSCAN",
+   "tool": "origin_discovery",
+   "traffic": "active",
+   "type": "boolean",
+   "unit": "none"
+  },
   "originDiscoveryWorkers": {
    "bounds": {
     "min": 1,

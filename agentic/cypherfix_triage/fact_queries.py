@@ -369,6 +369,8 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.detection_method AS detection_method,
        // A live takeover error page that only leaves the name dangling is not exploitable.
        v.outcome AS outcome,
+       // An origin that served the site's own build file byte for byte.
+       v.file_match AS file_match,
        // route_exposure's secret_in_response is classed by its detector name.
        v.secret_types AS secret_types,
        // urlscan history: the kind keys its detector (urlscan_leak:{type}:{kind}).

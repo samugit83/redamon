@@ -1086,6 +1086,11 @@ def _rule_confidence(finding: dict, facts: ProjectFacts) -> Factor:
     if is_proven(finding, facts):
         return Factor(1.0, "proven: an exploit or a validated credential")
 
+    # Keyed on the type, not the source: origin discovery and the security
+    # check MERGE the same waf_bypass node, and `source` is set on create only.
+    if _lower(finding.get("type")) == "waf_bypass" and _truthy(finding.get("file_match")):
+        return Factor(0.9, "the suspect served the site's own build file byte for byte")
+
     if source == "security_check":
         return _security_check_confidence(finding)
 

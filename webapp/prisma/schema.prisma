@@ -1145,6 +1145,7 @@ model Project {
   originDiscoveryKeyless            Boolean @default(true)  @map("origin_discovery_keyless")
   originDiscoveryScanners           Boolean @default(true)  @map("origin_discovery_scanners")
   originDiscoveryPassiveDns         Boolean @default(true)  @map("origin_discovery_passive_dns")
+  originDiscoveryUrlscan            Boolean @default(true)  @map("origin_discovery_urlscan")
   originDiscoveryMaxCandidates      Int     @default(25)    @map("origin_discovery_max_candidates")
   originDiscoveryMaxSearchCalls     Int     @default(50)    @map("origin_discovery_max_search_calls")
   originDiscoveryThreshold          Int     @default(60)    @map("origin_discovery_threshold")

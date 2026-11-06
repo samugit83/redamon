@@ -887,6 +887,10 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
     probe into an SSRF pivot. The trusted reference fetch (the in-scope fronted
     host) passes allow_redirects=True so a canonical 301 (apex->www, http->https)
     doesn't collapse its body and destroy the HTML-similarity signal.
+
+    That trusted reference fetch also returns the raw page (its ``<script
+    src>`` are where the site's own file is found) and the URL it ended on,
+    which a relative src resolves against.
     """
     headers = {"User-Agent": _UA}
     if host_header:
@@ -899,10 +903,93 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
         status = resp.status_code
         hdrs = {k.lower(): v for k, v in resp.headers.items()}
         cookies = resp.raw.headers.get_all("Set-Cookie") if hasattr(resp.raw.headers, "get_all") else resp.headers.get("Set-Cookie", "")
+        final_url = getattr(resp, "url", None) or url
         resp.close()
-        return {"text": _extract_text(body), "status": status, "headers": hdrs, "cookies": cookies}
+        out = {"text": _extract_text(body), "status": status, "headers": hdrs, "cookies": cookies}
+        if allow_redirects:
+            out.update({"html": body.decode("utf-8", "replace"), "final_url": str(final_url)})
+        return out
     except requests.RequestException:
         return None
+
+
+# ---------------------------------------------------------------------------
+# The site's own build file (item 7): a fingerprint urlscan can search, and a
+# stronger live check for every source
+# ---------------------------------------------------------------------------
+
+#: A file is big enough to fingerprint whole: a cut file gives a wrong SHA256.
+_MAX_OWN_FILE_BYTES = 20 * 1024 * 1024
+_SCRIPT_SRC_RE = re.compile(r"""<script\b[^>]*?\bsrc\s*=\s*["']?([^"'\s>]+)""", re.I)
+#: A build code: 8 or more letters and digits (at least one digit) after ".",
+#: "-" or "_", right before ".js" (app.8f3a91c2.js, index-BXy7a9Qe.js).
+_BUILD_CODE_RE = re.compile(r"[._-](?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,}\.js$", re.I)
+#: Names of files many sites ship byte for byte: their fingerprint finds
+#: thousands of unrelated visits (hash: of jquery-3.7.1 returned 10,000+).
+_SHARED_FILE_WORDS = ("framework", "webpack", "runtime", "polyfill", "vendor", "chunk-vendors",
+                      "jquery", "react", "vue", "angular", "bootstrap", "lodash", "gtag", "analytics")
+_PREFERRED_FILE_WORDS = ("main", "app", "index", "bundle")
+
+
+def _qualifying_name(name: str) -> bool:
+    low = name.lower()
+    return bool(_BUILD_CODE_RE.search(low)) and not any(w in low for w in _SHARED_FILE_WORDS)
+
+
+def _own_script(host: str, html: str, base_url: str, js_urls: List[str], in_scope) -> Optional[str]:
+    """The site's own build file: on the fronted host or another in-scope host
+    (``in_scope(host)`` applies the scope and the RoE), with a build code, not
+    a shared framework file. From the reference page's ``<script src>`` first,
+    then the crawler's JS list; ``main``/``app``/``index``/``bundle`` first."""
+    from urllib.parse import urljoin
+    found: List[str] = []
+    for src in _SCRIPT_SRC_RE.findall(html or ""):
+        found.append(urljoin(base_url or f"https://{host}/", src.strip()))
+    found += [u for u in js_urls or [] if isinstance(u, str)]
+    kept: List[str] = []
+    for url in found:
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            continue
+        name = (parsed.path or "").rsplit("/", 1)[-1]
+        file_host = (parsed.hostname or "").lower()
+        if (parsed.scheme in ("http", "https") and file_host and _qualifying_name(name)
+                and (file_host == host.lower() or in_scope(file_host)) and url not in kept):
+            kept.append(url)
+    if not kept:
+        return None
+    preferred = [u for u in kept if any(urlparse(u).path.rsplit("/", 1)[-1].lower().startswith(w)
+                                        for w in _PREFERRED_FILE_WORDS)]
+    return (preferred or kept)[0]
+
+
+def _file_sha256(url: str, host_header: str, ctx: _RunCtx) -> Optional[str]:
+    """SHA256 of the uncompressed body (what urlscan indexes), or None: a
+    redirect is never followed, a body over 20 MB is skipped, and a response
+    an edge or WAF answered is no file."""
+    import hashlib
+    if not is_url_safe_to_probe(url):
+        return None
+    headers = {"User-Agent": _UA}
+    if host_header:
+        headers["Host"] = host_header
+    try:
+        ctx.rate.wait()
+        resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=False,
+                            headers=headers, stream=True)
+        try:
+            if resp.status_code != 200 or edge_from_headers(
+                    {k.lower(): v for k, v in resp.headers.items()}) is not None:
+                return None
+            body = resp.raw.read(_MAX_OWN_FILE_BYTES + 1, decode_content=True) or b""
+        finally:
+            resp.close()
+    except requests.RequestException:
+        return None
+    if not body or len(body) > _MAX_OWN_FILE_BYTES:
+        return None
+    return hashlib.sha256(body).hexdigest()
 
 
 def _compare_html(a: str, b: str) -> float:
@@ -1033,9 +1120,10 @@ def _default_cert_check(host: str, ip: str, port: int, ctx: _RunCtx) -> Tuple[st
     return ("target", "") if domain and _cert_covers(cert, domain) else ("foreign", "")
 
 
-def _confirm_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optional[dict]:
+def _confirm_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx,
+                       own_file: Optional[dict] = None) -> Optional[dict]:
     """Score the candidate; if it passes, weigh its default certificate in."""
-    match = _score_candidate(host, reference, ip, ctx)
+    match = _score_candidate(host, reference, ip, ctx, own_file=own_file)
     if not match:
         return None
     port = match["port"] if match["port"] in _TLS_PORTS else 443
@@ -1050,10 +1138,21 @@ def _confirm_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Opt
     return match
 
 
-def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optional[dict]:
+#: An origin that served the site's own build file byte for byte is the site.
+_FILE_MATCH_MIN_CONFIDENCE = 85.0
+
+
+def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx,
+                     own_file: Optional[dict] = None) -> Optional[dict]:
     """Probe the candidate IP (direct + host-header) across web ports; return the
-    best confirmed match >= threshold, mirroring unwaf's verification loop."""
+    best confirmed match >= threshold, mirroring unwaf's verification loop.
+
+    With the host's own build file (``own_file``: url path, its host, SHA256),
+    the attempt with the best page score, passing or not, is asked for that
+    file once: the same bytes confirm at 85 or more, even for a single-page app
+    whose reference page has no text to compare."""
     best: Optional[dict] = None
+    best_attempt: Optional[dict] = None
     port_timeout = max(2.0, min(ctx.timeout / 5.0, 5.0))  # unwaf: timeout/5, floor 2s
     for port in WEB_PORTS:
         if not _port_open(ip, port, port_timeout):
@@ -1072,6 +1171,17 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
             html_sim = _compare_html(reference["text"], resp["text"])
             hdr = 0.0 if resp["status"] >= 400 else _compare_headers(reference, resp)
             score = _overall_score(html_sim, cert, hdr, reference["status"], resp["status"]) * 100.0
+            attempt = {
+                "matched_ip": ip, "port": port, "method": method,
+                "confidence_score": round(score, 1),
+                "html_similarity": round(html_sim * 100, 1),
+                "cert_match": round(cert * 100, 1),
+                "header_match": round(hdr * 100, 1),
+                "status_code": resp["status"],
+                "url": url,
+            }
+            if best_attempt is None or score > best_attempt["confidence_score"]:
+                best_attempt = attempt
             # F4: when the fronted host serves no comparable HTML (empty body / a
             # JSON API), the 60% HTML weight is unavailable and the score can't
             # reach the threshold — but an exact TLS match (cert >= 0.5 = serial or
@@ -1084,16 +1194,155 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx) -> Optio
             passed = score > ctx.threshold or cert_definitive
             eff_score = max(score, cert * 100.0) if cert_definitive else score
             if passed and (best is None or eff_score > best["confidence_score"]):
-                best = {
-                    "matched_ip": ip, "port": port, "method": method,
-                    "confidence_score": round(eff_score, 1),
-                    "html_similarity": round(html_sim * 100, 1),
-                    "cert_match": round(cert * 100, 1),
-                    "header_match": round(hdr * 100, 1),
-                    "status_code": resp["status"],
-                    "url": url,
-                }
+                best = {**attempt, "confidence_score": round(eff_score, 1)}
+    if own_file and best_attempt is not None:
+        base = best or best_attempt
+        port = base["port"]
+        scheme = "https" if port in _TLS_PORTS else "http"
+        sha = _file_sha256(f"{scheme}://{_url_host(ip)}:{port}{own_file['path']}",
+                           own_file["host"], ctx)
+        if sha and sha == own_file["sha256"]:
+            best = {**base, "file_match": True,
+                    "confidence_score": max(base["confidence_score"], _FILE_MATCH_MIN_CONFIDENCE)}
+        elif best is not None:
+            best["file_match"] = False
     return best
+
+
+# ---------------------------------------------------------------------------
+# urlscan (item 7): old addresses from the visits the URLScan module already
+# downloaded, and the visits that loaded the site's own build file
+# ---------------------------------------------------------------------------
+
+_URLSCAN_HISTORY_PER_HOST = 5
+_URLSCAN_MAX_FILE_SEARCHES = 3
+#: More than this many other registrable domains loaded the "own" file: it is
+#: shared after all (a framework that slipped through), so none of it counts.
+_SHARED_FILE_MAX_DOMAINS = 5
+URLSCAN_HASH_BREAKER = "urlscan:hash"
+
+
+class _UrlscanSource:
+    """Origin Discovery's urlscan source for one run. It only proposes
+    suspects; the module's filter and live check decide. It never submits a
+    scan, and the queries hold only a fingerprint or a file name."""
+
+    def __init__(self, combined_result: dict, ctx: _RunCtx):
+        settings = ctx.settings
+        self.ctx = ctx
+        self.api_key = settings.get("URLSCAN_API_KEY", "") or ""
+        self.key_rotator = settings.get("URLSCAN_KEY_ROTATOR")
+        self.entries = [e for e in ((combined_result.get("urlscan") or {}).get("entries") or [])
+                        if isinstance(e, dict)]
+        self.js_urls = [u for u in ((combined_result.get("resource_enum") or {}).get("js_urls") or [])
+                        if isinstance(u, str)]
+        self._combined = combined_result
+        self._lock = threading.Lock()
+        self._searches = 0
+        self._by_sha: Dict[str, List[Tuple[str, str]]] = {}
+
+    def in_scope(self, host: str) -> bool:
+        from graph_db.mixins.recon.scope import scan_root_for_host
+        h = (host or "").lower()
+        if not h or (self.ctx.roe_enabled and _is_roe_excluded(h, self.ctx.roe_excluded)):
+            return False
+        try:
+            return bool(scan_root_for_host(h, self._combined))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def history(self, host: str, entry: dict, flagged: Set[str]) -> List[Tuple[str, str]]:
+        """Clue 1: the addresses visits of exactly this host recorded, newest
+        first, without the edge and the host's current addresses, at most 5."""
+        resolved = entry.get("resolved_ips") or set()
+        rows = sorted((e for e in self.entries
+                       if (e.get("domain") or "").lower() == host.lower() and e.get("ip")),
+                      key=lambda e: e.get("scan_time") or "", reverse=True)
+        out: List[Tuple[str, str]] = []
+        for e in rows:
+            ip = str(e["ip"])
+            if ip in resolved or ip in flagged or _ip_in_cdn_ranges(ip) or any(ip == o for o, _ in out):
+                continue
+            out.append((ip, (e.get("scan_time") or "")[:10]))
+            if len(out) >= _URLSCAN_HISTORY_PER_HOST:
+                break
+        return out
+
+    def own_file(self, host: str, reference: Optional[dict]) -> Optional[dict]:
+        """The host's own build file, downloaded once: {url, path, host, name, sha256}."""
+        if not reference:
+            return None
+        url = _own_script(host, reference.get("html") or "", reference.get("final_url") or "",
+                          self.js_urls, self.in_scope)
+        if not url:
+            _log("-", f"{host}: no own file")
+            return None
+        parsed = urlparse(url)
+        sha = _file_sha256(url, "", self.ctx)
+        if not sha:
+            return None
+        return {"url": url, "path": parsed.path + (f"?{parsed.query}" if parsed.query else ""),
+                "host": (parsed.hostname or "").lower(), "name": parsed.path.rsplit("/", 1)[-1],
+                "sha256": sha}
+
+    def _search(self, query: str, host: str) -> Optional[list]:
+        with self._lock:
+            if self._searches >= _URLSCAN_MAX_FILE_SEARCHES:
+                return None
+            self._searches += 1
+        if not self.ctx.budget.take():
+            return None
+        from recon.main_recon_modules import urlscan_enrich as us
+        results = us.urlscan_search(
+            query, self.api_key, max_results=100, key_rotator=self.key_rotator,
+            breaker_key=URLSCAN_HASH_BREAKER, caller="hash", root=host, page=False,
+            local_refusals=True, budget=us.search_budget(self.ctx.settings))
+        return [r for r in results if isinstance(r, dict)]
+
+    def _filter(self, results: list) -> List[Tuple[str, str]]:
+        """Keep a visit whose page is a bare IP or an in-scope host; other
+        domains are counted, never stored or probed."""
+        kept: List[Tuple[str, str]] = []
+        others: Set[str] = set()
+        for r in results:
+            page = r.get("page") or {}
+            domain = (page.get("domain") or "").lower()
+            ip = str(page.get("ip") or "")
+            if not domain or not ip:
+                continue
+            if _is_ip(domain) or self.in_scope(domain):
+                kept.append((ip, (((r.get("task") or {}).get("time")) or "")[:10]))
+            else:
+                others.add(org_domain(domain) or domain)
+        if len(others) > _SHARED_FILE_MAX_DOMAINS:
+            _log("-", f"shared file: {len(others)} other domains loaded it; its visits are ignored")
+            return []
+        return kept
+
+    def file_suspects(self, host: str, own: Optional[dict]) -> Tuple[List[Tuple[str, str]], str]:
+        """Clue 2: hash:<sha256>, then filename:"<name>" only when the hash
+        search found nothing. Hosts sharing the file share the search."""
+        if not own:
+            return [], ""
+        with self._lock:
+            if own["sha256"] in self._by_sha:
+                return self._by_sha[own["sha256"]], "urlscan_hash"
+        source = "urlscan_hash"
+        results = self._search(f"hash:{own['sha256']}", host)
+        if results is not None and not results and _BUILD_CODE_RE.search(own["name"]):
+            source = "urlscan_filename"
+            results = self._search(f'filename:"{own["name"]}"', host)
+        suspects = self._filter(results or [])
+        with self._lock:
+            self._by_sha[own["sha256"]] = suspects
+        return suspects, source
+
+
+def _urlscan_source_on(settings: dict) -> bool:
+    # URLScan off means neither the URLScan module nor Origin Discovery
+    # contacts urlscan, whatever this switch says (presets and the API set
+    # settings without the form).
+    return bool(settings.get("ORIGIN_DISCOVERY_URLSCAN", True) and settings.get("URLSCAN_ENABLED"))
 
 
 # ---------------------------------------------------------------------------
@@ -1104,7 +1353,9 @@ _KEY_FROM_HOST = object()
 
 
 def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict,
-                       key=_KEY_FROM_HOST) -> Dict[str, str]:
+                       key=_KEY_FROM_HOST, urlscan: Optional[_UrlscanSource] = None,
+                       own_file: Optional[dict] = None,
+                       flagged: Set[str] = frozenset()) -> Dict[str, str]:
     """Run every enabled source for one host; map ip -> first source. Never raises.
 
     ``key`` is the name the domain-keyed sources (SPF/MX, crt.sh, the
@@ -1128,6 +1379,30 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict,
             meta.setdefault("errors", {})[name] = str(e)[:200]
             # surface it (e.g. an invalid API key) instead of a silent empty result
             _log("-", f"{host}: source '{name}' failed: {str(e)[:120]}")
+
+    # First: the cheapest and most specific source, so the candidate cap
+    # never pushes its suspects out. The visit date rides in meta.
+    if urlscan is not None:
+        seen = meta.setdefault("urlscan_seen", {})
+
+        def _history():
+            found = urlscan.history(host, entry, flagged)
+            for ip, when in found:
+                seen.setdefault(ip, when)
+            return [ip for ip, _ in found]
+
+        def _file(kind: str):
+            def run():
+                suspects, source = urlscan.file_suspects(host, own_file)
+                if source != kind:
+                    return []
+                for ip, when in suspects:
+                    seen.setdefault(ip, when)
+                return [ip for ip, _ in suspects]
+            return run
+        _run("urlscan_history", "ip_history", _history)
+        _run("urlscan_hash", "file_hash", _file("urlscan_hash"))
+        _run("urlscan_filename", "file_name", _file("urlscan_filename"))
 
     if domain and ctx.settings.get("ORIGIN_DISCOVERY_KEYLESS", True):
         # Keyed by the registrable domain so N fronted subdomains of one domain
@@ -1161,6 +1436,7 @@ _METHOD_LABEL = {
     "censys": "cert_san", "fofa": "cert_san", "zoomeye": "cert_san",
     "otx": "passive_dns", "virustotal": "passive_dns",
     "securitytrails": "passive_dns", "viewdns": "passive_dns",
+    "urlscan_history": "ip_history", "urlscan_hash": "file_hash", "urlscan_filename": "file_name",
 }
 
 
@@ -1191,26 +1467,49 @@ def _candidate_key_rule(combined_result: dict):
     return _scan_root_key
 
 
+def _reference(host: str, ctx: _RunCtx) -> Optional[dict]:
+    # The in-scope fronted host: follow its canonical redirects so a 301
+    # doesn't yield an empty body (candidate probes never follow: SSRF).
+    return (_fetch(f"https://{host}", "", ctx, allow_redirects=True)
+            or _fetch(f"http://{host}", "", ctx, allow_redirects=True))
+
+
+def _own_file_source(ctx: _RunCtx, combined_result: dict, urlscan: Optional[_UrlscanSource]):
+    """The own-file lookup the live check uses for every source, with or
+    without the urlscan switch."""
+    return urlscan if urlscan is not None else _UrlscanSource(combined_result, ctx)
+
+
 def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
-                  flagged: Set[str] = frozenset()) -> Tuple[List[dict], dict]:
+                  flagged: Set[str] = frozenset(), urlscan: Optional[_UrlscanSource] = None,
+                  files: Optional[_UrlscanSource] = None) -> Tuple[List[dict], dict]:
     meta: dict = {"candidates": [], "methods": [], "errors": {}}
-    candidates = _gather_candidates(host, entry, ctx, meta, key=key)
+    reference = own = None
+    if urlscan is not None:
+        # The file search needs the reference page's scripts: the same request, earlier.
+        reference = _reference(host, ctx)
+        own = urlscan.own_file(host, reference)
+    candidates = _gather_candidates(host, entry, ctx, meta, key=key, urlscan=urlscan,
+                                    own_file=own, flagged=flagged)
     kept = _dedup_and_filter(candidates, entry, ctx, meta, flagged=flagged)
     meta["candidates"] = [ip for ip, _ in kept]
     if not kept:
         return [], meta
 
-    # Reference is the in-scope fronted host: follow its canonical redirects so a
-    # 301 doesn't yield an empty body (candidate probes below never follow — SSRF).
-    reference = (_fetch(f"https://{host}", "", ctx, allow_redirects=True)
-                 or _fetch(f"http://{host}", "", ctx, allow_redirects=True))
+    if reference is None:
+        reference = _reference(host, ctx)
+        if reference is not None and files is not None:
+            own = files.own_file(host, reference)
     if reference is None:
         meta["errors"]["reference"] = "could not fetch the fronted host for comparison"
         return [], meta
+    if own:
+        meta["own_file"] = own["path"]
+    seen = meta.get("urlscan_seen") or {}
 
     confirmed: List[dict] = []
     with ThreadPoolExecutor(max_workers=ctx.workers) as ex:
-        futs = {ex.submit(_confirm_candidate, host, reference, ip, ctx): (ip, source)
+        futs = {ex.submit(_confirm_candidate, host, reference, ip, ctx, own): (ip, source)
                 for ip, source in kept}
         for fut in as_completed(futs):
             ip, source = futs[fut]
@@ -1220,6 +1519,11 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
                 match = None
             if not match:
                 continue
+            seen_at = seen.get(ip) if source.startswith("urlscan") else None
+            parts = [source] + ([f"seen {seen_at}"] if seen_at else []) + [
+                match["method"], f"score {match['confidence_score']}%"]
+            if match.get("file_match"):
+                parts.append(f"same {own['name']}")
             confirmed.append({
                 "type": "waf_bypass",
                 "severity": "high" if match["confidence_score"] >= 80 else "medium",
@@ -1237,10 +1541,11 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
                 "cert_match": match["cert_match"],
                 "header_match": match["header_match"],
                 "status_code": match["status_code"],
-                "evidence": (f"{host} → {match['matched_ip']}:{match['port']} "
-                             f"({source}, {match['method']}, score {match['confidence_score']}%)"
+                "evidence": (f"{host} → {match['matched_ip']}:{match['port']} ({', '.join(parts)})"
                              + (f"; {match['default_cert_note']}" if match.get("default_cert_note") else "")),
                 "source": "origin_discovery",
+                **({"file_match": bool(match.get("file_match")), "own_file": own["path"]} if own else {}),
+                **({"urlscan_seen_at": seen_at} if seen_at else {}),
             })
             _log("+", f"{host} -> {match['matched_ip']}:{match['port']} "
                       f"(method={_METHOD_LABEL.get(source, source)}, source={source}, "
@@ -1273,10 +1578,13 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
               f"threshold={ctx.threshold:.0f}% budget={ctx.budget.remaining} search calls")
 
     flagged = _cdn_flagged_ips(combined_result)
+    urlscan = _UrlscanSource(combined_result, ctx) if _urlscan_source_on(settings) else None
+    files = _own_file_source(ctx, combined_result, urlscan)
     all_confirmed: List[dict] = []
     for host, entry in fronted.items():
         try:
-            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host), flagged=flagged)
+            confirmed, meta = _process_host(host, entry, ctx, key=key_for(host), flagged=flagged,
+                                            urlscan=urlscan, files=files)
         except Exception as e:  # a host never sinks the whole module
             payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]}}
             _log("!", f"{host}: {e}")
@@ -1295,7 +1603,7 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
 
 # Every keyed provider origin discovery asks, by breaker key prefix.
 _KEYED_PROVIDERS = ("shodan", "censys", "fofa", "zoomeye", "otx", "virustotal",
-                    "securitytrails", "viewdns")
+                    "securitytrails", "viewdns", "urlscan")
 
 
 def run_origin_discovery_enrichment_isolated(combined_result: dict, settings: dict) -> dict:

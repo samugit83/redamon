@@ -3108,7 +3108,8 @@ class OsintMixin:
                         "last_seen": now_iso,
                     }
                     for k in ("confidence_score", "port", "match_method", "html_similarity",
-                              "cert_match", "header_match", "status_code", "evidence"):
+                              "cert_match", "header_match", "status_code", "evidence",
+                              "file_match", "own_file", "urlscan_seen_at"):
                         if finding.get(k) is not None:
                             vuln_props[k] = finding[k]
                     if cdn:

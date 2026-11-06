@@ -90,6 +90,54 @@ def _inject_graph_fronted_hosts(by_url: dict, roots: list, user_id: str, project
                 print(f"[+][Partial Recon] Loaded {count} CDN-fronted host(s) from the graph")
 
 
+def _load_urlscan_inputs(recon_data: dict, hosts: list, roots: list, user_id: str,
+                         project_id: str, domain_groups: list = None) -> None:
+    """Item 7 in partial recon: the urlscan source's two inputs, from the graph.
+
+    Old addresses come from an earlier URLScan run's
+    `(Subdomain)-[:HISTORICALLY_RESOLVED_TO {source:'urlscan'}]->(IP)`, never
+    from a current RESOLVES_TO, loaded into the `urlscan.entries` shape. The
+    site's files come from JS Recon's `js_file` nodes, inside the run's scope,
+    into `resource_enum.js_urls`. Typed subdomains get the history read too."""
+    from graph_db import Neo4jClient
+    from urllib.parse import urlparse
+
+    hosts = sorted({str(h).lower() for h in hosts or [] if h})
+    scope = _GraphScope(roots, domain_groups, include_root_domain=True)
+    with Neo4jClient() as client:
+        if not client.verify_connection():
+            return
+        with client.driver.session() as session:
+            entries = recon_data.setdefault("urlscan", {}).setdefault("entries", [])
+            if hosts:
+                rows = session.run(
+                    """
+                    MATCH (s:Subdomain {user_id: $uid, project_id: $pid})
+                          -[r:HISTORICALLY_RESOLVED_TO {source: 'urlscan'}]->(i:IP)
+                    WHERE toLower(s.name) IN $hosts
+                    RETURN toLower(s.name) AS host, i.address AS ip, r.last_seen AS last_seen
+                    """, uid=user_id, pid=project_id, hosts=hosts)
+                for r in rows:
+                    if r["ip"]:
+                        entries.append({"domain": r["host"], "ip": r["ip"],
+                                        "scan_time": r["last_seen"] or "", "in_scope": True})
+            rows = session.run(
+                """
+                MATCH (f:JsReconFinding {user_id: $uid, project_id: $pid, finding_type: 'js_file'})
+                WHERE f.source_url STARTS WITH 'http' AND NOT f.source_url CONTAINS '#'
+                RETURN DISTINCT f.source_url AS url
+                """, uid=user_id, pid=project_id)
+            js_urls = recon_data.setdefault("resource_enum", {}).setdefault("js_urls", [])
+            for r in rows:
+                url = r["url"]
+                host = (urlparse(url).hostname or "").lower() if isinstance(url, str) else ""
+                if host and scope.keeps(host) and url not in js_urls:
+                    js_urls.append(url)
+    if entries or js_urls:
+        print(f"[+][Partial Recon] urlscan source: {len(entries)} old address(es), "
+              f"{len(js_urls)} JS file(s) from the graph")
+
+
 def run_origin_discovery(config: dict) -> None:
     from recon.main_recon_modules.origin_discovery import run_origin_discovery_enrichment
 
@@ -185,6 +233,16 @@ def run_origin_discovery(config: dict) -> None:
         1 for v in recon_data["http_probe"]["by_url"].values()
         if isinstance(v, dict) and v.get("is_cdn")
     )
+
+    from recon.main_recon_modules.origin_discovery import _urlscan_source_on
+    if _urlscan_source_on(settings):
+        fronted_hosts = [v.get("host") for v in recon_data["http_probe"]["by_url"].values()
+                         if isinstance(v, dict) and v.get("is_cdn")]
+        try:
+            _load_urlscan_inputs(recon_data, fronted_hosts, roots, user_id, project_id,
+                                 domain_groups=config.get("domain_groups"))
+        except Exception as e:
+            print(f"[!][Partial Recon] Could not load urlscan history from the graph: {e}")
     if not fronted_count:
         print(f"[!][Partial Recon] No CDN-fronted hosts found in the graph and no subdomain entered — "
               f"run an HTTP-probe scan first, or enter a fronted subdomain. Nothing to unmask.")

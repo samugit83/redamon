@@ -6682,6 +6682,26 @@ fields:
     group: egress
     meaning: >-
       SecurityTrails + ViewDNS DNS history
+  originDiscoveryUrlscan:
+    tool: origin_discovery
+    runtime_key: "ORIGIN_DISCOVERY_URLSCAN"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: egress
+    meaning: >-
+      urlscan history and file fingerprint: two clues from urlscan.io, run first.
+      Old addresses: the IPs public urlscan visits recorded for a fronted host, from
+      the visits the URLScan module already downloaded (no search; in partial recon
+      from the graph's urlscan history). Same file: the host's own build JavaScript
+      file is downloaded once, fingerprinted (SHA256) and searched on urlscan
+      (hash:, then filename: when the hash search finds nothing; at most 3 searches
+      per scan, counted against urlscanMaxSearches and the module's search budget);
+      only bare IPs and in-scope hosts are kept, and a file more than 5 other
+      domains loaded is ignored as shared. Every suspect is checked live like any
+      other. Skipped while URLScan is off. RedAmon never submits a urlscan scan.
   originDiscoveryScanners:
     tool: origin_discovery
     runtime_key: "ORIGIN_DISCOVERY_SCANNERS"

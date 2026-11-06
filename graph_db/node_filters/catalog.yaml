@@ -163,13 +163,15 @@ kinds:
         type: enum
         prop: origin_discovery_method
         label: Discovery method
-        values: [subdomain, cert_san, favicon_hash, passive_dns, unknown]
+        values: [subdomain, cert_san, favicon_hash, passive_dns, ip_history, file_hash, file_name, unknown]
       match_method:  { type: enum, prop: match_method, label: Match method, values: [direct, host-header] }
       origin_source:
         type: enum
         prop: origin_source
         label: Origin source
-        values: [dns, crtsh, shodan, censys, fofa, zoomeye, otx, virustotal, securitytrails, viewdns, unknown]
+        values: [dns, crtsh, shodan, censys, fofa, zoomeye, otx, virustotal, securitytrails, viewdns,
+                 urlscan_history, urlscan_hash, urlscan_filename, unknown]
+      file_match:      { type: bool, prop: file_match, label: Served the site's own file }
       cdn_fronting:    { type: text, prop: cdn_fronting, label: CDN }
       html_similarity: { type: number, prop: html_similarity, label: HTML similarity (0-100) }
       cert_match:      { type: number, prop: cert_match, label: Certificate match (0-100) }

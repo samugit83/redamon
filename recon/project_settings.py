@@ -701,6 +701,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'ORIGIN_DISCOVERY_KEYLESS': True,        # subdomain probe + SPF/MX + crt.sh + favicon (no key needed)
     'ORIGIN_DISCOVERY_SCANNERS': True,       # Shodan/Censys/FOFA/ZoomEye/OTX/VT (each still needs its own key)
     'ORIGIN_DISCOVERY_PASSIVE_DNS': True,    # SecurityTrails + ViewDNS history
+    'ORIGIN_DISCOVERY_URLSCAN': True,
     'ORIGIN_DISCOVERY_MAX_CANDIDATES': 25,   # cap probed candidate IPs per host
     'ORIGIN_DISCOVERY_MAX_SEARCH_CALLS': 50, # per-scan budget of genuine keyed search calls
     'ORIGIN_DISCOVERY_THRESHOLD': 60,        # weighted-similarity confirm threshold (0-100)
@@ -2030,6 +2031,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['ORIGIN_DISCOVERY_KEYLESS'] = project.get('originDiscoveryKeyless', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_KEYLESS'])
     settings['ORIGIN_DISCOVERY_SCANNERS'] = project.get('originDiscoveryScanners', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_SCANNERS'])
     settings['ORIGIN_DISCOVERY_PASSIVE_DNS'] = project.get('originDiscoveryPassiveDns', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_PASSIVE_DNS'])
+    settings['ORIGIN_DISCOVERY_URLSCAN'] = project.get('originDiscoveryUrlscan', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_URLSCAN'])
     settings['ORIGIN_DISCOVERY_MAX_CANDIDATES'] = project.get('originDiscoveryMaxCandidates', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_MAX_CANDIDATES'])
     settings['ORIGIN_DISCOVERY_MAX_SEARCH_CALLS'] = project.get('originDiscoveryMaxSearchCalls', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_MAX_SEARCH_CALLS'])
     settings['ORIGIN_DISCOVERY_THRESHOLD'] = project.get('originDiscoveryThreshold', DEFAULT_SETTINGS['ORIGIN_DISCOVERY_THRESHOLD'])

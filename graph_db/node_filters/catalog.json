@@ -641,6 +641,9 @@
             "cert_san",
             "favicon_hash",
             "passive_dns",
+            "ip_history",
+            "file_hash",
+            "file_name",
             "unknown"
           ]
         },
@@ -668,8 +671,16 @@
             "virustotal",
             "securitytrails",
             "viewdns",
+            "urlscan_history",
+            "urlscan_hash",
+            "urlscan_filename",
             "unknown"
           ]
+        },
+        "file_match": {
+          "type": "bool",
+          "prop": "file_match",
+          "label": "Served the site's own file"
         },
         "cdn_fronting": {
           "type": "text",
