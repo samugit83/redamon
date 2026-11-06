@@ -592,10 +592,14 @@ def check_page_signals(visits: list[dict], path: Path = PAGE_SIGNALS) -> list[st
         return []
     spec = importlib.util.spec_from_file_location("uslab_page_signals", path)
     module = importlib.util.module_from_spec(spec)
+    # A dataclass looks its module up in sys.modules while the class is built.
+    sys.modules[spec.name] = module
     try:
         spec.loader.exec_module(module)
     except Exception as e:  # noqa: BLE001 - a catalog that cannot load is reported, not fatal here
         return [f"page_signals.py did not import: {e!r}"]
+    finally:
+        sys.modules.pop(spec.name, None)
     match_page = getattr(module, "match_page", None)
     if not callable(match_page):
         return []

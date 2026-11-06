@@ -234,6 +234,13 @@ class GeneratedFixturesAreUrlscanShaped(unittest.TestCase):
         self.assertTrue(expected)
         self.assertEqual({p.split(":", 1)[0] for p in problems}, expected)
 
+    def test_the_real_catalog_agrees_with_every_problem_page_fixture(self):
+        # recon/helpers/page_signals.py exists now: a disagreement, or a catalog
+        # that fails to load (a dataclass loaded by path needs sys.modules), is
+        # a fixture or a rule to fix, never a silent pass.
+        self.assertTrue(gen_lab.PAGE_SIGNALS.is_file())
+        self.assertEqual(gen_lab.check_page_signals(self.visits), [])
+
     def test_takeover_cnames_only_with_the_takeover_switch(self):
         gen_lab.compose_dns(self.out, takeover=False)
         self.assertNotIn("CNAME", (self.out / "dns" / "uslab.test.db").read_text())
