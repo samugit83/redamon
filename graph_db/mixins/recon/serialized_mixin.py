@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 from urllib.parse import urlparse
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 #: Jev's assessment (recon/helpers/ai_planner/serialized_assess.py). Each run
 #: replaces them: a run without Jev, or one where Jev could not answer for this
@@ -72,7 +73,7 @@ class SerializedScanMixin:
                     location = finding.get("deser_location") or ""
                     transport = finding.get("deser_transport") or ""
                     baseurl = finding.get("baseurl") or ""
-                    path = finding.get("path") or "/"
+                    path = normalize_endpoint_path(finding.get("path") or "/")
                     method = (finding.get("http_method") or "GET").upper()
                     if not endpoint_url or not deser_format:
                         continue

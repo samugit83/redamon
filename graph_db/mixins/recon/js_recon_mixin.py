@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 from graph_db.coverage_stamps import stamp_base_url_coverage
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, home_domain, host_in_scope, scan_root_for_host
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 # merge_discovered_hostnames (recon/helpers/target_helpers.py) tags each name it
 # admits into dns.subdomains with one of these, after its apex allow-list, RoE,
@@ -141,7 +142,7 @@ def split_absolute_endpoint(path: str, source_js: str) -> tuple:
     scheme = {'ws': 'http', 'wss': 'https'}.get(parsed.scheme, parsed.scheme)
     if scheme not in ('http', 'https') or not parsed.netloc:
         return '', path
-    return f"{scheme}://{parsed.netloc}", parsed.path or '/'
+    return f"{scheme}://{parsed.netloc}", normalize_endpoint_path(parsed.path or '/')
 
 
 class JsReconMixin:
@@ -921,6 +922,9 @@ class JsReconMixin:
                             e.validation_status = COALESCE($validation_status, e.validation_status),
                             e.updated_at = datetime()
                         SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
+                        // JS Recon's own word, on create AND on match: an endpoint
+                        // a crawler wrote first still gets it (Route Exposure ranks on it).
+                        SET e.js_recon_category = coalesce($js_recon_category, e.js_recon_category)
                         WITH e, COALESCE(e._js_recon_created, false) AS created
                         REMOVE e._js_recon_created
                         RETURN created AS created
@@ -929,6 +933,7 @@ class JsReconMixin:
                         uid=user_id, pid=project_id,
                         id=node_id,
                         category=ep.get("category", "endpoint"),
+                        js_recon_category=ep.get("js_recon_category"),
                         full_url=ep.get("full_url", ""),
                         status_code=ep.get("status_code"),
                         resolved_url=ep.get("resolved_url", ""),

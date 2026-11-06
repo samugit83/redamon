@@ -5,13 +5,16 @@ Extracts API endpoints, GraphQL queries, WebSocket connections, router
 definitions, and admin/debug paths from JavaScript content. Goes beyond
 jsluice with pattern-aware parsing.
 
-Reuses classify_endpoint() and classify_parameter() from
-recon/helpers/resource_enum/classification.py.
+Every endpoint gets the shared word in `category` (classify_endpoint() from
+recon/helpers/resource_enum/classification.py, as every other module writes),
+and JS Recon's own label (api_documentation, admin_debug, file_upload,
+graphql, websocket...) with its severity in `js_recon_category`, which Route
+Exposure's ranking and the AI route ranking read.
 """
 
 import re
 import hashlib
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlsplit, urlparse, parse_qs
 from typing import Optional
 
 
@@ -470,4 +473,12 @@ def extract_endpoints(
             seen.add(ep['id'])
             deduped.append(ep)
 
+    from recon.helpers.resource_enum.classification import classify_endpoint
+    for ep in deduped:
+        if 'js_recon_category' not in ep:
+            ep['js_recon_category'] = ep.get('category') or 'endpoint'
+            path = str(ep.get('path') or '')
+            if '://' in path:
+                path = urlsplit(path).path or '/'
+            ep['category'] = classify_endpoint(path, [ep.get('method') or 'GET'], {})
     return deduped

@@ -1258,6 +1258,19 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
             if ai_fired.get("wappalyzer"):
                 ai_summary["wappalyzer_matches"] = ai_summary.get("wappalyzer_matches", 0) + 1
 
+            # A page that says what it is only in its title (a login form at
+            # `/`, Grafana at `/app`): its category, path rule first, read from
+            # the last hop, whose title httpx kept. A label, never a finding.
+            try:
+                from recon.helpers.resource_enum.classification import endpoint_category
+                from urllib.parse import urlsplit as _urlsplit
+                _hop = str(url_entry.get("final_url") or url)
+                _cat = endpoint_category(_urlsplit(_hop).path or "/", ["GET"], {}, url_entry.get("title"))
+                if _cat != "other":
+                    url_entry["category"] = _cat
+            except Exception:  # noqa: BLE001 - a label must never cost the probe
+                pass
+
             # Add to by_url
             by_url[url] = url_entry
 

@@ -45,8 +45,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "all_off/exploitation/ssrf": {
-   "chars": 12534,
-   "sha256": "3922e6f765f97c65f074134da563f42dc9bd8190155160ec9fec5fcab3d2d8ea"
+   "chars": 13083,
+   "sha256": "01fdd299fa1330d022e3f0287e4aee502c475a2a9492c8a5af418534603f1768"
   },
   "all_off/exploitation/xss": {
    "chars": 40553,
@@ -101,8 +101,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "all_off/informational/ssrf": {
-   "chars": 12534,
-   "sha256": "3922e6f765f97c65f074134da563f42dc9bd8190155160ec9fec5fcab3d2d8ea"
+   "chars": 13083,
+   "sha256": "01fdd299fa1330d022e3f0287e4aee502c475a2a9492c8a5af418534603f1768"
   },
   "all_off/informational/xss": {
    "chars": 40553,
@@ -157,8 +157,8 @@
    "sha256": "fcb07806cc1108a02b8cb1ced23dcf711c71774ad3cbfa302ca2013541b66c1f"
   },
   "all_on/exploitation/ssrf": {
-   "chars": 25321,
-   "sha256": "48bd1647684a4aa2601904284ae61a0620703002df3e3b5d2ef338c475690932"
+   "chars": 25870,
+   "sha256": "8524527960a97a12198fc07357189e33ef7c0a1e5df32888b9b53aed7f99fe1b"
   },
   "all_on/exploitation/xss": {
    "chars": 43654,
@@ -213,8 +213,8 @@
    "sha256": "fcb07806cc1108a02b8cb1ced23dcf711c71774ad3cbfa302ca2013541b66c1f"
   },
   "all_on/informational/ssrf": {
-   "chars": 25321,
-   "sha256": "48bd1647684a4aa2601904284ae61a0620703002df3e3b5d2ef338c475690932"
+   "chars": 25870,
+   "sha256": "8524527960a97a12198fc07357189e33ef7c0a1e5df32888b9b53aed7f99fe1b"
   },
   "all_on/informational/xss": {
    "chars": 43654,
@@ -301,8 +301,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "defaults/exploitation/ssrf": {
-   "chars": 25102,
-   "sha256": "9bec4b1a91786e61933b5ca98c302e0859993b77e5bd367e9742a51fa2676609"
+   "chars": 25651,
+   "sha256": "af8562c3ec21c6fd5d0449ae6dd99cff9e72a20069313c2b18a607cc42208366"
   },
   "defaults/exploitation/xss": {
    "chars": 40551,
@@ -357,8 +357,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "defaults/informational/ssrf": {
-   "chars": 25102,
-   "sha256": "9bec4b1a91786e61933b5ca98c302e0859993b77e5bd367e9742a51fa2676609"
+   "chars": 25651,
+   "sha256": "af8562c3ec21c6fd5d0449ae6dd99cff9e72a20069313c2b18a607cc42208366"
   },
   "defaults/informational/xss": {
    "chars": 40551,
@@ -413,8 +413,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "roe_restricted/exploitation/ssrf": {
-   "chars": 25102,
-   "sha256": "9bec4b1a91786e61933b5ca98c302e0859993b77e5bd367e9742a51fa2676609"
+   "chars": 25651,
+   "sha256": "af8562c3ec21c6fd5d0449ae6dd99cff9e72a20069313c2b18a607cc42208366"
   },
   "roe_restricted/exploitation/xss": {
    "chars": 40551,
@@ -469,8 +469,8 @@
    "sha256": "a6f0c9602092005ec4a49da23e0d0a1f6980fe1af4a25f4b313fe9b4d60b7478"
   },
   "roe_restricted/informational/ssrf": {
-   "chars": 25102,
-   "sha256": "9bec4b1a91786e61933b5ca98c302e0859993b77e5bd367e9742a51fa2676609"
+   "chars": 25651,
+   "sha256": "af8562c3ec21c6fd5d0449ae6dd99cff9e72a20069313c2b18a607cc42208366"
   },
   "roe_restricted/informational/xss": {
    "chars": 40551,
@@ -689,11 +689,11 @@
    "sha256": "cb6ea40310fa7af2810d04761b3f9b8840e98d51a5df2d0651f917346b9d4704"
   },
   "all_off/ssrf": {
-   "chars": 12486,
+   "chars": 13035,
    "parts": [
-    "d91d5af3ce9f8fe3712fec8d18e1edb494c70bc4a1a1c09ec88ac233382d4797"
+    "0feb271628184ad6a60ae2ef48726c1715533ee16ac2927ce970cc1e0f364399"
    ],
-   "sha256": "d91d5af3ce9f8fe3712fec8d18e1edb494c70bc4a1a1c09ec88ac233382d4797"
+   "sha256": "0feb271628184ad6a60ae2ef48726c1715533ee16ac2927ce970cc1e0f364399"
   },
   "all_off/xss": {
    "chars": 40505,
@@ -826,15 +826,15 @@
    "sha256": "7524e0a66fcd6f73416741c5810393289780d6b99d4fe96957a1a8c08f444056"
   },
   "all_on/ssrf": {
-   "chars": 25273,
+   "chars": 25822,
    "parts": [
-    "060f4b70a727d8941d5d7e1f97b96f7e19ea6ab7d828aee7713acc205f29c44b",
+    "47f556139b479cd10f810b53c608ebe47850aaaa75d1628aa3651b533e460f74",
     "b00fa7db8fcacc5c5d5049af8d4f8eb002e63bd3543031bcd23ea5c2365a5a9f",
     "2cf4733c8f1dfd4a55248c4b33bf82457b69ef077a391b81cfda0bbde2347cf4",
     "b7892318f4db2f1a07b197cead5ba705f7617f67e5f9aea3e19e10bcb6564f21",
     "4e6dd3cb136bb361b75e67343aaff3805d4049f399323b8432e832feb8d6f5b2"
    ],
-   "sha256": "444550de6f0fae77e64bc1796b4c1483a3310c781fc7de2e2440bd719a3e741b"
+   "sha256": "29e91caa37de11a281157053c875ef75ac681338fe3eb518c2125f5545377f40"
   },
   "all_on/xss": {
    "chars": 43606,
@@ -990,15 +990,15 @@
    "sha256": "cb6ea40310fa7af2810d04761b3f9b8840e98d51a5df2d0651f917346b9d4704"
   },
   "defaults/ssrf": {
-   "chars": 25054,
+   "chars": 25603,
    "parts": [
-    "de17681f26cbe33e3f844c029189309b7ef7053e601f4a32cdb0d8ec6df414c8",
+    "c8f2e3becd24a3327896f8349d47c5455cb50892560018b2bcff3980eade96e0",
     "b00fa7db8fcacc5c5d5049af8d4f8eb002e63bd3543031bcd23ea5c2365a5a9f",
     "2cf4733c8f1dfd4a55248c4b33bf82457b69ef077a391b81cfda0bbde2347cf4",
     "b7892318f4db2f1a07b197cead5ba705f7617f67e5f9aea3e19e10bcb6564f21",
     "4e6dd3cb136bb361b75e67343aaff3805d4049f399323b8432e832feb8d6f5b2"
    ],
-   "sha256": "f5cbb3c7fdc401fa256da82f90364117aedebc2ae36025b0b33bc47b9a4eee60"
+   "sha256": "38e0f36262eff59f2820a59aebae4fbb3e9aecfffd079e3037ee9d48466cfc21"
   },
   "defaults/xss": {
    "chars": 40503,
@@ -1109,15 +1109,15 @@
    "sha256": "cb6ea40310fa7af2810d04761b3f9b8840e98d51a5df2d0651f917346b9d4704"
   },
   "roe_restricted/ssrf": {
-   "chars": 25054,
+   "chars": 25603,
    "parts": [
-    "de17681f26cbe33e3f844c029189309b7ef7053e601f4a32cdb0d8ec6df414c8",
+    "c8f2e3becd24a3327896f8349d47c5455cb50892560018b2bcff3980eade96e0",
     "b00fa7db8fcacc5c5d5049af8d4f8eb002e63bd3543031bcd23ea5c2365a5a9f",
     "2cf4733c8f1dfd4a55248c4b33bf82457b69ef077a391b81cfda0bbde2347cf4",
     "b7892318f4db2f1a07b197cead5ba705f7617f67e5f9aea3e19e10bcb6564f21",
     "4e6dd3cb136bb361b75e67343aaff3805d4049f399323b8432e832feb8d6f5b2"
    ],
-   "sha256": "f5cbb3c7fdc401fa256da82f90364117aedebc2ae36025b0b33bc47b9a4eee60"
+   "sha256": "38e0f36262eff59f2820a59aebae4fbb3e9aecfffd079e3037ee9d48466cfc21"
   },
   "roe_restricted/xss": {
    "chars": 40503,

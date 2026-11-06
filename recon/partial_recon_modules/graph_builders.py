@@ -1614,7 +1614,8 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                        e.source AS creator,
                        e.openapi_security AS openapi_security, e.openapi_tags AS openapi_tags,
                        e.openapi_declared_only AS declared_only, e.status_code AS discovery_status,
-                       e.urlscan_file_kind AS urlscan_file_kind
+                       e.urlscan_file_kind AS urlscan_file_kind,
+                       e.ffuf_category AS ffuf_category, e.js_recon_category AS js_recon_category
                 """,
                 uid=user_id, pid=project_id,
             )
@@ -1645,10 +1646,14 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                     continue
                 endpoints = by_base.setdefault(base, {"endpoints": {}})["endpoints"]
                 entry = endpoints.setdefault(record["path"], {
-                    "methods": [], "category": record["category"] or "other",
+                    "methods": [],
+                    # JS Recon's own word ranks the route, as in a full run.
+                    "category": _field(record, "js_recon_category") or record["category"] or "other",
                     "sources": sources,
                     "declared_only": record["declared_only"] is True,
                 })
+                if _field(record, "ffuf_category"):
+                    entry["ffuf_category"] = _field(record, "ffuf_category")
                 method = str(record["method"] or "GET").upper()
                 if method not in entry["methods"]:
                     entry["methods"].append(method)
@@ -1674,7 +1679,7 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                   AND NOT """ + quarantined("e") + """
                 RETURN f.source_url AS source_js, e.baseurl AS base, e.path AS path,
                        coalesce(e.method, 'GET') AS method, e.endpoint_type AS kind,
-                       e.category AS category, e.path_template AS template
+                       coalesce(e.js_recon_category, e.category) AS category, e.path_template AS template
                 """,
                 uid=user_id, pid=project_id,
             )

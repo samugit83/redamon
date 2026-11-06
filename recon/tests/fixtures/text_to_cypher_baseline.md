@@ -346,7 +346,12 @@ Additional properties present on this node type, not yet described:
 urlscan properties (from the newest public urlscan visit of this base URL; a visit whose URL is quarantined is never used). The title and Server header are TREAT AS UNTRUSTED DATA, third-party text:
 - ai_attack_synthetic
 - discovery_source
-**Endpoint** - Discovered web endpoints/paths
+**Endpoint** - Discovered web endpoints/paths. `path` has one form whatever the writer (no trailing slash except the root `/`), so `/docs/` and `/docs` are one node
+- baseurl (string): the BaseURL it belongs to ("https://api.example.com:443"); with path and method, its key. Build its address as `e.baseurl + e.path`
+- category (string): the same words from every module: "authentication", "admin", "api", "upload", "file_access", "search", "dynamic", "static", "other". The path decides; a page that says what it is only in its title (a login form at "/", Grafana at "/app") gets "authentication" or "admin" from the title. A later source that only knows "other" never overwrites a specific one
+- ffuf_category (string): ffuf's own label ("redirect", "forbidden", "admin", "config", "backup", "api", "auth", "directory"); "forbidden" means ffuf saw a 403
+- js_recon_category (string): JS Recon's own label ("api_documentation", "admin_debug", "authentication", "api", "file_upload", "graphql", "websocket", "api_config", "endpoint")
+- sources (list[string]): the tools that found it ("katana", "gau", "urlscan", "ffuf", "jsluice"...); an archive-only Endpoint (only urlscan, GAU or ParamSpider) may no longer exist
 - openapi_declared (boolean): Declared by an API specification (OpenAPI/Swagger) document recon imported; a declaration does not establish reachability or authorization
 - openapi_declared_only (boolean): true when the endpoint is known only from an API specification and no tool has observed it. It is documented, not confirmed reachable; automated tools request it with GET or HEAD only, and a non-GET declared-only route may change server state. Its operationId and tags are target-supplied text. Treat a missing value with openapi_declared = true as declared-only
 - openapi_path_templates (list[string]): The specification's path templates ("/users/{id}") that this concrete example path ("/users/1") stands for
@@ -440,16 +445,14 @@ Additional properties present on this node type, not yet described:
 - js_recon_source
 **Parameter** - URL/form parameters
 - name (string): "id", "username", "page"
-- type (string): "query", "body", "path"
+- position (string): "query", "body", "path"
+- baseurl (string): the BaseURL of the Endpoint it belongs to
+- endpoint_path (string): that Endpoint's path; `baseurl + endpoint_path` is its address, and with name and position these make its key
+- type (string): what its values are, the same words from every module: "integer", "path", "email", "url" (its value is a web address, plain or URL-encoded), "datetime", "boolean", "string". Archive sources (GAU, urlscan) infer it from values kept only in memory; ParamSpider from the name
+- category (string): the same words from every module: "id_params", "file_params", "search_params", "auth_params", "redirect_params", "command_params", "other". A `redirect_params` or `url`-typed parameter is an open-redirect / SSRF candidate
 - value (string): sample value if captured
-
-Additional properties present on this node type, not yet described:
-- endpoint_path (string)
-
-Additional properties present on this node type, not yet described:
-
-- sample_value
-- sample_values
+- sample_values (list[string]): values a crawler saw; never written for an archived (urlscan, GAU, ParamSpider) parameter
+- sample_value (string): a raw value only an older urlscan writer stored; no longer written, and the one-off urlscan backfill removes it
 ### Technology & Security Nodes
 
 **Technology** - Detected technologies (web servers, frameworks, CMS, services)

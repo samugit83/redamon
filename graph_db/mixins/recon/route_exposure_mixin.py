@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from urllib.parse import urlparse
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 #: Jev's opinions (plan §13), replaced on every run so a node never keeps a
 #: stale one from a run that asked.
@@ -113,7 +114,7 @@ class RouteExposureMixin:
         with self.driver.session() as session:
             if statuses:
                 try:
-                    rows = [{"baseurl": s["baseurl"], "path": s["path"],
+                    rows = [{"baseurl": s["baseurl"], "path": normalize_endpoint_path(s["path"]),
                              "method": str(s.get("method") or "GET").upper(),
                              "anon_status": int(s["anon_status"])} for s in statuses]
                     session.run(
@@ -151,7 +152,7 @@ class RouteExposureMixin:
                             e.generated_by = $generated_by
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         """,
-                        baseurl=endpoint["baseurl"], path=endpoint["path"],
+                        baseurl=endpoint["baseurl"], path=normalize_endpoint_path(endpoint["path"]),
                         url=endpoint["baseurl"].rstrip("/") + endpoint["path"],
                         category=str(endpoint.get("category") or "other"),
                         anon_status=int(endpoint.get("anon_status") or 0),
@@ -179,7 +180,7 @@ class RouteExposureMixin:
 
     def _write_route_exposure_finding(self, session, finding: dict, user_id: str, project_id: str) -> None:
         baseurl = finding.get("baseurl") or ""
-        path = finding.get("path") or "/"
+        path = normalize_endpoint_path(finding.get("path") or "/")
         method = (finding.get("http_method") or "GET").upper()
         kind = finding.get("exposure_kind") or ""
         if not baseurl or not kind:

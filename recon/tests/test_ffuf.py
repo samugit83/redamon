@@ -339,7 +339,9 @@ def test_ffuf_merge_new_base_url():
     assert admin_ep["ffuf_metadata"]["length"] == 500
 
     env_ep = merged["https://example.com"]["endpoints"]["/.env"]
-    assert env_ep["category"] == "config"
+    # The shared word in `category`; ffuf's own label beside it.
+    assert env_ep["ffuf_category"] == "config"
+    assert env_ep["category"] == "other"
 
     assert stats["ffuf_new"] == 2
     assert stats["ffuf_overlap"] == 0
@@ -433,9 +435,10 @@ def test_ffuf_merge_summary_update():
     summary = merged["https://example.com"]["summary"]
     assert summary["total_endpoints"] == 3
     assert summary["methods"]["GET"] == 3
+    # Counted on the shared words, as every other module's summary.
     assert summary["categories"]["admin"] == 1
     assert summary["categories"]["api"] == 1
-    assert summary["categories"]["config"] == 1
+    assert summary["categories"]["other"] == 1
     print("PASS: test_ffuf_merge_summary_update")
 
 

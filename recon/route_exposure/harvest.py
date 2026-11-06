@@ -244,7 +244,8 @@ def _read_resource_enum(corpus: Corpus, combined_result: dict) -> None:
                 if isinstance(meta, dict) else (),
                 declared_only=endpoint.get("declared_only") is True,
             )
-            if category == "forbidden":
+            # ffuf's own label says it answered 403; older data held it in `category`.
+            if "forbidden" in (category, endpoint.get("ffuf_category")):
                 route.discovery_status = route.discovery_status or 403
             if corpus.add(route):
                 _note_api_prefix(corpus, base, path)
@@ -279,7 +280,10 @@ def _read_js_recon(corpus: Corpus, combined_result: dict, *, routers: bool) -> N
         if not base:
             continue
         path = urlsplit(url).path or "/"
-        route = Route(baseurl=base, path=path, category=str(endpoint.get("category") or "endpoint"),
+        # JS Recon's own word ranks the route (admin_debug ranks like admin);
+        # `category` holds the shared one.
+        route = Route(baseurl=base, path=path,
+                      category=str(endpoint.get("js_recon_category") or endpoint.get("category") or "endpoint"),
                       sources=("js_recon",), js_only=True, router=is_router)
         # A route another source also saw is merged: it is no longer js_only.
         if corpus.add(route):

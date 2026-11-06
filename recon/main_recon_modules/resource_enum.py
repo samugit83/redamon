@@ -1535,6 +1535,20 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         if KITERUNNER_DETECT_METHODS and kr_stats.get('kr_with_multiple_methods', 0) > 0:
             print(f"[+][Kiterunner] Endpoints with multiple methods: {kr_stats['kr_with_multiple_methods']}")
 
+    # urlscan's addresses join by_base_url like the archive sources, labelled the
+    # same way, on bases live in this scan only, and BEFORE OpenAPI, which reads
+    # by_base_url for its seeds (a swagger address seen on urlscan becomes an
+    # import when auto-discover is on).
+    from recon.helpers.resource_enum.urlscan_helpers import (
+        live_bases, merge_urlscan_into_by_base_url, title_seed_urls)
+    urlscan_rows = (recon_data.get("urlscan") or {}).get("urls_with_paths") or []
+    if urlscan_rows:
+        organized_data['by_base_url'], us_stats = merge_urlscan_into_by_base_url(
+            urlscan_rows, organized_data['by_base_url'], live_bases(recon_data), target_domains)
+        print(f"[+][URLScan] by_base_url: {us_stats['urlscan_new']} new, "
+              f"{us_stats['urlscan_overlap']} shared with other sources, "
+              f"{us_stats['urlscan_not_live']} on bases not live in this scan (skipped)")
+
     # OpenAPI runs last, after every crawler has merged, so no tool in this
     # module ever requests a path known only from a specification. Fail-soft:
     # an OpenAPI failure costs the run its declarations, never its endpoints.
@@ -1548,8 +1562,12 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 for path in (data.get('endpoints') or {})
                 if SPEC_LIKE_PATH.search(path)
             ]
+            # A page titled Swagger UI or ReDoc is a seed whatever its path.
+            title_seeds = title_seed_urls(urlscan_rows,
+                                          (recon_data.get("http_probe") or {}).get("by_url") or {})
             print("\n[*][OpenAPI] Discovering and parsing API specifications...")
-            openapi_payload = run_openapi_discovery(recon_data, settings, seed_urls)
+            openapi_payload = run_openapi_discovery(recon_data, settings, seed_urls,
+                                                    title_seeds=title_seeds)
             organized_data['by_base_url'], oa_stats = merge_openapi_into_by_base_url(
                 openapi_payload, organized_data['by_base_url'])
             openapi_inventory = build_openapi_inventory(recon_data, openapi_payload, oa_stats)

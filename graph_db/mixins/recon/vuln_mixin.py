@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 from graph_db.coverage_stamps import stamp_base_url_coverage
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, host_in_scope, org_for_scan_root
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 
 def stable_vuln_id(finding_type: str, url: str, ip_or_host: str = "",
@@ -371,7 +372,7 @@ class VulnMixin:
                     # Determine scheme, host, path
                     scheme = parsed.scheme or "http"
                     host = parsed.netloc
-                    path = parsed.path or "/"
+                    path = normalize_endpoint_path(parsed.path or "/")
                     query_string = parsed.query
 
                     # Skip URLs that are not in scan scope (discovered subdomains only)
@@ -507,7 +508,7 @@ class VulnMixin:
 
                         # Extract path from matched_at URL
                         matched_parsed = urlparse(matched_at)
-                        vuln_path = matched_parsed.path or "/"
+                        vuln_path = normalize_endpoint_path(matched_parsed.path or "/")
                         vuln_scheme = matched_parsed.scheme or "http"
                         vuln_host = matched_parsed.netloc or target_host
 

@@ -60,11 +60,13 @@ Cloud providers in scope:      {ssrf_cloud_providers}
 BEFORE firing any payload, pull what recon already discovered:
 
 ```cypher
-MATCH (e:Endpoint) WHERE e.url CONTAINS '<target_host>' RETURN e.url, e.method, e.parameters LIMIT 100
-MATCH (p:Parameter) WHERE p.endpoint CONTAINS '<target_host>' AND (p.name =~ '(?i).*(url|uri|src|dest|redirect|callback|webhook|feed|fetch|target|link|image|avatar|file|document|host|domain|site|path|page|load).*') RETURN p.name, p.location, p.endpoint LIMIT 100
+MATCH (e:Endpoint) WHERE e.baseurl CONTAINS '<target_host>' AND coalesce(e.quarantined, false) = false RETURN e.baseurl + e.path AS url, e.method, e.category, e.has_parameters LIMIT 100
+MATCH (p:Parameter) WHERE p.baseurl CONTAINS '<target_host>' AND (p.category = 'redirect_params' OR p.type = 'url' OR p.name =~ '(?i).*(url|uri|src|dest|redirect|callback|webhook|feed|fetch|target|link|image|avatar|file|document|host|domain|site|path|page|load).*') AND NOT EXISTS {{ MATCH (e:Endpoint {{path: p.endpoint_path, baseurl: p.baseurl}}) WHERE e.user_id = p.user_id AND e.project_id = p.project_id AND coalesce(e.quarantined, false) }} RETURN p.name, p.position, p.baseurl + p.endpoint_path AS endpoint, p.category, p.type LIMIT 100
 MATCH (b:BaseURL) WHERE b.url CONTAINS '<target_host>' RETURN b.url
-MATCH (t:Technology) WHERE t.host CONTAINS '<target_host>' RETURN t.name, t.version
+MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(:Endpoint)-[:USES_TECHNOLOGY]->(t:Technology) WHERE b.url CONTAINS '<target_host>' RETURN DISTINCT t.name, t.version
 ```
+
+A **quarantined** Endpoint (a leaked one-time link or token from an archived URL) is never a target: never request it.
 
 If no graph data exists, surface candidate sinks via response inspection:
 - Open Graph / link previews (submit a URL in user content)

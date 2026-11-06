@@ -82,6 +82,9 @@ def organize_endpoints(
                                 existing_param['sample_values'].append(val)
                                 if len(existing_param['sample_values']) >= 5:
                                     break
+                        # The type follows every value seen, not the first URL's.
+                        existing_param['type'] = infer_parameter_type(
+                            param_name, existing_param['sample_values'])
                     else:
                         # Create new parameter entry
                         sample_values = [v for v in param_values if v][:5]

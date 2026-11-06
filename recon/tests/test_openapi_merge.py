@@ -69,7 +69,7 @@ def test_templated_path_is_concrete_and_keeps_its_template():
     entry = by_base[BASE]['endpoints']['/v2/users/7']
     assert entry['openapi_path_templates'] == ['/v2/users/{id}']
     assert entry['parameters']['path'] == [
-        {'name': 'id', 'type': 'integer', 'category': 'other', 'required': True, 'sample_values': ['7']}]
+        {'name': 'id', 'type': 'integer', 'category': 'id_params', 'required': True, 'sample_values': ['7']}]
     assert entry['declared_only'] is True
     assert entry['sources'] == ['openapi']
     assert stats['openapi_new'] == 1

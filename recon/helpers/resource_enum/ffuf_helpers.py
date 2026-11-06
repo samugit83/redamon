@@ -17,6 +17,7 @@ import subprocess
 import time
 
 from recon.helpers.subprocess_helpers import run_with_heartbeat
+from recon.helpers.resource_enum.classification import classify_endpoint
 import tempfile
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -441,12 +442,16 @@ def merge_ffuf_into_by_base_url(
 
         status = result.get("status", 200)
         method = "GET"
-        category = _classify_ffuf_endpoint(path, status, result.get("content_type", ""))
+        # The shared word in `category` (what every module writes); ffuf's own
+        # label, which Route Exposure reads for its 403 hint, in `ffuf_category`.
+        ffuf_category = _classify_ffuf_endpoint(path, status, result.get("content_type", ""))
+        category = classify_endpoint(path, [method], {})
 
         endpoint = {
             'methods': [method],
             'sources': ['ffuf'],
             'category': category,
+            'ffuf_category': ffuf_category,
             'parameters': {'query': [], 'body': [], 'path': []},
             'parameter_count': {'query': 0, 'body': 0, 'path': 0, 'total': 0},
             'urls_found': 1,

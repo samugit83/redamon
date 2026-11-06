@@ -10,7 +10,7 @@ import re
 from typing import Dict, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
-from .classification import classify_endpoint
+from .classification import classify_endpoint, classify_parameter
 
 IDENTIFIER = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
 SPEC_VERSION = re.compile(r'^(2\.0|3\.[01]\.\d+)$')
@@ -96,16 +96,32 @@ def _valid_name(name) -> bool:
             and not CONTROL.search(name))
 
 
+#: JSON-schema `format` -> the shared parameter type every module writes.
+_FORMAT_TYPES = {"uri": "url", "url": "url", "uri-reference": "url", "iri": "url",
+                 "email": "email", "idn-email": "email", "date": "datetime", "date-time": "datetime"}
+
+
 def _kind(schema):
+    """The shared type words (integer, boolean, url, email, datetime, string),
+    from the schema's `type` and `format`: `number` is an integer, an array or
+    object is a string, as for every other source."""
     kind = schema.get('type') if isinstance(schema, dict) else None
     if isinstance(kind, list):
         kind = next((k for k in kind if k != 'null'), None)
-    return kind if isinstance(kind, str) else 'string'
+    kind = kind if isinstance(kind, str) else 'string'
+    if kind in ('integer', 'number'):
+        return 'integer'
+    if kind == 'boolean':
+        return 'boolean'
+    if kind == 'string':
+        fmt = schema.get('format') if isinstance(schema, dict) else None
+        return _FORMAT_TYPES.get(str(fmt or '').lower(), 'string')
+    return 'string'
 
 
 def _parameter(name, schema_or_param, required, *, sample=True):
     entry = {'name': name, 'type': _kind(_schema(schema_or_param) or schema_or_param),
-             'category': 'other', 'required': bool(required)}
+             'category': classify_parameter(name), 'required': bool(required)}
     if sample:
         value = _declared_value(schema_or_param)
         entry['sample_values'] = [] if value is None else [encode_value(value)]

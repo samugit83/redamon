@@ -270,6 +270,21 @@ def run_shodan(config: dict) -> dict:
     return run_per_root(roots, _one_root, "Shodan")
 
 
+def _graph_live_bases(graph_client, user_id: str, project_id: str, roots: list, config: dict) -> set:
+    """BaseURLs whose probed Endpoint answered, inside this run's scope."""
+    from recon.partial_recon_modules.graph_builders import graph_url_scope, url_host
+    with graph_client.driver.session() as session:
+        keep = graph_url_scope(session, user_id, project_id, roots, config.get("domain_groups"),
+                               apex_filter=False)
+        rows = session.run(
+            """
+            MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+            WHERE e.status_code IS NOT NULL
+            RETURN DISTINCT b.url AS url, b.host AS host
+            """, uid=user_id, pid=project_id)
+        return {r["url"] for r in rows if r["url"] and keep(url_host(r["url"], r["host"] or ""))}
+
+
 def run_urlscan(config: dict) -> dict:
     """
     Run partial URLScan.io passive enrichment, once per root.
@@ -347,6 +362,22 @@ def run_urlscan(config: dict) -> dict:
                 findings_stats = graph_client.update_graph_from_urlscan_findings(
                     recon_data=combined_result, user_id=user_id, project_id=project_id)
                 print(f"[+][Partial Recon] Findings graph update: {json.dumps(findings_stats, default=str)}")
+
+                # urlscan's addresses get every module's labels (item 4a). A
+                # partial run has no httpx step: the live bases are the graph's.
+                rows = urlscan_data.get("urls_with_paths") or []
+                if rows:
+                    from urllib.parse import urlparse
+                    from recon.helpers.resource_enum.urlscan_helpers import merge_urlscan_into_by_base_url
+                    bases = _graph_live_bases(graph_client, user_id, project_id, roots, config)
+                    by_base, us_stats = merge_urlscan_into_by_base_url(rows, {}, bases)
+                    print(f"[+][Partial Recon] urlscan addresses on live bases: {us_stats['urlscan_new']}")
+                    if by_base:
+                        graph_client.update_graph_from_resource_enum({
+                            "domain": domain, "domains": list(roots),
+                            "subdomains": sorted({urlparse(b).hostname for b in by_base}),
+                            "resource_enum": {"by_base_url": by_base},
+                        }, user_id, project_id)
 
                 # The full run's ExternalDomain shape (HAS_EXTERNAL_DOMAIN, the
                 # *_seen lists), written additively over what is there.

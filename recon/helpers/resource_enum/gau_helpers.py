@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, parse_qs
 
 from recon.helpers.docker_helpers import pull_image_or_use_local
-from .classification import classify_parameter, classify_endpoint
+from .classification import classify_parameter, classify_endpoint, infer_parameter_type
 
 
 def _is_arm64_host() -> bool:
@@ -349,13 +349,16 @@ def parse_gau_url_to_endpoint(url: str) -> Optional[Dict]:
         if path != "/" and path.endswith("/"):
             path = path.rstrip("/")
 
-        # Extract query parameters (just the names, not values)
-        query_params = list(parse_qs(parsed.query).keys()) if parsed.query else []
+        # Query parameter names; their values only in memory, to infer each
+        # one's type: an archived value can be someone's token and is never stored.
+        values = parse_qs(parsed.query, keep_blank_values=True) if parsed.query else {}
+        query_params = list(values.keys())
 
         return {
             "base_url": base_url,
             "path": path,
-            "parameters": {"query": query_params} if query_params else {}
+            "parameters": {"query": query_params} if query_params else {},
+            "values": values,
         }
     except Exception:
         return None
@@ -717,11 +720,20 @@ def merge_gau_into_by_base_url(
                 else:
                     existing_names = []
 
+                values = parsed.get("values") or {}
+                for existing in existing_query if isinstance(existing_query, list) else []:
+                    # A more specific type from the archive replaces a plain one.
+                    if isinstance(existing, dict) and existing.get('type') in (None, '', 'string'):
+                        inferred = infer_parameter_type(existing.get('name', ''),
+                                                        values.get(existing.get('name', ''), []))
+                        if inferred != 'string':
+                            existing['type'] = inferred
                 for param_name in new_query:
                     if param_name not in existing_names:
                         param_info = {
                             'name': param_name,
                             'category': classify_parameter(param_name),
+                            'type': infer_parameter_type(param_name, values.get(param_name, [])),
                             'source': 'gau'
                         }
                         if 'parameters' not in endpoints[path]:
@@ -733,10 +745,12 @@ def merge_gau_into_by_base_url(
             stats["gau_new"] += 1
 
             query_params = []
+            values = parsed.get("values") or {}
             for param_name in parsed["parameters"].get("query", []):
                 query_params.append({
                     'name': param_name,
                     'category': classify_parameter(param_name),
+                    'type': infer_parameter_type(param_name, values.get(param_name, [])),
                     'source': 'gau'
                 })
 

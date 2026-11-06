@@ -14,6 +14,7 @@ Part of the recon_mixin.py split.
 import json
 
 from graph_db.technology_identity import resolve_tech_name, resolve_tech_version
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 # NOTE: `recon.helpers.ai_signal_catalog` is imported lazily inside
 # `_aisr_annotate_host` (the only consumer). The `recon` package ships in the
@@ -75,7 +76,7 @@ class AiSurfaceReconMixin:
         # Representative endpoint path for host-level (chat/openapi/julius) props.
         # Never borrow the MCP path here — the MCP endpoint is written separately
         # as POST /mcp; reusing it would spawn a spurious GET /mcp twin.
-        primary_path = chat.get("path") or "/"
+        primary_path = normalize_endpoint_path(chat.get("path") or "/")
         model_family = (chat.get("model_family_guess") or oa.get("model_family_guess")
                         or julius.get("model_family_guess"))
 
@@ -129,7 +130,7 @@ class AiSurfaceReconMixin:
 
         # 2) MCP Endpoint + capability props + per-tool Parameters
         if mcp:
-            mcp_path = mcp.get("path") or "/mcp"
+            mcp_path = normalize_endpoint_path(mcp.get("path") or "/mcp")
             session.run(
                 """
                 MERGE (b:BaseURL {url: $baseurl, user_id: $uid, project_id: $pid})
@@ -255,7 +256,7 @@ class AiSurfaceReconMixin:
             id=finding["id"], props=props,
         )
         base_url = finding.get("baseurl")
-        path = finding.get("path") or "/"
+        path = normalize_endpoint_path(finding.get("path") or "/")
         host = ""
         if base_url:
             from urllib.parse import urlparse

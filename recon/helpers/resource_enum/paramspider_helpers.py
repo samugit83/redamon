@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .classification import classify_parameter, classify_endpoint
+from .classification import classify_parameter, classify_endpoint, infer_parameter_type
 from .gau_helpers import parse_gau_url_to_endpoint
 
 
@@ -273,6 +273,8 @@ def merge_paramspider_into_by_base_url(
                         param_info = {
                             'name': param_name,
                             'category': classify_parameter(param_name),
+                            # Its values are the placeholder (-p FUZZ): a name-based guess only.
+                            'type': infer_parameter_type(param_name, []),
                             'source': 'paramspider'
                         }
                         if 'parameters' not in endpoints[path]:
@@ -289,6 +291,7 @@ def merge_paramspider_into_by_base_url(
                 query_params.append({
                     'name': param_name,
                     'category': classify_parameter(param_name),
+                    'type': infer_parameter_type(param_name, []),
                     'source': 'paramspider'
                 })
 

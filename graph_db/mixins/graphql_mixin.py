@@ -8,6 +8,7 @@ Separated from recon_mixin.py for better organization.
 from urllib.parse import urlparse
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ class GraphQLMixin:
                 try:
                     # Parse endpoint URL to get path and baseurl
                     parsed = urlparse(endpoint_url)
-                    path = parsed.path or "/"
+                    path = normalize_endpoint_path(parsed.path or "/")
                     baseurl = f"{parsed.scheme}://{parsed.netloc}"
 
                     # Build GraphQL enrichment properties
@@ -237,7 +238,7 @@ class GraphQLMixin:
 
                     # Parse endpoint URL
                     parsed = urlparse(endpoint_url)
-                    path = parsed.path or "/"
+                    path = normalize_endpoint_path(parsed.path or "/")
                     baseurl = f"{parsed.scheme}://{parsed.netloc}"
 
                     # Generate unique vulnerability ID.

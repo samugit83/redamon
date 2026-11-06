@@ -38,7 +38,10 @@ PARAM_PATTERNS = {
     'redirect_params': [
         r'^url$', r'^redirect$', r'^return$', r'^next$', r'^goto$',
         r'^target$', r'^dest$', r'^destination$', r'^continue$', r'^ref$',
-        r'^callback$', r'^returnurl$', r'^return_url$'
+        r'^callback$', r'^returnurl$', r'^return_url$',
+        # Exact names only: `to` is mostly a date range or a recipient; a
+        # `?to=https://...` is caught by its value (infer_parameter_type).
+        r'^uri$', r'^redirect_uri$', r'^redirect_url$', r'^forward$', r'^forwarded$'
     ],
     'command_params': [
         r'^cmd$', r'^command$', r'^exec$', r'^execute$', r'^run$',
@@ -68,50 +71,64 @@ def classify_parameter(param_name: str) -> str:
     return 'other'
 
 
+_URL_VALUE = re.compile(
+    r"^(?:https?://|https?%3a|https?%253a|%2f%2f|//[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[:/?#]|$))", re.IGNORECASE)
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+
+
+def _name_words(name: str) -> List[str]:
+    """`next_page_url` -> [next, page, url]; `videoId` -> [video, id]."""
+    words = []
+    for part in re.split(r"[_\-.\[\]]+", name or ""):
+        words += [w.lower() for w in _NAME_WORDS.findall(part)]
+    return words
+
+
+def is_url_value(value: str) -> bool:
+    """A web address, plain or URL-encoded (once or twice), or scheme-relative."""
+    return bool(_URL_VALUE.match((value or "").strip()))
+
+
 def infer_parameter_type(param_name: str, sample_values: List[str]) -> str:
     """
     Infer the data type of a parameter from its name and sample values.
-    
+
     Returns: integer, path, email, url, datetime, boolean, or string
+
+    A web address is checked first: `https://a.b/x.html` is a url, not a path,
+    and `https://a.b/c@d` is a url, not an email. Name words are matched whole
+    (`video` is not `id`, `valid` is not `id`).
     """
-    param_lower = param_name.lower()
+    values = [v for v in (sample_values or []) if isinstance(v, str) and v]
 
-    # Check sample values first
-    if sample_values:
-        # Check if all values are numeric
-        all_numeric = all(
-            v.isdigit() or (v.startswith('-') and v[1:].isdigit())
-            for v in sample_values if v
-        )
-        if all_numeric:
-            return 'integer'
-
-        # Check if values look like file paths
-        if any('/' in v or '\\' in v or '.' in v for v in sample_values if v):
-            if any(v.endswith(('.jpg', '.png', '.gif', '.pdf', '.txt', '.html', '.php', '.js'))
-                   for v in sample_values if v):
-                return 'path'
-
-        # Check if values look like emails
-        if any('@' in v and '.' in v for v in sample_values if v):
-            return 'email'
-
-        # Check if values look like URLs
-        if any(v.startswith(('http://', 'https://')) for v in sample_values if v):
+    if values:
+        if any(is_url_value(v) for v in values):
             return 'url'
 
-    # Infer from parameter name
-    if any(p in param_lower for p in ['id', 'num', 'count', 'page', 'limit', 'offset', 'size']):
-        return 'integer'
-    if any(p in param_lower for p in ['file', 'path', 'dir', 'template', 'include']):
-        return 'path'
-    if any(p in param_lower for p in ['email', 'mail']):
-        return 'email'
-    if any(p in param_lower for p in ['url', 'link', 'redirect', 'callback']):
+        if all(v.isdigit() or (v.startswith('-') and v[1:].isdigit()) for v in values):
+            return 'integer'
+
+        if any('/' in v or '\\' in v or '.' in v for v in values):
+            if any(v.endswith(('.jpg', '.png', '.gif', '.pdf', '.txt', '.html', '.php', '.js'))
+                   for v in values):
+                return 'path'
+
+        if any('@' in v and '.' in v for v in values):
+            return 'email'
+
+    words = set(_name_words(param_name))
+    lower = (param_name or "").lower()
+    if words & {'url', 'uri', 'link', 'redirect', 'callback', 'href'}:
         return 'url'
-    if any(p in param_lower for p in ['date', 'time', 'timestamp']):
+    if words & {'id', 'num', 'count', 'page', 'limit', 'offset', 'size'} or lower in ('uid', 'pid'):
+        return 'integer'
+    if words & {'file', 'path', 'dir', 'template', 'include', 'filename', 'filepath'}:
+        return 'path'
+    if words & {'email', 'mail'}:
+        return 'email'
+    if words & {'date', 'time', 'timestamp'}:
         return 'datetime'
-    if any(p in param_lower for p in ['bool', 'flag', 'enabled', 'active', 'is_']):
+    if words & {'bool', 'flag', 'enabled', 'active'} or (_name_words(param_name)[:1] in (['is'], ['has'])):
         return 'boolean'
 
     return 'string'
@@ -144,6 +161,12 @@ def classify_endpoint(path: str, methods: List[str], params: Dict) -> str:
                      '/token', '/jwt', '/sso']
     if any(p in path_lower for p in auth_patterns):
         return 'authentication'
+    # OpenID Connect and SAML flows, as whole segments only: their public
+    # metadata documents (/.well-known/openid-configuration, /saml/metadata) are
+    # not login endpoints, and Route Exposure skips authentication paths.
+    segments = [seg for seg in path_lower.split('/') if seg]
+    if set(segments) & {'oidc', 'openid', 'saml', 'saml2'} and 'metadata' not in segments:
+        return 'authentication'
 
     # Check for admin endpoints
     admin_patterns = ['/admin', '/dashboard', '/panel', '/manage', '/control',
@@ -159,7 +182,7 @@ def classify_endpoint(path: str, methods: List[str], params: Dict) -> str:
 
     # Check for file access endpoints
     file_patterns = ['/download', '/file', '/image', '/img', '/media', '/upload',
-                     '/attachment', '/document', '/doc', '/pdf', '/export']
+                     '/attach', '/document', '/doc', '/pdf', '/export']
     if any(p in path_lower for p in file_patterns):
         # Check if it's upload vs download
         if any(p in path_lower for p in ['/upload', '/import']):
@@ -196,3 +219,53 @@ def classify_endpoint(path: str, methods: List[str], params: Dict) -> str:
     # Default
     return 'other'
 
+
+
+# =============================================================================
+# Labels from page titles (item 4f)
+# =============================================================================
+
+#: Product pages that are only a login form.
+_LOGIN_ONLY_TITLES = ("login - adminer", "login to webmin", "cpanel login", "sign in [jenkins]",
+                      "sign in - jenkins", "jupyter notebook", "phpmyadmin")
+#: Products whose page looks the same logged in or not: an admin surface.
+_ADMIN_TITLES = ("grafana", "kibana", "kubernetes dashboard", "portainer", "rabbitmq management",
+                 "consul by hashicorp", "solr admin", "sonarqube", "argo cd", "rancher",
+                 "minio console", "pgadmin", "node-red", "metabase", "zabbix", "airflow",
+                 "admin panel")
+_LOGIN_TITLE_WORDS = re.compile(r"\b(?:log ?in|sign[ -]in)\b", re.IGNORECASE)
+_API_DOC_TITLE = re.compile(r"^(?:swagger ui|redoc)$|api documentation", re.IGNORECASE)
+
+
+def _norm_title(title) -> str:
+    return re.sub(r"\s+", " ", str(title or "")).strip().lower()
+
+
+def category_from_title(title) -> str:
+    """'authentication', 'admin' or '' from a page title. A label, never a
+    finding; the caller uses it only where the path rule said 'other'."""
+    t = _norm_title(title)
+    if not t:
+        return ""
+    if any(t == x or t.startswith(x) for x in _LOGIN_ONLY_TITLES):
+        return "authentication"
+    if any(t == x or t.startswith(x + " ") or t.endswith(" " + x) or f" {x} " in f" {t} "
+           for x in _ADMIN_TITLES):
+        return "admin"
+    if _LOGIN_TITLE_WORDS.search(t):
+        return "authentication"
+    return ""
+
+
+def is_api_doc_title(title) -> bool:
+    """A Swagger UI or ReDoc page, whatever its path: an OpenAPI seed."""
+    return bool(_API_DOC_TITLE.search(_norm_title(title)))
+
+
+def endpoint_category(path: str, methods: List[str], params: Dict, title=None) -> str:
+    """The path rule, then the title rule when the path said 'other': computed
+    once, before any writer runs (the endpoint writer sets it unconditionally)."""
+    category = classify_endpoint(path, methods, params)
+    if category == "other" and title:
+        return category_from_title(title) or category
+    return category

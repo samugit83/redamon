@@ -531,6 +531,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
                 if parsed:
                     row = _stored_row(parsed, mask_url)
                     _tag_file_row(row, page_url, page.get("mimeType") or "", settings)
+                    if page_title:
+                        # Labels a page by its title (item 4f); third-party text.
+                        row["title"] = page_title
                     urls_with_paths.append(row)
         task_url = task.get("url", "") or ""
         if (task_url and task_url not in seen_urls and _extract_domain_from_url(task_url, domain)

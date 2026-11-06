@@ -28,6 +28,7 @@ from graph_db.mixins.recon.scope import (
 )
 from graph_db.mixins.recon.vuln_mixin import stable_vuln_id
 from urllib.parse import urlparse as _urlparse
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 
 def _cvss_severity(cvss) -> str | None:
@@ -126,7 +127,7 @@ def _split_url(url: str) -> tuple[str, str]:
     osint tests do not load.
     """
     parsed = _urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}", (parsed.path or "/")
+    return f"{parsed.scheme}://{parsed.netloc}", normalize_endpoint_path(parsed.path or "/")
 
 # K19: one except block logs through `logger`, which was never defined here, so
 # the handler raised NameError while handling an error and took the whole
@@ -862,7 +863,7 @@ class OsintMixin:
             # ── 2. Create Endpoint + Parameter nodes for URLs with paths ──
             for url_entry in urlscan_data.get("urls_with_paths", []):
                 base_url = url_entry.get("base_url", "")
-                path = url_entry.get("path", "")
+                path = normalize_endpoint_path(url_entry.get("path", "")) if url_entry.get("path") else ""
                 full_url = url_entry.get("full_url", "")
                 params = url_entry.get("params", {})
 
@@ -937,7 +938,7 @@ class OsintMixin:
             stats["endpoints_quarantined"] = 0
             for row in urlscan_data.get("quarantined_urls", []) or []:
                 base_url = row.get("base_url", "")
-                path = row.get("path", "")
+                path = normalize_endpoint_path(row.get("path", "")) if row.get("path") else ""
                 if not base_url or not path:
                     continue
                 try:

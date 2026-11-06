@@ -239,12 +239,14 @@ def _empty_result():
             'source_status': [], 'requests': []}
 
 
-def run_openapi_discovery(recon_data, settings, seed_urls=(), *, documents=()):
+def run_openapi_discovery(recon_data, settings, seed_urls=(), *, documents=(), title_seeds=()):
     """Fetch and parse this run's OpenAPI documents.
 
     ``seed_urls``: live URLs and crawled URLs; used only with auto-discover on.
     ``documents``: URLs the operator typed in a partial run, fetched as
     specification documents whatever auto-discover says.
+    ``title_seeds``: pages titled like an API description (Swagger UI, ReDoc);
+    with auto-discover on they are enqueued whatever their path.
 
     Returns ``{documents, operations, diagnostics, skipped_servers,
     source_status, requests}``. Operations are transient: the caller merges
@@ -252,7 +254,8 @@ def run_openapi_discovery(recon_data, settings, seed_urls=(), *, documents=()):
     """
     result = _empty_result()
     try:
-        _discover(recon_data or {}, settings or {}, list(seed_urls or ()), list(documents or ()), result)
+        _discover(recon_data or {}, settings or {}, list(seed_urls or ()), list(documents or ()), result,
+                  title_seeds=list(title_seeds or ()))
     except Exception:  # noqa: BLE001
         # Request exceptions can embed credentials; log a fixed text only.
         print('[!][OpenAPI] Ingestion failed')
@@ -267,7 +270,7 @@ def _source_hash(url):
     return hashlib.sha256(public_url(url).encode()).hexdigest()[:12]
 
 
-def _discover(recon_data, settings, seed_urls, explicit_urls, result):
+def _discover(recon_data, settings, seed_urls, explicit_urls, result, title_seeds=()):
     if not settings.get('OPENAPI_ENABLED', True):
         return
     if settings.get('STEALTH_MODE', False):
@@ -403,12 +406,13 @@ def _discover(recon_data, settings, seed_urls, explicit_urls, result):
     if settings.get('OPENAPI_AUTO_DISCOVER', False):
         paths = valid_discovery_paths(settings.get('OPENAPI_DISCOVERY_PATHS'), diagnostics)
         origins = set()
-        for url in sorted(set(seed_urls)):
+        flagged = set(title_seeds or ())
+        for url in sorted(set(seed_urls) | flagged):
             try:
                 if not scope.allows(url):
                     continue
                 origins.add(origin(url))
-                if SPEC_LIKE_PATH.search(urlsplit(url).path):
+                if url in flagged or SPEC_LIKE_PATH.search(urlsplit(url).path):
                     enqueue(url, explicit=True)
             except (DocumentError, ValueError):
                 continue

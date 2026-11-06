@@ -30,6 +30,7 @@ from graph_db.technology_identity import (  # noqa: F401  re-exported for caller
     resolve_tech_version,
     tech_name_key,
 )
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 
 #: A root page whose exact body this many distinct BaseURLs serve (200 or 403)
@@ -44,7 +45,7 @@ def _split_url(url: str) -> tuple[str, str]:
     per the existing Redamon convention (matches js_recon + vuln_scan mixins)."""
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
-    path = parsed.path or "/"
+    path = normalize_endpoint_path(parsed.path or "/")
     return base_url, path
 
 
@@ -180,6 +181,10 @@ class HttpMixin:
                         "page_class_confidence": url_info.get("page_class_confidence"),
                         "page_class_source": url_info.get("page_class_source"),
                     }
+                    # Only when httpx labelled the page: a null here would erase a
+                    # category a crawler wrote in an earlier partial run.
+                    if url_info.get("category"):
+                        endpoint_props["category"] = url_info["category"]
                     body_hash = url_info.get("body_hash", {})
                     if body_hash:
                         endpoint_props["body_sha256"] = body_hash.get("body_sha256")

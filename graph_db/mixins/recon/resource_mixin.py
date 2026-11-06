@@ -9,6 +9,7 @@ from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, host_in_scope, org_for_scan_root
+from graph_db.endpoint_paths import normalize_endpoint_path
 
 def _openapi_params(endpoint_info: dict, method: str) -> dict:
     """Cypher parameters for an endpoint's OpenAPI fields; None keeps what is stored.
@@ -135,6 +136,7 @@ class ResourceMixin:
                 endpoints = base_data.get("endpoints", {})
 
                 for path, endpoint_info in endpoints.items():
+                    path = normalize_endpoint_path(path)
                     try:
                         methods = endpoint_info.get("methods", ["GET"])
                         category = endpoint_info.get("category", "other")
@@ -198,7 +200,13 @@ class ResourceMixin:
                                 END
                                 SET e.user_id = $user_id,
                                     e.project_id = $project_id,
-                                    e.category = $category,
+                                    // A category an earlier writer knew (httpx from a page
+                                    // title, a crawler from the path) is not lost to a
+                                    // later source that only says "other".
+                                    e.category = CASE WHEN $category = 'other' AND e.category IS NOT NULL
+                                                           AND e.category <> 'other'
+                                                      THEN e.category ELSE $category END,
+                                    e.ffuf_category = coalesce($ffuf_category, e.ffuf_category),
                                     e.has_parameters = $has_params,
                                     e.query_param_count = $query_count,
                                     e.body_param_count = $body_count,
@@ -228,6 +236,7 @@ class ResourceMixin:
                                 path=path, method=method, baseurl=base_url,
                                 user_id=user_id, project_id=project_id,
                                 category=category,
+                                ffuf_category=endpoint_info.get("ffuf_category"),
                                 has_params=param_count.get('total', 0) > 0,
                                 query_count=param_count.get('query', 0),
                                 body_count=param_count.get('body', 0),
@@ -281,7 +290,11 @@ class ResourceMixin:
                                 MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                 SET p.user_id = $user_id,
                                     p.project_id = $project_id,
-                                    p.type = $param_type,
+                                    // A specific type (url, integer...) another source
+                                    // inferred is kept over a plain "string".
+                                    p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
+                                                       AND p.type <> 'string'
+                                                  THEN p.type ELSE $param_type END,
                                     p.category = $category,
                                     p.sample_values = $sample_values,
                                     p.is_injectable = coalesce(p.is_injectable, false),
@@ -330,7 +343,11 @@ class ResourceMixin:
                                 MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                 SET p.user_id = $user_id,
                                     p.project_id = $project_id,
-                                    p.type = $param_type,
+                                    // A specific type (url, integer...) another source
+                                    // inferred is kept over a plain "string".
+                                    p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
+                                                       AND p.type <> 'string'
+                                                  THEN p.type ELSE $param_type END,
                                     p.category = $category,
                                     p.sample_values = $sample_values,
                                     p.required = $required,
@@ -382,7 +399,11 @@ class ResourceMixin:
                                 MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                 SET p.user_id = $user_id,
                                     p.project_id = $project_id,
-                                    p.type = $param_type,
+                                    // A specific type (url, integer...) another source
+                                    // inferred is kept over a plain "string".
+                                    p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
+                                                       AND p.type <> 'string'
+                                                  THEN p.type ELSE $param_type END,
                                     p.category = $category,
                                     p.input_type = $input_type,
                                     p.required = $required,
