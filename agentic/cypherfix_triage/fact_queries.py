@@ -369,6 +369,8 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.detection_method AS detection_method,
        // route_exposure's secret_in_response is classed by its detector name.
        v.secret_types AS secret_types,
+       // urlscan history: the kind keys its detector (urlscan_leak:{type}:{kind}).
+       coalesce(v.link_kind, v.file_kind, v.family) AS finding_kind,
        toString(v.updated_at) AS seen_updated_at,
        // Host resolution, in the order of section 3.2.6.
        // A pattern comprehension takes ONE pattern, so each candidate is its
@@ -446,8 +448,12 @@ RETURN s.id AS id, 'Secret' AS label, coalesce(s.source, 'js_recon') AS source,
        s.triage_status AS triage_status, s.triage_source AS triage_source,
        s.triage_evidence_hash AS triage_evidence_hash,
        toString(s.updated_at) AS seen_updated_at,
+       // A urlscan Secret hangs off its Subdomain (the org's own name: its
+       // Domain), carrying base_url; the parent name covers an older node.
        coalesce(s.base_url,
-                head([(bu:BaseURL)-[:HAS_SECRET]->(s) | bu.url]), '') AS triage_host
+                head([(bu:BaseURL)-[:HAS_SECRET]->(s) | bu.url]),
+                head([(sd)-[:HAS_SECRET]->(s) WHERE sd:Subdomain OR sd:Domain | sd.name]),
+                '') AS triage_host
 """,
     },
     {

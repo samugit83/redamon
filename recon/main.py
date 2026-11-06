@@ -325,79 +325,10 @@ from recon.helpers.roe_scope import _is_roe_excluded, _filter_roe_excluded, _che
 
 
 
-def _merge_external_domain(aggregated: dict, entry: dict):
-    """Merge a single external domain entry into the aggregated dict."""
-    domain = entry.get("domain", "").strip().lower()
-    if not domain:
-        return
-    if domain not in aggregated:
-        aggregated[domain] = {
-            "domain": domain, "sources": [], "redirect_from_urls": [],
-            "redirect_to_urls": [], "status_codes_seen": [], "titles_seen": [],
-            "servers_seen": [], "ips_seen": [], "countries_seen": [], "times_seen": 0,
-        }
-    rec = aggregated[domain]
-    rec["times_seen"] += 1
-    for val, key in [
-        (entry.get("source"), "sources"),
-        (entry.get("url"), "redirect_to_urls"),
-        (entry.get("redirect_from_url"), "redirect_from_urls"),
-        (entry.get("title"), "titles_seen"),
-        (entry.get("server"), "servers_seen"),
-        (entry.get("ip"), "ips_seen"),
-        (entry.get("country"), "countries_seen"),
-    ]:
-        if val and val not in rec[key]:
-            rec[key].append(val)
-    sc = entry.get("status_code")
-    if sc is not None:
-        sc_str = str(sc)
-        if sc_str not in rec["status_codes_seen"]:
-            rec["status_codes_seen"].append(sc_str)
-
-
-def _aggregate_external_domains(combined_result: dict) -> list:
-    """Aggregate external domains from all pipeline sources."""
-    aggregated = {}
-    for e in combined_result.get("http_probe", {}).get("external_domains", []):
-        _merge_external_domain(aggregated, e)
-    for e in combined_result.get("urlscan", {}).get("external_domains", []):
-        _merge_external_domain(aggregated, e)
-    for e in combined_result.get("resource_enum", {}).get("external_domains", []):
-        _merge_external_domain(aggregated, e)
-    for e in combined_result.get("domain_discovery_external_domains", []):
-        _merge_external_domain(aggregated, e)
-    # Out-of-scope names diverted by merge_discovered_hostnames (certificate
-    # SANs, js_recon subdomains): recorded, never scanned.
-    for e in combined_result.get("discovered_external_domains", []):
-        _merge_external_domain(aggregated, e)
-    for e in _js_recon_external_domains(combined_result):
-        _merge_external_domain(aggregated, e)
-    return list(aggregated.values())
-
-
-def _js_recon_external_domains(combined_result: dict) -> list:
-    """Third-party hosts the target's JavaScript names, as external-domain entries.
-
-    The graph keeps no Endpoint for them, so this is their only record. JS recon
-    tests hosts against the root domain, which in IP mode is the synthetic
-    ip-targets name, so the target IPs come back as "external" and are dropped.
-    Only domain and source are passed: a URL a bundle names is not a redirect.
-    """
-    metadata = combined_result.get("metadata") or {}
-    targets = {
-        str(h).strip().lower()
-        for h in [*(combined_result.get("subdomains") or []),
-                  *(metadata.get("subdomain_filter") or []),
-                  *(metadata.get("expanded_ips") or [])]
-    }
-    entries = (combined_result.get("js_recon") or {}).get("external_domains") or []
-    return [
-        {"domain": e["domain"], "source": "js_recon"}
-        for e in entries
-        if isinstance(e, dict) and isinstance(e.get("domain"), str)
-        and e["domain"].strip().lower() not in targets
-    ]
+# The aggregation lives in a helper partial recon can import; re-exported here.
+from recon.helpers.external_domains import (  # noqa: E402
+    _aggregate_external_domains, _js_recon_external_domains, _merge_external_domain,
+)
 
 
 def should_skip_active_scans(recon_data: dict) -> tuple:
@@ -1422,8 +1353,6 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 save_recon_file(combined_result, output_file)
 
                 _graph_update_bg("update_graph_from_http_probe", combined_result, USER_ID, PROJECT_ID)
-                if 'urlscan' in combined_result:
-                    _graph_update_bg("update_graph_from_urlscan_enrichment", combined_result, USER_ID, PROJECT_ID)
             except Exception as e:
                 print(f"[!][Pipeline] http_probe failed: {e}")
                 combined_result["metadata"].setdefault("phase_errors", {})["http_probe"] = str(e)
@@ -1739,6 +1668,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                             print(f"[+][URLScan] Discovery complete")
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
+                    if name == "urlscan":
+                        _note_phase_error("urlscan")
         whois_scope.finish("whois")
 
         if not _settings.get('WHOIS_ENABLED', True):
@@ -1800,6 +1731,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
                     g1_results[name] = None
+                    if name == "urlscan":
+                        _note_phase_error("urlscan")
 
         whois_scope.finish("whois")
 
@@ -1860,6 +1793,9 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     _graph_update_bg("update_graph_from_domain_discovery", combined_result, USER_ID, PROJECT_ID)
     if "urlscan" in combined_result:
         _graph_update_bg("update_graph_from_urlscan_discovery", combined_result, USER_ID, PROJECT_ID)
+        # Its own writer, right after discovery on the one graph worker: the
+        # findings never depend on httpx running.
+        _graph_update_bg("update_graph_from_urlscan_findings", combined_result, USER_ID, PROJECT_ID)
 
     # =====================================================================
     # GROUP 2b — Uncover Target Expansion (before port scan / OSINT)
@@ -2103,8 +2039,6 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
                 # Background graph updates
                 _graph_update_bg("update_graph_from_http_probe", combined_result, USER_ID, PROJECT_ID)
-                if 'urlscan' in combined_result:
-                    _graph_update_bg("update_graph_from_urlscan_enrichment", combined_result, USER_ID, PROJECT_ID)
             except Exception as e:
                 print(f"[!][Pipeline] http_probe failed: {e}")
                 combined_result["metadata"].setdefault("phase_errors", {})["http_probe"] = str(e)
@@ -2169,6 +2103,12 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                 combined_result["metadata"].setdefault("phase_errors", {})["resource_enum"] = str(e)
                 _note_phase_error("resource_enum")
                 save_recon_file(combined_result, output_file)
+
+    # urlscan's enrichment writer only MATCHes existing BaseURLs, which httpx,
+    # uncover and resource enumeration make: queued after GROUP 5's write, and
+    # outside the httpx step so it still runs when httpx is off or fails.
+    if 'urlscan' in combined_result:
+        _graph_update_bg("update_graph_from_urlscan_enrichment", combined_result, USER_ID, PROJECT_ID)
 
     # GROUP 4.5 — AI Surface Recon (runs after resource_enum)
     combined_result = _maybe_run_ai_surface(combined_result, _settings, output_file)
@@ -2566,6 +2506,7 @@ _PHASE_FINDING_SOURCES = {
     "origin_discovery": ("origin_discovery",),
     "serialized_scan": ("serialized_scan",),
     "route_exposure": ("route_exposure",),
+    "urlscan": ("urlscan_leak", "urlscan"),
     **PASSIVE_CVE_SOURCES,
 }
 

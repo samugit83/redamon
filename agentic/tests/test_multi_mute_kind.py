@@ -46,6 +46,7 @@ KIND_ROWS = [
     ("Vulnerability", {"source": "shodan"}, "vuln.passive_cve"),
     ("Vulnerability", {"source": "internetdb"}, "vuln.passive_cve"),
     ("Vulnerability", {"source": "osv"}, "vuln.osv"),
+    ("Vulnerability", {"source": "urlscan_leak", "type": "leaked_one_time_link"}, "vuln.urlscan"),
     # No kind yet (planned): label + the projected source.
     ("Vulnerability", {"source": "gvm"}, "Vulnerability:gvm"),
     ("Vulnerability", {"source": "garak"}, "Vulnerability:garak"),
@@ -54,6 +55,7 @@ KIND_ROWS = [
     ("JsReconFinding", {"finding_type": "endpoint"}, "js.finding"),
     ("JsReconFinding", {}, "js.finding"),
     ("Secret", {"source": "jsluice"}, "secret"),
+    ("Secret", {"source": "urlscan"}, "secret"),
     ("Secret", {}, "secret"),
     ("MalPackageFinding", {"source_tool": "guarddog"}, "malpackage"),
     ("MultiscannerFinding", {"source": "noseyparker"}, "MultiscannerFinding:noseyparker"),

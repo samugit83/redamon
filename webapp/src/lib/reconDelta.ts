@@ -41,7 +41,9 @@ export const IDENTITY_KEYS: Record<string, string[]> = {
   Header: ['url', 'name'],
   DNSRecord: ['name', 'type', 'value'],
   Email: ['address'],
-  Secret: ['value', 'file'],
+  // A urlscan Secret stores neither: its value's HMAC (or, without the key,
+  // where it was seen, masked) tells one secret from another.
+  Secret: ['value', 'file', 'value_hmac', 'masked_url'],
   JsReconFinding: ['url', 'type', 'value'],
 }
 

@@ -506,6 +506,27 @@ ROUTE_EXPOSURE_CLASSES = {
     "exposed_route_catalog": FindingClass("info_disclosure", 0.3, 0.3, caps_impact=True),
 }
 
+#: urlscan history (source "urlscan_leak") `type` -> class. A public record of
+#: what someone opened, never confirmed live by RedAmon: likelihood stays below
+#: the confirmed rows, and the history writer already caps severity at high.
+#: Routed by source BEFORE the type and exploitable-class gates, since
+#: `_is_exploitable_class` matches substrings and "takeover_page_seen" would
+#: otherwise read as a confirmed takeover by its name.
+URLSCAN_LEAK_CLASSES = {
+    "leaked_one_time_link": FindingClass("credential_exposure", 0.4, 0.75),
+    "sensitive_file_seen": FindingClass("data_exposure", 0.4, 0.75),
+    "open_redirect_seen": FindingClass("open_redirect", 0.3, 0.3, caps_impact=True),
+    "takeover_page_seen": FindingClass("possible_takeover", 0.4, 0.75),
+    "open_console_seen": FindingClass("rce", 0.4, 0.75),
+    "installer_seen": FindingClass("rce", 0.4, 0.75),
+    "debug_page_seen": FindingClass("info_disclosure", 0.3, 0.3, caps_impact=True),
+    "directory_listing_seen": FindingClass("info_disclosure", 0.3, 0.3, caps_impact=True),
+    "dev_server_seen": FindingClass("misconfig", 0.2, 0.3, caps_impact=True),
+    "test_certificate_seen": FindingClass("misconfig", 0.2, 0.3, caps_impact=True),
+    "defaced_page_seen": FindingClass("unauthenticated_access", 0.4, 0.75),
+}
+URLSCAN_LEAK_DEFAULT = FindingClass("urlscan_history", 0.2, 0.3, caps_impact=True)
+
 #: Directly exploitable classes. Reaching one of these, CONFIRMED, is the 0.7
 #: row of the L table.
 EXPLOITABLE_CLASSES = frozenset({
@@ -616,6 +637,8 @@ CONFIDENCE_BY_SOURCE = {
     "zoomeye": 0.4,
     "uncover": 0.4,
     "urlscan": 0.4,
+    # urlscan's history: a public record of what someone opened, not a test
+    "urlscan_leak": 0.4,
     "otx": 0.4,
     "vulners": 0.4,
     "nvd": 0.4,
@@ -963,6 +986,15 @@ def detector_key(finding: dict) -> str:
         check = part(finding.get("type"), finding.get("name"))
         return f"check:{check}" if check else "security_check"
 
+    if source == "urlscan_leak":
+        # Per type AND kind: a "false positive" on a folder listing, or on a
+        # config file, must not teach down leaked reset links or .env files.
+        kind_type = part(finding.get("type"))
+        kind = part(finding.get("finding_kind"))
+        if kind:
+            return f"urlscan_leak:{kind_type}:{kind}"
+        return f"urlscan_leak:{kind_type}" if kind_type else "urlscan_leak"
+
     if label in ("Secret", "GithubSecret", "GithubSensitiveFile",
                  "MultiscannerFinding") or source in ("trufflehog", "github_hunt"):
         detector = part(finding.get("detector_name"), finding.get("secret_type"),
@@ -1303,6 +1335,10 @@ def _best_cve_intel(cve_ids: Iterable[str], intel: dict) -> dict:
 
 
 def _is_exploitable_class(finding: dict, klass: FindingClass) -> bool:
+    if _lower(finding.get("source")) == "urlscan_leak":
+        # A historical record: its type names what was seen, not a weakness a
+        # tool reached ("takeover_page_seen" is not a takeover).
+        return klass.name in EXPLOITABLE_CLASSES
     haystack = " ".join([
         _lower(finding.get("category")),
         _lower(finding.get("type")),
@@ -1811,6 +1847,9 @@ def _class_for(finding: dict) -> FindingClass:
     # node, so the reason that gate exists does not apply to it.
     if source == "route_exposure":
         return _route_exposure_class(finding)
+    # The same holds for urlscan's history, whose ids no other writer produces.
+    if source == "urlscan_leak":
+        return URLSCAN_LEAK_CLASSES.get(_lower(finding.get("type")), URLSCAN_LEAK_DEFAULT)
 
     # By type before source: origin_discovery MERGEs the same waf_bypass node as
     # security_check and `source` is set on create only, so routing by source

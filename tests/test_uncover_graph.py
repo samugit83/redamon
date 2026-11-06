@@ -41,6 +41,9 @@ sys.modules.setdefault("graph_db.node_filters", MagicMock())
 _load("graph_db.node_filters.guards", "graph_db/node_filters/guards.py")
 _base = _load("graph_db.mixins.base_mixin", "graph_db/mixins/base_mixin.py")
 _scope = _load("graph_db.mixins.recon.scope", "graph_db/mixins/recon/scope.py")
+# osint_mixin keys urlscan findings with vuln_mixin.stable_vuln_id.
+_load("graph_db.coverage_stamps", "graph_db/coverage_stamps.py")
+_load("graph_db.mixins.recon.vuln_mixin", "graph_db/mixins/recon/vuln_mixin.py")
 _osint = _load("graph_db.mixins.osint_mixin", "graph_db/mixins/osint_mixin.py")
 
 

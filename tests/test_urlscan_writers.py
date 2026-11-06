@@ -177,5 +177,23 @@ class TestB03PassiveSourcesAreNotCurrentDns(unittest.TestCase):
         self.assertNotIn("MERGE (s)-[:RESOLVES_TO]->(i)", source)
 
 
+class TestB19ExternalDomainsAreAdditive(unittest.TestCase):
+    """A partial urlscan run writes only its own sightings: the aggregated
+    writer must add to what a full run recorded, never overwrite it."""
+
+    def test_lists_append_distinct_and_counts_add(self):
+        w = _Writer()
+        recon = {"domain": "example.test", "domains": ["example.test"],
+                 "external_domains_aggregated": [{
+                     "domain": "outsider.other.test", "sources": ["urlscan_redirect"],
+                     "redirect_from_urls": ["https://app.example.test/go?url=***"],
+                     "redirect_to_urls": ["https://outsider.other.test"], "times_seen": 2}]}
+        w.update_graph_from_external_domains(recon, "u1", "p1")
+        q = next(q for q, _p in w.session.calls if "MERGE (ed:ExternalDomain" in q)
+        self.assertIn("ed.sources = coalesce(ed.sources, []) + [x IN $sources WHERE NOT x IN coalesce(ed.sources, [])]", q)
+        self.assertIn("ed.times_seen = coalesce(ed.times_seen, 0) + $times_seen", q)
+        self.assertNotIn("SET ed.sources = $sources", q)
+
+
 if __name__ == "__main__":
     unittest.main()

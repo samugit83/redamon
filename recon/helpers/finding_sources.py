@@ -12,6 +12,8 @@ RECON_FINDING_SOURCES = (
     "vhost_sni_enum", "origin_discovery", "nmap_nse", "resource_enum",
     "http_probe", "vuln_scan", "wcvs", "serialized_scan", "route_exposure",
     "shodan_api", "internetdb", "shodan", "shodan_host_lookup", "netlas", "criminalip",
+    # urlscan's history: Vulnerability {source: 'urlscan_leak'} and Secret {source: 'urlscan'}
+    "urlscan_leak", "urlscan",
 )
 
 #: The `source` each passive CVE writer stamps, per enricher (the key is its

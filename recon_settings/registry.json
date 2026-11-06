@@ -16857,7 +16857,9 @@
     "Subdomain",
     "ExternalDomain",
     "Endpoint",
-    "Parameter"
+    "Parameter",
+    "Vulnerability",
+    "Secret"
    ],
    "title": "urlscan.io",
    "traffic": "passive"

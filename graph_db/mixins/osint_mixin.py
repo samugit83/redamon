@@ -26,6 +26,7 @@ from graph_db.mixins.recon.scope import (
     IN_SCOPE, OUT_OF_SCOPE, attach_for_host, attach_roots, classify_host, home_domain,
     org_for_scan_root, scope_groups_by_root,
 )
+from graph_db.mixins.recon.vuln_mixin import stable_vuln_id
 from urllib.parse import urlparse as _urlparse
 
 
@@ -99,6 +100,18 @@ _CVE_ID = re.compile(r"^CVE-\d{4}-\d{4,}$")
 def netlas_vuln_id(cve_id: str, ip: str, port) -> str:
     """A Netlas finding's id: one per CVE, IP and port."""
     return f"netlas-{cve_id}-{ip}-{port}"
+
+
+_SEVERITIES = ("info", "low", "medium", "high", "critical")
+
+
+def _history_severity(severity, live=False) -> str:
+    """A finding seen only in urlscan's history is at most high: critical needs
+    this scan to confirm it live."""
+    sev = str(severity or "medium").strip().lower()
+    if sev not in _SEVERITIES:
+        sev = "medium"
+    return sev if live or sev != "critical" else "high"
 
 
 def _split_url(url: str) -> tuple[str, str]:
@@ -966,6 +979,148 @@ class OsintMixin:
         return stats
 
 
+    def update_graph_from_urlscan_findings(self, recon_data: dict, user_id: str, project_id: str,
+                                           keys: tuple = ("findings",)) -> dict:
+        """The findings urlscan's history gives about the target: leaked links,
+        exposed files, open redirects, problem and takeover pages (Vulnerability
+        {source: 'urlscan_leak'}) and secrets written in URLs (Secret {source:
+        'urlscan'}).
+
+        Its own writer, queued with the discovery writer (GROUP 1), not the
+        enrichment one, which runs only inside the httpx step. `keys` names the
+        urlscan lists to read: the takeover verdict, decided after httpx, is a
+        second call that writes only its own list. It never prunes.
+
+        Every finding is a public record ("seen in a public urlscan scan on
+        DATE"), never confirmed by RedAmon and never an agent lead: no
+        needs_agent_confirmation. History alone is at most high.
+        """
+        stats = {"findings_written": 0, "secrets_written": 0, "skipped_out_of_scope": 0, "errors": []}
+        urlscan_data = recon_data.get("urlscan") or {}
+        rows = [f for key in keys for f in (urlscan_data.get(key) or []) if isinstance(f, dict)]
+        secrets = [s for s in (urlscan_data.get("url_secrets") or []) if isinstance(s, dict)] \
+            if "findings" in keys else []
+        if not rows and not secrets:
+            return stats
+
+        def _parent(session, host: str, rel: str, label: str, node_id: str) -> bool:
+            kind, org = attach_for_host(host, recon_data)
+            if kind != IN_SCOPE or not org:
+                return False
+            if host.strip().lower() == org.strip().lower():
+                session.run(
+                    f"""
+                    MATCH (d:Domain {{name: $org, user_id: $uid, project_id: $pid}})
+                    MATCH (n:{label} {{id: $id, user_id: $uid, project_id: $pid}})
+                    MERGE (d)-[:{rel}]->(n)
+                    """, org=org, id=node_id, uid=user_id, pid=project_id)
+                return True
+            # A host seen only in a visit's start URL has no Subdomain yet.
+            session.run(
+                f"""
+                MATCH (d:Domain {{name: $org, user_id: $uid, project_id: $pid}})
+                MERGE (s:Subdomain {{name: $host, user_id: $uid, project_id: $pid}})
+                ON CREATE SET s.source = 'urlscan', s.discovered_by = 'urlscan',
+                              s.status = 'unverified', s.updated_at = datetime()
+                MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+                MERGE (s)-[:BELONGS_TO]->(d)
+                WITH s
+                MATCH (n:{label} {{id: $id, user_id: $uid, project_id: $pid}})
+                MERGE (s)-[:{rel}]->(n)
+                """, org=org, host=host.strip().lower(), id=node_id, uid=user_id, pid=project_id)
+            return True
+
+        with self.driver.session() as session:
+            for f in rows:
+                host = (f.get("host") or "").strip().lower()
+                ftype = f.get("type") or ""
+                if not host or not ftype:
+                    continue
+                kind = f.get("kind") or ""
+                path = f.get("path") or "/"
+                vid = "urlscan-" + stable_vuln_id(f"{ftype}:{kind}" if kind else ftype, path, host,
+                                                  user_id, project_id)
+                props = {k: v for k, v in (f.get("props") or {}).items()
+                         if v is not None and not isinstance(v, (dict, list)) or isinstance(v, list)
+                         and all(not isinstance(x, (dict, list)) for x in v)}
+                if f.get("kind_field") and kind:
+                    props[f["kind_field"]] = kind
+                props.update({
+                    "type": ftype,
+                    "name": f.get("name") or ftype,
+                    "description": f.get("description") or "",
+                    "severity": _history_severity(f.get("severity"), f.get("live")),
+                    "matched_at": f.get("url") or f"https://{host}{path}",
+                    "url": f.get("url") or f"https://{host}{path}",
+                    "hostname": host,
+                    "first_seen": f.get("first_seen") or "",
+                    "last_seen": f.get("last_seen") or "",
+                })
+                if f.get("urlscan_scan_id"):
+                    props["urlscan_scan_id"] = f["urlscan_scan_id"]
+                try:
+                    session.run(
+                        """
+                        MERGE (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
+                        ON CREATE SET v.source = 'urlscan_leak', v.created_at = datetime()
+                        SET v += $props, v.updated_at = datetime()
+                        """, id=vid, props=props, uid=user_id, pid=project_id)
+                    if _parent(session, host, "HAS_VULNERABILITY", "Vulnerability", vid):
+                        stats["findings_written"] += 1
+                    else:
+                        stats["skipped_out_of_scope"] += 1
+                        session.run(
+                            "MATCH (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid}) "
+                            "WHERE NOT (v)--() DELETE v", id=vid, uid=user_id, pid=project_id)
+                except Exception as e:
+                    stats["errors"].append(f"urlscan finding {ftype}: {e}")
+
+            for sec in secrets:
+                host = (sec.get("host") or "").strip().lower()
+                stype = sec.get("secret_type") or ""
+                if not host or not stype:
+                    continue
+                # One Secret per distinct value (its HMAC); with no HMAC key, one
+                # per host, type and parameter.
+                ident = sec.get("value_hmac") or sec.get("param_name") or ""
+                sid = "secret-urlscan-" + stable_vuln_id(stype, ident, host, user_id, project_id)
+                props = {k: v for k, v in {
+                    "secret_type": stype,
+                    "param_name": sec.get("param_name"),
+                    "value_length": sec.get("value_length"),
+                    "value_hmac": sec.get("value_hmac"),
+                    "jwt_alg": sec.get("jwt_alg"),
+                    "jwt_expired": sec.get("jwt_expired"),
+                    "masked_url": sec.get("masked_url"),
+                    "base_url": sec.get("base_url"),
+                    "severity": _history_severity(sec.get("severity"), False),
+                    "first_seen": sec.get("first_seen") or "",
+                    "last_seen": sec.get("last_seen") or "",
+                    "sighting_count": sec.get("count"),
+                }.items() if v is not None}
+                try:
+                    session.run(
+                        """
+                        MERGE (s:Secret {id: $id, user_id: $uid, project_id: $pid})
+                        ON CREATE SET s.source = 'urlscan', s.created_at = datetime()
+                        SET s += $props, s.updated_at = datetime()
+                        """, id=sid, props=props, uid=user_id, pid=project_id)
+                    if _parent(session, host, "HAS_SECRET", "Secret", sid):
+                        stats["secrets_written"] += 1
+                    else:
+                        stats["skipped_out_of_scope"] += 1
+                        session.run(
+                            "MATCH (s:Secret {id: $id, user_id: $uid, project_id: $pid}) "
+                            "WHERE NOT (s)--() DELETE s", id=sid, uid=user_id, pid=project_id)
+                except Exception as e:
+                    stats["errors"].append(f"urlscan secret {stype}: {e}")
+
+        print(f"[+][graph-db] URLScan findings: {stats['findings_written']} findings, "
+              f"{stats['secrets_written']} secrets")
+        if stats["errors"]:
+            print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
+        return stats
+
     def update_graph_from_external_domains(self, recon_data, user_id, project_id):
         """Update graph with aggregated external (out-of-scope) domains.
 
@@ -1010,18 +1165,21 @@ class OsintMixin:
                             logger.warning(f"Cross-root Subdomain graph error for {ed_domain}: {e}")
                     continue
                 try:
+                    # Additive: a partial run writes only its own source's
+                    # sightings, so it must not overwrite what a full run
+                    # (or another source) recorded on the same node.
                     result = session.run("""
                         MERGE (ed:ExternalDomain {domain: $ed_domain, user_id: $uid, project_id: $pid})
                         ON CREATE SET ed.first_seen_at = datetime()
-                        SET ed.sources = $sources,
-                            ed.redirect_from_urls = $redirect_from,
-                            ed.redirect_to_urls = $redirect_to,
-                            ed.status_codes_seen = $status_codes,
-                            ed.titles_seen = $titles,
-                            ed.servers_seen = $servers,
-                            ed.ips_seen = $ips,
-                            ed.countries_seen = $countries,
-                            ed.times_seen = $times_seen,
+                        SET ed.sources = coalesce(ed.sources, []) + [x IN $sources WHERE NOT x IN coalesce(ed.sources, [])],
+                            ed.redirect_from_urls = coalesce(ed.redirect_from_urls, []) + [x IN $redirect_from WHERE NOT x IN coalesce(ed.redirect_from_urls, [])],
+                            ed.redirect_to_urls = coalesce(ed.redirect_to_urls, []) + [x IN $redirect_to WHERE NOT x IN coalesce(ed.redirect_to_urls, [])],
+                            ed.status_codes_seen = coalesce(ed.status_codes_seen, []) + [x IN $status_codes WHERE NOT x IN coalesce(ed.status_codes_seen, [])],
+                            ed.titles_seen = coalesce(ed.titles_seen, []) + [x IN $titles WHERE NOT x IN coalesce(ed.titles_seen, [])],
+                            ed.servers_seen = coalesce(ed.servers_seen, []) + [x IN $servers WHERE NOT x IN coalesce(ed.servers_seen, [])],
+                            ed.ips_seen = coalesce(ed.ips_seen, []) + [x IN $ips WHERE NOT x IN coalesce(ed.ips_seen, [])],
+                            ed.countries_seen = coalesce(ed.countries_seen, []) + [x IN $countries WHERE NOT x IN coalesce(ed.countries_seen, [])],
+                            ed.times_seen = coalesce(ed.times_seen, 0) + $times_seen,
                             ed.updated_at = datetime()
                         RETURN ed.first_seen_at = ed.updated_at AS is_new
                     """, ed_domain=ed_domain, uid=user_id, pid=project_id,

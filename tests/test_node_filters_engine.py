@@ -70,7 +70,7 @@ class TestTheCatalog(unittest.TestCase):
             "vuln.nuclei", "vuln.security_check", "vuln.waf_bypass", "vuln.nmap_nse",
             "vuln.takeover", "vuln.vhost_sni", "vuln.cache_poisoning", "vuln.graphql",
             "vuln.ai_surface", "vuln.passive_cve", "vuln.osv", "vuln.serialized_scan",
-            "vuln.route_exposure", "js.finding", "secret", "malpackage",
+            "vuln.route_exposure", "vuln.urlscan", "js.finding", "secret", "malpackage",
         })
 
     def test_the_muteable_labels_match_the_triage_mixin(self):

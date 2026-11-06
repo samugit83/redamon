@@ -1338,6 +1338,7 @@ export async function queryVulnerabilities(session: any, pid: string) {
                WHEN v.source = 'vhost_sni_enum' THEN 'VHost & SNI'
                WHEN v.source = 'serialized_scan' THEN 'Insecure Deserialization'
                WHEN v.source = 'route_exposure' THEN 'Route Exposure'
+               WHEN v.source = 'urlscan_leak' THEN 'urlscan history'
                WHEN ep IS NOT NULL THEN 'DAST'
                WHEN v.source = 'gvm' THEN 'GVM'
                WHEN v.source = 'nuclei' THEN 'Nuclei'

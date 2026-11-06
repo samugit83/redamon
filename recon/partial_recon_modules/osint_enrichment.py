@@ -343,6 +343,17 @@ def run_urlscan(config: dict) -> dict:
                     project_id=project_id,
                 )
                 print(f"[+][Partial Recon] Enrichment graph update: {json.dumps(enrichment_stats, default=str)}")
+
+                findings_stats = graph_client.update_graph_from_urlscan_findings(
+                    recon_data=combined_result, user_id=user_id, project_id=project_id)
+                print(f"[+][Partial Recon] Findings graph update: {json.dumps(findings_stats, default=str)}")
+
+                # The full run's ExternalDomain shape (HAS_EXTERNAL_DOMAIN, the
+                # *_seen lists), written additively over what is there.
+                from recon.helpers.external_domains import _aggregate_external_domains
+                combined_result["external_domains_aggregated"] = _aggregate_external_domains(combined_result)
+                if combined_result["external_domains_aggregated"]:
+                    graph_client.update_graph_from_external_domains(combined_result, user_id, project_id)
             else:
                 print("[!][Partial Recon] Neo4j not reachable, graph not updated")
         return STATUS_OK

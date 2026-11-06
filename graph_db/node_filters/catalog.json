@@ -929,6 +929,148 @@
       ],
       "notes": []
     },
+    "vuln.urlscan": {
+      "id": "vuln.urlscan",
+      "group": "vulnerability",
+      "label": "urlscan history",
+      "graph_label": "Vulnerability",
+      "key": "id",
+      "select": [
+        {
+          "prop": "source",
+          "in": [
+            "urlscan_leak"
+          ]
+        }
+      ],
+      "sources": [
+        "urlscan_leak"
+      ],
+      "behaviour": "finding",
+      "phase": 1,
+      "fields": {
+        "severity": {
+          "type": "ordinal",
+          "scale": "severity",
+          "normalizer": "severity",
+          "label": "Severity"
+        },
+        "cvss": {
+          "type": "number",
+          "normalizer": "cvss",
+          "label": "CVSS score"
+        },
+        "cve_ids": {
+          "type": "list",
+          "normalizer": "cve_ids",
+          "label": "CVE ids"
+        },
+        "has_cve": {
+          "type": "bool",
+          "normalizer": "has_cve",
+          "label": "Has a CVE"
+        },
+        "cve_year": {
+          "type": "number",
+          "normalizer": "cve_year",
+          "label": "Newest CVE year"
+        },
+        "name": {
+          "type": "text",
+          "normalizer": "name",
+          "label": "Name"
+        },
+        "updated_at": {
+          "type": "date",
+          "prop": "updated_at",
+          "label": "Last reported"
+        },
+        "type": {
+          "type": "enum",
+          "prop": "type",
+          "label": "Kind",
+          "values": [
+            "leaked_one_time_link",
+            "sensitive_file_seen",
+            "open_redirect_seen",
+            "takeover_page_seen",
+            "open_console_seen",
+            "debug_page_seen",
+            "installer_seen",
+            "dev_server_seen",
+            "directory_listing_seen",
+            "defaced_page_seen",
+            "test_certificate_seen"
+          ]
+        },
+        "link_kind": {
+          "type": "enum",
+          "prop": "link_kind",
+          "label": "One-time link",
+          "values": [
+            "password_reset",
+            "account_setup",
+            "invite",
+            "payment",
+            "login_link"
+          ]
+        },
+        "file_kind": {
+          "type": "enum",
+          "prop": "file_kind",
+          "label": "File kind",
+          "values": [
+            "env",
+            "vcs",
+            "private_key",
+            "db_dump",
+            "backup",
+            "log",
+            "config",
+            "debug_page",
+            "installer",
+            "web_shell_trace",
+            "file_manager",
+            "debug_console",
+            "memory_dump",
+            "salesforce_aura"
+          ]
+        },
+        "hostname": {
+          "type": "host",
+          "prop": "hostname",
+          "label": "Hostname"
+        },
+        "url": {
+          "type": "url",
+          "prop": "url",
+          "label": "URL (masked)"
+        },
+        "last_seen": {
+          "type": "text",
+          "prop": "last_seen",
+          "label": "Last seen on urlscan"
+        }
+      },
+      "overlaps": [],
+      "examples": [
+        {
+          "name": "Old directory listings",
+          "all": [
+            {
+              "field": "type",
+              "op": "in",
+              "value": [
+                "directory_listing_seen"
+              ]
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "Seen in a public urlscan scan, never requested by RedAmon: a leaked link or file is the public record itself. Whether a file is still online is Route Exposure's job."
+      ]
+    },
     "vuln.vhost_sni": {
       "id": "vuln.vhost_sni",
       "group": "vulnerability",
@@ -2263,7 +2405,8 @@
       "select": [],
       "sources": [
         "js_recon",
-        "jsluice"
+        "jsluice",
+        "urlscan"
       ],
       "behaviour": "finding",
       "phase": 1,
@@ -2274,7 +2417,8 @@
           "label": "Found by",
           "values": [
             "js_recon",
-            "jsluice"
+            "jsluice",
+            "urlscan"
           ]
         },
         "secret_type": {
@@ -2370,7 +2514,7 @@
         }
       ],
       "notes": [
-        "`jsluice` secrets come from resource enumeration's jsluice pass; everything JS Recon finds is `js_recon`. Only JS Recon records a key category, confidence, detection method and validation."
+        "`jsluice` secrets come from resource enumeration's jsluice pass; everything JS Recon finds is `js_recon`; `urlscan` secrets were written in a URL a public urlscan scan recorded, and are stored masked (length and HMAC, never the value). Only JS Recon records a key category, confidence, detection method and validation."
       ]
     },
     "malpackage": {
