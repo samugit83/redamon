@@ -1962,6 +1962,15 @@ ensure_auth_secrets() {
         echo "TUNNEL_AUTH_TOKEN=$(openssl rand -hex 32)" >> "$env_file"
         info "Generated TUNNEL_AUTH_TOKEN"
     fi
+    # The key the recon container HMACs a secret seen in a URL with (urlscan's
+    # Secret.value_hmac), so the same secret is recognised across scans without
+    # storing anything reversible. Kept outside the data and never rotated: a
+    # new key turns every such Secret into a new node at the next scan. Only
+    # created when missing, on install and on every update.
+    if ! grep -q '^REDAMON_SECRET_HMAC_KEY=' "$env_file" 2>/dev/null; then
+        echo "REDAMON_SECRET_HMAC_KEY=$(openssl rand -hex 32)" >> "$env_file"
+        info "Generated REDAMON_SECRET_HMAC_KEY"
+    fi
     # Scoped INSERT-only DSN for the HTTP-traffic-capture ingest worker. This is the
     # SINGLE SOURCE OF TRUTH for the traffic_ingest password: the webapp entrypoint
     # (scripts/apply-ingest-role.mjs) provisions the matching Postgres role from it

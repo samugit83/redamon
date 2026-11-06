@@ -597,6 +597,8 @@ export const reconPresetSchema = z.object({
   urlscanEnabled: bool,
   urlscanMaxResults: int,
   urlscanMaxSearches: int,
+  urlscanLeakedLinks: bool,
+  urlscanSecretsInUrls: bool,
   censysEnabled: bool,
   fofaEnabled: bool,
   fofaMaxResults: int,
@@ -1202,6 +1204,8 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - urlscanEnabled: boolean - URLScan.io
 - urlscanMaxResults: integer - visits read per domain; capped at 10000 with a key, 1000 without
 - urlscanMaxSearches: integer - urlscan searches one scan may send, across every domain
+- urlscanLeakedLinks: boolean - findings for the target's leaked password-reset, invite, payment and login links seen on urlscan (never opened)
+- urlscanSecretsInUrls: boolean - Secrets for passwords, API keys, tokens and JWTs written in URLs seen on urlscan, stored masked
 - censysEnabled: boolean
 - fofaEnabled: boolean
 - fofaMaxResults: integer

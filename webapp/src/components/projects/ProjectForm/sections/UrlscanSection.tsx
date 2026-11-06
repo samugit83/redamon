@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronDown, Globe, Info, Play } from 'lucide-react'
+import { ChevronDown, Globe, Info, Play, ShieldCheck } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
@@ -14,6 +14,27 @@ interface UrlscanSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
   onRun?: () => void
+}
+
+// Each use site keeps its literal `updateField('<column>', …)` call: the
+// registry parity test finds a field's form input by that call.
+function UrlscanToggle({ checked, onChange, label, description, hint }: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: string
+  description: string
+  hint?: string
+}) {
+  return (
+    <div className={styles.toggleRow}>
+      <div>
+        <span className={styles.toggleLabel}>{label}</span>
+        <p className={styles.toggleDescription}>{description}</p>
+        {hint && <p className={styles.toggleDescription}><Info size={12} /> {hint}</p>}
+      </div>
+      <Toggle checked={checked} onChange={onChange} />
+    </div>
+  )
 }
 
 export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps) {
@@ -119,6 +140,26 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                     day, shared by every scan, scheduled ones included.
                   </span>
                 </div>
+              </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Leak Detection</h3>
+                <div className={`${styles.callout} ${styles.calloutInfo}`}>
+                  <ShieldCheck size={16} />
+                  Links containing tokens or passwords are never opened by RedAmon.
+                </div>
+                <UrlscanToggle
+                  checked={data.urlscanLeakedLinks ?? true}
+                  onChange={(checked) => updateField('urlscanLeakedLinks', checked)}
+                  label="Leaked One-Time Links"
+                  description="Checks the URLs urlscan already returned for the target's password-reset, account-setup, invitation, payment and login links. Each one becomes a finding. RedAmon never opens them. No extra searches."
+                />
+                <UrlscanToggle
+                  checked={data.urlscanSecretsInUrls ?? true}
+                  onChange={(checked) => updateField('urlscanSecretsInUrls', checked)}
+                  label="Secrets in URLs"
+                  description="Checks the URLs urlscan already returned for passwords, API keys, tokens and JWTs written in the address. Each one becomes a Secret, stored masked. No extra searches."
+                />
               </div>
             </>
           )}

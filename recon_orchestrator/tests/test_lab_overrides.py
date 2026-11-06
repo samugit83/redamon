@@ -86,5 +86,24 @@ class TestComposeForwardsTheHooks(unittest.TestCase):
             self.assertIn(f"{name}: ${{{name}:-}}", compose)
 
 
+
+class TestSecretHmacKeyForwarding(unittest.TestCase):
+    """The urlscan Secret HMAC key reaches both spawns when set, and nothing is
+    forwarded when it is not: no value_hmac rather than a fixed key."""
+
+    def test_set_reaches_both(self):
+        env = _clean_env(REDAMON_SECRET_HMAC_KEY="k" * 64)
+        with mock.patch.dict(os.environ, env, clear=True):
+            for spawned in (_full_recon_env(), _partial_recon_env()):
+                self.assertEqual(spawned.get("REDAMON_SECRET_HMAC_KEY"), "k" * 64)
+
+    def test_unset_or_blank_forwards_nothing(self):
+        for extra in ({}, {"REDAMON_SECRET_HMAC_KEY": "  "}):
+            env = {k: v for k, v in _clean_env(**extra).items() if k != "REDAMON_SECRET_HMAC_KEY" or extra}
+            with mock.patch.dict(os.environ, env, clear=True):
+                for spawned in (_full_recon_env(), _partial_recon_env()):
+                    self.assertNotIn("REDAMON_SECRET_HMAC_KEY", spawned)
+
+
 if __name__ == "__main__":
     unittest.main()

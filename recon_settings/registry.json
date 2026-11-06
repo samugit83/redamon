@@ -14354,6 +14354,22 @@
    "type": "boolean",
    "unit": "none"
   },
+  "urlscanLeakedLinks": {
+   "default": true,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Checks the URLs urlscan already returned for the target's password-reset, account-setup, invitation, payment and login links. Each one becomes a finding (Vulnerability source urlscan_leak, type leaked_one_time_link), one per host, path and kind. RedAmon never opens them: such a URL is quarantined whatever this switch says. No extra searches.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_LEAKED_LINKS",
+   "tool": "urlscan",
+   "traffic": "passive",
+   "type": "boolean",
+   "unit": "none"
+  },
   "urlscanMaxResults": {
    "bounds": {
     "min": 1,
@@ -14401,6 +14417,22 @@
    "traffic": "passive",
    "type": "int",
    "unit": "count"
+  },
+  "urlscanSecretsInUrls": {
+   "default": true,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Checks the URLs urlscan already returned for passwords, API keys, tokens and JWTs written in the address. Each one becomes a Secret (source urlscan) stored masked: its length and an HMAC, never the value. Such a URL is quarantined whatever this switch says. No extra searches.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_SECRETS_IN_URLS",
+   "tool": "urlscan",
+   "traffic": "passive",
+   "type": "boolean",
+   "unit": "none"
   },
   "useBruteforceForSubdomains": {
    "default": false,

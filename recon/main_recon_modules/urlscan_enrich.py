@@ -377,6 +377,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             ("URLSCAN_ENABLED", "Toggle"),
             ("URLSCAN_MAX_RESULTS", "Limits"),
             ("URLSCAN_MAX_SEARCHES", "Limits"),
+            ("URLSCAN_LEAKED_LINKS", "Leak detection"),
+            ("URLSCAN_SECRETS_IN_URLS", "Leak detection"),
             ("URLSCAN_API_KEY", "API credentials"),
             ("URLSCAN_KEY_ROTATOR", "API credentials"),
         ],
@@ -433,8 +435,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     urls_with_paths: list[dict] = []
     quarantined_urls: list[dict] = []
     seen_urls: set[str] = set()
-    quarantine = UrlQuarantine(_in_scope_urls(results, domain))
+    quarantine = UrlQuarantine(_in_scope_urls(results, domain), hmac_key=_hmac_key())
     scope = HostScope(settings, domain)
+    leak_inputs: list = []
     from recon.helpers.url_leaks import mask_url
 
     # Track domain age (take max from all results)
@@ -514,6 +517,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         # Parse URL paths for Phase B endpoint creation (in-scope only). A
         # quarantined URL (a one-time link, a secret, a state-changing link with
         # a value, a web-shell trace) never reaches a list anything requests.
+        for candidate in (page_url, task.get("url") or ""):
+            if candidate and _extract_domain_from_url(candidate, domain):
+                leak_inputs.append((candidate, result))
         if page_url and page_url not in seen_urls and is_in_scope:
             seen_urls.add(page_url)
             if quarantine.holds(page_url):
@@ -562,6 +568,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     # Remove root domain from subdomain list (it's not a "discovery")
     subdomains.discard(domain)
 
+    findings, url_secrets = _leak_findings(leak_inputs, quarantine, scope, settings)
+
     urlscan_data = {
         "results_count": len(results),
         "subdomains_discovered": sorted(subdomains),
@@ -573,12 +581,18 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "entries": entries,
         "external_domains": external_domain_entries,
         "coverage": coverage,
+        "findings": findings,
+        "url_secrets": url_secrets,
     }
 
     print(f"[+][URLScan] {len(results)} scans found")
     print(f"[+][URLScan] Subdomains discovered: {len(subdomains)}")
     print(f"[+][URLScan] Unique IPs found: {len(ips)}")
-    print(f"[+][URLScan] URLs with paths: {len(urls_with_paths)}")
+    print(f"[+][URLScan] URLs with paths: {len(urls_with_paths)} "
+          f"({len(quarantined_urls)} quarantined: never requested)")
+    if findings or url_secrets:
+        print(f"[+][URLScan] Findings from public visits: {len(findings)}, "
+              f"secrets in URLs: {len(url_secrets)}")
     if domain_age_days is not None:
         print(f"[+][URLScan] Domain age: {domain_age_days} days")
 
@@ -709,6 +723,113 @@ class HostScope:
         return not self._roe(str(addr))
 
 
+def _hmac_key() -> str:
+    # Generated in .env by redamon.sh and forwarded by the orchestrator; empty
+    # means no value_hmac, and one Secret per host, type and parameter.
+    return (os.environ.get("REDAMON_SECRET_HMAC_KEY") or "").strip()
+
+
+LINK_SEVERITY = {"password_reset": "high", "account_setup": "high", "login_link": "high",
+                 "invite": "medium", "payment": "medium"}
+LINK_LABEL = {"password_reset": "password-reset", "account_setup": "account-setup",
+              "login_link": "magic-login or verification", "invite": "invitation",
+              "payment": "payment or invoice"}
+SECRET_SEVERITY = {"password": "high", "api_key": "high", "token": "medium", "jwt": "medium"}
+
+
+def _is_public(result: dict) -> bool:
+    """Only a public visit is an exposure (a keyed search can also return the
+    account's own private or unlisted scans). An anonymous search returns only
+    public ones, sometimes without saying so."""
+    visibility = ((result or {}).get("task") or {}).get("visibility")
+    return visibility in (None, "", "public")
+
+
+def _span(rows: list) -> tuple:
+    times = sorted(t for t in rows if t)
+    return (times[0], times[-1]) if times else ("", "")
+
+
+def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope",
+                   settings: dict) -> tuple:
+    """Item 2: the target's leaked one-time links (URLSCAN_LEAKED_LINKS) and the
+    secrets written in its URLs (URLSCAN_SECRETS_IN_URLS), from public visits of
+    target hosts. Grouped: one finding per host, masked path and kind; one
+    Secret per value (its HMAC), else per host, type and parameter. Nothing
+    raw is kept: masked URLs, lengths and HMACs only, and no scan ID."""
+    want_links = bool(settings.get("URLSCAN_LEAKED_LINKS", True))
+    want_secrets = bool(settings.get("URLSCAN_SECRETS_IN_URLS", True))
+    if not (want_links or want_secrets):
+        return [], []
+    links: dict = {}
+    secrets: dict = {}
+    seen = set()
+    for url, result in inputs:
+        if not _is_public(result):
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not scope.host_ok(host):
+            continue
+        scan_time = ((result or {}).get("task") or {}).get("time") or ""
+        scan_id = ((result or {}).get("task") or {}).get("uuid") or ""
+        key = (url, scan_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        v = quarantine.verdict(url)
+        if want_links and v["link_kind"]:
+            slot = links.setdefault((host, v["masked_path"], v["link_kind"]), {
+                "masked_url": v["masked_url"], "times": [], "count": 0})
+            slot["count"] += 1
+            slot["times"].append(scan_time)
+            slot["masked_url"] = v["masked_url"]
+        if want_secrets:
+            for sec in v["secrets"]:
+                ident = sec.get("value_hmac") or sec["param_name"]
+                slot = secrets.setdefault((host, sec["secret_type"], ident), {
+                    "sec": sec, "times": [], "count": 0, "masked_url": v["masked_url"]})
+                slot["count"] += 1
+                slot["times"].append(scan_time)
+                if scan_time >= max(slot["times"]):
+                    slot["masked_url"] = v["masked_url"]
+                    slot["sec"] = sec
+    findings = []
+    for (host, path, kind), slot in sorted(links.items()):
+        first, last = _span(slot["times"])
+        label = LINK_LABEL.get(kind, kind)
+        findings.append({
+            "type": "leaked_one_time_link", "kind": kind, "kind_field": "link_kind",
+            "host": host, "path": path or "/", "url": slot["masked_url"],
+            "severity": LINK_SEVERITY.get(kind, "medium"),
+            "name": f"Leaked {label} link seen on urlscan",
+            "description": (
+                f"{host}{path} has {label} links in {slot['count']} public urlscan scan(s), seen "
+                f"from {first[:10] or 'unknown'} to {last[:10] or 'unknown'}: anyone searching urlscan "
+                f"can open them. RedAmon never opened one and cannot tell whether a link still works. "
+                f"Make one-time links expire within minutes and work once, and ask urlscan to "
+                f"remove the scans; test the lifetime with a link for your own test account."),
+            "first_seen": first, "last_seen": last,
+            "props": {"link_count": slot["count"]},
+        })
+    url_secrets = []
+    for (host, stype, _ident), slot in sorted(secrets.items()):
+        first, last = _span(slot["times"])
+        sec = slot["sec"]
+        severity = SECRET_SEVERITY.get(stype, "medium")
+        if stype == "jwt" and sec.get("jwt_expired") is True:
+            severity = "low"
+        parsed = urlparse(slot["masked_url"] or "")
+        url_secrets.append({
+            "host": host, "secret_type": stype, "param_name": sec["param_name"],
+            "value_length": sec["value_length"], "value_hmac": sec.get("value_hmac"),
+            "jwt_alg": sec.get("jwt_alg"), "jwt_expired": sec.get("jwt_expired"),
+            "masked_url": slot["masked_url"],
+            "base_url": f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else f"https://{host}",
+            "severity": severity, "first_seen": first, "last_seen": last, "count": slot["count"],
+        })
+    return findings, url_secrets
+
+
 def _in_scope_urls(results: list, domain: str) -> list:
     urls = []
     for result in results:
@@ -725,16 +846,17 @@ class UrlQuarantine:
     """The quarantine verdicts for one search's in-scope URLs. A web-shell trace
     quarantines every URL on its host + path, whichever visit comes first."""
 
-    def __init__(self, urls: list):
+    def __init__(self, urls: list, hmac_key: str = ""):
         from recon.helpers import url_leaks
         self._ul = url_leaks
-        self._verdicts = {u: url_leaks.inspect_url(u) for u in dict.fromkeys(urls)}
+        self._hmac_key = hmac_key
+        self._verdicts = {u: url_leaks.inspect_url(u, hmac_key=hmac_key) for u in dict.fromkeys(urls)}
         self._shells = {url_leaks.host_path_key(u) for u, v in self._verdicts.items() if v["web_shell"]}
 
     def verdict(self, url: str) -> dict:
         v = self._verdicts.get(url)
         if v is None:
-            v = self._verdicts[url] = self._ul.inspect_url(url)
+            v = self._verdicts[url] = self._ul.inspect_url(url, hmac_key=self._hmac_key)
         return v
 
     def holds(self, url: str) -> bool:

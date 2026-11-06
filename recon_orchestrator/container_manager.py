@@ -72,6 +72,13 @@ def _shodan_base_overrides() -> dict:
             if (os.environ.get(k) or "").strip()}
 
 
+def _secret_hmac_env() -> dict:
+    """The key a recon container HMACs a secret seen in a URL with; forwarded
+    only when set, so an unset key leaves no value_hmac rather than a fixed one."""
+    key = (os.environ.get("REDAMON_SECRET_HMAC_KEY") or "").strip()
+    return {"REDAMON_SECRET_HMAC_KEY": key} if key else {}
+
+
 #: The urlscan lab's hooks: a fake urlscan (it receives the project's urlscan key)
 #: and an extra CDN edge prefix.
 URLSCAN_LAB_HOOKS = ("URLSCAN_API_BASE", "REDAMON_LAB_CDN_PREFIXES")
@@ -1231,6 +1238,7 @@ class ContainerManager:
                     "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
                     **_urlscan_lab_overrides(project_id),
+                    **_secret_hmac_env(),
                     **_governor_overrides(),
                     "RECON_RUN_ID": recon_run_id,
                     # Scan Timeline telemetry only (see start_recon docstring).
@@ -2546,6 +2554,7 @@ class ContainerManager:
                     "RECON_STOP_GRACE_S": str(RECON_STOP_GRACE_S),
                     **_shodan_base_overrides(),
                     **_urlscan_lab_overrides(project_id),
+                    **_secret_hmac_env(),
                     **_governor_overrides(),
                     "UPDATE_GRAPH_DB": "true",
                     "HOST_RECON_OUTPUT_PATH": f"{recon_path}/output",

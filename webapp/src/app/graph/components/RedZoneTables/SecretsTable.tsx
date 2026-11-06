@@ -40,6 +40,9 @@ interface SecretRow {
   sourceModule: string | null
   sourceUrl: string | null
   secretBaseUrl: string | null
+  /** urlscan secrets: stored masked, never sampled. Absent on other rows. */
+  maskedUrl?: string | null
+  valueLength?: number | null
   keyType: string | null
   detectionMethod: string | null
   validationStatus: string | null
@@ -188,7 +191,10 @@ export const SecretsTable = memo(function SecretsTable({ projectId }: Props) {
                 )}
               </td>
               <td>{r.keyType ? <span className={rowStyles.listChip}>{r.keyType}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
-              <td><Mono>{redactSecret(r.valueSample || r.matchedText)}</Mono></td>
+              <td>{r.valueSample || r.matchedText || !r.maskedUrl
+                ? <Mono>{redactSecret(r.valueSample || r.matchedText)}</Mono>
+                : <span title={r.maskedUrl}><span className={rowStyles.listChip}>masked</span>{' '}
+                    <Mono>{r.valueLength != null ? `${r.valueLength} chars` : 'value not stored'}</Mono></span>}</td>
               <td>{r.entropy != null ? <span className={rowStyles.numCell}>{r.entropy.toFixed(2)}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
               <td>{r.confidence != null ? <span className={rowStyles.numCell}>{String(r.confidence)}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
               <td><SeverityBadge severity={normalizeSeverity(r.severity)} /></td>

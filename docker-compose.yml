@@ -580,6 +580,10 @@ services:
       URLSCAN_API_BASE: ${URLSCAN_API_BASE:-}
       REDAMON_LAB_CDN_PREFIXES: ${REDAMON_LAB_CDN_PREFIXES:-}
       REDAMON_LAB_PROJECT_IDS: ${REDAMON_LAB_PROJECT_IDS:-}
+      # HMAC key for secrets seen in URLs (urlscan Secret.value_hmac), generated in
+      # .env by redamon.sh. NO default on purpose: a fixed one would make the HMAC
+      # a public, reversible hash. Empty -> no value_hmac is written.
+      REDAMON_SECRET_HMAC_KEY: ${REDAMON_SECRET_HMAC_KEY:-}
       # Scan Timeline — Scan Scheduler worker (plan Section 7.2). It ticks here
       # (the orchestrator owns admission + spawn) and asks the webapp to run each
       # due schedule through the same start path a manual scan uses. Listed

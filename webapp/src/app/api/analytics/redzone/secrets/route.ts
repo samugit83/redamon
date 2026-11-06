@@ -76,7 +76,10 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (buDirect:BaseURL)-[:HAS_SECRET]->(s)
        OPTIONAL MATCH (j:JsReconFinding {finding_type: 'js_file'})-[:HAS_SECRET]->(s)
        OPTIONAL MATCH (buJs:BaseURL)-[:HAS_JS_FILE]->(j)
-       WITH s, j, coalesce(buDirect, buJs) AS bu
+       // A secret seen in a URL a public urlscan scan recorded hangs off its
+       // host (the org's own name: its Domain), never off a BaseURL.
+       OPTIONAL MATCH (hostNode)-[:HAS_SECRET]->(s) WHERE hostNode:Subdomain OR hostNode:Domain
+       WITH s, j, coalesce(buDirect, buJs) AS bu, hostNode
        OPTIONAL MATCH (sd:Subdomain)-[:HAS_BASE_URL]->(bu)
        RETURN toString(id(s))                           AS nodeId,
               s.id                                      AS id,
@@ -94,7 +97,9 @@ export async function GET(request: NextRequest) {
               s.validation_status                       AS validationStatus,
               s.public_client_key                       AS publicClientKey,
               bu.url                                    AS baseUrl,
-              sd.name                                   AS subdomain,
+              coalesce(sd.name, hostNode.name)          AS subdomain,
+              s.masked_url                              AS maskedUrl,
+              s.value_length                            AS valueLength,
               j.source_url                              AS jsFileUrl,
               CASE WHEN j IS NOT NULL THEN 'JsReconFinding' ELSE 'Secret' END AS origin,
               null                                      AS trufflehogSource,
@@ -213,8 +218,11 @@ export async function GET(request: NextRequest) {
         severity: publicClientKey ? 'info' : ((r.get('severity') as string) || 'medium'),
         publicClientKey,
         sourceModule: secretSourceLabel(r.get('sourceModule'), r.get('detectionMethod')),
-        sourceUrl: r.get('sourceUrl') as string | null,
+        sourceUrl: (r.get('sourceUrl') ?? r.get('maskedUrl')) as string | null,
         secretBaseUrl: r.get('secretBaseUrl') as string | null,
+        // A urlscan secret stores no sample: where it was seen (masked) and its length.
+        maskedUrl: (r.get('maskedUrl') ?? null) as string | null,
+        valueLength: r.get('valueLength') != null ? toNum(r.get('valueLength')) : null,
         keyType: r.get('keyType') as string | null,
         detectionMethod: r.get('detectionMethod') as string | null,
         validationStatus: r.get('validationStatus') as string | null,
@@ -248,6 +256,8 @@ export async function GET(request: NextRequest) {
         sourceModule: `trufflehog:${r.get('trufflehogSource') ?? 'unknown'}`,
         sourceUrl: r.get('sourceUrl') as string | null,
         secretBaseUrl: null as string | null,
+        maskedUrl: null as string | null,
+        valueLength: null as number | null,
         keyType: null as string | null,
         detectionMethod: 'trufflehog',
         validationStatus: r.get('validationStatus') as string | null,
@@ -288,6 +298,8 @@ export async function GET(request: NextRequest) {
         sourceModule: 'github_hunt',
         sourceUrl: null as string | null,
         secretBaseUrl: null as string | null,
+        maskedUrl: null as string | null,
+        valueLength: null as number | null,
         keyType: null as string | null,
         detectionMethod: 'regex',
         // Regex match, nothing verified it. `unverified` (not `unvalidated`)
@@ -317,6 +329,8 @@ export async function GET(request: NextRequest) {
       sourceModule: 'github_hunt',
       sourceUrl: null as string | null,
       secretBaseUrl: null as string | null,
+      maskedUrl: null as string | null,
+      valueLength: null as number | null,
       keyType: null as string | null,
       detectionMethod: 'filename',
       validationStatus: 'unverified',
@@ -348,6 +362,8 @@ export async function GET(request: NextRequest) {
         sourceModule: 'attack_chain',
         sourceUrl: null as string | null,
         secretBaseUrl: null as string | null,
+        maskedUrl: null as string | null,
+        valueLength: null as number | null,
         keyType: r.get('attackType') as string | null,
         detectionMethod: 'exploitation',
         // The agent did not pattern-match this, it USED it: an exploit_success

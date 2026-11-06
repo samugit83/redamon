@@ -10244,6 +10244,33 @@ fields:
       records a coverage gap and keeps the earlier urlscan findings. Without a
       key urlscan allows 30 searches a minute; the free plan allows 1,000 a day,
       shared by every scan, scheduled ones included.
+  urlscanLeakedLinks:
+    tool: urlscan
+    runtime_key: "URLSCAN_LEAKED_LINKS"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Checks the URLs urlscan already returned for the target's password-reset,
+      account-setup, invitation, payment and login links. Each one becomes a finding
+      (Vulnerability source urlscan_leak, type leaked_one_time_link), one per host,
+      path and kind. RedAmon never opens them: such a URL is quarantined whatever
+      this switch says. No extra searches.
+  urlscanSecretsInUrls:
+    tool: urlscan
+    runtime_key: "URLSCAN_SECRETS_IN_URLS"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Checks the URLs urlscan already returned for passwords, API keys, tokens and
+      JWTs written in the address. Each one becomes a Secret (source urlscan) stored
+      masked: its length and an HMAC, never the value. Such a URL is quarantined
+      whatever this switch says. No extra searches.
   useBruteforceForSubdomains:
     tool: pipeline
     runtime_key: "USE_BRUTEFORCE_FOR_SUBDOMAINS"
