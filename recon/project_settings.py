@@ -772,6 +772,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'CRTSH_MAX_RESULTS': 5000,
     'HACKERTARGET_ENABLED': True,
     'HACKERTARGET_MAX_RESULTS': 5000,
+    'JSMON_ENABLED': True,
+    'JSMON_MAX_RESULTS': 5000,
+    'JSMON_API_KEY': '',
     'KNOCKPY_RECON_ENABLED': True,
     'KNOCKPY_RECON_MAX_RESULTS': 5000,
     'SUBFINDER_ENABLED': True,
@@ -2065,6 +2068,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['CRTSH_MAX_RESULTS'] = project.get('crtshMaxResults', DEFAULT_SETTINGS['CRTSH_MAX_RESULTS'])
     settings['HACKERTARGET_ENABLED'] = project.get('hackerTargetEnabled', DEFAULT_SETTINGS['HACKERTARGET_ENABLED'])
     settings['HACKERTARGET_MAX_RESULTS'] = project.get('hackerTargetMaxResults', DEFAULT_SETTINGS['HACKERTARGET_MAX_RESULTS'])
+    settings['JSMON_ENABLED'] = project.get('jsmonEnabled', DEFAULT_SETTINGS['JSMON_ENABLED'])
+    settings['JSMON_MAX_RESULTS'] = project.get('jsmonMaxResults', DEFAULT_SETTINGS['JSMON_MAX_RESULTS'])
     settings['KNOCKPY_RECON_ENABLED'] = project.get('knockpyReconEnabled', DEFAULT_SETTINGS['KNOCKPY_RECON_ENABLED'])
     settings['KNOCKPY_RECON_MAX_RESULTS'] = project.get('knockpyReconMaxResults', DEFAULT_SETTINGS['KNOCKPY_RECON_MAX_RESULTS'])
     settings['SUBFINDER_ENABLED'] = project.get('subfinderEnabled', DEFAULT_SETTINGS['SUBFINDER_ENABLED'])
@@ -2184,6 +2189,12 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
         vd_key = user_global.get('viewdnsApiKey', '')
         settings['VIEWDNS_API_KEY'] = vd_key
         settings['VIEWDNS_KEY_ROTATOR'] = _build_rotator(vd_key, 'viewdns')
+
+    # Jsmon (passive subdomain discovery, keyed)
+    if settings.get('JSMON_ENABLED'):
+        jsmon_key = user_global.get('jsmonApiKey', '')
+        settings['JSMON_API_KEY'] = jsmon_key
+        settings['JSMON_KEY_ROTATOR'] = _build_rotator(jsmon_key, 'jsmon')
 
     # Uncover keys — always load shared OSINT keys so uncover can use
     # engines even when the per-tool enrichment toggles are off.

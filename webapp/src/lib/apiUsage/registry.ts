@@ -120,4 +120,6 @@ export const LLM_PROBES: Readonly<Record<string, ProbeDef>> = {
  * (censysOrgId, googleApiCx, githubEnterpriseHost, ...) are claimed by their
  * probe instead. Empty today: every stored credential has a probe.
  */
-export const NOT_PROBED: Readonly<Record<string, string>> = {}
+export const NOT_PROBED: Readonly<Record<string, string>> = {
+  jsmonApiKey: 'subdomains.jsmon.sh has no usage/account endpoint; validity is tested on the first scan query',
+}

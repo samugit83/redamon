@@ -15753,6 +15753,50 @@
    "traffic": "passive",
    "type": "int",
    "unit": "threads"
+  },
+  "jsmonEnabled": {
+   "default": true,
+   "form_section": "SubdomainDiscoverySection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Whether the Subdomains by Jsmon passive source runs. Two levels: this flag decides whether the tool runs inside its phase, and scanModules decides whether the phase runs at all.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "JSMON_ENABLED",
+   "tool": "jsmon",
+   "traffic": "passive",
+   "type": "boolean",
+   "unit": "none"
+  },
+  "jsmonMaxResults": {
+   "bounds": {
+    "min": 1,
+    "max": 50000
+   },
+   "default": 5000,
+   "form_section": "SubdomainDiscoverySection",
+   "governor": {
+    "model": "budget",
+    "family": "osint_result",
+    "floor": 100
+   },
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Maximum subdomains taken from the Subdomains by Jsmon API in one pass.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "JSMON_MAX_RESULTS",
+   "stealth": {
+    "ceiling": 100
+   },
+   "tool": "jsmon",
+   "traffic": "passive",
+   "type": "int",
+   "unit": "count"
   }
  },
  "runtime_only": {
@@ -16033,6 +16077,14 @@
    "secret": true,
    "source": "user_account",
    "tool": "zoomeye",
+   "unit": "none"
+  },
+  "JSMON_API_KEY": {
+   "meaning": "The user's own API key for Subdomains by Jsmon, fetched per scan from the user account. Never a project column, so it is not reachable from any project-scoped surface.",
+   "roe_capped": false,
+   "secret": true,
+   "source": "user_account",
+   "tool": "jsmon",
    "unit": "none"
   }
  },
@@ -16929,6 +16981,15 @@
    "partial_recon_module": "osint_enrichment",
    "phase": "domain_discovery",
    "title": "ZoomEye",
+   "traffic": "passive"
+  },
+  "jsmon": {
+   "enabled_key": "JSMON_ENABLED",
+   "form_section": "SubdomainDiscoverySection",
+   "module": "recon.main_recon_modules.domain_recon",
+   "partial_recon_module": "subdomain_discovery",
+   "phase": "domain_discovery",
+   "title": "Subdomains by Jsmon",
    "traffic": "passive"
   }
  }

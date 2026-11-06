@@ -15,7 +15,7 @@ const SubdomainDiscovery = (
   <div style={wrapperStyle}>
     <div style={firstSectionTitleStyle}>How input is generated</div>
     <p style={paraStyle}>
-      The input is the scan root of each enumerated scope group (a <span style={codeStyle}>*.name</span> entry); the <strong>Domain</strong> node is its registrable domain. Subdomain Discovery uses the scan root as the seed for multiple OSINT sources (Subfinder, Amass, certificate transparency logs, DNS bruteforce, etc., depending on the modules you have enabled).
+      The input is the scan root of each enumerated scope group (a <span style={codeStyle}>*.name</span> entry); the <strong>Domain</strong> node is its registrable domain. Subdomain Discovery uses the scan root as the seed for multiple OSINT sources (Subfinder, Amass, certificate transparency logs, HackerTarget, Subdomains by Jsmon, DNS bruteforce, etc., depending on the modules you have enabled).
     </p>
     <p style={paraStyle}>
       Each source returns a list of candidate hostnames. Candidates are merged, deduplicated, and validated to confirm they actually sit under the scan root. Wildcard records and bogus mock subdomains are filtered out using puredns.
