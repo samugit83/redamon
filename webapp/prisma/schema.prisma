@@ -1129,6 +1129,14 @@ model Project {
   securityCheckCspUnsafeInline      Boolean @default(true) @map("security_check_csp_unsafe_inline")
   securityCheckInsecureFormAction   Boolean @default(true) @map("security_check_insecure_form_action")
   securityCheckNoRateLimiting       Boolean @default(true) @map("security_check_no_rate_limiting")
+  securityCheckOpenConsoles         Boolean @default(true) @map("security_check_open_consoles")
+  securityCheckDebugPages           Boolean @default(true) @map("security_check_debug_pages")
+  securityCheckUnfinishedInstallers Boolean @default(true) @map("security_check_unfinished_installers")
+  securityCheckDevServers           Boolean @default(true) @map("security_check_dev_servers")
+  securityCheckDirectoryListing     Boolean @default(true) @map("security_check_directory_listing")
+  securityCheckDefacedPages         Boolean @default(true) @map("security_check_defaced_pages")
+  securityCheckTakeoverErrorPages   Boolean @default(true) @map("security_check_takeover_error_pages")
+  securityCheckTestCertificates     Boolean @default(true) @map("security_check_test_certificates")
   securityCheckTimeout              Int     @default(10) @map("security_check_timeout")
   securityCheckMaxWorkers           Int     @default(10) @map("security_check_max_workers")
 
@@ -1247,6 +1255,8 @@ model Project {
   urlscanSensitiveFiles                 Boolean  @default(true)  @map("urlscan_sensitive_files")
   urlscanDocumentLinks                  Boolean  @default(true)  @map("urlscan_document_links")
   urlscanRedirectSearch                 Boolean  @default(false)  @map("urlscan_redirect_search")
+  urlscanTakeoverPages                  Boolean  @default(true)  @map("urlscan_takeover_pages")
+  urlscanProblemPages                   Boolean  @default(true)  @map("urlscan_problem_pages")
 
   // OSINT & Threat Intelligence Master Switch
   osintEnrichmentEnabled                Boolean  @default(false) @map("osint_enrichment_enabled")

@@ -36,6 +36,11 @@ const HEADER_HYGIENE_TYPES = [
   'missing_coep',
 ]
 
+// Live Page Content checks (item 5) that are a way in by themselves: a console
+// open without login, an install page anyone can complete. urlscan's history
+// types stay out: this tab is the live state.
+const OPEN_DOOR_TYPES = ['open_console', 'unfinished_installer']
+
 const AUTH_CATEGORIES = ['auth', 'login', 'admin', 'authentication']
 
 export async function GET(request: NextRequest) {
@@ -115,7 +120,7 @@ export async function GET(request: NextRequest) {
       {
         pid: projectId,
         authCategories: AUTH_CATEGORIES,
-        allTypes: [...WEB_AUTH_TYPES, ...HEADER_HYGIENE_TYPES],
+        allTypes: [...WEB_AUTH_TYPES, ...HEADER_HYGIENE_TYPES, ...OPEN_DOOR_TYPES],
       }
     )
 

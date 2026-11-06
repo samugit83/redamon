@@ -179,6 +179,33 @@ def graph_url_fingerprints(base_urls, user_id: str, project_id: str) -> dict:
         return {}
 
 
+def graph_takeover_page_hosts(user_id: str, project_id: str) -> list:
+    """The hosts a urlscan takeover verdict kept (item 5: `takeover_page_seen`),
+    which partial Subdomain Takeover adds to its list as the full run does with
+    urlscan.takeover_hosts. The caller applies the run's scope and RoE. Never
+    raises."""
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if not graph_client.verify_connection():
+                return []
+            with graph_client.driver.session() as session:
+                result = session.run(
+                    """
+                    MATCH (v:Vulnerability {user_id: $uid, project_id: $pid,
+                                           source: 'urlscan_leak', type: 'takeover_page_seen'})
+                    WHERE v.hostname IS NOT NULL AND NOT v:Muted
+                    RETURN collect(DISTINCT toLower(v.hostname)) AS hosts
+                    """,
+                    uid=user_id, pid=project_id,
+                )
+                record = result.single()
+                return sorted(h for h in (_field(record, "hosts") or []) if isinstance(h, str) and h)
+    except Exception as e:  # noqa: BLE001
+        print(f"[!][Partial Recon] Could not read urlscan takeover hosts: {e}")
+        return []
+
+
 def graph_open_ports(ips, user_id: str, project_id: str) -> dict:
     """{ip: [open port numbers]} from the graph's Port nodes. Never raises.
 
@@ -1107,19 +1134,23 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                 """ + _PROBED_ENDPOINT + """
+                OPTIONAL MATCH (b)-[:HAS_CERTIFICATE]->(c:Certificate)
+                WITH b, probe, head(collect(c)) AS cert
                 RETURN b.url AS url, coalesce(b.status_code, probe.status_code) AS status_code,
                        b.host AS host, coalesce(b.content_type, probe.content_type) AS content_type,
                        coalesce(b.is_cdn, probe.is_cdn) AS is_cdn,
                        coalesce(b.cdn, probe.cdn) AS cdn, coalesce(b.asn, probe.asn) AS asn,
-                       coalesce(b.server, probe.server) AS server
+                       coalesce(b.server, probe.server) AS server,
+                       probe.title AS title, probe.final_url AS final_url, probe.cname AS cname,
+                       cert {.issuer, .issuer_cn, .issuer_dn, .subject_cn, .subject_dn, .san,
+                             .not_after, .expired, .self_signed, .mismatched, .wildcard,
+                             .tls_version, .cipher} AS cert
                 """,
                 uid=user_id, pid=project_id,
             )
             for record in result:
                 url = record["url"]
                 status_code = record["status_code"]
-                if status_code is not None and int(status_code) >= 500:
-                    continue
                 host = record["host"] or ""
                 if not keep(url_host(url, host)):
                     continue
@@ -1134,7 +1165,11 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                         (sub_ips.get("ipv4") or [None])[0]
                         or (sub_ips.get("ipv6") or [None])[0]
                     )
-                recon_data["http_probe"]["by_url"][url] = {
+                # The real status (Tomcat's and Fastly's error pages are 500s,
+                # and an open console counts only at 200). An unprobed BaseURL
+                # still reads as live for the target builders, which skip >= 500
+                # themselves, and is marked so no status rule trusts the 200.
+                entry = recon_data["http_probe"]["by_url"][url] = {
                     "url": url,
                     "host": host,
                     "status_code": int(status_code) if status_code is not None else 200,
@@ -1146,6 +1181,21 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                     "server": _field(record, "server"),
                     "technologies": [],
                 }
+                # What the Page Content checks read, when httpx recorded it.
+                for key in ("title", "final_url", "cname"):
+                    if _field(record, key) is not None:
+                        entry[key] = _field(record, key)
+                if status_code is None:
+                    entry["status_unknown"] = True
+                cert = _field(record, "cert")
+                if isinstance(cert, dict) and any(cert.values()):
+                    entry["tls"] = {
+                        "version": cert.get("tls_version"), "cipher": cert.get("cipher"),
+                        "certificate": {k: cert.get(k) for k in (
+                            "issuer", "issuer_cn", "issuer_dn", "subject_cn", "subject_dn",
+                            "not_after", "expired", "self_signed", "mismatched", "wildcard")}
+                        | {"san": cert.get("san") or []},
+                    }
                 # If the URL is CDN-flagged AND the cdn name is a reliable
                 # edge provider (not generic "aws"/"azure"), also stamp
                 # is_cdn on every IP the host resolves to so port_scan.by_ip

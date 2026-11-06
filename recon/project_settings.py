@@ -684,6 +684,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'SECURITY_CHECK_CSP_UNSAFE_INLINE': True,
     'SECURITY_CHECK_INSECURE_FORM_ACTION': True,
     'SECURITY_CHECK_NO_RATE_LIMITING': True,
+    'SECURITY_CHECK_OPEN_CONSOLES': True,
+    'SECURITY_CHECK_DEBUG_PAGES': True,
+    'SECURITY_CHECK_UNFINISHED_INSTALLERS': True,
+    'SECURITY_CHECK_DEV_SERVERS': True,
+    'SECURITY_CHECK_DIRECTORY_LISTING': True,
+    'SECURITY_CHECK_DEFACED_PAGES': True,
+    'SECURITY_CHECK_TAKEOVER_ERROR_PAGES': True,
+    'SECURITY_CHECK_TEST_CERTIFICATES': True,
     'SECURITY_CHECK_TIMEOUT': 10,
     'SECURITY_CHECK_MAX_WORKERS': 10,
 
@@ -721,6 +729,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'URLSCAN_SENSITIVE_FILES': True,
     'URLSCAN_DOCUMENT_LINKS': True,
     'URLSCAN_REDIRECT_SEARCH': False,
+    'URLSCAN_TAKEOVER_PAGES': True,
+    'URLSCAN_PROBLEM_PAGES': True,
 
     # OSINT & Threat Intelligence Enrichment
     'OSINT_ENRICHMENT_ENABLED': False,
@@ -2002,6 +2012,14 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['SECURITY_CHECK_CSP_UNSAFE_INLINE'] = project.get('securityCheckCspUnsafeInline', DEFAULT_SETTINGS['SECURITY_CHECK_CSP_UNSAFE_INLINE'])
     settings['SECURITY_CHECK_INSECURE_FORM_ACTION'] = project.get('securityCheckInsecureFormAction', DEFAULT_SETTINGS['SECURITY_CHECK_INSECURE_FORM_ACTION'])
     settings['SECURITY_CHECK_NO_RATE_LIMITING'] = project.get('securityCheckNoRateLimiting', DEFAULT_SETTINGS['SECURITY_CHECK_NO_RATE_LIMITING'])
+    settings['SECURITY_CHECK_OPEN_CONSOLES'] = project.get('securityCheckOpenConsoles', DEFAULT_SETTINGS['SECURITY_CHECK_OPEN_CONSOLES'])
+    settings['SECURITY_CHECK_DEBUG_PAGES'] = project.get('securityCheckDebugPages', DEFAULT_SETTINGS['SECURITY_CHECK_DEBUG_PAGES'])
+    settings['SECURITY_CHECK_UNFINISHED_INSTALLERS'] = project.get('securityCheckUnfinishedInstallers', DEFAULT_SETTINGS['SECURITY_CHECK_UNFINISHED_INSTALLERS'])
+    settings['SECURITY_CHECK_DEV_SERVERS'] = project.get('securityCheckDevServers', DEFAULT_SETTINGS['SECURITY_CHECK_DEV_SERVERS'])
+    settings['SECURITY_CHECK_DIRECTORY_LISTING'] = project.get('securityCheckDirectoryListing', DEFAULT_SETTINGS['SECURITY_CHECK_DIRECTORY_LISTING'])
+    settings['SECURITY_CHECK_DEFACED_PAGES'] = project.get('securityCheckDefacedPages', DEFAULT_SETTINGS['SECURITY_CHECK_DEFACED_PAGES'])
+    settings['SECURITY_CHECK_TAKEOVER_ERROR_PAGES'] = project.get('securityCheckTakeoverErrorPages', DEFAULT_SETTINGS['SECURITY_CHECK_TAKEOVER_ERROR_PAGES'])
+    settings['SECURITY_CHECK_TEST_CERTIFICATES'] = project.get('securityCheckTestCertificates', DEFAULT_SETTINGS['SECURITY_CHECK_TEST_CERTIFICATES'])
     settings['SECURITY_CHECK_TIMEOUT'] = project.get('securityCheckTimeout', DEFAULT_SETTINGS['SECURITY_CHECK_TIMEOUT'])
     settings['SECURITY_CHECK_MAX_WORKERS'] = project.get('securityCheckMaxWorkers', DEFAULT_SETTINGS['SECURITY_CHECK_MAX_WORKERS'])
 
@@ -2033,6 +2051,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['URLSCAN_SENSITIVE_FILES'] = project.get('urlscanSensitiveFiles', DEFAULT_SETTINGS['URLSCAN_SENSITIVE_FILES'])
     settings['URLSCAN_DOCUMENT_LINKS'] = project.get('urlscanDocumentLinks', DEFAULT_SETTINGS['URLSCAN_DOCUMENT_LINKS'])
     settings['URLSCAN_REDIRECT_SEARCH'] = project.get('urlscanRedirectSearch', DEFAULT_SETTINGS['URLSCAN_REDIRECT_SEARCH'])
+    settings['URLSCAN_TAKEOVER_PAGES'] = project.get('urlscanTakeoverPages', DEFAULT_SETTINGS['URLSCAN_TAKEOVER_PAGES'])
+    settings['URLSCAN_PROBLEM_PAGES'] = project.get('urlscanProblemPages', DEFAULT_SETTINGS['URLSCAN_PROBLEM_PAGES'])
 
     # OSINT & Threat Intelligence Enrichment
     settings['OSINT_ENRICHMENT_ENABLED'] = project.get('osintEnrichmentEnabled', DEFAULT_SETTINGS['OSINT_ENRICHMENT_ENABLED'])

@@ -572,6 +572,14 @@ export const reconPresetSchema = z.object({
   securityCheckCspUnsafeInline: bool,
   securityCheckInsecureFormAction: bool,
   securityCheckNoRateLimiting: bool,
+  securityCheckOpenConsoles: bool,
+  securityCheckDebugPages: bool,
+  securityCheckUnfinishedInstallers: bool,
+  securityCheckDevServers: bool,
+  securityCheckDirectoryListing: bool,
+  securityCheckDefacedPages: bool,
+  securityCheckTakeoverErrorPages: bool,
+  securityCheckTestCertificates: bool,
   securityCheckTimeout: int,
   securityCheckMaxWorkers: int,
 
@@ -602,6 +610,8 @@ export const reconPresetSchema = z.object({
   urlscanSensitiveFiles: bool,
   urlscanDocumentLinks: bool,
   urlscanRedirectSearch: bool,
+  urlscanTakeoverPages: bool,
+  urlscanProblemPages: bool,
   censysEnabled: bool,
   fofaEnabled: bool,
   fofaMaxResults: int,
@@ -1175,6 +1185,14 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - securityCheckCspUnsafeInline: boolean
 - securityCheckInsecureFormAction: boolean
 - securityCheckNoRateLimiting: boolean
+- securityCheckOpenConsoles: boolean - flag live consoles open without login, by page title (open_console). Default true.
+- securityCheckDebugPages: boolean - flag live debug pages that show code or settings, by page title (debug_page). Default true.
+- securityCheckUnfinishedInstallers: boolean - flag live install pages anyone can complete, by page title (unfinished_installer). Default true.
+- securityCheckDevServers: boolean - flag live sites served by a development server, by Server header (dev_server). Default true.
+- securityCheckDirectoryListing: boolean - flag live folder listings, by page title (directory_listing). Default true.
+- securityCheckDefacedPages: boolean - flag a live root page titled Hacked by (defaced_page). Default true.
+- securityCheckTakeoverErrorPages: boolean - flag live hosts showing a cloud provider's deleted-service page (takeover_error_page). Default true.
+- securityCheckTestCertificates: boolean - flag live hosts with a staging or default ingress certificate (test_certificate). Default true.
 - securityCheckTimeout: integer - Seconds
 - securityCheckMaxWorkers: integer
 
@@ -1212,6 +1230,8 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - urlscanSensitiveFiles: boolean - findings for sensitive files (.env, .git, dumps, backups, keys, logs, installers, debug consoles) seen on urlscan
 - urlscanDocumentLinks: boolean - marks documents opened by direct link (PDF, Office, CSV, archives, JSON, raw text) on their urlscan endpoints
 - urlscanRedirectSearch: boolean - one extra urlscan search per domain for visits that started on the target and ended on another site (open redirects, leaked links); +1 search
+- urlscanTakeoverPages: boolean - check urlscan's page titles for cloud providers' deleted-service pages, kept only when this scan's DNS and live pages confirm them; no extra searches. Default true.
+- urlscanProblemPages: boolean - check urlscan's titles, server names and certificates for open consoles, debug pages, installers, dev servers, listings, defacements and test certificates; no extra searches. Default true.
 - censysEnabled: boolean
 - fofaEnabled: boolean
 - fofaMaxResults: integer

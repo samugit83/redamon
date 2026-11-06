@@ -118,6 +118,46 @@ class TestShape(unittest.TestCase):
         self.assertFalse([q for q, _p in w.session.calls if "HAS_VULNERABILITY" in q])
 
 
+class TestProblemAndTakeoverPages(unittest.TestCase):
+    """Item 5: problem pages ride with GROUP 1's call; the takeover verdict,
+    decided after httpx, is a second call that writes only its own list."""
+
+    PROBLEM = {"type": "open_console_seen", "kind": "jupyter_notebook_open", "kind_field": "problem",
+               "host": "nb.example.test", "path": "/tree", "url": "https://nb.example.test/tree",
+               "severity": "critical", "name": "Jupyter Notebook seen on urlscan",
+               "props": {"family": "open_console", "matched": "Home Page - Select or create a notebook"}}
+    TAKEOVER = {"type": "takeover_page_seen", "kind": "heroku", "kind_field": "provider",
+                "host": "gone.example.test", "path": "/", "url": "https://gone.example.test/",
+                "severity": "medium", "live": True, "name": "Heroku deleted-service page",
+                "props": {"outcome": "possible_takeover", "cname": "acme.herokuapp.com",
+                          "cname_still_points": True, "verdict_basis": "live_page"}}
+
+    def _writer_run(self, method, **lists):
+        w = _Writer()
+        recon = {"domain": "example.test", "domains": ["example.test"],
+                 "urlscan": {"url_secrets": [TestSecrets.SECRET], **lists}}
+        getattr(w, method)(recon, "u1", "p1")
+        return w
+
+    def test_group_1_writes_problem_pages_capped_at_high(self):
+        w = self._writer_run("update_graph_from_urlscan_findings", problem_pages=[self.PROBLEM],
+                             takeover_findings=[self.TAKEOVER])
+        (q, p), = _vuln_writes(w)
+        self.assertEqual((p["props"]["type"], p["props"]["problem"], p["props"]["severity"]),
+                         ("open_console_seen", "jupyter_notebook_open", "high"))
+        self.assertEqual(p["props"]["family"], "open_console")
+
+    def test_the_takeover_call_writes_only_its_list(self):
+        w = self._writer_run("update_graph_from_urlscan_takeover", problem_pages=[self.PROBLEM],
+                             takeover_findings=[self.TAKEOVER])
+        (q, p), = _vuln_writes(w)
+        self.assertEqual((p["props"]["type"], p["props"]["provider"], p["props"]["outcome"]),
+                         ("takeover_page_seen", "heroku", "possible_takeover"))
+        self.assertTrue(p["props"]["cname_still_points"])
+        self.assertFalse([c for c, _p in w.session.calls if "MERGE (s:Secret" in c])
+        self.assertFalse([c for c, _p in w.session.calls if "DETACH DELETE" in c or "prune" in c.lower()])
+
+
 class TestSecrets(unittest.TestCase):
     SECRET = {"secret_type": "api_key", "param_name": "apikey", "host": "app.example.test",
               "base_url": "https://app.example.test", "value_length": 32, "value_hmac": "ab" * 32,

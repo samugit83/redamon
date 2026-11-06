@@ -11,6 +11,23 @@ function toNum(val: unknown): number {
   return typeof val === 'number' ? val : 0
 }
 
+/** Who found the row: the takeover scan, urlscan's history (a deleted-service
+ *  page this scan's verdict kept) or a live Security Check (the same page,
+ *  served now). */
+const TAKEOVER_SOURCE_LABEL: Record<string, string> = {
+  takeover_scan: 'takeover scan',
+  urlscan_leak: 'urlscan history',
+  security_check: 'live check',
+}
+
+/** A problem-page outcome on the takeover scan's verdict scale, so the
+ *  summary buckets keep one meaning. */
+const OUTCOME_VERDICT: Record<string, string> = {
+  likely_takeover: 'likely',
+  possible_takeover: 'manual_review',
+  dangling_dns: 'manual_review',
+}
+
 export async function GET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId')
   const __denied = await guardProject(projectId || '')
@@ -21,24 +38,31 @@ export async function GET(request: NextRequest) {
 
   const session = getGraphSession()
   try {
-    // Vulnerabilities with source = takeover_scan (subjack + nuclei + baddns dedup output)
+    // The takeover scan's findings (subjack + nuclei + baddns dedup output),
+    // plus item 5's deleted-service pages: urlscan's (only those this scan's
+    // verdict kept are ever written) and the live Security Check's.
     const result = await session.run(
-      `MATCH (v:Vulnerability {project_id: $pid, source: 'takeover_scan'})
-       WHERE ${notMuted('v')} AND ${reportCountable('v')}
+      `MATCH (v:Vulnerability {project_id: $pid})
+       WHERE (v.source = 'takeover_scan'
+              OR (v.source = 'urlscan_leak' AND v.type = 'takeover_page_seen')
+              OR (v.source = 'security_check' AND v.type = 'takeover_error_page'))
+         AND ${notMuted('v')} AND ${reportCountable('v')}
        OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
        RETURN toString(id(v))       AS nodeId,
               v.id                   AS id,
+              v.source               AS source,
               coalesce(v.hostname, v.host, parent.name) AS hostname,
               labels(parent)[0]     AS parentType,
-              v.cname_target        AS cnameTarget,
-              v.takeover_provider   AS provider,
-              v.takeover_method     AS method,
+              coalesce(v.cname_target, v.cname) AS cnameTarget,
+              coalesce(v.takeover_provider, v.provider) AS provider,
+              coalesce(v.takeover_method, v.verdict_basis, CASE WHEN v.type = 'takeover_error_page' THEN 'live_page' END) AS method,
               v.verdict             AS verdict,
+              v.outcome             AS outcome,
               v.confidence          AS confidence,
               v.severity            AS severity,
               v.sources             AS sources,
               v.confirmation_count  AS confirmationCount,
-              v.evidence            AS evidence,
+              coalesce(v.evidence, v.matched) AS evidence,
               v.first_seen          AS firstSeen,
               v.last_seen           AS lastSeen,
               v.detected_at         AS detectedAt,
@@ -53,12 +77,14 @@ export async function GET(request: NextRequest) {
     const rows = result.records.map(r => ({
       nodeId: (r.get('nodeId') as string | null) ?? null,
       id: (r.get('id') as string) || '',
+      foundBy: TAKEOVER_SOURCE_LABEL[(r.get('source') as string) || ''] || 'takeover scan',
       hostname: (r.get('hostname') as string) || '',
       parentType: (r.get('parentType') as string) || 'Subdomain',
       cnameTarget: r.get('cnameTarget') as string | null,
       provider: (r.get('provider') as string) || 'unknown',
       method: (r.get('method') as string) || 'unknown',
-      verdict: (r.get('verdict') as string) || 'manual_review',
+      verdict: (r.get('verdict') as string) || OUTCOME_VERDICT[(r.get('outcome') as string) || ''] || 'manual_review',
+      outcome: (r.get('outcome') as string | null) ?? null,
       confidence: r.get('confidence') != null ? toNum(r.get('confidence')) : null,
       severity: (r.get('severity') as string) || 'info',
       sources: (r.get('sources') as string[]) || [],

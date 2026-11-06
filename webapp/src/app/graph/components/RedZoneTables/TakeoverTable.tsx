@@ -28,12 +28,16 @@ import rowStyles from './RedZoneTableRow.module.css'
 interface TakeoverRow {
   nodeId: string | null
   id: string
+  /** "takeover scan", "urlscan history" or "live check". */
+  foundBy: string
   hostname: string
   parentType: string
   cnameTarget: string | null
   provider: string
   method: string
   verdict: string
+  /** The problem-page outcome (likely_takeover, possible_takeover, dangling_dns). */
+  outcome: string | null
   confidence: number | null
   severity: string
   sources: string[]
@@ -52,6 +56,7 @@ const PAGE_SIZE = 100
 const COLUMNS: RedZoneFilterColumn[] = [
   NODE_ID_COLUMN,
   { key: 'hostname', header: 'Hostname' },
+  { key: 'foundBy', header: 'Found by' },
   { key: 'cnameTarget', header: 'CNAME Target' },
   { key: 'provider', header: 'Provider' },
   { key: 'method', header: 'Method' },
@@ -130,6 +135,7 @@ export const TakeoverTable = memo(function TakeoverTable({ projectId }: Props) {
           <tr>
             <NodeIdTh />
             <th>Hostname</th>
+            <th>Found by</th>
             <th>CNAME Target</th>
             <th>Provider</th>
             <th>Method</th>
@@ -148,6 +154,7 @@ export const TakeoverTable = memo(function TakeoverTable({ projectId }: Props) {
             <tr key={r.id || `${r.hostname}-${i}`}>
               <td><NodeIdCell value={r.nodeId} /></td>
               <td>{r.hostname ? <HostCell host={r.hostname} /> : <Truncated text={r.hostname} max={220} />}</td>
+              <td><Mono>{r.foundBy}</Mono></td>
               <td>{r.cnameTarget ? <HostCell host={r.cnameTarget} /> : <Truncated text={r.cnameTarget} max={220} />}</td>
               <td><Mono>{r.provider}</Mono></td>
               <td><Mono>{r.method}</Mono></td>

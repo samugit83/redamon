@@ -42,6 +42,10 @@ export function buildHeaderGrid(presentHeaderNames: string[]): Record<string, bo
   return grid
 }
 
+/** Live findings that are a way in by themselves (an open console, an
+ *  installer anyone can finish): the base URL grades F whatever its headers. */
+export const WEB_INIT_OPEN_DOORS = ['open_console', 'unfinished_installer'] as const
+
 /**
  * Aggregate grade derivation: count missing headers, add vuln-tag count,
  * return {grade, missingHeaderCount}.
@@ -53,5 +57,6 @@ export function deriveWebInitGrade(
   const headerGrid = buildHeaderGrid(presentHeaderNames)
   const missingHeaderCount = WEB_INIT_HEADER_CHECKS.filter(h => !headerGrid[h]).length
   const total = missingHeaderCount + (vulnTags?.length || 0)
-  return { grade: computeWebInitGrade(total), headerGrid, missingHeaderCount }
+  const openDoor = (vulnTags || []).some(t => (WEB_INIT_OPEN_DOORS as readonly string[]).includes(t))
+  return { grade: openDoor ? 'F' : computeWebInitGrade(total), headerGrid, missingHeaderCount }
 }

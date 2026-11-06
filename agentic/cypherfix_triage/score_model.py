@@ -397,6 +397,18 @@ SECURITY_CHECK_CLASSES = {
     "tls_wildcard_overbroad": FindingClass("misconfig", 0.3, 0.3, caps_impact=True),
     "tls_weak_version_supported": FindingClass("misconfig", 0.3, 0.3, caps_impact=True),
     "tls_weak_cipher_supported": FindingClass("misconfig", 0.3, 0.3, caps_impact=True),
+    # Page Content (item 5), on the rows of the findings they resemble: an open
+    # console or an installer anyone can finish runs code like an exposed debug
+    # console; a debug page or a listing leaks like a debug error page; a
+    # deleted-service page is a takeover; a defacement is someone else's write.
+    "open_console": FindingClass("rce", 0.7, 0.75),
+    "unfinished_installer": FindingClass("rce", 0.7, 0.75),
+    "debug_page": FindingClass("info_disclosure", 0.3, 0.3, caps_impact=True),
+    "directory_listing": FindingClass("info_disclosure", 0.3, 0.3, caps_impact=True),
+    "takeover_error_page": FindingClass("takeover", 0.7, 0.75),
+    "defaced_page": FindingClass("unauthenticated_access", 0.5, 0.75),
+    "dev_server": FindingClass("misconfig", 0.3, 0.3, caps_impact=True),
+    "test_certificate": FindingClass("misconfig", 0.3, 0.3, caps_impact=True),
 }
 
 #: Secret class by detector / secret_type. The `identifier` row is the fix for
@@ -685,6 +697,13 @@ SECURITY_CHECK_CONFIDENCE = {
     "kubernetes_api_exposed": (0.6, "a keyword in the /api response, not a verified API"),
     "ip_api_exposed": (0.6, "an API inferred from a status code or a content type"),
     "no_rate_limiting": (0.6, "ten logins went unthrottled; a limit may start later"),
+    # A page title is strong evidence of what the page is, not proof of access.
+    "open_console": (0.75, "the page title names a console; the console itself was not used"),
+    "unfinished_installer": (0.75, "the page title names an installer; it was not completed"),
+    "debug_page": (0.75, "the page title names a debug page"),
+    "directory_listing": (0.75, "the page title names a folder listing"),
+    "defaced_page": (0.75, "the page title says the site was defaced"),
+    "takeover_error_page": (0.75, "the page is the provider's deleted-service page; the name was not claimed"),
 }
 
 #: waf_bypass by the `detection_method` the producer recorded. A node with none
@@ -1339,6 +1358,10 @@ def _is_exploitable_class(finding: dict, klass: FindingClass) -> bool:
         # A historical record: its type names what was seen, not a weakness a
         # tool reached ("takeover_page_seen" is not a takeover).
         return klass.name in EXPLOITABLE_CLASSES
+    if _lower(finding.get("type")) == "takeover_error_page":
+        # A provider that now asks for a DNS verification record (Netlify,
+        # Azure, Shopify, Fastly) leaves the name dangling, not claimable.
+        return _lower(finding.get("outcome")) != "dangling_dns"
     haystack = " ".join([
         _lower(finding.get("category")),
         _lower(finding.get("type")),

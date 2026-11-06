@@ -387,6 +387,94 @@ export function SecurityChecksSection({ data, updateField, onRun }: SecurityChec
                   />
                 </div>
               </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Page Content</h3>
+                <p className={styles.toggleDescription}>
+                  Checks the live page titles, server names and certificates httpx and tlsx already
+                  collected. No extra requests.
+                </p>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Open Consoles Without Login</span>
+                    <p className={styles.toggleDescription}>{'Live consoles that show their content without asking to log in: Jupyter, Jenkins, Ray, Spark, Flink, Airflow, Mongo Express, phpMyAdmin, Selenium, Prometheus and others.'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckOpenConsoles ?? true}
+                    onChange={(checked) => updateField('securityCheckOpenConsoles', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Debug Pages</span>
+                    <p className={styles.toggleDescription}>{'Live debug and error pages that show code or settings: Werkzeug, Django, Laravel, Symfony, Rails, phpinfo, Apache server-status.'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckDebugPages ?? true}
+                    onChange={(checked) => updateField('securityCheckDebugPages', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Unfinished Installers</span>
+                    <p className={styles.toggleDescription}>{'Live install pages anyone can complete to take over the site: WordPress, Joomla, Drupal, Gitea, TYPO3, PrestaShop and others.'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckUnfinishedInstallers ?? true}
+                    onChange={(checked) => updateField('securityCheckUnfinishedInstallers', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Development Servers</span>
+                    <p className={styles.toggleDescription}>{"Live sites answered by a development server that is not built for the internet: Werkzeug, Python's built-in server, WEBrick."}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckDevServers ?? true}
+                    onChange={(checked) => updateField('securityCheckDevServers', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Directory Listings</span>
+                    <p className={styles.toggleDescription}>{'Live pages that list every file in a folder ("Index of /").'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckDirectoryListing ?? true}
+                    onChange={(checked) => updateField('securityCheckDirectoryListing', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Defaced Pages</span>
+                    <p className={styles.toggleDescription}>{'Live pages whose title says "Hacked by…".'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckDefacedPages ?? true}
+                    onChange={(checked) => updateField('securityCheckDefacedPages', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Takeover Error Pages</span>
+                    <p className={styles.toggleDescription}>{'Live hosts showing a cloud provider\'s "deleted service" page. Turn on Subdomain Takeover for the full verdict.'}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckTakeoverErrorPages ?? true}
+                    onChange={(checked) => updateField('securityCheckTakeoverErrorPages', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Test or Default Certificates</span>
+                    <p className={styles.toggleDescription}>{"Live hosts using a Let's Encrypt staging certificate or the default certificate of Kubernetes Ingress or Traefik: a test deployment or an unconfigured host."}</p>
+                  </div>
+                  <Toggle
+                    checked={data.securityCheckTestCertificates ?? true}
+                    onChange={(checked) => updateField('securityCheckTestCertificates', checked)}
+                  />
+                </div>
+              </div>
             </>
           )}
         </div>

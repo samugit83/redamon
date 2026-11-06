@@ -82,6 +82,7 @@ from recon.helpers import (
     # Security checks
     run_security_checks,
 )
+from recon.helpers.security_checks import page_content_enabled
 from recon.helpers.isolated_result import TopLevelKeys
 
 # Every top-level key run_vuln_scan writes; the security checks nest inside
@@ -690,8 +691,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 SECURITY_CHECK_KUBERNETES_API_EXPOSED, SECURITY_CHECK_SMTP_OPEN_RELAY,
                 SECURITY_CHECK_CSP_UNSAFE_INLINE, SECURITY_CHECK_INSECURE_FORM_ACTION,
                 SECURITY_CHECK_NO_RATE_LIMITING,
-            ] if v)
-            print(f"[*][Nuclei]   Active checks: {sec_checks_count}/27")
+            ] if v) + sum(page_content_enabled(settings).values())
+            print(f"[*][Nuclei]   Active checks: {sec_checks_count}/35")
             print(f"[*][Nuclei]   Timeout: {SECURITY_CHECK_TIMEOUT}s")
             print(f"[*][Nuclei]   Max workers: {SECURITY_CHECK_MAX_WORKERS}")
         print("=" * 70 + "\n")
@@ -1164,6 +1165,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             "insecure_form_action": SECURITY_CHECK_INSECURE_FORM_ACTION,
             # Rate limiting checks
             "no_rate_limiting": SECURITY_CHECK_NO_RATE_LIMITING,
+            # Page Content: titles, Server headers and issuers already collected
+            **page_content_enabled(settings),
         }
 
         # Only run if at least one check is enabled

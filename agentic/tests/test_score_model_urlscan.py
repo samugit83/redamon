@@ -55,12 +55,51 @@ class TestUrlscanLeakRows(unittest.TestCase):
         self.assertGreater(console.risk, listing.risk)
 
 
+class TestPageContentChecks(unittest.TestCase):
+    """Item 5's live security_check types: classed on the rows they resemble,
+    a title-based check below a fact's 1.0, never the generic fallback."""
+
+    TYPES = ("open_console", "debug_page", "unfinished_installer", "dev_server",
+             "directory_listing", "defaced_page", "takeover_error_page", "test_certificate")
+
+    def _check(self, ftype, severity="high", **kw):
+        return {"id": "x", "label": "Vulnerability", "source": "security_check", "type": ftype,
+                "severity": severity, "name": ftype, **kw}
+
+    def test_every_type_has_its_own_row(self):
+        for t in self.TYPES:
+            self.assertIs(sm.classify_security_check(t), sm.SECURITY_CHECK_CLASSES[t])
+        self.assertEqual(sm.SECURITY_CHECK_CLASSES["open_console"].name, "rce")
+        self.assertEqual(sm.SECURITY_CHECK_CLASSES["takeover_error_page"].name, "takeover")
+
+    def test_title_based_checks_are_strong_evidence_not_proof(self):
+        for t in ("open_console", "unfinished_installer", "debug_page", "directory_listing",
+                  "defaced_page", "takeover_error_page"):
+            self.assertEqual(sm.SECURITY_CHECK_CONFIDENCE[t][0], 0.75)
+        self.assertNotIn("dev_server", sm.SECURITY_CHECK_CONFIDENCE)
+
+    def test_an_open_console_ranks_above_a_missing_header(self):
+        console = sm.score(self._check("open_console", "critical"))
+        header = sm.score(self._check("missing_referrer_policy", "low"))
+        self.assertGreater(console.risk, header.risk)
+
+    def test_a_dangling_name_is_not_an_exploitable_takeover(self):
+        dangling = self._check("takeover_error_page", "low", outcome="dangling_dns")
+        likely = self._check("takeover_error_page", "high", outcome="likely_takeover")
+        klass = sm._class_for(likely)
+        self.assertTrue(sm._is_exploitable_class(likely, klass))
+        self.assertFalse(sm._is_exploitable_class(dangling, klass))
+
+
 class TestFactQueries(unittest.TestCase):
     def _query(self, name):
         return next(q["query"] for q in FINDING_QUERIES if q["name"] == name)
 
+    def test_the_takeover_outcome_reaches_the_scorer(self):
+        self.assertIn("v.outcome AS outcome", self._query("vulnerabilities"))
+
     def test_the_kind_reaches_the_scorer(self):
-        self.assertIn("coalesce(v.link_kind, v.file_kind, v.family) AS finding_kind",
+        self.assertIn("coalesce(v.link_kind, v.file_kind, v.problem, v.provider, v.family) AS finding_kind",
                       self._query("vulnerabilities"))
 
     def test_a_secret_on_a_subdomain_resolves_its_host(self):

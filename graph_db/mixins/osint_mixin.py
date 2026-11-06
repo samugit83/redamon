@@ -1053,8 +1053,15 @@ class OsintMixin:
         return stats
 
 
+    def update_graph_from_urlscan_takeover(self, recon_data: dict, user_id: str,
+                                           project_id: str) -> dict:
+        """The takeover verdict's findings (item 5), decided after httpx: the
+        same writer, reading only that list."""
+        return self.update_graph_from_urlscan_findings(recon_data, user_id, project_id,
+                                                       keys=("takeover_findings",))
+
     def update_graph_from_urlscan_findings(self, recon_data: dict, user_id: str, project_id: str,
-                                           keys: tuple = ("findings",)) -> dict:
+                                           keys: tuple = ("findings", "problem_pages")) -> dict:
         """The findings urlscan's history gives about the target: leaked links,
         exposed files, open redirects, problem and takeover pages (Vulnerability
         {source: 'urlscan_leak'}) and secrets written in URLs (Secret {source:

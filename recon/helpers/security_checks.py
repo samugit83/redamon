@@ -22,6 +22,7 @@ from urllib.parse import quote, urlparse
 import concurrent.futures
 
 from recon.helpers import catchall
+from recon.helpers import page_signals
 from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 from recon.helpers.cdn_ranges import (
     collect_asn_cdn_ips,
@@ -1286,8 +1287,13 @@ def _expired_from_not_after(not_after) -> Optional[bool]:
         return None
 
 
-def _iter_cert_targets(recon_data: Dict[str, Any]):
+def _iter_cert_targets(recon_data: Dict[str, Any], nameless: bool = False):
     """Yield (host, ip, port, verdicts) for EVERY certificate already in memory.
+
+    httpx certificates with no subject CN and no SAN are skipped (a name check
+    would only guess), unless `nameless`: the issuer rules of the Page Content
+    group read the issuer alone, and a default ingress certificate often names
+    nobody.
 
     Phase 1.0's rule is to gate the consumers on cert-data AVAILABILITY, not on
     which tool produced it. tlsx is the richer source (it reports the verdict
@@ -1319,6 +1325,7 @@ def _iter_cert_targets(recon_data: Dict[str, Any]):
             "version_enum": e.get("version_enum") or [],
             "cipher_enum": e.get("cipher_enum") or [],
             "covers_siblings": e.get("mismatch_cert_covers_siblings") or [],
+            "issuer_dn": e.get("issuer_dn"), "issuer_cn": e.get("issuer_cn"),
             "source": "tlsx",
         }
 
@@ -1328,7 +1335,8 @@ def _iter_cert_targets(recon_data: Dict[str, Any]):
             continue
         tls = info.get("tls") or {}
         cert = tls.get("certificate") or {}
-        if not (cert.get("subject_cn") or cert.get("san")):
+        if not (cert.get("subject_cn") or cert.get("san")) and not (
+                nameless and (cert.get("issuer") or cert.get("issuer_cn"))):
             continue
         try:
             parsed = urlparse(str(url))
@@ -1356,6 +1364,8 @@ def _iter_cert_targets(recon_data: Dict[str, Any]):
             "wildcard": bool(wildcard) if wildcard is not None else _cert_is_wildcard(san),
             "tls_version": tls.get("version"), "cipher": tls.get("cipher"),
             "version_enum": [], "cipher_enum": [],
+            "issuer_dn": cert.get("issuer_dn") or cert.get("issuer"),
+            "issuer_cn": cert.get("issuer_cn"),
             "source": "http_probe",
         }
 
@@ -1435,7 +1445,132 @@ def run_cert_hygiene_checks_only(recon_data: Dict[str, Any],
     probing the skip is there to prevent.
     """
     findings = run_tls_data_checks(recon_data, enabled_checks)
+    findings += run_page_content_checks(recon_data, enabled_checks, pages=False)
     return _assemble_security_result(findings, enabled_checks, 0, 0)
+
+
+# =============================================================================
+# Page Content checks (item 5): titles, Server headers and certificate issuers
+# httpx and tlsx already collected, against the page_signals catalog. No
+# request: the data is in memory.
+# =============================================================================
+
+#: Live check type -> (catalog family, the setting that switches it).
+PAGE_CONTENT_CHECKS = {
+    "open_console": ("open_console", "SECURITY_CHECK_OPEN_CONSOLES"),
+    "debug_page": ("debug_page", "SECURITY_CHECK_DEBUG_PAGES"),
+    "unfinished_installer": ("unfinished_installer", "SECURITY_CHECK_UNFINISHED_INSTALLERS"),
+    "dev_server": ("dev_server", "SECURITY_CHECK_DEV_SERVERS"),
+    "directory_listing": ("directory_listing", "SECURITY_CHECK_DIRECTORY_LISTING"),
+    "defaced_page": ("defaced_page", "SECURITY_CHECK_DEFACED_PAGES"),
+    "takeover_error_page": ("takeover", "SECURITY_CHECK_TAKEOVER_ERROR_PAGES"),
+    "test_certificate": ("test_certificate", "SECURITY_CHECK_TEST_CERTIFICATES"),
+}
+
+_PAGE_CONTENT_ADVICE = {
+    "open_console": "Put it behind a login, or take it off the internet: anyone can use it as it is.",
+    "debug_page": "Turn debug mode off in production: the page shows code or settings.",
+    "unfinished_installer": "Finish the installation or remove the installer: whoever completes it owns the site.",
+    "dev_server": "Serve the site through a production web server: a development server is not built for the internet.",
+    "directory_listing": "Turn directory listing off: every file in the folder can be downloaded.",
+    "defaced_page": "Treat it as an incident: someone else changed the site.",
+    "takeover": "Remove the DNS record, or claim the name on the provider again. Turn on Subdomain Takeover for the full verdict.",
+    "test_certificate": "Install a real certificate: a test or default certificate means a test deployment, or a host the ingress does not know.",
+}
+
+
+def page_content_enabled(settings: Dict[str, Any]) -> Dict[str, bool]:
+    """The Page Content entries of an enabled-checks dict, from the settings."""
+    return {check: bool(settings.get(key, True)) for check, (_family, key) in PAGE_CONTENT_CHECKS.items()}
+
+
+def _dns_cname(dns_subdomains: Dict[str, Any], host: str) -> list:
+    records = ((dns_subdomains or {}).get(host) or {}).get("records") or {}
+    cname = records.get("CNAME")
+    if isinstance(cname, str):
+        return [cname]
+    return [c for c in cname if isinstance(c, str)] if isinstance(cname, list) else []
+
+
+def run_page_content_checks(recon_data: Dict[str, Any], enabled_checks: Dict[str, bool],
+                            pages: bool = True) -> List[Dict]:
+    """The live Page Content findings: one per host, path and problem for a
+    page (one per host for a server or a certificate). Pages are described by
+    httpx's last hop, so paths, the root-only rule and the finding's URL use
+    `final_url`. A status the partial builder did not know (`status_unknown`)
+    satisfies no status condition. `pages=False` runs the certificate rules
+    alone (the certificate-only fallback when the active scans are skipped)."""
+    family_type = {family: check for check, (family, _key) in PAGE_CONTENT_CHECKS.items()}
+    on = {family for check, (family, _key) in PAGE_CONTENT_CHECKS.items()
+          if enabled_checks.get(check, True)}
+    findings: List[Dict] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    def _add_finding(family, match, url, hostname, ip, evidence_of, extra):
+        check_type = family_type[family]
+        key = (check_type, url)
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append({
+            "type": check_type, "severity": match["severity"],
+            "name": f"{match['label']}: {page_signals.FAMILY_LABEL[family]}",
+            "description": (f"{evidence_of} in this scan ({match['matched']}). "
+                            f"{_PAGE_CONTENT_ADVICE[family]}"),
+            "evidence": match["matched"], "url": url, "source": "security_check",
+            "family": family, "matched": match["matched"], "problem": match["problem"],
+            **({"provider": match["provider"], "outcome": match["outcome"]} if family == "takeover" else {}),
+            **({"hostname": hostname} if hostname else {"matched_ip": ip}),
+            **extra,
+        })
+
+    if pages and on - {"test_certificate"}:
+        dns_subdomains = (recon_data.get("dns") or {}).get("subdomains") or {}
+        by_url = (recon_data.get("http_probe") or {}).get("by_url") or {}
+        for url in sorted(by_url):
+            info = by_url[url]
+            if not isinstance(info, dict) or not info.get("status_code"):
+                continue
+            final = str(info.get("final_url") or url)
+            try:
+                parsed = urlparse(final)
+                host = (parsed.hostname or info.get("host") or "").lower()
+            except ValueError:
+                continue
+            if not host:
+                continue
+            status = None if info.get("status_unknown") else info.get("status_code")
+            cname = info.get("cname")
+            cname = ([cname] if isinstance(cname, str) else cname) or _dns_cname(dns_subdomains, host)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            for match in page_signals.match_page(
+                    info.get("title"), info.get("server"), status, parsed.path or "/",
+                    info.get("content_type"), host, final, cname):
+                family = match["family"]
+                if family not in on:
+                    continue
+                per_host = family in page_signals.PER_HOST_FAMILIES
+                target = origin if per_host else f"{origin}{parsed.path or '/'}"
+                is_ip = _looks_like_ip(host)
+                _add_finding(family, match, target, None if is_ip else host, host,
+                             f"httpx got a {page_signals.FAMILY_LABEL[family]} at {target}",
+                             {"status_code": info.get("status_code"), "server": info.get("server")})
+
+    if "test_certificate" in on:
+        targets = sorted(_iter_cert_targets(recon_data, nameless=True),
+                         key=lambda t: (str(t[0] or t[1] or ""), int(t[2] or 0)))
+        for host, ip, port, c in targets:
+            match = next(iter(page_signals.match_certificate(c.get("issuer_dn"), c.get("issuer_cn"))), None)
+            if not match:
+                continue
+            is_ip = _looks_like_ip(str(host))
+            hostname = host if host and not is_ip else None
+            name = _url_host(host or ip or "")
+            if not name:
+                continue
+            _add_finding("test_certificate", match, f"https://{name}", hostname, ip or host,
+                         f"{host or ip}:{port} presented a {match['label']}", {"port": port})
+    return findings
 
 
 def run_tls_data_checks(recon_data: Dict[str, Any], enabled_checks: Dict[str, bool]) -> List[Dict]:
@@ -3341,11 +3476,13 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
     enabled_port = sum(1 for c in port_checks if enabled_checks.get(c, False))
     enabled_app = sum(1 for c in app_checks if enabled_checks.get(c, False))
     enabled_rate = sum(1 for c in rate_checks if enabled_checks.get(c, False))
+    enabled_page = sum(1 for c in PAGE_CONTENT_CHECKS if enabled_checks.get(c, False))
 
     print(f"[*][SecurityCheck] Enabled checks:")
     print(f"[*][SecurityCheck]   - Direct IP: {enabled_ip}, TLS: {enabled_tls}, Headers: {enabled_headers}")
     print(f"[*][SecurityCheck]   - Auth: {enabled_auth}, DNS: {enabled_dns}, Port/Service: {enabled_port}")
-    print(f"[*][SecurityCheck]   - App Security: {enabled_app}, Rate Limit: {enabled_rate}")
+    print(f"[*][SecurityCheck]   - App Security: {enabled_app}, Rate Limit: {enabled_rate}, "
+          f"Page Content: {enabled_page}")
     print("=" * 70 + "\n")
 
     all_findings = []
@@ -3404,6 +3541,14 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
         if tls_data_findings:
             all_findings.extend(tls_data_findings)
             print(f"[+][SecurityCheck] Found {len(tls_data_findings)} TLS-hygiene issues from cert data")
+
+    # Page Content (item 5): the titles, Server headers and issuers already in
+    # memory, against the problem-page catalog. No request.
+    if enabled_page > 0 and (recon_data.get("tlsx") or recon_data.get("http_probe")):
+        page_findings = run_page_content_checks(recon_data, enabled_checks)
+        if page_findings:
+            all_findings.extend(page_findings)
+            print(f"[+][SecurityCheck] Found {len(page_findings)} page-content issues from httpx and tlsx data")
 
     # Run Security Headers checks
     if enabled_headers > 0 and hostnames:

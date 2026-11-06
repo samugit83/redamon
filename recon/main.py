@@ -569,6 +569,8 @@ _TLS_HYGIENE_CHECK_SETTINGS = {
     "tls_weak_version": "SECURITY_CHECK_TLS_WEAK_VERSION",
     "tls_weak_cipher": "SECURITY_CHECK_TLS_WEAK_CIPHER",
     "tls_wildcard_overbroad": "SECURITY_CHECK_TLS_WILDCARD_OVERBROAD",
+    # Item 5's certificate rule reads the same stored certificates.
+    "test_certificate": "SECURITY_CHECK_TEST_CERTIFICATES",
 }
 
 
@@ -2077,6 +2079,17 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     _run_ip_attribution(combined_result, _settings, output_file)
     _write_shodan_cves(combined_result)
     _write_netlas(combined_result)
+
+    # Item 5: which deleted-service pages urlscan recorded still describe their
+    # host, decided with this scan's DNS and live pages. Outside the httpx step
+    # (with httpx off the NXDOMAIN row still decides) and before Phase A, whose
+    # copies Subdomain Takeover reads urlscan.takeover_hosts from.
+    if (combined_result.get("urlscan") or {}).get("takeover_pages"):
+        from recon.main_recon_modules.urlscan_takeover import run_takeover_verdict
+        combined_result = run_takeover_verdict(combined_result, _settings)
+        if (combined_result.get("urlscan") or {}).get("takeover_findings"):
+            save_recon_file(combined_result, output_file)
+            _graph_update_bg("update_graph_from_urlscan_takeover", combined_result, USER_ID, PROJECT_ID)
 
     # Check if we should skip active scanning modules (resource_enum, vuln_scan)
     # These require live targets from http_probe to work

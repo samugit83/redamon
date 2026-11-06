@@ -8560,6 +8560,131 @@ fields:
       Whether this individual check runs during the security-check pass. Each
       check is one condition tested against what the earlier phases already found;
       turning it off removes that finding class without affecting the rest.
+  securityCheckOpenConsoles:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_OPEN_CONSOLES"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Open Consoles Without Login: live consoles that
+      show their content without asking to log in (Jupyter, Jenkins, Ray, Spark,
+      Flink, Airflow, Mongo Express, phpMyAdmin, Selenium, Prometheus and others),
+      recognised by the page title with status 200 (security_check type
+      open_console). It reads what httpx and tlsx already collected and sends no
+      request; off removes this finding class without affecting the other checks.
+  securityCheckDebugPages:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_DEBUG_PAGES"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Debug Pages: live debug and error pages that
+      show code or settings (Werkzeug, Django, Laravel, Symfony, Rails, phpinfo,
+      Apache server-status), recognised by the page title (debug_page). It reads
+      what httpx and tlsx already collected and sends no request; off removes this
+      finding class without affecting the other checks.
+  securityCheckUnfinishedInstallers:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_UNFINISHED_INSTALLERS"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Unfinished Installers: live install pages
+      anyone can complete to take over the site (WordPress, Joomla, Drupal, Gitea,
+      TYPO3, PrestaShop and others), recognised by the page title
+      (unfinished_installer). It reads what httpx and tlsx already collected and
+      sends no request; off removes this finding class without affecting the other
+      checks.
+  securityCheckDevServers:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_DEV_SERVERS"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Development Servers: live sites answered by a
+      development server not built for the internet (Werkzeug, Python's built-in
+      server, WEBrick), recognised by the Server header, one finding per host
+      (dev_server). It reads what httpx and tlsx already collected and sends no
+      request; off removes this finding class without affecting the other checks.
+  securityCheckDirectoryListing:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_DIRECTORY_LISTING"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Directory Listings: live pages that list every
+      file in a folder (Index of /, IIS, Tomcat, Jetty and Python listings),
+      recognised by the page title (directory_listing). It reads what httpx and tlsx
+      already collected and sends no request; off removes this finding class without
+      affecting the other checks.
+  securityCheckDefacedPages:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_DEFACED_PAGES"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Defaced Pages: a live root page whose title
+      says Hacked by (defaced_page). It reads what httpx and tlsx already collected
+      and sends no request; off removes this finding class without affecting the
+      other checks.
+  securityCheckTakeoverErrorPages:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_TAKEOVER_ERROR_PAGES"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Takeover Error Pages: live hosts showing a
+      cloud provider's deleted-service page (GitHub Pages, Heroku, Surge, S3 and
+      others), recognised by title, Server header and status; severity from the
+      provider's outcome. Subdomain Takeover gives the full verdict
+      (takeover_error_page). It reads what httpx and tlsx already collected and
+      sends no request; off removes this finding class without affecting the other
+      checks.
+  securityCheckTestCertificates:
+    tool: security_check
+    runtime_key: "SECURITY_CHECK_TEST_CERTIFICATES"
+    unit: none
+    phase: http_probe
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    group: not-tuning
+    meaning: >-
+      Whether the Page Content check Test or Default Certificates: live hosts using
+      a Let's Encrypt staging certificate or the default certificate of Kubernetes
+      Ingress or Traefik, a test deployment or a host the ingress does not know;
+      read from the certificate issuer, one finding per host, also when the active
+      scans are skipped (test_certificate). It reads what httpx and tlsx already
+      collected and sends no request; off removes this finding class without
+      affecting the other checks.
   securityCheckRedisNoAuth:
     tool: security_check
     runtime_key: "SECURITY_CHECK_REDIS_NO_AUTH"
@@ -10315,6 +10440,38 @@ fields:
       site the browser ended on), leaked reset or invite links and sign-in flows on
       the target's own URLs. The other sites are only recorded as External Domains,
       origin only, never scanned. Counts against urlscanMaxSearches.
+  urlscanTakeoverPages:
+    tool: urlscan
+    runtime_key: "URLSCAN_TAKEOVER_PAGES"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Takeover Pages: checks the page titles urlscan already returned for the error
+      pages a cloud provider shows when a subdomain points to a deleted service
+      (Surge, Ghost, GitHub Pages, Heroku, Azure, S3 and others). Each host is then
+      checked after httpx against this scan's DNS and live pages: only a host that
+      still points to the provider and shows the same page now, or whose CNAME
+      target no longer exists, is reported (takeover_page_seen). When Subdomain
+      Takeover is on, these hosts join its list. No extra searches; a host only
+      urlscan knows costs one or two DNS queries.
+  urlscanProblemPages:
+    tool: urlscan
+    runtime_key: "URLSCAN_PROBLEM_PAGES"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Problem Pages from Titles and Certificates: checks the titles, server names
+      and certificates urlscan already returned for consoles open without login
+      (Jupyter, Jenkins, Spark, Airflow and others), debug pages, unfinished
+      installers, development servers, folder listings, defaced pages and test or
+      default certificates. Each one becomes a finding marked seen on urlscan, at
+      most high. No extra searches.
   useBruteforceForSubdomains:
     tool: pipeline
     runtime_key: "USE_BRUTEFORCE_FOR_SUBDOMAINS"

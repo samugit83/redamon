@@ -64,6 +64,8 @@ def _ip_port_key(ip: str, port) -> str:
 _SECURITY_CHECK_EXTRA_FIELDS = (
     "detection_method", "waf_confidence", "waf_type", "ai_reasoning", "service",
     "control_check",
+    # Page Content checks (item 5): the catalog row that matched.
+    "family", "matched", "problem", "provider", "outcome",
 )
 
 #: Words nmap and the fingerprinters put after a product name without making

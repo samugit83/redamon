@@ -144,6 +144,13 @@ describe('/api/analytics/redzone/webInitAccess', () => {
     ]))
   })
 
+  test("lists the live open consoles and installers, never urlscan's history types", async () => {
+    await webInitRoute.GET(makeRequest('p1'))
+    const types = runCalls[0].params.allTypes as string[]
+    expect(types).toEqual(expect.arrayContaining(['open_console', 'unfinished_installer']))
+    expect(types.filter(t => t.endsWith('_seen'))).toEqual([])
+  })
+
   test('builds headerGrid from securityHeadersPresent (case-insensitive)', async () => {
     runReturn = [{
       baseUrl: 'https://api.example.com',

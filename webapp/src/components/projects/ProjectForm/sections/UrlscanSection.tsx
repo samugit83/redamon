@@ -188,6 +188,25 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                   description="Marks the URLs urlscan already returned that are documents or data rather than web pages: PDF, Word, Excel, CSV, ZIP, JSON and raw text. They are listed for review on their endpoints, not reported as findings. No extra searches."
                 />
               </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Problem Pages</h3>
+                <UrlscanToggle
+                  checked={data.urlscanTakeoverPages ?? true}
+                  onChange={(checked) => updateField('urlscanTakeoverPages', checked)}
+                  label="Takeover Pages"
+                  description="Checks the page titles urlscan already returned for the error pages a cloud provider shows when a subdomain points to a deleted service (Surge, Ghost, GitHub Pages, Heroku, Azure, S3…). Each host is then checked against this scan's DNS and live pages: only hosts that still point to a missing service are reported. When Subdomain Takeover is on, these hosts are added to its list. No extra searches."
+                  hint={data.subdomainTakeoverEnabled
+                    ? "These hosts are added to Subdomain Takeover's list."
+                    : 'Subdomain Takeover is off: these hosts get only the DNS and live-page check.'}
+                />
+                <UrlscanToggle
+                  checked={data.urlscanProblemPages ?? true}
+                  onChange={(checked) => updateField('urlscanProblemPages', checked)}
+                  label="Problem Pages from Titles and Certificates"
+                  description={'Checks the titles, server names and certificates urlscan already returned for consoles open without login (Jupyter, Jenkins, Spark, Airflow…), debug pages, unfinished installers, development servers, folder listings, defaced pages and test or default certificates. Each one becomes a finding marked "seen on urlscan". No extra searches.'}
+                />
+              </div>
             </>
           )}
         </div>

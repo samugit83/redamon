@@ -916,6 +916,17 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
             if isinstance(n, str) and n.strip():
                 names.add(n.strip().lower())
 
+    # Item 5: names whose urlscan deleted-service page this scan's verdict kept.
+    # A name from history joins only a group that takes found names (never an
+    # EXACT one) and only as a target of its scope; the RoE below applies too.
+    root_names = {r.strip().lower() for r in roots if isinstance(r, str) and r.strip()}
+    for host in (recon_data.get("urlscan") or {}).get("takeover_hosts") or []:
+        if not isinstance(host, str) or not host.strip() or not scope.may_inject:
+            continue
+        h = host.strip().strip(".").lower()
+        if scope.admits(h) if scope.mode else any(h.endswith("." + r) for r in root_names):
+            names.add(h)
+
     names = {n for n in names if not n.startswith("ip-targets.")}
     if scope.mode and not isinstance(recon_data.get("domains"), list):
         if scope.exact:

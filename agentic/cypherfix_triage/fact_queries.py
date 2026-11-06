@@ -367,10 +367,12 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.triage_evidence_hash AS triage_evidence_hash,
        v.validation_status AS validation_status, v.validated_at AS validated_at,
        v.detection_method AS detection_method,
+       // A live takeover error page that only leaves the name dangling is not exploitable.
+       v.outcome AS outcome,
        // route_exposure's secret_in_response is classed by its detector name.
        v.secret_types AS secret_types,
        // urlscan history: the kind keys its detector (urlscan_leak:{type}:{kind}).
-       coalesce(v.link_kind, v.file_kind, v.family) AS finding_kind,
+       coalesce(v.link_kind, v.file_kind, v.problem, v.provider, v.family) AS finding_kind,
        toString(v.updated_at) AS seen_updated_at,
        // Host resolution, in the order of section 3.2.6.
        // A pattern comprehension takes ONE pattern, so each candidate is its

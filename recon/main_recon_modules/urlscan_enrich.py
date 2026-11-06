@@ -405,6 +405,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             ("URLSCAN_SECRETS_IN_URLS", "Leak detection"),
             ("URLSCAN_SENSITIVE_FILES", "Exposed files"),
             ("URLSCAN_DOCUMENT_LINKS", "Exposed files"),
+            ("URLSCAN_TAKEOVER_PAGES", "Problem pages"),
+            ("URLSCAN_PROBLEM_PAGES", "Problem pages"),
             ("URLSCAN_API_KEY", "API credentials"),
             ("URLSCAN_KEY_ROTATOR", "API credentials"),
         ],
@@ -610,7 +612,10 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     quarantined_urls += redirect["quarantined_urls"]
     external_domain_entries += redirect["external_domains"]
     findings, url_secrets = _leak_findings(leak_inputs, quarantine, scope, settings)
-    findings += _file_findings(leak_inputs, quarantine, scope, settings)
+    problem_pages, takeover_pages = _problem_pages(
+        results, domain, quarantine, scope, settings, combined_result.get("dns") or {})
+    findings += _without_titled_pages(_file_findings(leak_inputs, quarantine, scope, settings),
+                                      problem_pages)
 
     urlscan_data = {
         "results_count": len(results),
@@ -624,6 +629,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "external_domains": external_domain_entries,
         "coverage": coverage,
         "findings": findings + redirect["findings"],
+        "problem_pages": problem_pages,
+        "takeover_pages": takeover_pages,
         "url_secrets": url_secrets,
         "redirect_entries": redirect["redirect_entries"],
         "redirect_start_hosts": redirect["start_hosts"],
@@ -639,6 +646,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     if findings or url_secrets:
         print(f"[+][URLScan] Findings from public visits: {len(findings)}, "
               f"secrets in URLs: {len(url_secrets)}")
+    if problem_pages or takeover_pages:
+        print(f"[+][URLScan] Problem pages: {len(problem_pages)}, deleted-service pages: "
+              f"{len(takeover_pages)} host(s), checked after httpx")
     if domain_age_days is not None:
         print(f"[+][URLScan] Domain age: {domain_age_days} days")
 
@@ -957,6 +967,119 @@ def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
             "props": {"sightings": len(slot["times"])},
         })
     return out
+
+
+def _visit_cname(dns: dict, host: str):
+    """The host's CNAME from this scan's DNS map: a list (empty for none) when
+    the map knows the host, None when it does not."""
+    entry = ((dns or {}).get("subdomains") or {}).get(host)
+    if not isinstance(entry, dict) or "records" not in entry:
+        return None
+    cname = (entry.get("records") or {}).get("CNAME")
+    if isinstance(cname, str):
+        return [cname]
+    return [c for c in cname if isinstance(c, str)] if isinstance(cname, list) else []
+
+
+def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scope: "HostScope",
+                   settings: dict, dns: dict) -> tuple:
+    """Item 5: the page titles, Server headers and certificates urlscan already
+    returned, checked against the problem-page catalog (page_signals.py).
+
+    Returns (problem findings, takeover pages). A problem page is one finding
+    per host, path and problem (per host for a server or a certificate). A
+    deleted-service page is only collected here, one per host: whether it still
+    describes the host is decided after httpx (urlscan_takeover.py), since a
+    CNAME to the provider is the normal state of a healthy site."""
+    want_takeover = bool(settings.get("URLSCAN_TAKEOVER_PAGES", True))
+    want_problems = bool(settings.get("URLSCAN_PROBLEM_PAGES", True))
+    if not (want_takeover or want_problems):
+        return [], []
+    from recon.helpers import page_signals as ps
+    groups: dict = {}
+    takeovers: dict = {}
+    for result in results:
+        if not isinstance(result, dict) or not _is_public(result):
+            continue
+        page = result.get("page") or {}
+        task = result.get("task") or {}
+        url = page.get("url") or ""
+        host = (urlparse(url).hostname or "").lower() if url else ""
+        if not host or not _extract_domain_from_url(url, domain) or not scope.host_ok(host):
+            continue
+        v = quarantine.verdict(url)
+        held = quarantine.holds(url)
+        when, uuid = task.get("time") or "", "" if held else (task.get("uuid") or "")
+        matches = ps.match_page(page.get("title"), page.get("server"), page.get("status"),
+                                urlparse(url).path or "/", page.get("mimeType"), host, url,
+                                _visit_cname(dns, host))
+        if want_problems and url.lower().startswith("https://"):
+            matches += ps.match_certificate(page.get("tlsIssuer"), "", page.get("tlsAgeDays"),
+                                            page.get("tlsValidDays"))
+        for m in matches:
+            if m["family"] == "takeover":
+                if not want_takeover:
+                    continue
+                slot = takeovers.setdefault(host, {"times": [], "newest": "", **m})
+                slot["times"].append(when)
+                if when >= slot["newest"]:
+                    slot.update({**m, "newest": when, "scan_id": uuid,
+                                 "url": (v["masked_url"] or url).split("?", 1)[0],
+                                 "title": page.get("title") or "", "server": page.get("server") or "",
+                                 "status": page.get("status")})
+                continue
+            if not want_problems:
+                continue
+            per_host = m["family"] in ps.PER_HOST_FAMILIES
+            path = "/" if per_host else (v["masked_path"] or "/")
+            slot = groups.setdefault((host, path, m["family"], m["problem"]),
+                                     {"times": [], "newest": "", **m})
+            slot["times"].append(when)
+            if when >= slot["newest"]:
+                origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
+                slot.update({"newest": when, "scan_id": uuid, "matched": m["matched"],
+                             "url": origin if per_host else (v["masked_url"] or url).split("?", 1)[0]})
+    problems = []
+    for (host, path, family, problem), slot in sorted(groups.items()):
+        first, last = _span(slot["times"])
+        what = f"{slot['label']} ({ps.FAMILY_LABEL[family]})"
+        problems.append({
+            "type": ps.FAMILY_TYPES[family][1], "kind": problem, "kind_field": "problem",
+            "host": host, "path": path, "url": slot["url"], "severity": slot["severity"],
+            "name": f"{what[0].upper()}{what[1:]} seen on urlscan",
+            "description": (
+                f"{host}{'' if path == '/' else path} showed a {what} in {len(slot['times'])} "
+                f"public urlscan scan(s), seen from {first[:10] or 'unknown'} to "
+                f"{last[:10] or 'unknown'} (matched: {slot['matched']}). RedAmon did not request "
+                f"it; the Security Checks' Page Content group checks this scan's live pages."),
+            "first_seen": first, "last_seen": last, "urlscan_scan_id": slot["scan_id"],
+            "props": {"family": family, "matched": slot["matched"], "sightings": len(slot["times"])},
+        })
+    pages = []
+    for host, slot in sorted(takeovers.items()):
+        first, last = _span(slot["times"])
+        pages.append({
+            "host": host, "provider": slot["provider"], "problem": slot["problem"],
+            "label": slot["label"], "outcome": slot["outcome"], "matched": slot["matched"],
+            "title": slot["title"], "server": slot["server"], "status": slot["status"],
+            "url": slot["url"], "first_seen": first, "last_seen": last,
+            "urlscan_scan_id": slot["scan_id"], "sightings": len(slot["times"]),
+        })
+    return problems, pages
+
+
+#: Item 3's path-based kinds that a matching title (item 5) names more precisely.
+_TITLED_FILE_KINDS = {"installer": "unfinished_installer", "debug_page": "debug_page",
+                      "debug_console": "debug_page"}
+
+
+def _without_titled_pages(file_findings: list, problem_pages: list) -> list:
+    """One finding for one page: an installer or a debug page found by its path
+    (item 3) and by its title (item 5) keeps the title's, which says what the
+    page showed."""
+    titled = {(p["host"], p["path"], p["props"]["family"]) for p in problem_pages}
+    return [f for f in file_findings
+            if (f.get("host"), f.get("path"), _TITLED_FILE_KINDS.get(f.get("kind"))) not in titled]
 
 
 #: Sign-in flows send the user back to a registered address on purpose: an

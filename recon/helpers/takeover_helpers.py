@@ -14,6 +14,7 @@ Scoring rules: see score_finding().
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
 from typing import Iterable, List, Optional
 
@@ -85,6 +86,7 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
     ".github.io": "github-pages",
     ".herokuapp.com": "heroku",
     ".herokussl.com": "heroku",
+    ".herokudns.com": "heroku",
     ".s3.amazonaws.com": "aws-s3",
     ".s3-website": "aws-s3",
     ".cloudfront.net": "aws-cloudfront",
@@ -104,6 +106,7 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
     ".netlify.com": "netlify",
     ".vercel.app": "vercel",
     ".pantheonsite.io": "pantheon",
+    ".pantheon.io": "pantheon",
     ".webflow.io": "webflow",
     ".tumblr.com": "tumblr",
     ".statuspage.io": "statuspage",
@@ -114,6 +117,18 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
     ".bitbucket.io": "bitbucket",
     ".stats.uptimerobot.com": "uptimerobot",
     ".mailgun.org": "mailgun",
+    # Providers the problem-page catalog (page_signals.py) names by their
+    # deleted-service page: the verdict needs the CNAME to point to them.
+    ".uberflip.com": "uberflip",
+    ".animaapp.io": "anima",
+    ".canny.io": "canny",
+    ".hatenablog.com": "hatenablog",
+    ".hatenadiary.com": "hatenablog",
+    ".wixdns.net": "wix",
+    ".framer.app": "framer",
+    ".framer.website": "framer",
+    ".pingdom.com": "pingdom",
+    ".tilda.ws": "tilda",
     ".akamaiedge.net": "akamai",
     ".edgekey.net": "akamai",
     ".edgesuite.net": "akamai",
@@ -151,11 +166,19 @@ AUTO_EXPLOITABLE_PROVIDERS: frozenset[str] = frozenset({
 })
 
 
+#: Every S3 endpoint form: bucket.s3.amazonaws.com, the regional
+#: bucket.s3.eu-west-1.amazonaws.com and bucket.s3-eu-west-1.amazonaws.com, the
+#: website and dual-stack ones.
+_S3_CNAME = re.compile(r"(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$")
+
+
 def provider_from_cname(cname: Optional[str]) -> Optional[str]:
     """Map a CNAME target hostname to a canonical provider slug, or None."""
     if not cname:
         return None
     lowered = cname.lower().rstrip(".")
+    if _S3_CNAME.search(lowered):
+        return "aws-s3"
     # Check longest CNAME patterns first
     best_match: tuple[int, Optional[str]] = (0, None)
     for signal, provider in PROVIDER_FROM_SIGNAL.items():

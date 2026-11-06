@@ -285,6 +285,28 @@ def _graph_live_bases(graph_client, user_id: str, project_id: str, roots: list, 
         return {r["url"] for r in rows if r["url"] and keep(url_host(r["url"], r["host"] or ""))}
 
 
+def _graph_live_pages(graph_client, user_id: str, project_id: str, hosts: list) -> dict:
+    """{host: [page]} from the graph's probed Endpoints (the last httpx run),
+    in the shape urlscan_takeover.decide reads."""
+    hosts = sorted({str(h).lower() for h in hosts or [] if h})
+    if not hosts:
+        return {}
+    out: dict = {}
+    with graph_client.driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+            WHERE toLower(b.host) IN $hosts AND e.status_code IS NOT NULL
+            RETURN toLower(b.host) AS host, coalesce(e.final_url, e.url) AS final_url,
+                   e.title AS title, e.server AS server, e.status_code AS status,
+                   e.content_type AS content_type, e.cname AS cname
+            """, uid=user_id, pid=project_id, hosts=hosts)
+        for r in rows:
+            out.setdefault(r["host"], []).append({k: r[k] for k in (
+                "final_url", "title", "server", "status", "content_type", "cname")})
+    return out
+
+
 def run_urlscan(config: dict) -> dict:
     """
     Run partial URLScan.io passive enrichment, once per root.
@@ -366,6 +388,20 @@ def run_urlscan(config: dict) -> dict:
                 findings_stats = graph_client.update_graph_from_urlscan_findings(
                     recon_data=combined_result, user_id=user_id, project_id=project_id)
                 print(f"[+][Partial Recon] Findings graph update: {json.dumps(findings_stats, default=str)}")
+
+                # Item 5: a deleted-service page is kept only when the host still
+                # points to the provider and the page (the graph's last httpx
+                # run) or NXDOMAIN says so now.
+                pages = urlscan_data.get("takeover_pages") or []
+                if pages:
+                    from recon.main_recon_modules.urlscan_takeover import run_partial_verdict
+                    live = _graph_live_pages(graph_client, user_id, project_id,
+                                             [p.get("host") for p in pages])
+                    found, hosts = run_partial_verdict(pages, live)
+                    urlscan_data["takeover_findings"], urlscan_data["takeover_hosts"] = found, hosts
+                    print(f"[+][Partial Recon] Takeover verdict: {len(found)} of {len(pages)} host(s) kept")
+                    if found:
+                        graph_client.update_graph_from_urlscan_takeover(combined_result, user_id, project_id)
 
                 # urlscan's addresses get every module's labels (item 4a). A
                 # partial run has no httpx step: the live bases are the graph's.

@@ -110,6 +110,13 @@ describe('deriveWebInitGrade', () => {
     expect(grade).toBe('C')
   })
 
+  test('an open console or an installer grades F whatever the headers', () => {
+    for (const door of ['open_console', 'unfinished_installer']) {
+      expect(deriveWebInitGrade([...WEB_INIT_HEADER_CHECKS], [door]).grade).toBe('F')
+    }
+    expect(deriveWebInitGrade([...WEB_INIT_HEADER_CHECKS], ['login_no_https']).grade).toBe('A')
+  })
+
   test('vuln-only weighting: 6 vulns + 0 headers present → 12 total → F', () => {
     const { grade } = deriveWebInitGrade(
       [],

@@ -402,7 +402,15 @@
             "database_exposed",
             "redis_no_auth",
             "kubernetes_api_exposed",
-            "smtp_open_relay"
+            "smtp_open_relay",
+            "open_console",
+            "debug_page",
+            "unfinished_installer",
+            "dev_server",
+            "directory_listing",
+            "defaced_page",
+            "takeover_error_page",
+            "test_certificate"
           ],
           "value_groups": {
             "Direct IP access": [
@@ -450,8 +458,23 @@
               "redis_no_auth",
               "kubernetes_api_exposed",
               "smtp_open_relay"
+            ],
+            "Page content": [
+              "open_console",
+              "debug_page",
+              "unfinished_installer",
+              "dev_server",
+              "directory_listing",
+              "defaced_page",
+              "takeover_error_page",
+              "test_certificate"
             ]
           }
+        },
+        "problem": {
+          "type": "text",
+          "prop": "problem",
+          "label": "Problem page (catalog row)"
         },
         "missing_header": {
           "type": "text",
@@ -1035,6 +1058,26 @@
             "memory_dump",
             "salesforce_aura"
           ]
+        },
+        "problem": {
+          "type": "text",
+          "prop": "problem",
+          "label": "Problem page (catalog row)"
+        },
+        "outcome": {
+          "type": "enum",
+          "prop": "outcome",
+          "label": "Takeover outcome",
+          "values": [
+            "likely_takeover",
+            "possible_takeover",
+            "dangling_dns"
+          ]
+        },
+        "provider": {
+          "type": "text",
+          "prop": "provider",
+          "label": "Takeover provider"
         },
         "hostname": {
           "type": "host",

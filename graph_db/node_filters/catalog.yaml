@@ -102,7 +102,9 @@ kinds:
                  insecure_form_action, no_rate_limiting,
                  spf_missing, dmarc_missing, dnssec_missing, zone_transfer,
                  admin_port_exposed, database_exposed, redis_no_auth,
-                 kubernetes_api_exposed, smtp_open_relay]
+                 kubernetes_api_exposed, smtp_open_relay,
+                 open_console, debug_page, unfinished_installer, dev_server,
+                 directory_listing, defaced_page, takeover_error_page, test_certificate]
         value_groups:
           Direct IP access: [direct_ip_http, direct_ip_https, ip_api_exposed]
           TLS: [tls_expired, tls_expiring_soon, tls_self_signed, tls_hostname_mismatch,
@@ -115,6 +117,9 @@ kinds:
           DNS and mail: [spf_missing, dmarc_missing, dnssec_missing, zone_transfer]
           Exposed services: [admin_port_exposed, database_exposed, redis_no_auth,
                              kubernetes_api_exposed, smtp_open_relay]
+          Page content: [open_console, debug_page, unfinished_installer, dev_server,
+                         directory_listing, defaced_page, takeover_error_page, test_certificate]
+      problem:        { type: text, prop: problem, label: Problem page (catalog row) }
       missing_header: { type: text, prop: missing_header, label: Missing header }
       url:            { type: url, prop: url, label: URL }
       hostname:       { type: host, prop: hostname, label: Hostname }
@@ -260,6 +265,16 @@ kinds:
         label: File kind
         values: [env, vcs, private_key, db_dump, backup, log, config, debug_page, installer,
                  web_shell_trace, file_manager, debug_console, memory_dump, salesforce_aura]
+      problem:
+        type: text
+        prop: problem
+        label: Problem page (catalog row)
+      outcome:
+        type: enum
+        prop: outcome
+        label: Takeover outcome
+        values: [likely_takeover, possible_takeover, dangling_dns]
+      provider:   { type: text, prop: provider, label: Takeover provider }
       hostname:   { type: host, prop: hostname, label: Hostname }
       url:        { type: url, prop: url, label: URL (masked) }
       last_seen:  { type: text, prop: last_seen, label: Last seen on urlscan }

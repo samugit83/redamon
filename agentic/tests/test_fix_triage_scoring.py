@@ -75,6 +75,8 @@ def producer_check_types() -> set:
     types = set(re.findall(r'"type":\s*"([a-z0-9_]+)"', text))
     types |= set(re.findall(r'_add\(\s*"([a-z0-9_]+)"', text))
     types |= set(re.findall(r'"check_name":\s*"([a-z0-9_]+)"', text))
+    # The Page Content checks emit their type from the PAGE_CONTENT_CHECKS table.
+    types |= set(re.findall(r'^\s*"([a-z0-9_]+)":\s*\("[a-z_]+",\s*"SECURITY_CHECK_', text, re.M))
     return types
 
 
@@ -248,7 +250,7 @@ class TestSecurityCheckClasses(unittest.TestCase):
         """Guards the test above against a regex that matches nothing."""
         found = producer_check_types()
         for expected in ("redis_no_auth", "tls_weak_cipher_supported",
-                         "missing_coep", "dnssec_missing"):
+                         "missing_coep", "dnssec_missing", "open_console", "test_certificate"):
             self.assertIn(expected, found)
 
     def test_an_unauthenticated_redis_outranks_a_missing_dmarc(self):
