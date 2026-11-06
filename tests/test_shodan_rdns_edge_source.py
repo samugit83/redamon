@@ -103,10 +103,10 @@ class TestReadersIgnoreAShodanEdge(unittest.TestCase):
         sys.path.insert(0, os.path.join(_REPO, "agentic"))
         from cypherfix_triage.fact_queries import PROJECT_FACT_QUERIES
         query = " ".join(next(q for q in PROJECT_FACT_QUERIES if q["name"] == "gone_hosts")["query"].split())
-        self.assertIn("MATCH (n)-[r:RESOLVES_TO]->(:IP) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'",
-                      query)
-        self.assertIn("MATCH (n)<-[r:RESOLVES_TO]-(:Subdomain) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'",
-                      query)
+        # Forward DNS is an edge with no source: every passive writer, Shodan's
+        # included, stamps one when it creates the edge.
+        self.assertIn("MATCH (n)-[r:RESOLVES_TO]->(:IP) WHERE r.source IS NULL", query)
+        self.assertIn("MATCH (n)<-[r:RESOLVES_TO]-(:Subdomain) WHERE r.source IS NULL", query)
 
 
 if __name__ == "__main__":

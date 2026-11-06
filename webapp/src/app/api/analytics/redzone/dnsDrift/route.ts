@@ -3,6 +3,7 @@ import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -20,7 +21,8 @@ export async function GET(request: NextRequest) {
   const session = getGraphSession()
   try {
     // Surface owned domains with either:
-    //   - HISTORICALLY_RESOLVED_TO edges to IPs (from OTX passive DNS), or
+    //   - HISTORICALLY_RESOLVED_TO edges to IPs: the Domain's (OTX passive
+    //     DNS) and its Subdomains' (addresses public urlscan visits recorded), or
     //   - HAS_EXTERNAL_DOMAIN edges to foreign domains seen redirecting
     //   - Any dangling Subdomain (no DNS, no_http) belonging to the domain
     const result = await session.run(
@@ -29,7 +31,9 @@ export async function GET(request: NextRequest) {
        OPTIONAL MATCH (d)-[:HAS_EXTERNAL_DOMAIN]->(ext:ExternalDomain)
        OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(sd:Subdomain)
          WHERE sd.has_dns_records = false OR sd.status = 'no_http'
-       OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(anySd:Subdomain)-[:RESOLVES_TO]->(currentIp:IP)
+       OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(anySd:Subdomain)-[dnsr:RESOLVES_TO]->(currentIp:IP)
+         WHERE ${currentDns('dnsr')}
+       OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(histSd:Subdomain)-[subRel:HISTORICALLY_RESOLVED_TO]->(subIpHist:IP)
        WITH d,
             collect(DISTINCT {
               address: ipHist.address,
@@ -37,7 +41,18 @@ export async function GET(request: NextRequest) {
               country: ipHist.country,
               firstSeen: rel.first_seen,
               lastSeen: rel.last_seen,
-              recordType: rel.record_type
+              recordType: rel.record_type,
+              source: coalesce(rel.source, 'otx'),
+              host: d.name
+            }) + collect(DISTINCT {
+              address: subIpHist.address,
+              asn: subIpHist.asn,
+              country: subIpHist.country,
+              firstSeen: subRel.first_seen,
+              lastSeen: subRel.last_seen,
+              recordType: null,
+              source: subRel.source,
+              host: histSd.name
             }) AS historicResolutions,
             collect(DISTINCT currentIp.address) AS currentIps,
             collect(DISTINCT currentIp.asn)     AS currentAsns,
@@ -88,6 +103,8 @@ export async function GET(request: NextRequest) {
         firstSeen: h.firstSeen as string | null,
         lastSeen: h.lastSeen as string | null,
         recordType: h.recordType as string | null,
+        source: (h.source as string | null) ?? null,
+        host: (h.host as string | null) ?? null,
       }))
 
       const externalDomains = ((r.get('externalDomains') as any[]) || []).map(e => ({

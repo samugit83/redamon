@@ -53,10 +53,11 @@ def _run(results):
 
 def test_quarantined_urls_never_reach_urls_with_paths():
     data = _run(LEAKS + CLEAN)
+    from recon.helpers.url_leaks import mask_url
     full = [row["full_url"] for row in data["urls_with_paths"]]
     # The page a leaked invite redirected to is an ordinary page; only the
     # invite (the start URL) is quarantined.
-    assert sorted(full) == sorted([v["page"]["url"] for v in CLEAN] + ["https://app.example.test/login"])
+    assert sorted(full) == sorted([mask_url(v["page"]["url"]) for v in CLEAN] + ["https://app.example.test/login"])
     for row in data["urls_with_paths"]:
         assert not any(t in row["full_url"] for t in PLANTED)
 

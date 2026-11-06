@@ -12,6 +12,7 @@ import {
 } from '@/lib/partialReconScope'
 import { findLegacyDomains } from '@/lib/legacyGraph'
 import { notQuarantined } from '@/lib/graph/requestTargets'
+import { currentDns } from '@/lib/graph/forwardDns'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -49,6 +50,10 @@ function strings(record: Neo4jRecord | undefined, key: string): string[] {
  * itself in scope); `subPath(tail)` binds `s` (plus `tail`'s variables);
  * `hostOk(expr)` tests a lower-cased host expression.
  */
+// A path through RESOLVES_TO counts only current forward DNS: an address a
+// passive source once saw is not a target the tool reads (FORWARD_DNS).
+const dnsTail = (tail: string, joiner: string) => (tail.includes('dnsr:RESOLVES_TO') ? `${joiner}${currentDns('dnsr')}` : '')
+
 interface ScopeCypher {
   domains: string
   subPath: (tail: string) => string
@@ -58,7 +63,7 @@ interface ScopeCypher {
 const BY_GRAPH_SCOPE: ScopeCypher = {
   domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE ${graphHostInScopeCypher('toLower(d.name)')}`,
   subPath: tail => `OPTIONAL MATCH (s:Subdomain {user_id: $uid, project_id: $pid})${tail}
-    WHERE ${graphHostInScopeCypher('toLower(s.name)')}`,
+    WHERE ${graphHostInScopeCypher('toLower(s.name)')}${dnsTail(tail, ' AND ')}`,
   hostOk: host => graphHostInScopeCypher(host),
 }
 
@@ -72,7 +77,7 @@ function notUnderOtherDomain(host: string): string {
 
 const BY_DOMAIN_NAME: ScopeCypher = {
   domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains`,
-  subPath: tail => `OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)${tail}`,
+  subPath: tail => `OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)${tail}${dnsTail(tail, ' WHERE ')}`,
   hostOk: notUnderOtherDomain,
 }
 
@@ -81,16 +86,16 @@ const SUBDOMAIN_COUNT = (q: ScopeCypher) => `${q.domains}
   RETURN count(DISTINCT s) AS subdomainCount`
 
 const SUBDOMAINS_AND_IPS = (q: ScopeCypher) => `${q.domains}
-  ${q.subPath('-[:RESOLVES_TO]->(i:IP)')}
-  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)
+  ${q.subPath('-[dnsr:RESOLVES_TO]->(i:IP)')}
+  OPTIONAL MATCH (d)-[ddns:RESOLVES_TO]->(di:IP) WHERE ${currentDns('ddns')}
   WITH collect(DISTINCT s.name) AS subdomains,
        count(DISTINCT i) + count(DISTINCT di) AS ipCount
   RETURN subdomains, size(subdomains) AS subCount, ipCount`
 
 // Same IP + Port shape as Nmap: tlsx grabs certs on already-open ports.
 const PORTS = (q: ScopeCypher) => `${q.domains}
-  ${q.subPath('-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
-  OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
+  ${q.subPath('-[dnsr:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
+  OPTIONAL MATCH (d)-[ddns:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port) WHERE ${currentDns('ddns')}
   WITH collect(DISTINCT s.name) AS subdomains,
        count(DISTINCT i) + count(DISTINCT di) AS ipCount,
        count(DISTINCT p) + count(DISTINCT dp) AS portCount
@@ -250,8 +255,8 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   },
   SecurityChecks: {
     cypher: q => `${q.domains}
-      ${q.subPath('-[:RESOLVES_TO]->(i:IP)')}
-      OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)
+      ${q.subPath('-[dnsr:RESOLVES_TO]->(i:IP)')}
+      OPTIONAL MATCH (d)-[ddns:RESOLVES_TO]->(di:IP) WHERE ${currentDns('ddns')}
       WITH collect(DISTINCT s.name) AS subdomains,
            count(DISTINCT i) + count(DISTINCT di) AS ipCount
       ${SCOPED_BASEURLS(q)}
@@ -268,8 +273,8 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
       ${q.subPath('')}
       WITH collect(DISTINCT s.name) AS subdomains
       ${q.domains}
-      ${q.subPath('-[:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
-      OPTIONAL MATCH (d)-[:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port)
+      ${q.subPath('-[dnsr:RESOLVES_TO]->(i:IP)-[:HAS_PORT]->(p:Port)')}
+      OPTIONAL MATCH (d)-[ddns:RESOLVES_TO]->(di:IP)-[:HAS_PORT]->(dp:Port) WHERE ${currentDns('ddns')}
       OPTIONAL MATCH (p)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(bu:BaseURL)
       OPTIONAL MATCH (dp)-[:RUNS_SERVICE]->(:Service)-[:SERVES_URL]->(dbu:BaseURL)
       WITH subdomains,
@@ -316,7 +321,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   VhostSni: {
     cypher: q => `${q.domains}
       ${q.subPath('')}
-      OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
+      OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(i:IP) WHERE ${currentDns('dnsr')}
       OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
       OPTIONAL MATCH (s)-[:HAS_BASE_URL|HAS_BASEURL]->(bu:BaseURL)
       WITH collect(DISTINCT s.name) AS subdomains,
@@ -367,7 +372,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     cypher: q => `${q.domains}
       ${q.subPath('')}
       RETURN collect(DISTINCT s.name) AS subdomains, count(DISTINCT s) AS subCount,
-             count(DISTINCT CASE WHEN EXISTS { (s)-[:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true }
+             count(DISTINCT CASE WHEN EXISTS { (s)-[cr:RESOLVES_TO]->(ci:IP) WHERE ci.is_cdn = true AND ${currentDns('cr')} }
                OR EXISTS { (s)-[:HAS_BASE_URL|HAS_BASEURL]->(:BaseURL)-[:HAS_ENDPOINT]->(ep:Endpoint)
                            WHERE ep.is_cdn = true OR ep.favicon_hash IS NOT NULL } THEN s END) AS frontedCount`,
     respond: r => ({ ...subdomainFields(r), fronted_count: num(r, 'frontedCount') }),

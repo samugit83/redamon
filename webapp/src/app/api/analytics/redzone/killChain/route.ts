@@ -5,6 +5,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -24,7 +25,8 @@ export async function GET(request: NextRequest) {
     // Attack paths: Subdomain -> IP -> Port -> Service -> Technology -> CVE -> MitreData -> Capec
     // Aggregated per (subdomain, tech, cve) with CISA-KEV priority via ExploitGvm match.
     const result = await session.run(
-      `MATCH (s:Subdomain {project_id: $pid})-[:RESOLVES_TO]->(ip:IP)
+      `MATCH (s:Subdomain {project_id: $pid})-[dnsr:RESOLVES_TO]->(ip:IP)
+       WHERE ${currentDns('dnsr')}
        OPTIONAL MATCH (ip)-[:HAS_PORT]->(p:Port)
        OPTIONAL MATCH (p)-[:RUNS_SERVICE]->(svc:Service)
        OPTIONAL MATCH (svc)-[:USES_TECHNOLOGY]->(t:Technology)

@@ -4093,6 +4093,8 @@ cmd_update() {
     # Ensure an admin user exists (prompts if none found)
     ensure_admin
 
+    _urlscan_backfill_once
+
     # HTTP Traffic Capture. Order matters, and it is the reverse of what it looks
     # like: the capture pair is spawned BY THE ORCHESTRATOR, so it must be
     # reconciled AFTER the orchestrator has been recreated onto the new code, not
@@ -4266,6 +4268,29 @@ ensure_core_images() {
 }
 
 # True when compose reports at least one RUNNING container for <service>.
+# One-off: mask the urlscan tokens earlier releases stored in clear, in the graph
+# and in every recon JSON file (tooling/scripts/urlscan_backfill.py). It runs in
+# the recon image, which carries the quarantine rules; markers make it once only.
+# Best-effort: a failure never fails the update, and the script can be run by hand.
+_urlscan_backfill_once() {
+    local out="$SCRIPT_DIR/recon/output"
+    [[ -f "$out/.urlscan_backfill_v1" && -f "$out/.urlscan_backfill_graph_v1" ]] && return 0
+    if ! _service_running neo4j || ! docker image inspect redamon-recon >/dev/null 2>&1; then
+        warn "urlscan backfill skipped: Neo4j or the recon image is not available."
+        warn "  Run it later: see tooling/scripts/urlscan_backfill.py"
+        return 0
+    fi
+    mkdir -p "$out"
+    info "Masking urlscan values stored by earlier releases (one-off)..."
+    NEO4J_PASSWORD="$(_env_get NEO4J_PASSWORD)" docker run --rm --network host \
+        -v "$SCRIPT_DIR:/repo:ro" -v "$out:/data/recon-output" -w /repo \
+        -e PYTHONPATH=/repo:/repo/recon -e HOME=/tmp \
+        -e NEO4J_URI="bolt://localhost:$(_env_get NEO4J_BOLT_PORT | grep -E '^[0-9]+$' || echo 7687)" \
+        -e NEO4J_USER="$(_env_get NEO4J_USER | grep . || echo neo4j)" -e NEO4J_PASSWORD \
+        --entrypoint python redamon-recon tooling/scripts/urlscan_backfill.py --apply \
+        || warn "urlscan backfill did not finish; run it again by hand (tooling/scripts/urlscan_backfill.py)"
+}
+
 _service_running() {
     local svc="$1" ids id state
     ids="$(docker compose ps -q "$svc" 2>/dev/null)" || return 1

@@ -3,6 +3,7 @@ import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -70,7 +71,7 @@ export async function GET(request: NextRequest) {
       `MATCH (ip:IP {project_id: $pid})
        OPTIONAL MATCH (ip)-[:APPEARS_IN_PULSE]->(pulse:ThreatPulse)
        OPTIONAL MATCH (ip)-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)
-       OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
+       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
        WITH ip,
             collect(DISTINCT sd.name)                 AS subdomains,
             collect(DISTINCT pulse.name)              AS pulseNames,

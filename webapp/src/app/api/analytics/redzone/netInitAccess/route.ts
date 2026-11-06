@@ -5,6 +5,7 @@ import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -52,7 +53,7 @@ export async function GET(request: NextRequest) {
        WHERE p.number IN $ports
        OPTIONAL MATCH (p)-[:RUNS_SERVICE]->(svc:Service)
        OPTIONAL MATCH (p)-[:HAS_TECHNOLOGY]->(t:Technology)
-       OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
+       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
        OPTIONAL MATCH (ip)-[:HAS_VULNERABILITY]->(v:Vulnerability)
          WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
            AND ${notMuted('v')} AND ${reportCountable('v')}
@@ -82,7 +83,7 @@ export async function GET(request: NextRequest) {
       `MATCH (ip:IP {project_id: $pid})-[:HAS_VULNERABILITY]->(v:Vulnerability)
        WHERE (v.type IN $vulnTypes OR v.vulnerability_type IN $vulnTypes OR v.name IN $vulnTypes)
          AND ${notMuted('v')} AND ${reportCountable('v')}
-       OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
+       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
        // Grouped on (ip, port, timestamp), not on v: in practice one
        // Vulnerability, but not by construction, and making v a grouping key
        // would split rows. Point at it when it is alone, at the IP otherwise.

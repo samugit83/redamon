@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules import graph_builders as gb  # noqa: E402
 
-FORWARD = "NOT coalesce(r.source, '') STARTS WITH 'shodan_'"
+FORWARD = "r.source IS NULL"
 
 
 class _Session:

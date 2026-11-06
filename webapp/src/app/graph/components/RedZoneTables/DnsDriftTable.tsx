@@ -29,6 +29,17 @@ interface HistoricResolution {
   firstSeen: string | null
   lastSeen: string | null
   recordType: string | null
+  // 'otx' for the Domain's passive DNS; 'urlscan' for an address a public
+  // urlscan visit of a subdomain recorded (`host`).
+  source?: string | null
+  host?: string | null
+}
+
+function describeResolution(h: HistoricResolution): string {
+  const seen = [h.firstSeen, h.lastSeen].filter(Boolean).join(' to ')
+  const where = h.host ? `${h.host} -> ` : ''
+  const via = h.source ? ` (${h.source === 'urlscan' ? 'urlscan history' : h.source})` : ''
+  return `${where}${h.address}${via}${seen ? `, seen ${seen}` : ''}`
 }
 
 interface ExternalDomainSighting {
@@ -105,6 +116,7 @@ export const DnsDriftTable = memo(function DnsDriftTable({ projectId }: Props) {
       domain: r.domain,
       historicIpCount: r.historicIpCount,
       historicIps: r.historicResolutions.map(h => h.address).filter(Boolean).join(', '),
+      historicSources: Array.from(new Set(r.historicResolutions.map(h => h.source).filter(Boolean) as string[])).join(', '),
       historicAsns: Array.from(new Set(r.historicResolutions.map(h => h.asn).filter(Boolean) as string[])).join(', '),
       historicCountries: Array.from(new Set(r.historicResolutions.map(h => h.country).filter(Boolean) as string[])).join(', '),
       lastResolutionDate: r.lastResolutionDate,
@@ -166,7 +178,7 @@ export const DnsDriftTable = memo(function DnsDriftTable({ projectId }: Props) {
               <td><HostCell host={r.domain} /></td>
               <td>
                 {r.historicIpCount > 0 ? (
-                  <span title={r.historicResolutions.map(h => h.address).filter(Boolean).join('\n')}>
+                  <span title={r.historicResolutions.filter(h => h.address).map(describeResolution).join('\n')}>
                     <span className={rowStyles.numCell}>{r.historicIpCount}</span>
                   </span>
                 ) : <span className={rowStyles.nullCell}>0</span>}

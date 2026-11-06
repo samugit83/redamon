@@ -116,7 +116,7 @@ describe('/api/analytics/redzone/killChain', () => {
     expect(runCalls).toHaveLength(1)
     const c = runCalls[0].cypher
     expect(c).toMatch(/MATCH \(s:Subdomain \{project_id: \$pid\}\)/)
-    expect(c).toMatch(/-\[:RESOLVES_TO\]->\(ip:IP\)/)
+    expect(c).toMatch(/-\[dnsr:RESOLVES_TO\]->\(ip:IP\)\s+WHERE dnsr\.source IS NULL/)
     expect(c).toMatch(/-\[:HAS_PORT\]->\(p:Port\)/)
     expect(c).toMatch(/-\[:RUNS_SERVICE\]->\(svc:Service\)/)
     expect(c).toMatch(/-\[:USES_TECHNOLOGY\]->\(t:Technology\)/)

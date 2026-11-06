@@ -639,33 +639,36 @@ class OsintMixin:
         with self.driver.session() as session:
 
             # ── 1. Subdomain + IP discovery ──
+            # A visit's page.ip is history, not current DNS: written only as
+            # HISTORICALLY_RESOLVED_TO {source: 'urlscan'} (S5), only for a host
+            # the scan may target and a routable address the RoE does not
+            # exclude (urlscan_enrich tags each entry; an entry without the tag,
+            # from an older recon file, gets no IP at all), and only through an
+            # existing Subdomain, so no orphan IP is left (B11).
             seen_subs = set()
-            seen_ips = set()
-            seen_sub_ip_links = set()
+            history: dict = {}
             for entry in urlscan_data.get("entries", []):
                 subdomain = entry.get("domain", "")
-                ip = entry.get("ip", "")
-                asn = entry.get("asn", "")
-                asn_name = entry.get("asn_name", "")
-                country = entry.get("country", "")
+                in_scope = entry.get("in_scope", True)
 
                 # Create/update subdomain or external domain node
                 if subdomain and subdomain.lower() not in apexes and subdomain not in seen_subs:
                     seen_subs.add(subdomain)
                     kind, root = attach_for_host(subdomain, recon_data)
                     try:
-                        if root:
+                        if root and in_scope:
                             # MATCH, never MERGE: the run's domain write (or
                             # ensure_root_domains, in a batch) made the root's
                             # Domain, and creating one here could leave a Domain
-                            # the scope no longer names.
+                            # the scope no longer names. Unverified until DNS
+                            # resolves it: urlscan only saw it in the past.
                             rec = session.run(
                                 """
                                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
                                 SET d.updated_at = datetime()
                                 MERGE (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
-                                ON CREATE SET s.discovered_by = 'urlscan', s.status = 'resolved',
-                                              s.updated_at = datetime()
+                                ON CREATE SET s.source = 'urlscan', s.discovered_by = 'urlscan',
+                                              s.status = 'unverified', s.updated_at = datetime()
                                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                 MERGE (s)-[:BELONGS_TO]->(d)
                                 RETURN count(s) AS n
@@ -693,47 +696,45 @@ class OsintMixin:
                     except Exception as e:
                         stats["errors"].append(f"Subdomain {subdomain}: {e}")
 
-                # Enrich IP with ASN/country (deduplicate — many entries share the same IP)
-                if ip and ip not in seen_ips:
-                    seen_ips.add(ip)
-                    try:
-                        props = {k: v for k, v in {
-                            "country": country or None,
-                            "asn": asn or None,
-                            "asn_name": asn_name or None,
+                ip = entry.get("ip", "")
+                if subdomain and ip and entry.get("ip_in_scope") and subdomain.lower() not in apexes:
+                    key = (subdomain, ip)
+                    seen = entry.get("scan_time") or ""
+                    slot = history.setdefault(key, {
+                        "first": seen, "last": seen,
+                        "props": {k: v for k, v in {
+                            "country": entry.get("country") or None,
+                            "asn": entry.get("asn") or None,
+                            "asn_name": entry.get("asn_name") or None,
                             "urlscan_enriched": True,
-                        }.items() if v is not None}
+                        }.items() if v is not None},
+                    })
+                    if seen:
+                        slot["first"] = min(slot["first"] or seen, seen)
+                        slot["last"] = max(slot["last"] or seen, seen)
 
-                        session.run(
-                            """
-                            MERGE (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                            SET i += $props, i.updated_at = datetime()
-                            """,
-                            ip=ip, uid=user_id, pid=project_id, props=props
-                        )
+            for (subdomain, ip), slot in history.items():
+                try:
+                    rec = session.run(
+                        """
+                        MATCH (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
+                        MERGE (i:IP {address: $ip, user_id: $uid, project_id: $pid})
+                        SET i += $props, i.updated_at = datetime()
+                        MERGE (s)-[r:HISTORICALLY_RESOLVED_TO {source: 'urlscan'}]->(i)
+                        ON CREATE SET r.first_seen = $first, r.last_seen = $last
+                        ON MATCH SET r.first_seen = CASE WHEN $first <> '' AND (r.first_seen IS NULL OR r.first_seen = '' OR $first < r.first_seen) THEN $first ELSE r.first_seen END,
+                                     r.last_seen = CASE WHEN $last > coalesce(r.last_seen, '') THEN $last ELSE r.last_seen END
+                        RETURN count(r) AS n
+                        """,
+                        subdomain=subdomain, ip=ip, props=slot["props"],
+                        first=slot["first"], last=slot["last"],
+                        uid=user_id, pid=project_id
+                    ).single()
+                    if rec and rec["n"]:
                         stats["ips_enriched"] += 1
-                    except Exception as e:
-                        stats["errors"].append(f"IP {ip}: {e}")
-
-                # Link subdomain -> IP (deduplicate the pair, skip any root apex)
-                if subdomain and ip and subdomain.lower() not in apexes:
-                    link_key = (subdomain, ip)
-                    if link_key not in seen_sub_ip_links:
-                        seen_sub_ip_links.add(link_key)
-                        try:
-                            session.run(
-                                """
-                                MATCH (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
-                                MERGE (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-                                SET i.updated_at = datetime()
-                                MERGE (s)-[:RESOLVES_TO]->(i)
-                                """,
-                                subdomain=subdomain, ip=ip,
-                                uid=user_id, pid=project_id
-                            )
-                            stats["relationships_created"] += 1
-                        except Exception as e:
-                            stats["errors"].append(f"Link {subdomain}->{ip}: {e}")
+                        stats["relationships_created"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"IP history {subdomain}->{ip}: {e}")
 
             # ── 2. Domain age enrichment ──
             domain_age = urlscan_data.get("domain_age_days")
@@ -792,7 +793,9 @@ class OsintMixin:
             baseurl_data: dict[str, dict] = {}
             for entry in urlscan_data.get("entries", []):
                 url = entry.get("url", "")
-                if not url:
+                # A quarantined visit's screenshot and scan ID open the
+                # unmasked scan on urlscan: never the BaseURL's evidence.
+                if not url or entry.get("quarantined"):
                     continue
                 try:
                     parsed = _urlparse(url)
@@ -805,6 +808,10 @@ class OsintMixin:
                         "screenshot_url": entry.get("screenshot_url", ""),
                         "server": entry.get("server", ""),
                         "title": entry.get("title", ""),
+                        "tls_issuer": entry.get("tls_issuer", ""),
+                        "tls_valid_days": entry.get("tls_valid_days"),
+                        "tls_valid_from": entry.get("tls_valid_from", ""),
+                        "tls_age_days": entry.get("tls_age_days"),
                     }
 
             for base_url, data in baseurl_data.items():
@@ -859,6 +866,7 @@ class OsintMixin:
                                            user_id: $uid, project_id: $pid})
                         ON CREATE SET e.source = 'urlscan', e.full_url = $full_url,
                                       e.has_parameters = $has_params, e.updated_at = datetime()
+                        SET e.full_url = CASE WHEN e.source = 'urlscan' THEN $full_url ELSE e.full_url END
                         SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         RETURN e.path AS path
@@ -871,10 +879,11 @@ class OsintMixin:
                         stats["endpoints_created"] += 1
                         stats["relationships_created"] += 1
 
-                        # Create Parameter nodes from query string
-                        for param_name, param_value in params.items():
+                        # Parameter nodes from the query string: names only. An
+                        # archived value is someone's old request, so none is
+                        # stored (S4); a value an older run stored is removed.
+                        for param_name in params:
                             try:
-                                sample_val = param_value if isinstance(param_value, str) else str(param_value)
                                 session.run(
                                     """
                                     MATCH (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url,
@@ -882,12 +891,12 @@ class OsintMixin:
                                     MERGE (p:Parameter {name: $param_name, position: 'query',
                                                         endpoint_path: $path, baseurl: $base_url,
                                                         user_id: $uid, project_id: $pid})
-                                    ON CREATE SET p.source = 'urlscan', p.sample_value = $sample_val,
-                                                  p.is_injectable = false, p.updated_at = datetime()
+                                    ON CREATE SET p.source = 'urlscan', p.is_injectable = false,
+                                                  p.updated_at = datetime()
+                                    REMOVE p.sample_value
                                     MERGE (e)-[:HAS_PARAMETER]->(p)
                                     """,
                                     path=path, base_url=base_url, param_name=param_name,
-                                    sample_val=sample_val[:500],
                                     uid=user_id, pid=project_id
                                 )
                                 stats["parameters_created"] += 1
@@ -1245,7 +1254,7 @@ class OsintMixin:
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         SET i.updated_at = datetime()
                                         MERGE (s)-[r:RESOLVES_TO]->(i)
-                                        ON CREATE SET r.timestamp = datetime()
+                                        ON CREATE SET r.timestamp = datetime(), r.source = 'censys_dns'
                                         SET r.last_seen_at = datetime(),
                                             r.record_type = coalesce(r.record_type,
                                                 CASE WHEN $ip CONTAINS ':' THEN 'AAAA' ELSE 'A' END)
@@ -1428,7 +1437,7 @@ class OsintMixin:
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (s)-[r:RESOLVES_TO]->(i)
-                                    ON CREATE SET r.timestamp = datetime()
+                                    ON CREATE SET r.timestamp = datetime(), r.source = 'fofa_dns'
                                     SET r.last_seen_at = datetime(),
                                         r.record_type = coalesce(r.record_type,
                                             CASE WHEN $ip CONTAINS ':' THEN 'AAAA' ELSE 'A' END)
@@ -1554,7 +1563,7 @@ class OsintMixin:
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         SET i.updated_at = datetime()
                                         MERGE (s)-[r:RESOLVES_TO]->(i)
-                                        ON CREATE SET r.timestamp = datetime()
+                                        ON CREATE SET r.timestamp = datetime(), r.source = 'otx_passive_dns'
                                         SET r.record_type = coalesce(r.record_type, $record_type),
                                             r.first_seen = CASE
                                                 WHEN $first_seen = '' THEN r.first_seen
@@ -2273,7 +2282,7 @@ class OsintMixin:
                                                      project_id: $project_id})
                                         SET i.updated_at = datetime()
                                         MERGE (s)-[r:RESOLVES_TO]->(i)
-                                        ON CREATE SET r.timestamp = datetime()
+                                        ON CREATE SET r.timestamp = datetime(), r.source = 'zoomeye_dns'
                                         SET r.last_seen_at = datetime(),
                                             r.record_type = coalesce(r.record_type,
                                                 CASE WHEN $ip CONTAINS ':' THEN 'AAAA' ELSE 'A' END)

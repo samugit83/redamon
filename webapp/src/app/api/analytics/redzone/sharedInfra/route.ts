@@ -3,6 +3,7 @@ import { rowCap } from '../rowCap'
 import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest) {
     const asnResult = await session.run(
       `MATCH (ip:IP {project_id: $pid})
        WHERE ip.asn IS NOT NULL AND ip.asn <> ''
-       OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
+       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
        WITH ip.asn AS asnKey,
             max(ip.updated_at)                                     AS asnUpdatedAt,
             collect(DISTINCT ip.country)                           AS countries,
@@ -97,7 +98,7 @@ export async function GET(request: NextRequest) {
     // Cluster type 3: Shared origin IP (>=2 subdomains pointing to same IP)
     const ipResult = await session.run(
       `MATCH (ip:IP {project_id: $pid})
-       OPTIONAL MATCH (sd:Subdomain)-[:RESOLVES_TO]->(ip)
+       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
        WITH ip, collect(DISTINCT sd.name) AS subs
        WITH ip, [x IN subs WHERE x IS NOT NULL] AS subsClean
        WHERE size(subsClean) >= 2

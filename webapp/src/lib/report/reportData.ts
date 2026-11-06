@@ -17,6 +17,7 @@ import { type CoverageGap, currentScanRoots, gapInScope } from '@/lib/scanCovera
 import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
 import type { AiAttackFindingRecord, RawAttackRow } from './aiAttackFindings'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1028,7 +1029,7 @@ export async function queryGraphOverview(session: any, pid: string) {
   )
   const subRes = await session.run(
     `MATCH (s:Subdomain {project_id: $pid})
-     OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
+     OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(i:IP) WHERE ${currentDns('dnsr')}
      RETURN count(DISTINCT s) AS total,
             count(DISTINCT CASE WHEN i IS NOT NULL THEN s END) AS resolved,
             count(DISTINCT i) AS uniqueIps`,
@@ -1081,7 +1082,7 @@ export async function queryGraphOverview(session: any, pid: string) {
   // Subdomain → IP detail mapping
   const subDetailRes = await session.run(
     `MATCH (s:Subdomain {project_id: $pid})
-     OPTIONAL MATCH (s)-[:RESOLVES_TO]->(ip:IP)
+     OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(ip:IP) WHERE ${currentDns('dnsr')}
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      RETURN s.name AS subdomain,
             collect(DISTINCT {address: ip.address, version: ip.version, isCdn: ip.is_cdn, cdnName: ip.cdn_name,
@@ -1093,7 +1094,7 @@ export async function queryGraphOverview(session: any, pid: string) {
   // IP → hostname detail mapping
   const ipDetailRes = await session.run(
     `MATCH (ip:IP {project_id: $pid})
-     OPTIONAL MATCH (s:Subdomain {project_id: $pid})-[:RESOLVES_TO]->(ip)
+     OPTIONAL MATCH (s:Subdomain {project_id: $pid})-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      RETURN ip.address AS ip, ip.version AS version, ip.is_cdn AS isCdn,
             ip.cdn_name AS cdnName, ip.asn AS asn, ip.ownership AS ownership,

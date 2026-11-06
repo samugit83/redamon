@@ -39,7 +39,8 @@ const graphOverview = await import('@/app/api/analytics/graph-overview/route')
 const subQuery = () => queries.find(q => q.includes('AS uniqueIps') && q.includes(':Subdomain'))!
 
 function expectCountedByEdge(cypher: string) {
-  expect(cypher).toContain('OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)')
+  // Only current forward DNS: a passive source's old address is not a resolution.
+  expect(cypher).toContain('OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(i:IP) WHERE dnsr.source IS NULL')
   expect(cypher).toContain('count(DISTINCT CASE WHEN i IS NOT NULL THEN s END) AS resolved')
   expect(cypher).not.toMatch(/\bstatus\b/)
 }

@@ -397,7 +397,8 @@ class TestRunUrlscanEnrichment(unittest.TestCase):
         paths = result["urlscan"]["urls_with_paths"]
         # Both results have the same URL, should only appear once
         full_urls = [p["full_url"] for p in paths]
-        self.assertEqual(full_urls.count("https://app.example.com/login?next=/dashboard"), 1)
+        # Stored masked (S4): an archived value is someone's old request.
+        self.assertEqual(full_urls.count("https://app.example.com/login?next=***"), 1)
 
     @patch("urlscan_enrich._urlscan_search")
     def test_root_url_excluded_from_paths(self, mock_search):
@@ -430,10 +431,11 @@ class TestRunUrlscanEnrichment(unittest.TestCase):
             "url", "domain", "ip", "asn", "asn_name", "country",
             "server", "status", "title", "tls_issuer", "tls_valid_days",
             "tls_valid_from", "tls_age_days", "domain_age_days",
-            "screenshot_url", "scan_time",
+            "screenshot_url", "scan_time", "scan_id", "visibility", "mime_type",
+            "in_scope", "ip_in_scope", "quarantined",
         }
         self.assertEqual(set(entry.keys()), expected_keys)
-        self.assertEqual(entry["url"], "https://app.example.com/login?next=/dashboard")
+        self.assertEqual(entry["url"], "https://app.example.com/login?next=***")
         self.assertEqual(entry["ip"], "93.184.216.34")
         self.assertEqual(entry["server"], "nginx/1.21.6")
         self.assertEqual(entry["status"], "200")  # Converted to string
@@ -449,10 +451,11 @@ class TestRunUrlscanEnrichment(unittest.TestCase):
         paths = result["urlscan"]["urls_with_paths"]
         self.assertEqual(len(paths), 1)
         p = paths[0]
-        self.assertEqual(p["full_url"], "https://app.example.com/login?next=/dashboard")
+        self.assertEqual(p["full_url"], "https://app.example.com/login?next=***")
         self.assertEqual(p["base_url"], "https://app.example.com")
         self.assertEqual(p["path"], "/login")
-        self.assertEqual(p["params"], {"next": "/dashboard"})
+        self.assertEqual(p["params"], {"next": "***"})
+        self.assertEqual(set(p["param_types"]), {"next"})
 
     @patch("urlscan_enrich._urlscan_search")
     def test_api_key_passed_through(self, mock_search):

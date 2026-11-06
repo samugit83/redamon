@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -174,7 +175,8 @@ export async function GET(request: NextRequest) {
 
     // Q11: IP concentration (subdomains per IP)
     const ipConcResult = await session.run(
-      `MATCH (s:Subdomain {project_id: $pid})-[:RESOLVES_TO]->(ip:IP)
+      `MATCH (s:Subdomain {project_id: $pid})-[dnsr:RESOLVES_TO]->(ip:IP)
+       WHERE ${currentDns('dnsr')}
        WITH ip.address AS ip, count(s) AS subCount,
             CASE WHEN ip.is_cdn = true THEN true ELSE false END AS isCdn
        RETURN ip, subCount, isCdn

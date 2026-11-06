@@ -43,6 +43,19 @@ describe('quarantined endpoints are not counted', () => {
     expect(cypher).toContain(notQuarantined('e'))
   })
 
+  test.each(['Naabu', 'Masscan', 'Shodan', 'Nmap', 'Tlsx', 'SecurityChecks', 'Httpx', 'VhostSni',
+    'OriginDiscovery'])('%s counts only current-DNS addresses', async (toolId) => {
+    const cypher = await cypherFor(toolId)
+    // The Domain read's "has any data" existence check is not a target read.
+    const reads = [...cypher.matchAll(/\[(\w*):RESOLVES_TO\]/g)].filter(m =>
+      !cypher.slice(m.index, cypher.indexOf('\n', m.index)).includes('AS hasData'))
+    expect(reads.length).toBeGreaterThan(0)
+    for (const m of reads) {
+      expect(m[1], cypher).not.toBe('')
+      expect(cypher.slice(m.index, m.index + 600)).toContain(`${m[1]}.source IS NULL`)
+    }
+  })
+
   test('the fragment is the Python builders\' predicate', () => {
     const builders = readFileSync(
       resolve(__dirname, '../../../../../../../../recon/partial_recon_modules/graph_builders.py'), 'utf8')

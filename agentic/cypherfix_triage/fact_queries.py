@@ -232,9 +232,10 @@ RETURN collect(DISTINCT b.url) AS hosts
         "name": "gone_hosts",
         "description": "no live endpoint, no open port, nothing resolves",
         # RESOLVES_TO runs Subdomain -> IP, so each label reads its own end of
-        # it. Only forward DNS counts: Shodan's reverse-DNS and domain-DNS
-        # answers write the same edge with source 'shodan_rdns' / 'shodan_dns',
-        # and a PTR record does not say the host resolves today. A host the run
+        # it. Only forward DNS counts (no source): Shodan's reverse DNS and the
+        # passive sources (Censys, FOFA, OTX, ZoomEye) write the same edge with
+        # a source, and a PTR record or an old sighting does not say the host
+        # resolves today. A host the run
         # skipped was not re-checked, so its absence proves nothing.
         "query": _SKIPPED_HOSTS + """
 MATCH (n {user_id: $userId, project_id: $projectId})
@@ -247,10 +248,10 @@ WHERE (n:Subdomain OR n:IP)
     MATCH (n)-[:HAS_PORT]->(p:Port) WHERE toLower(coalesce(p.state, 'open')) = 'open'
   }
   AND NOT (n:Subdomain AND EXISTS {
-    MATCH (n)-[r:RESOLVES_TO]->(:IP) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+    MATCH (n)-[r:RESOLVES_TO]->(:IP) WHERE r.source IS NULL
   })
   AND NOT (n:IP AND EXISTS {
-    MATCH (n)<-[r:RESOLVES_TO]-(:Subdomain) WHERE NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+    MATCH (n)<-[r:RESOLVES_TO]-(:Subdomain) WHERE r.source IS NULL
   })
   AND coalesce(n.is_live, false) = false
   AND NOT toLower(coalesce(n.name, n.address, '')) IN skipped
@@ -267,13 +268,13 @@ RETURN skipped AS hosts
     {
         "name": "name_ownership",
         "description": "the attribution tags of the IPs each DNS name currently resolves to",
-        # Forward DNS only, as in gone_hosts: a PTR answer Shodan recorded does
-        # not say the name points there today. An IP no run attributed yet
+        # Forward DNS only, as in gone_hosts: a PTR answer or a passive sighting
+        # does not say the name points there today. An IP no run attributed yet
         # comes back as '' and keeps the name's attribution unknown.
         "query": """
 MATCH (s:Subdomain {user_id: $userId, project_id: $projectId})-[r:RESOLVES_TO]->(ip:IP)
 WHERE ip.user_id = $userId AND ip.project_id = $projectId
-  AND NOT coalesce(r.source, '') STARTS WITH 'shodan_'
+  AND r.source IS NULL
 RETURN s.name AS name, collect(DISTINCT coalesce(ip.ownership, '')) AS tags
 """,
     },

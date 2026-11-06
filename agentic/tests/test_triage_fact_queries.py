@@ -172,7 +172,7 @@ class TestGateFactQueries(unittest.TestCase):
     def test_name_ownership_reads_forward_dns_of_this_tenant_only(self):
         query = self._query("name_ownership")
         self.assertIn("(s:Subdomain {user_id: $userId, project_id: $projectId})-[r:RESOLVES_TO]->(ip:IP)", query)
-        self.assertIn("NOT coalesce(r.source, '') STARTS WITH 'shodan_'", query)
+        self.assertIn("r.source IS NULL", query)
         self.assertIn("ip.user_id = $userId AND ip.project_id = $projectId", query)
 
     def test_the_reducers_build_the_two_facts(self):

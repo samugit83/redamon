@@ -50,11 +50,13 @@ ARCHIVE_ONLY = (
 )
 
 
-#: True for a RESOLVES_TO edge `r` that is forward DNS. Shodan's reverse-DNS
-#: and domain-DNS answers write the same edge with source 'shodan_rdns' /
-#: 'shodan_dns'; a partial run reading them would take a PTR record for the
-#: name's current address. An edge with no source (DNS, or older) counts.
-FORWARD_DNS = "NOT coalesce(r.source, '') STARTS WITH 'shodan_'"
+#: True for a RESOLVES_TO edge `r` that is current forward DNS. Every passive
+#: writer (Shodan's reverse DNS and domain DNS, Censys, FOFA, OTX passive DNS,
+#: ZoomEye) sets `source` when it creates the edge, and a DNS resolution of the
+#: pair REMOVEs it; an edge the one-off urlscan backfill could not vouch for
+#: carries 'legacy_unknown'. A partial run reading a passive edge as current
+#: would scan an address the name had years ago, which may be someone else's now.
+FORWARD_DNS = "r.source IS NULL"
 
 
 #: A BaseURL is a thin service-identity node: httpx writes the response data

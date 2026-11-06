@@ -5,6 +5,7 @@ import { notMuted } from '@/lib/graphMute'
 import { DECLARED_ONLY } from '@/lib/declaredOnly'
 import { ipVersionIs } from '@/lib/ipVersion'
 import { internalError } from '@/lib/routeErrors'
+import { currentDns } from '@/lib/graph/forwardDns'
 
 function toNum(val: unknown): number {
   if (val && typeof val === 'object' && 'low' in val) return (val as { low: number }).low
@@ -48,7 +49,7 @@ export async function GET(request: NextRequest) {
     // Q3: Subdomain stats (Subdomain -[:BELONGS_TO]-> Domain)
     const subResult = await session.run(
       `MATCH (s:Subdomain {project_id: $pid})-[:BELONGS_TO]->(d:Domain)
-       OPTIONAL MATCH (s)-[:RESOLVES_TO]->(i:IP)
+       OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(i:IP) WHERE ${currentDns('dnsr')}
        RETURN count(DISTINCT s) AS total,
               count(DISTINCT CASE WHEN i IS NOT NULL THEN s END) AS resolved,
               count(DISTINCT i) AS uniqueIps`,

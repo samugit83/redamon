@@ -158,7 +158,7 @@ describe('vuln tools count only the run roots', () => {
     // Subdomain of the project.
     expect(cypher).toContain('d.name IN $domains')
     expect(cypher).toContain('(d)-[:HAS_SUBDOMAIN]->(s:Subdomain)')
-    expect(cypher).toMatch(/count\(DISTINCT CASE WHEN EXISTS \{ \(s\)-\[:RESOLVES_TO\]/)
+    expect(cypher).toMatch(/count\(DISTINCT CASE WHEN EXISTS \{ \(s\)-\[cr:RESOLVES_TO\]->\(ci:IP\) WHERE ci\.is_cdn = true AND cr\.source IS NULL/)
     expect(cypher).not.toMatch(/MATCH \(s:Subdomain \{/)
   })
 })

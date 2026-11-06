@@ -434,6 +434,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     quarantined_urls: list[dict] = []
     seen_urls: set[str] = set()
     quarantine = UrlQuarantine(_in_scope_urls(results, domain))
+    scope = HostScope(settings, domain)
+    from recon.helpers.url_leaks import mask_url
 
     # Track domain age (take max from all results)
     domain_age_days = None
@@ -479,12 +481,13 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             subdomains.add(url_domain)
             is_in_scope = True  # URL hostname confirms scope
 
-        # Collect out-of-scope domains for situational awareness
+        # Collect out-of-scope domains for situational awareness. Only the
+        # origin is kept: a third party's path is often a private link.
         if not is_in_scope and page_domain:
             external_domain_entries.append({
                 "domain": page_domain,
                 "source": "urlscan",
-                "url": page_url,
+                "url": _origin(page_url),
                 "status_code": int(page_status) if page_status.isdigit() else None,
                 "title": page_title,
                 "server": page_server,
@@ -492,8 +495,11 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
                 "country": page_country,
             })
 
-        # Track IPs (in-scope only — foreign IPs would pollute the graph)
-        if page_ip and is_in_scope:
+        # An address a visit recorded is history, not current DNS: kept only for
+        # a host the scan may target (group scope, RoE) and when it is routable.
+        host_in_scope = bool(is_in_scope and page_domain and scope.host_ok(page_domain))
+        ip_in_scope = bool(host_in_scope and page_ip and scope.ip_ok(page_ip))
+        if ip_in_scope:
             ips.add(page_ip)
 
         # Track domain age (in-scope only — foreign domain ages are irrelevant)
@@ -515,16 +521,20 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             else:
                 parsed = _parse_url_path(page_url)
                 if parsed:
-                    urls_with_paths.append(parsed)
+                    urls_with_paths.append(_stored_row(parsed, mask_url))
         task_url = task.get("url", "") or ""
         if (task_url and task_url not in seen_urls and _extract_domain_from_url(task_url, domain)
                 and quarantine.holds(task_url)):
             seen_urls.add(task_url)
             quarantined_urls.append(quarantine.row(task_url, "task", result))
 
-        # Build entry
+        # Build entry. Every URL is stored masked; a quarantined visit keeps no
+        # screenshot and no scan ID (either opens the unmasked scan on urlscan).
+        visit_quarantined = bool(page_url) and quarantine.holds(page_url)
         entry = {
-            "url": page_url,
+            # A third party's page keeps its origin only: its path is often a
+            # private link (a shared document, a meeting room).
+            "url": (mask_url(page_url) if is_in_scope else _origin(page_url)) if page_url else "",
             "domain": page_domain,
             "ip": page_ip,
             "asn": page_asn,
@@ -538,8 +548,14 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             "tls_valid_from": page_tls_valid_from,
             "tls_age_days": page_tls_age_days,
             "domain_age_days": page_domain_age,
-            "screenshot_url": screenshot,
+            "screenshot_url": "" if visit_quarantined else screenshot,
             "scan_time": scan_time,
+            "scan_id": "" if visit_quarantined else (task.get("uuid") or ""),
+            "visibility": task.get("visibility") or "",
+            "mime_type": page.get("mimeType") or "",
+            "in_scope": host_in_scope,
+            "ip_in_scope": ip_in_scope,
+            "quarantined": visit_quarantined,
         }
         entries.append(entry)
 
@@ -610,6 +626,87 @@ def _note_coverage_gap(domain: str, results: SearchResults) -> None:
     label = "search budget reached" if getattr(results, "budget_exhausted", False) else reason
     cb.note_degraded("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES,
                      reason=f"urlscan: {label}")
+
+
+def _origin(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _stored_row(parsed: dict, mask_url) -> dict:
+    """A urls_with_paths row as it may be stored and handed on: the URL with
+    every value masked, parameter names kept, and each parameter's type
+    computed from its value here, before the value is gone (S4)."""
+    from recon.helpers.resource_enum.classification import infer_parameter_type
+    params = parsed.get("params") or {}
+    types = {}
+    for name, value in params.items():
+        values = value if isinstance(value, list) else [value]
+        try:
+            types[name] = infer_parameter_type(name, [str(v) for v in values])
+        except Exception:  # noqa: BLE001
+            types[name] = "string"
+    return {
+        "full_url": mask_url(parsed["full_url"]) or parsed["full_url"].split("?", 1)[0],
+        "base_url": parsed["base_url"],
+        "path": parsed["path"],
+        "params": {name: "***" for name in params},
+        "param_types": types,
+    }
+
+
+class HostScope:
+    """Whether a urlscan host, and the address a visit recorded for it, may be
+    written as part of the target: the host's scope group (an EXACT group
+    lists its hosts; a scan root is a target only with Include Root) and the
+    RoE; the address must also be routable and not excluded."""
+
+    def __init__(self, settings: dict, domain: str):
+        settings = settings or {}
+        self._excluded = list(settings.get("ROE_EXCLUDED_HOSTS") or []) if settings.get("ROE_ENABLED") else []
+        self._domain = (domain or "").lower()
+        try:
+            from recon.helpers.batch_groups import settings_scope_groups
+            groups = settings_scope_groups(settings)
+        except Exception:  # noqa: BLE001
+            groups = []
+        self._groups = sorted(
+            [g for g in groups if isinstance(g, dict) and g.get("scanRoot")],
+            key=lambda g: len(g["scanRoot"]), reverse=True)
+
+    def _roe(self, value: str) -> bool:
+        if not self._excluded:
+            return False
+        from recon.helpers.roe_scope import _is_roe_excluded
+        return _is_roe_excluded(value, self._excluded)
+
+    def host_ok(self, host: str) -> bool:
+        h = (host or "").strip().strip(".").lower()
+        if not h or self._roe(h):
+            return False
+        for g in self._groups:
+            root = str(g["scanRoot"]).strip().lower()
+            if h == root:
+                return bool(g.get("includeRoot"))
+            if h.endswith("." + root):
+                if g.get("mode") == "exact":
+                    return h in {str(x).strip().lower() for x in g.get("exactHosts") or []}
+                return True
+        return h == self._domain or h.endswith("." + self._domain)
+
+    def ip_ok(self, ip: str) -> bool:
+        import ipaddress
+        try:
+            addr = ipaddress.ip_address(str(ip).strip())
+        except ValueError:
+            return False
+        if (addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_unspecified):
+            return False
+        return not self._roe(str(addr))
 
 
 def _in_scope_urls(results: list, domain: str) -> list:
