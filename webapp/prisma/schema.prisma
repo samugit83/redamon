@@ -1244,6 +1244,8 @@ model Project {
   urlscanMaxSearches                    Int      @default(60)  @map("urlscan_max_searches")
   urlscanLeakedLinks                    Boolean  @default(true)  @map("urlscan_leaked_links")
   urlscanSecretsInUrls                  Boolean  @default(true)  @map("urlscan_secrets_in_urls")
+  urlscanSensitiveFiles                 Boolean  @default(true)  @map("urlscan_sensitive_files")
+  urlscanDocumentLinks                  Boolean  @default(true)  @map("urlscan_document_links")
 
   // OSINT & Threat Intelligence Master Switch
   osintEnrichmentEnabled                Boolean  @default(false) @map("osint_enrichment_enabled")

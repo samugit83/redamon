@@ -379,6 +379,8 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             ("URLSCAN_MAX_SEARCHES", "Limits"),
             ("URLSCAN_LEAKED_LINKS", "Leak detection"),
             ("URLSCAN_SECRETS_IN_URLS", "Leak detection"),
+            ("URLSCAN_SENSITIVE_FILES", "Exposed files"),
+            ("URLSCAN_DOCUMENT_LINKS", "Exposed files"),
             ("URLSCAN_API_KEY", "API credentials"),
             ("URLSCAN_KEY_ROTATOR", "API credentials"),
         ],
@@ -527,7 +529,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             else:
                 parsed = _parse_url_path(page_url)
                 if parsed:
-                    urls_with_paths.append(_stored_row(parsed, mask_url))
+                    row = _stored_row(parsed, mask_url)
+                    _tag_file_row(row, page_url, page.get("mimeType") or "", settings)
+                    urls_with_paths.append(row)
         task_url = task.get("url", "") or ""
         if (task_url and task_url not in seen_urls and _extract_domain_from_url(task_url, domain)
                 and quarantine.holds(task_url)):
@@ -569,6 +573,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     subdomains.discard(domain)
 
     findings, url_secrets = _leak_findings(leak_inputs, quarantine, scope, settings)
+    findings += _file_findings(leak_inputs, quarantine, scope, settings)
 
     urlscan_data = {
         "results_count": len(results),
@@ -828,6 +833,89 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
             "severity": severity, "first_seen": first, "last_seen": last, "count": slot["count"],
         })
     return findings, url_secrets
+
+
+def _tag_file_row(row: dict, url: str, mime_type: str, settings: dict) -> None:
+    """Item 3 on a urls_with_paths row (the only list the endpoint writer reads):
+    a document's type and content type, and a sensitive file's kind, which partial
+    Route Exposure reads back to request it the way its kind needs."""
+    from recon.helpers.url_leaks import classify_file
+    found = classify_file(url, mime_type)
+    if found.get("file_kind") and settings.get("URLSCAN_SENSITIVE_FILES", True):
+        row["urlscan_file_kind"] = found["file_kind"]
+    if found.get("document_type") and settings.get("URLSCAN_DOCUMENT_LINKS", True):
+        row["document_type"] = found["document_type"]
+        if mime_type:
+            row["urlscan_mime_type"] = mime_type.split(";", 1)[0].strip().lower()
+
+
+FILE_LABEL = {
+    "env": "environment file (.env)", "vcs": "version-control folder", "private_key": "private key",
+    "db_dump": "database dump", "backup": "backup file", "log": "log file", "config": "config file",
+    "debug_page": "debug page (phpinfo)", "installer": "unfinished installer",
+    "web_shell_trace": "web-shell command trace", "file_manager": "web file manager",
+    "debug_console": "debug console", "memory_dump": "memory dump (heapdump)",
+    "salesforce_aura": "Salesforce Aura API",
+}
+
+
+def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope",
+                   settings: dict) -> list:
+    """Item 3: files and pages that should never be public, opened directly in
+    public urlscan visits of target hosts: one finding per host, path and kind,
+    with the newest scan as evidence (never for a web-shell trace, whose scan
+    shows the command). A web-shell trace comes from the quarantine."""
+    if not settings.get("URLSCAN_SENSITIVE_FILES", True):
+        return []
+    from recon.helpers.url_leaks import classify_file
+    groups: dict = {}
+    seen = set()
+    for url, result in inputs:
+        if not _is_public(result):
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not scope.host_ok(host):
+            continue
+        task = (result or {}).get("task") or {}
+        page = (result or {}).get("page") or {}
+        key = (url, task.get("uuid") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        v = quarantine.verdict(url)
+        if v["web_shell"]:
+            kind, severity = "web_shell_trace", "high"
+        else:
+            mime = (page.get("mimeType") or "") if page.get("url") == url else ""
+            found = classify_file(url, mime)
+            if not found.get("file_kind"):
+                continue
+            kind, severity = found["file_kind"], found["severity"]
+        slot = groups.setdefault((host, v["masked_path"] or "/", kind), {
+            "url": v["masked_url"], "severity": severity, "times": [], "newest": ("", "")})
+        slot["times"].append(task.get("time") or "")
+        if (task.get("time") or "") >= slot["newest"][0]:
+            slot["newest"] = (task.get("time") or "", task.get("uuid") or "")
+    out = []
+    for (host, path, kind), slot in sorted(groups.items()):
+        first, last = _span(slot["times"])
+        label = FILE_LABEL.get(kind, kind)
+        out.append({
+            "type": "sensitive_file_seen", "kind": kind, "kind_field": "file_kind",
+            "host": host, "path": path, "url": slot["url"].split("?", 1)[0] if kind != "web_shell_trace"
+            else slot["url"], "severity": slot["severity"],
+            "name": f"Exposed {label} seen on urlscan",
+            "description": (
+                f"{host}{path} ({label}) was opened in {len(slot['times'])} public urlscan scan(s), "
+                f"seen from {first[:10] or 'unknown'} to {last[:10] or 'unknown'}. RedAmon did not "
+                f"request it" + (": someone ran commands through a web shell, so the site may "
+                                 "already be compromised." if kind == "web_shell_trace" else
+                                 "; turn on Route Exposure to check whether it is still online.")),
+            "first_seen": first, "last_seen": last,
+            "urlscan_scan_id": "" if kind == "web_shell_trace" else slot["newest"][1],
+            "props": {"sightings": len(slot["times"])},
+        })
+    return out
 
 
 def _in_scope_urls(results: list, domain: str) -> list:

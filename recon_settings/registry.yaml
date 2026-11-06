@@ -10271,6 +10271,35 @@ fields:
       JWTs written in the address. Each one becomes a Secret (source urlscan) stored
       masked: its length and an HMAC, never the value. Such a URL is quarantined
       whatever this switch says. No extra searches.
+  urlscanSensitiveFiles:
+    tool: urlscan
+    runtime_key: "URLSCAN_SENSITIVE_FILES"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Checks the URLs urlscan already returned for files and pages that should never
+      be public: .env, .git, database dumps, backups, private keys, logs, phpinfo,
+      debug pages, leftover installers, web shells, file managers, debug consoles
+      and memory dumps. Each one becomes a finding (Vulnerability source
+      urlscan_leak, type sensitive_file_seen) marked seen on urlscan. With Route
+      Exposure on, the kinds it can prove are handed to it to check whether they are
+      still online. No extra searches.
+  urlscanDocumentLinks:
+    tool: urlscan
+    runtime_key: "URLSCAN_DOCUMENT_LINKS"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      Marks the URLs urlscan already returned that are documents or data rather than
+      web pages (PDF, Word, Excel, CSV, ZIP, JSON and raw text) with
+      Endpoint.document_type and urlscan_mime_type, for review. No finding and no
+      extra searches.
   useBruteforceForSubdomains:
     tool: pipeline
     runtime_key: "USE_BRUTEFORCE_FOR_SUBDOMAINS"

@@ -1613,15 +1613,26 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                        coalesce(e.sources, CASE WHEN e.source IS NULL THEN [] ELSE [e.source] END) AS sources,
                        e.source AS creator,
                        e.openapi_security AS openapi_security, e.openapi_tags AS openapi_tags,
-                       e.openapi_declared_only AS declared_only, e.status_code AS discovery_status
+                       e.openapi_declared_only AS declared_only, e.status_code AS discovery_status,
+                       e.urlscan_file_kind AS urlscan_file_kind
                 """,
                 uid=user_id, pid=project_id,
             )
+            urlscan_files = []
             for record in result:
                 base = record["base"]
                 if not base or not keep(url_host(base, record["host"] or "")):
                     continue
                 sources = [s for s in (record["sources"] or []) if isinstance(s, str)]
+                # A sensitive file urlscan saw is handed over the way the full
+                # run does it (harvest._read_urlscan), so a heap dump stays HEAD
+                # and a dump is read as a backup, never fetched with a plain GET.
+                file_kind = _field(record, "urlscan_file_kind")
+                if file_kind:
+                    urlscan_files.append({"type": "sensitive_file_seen", "kind": file_kind,
+                                          "host": url_host(base, record["host"] or ""),
+                                          "path": record["path"],
+                                          "url": base.rstrip("/") + record["path"]})
                 # A route the scan itself generated and wrote is not recon's input: a
                 # full run never reads it. Read back, it became a found route, lost its
                 # generated_by and variant_of (an old API version stopped being
@@ -1679,5 +1690,8 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                     "source_js": record["source_js"] or "",
                     "parameterized": record["template"] is not None,
                 })
+
+            if urlscan_files:
+                recon_data["urlscan"] = {"findings": urlscan_files}
 
     return recon_data

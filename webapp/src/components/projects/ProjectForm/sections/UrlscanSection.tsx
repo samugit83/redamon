@@ -161,6 +161,25 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                   description="Checks the URLs urlscan already returned for passwords, API keys, tokens and JWTs written in the address. Each one becomes a Secret, stored masked. No extra searches."
                 />
               </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Exposed Files</h3>
+                <UrlscanToggle
+                  checked={data.urlscanSensitiveFiles ?? true}
+                  onChange={(checked) => updateField('urlscanSensitiveFiles', checked)}
+                  label="Sensitive Files and Pages"
+                  description={'Checks the URLs urlscan already returned for files and pages that should never be public: .env, .git, database dumps, backups, private keys, logs, phpinfo, debug pages, leftover installers, web shells, file managers, debug consoles and memory dumps. Each one becomes a finding marked "seen on urlscan". Turn on Route Exposure to check whether they are still online. No extra searches.'}
+                  hint={data.routeExposureEnabled
+                    ? 'Route Exposure will check whether they are still online.'
+                    : 'Turn on Route Exposure to check whether they are still online.'}
+                />
+                <UrlscanToggle
+                  checked={data.urlscanDocumentLinks ?? true}
+                  onChange={(checked) => updateField('urlscanDocumentLinks', checked)}
+                  label="Documents Opened by Direct Link"
+                  description="Marks the URLs urlscan already returned that are documents or data rather than web pages: PDF, Word, Excel, CSV, ZIP, JSON and raw text. They are listed for review on their endpoints, not reported as findings. No extra searches."
+                />
+              </div>
             </>
           )}
         </div>

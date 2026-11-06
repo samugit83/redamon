@@ -881,11 +881,17 @@ class OsintMixin:
                                       e.has_parameters = $has_params, e.updated_at = datetime()
                         SET e.full_url = CASE WHEN e.source = 'urlscan' THEN $full_url ELSE e.full_url END
                         SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
+                        SET e += $file_props
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         RETURN e.path AS path
                         """,
                         base_url=base_url, path=path, full_url=full_url,
-                        has_params=has_params, uid=user_id, pid=project_id
+                        has_params=has_params, uid=user_id, pid=project_id,
+                        # Item 3: a document's type, its content type, and a
+                        # sensitive file's kind (partial Route Exposure reads it).
+                        file_props={k: url_entry[k] for k in
+                                    ("document_type", "urlscan_mime_type", "urlscan_file_kind")
+                                    if url_entry.get(k)},
                     )
                     record = result.single()
                     if record:

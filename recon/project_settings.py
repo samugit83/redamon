@@ -718,6 +718,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'URLSCAN_MAX_SEARCHES': 60,
     'URLSCAN_LEAKED_LINKS': True,
     'URLSCAN_SECRETS_IN_URLS': True,
+    'URLSCAN_SENSITIVE_FILES': True,
+    'URLSCAN_DOCUMENT_LINKS': True,
 
     # OSINT & Threat Intelligence Enrichment
     'OSINT_ENRICHMENT_ENABLED': False,
@@ -2027,6 +2029,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['URLSCAN_MAX_SEARCHES'] = project.get('urlscanMaxSearches', DEFAULT_SETTINGS['URLSCAN_MAX_SEARCHES'])
     settings['URLSCAN_LEAKED_LINKS'] = project.get('urlscanLeakedLinks', DEFAULT_SETTINGS['URLSCAN_LEAKED_LINKS'])
     settings['URLSCAN_SECRETS_IN_URLS'] = project.get('urlscanSecretsInUrls', DEFAULT_SETTINGS['URLSCAN_SECRETS_IN_URLS'])
+    settings['URLSCAN_SENSITIVE_FILES'] = project.get('urlscanSensitiveFiles', DEFAULT_SETTINGS['URLSCAN_SENSITIVE_FILES'])
+    settings['URLSCAN_DOCUMENT_LINKS'] = project.get('urlscanDocumentLinks', DEFAULT_SETTINGS['URLSCAN_DOCUMENT_LINKS'])
 
     # OSINT & Threat Intelligence Enrichment
     settings['OSINT_ENRICHMENT_ENABLED'] = project.get('osintEnrichmentEnabled', DEFAULT_SETTINGS['OSINT_ENRICHMENT_ENABLED'])

@@ -454,3 +454,124 @@ def split_quarantined(urls: Iterable[str]) -> tuple:
         else:
             kept.append(u)
     return kept, quarantined
+
+
+# ---------------------------------------------------------------------------
+# Exposed files and documents (item 3)
+# ---------------------------------------------------------------------------
+
+#: file_kind -> severity, for a file seen on urlscan (history alone: at most high).
+FILE_SEVERITY = {
+    "env": "high", "vcs": "high", "db_dump": "high", "installer": "high", "private_key": "high",
+    "backup": "medium", "log": "medium", "debug_page": "medium", "config": "low",
+    "web_shell_trace": "high", "file_manager": "high", "debug_console": "high",
+    "memory_dump": "high", "salesforce_aura": "medium",
+}
+_BACKUP_SUFFIXES = (".bak", ".old", ".orig", ".save", ".swp", "~")
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".tar", ".rar", ".7z")
+_BACKUP_ARCHIVE_WORDS = ("backup", "bak", "dump", "db", "database", "site", "www", "htdocs",
+                         "public_html")
+_KEY_SUFFIXES = (".key", ".p12", ".pfx", ".ppk", ".pem")
+_KEY_NAMES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+_DUMP_SUFFIXES = (".sql", ".sql.gz", ".sql.zip", ".dump", ".sqlite", ".sqlite3")
+_CONFIG_NAMES = ("config.json", "appsettings.json", "web.config")
+_DOC_MIME = (
+    ("application/pdf", "pdf"),
+    ("application/msword", "office"), ("application/vnd.openxmlformats", "office"),
+    ("application/vnd.ms-", "office"), ("application/vnd.oasis.opendocument", "office"),
+    ("application/zip", "archive"), ("application/x-7z-compressed", "archive"),
+    ("application/x-rar", "archive"), ("application/vnd.rar", "archive"),
+    ("application/gzip", "archive"), ("application/x-gzip", "archive"), ("application/x-tar", "archive"),
+    ("text/csv", "csv"), ("application/json", "json"),
+)
+_DOC_EXT = (
+    (".pdf", "pdf"), (".docx", "office"), (".doc", "office"), (".xlsx", "office"), (".xls", "office"),
+    (".pptx", "office"), (".ppt", "office"), (".odt", "office"), (".ods", "office"),
+    (".csv", "csv"), (".tar.gz", "archive"), (".zip", "archive"), (".rar", "archive"),
+    (".7z", "archive"), (".json", "json"),
+)
+_RAW_MIME = ("text/plain", "application/octet-stream", "application/xml", "text/xml")
+
+
+def _sensitive_kind(path: str, host: str) -> Optional[tuple]:
+    low = (path or "/").lower()
+    name = low.rstrip("/").rsplit("/", 1)[-1]
+    if any(seg in low for seg in ("/.git/", "/.svn/", "/.hg/")) or low.rstrip("/").endswith(
+            ("/.git", "/.svn", "/.hg")):
+        return "vcs", "high"
+    if "/sfsites/aura" in low:
+        return "salesforce_aura", "medium"
+    if "/_profiler/" in low or name == "app_dev.php":
+        return "debug_console", "high"
+    if "/elfinder/" in low or "/kcfinder/" in low or name in ("filemanager.php", "tinyfilemanager.php"):
+        return "file_manager", "high"
+    if name == "heapdump":
+        return "memory_dump", "high"
+    if name.endswith(_BACKUP_SUFFIXES):
+        stem = name
+        for suffix in _BACKUP_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        # A config file's backup holds its passwords.
+        is_config = "config" in stem or stem.startswith(".env") or stem in ("settings.py", "wp-config.php")
+        return "backup", "high" if is_config else "medium"
+    if name == ".env" or name.startswith(".env."):
+        return "env", "high"
+    if name.endswith(".pub"):
+        return None
+    if name.endswith(_KEY_SUFFIXES) or name in _KEY_NAMES:
+        return "private_key", "medium" if name.endswith(".pem") else "high"
+    if name.endswith(_DUMP_SUFFIXES):
+        return "db_dump", "high"
+    if name.endswith(_ARCHIVE_SUFFIXES):
+        host_word = (host or "").lower().split(".")[0]
+        words = _BACKUP_ARCHIVE_WORDS + ((host_word,) if host_word else ())
+        stem = name.split(".", 1)[0]
+        if any(w and w in stem for w in words):
+            return "backup", "medium"
+        return None
+    if name.endswith(".log") or name in ("error_log", "access_log"):
+        return "log", "medium"
+    if name in _CONFIG_NAMES or (name.startswith("appsettings.") and name.endswith(".json")):
+        return "config", "low"
+    if name in ("phpinfo.php", "info.php", "debug.php"):
+        return "debug_page", "medium"
+    if name in ("setup-config.php", "install.php", "installer.php"):
+        return "installer", "high"
+    return None
+
+
+def _has_extension(name: str) -> bool:
+    return "." in name.strip(".") and len(name.rsplit(".", 1)[-1]) <= 6
+
+
+def classify_file(url: str, mime_type: str = "") -> dict:
+    """What kind of file an archived URL opened directly. Never raises.
+
+    {"file_kind", "severity"} for a file that should never be public (matched on
+    the path's last part, never the host name), {"document_type"} for a document
+    or data rather than a page, else {}. A path that is a sensitive file stays
+    one, whatever its content type.
+    """
+    try:
+        parts = urlsplit(url or "")
+        path = unquote(parts.path or "/")
+        found = _sensitive_kind(path, parts.hostname or "")
+        if found:
+            return {"file_kind": found[0], "severity": found[1]}
+        mime = (mime_type or "").split(";", 1)[0].strip().lower()
+        for prefix, doc in _DOC_MIME:
+            if mime.startswith(prefix):
+                return {"document_type": doc}
+        name = path.lower().rstrip("/").rsplit("/", 1)[-1]
+        for suffix, doc in _DOC_EXT:
+            if name.endswith(suffix):
+                return {"document_type": doc}
+        # Raw text served as a page with no known extension: environment dumps,
+        # logs, bucket listings, WSDL.
+        if mime in _RAW_MIME and name and not _has_extension(name):
+            return {"document_type": "raw"}
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
