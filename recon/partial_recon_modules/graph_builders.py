@@ -28,6 +28,28 @@ def declared_only_unsafe(alias: str = "e") -> str:
     return DECLARED_ONLY_UNSAFE.format(a=alias)
 
 
+#: An Endpoint whose archived URL carried a leaked one-time link, a secret, a
+#: state-changing link with a value or a web-shell trace (recon/helpers/url_leaks.py).
+#: Never a request target, whatever the method: it has no full_url and no
+#: parameter value, and every reader that turns graph Endpoints into requests
+#: filters it.
+QUARANTINED = "coalesce({a}.quarantined, false)"
+
+
+def quarantined(alias: str = "e") -> str:
+    """Cypher, true for an Endpoint no tool may request."""
+    return QUARANTINED.format(a=alias)
+
+
+#: Cypher, true for an Endpoint only web archives reported (urlscan, GAU,
+#: ParamSpider read history, not the live site).
+ARCHIVE_ONLY = (
+    "(size([s IN coalesce(e.sources, CASE WHEN e.source IS NULL THEN [] ELSE [e.source] END) "
+    "| toLower(s)]) > 0 AND all(s IN [x IN coalesce(e.sources, CASE WHEN e.source IS NULL "
+    "THEN [] ELSE [e.source] END) | toLower(x)] WHERE s IN ['urlscan', 'gau', 'paramspider']))"
+)
+
+
 #: True for a RESOLVES_TO edge `r` that is forward DNS. Shodan's reverse-DNS
 #: and domain-DNS answers write the same edge with source 'shodan_rdns' /
 #: 'shodan_dns'; a partial run reading them would take a PTR record for the
@@ -1169,26 +1191,31 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                       -[:HAS_ENDPOINT]->(e:Endpoint)
                       -[:HAS_PARAMETER]->(p:Parameter)
                 WHERE p.position = 'query' AND p.name IS NOT NULL AND e.path IS NOT NULL
-                  AND NOT """ + declared_only_unsafe("e") + """
+                  AND NOT """ + declared_only_unsafe("e") + """ AND NOT """ + quarantined("e") + """
                 WITH b, e, p ORDER BY p.name
-                RETURN b.url AS baseurl, e.path AS path,
+                RETURN b.url AS baseurl, e.path AS path, """ + ARCHIVE_ONLY + """ AS archive_only,
                        collect(DISTINCT [p.name, coalesce(head(p.sample_values), '1')]) AS params
                 """,
                 uid=user_id, pid=project_id,
             )
             discovered_urls = []
+            archived_urls = []
             for record in result:
                 base = record["baseurl"]
                 params = [(name, str(value)) for name, value in (record["params"] or []) if name]
                 if base and params and keep(url_host(base)):
-                    discovered_urls.append(f"{base}{record['path']}?{urlencode(params)}")
+                    url = f"{base}{record['path']}?{urlencode(params)}"
+                    discovered_urls.append(url)
+                    if record.get("archive_only"):
+                        archived_urls.append(url)
             # URLs other writers store whole (JS Recon, urlscan) still count.
             result = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
-                WHERE e.full_url IS NOT NULL
-                RETURN e.full_url AS url, e.baseurl AS baseurl
+                WHERE e.full_url IS NOT NULL AND NOT """ + quarantined("e") + """
+                  AND NOT """ + declared_only_unsafe("e") + """
+                RETURN e.full_url AS url, e.baseurl AS baseurl, """ + ARCHIVE_ONLY + """ AS archive_only
                 """,
                 uid=user_id, pid=project_id,
             )
@@ -1196,7 +1223,12 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                 url = record["url"]
                 if url and keep(url_host(record["baseurl"] or url)):
                     discovered_urls.append(url)
+                    if record.get("archive_only"):
+                        archived_urls.append(url)
             recon_data["resource_enum"]["discovered_urls"] = list(dict.fromkeys(discovered_urls))
+            # The full run's marker for URLs only web archives reported: the
+            # rate-limit check never requests them.
+            recon_data["resource_enum"]["archived_urls"] = list(dict.fromkeys(archived_urls))
 
     return recon_data
 
@@ -1282,7 +1314,7 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
-                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """
+                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """ AND NOT """ + quarantined("e") + """
                 OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
                 RETURN b.url AS base_url, e.path AS path,
                        coalesce(e.method, 'GET') AS method,
@@ -1314,6 +1346,7 @@ def _build_graphql_data_from_graph(domains, user_id: str, project_id: str,
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
                 WHERE e.endpoint_type IN ['graphql', 'graphql_introspection']
+                  AND NOT """ + quarantined("e") + """
                 RETURN b.url AS base_url, e.path AS path, e.endpoint_type AS type,
                        coalesce(e.full_url, '') AS full_url
                 """,
@@ -1443,7 +1476,7 @@ def _build_serialized_data_from_graph(domains, user_id: str, project_id: str,
             result = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """
+                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """ AND NOT """ + quarantined("e") + """
                 OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
                 WHERE p.name IS NOT NULL
                 RETURN b.url AS base, b.host AS host, e.path AS path,
@@ -1572,7 +1605,7 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
             result = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """
+                WHERE e.path IS NOT NULL AND NOT """ + declared_only_unsafe("e") + """ AND NOT """ + quarantined("e") + """
                 RETURN b.url AS base, b.host AS host, e.path AS path,
                        coalesce(e.method, 'GET') AS method, e.category AS category,
                        coalesce(e.sources, CASE WHEN e.source IS NULL THEN [] ELSE [e.source] END) AS sources,
@@ -1625,6 +1658,7 @@ def _build_route_exposure_data_from_graph(domains, user_id: str, project_id: str
                 MATCH (f:JsReconFinding {user_id: $uid, project_id: $pid, finding_type: 'js_file'})
                       -[:HAS_ENDPOINT]->(e:Endpoint)
                 WHERE NOT f:Muted AND e.path IS NOT NULL AND e.endpoint_type IS NOT NULL
+                  AND NOT """ + quarantined("e") + """
                 RETURN f.source_url AS source_js, e.baseurl AS base, e.path AS path,
                        coalesce(e.method, 'GET') AS method, e.endpoint_type AS kind,
                        e.category AS category, e.path_template AS template

@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.graph_builders import declared_only, graph_url_scope, url_host
+from recon.partial_recon_modules.graph_builders import declared_only, graph_url_scope, quarantined, url_host
 from recon.partial_recon_modules.helpers import partial_settings, scope_roots
 
 
@@ -66,8 +66,9 @@ def run_ai_surface_recon(config: dict) -> None:
         ep_rows = session.run(
             """
             MATCH (b:BaseURL {user_id:$u, project_id:$p})-[:HAS_ENDPOINT]->(e:Endpoint)
-            WHERE (e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm')
-               OR e.is_ai_framework_detected = true
+            WHERE ((e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm')
+               OR e.is_ai_framework_detected = true)
+              AND NOT """ + quarantined("e") + """
             RETURN b.url AS base_url, e.path AS path,
                    coalesce(e.method,'GET') AS method,
                    e.ai_interface_type AS iface,

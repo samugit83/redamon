@@ -900,8 +900,53 @@ class OsintMixin:
                 except Exception as e:
                     stats["errors"].append(f"Endpoint {path}: {e}")
 
+            # ── 3. Quarantined URLs: a leaked one-time link, a secret, a state-
+            # changing link with a value, a web-shell trace. The Endpoint is
+            # kept (the path, masked, and the parameter NAMES) so the agent and
+            # the operator see it, flagged so every reader that turns graph
+            # Endpoints into requests skips it. A plain SET flags one another
+            # tool wrote too; its full_url and parameter values are removed.
+            stats["endpoints_quarantined"] = 0
+            for row in urlscan_data.get("quarantined_urls", []) or []:
+                base_url = row.get("base_url", "")
+                path = row.get("path", "")
+                if not base_url or not path:
+                    continue
+                try:
+                    rec = session.run(
+                        """
+                        MATCH (bu:BaseURL {url: $base_url, user_id: $uid, project_id: $pid})
+                        MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url,
+                                           user_id: $uid, project_id: $pid})
+                        ON CREATE SET e.source = 'urlscan', e.updated_at = datetime()
+                        SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
+                        SET e.quarantined = true, e.quarantine_reasons = $reasons,
+                            e.has_parameters = coalesce(e.has_parameters, false) OR size($names) > 0
+                        REMOVE e.full_url
+                        MERGE (bu)-[:HAS_ENDPOINT]->(e)
+                        WITH e
+                        UNWIND (CASE WHEN size($names) = 0 THEN [null] ELSE $names END) AS name
+                        WITH e, name WHERE name IS NOT NULL
+                        MERGE (p:Parameter {name: name, position: 'query', endpoint_path: $path,
+                                            baseurl: $base_url, user_id: $uid, project_id: $pid})
+                        ON CREATE SET p.source = 'urlscan', p.is_injectable = false,
+                                      p.updated_at = datetime()
+                        REMOVE p.sample_value, p.sample_values
+                        MERGE (e)-[:HAS_PARAMETER]->(p)
+                        RETURN count(DISTINCT e) AS n
+                        """,
+                        base_url=base_url, path=path, reasons=list(row.get("reasons") or []),
+                        names=[n for n in row.get("param_names") or [] if isinstance(n, str) and n],
+                        uid=user_id, pid=project_id,
+                    ).single()
+                    if rec is not None:
+                        stats["endpoints_quarantined"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"Quarantined endpoint {path}: {e}")
+
             print(f"[+][graph-db] URLScan enrichment: {stats['baseurls_enriched']} BaseURLs enriched, "
-                  f"{stats['endpoints_created']} endpoints, {stats['parameters_created']} parameters")
+                  f"{stats['endpoints_created']} endpoints, {stats['parameters_created']} parameters, "
+                  f"{stats['endpoints_quarantined']} quarantined")
             if stats["baseurls_not_found"]:
                 print(f"[*][graph-db] {stats['baseurls_not_found']} BaseURLs not in graph (stale URLScan data, expected)")
             if stats["endpoints_skipped"]:

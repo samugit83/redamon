@@ -26,7 +26,7 @@ def _spec_like_graph_urls(roots, user_id, project_id, domain_groups):
             rows = session.run(
                 """
                 MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-                WHERE e.path IS NOT NULL
+                WHERE e.path IS NOT NULL AND NOT coalesce(e.quarantined, false)
                 RETURN DISTINCT b.url AS base, e.path AS path
                 """,
                 uid=user_id, pid=project_id,

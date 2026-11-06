@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.graph_builders import declared_only_unsafe, graph_scope_subdomains
+from recon.partial_recon_modules.graph_builders import declared_only_unsafe, graph_scope_subdomains, quarantined
 from recon.partial_recon_modules.helpers import _is_valid_url, _scope_partial_urls, partial_settings, scope_roots, root_orgs
 
 
@@ -85,7 +85,7 @@ def run_jsrecon(config: dict) -> None:
                     result = session.run(
                         """
                         MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
-                        WHERE NOT """ + declared_only_unsafe("e") + """
+                        WHERE NOT """ + declared_only_unsafe("e") + """ AND NOT """ + quarantined("e") + """
                         RETURN DISTINCT e.baseurl + e.path AS url
                         """,
                         uid=user_id, pid=project_id,

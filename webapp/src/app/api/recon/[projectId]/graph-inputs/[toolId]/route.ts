@@ -11,6 +11,7 @@ import {
   type GraphDomainRow,
 } from '@/lib/partialReconScope'
 import { findLegacyDomains } from '@/lib/legacyGraph'
+import { notQuarantined } from '@/lib/graph/requestTargets'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -109,8 +110,9 @@ const BASEURL_HOST = `toLower(coalesce(b.host, ${hostOfUrl('b.url')}))`
 const SCOPED_BASEURLS = (q: ScopeCypher) => `OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
   WHERE ${q.hostOk(BASEURL_HOST)}`
 
+// The tools that read Endpoints never request a quarantined one.
 const SCOPED_ENDPOINTS = (q: ScopeCypher) => `OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
-  WHERE ${q.hostOk(`toLower(${hostOfUrl('e.baseurl')})`)}`
+  WHERE ${q.hostOk(`toLower(${hostOfUrl('e.baseurl')})`)} AND ${notQuarantined('e')}`
 
 const BASEURLS = (q: ScopeCypher) => `${SCOPED_BASEURLS(q)}
   RETURN collect(DISTINCT b.url) AS baseurls`
@@ -212,7 +214,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
     cypher: q => `${SCOPED_BASEURLS(q)}
       WITH collect(DISTINCT b.url) AS baseurls
       OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-      WHERE ${q.hostOk(BASEURL_HOST)}
+      WHERE ${q.hostOk(BASEURL_HOST)} AND ${notQuarantined('e')}
       RETURN baseurls, count(DISTINCT e) AS endpointCount`,
     respond: r => ({
       ...baseurlFields(r),
@@ -223,6 +225,7 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   Arjun: {
     cypher: q => `${SCOPED_BASEURLS(q)}
       OPTIONAL MATCH (b)-[:HAS_ENDPOINT]->(e:Endpoint {user_id: $uid, project_id: $pid})
+        WHERE ${notQuarantined('e')}
       WITH collect(DISTINCT b.url) AS baseurls, count(DISTINCT e) AS endpointCount
       RETURN baseurls, endpointCount`,
     respond: r => ({

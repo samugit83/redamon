@@ -155,7 +155,8 @@ def run_paramspider_discovery(
         urls_list = sorted(all_discovered_urls)
         print(f"[+][ParamSpider] Discovered {len(urls_list)} total parameterized URLs")
 
-        return urls_list, urls_by_domain
+        from recon.helpers.resource_enum.gau_helpers import quarantine_archive_urls
+        return quarantine_archive_urls(urls_list, urls_by_domain, "ParamSpider")
 
     finally:
         # Clean up temp directory

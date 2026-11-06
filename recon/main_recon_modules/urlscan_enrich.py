@@ -431,7 +431,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     subdomains: set[str] = set()
     ips: set[str] = set()
     urls_with_paths: list[dict] = []
+    quarantined_urls: list[dict] = []
     seen_urls: set[str] = set()
+    quarantine = UrlQuarantine(_in_scope_urls(results, domain))
 
     # Track domain age (take max from all results)
     domain_age_days = None
@@ -503,12 +505,22 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
                 if apex_domain_age_days is None or page_apex_age > apex_domain_age_days:
                     apex_domain_age_days = page_apex_age
 
-        # Parse URL paths for Phase B endpoint creation (in-scope only)
+        # Parse URL paths for Phase B endpoint creation (in-scope only). A
+        # quarantined URL (a one-time link, a secret, a state-changing link with
+        # a value, a web-shell trace) never reaches a list anything requests.
         if page_url and page_url not in seen_urls and is_in_scope:
             seen_urls.add(page_url)
-            parsed = _parse_url_path(page_url)
-            if parsed:
-                urls_with_paths.append(parsed)
+            if quarantine.holds(page_url):
+                quarantined_urls.append(quarantine.row(page_url, "page", result))
+            else:
+                parsed = _parse_url_path(page_url)
+                if parsed:
+                    urls_with_paths.append(parsed)
+        task_url = task.get("url", "") or ""
+        if (task_url and task_url not in seen_urls and _extract_domain_from_url(task_url, domain)
+                and quarantine.holds(task_url)):
+            seen_urls.add(task_url)
+            quarantined_urls.append(quarantine.row(task_url, "task", result))
 
         # Build entry
         entry = {
@@ -541,6 +553,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "domain_age_days": domain_age_days,
         "apex_domain_age_days": apex_domain_age_days,
         "urls_with_paths": urls_with_paths,
+        "quarantined_urls": quarantined_urls,
         "entries": entries,
         "external_domains": external_domain_entries,
         "coverage": coverage,
@@ -597,6 +610,55 @@ def _note_coverage_gap(domain: str, results: SearchResults) -> None:
     label = "search budget reached" if getattr(results, "budget_exhausted", False) else reason
     cb.note_degraded("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES,
                      reason=f"urlscan: {label}")
+
+
+def _in_scope_urls(results: list, domain: str) -> list:
+    urls = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        for part in ("page", "task"):
+            url = ((result.get(part) or {}).get("url") or "")
+            if url and _extract_domain_from_url(url, domain):
+                urls.append(url)
+    return urls
+
+
+class UrlQuarantine:
+    """The quarantine verdicts for one search's in-scope URLs. A web-shell trace
+    quarantines every URL on its host + path, whichever visit comes first."""
+
+    def __init__(self, urls: list):
+        from recon.helpers import url_leaks
+        self._ul = url_leaks
+        self._verdicts = {u: url_leaks.inspect_url(u) for u in dict.fromkeys(urls)}
+        self._shells = {url_leaks.host_path_key(u) for u, v in self._verdicts.items() if v["web_shell"]}
+
+    def verdict(self, url: str) -> dict:
+        v = self._verdicts.get(url)
+        if v is None:
+            v = self._verdicts[url] = self._ul.inspect_url(url)
+        return v
+
+    def holds(self, url: str) -> bool:
+        return self.verdict(url)["quarantined"] or self._ul.host_path_key(url) in self._shells
+
+    def row(self, url: str, field: str, result: dict) -> dict:
+        """What the graph may keep of a quarantined URL: no value, no scan ID."""
+        v = self.verdict(url)
+        parsed = urlparse(url)
+        reasons = list(v["reasons"])
+        if self._ul.host_path_key(url) in self._shells and "web_shell" not in reasons:
+            reasons.append("web_shell_host")
+        return {
+            "base_url": f"{parsed.scheme}://{parsed.netloc}",
+            "path": v["masked_path"] or "/",
+            "masked_url": v["masked_url"],
+            "param_names": sorted({n for n, _ in parse_qs(parsed.query, keep_blank_values=True).items()}),
+            "reasons": sorted(reasons),
+            "field": field,
+            "scan_time": ((result or {}).get("task") or {}).get("time", ""),
+        }
 
 
 def run_urlscan_discovery_only(domain: str, settings: dict[str, Any]) -> dict:

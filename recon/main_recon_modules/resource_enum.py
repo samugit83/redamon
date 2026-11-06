@@ -1587,14 +1587,18 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         if urlscan_skipped:
             print(f"[-][ResourceEnum] URLScan skipped {urlscan_skipped} out-of-scope URLs")
 
-    # Combine all discovered URLs (deduplicated, in-scope only)
+    # Combine all discovered URLs (deduplicated, in-scope only). An archive URL's
+    # parameter values are someone's old request (a session, a token the
+    # quarantine's rules missed): nuclei DAST and the recon JSON get them
+    # masked, as urlscan's are.
+    from recon.helpers.url_leaks import mask_url
+    archive_masked = [m for m in (mask_url(u) for u in in_scope_gau + paramspider_urls) if m]
     jsluice_in_scope_urls = jsluice_result.get("urls", []) if JSLUICE_ENABLED else []
     ffuf_discovered_urls = [r["url"] for r in ffuf_results] if FFUF_ENABLED else []
     all_discovered_urls = sorted(set(
         katana_urls
         + hakrawler_urls
-        + in_scope_gau
-        + paramspider_urls
+        + archive_masked
         + urlscan_urls
         + jsluice_in_scope_urls
         + ffuf_discovered_urls
@@ -1605,7 +1609,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     # JS_RECON_INCLUDE_ARCHIVED_JS is off.
     live_seen = set(katana_urls + hakrawler_urls + crawl_js_urls + jsluice_in_scope_urls
                     + ffuf_discovered_urls + zap_ajax_urls)
-    archived_only_urls = sorted(set(in_scope_gau + urlscan_urls + paramspider_urls) - live_seen)
+    archived_only_urls = sorted(
+        {mask_url(u) for u in set(in_scope_gau + urlscan_urls + paramspider_urls) - live_seen} - {""})
 
     # Build result structure
     resource_enum_result = {

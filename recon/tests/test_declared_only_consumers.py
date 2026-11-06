@@ -21,7 +21,7 @@ import pytest
 
 from recon.helpers.target_helpers import MAX_DECLARED_NUCLEI_URLS, build_target_urls_from_resource_enum
 from recon.partial_recon_modules import graph_builders
-from recon.partial_recon_modules.graph_builders import declared_only, declared_only_unsafe
+from recon.partial_recon_modules.graph_builders import declared_only, declared_only_unsafe, quarantined
 
 UNSAFE = "(coalesce(e.openapi_declared_only, e.openapi_declared, false) AND NOT e.method IN ['GET','HEAD'])"
 MODULES = Path(graph_builders.__file__).parent
@@ -109,12 +109,12 @@ def _arjun_endpoint_query(methods):
 
 def test_arjun_posting_reads_no_declared_only_path():
     query = _arjun_endpoint_query(['GET', 'POST'])
-    assert f"WHERE NOT {declared_only('e')} RETURN" in query
+    assert f"WHERE NOT {declared_only('e')} AND NOT {quarantined('e')} RETURN" in query
 
 
 def test_arjun_with_get_only_reads_declared_get_paths():
     query = _arjun_endpoint_query(['GET'])
-    assert f'WHERE NOT {UNSAFE} RETURN' in query
+    assert f'WHERE NOT {UNSAFE} AND NOT {quarantined("e")} RETURN' in query
 
 
 def test_partial_ai_surface_marks_a_path_declared_only_while_every_node_is():

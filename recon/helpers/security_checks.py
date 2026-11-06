@@ -2853,15 +2853,9 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
     """
     findings = []
 
-    # Keywords that indicate authentication endpoints
-    auth_keywords = [
-        'login', 'signin', 'sign-in', 'auth', 'authenticate', 'session',
-        'token', 'oauth', 'sso', 'password', 'credential', 'account/login',
-        'user/login', 'admin/login', 'api/login', 'api/auth', 'wp-login',
-        'register', 'signup', 'sign-up', 'forgot', 'reset-password'
-    ]
-
-    # Filter URLs that belong to this hostname and contain auth keywords
+    # Login-like URLs of exactly this host (a subdomain's URLs are its own
+    # host's pass), by the words of the PATH: a host named auth.* or a ?token=
+    # query says nothing about the page.
     auth_urls = set()
     host = (hostname or "").lower()
     for url in urls:
@@ -2869,12 +2863,10 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
             parsed = urlparse(url)
             # .hostname, not netloc: "app.example.com:8443" is still this host.
             url_host = parsed.hostname or ""
-            if url_host == host or url_host.endswith(f'.{host}'):
-                url_lower = url.lower()
-                if any(keyword in url_lower for keyword in auth_keywords):
-                    # Normalize to base URL without query params for rate limit test
-                    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                    auth_urls.add(base_url)
+            if url_host == host and _is_login_path(parsed.path) and not _never_request(url):
+                # Normalize to base URL without query params for rate limit test
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                auth_urls.add(base_url)
         except Exception:
             pass
 
@@ -2972,6 +2964,39 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
     return findings
 
 
+#: Path words of a login or credential endpoint, matched as whole words of a
+#: segment (split on - _ .), so `/blog/authors` or `/tokens-of-appreciation` is not one.
+_LOGIN_PATH_WORDS = frozenset({
+    "login", "signin", "auth", "authenticate", "session", "token", "oauth", "sso",
+    "password", "credential", "credentials", "register", "signup", "forgot", "logon",
+})
+_LOGIN_PATH_PHRASES = frozenset({"sign-in", "sign_in", "sign-up", "sign_up", "reset-password",
+                                 "log-in", "log_in"})
+
+
+def _is_login_path(path: str) -> bool:
+    for segment in (path or "").lower().split("/"):
+        if not segment:
+            continue
+        if segment in _LOGIN_PATH_PHRASES or any(p in segment for p in _LOGIN_PATH_PHRASES):
+            return True
+        if set(re.split(r"[-_.]+", segment)) & _LOGIN_PATH_WORDS:
+            return True
+    return False
+
+
+def _never_request(url: str) -> bool:
+    """A quarantined URL (a leaked one-time link or token: recon/helpers/url_leaks.py),
+    or one already stored masked (a `{token}` path)."""
+    if "{" in url or "***" in url:
+        return True
+    try:
+        from recon.helpers.url_leaks import inspect_url
+        return bool(inspect_url(url)["quarantined"])
+    except Exception:  # noqa: BLE001 - fail closed
+        return True
+
+
 def run_rate_limit_checks(
     hostnames: List[str],
     recon_data: Dict[str, Any],
@@ -2997,11 +3022,14 @@ def run_rate_limit_checks(
     if not enabled_checks.get("no_rate_limiting", True):
         return findings
 
-    # Extract all discovered URLs from recon data
+    # Extract all discovered URLs from recon data. Only live sources: a URL
+    # only a web archive reported (urlscan, GAU, ParamSpider) is someone's old
+    # link, and this check sends it a GET and ten POSTs.
     discovered_urls = []
 
     # From resource_enum
     resource_enum = recon_data.get("resource_enum", {})
+    archived = set((resource_enum or {}).get("archived_urls") or [])
     if resource_enum:
         discovered_urls.extend(resource_enum.get("discovered_urls", []))
 
@@ -3016,8 +3044,20 @@ def run_rate_limit_checks(
     for url, entry in by_url.items():
         discovered_urls.append((entry.get("url") if isinstance(entry, dict) else None) or url)
 
-    # Deduplicate
-    discovered_urls = list({u for u in discovered_urls if isinstance(u, str) and u})
+    # Deduplicate, then drop every URL whose path only an archive knows (the
+    # nuclei lists rebuild those URLs with their own query values).
+    def _key(u: str) -> str:
+        try:
+            p = urlparse(u)
+            return f"{p.scheme}://{p.netloc}{p.path}".lower()
+        except Exception:  # noqa: BLE001
+            return u
+    live_keys = {_key(u) for u in (resource_enum or {}).get("discovered_urls", []) or []
+                 if isinstance(u, str) and u not in archived}
+    live_keys |= {_key(u) for u in by_url}
+    archive_only = {_key(u) for u in archived} - live_keys
+    discovered_urls = list({u for u in discovered_urls
+                            if isinstance(u, str) and u and _key(u) not in archive_only})
 
     def check_single_host(hostname: str) -> List[Dict]:
         if _host_down(hostname):
