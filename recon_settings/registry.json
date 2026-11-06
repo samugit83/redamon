@@ -14359,7 +14359,7 @@
     "min": 1,
     "max": 50000
    },
-   "default": 50000,
+   "default": 10000,
    "form_section": "UrlscanSection",
    "governor": {
     "model": "budget",
@@ -14368,7 +14368,7 @@
    },
    "has_default": true,
    "mcp": "settable",
-   "meaning": "The most results urlscan accumulates in one pass. The memory governor budgets it against available RAM, so the effective value can be below what is written here.",
+   "meaning": "The most urlscan visits read per domain in one scan. Capped at scan start at 10,000 with an API key and 1,000 without one (urlscan returns 100 visits per search without a key and only the last 30 days), so a saved value above that is read as the cap. The memory governor budgets it against available RAM, so the effective value can be below what is written here.",
    "optional": false,
    "phase": "domain_discovery",
    "prisma_type": "Int",
@@ -14377,6 +14377,26 @@
    "stealth": {
     "ceiling": 100
    },
+   "tool": "urlscan",
+   "traffic": "passive",
+   "type": "int",
+   "unit": "count"
+  },
+  "urlscanMaxSearches": {
+   "bounds": {
+    "min": 1,
+    "max": 1000
+   },
+   "default": 60,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "The most searches one scan may send to urlscan, across every domain of the project and every caller (the main search and its pages, the outbound redirect search, Origin Discovery's file fingerprint search). Each domain's first search is reserved first. When it runs out the scan stops asking, records a coverage gap and keeps the earlier urlscan findings. Without a key urlscan allows 30 searches a minute; the free plan allows 1,000 a day, shared by every scan, scheduled ones included.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_MAX_SEARCHES",
    "tool": "urlscan",
    "traffic": "passive",
    "type": "int",

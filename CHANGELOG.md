@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Max urlscan searches per scan** (`urlscanMaxSearches`, default 60, URLScan section). One budget for every urlscan search of a scan, shared by every domain of the project and every caller. Each domain's first search is reserved first; when the budget runs out the scan stops asking, records a coverage gap and keeps the earlier urlscan findings. Every scheduled scan is a scan: size it to your urlscan plan's daily allowance.
+- **The recon JSON records how much of urlscan was read** (`urlscan.coverage`: visits read, match count, whether and why it was cut short, the oldest visit, searches used, urlscan's date limit). A run cut short by a rate limit, a refused page or the spent budget adds a coverage gap and keeps the earlier urlscan findings.
+
+### Changed
+
+- **urlscan pages through its results.** Without an API key urlscan answers at most 100 visits per search, whatever is asked, so RedAmon used to see only the newest 100. It now pages with `search_after` (100 a page without a key, up to 10,000 with one) until the answer, Max Results or the search budget ends. **Max Results defaults to 10,000** for new projects and is capped at scan start: 10,000 with a key, 1,000 without. Existing projects keep their saved value (often 50,000), which is simply read as the cap: nothing is rewritten.
+- The URLScan section says what a missing key costs: only the last 30 days, 100 visits per search, no urlscan verdicts.
+
 ### Fixed
 
 - **A host the Rules of Engagement exclude is no longer scanned through the DNS map.** Discovery's subdomain list was filtered, but its DNS map kept the excluded host with its records and IPs, and the port scan, the httpx DNS fallback, nuclei, the takeover module and the security checks read that map. The excluded hosts now leave the map too (one prune shared with the loaded-file path). Partial recon applies the RoE as well: the graph builders now drop excluded host names and IPs in excluded ranges that an earlier run wrote.
 - **Subdomain Takeover applies the Rules of Engagement in every mode.** subjack and the nuclei takeover templates could reach an excluded host, and partial runs skipped the scope check entirely.
+- **The keyed urlscan query no longer asks a redundant wildcard.** `page.domain:X` already matches every subdomain, with or without a key; the extra `OR page.domain:*.X` added nothing. The module's fallback for Max Results (500) now matches the real default.
 - **GAU's URL verification uses your settings.** Its arguments were passed in the wrong order, so httpx ran with 5 threads, a 100 s timeout and 50 requests/s whatever you set; and when verification timed out every URL was kept as verified. It now keeps only the URLs httpx confirmed.
 
 ## [7.6.2] - 2026-11-05

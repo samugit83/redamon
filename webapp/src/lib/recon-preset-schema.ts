@@ -596,6 +596,7 @@ export const reconPresetSchema = z.object({
   shodanWorkers: int,
   urlscanEnabled: bool,
   urlscanMaxResults: int,
+  urlscanMaxSearches: int,
   censysEnabled: bool,
   fofaEnabled: bool,
   fofaMaxResults: int,
@@ -1199,7 +1200,8 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - shodanPassiveCves: boolean - Passive CVE lookup via Shodan
 - shodanWorkers: integer - Parallel IP lookup workers
 - urlscanEnabled: boolean - URLScan.io
-- urlscanMaxResults: integer
+- urlscanMaxResults: integer - visits read per domain; capped at 10000 with a key, 1000 without
+- urlscanMaxSearches: integer - urlscan searches one scan may send, across every domain
 - censysEnabled: boolean
 - fofaEnabled: boolean
 - fofaMaxResults: integer

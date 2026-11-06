@@ -1240,7 +1240,8 @@ model Project {
 
   // URLScan.io Passive Enrichment
   urlscanEnabled                        Boolean  @default(true)  @map("urlscan_enabled")
-  urlscanMaxResults                     Int      @default(50000)  @map("urlscan_max_results")
+  urlscanMaxResults                     Int      @default(10000)  @map("urlscan_max_results")
+  urlscanMaxSearches                    Int      @default(60)  @map("urlscan_max_searches")
 
   // OSINT & Threat Intelligence Master Switch
   osintEnrichmentEnabled                Boolean  @default(false) @map("osint_enrichment_enabled")

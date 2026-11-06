@@ -2848,6 +2848,7 @@ def _run_pipeline():
     # ONCE per run, before any group: this is what lets a batch's groups
     # accumulate into a single graph instead of each wiping the last.
     _clear_recon_graph()
+    _start_urlscan_budget(groups or settings_scope_groups(_settings))
 
     if groups:
         return run_domain_batch(groups, start_time)
@@ -2860,6 +2861,20 @@ def _run_pipeline():
     if rc == 0:
         _prune_recon_findings()
     return rc
+
+
+def _start_urlscan_budget(groups) -> None:
+    """One urlscan search budget for the whole run, shared by every scope group
+    and every caller, with each root's first searches reserved up front."""
+    if not _settings.get('URLSCAN_ENABLED'):
+        return
+    try:
+        from recon.main_recon_modules.urlscan_enrich import start_search_budget
+        roots = [g.get("scanRoot") for g in groups or [] if isinstance(g, dict)]
+        budget = start_search_budget(_settings, [r for r in roots if r])
+        print(f"[*][URLScan] Search budget for this run: {budget.limit} search(es)")
+    except Exception as e:  # noqa: BLE001 - each search then gets a budget of its own
+        print(f"[!][URLScan] Could not start the run's search budget: {type(e).__name__}")
 
 
 # What run_domain_group's legacy branch (domain_discovery off) can re-check:

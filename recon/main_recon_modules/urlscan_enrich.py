@@ -1,26 +1,22 @@
 """
 URLScan.io Passive Enrichment Module
 
-Passive OSINT enrichment using the URLScan.io Search API.
-Queries historical scan data to discover subdomains, IPs, TLS info,
-server technologies, domain age, and screenshots — all without
-touching the target directly.
+Passive OSINT enrichment using the URLScan.io Search API. Reads the visits
+urlscan already recorded for the target to discover subdomains, IPs, TLS info,
+server technologies, domain age and screenshots, without touching the target.
 
-Works without an API key (public results only).
-With an API key, gets higher rate limits and access to private scans.
+Without an API key urlscan returns only the last 30 days of visits, 100 per
+search, without its verdicts; RedAmon then reads at most 1,000 visits. A key
+reaches older visits (how far depends on the urlscan plan) and larger pages.
 
-Features:
-  - Subdomain discovery from historical scans
-  - IP + ASN + country enrichment
-  - Domain age detection
-  - TLS certificate metadata
-  - Server/technology identification
-  - Screenshot URLs
-  - URL path discovery (for Phase B endpoint creation)
+Every search of a run goes through one search budget (URLSCAN_MAX_SEARCHES),
+shared by every scope group and every caller: the main search here, the
+redirect search and Origin Discovery's file-fingerprint search.
 """
 import logging
 import os
-from typing import Any
+import threading
+from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 
 import requests
@@ -31,68 +27,290 @@ logger = logging.getLogger(__name__)
 # whatever it names receives the project's urlscan API key.
 URLSCAN_API_BASE = (os.environ.get("URLSCAN_API_BASE") or "").strip() or "https://urlscan.io/api/v1"
 
+# urlscan answers at most 100 results per search without a key, whatever `size`
+# asks (checked live, Nov 2026); with a key a search returns up to 10,000.
+KEYLESS_PAGE_SIZE = 100
+KEYED_PAGE_SIZE = 10000
+# What one run reads at most per root: 10 keyless searches stay under the
+# anonymous limit of 30 searches a minute.
+KEYLESS_MAX_RESULTS = 1000
+KEYED_MAX_RESULTS = 10000
+DEFAULT_MAX_RESULTS = 10000
+DEFAULT_MAX_SEARCHES = 60
 
-class RateLimitedResults(list):
+#: The finding sources the urlscan module writes. A run that could not read
+#: urlscan in full (rate limit, refused page, spent budget) must not prune them.
+URLSCAN_FINDING_SOURCES = ("urlscan_leak", "urlscan")
+
+MAIN_BREAKER = "urlscan:search"
+
+
+class SearchResults(list):
+    """The visits one search returned, with how complete the answer is.
+
+    ``rate_limited``: urlscan answered 429 before any visit arrived.
+    ``truncated``: more visits matched than were read (a refused or rate-limited
+    later page, the result cap, or the run's search budget).
+    """
+
+    def __init__(self, items=(), *, rate_limited=False, failed=False, truncated=False,
+                 total=None, searches=0, date_limit_days=None, budget_exhausted=False,
+                 cut_reason=""):
+        super().__init__(items)
+        self.rate_limited = rate_limited
+        self.failed = failed
+        self.truncated = truncated
+        self.total = total
+        self.searches = searches
+        self.date_limit_days = date_limit_days
+        self.budget_exhausted = budget_exhausted
+        self.cut_reason = cut_reason
+
+
+class RateLimitedResults(SearchResults):
     """An empty search result that was a 429, not a real "nothing found".
 
     Still a list, so every caller that treats it as [] keeps working. Partial
     recon's per-root loop checks for it to wait and retry the root.
     """
 
+    def __init__(self, items=(), **kw):
+        kw.setdefault("rate_limited", True)
+        super().__init__(items, **kw)
+
+
+# ---------------------------------------------------------------------------
+# The run's search budget
+# ---------------------------------------------------------------------------
+
+class SearchBudget:
+    """One counter for every urlscan search of a run.
+
+    Spent in this order: the first page of the main search for every root, then
+    the redirect search's first page for every root, then further pages, then
+    Origin Discovery's hash searches. Those first pages are reserved when the
+    run starts (``reserve``), so a later page or an extra search of one root
+    never takes the one search another root needs.
+    """
+
+    def __init__(self, limit: int):
+        try:
+            self.limit = max(0, int(limit))
+        except (TypeError, ValueError):
+            self.limit = DEFAULT_MAX_SEARCHES
+        self.used = 0
+        self.exhausted = False
+        self._pending: set = set()
+        self._lock = threading.Lock()
+
+    def reserve(self, caller: str, root: str) -> None:
+        with self._lock:
+            self._pending.add((caller, (root or "").lower()))
+
+    def take(self, caller: str, root: str = "", *, first: bool = False) -> bool:
+        key = (caller, (root or "").lower())
+        with self._lock:
+            others = len(self._pending - {key}) if first else len(self._pending)
+            ok = self.used + others < self.limit
+            if first:
+                self._pending.discard(key)
+            if ok:
+                self.used += 1
+            else:
+                self.exhausted = True
+            return ok
+
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.limit - self.used)
+
+
+_RUN_BUDGET: Optional[SearchBudget] = None
+_RUN_BUDGET_LOCK = threading.Lock()
+
+
+def _max_searches(settings: dict) -> int:
+    value = (settings or {}).get("URLSCAN_MAX_SEARCHES", DEFAULT_MAX_SEARCHES)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_SEARCHES
+
+
+def start_search_budget(settings: dict, roots=()) -> SearchBudget:
+    """Start the run's budget (once per full or partial run) and reserve each
+    root's first pages."""
+    global _RUN_BUDGET
+    budget = SearchBudget(_max_searches(settings))
+    for root in roots or ():
+        if isinstance(root, str) and root:
+            budget.reserve("search", root)
+            if (settings or {}).get("URLSCAN_REDIRECT_SEARCH"):
+                budget.reserve("redirect", root)
+    with _RUN_BUDGET_LOCK:
+        _RUN_BUDGET = budget
+    return budget
+
+
+def end_search_budget() -> None:
+    global _RUN_BUDGET
+    with _RUN_BUDGET_LOCK:
+        _RUN_BUDGET = None
+
+
+def search_budget(settings: Optional[dict] = None) -> SearchBudget:
+    """The run's budget; a caller outside a started run (a test, a direct call)
+    gets a budget of its own."""
+    with _RUN_BUDGET_LOCK:
+        budget = _RUN_BUDGET
+    return budget if budget is not None else SearchBudget(_max_searches(settings or {}))
+
+
+def effective_max_results(settings: dict, keyed: bool) -> int:
+    """What one root's search may read: the saved value, capped at scan start
+    (nothing is rewritten, so a code revert restores the saved behaviour)."""
+    saved = (settings or {}).get("URLSCAN_MAX_RESULTS", DEFAULT_MAX_RESULTS)
+    try:
+        saved = int(saved)
+    except (TypeError, ValueError):
+        saved = DEFAULT_MAX_RESULTS
+    return max(1, min(saved, KEYED_MAX_RESULTS if keyed else KEYLESS_MAX_RESULTS))
+
+
+# ---------------------------------------------------------------------------
+# The search
+# ---------------------------------------------------------------------------
+
+def _breaker(key: str = MAIN_BREAKER):
+    from recon.helpers import circuit_breaker as cb
+    return cb.get_breaker(key, label="URLScan", parent="urlscan")
+
 
 def _urlscan_breaker():
+    return _breaker(MAIN_BREAKER)
+
+
+def _classifier(local_refusals: bool):
+    """The classify step. For an extra query (not the main search) a 400 or 403
+    is that query's own refusal: ``local=True`` keeps it off the provider, so it
+    neither switches the main search off nor rejects the key."""
     from recon.helpers import circuit_breaker as cb
-    return cb.get_breaker("urlscan:search", label="URLScan", parent="urlscan")
-
-
-def _urlscan_search(domain: str, api_key: str, max_results: int = 500, key_rotator=None) -> list[dict]:
-    """Query URLScan.io Search API for domain results.
-
-    Uses page.domain field for accurate matching:
-    - Without API key: exact match on page.domain (root domain only)
-    - With API key: also searches page.domain:*.domain for subdomain discovery
-
-    Goes through the URLScan breaker: a rate limit (now or while the breaker
-    is paused on one) returns RateLimitedResults, a refused key or a failure
-    returns [].
-    """
-    from recon.helpers import circuit_breaker as cb
-    keys = cb.KeyPool(key_rotator, api_key or "", label="URLScan")
-    breaker = _urlscan_breaker()
-    url = f"{URLSCAN_API_BASE}/search/"
-
-    def send(key):
-        # page.domain: matches the actual page domain (not a full-text index)
-        # Wildcard *.domain requires authentication (403 for anonymous users)
-        if key:
-            query = f"page.domain:{domain} OR page.domain:*.{domain}"
-        else:
-            query = f"page.domain:{domain}"
-        params = {"q": query, "size": min(max_results, 10000)}
-        headers = {"API-Key": key} if key else {}
-        return requests.get(url, params=params, headers=headers, timeout=60), bool(key)
 
     def classify(sent):
         resp, keyed = sent
-        return cb.json_result(resp, keyed=keyed)
+        res = cb.json_result(resp, keyed=keyed)
+        if local_refusals and not res.ok and cb.status_of(resp) in (400, 403):
+            return cb.CallResult(None, res.outcome, res.detail, local=True)
+        return res
+    return classify
 
-    res = cb.guarded_call(breaker, send, classify, keys=keys)
-    if res.ok:
-        results = (res.data or {}).get("results", []) if isinstance(res.data, dict) else []
-        logger.info(f"URLScan search returned {len(results)} results")
-        return list(results or [])
-    if res.answered:
-        return []
-    rate_limited = res.outcome is cb.Outcome.RATE_LIMIT or (
+
+def _was_rate_limited(res, breaker) -> bool:
+    from recon.helpers import circuit_breaker as cb
+    return res.outcome is cb.Outcome.RATE_LIMIT or (
         res.outcome is cb.Outcome.SKIPPED and not breaker.is_fatal
         and (breaker.open_outcome is cb.Outcome.RATE_LIMIT
              or (breaker.parent is not None and breaker.parent.open_outcome is cb.Outcome.RATE_LIMIT)))
-    if rate_limited:
-        print("[!][URLScan] Rate limit hit -- try adding an API key in Global Settings")
-        return RateLimitedResults()
-    if res.outcome is not cb.Outcome.SKIPPED:
-        print(f"[!][URLScan] Search failed ({res.detail})")
-    return []
+
+
+def urlscan_search(query: str, api_key: str = "", *, max_results: int = DEFAULT_MAX_RESULTS,
+                   key_rotator=None, breaker_key: str = MAIN_BREAKER, caller: str = "search",
+                   root: str = "", page: bool = True, local_refusals: bool = False,
+                   budget: Optional[SearchBudget] = None) -> SearchResults:
+    """Run one urlscan search and return its visits, newest first. Never raises.
+
+    ``page``: follow ``search_after`` until a page comes back empty, the match
+    count (``total``) or ``max_results`` is reached. ``has_more`` is not read: it
+    is true only above 10,000 matches and does not say a next page exists.
+    Every page takes one unit of ``budget``; the first page of a root is the
+    one the budget reserved for it.
+    """
+    from recon.helpers import circuit_breaker as cb
+    keys = cb.KeyPool(key_rotator, api_key or "", label="URLScan")
+    breaker = _breaker(breaker_key)
+    url = f"{URLSCAN_API_BASE}/search/"
+    max_results = max(1, int(max_results or 1))
+    budget = budget if budget is not None else search_budget()
+    keyed_run = keys.has_key
+    page_size = KEYED_PAGE_SIZE if keyed_run else KEYLESS_PAGE_SIZE
+
+    collected: list = []
+    total = None
+    date_limit = None
+    searches = 0
+    search_after = None
+    cut_reason = ""
+
+    while len(collected) < max_results:
+        if not budget.take(caller, root, first=(searches == 0)):
+            cut_reason = "search budget reached"
+            break
+        size = min(page_size, max_results - len(collected))
+
+        def send(key, _size=size, _after=search_after):
+            params = {"q": query, "size": _size}
+            if _after:
+                params["search_after"] = _after
+            headers = {"API-Key": key} if key else {}
+            return requests.get(url, params=params, headers=headers, timeout=60), bool(key)
+
+        res = cb.guarded_call(breaker, send, _classifier(local_refusals), keys=keys)
+        searches += 1
+        if not res.ok:
+            rate_limited = _was_rate_limited(res, breaker)
+            if not collected:
+                if res.answered:
+                    break
+                if rate_limited:
+                    print("[!][URLScan] Rate limit hit -- try adding an API key in Global Settings")
+                    return RateLimitedResults(searches=searches)
+                if res.outcome is not cb.Outcome.SKIPPED:
+                    print(f"[!][URLScan] Search failed ({res.detail})")
+                return SearchResults(failed=True, searches=searches)
+            cut_reason = "rate limited" if rate_limited else f"a later page failed ({res.detail})"
+            break
+        data = res.data if isinstance(res.data, dict) else {}
+        if total is None and isinstance(data.get("total"), int):
+            total = data["total"]
+        if date_limit is None and isinstance(data.get("search_date_limit_days"), int):
+            date_limit = data["search_date_limit_days"]
+        results = list(data.get("results") or [])
+        if not results:
+            break
+        collected.extend(results[:max_results - len(collected)])
+        if not page:
+            break
+        if total is not None and len(collected) >= total:
+            break
+        last_sort = results[-1].get("sort") if isinstance(results[-1], dict) else None
+        if not isinstance(last_sort, list) or not last_sort:
+            break
+        search_after = ",".join(str(v) for v in last_sort)
+
+    truncated = bool(cut_reason)
+    if not cut_reason and len(collected) >= max_results and (total is None or total > len(collected)):
+        truncated, cut_reason = True, "result cap reached"
+    if not page and total is not None and total > len(collected):
+        truncated = True
+    logger.info(f"URLScan search returned {len(collected)} results in {searches} search(es)")
+    return SearchResults(collected, truncated=truncated, total=total, searches=searches,
+                         date_limit_days=date_limit,
+                         budget_exhausted=cut_reason == "search budget reached",
+                         cut_reason=cut_reason)
+
+
+def main_query(domain: str) -> str:
+    # page.domain:X matches X and every subdomain, with or without a key
+    # (checked live, Nov 2026); the keyed `OR page.domain:*.X` added nothing.
+    return f"page.domain:{domain}"
+
+
+def _urlscan_search(domain: str, api_key: str, max_results: int = DEFAULT_MAX_RESULTS,
+                    key_rotator=None, *, budget: Optional[SearchBudget] = None) -> SearchResults:
+    """The main search for one root (Q182)."""
+    return urlscan_search(main_query(domain), api_key, max_results=max_results,
+                          key_rotator=key_rotator, breaker_key=MAIN_BREAKER,
+                          caller="search", root=domain, budget=budget)
 
 
 def _parse_url_path(full_url: str) -> dict | None:
@@ -158,6 +376,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         keys=[
             ("URLSCAN_ENABLED", "Toggle"),
             ("URLSCAN_MAX_RESULTS", "Limits"),
+            ("URLSCAN_MAX_SEARCHES", "Limits"),
             ("URLSCAN_API_KEY", "API credentials"),
             ("URLSCAN_KEY_ROTATOR", "API credentials"),
         ],
@@ -172,19 +391,25 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
 
     api_key = settings.get("URLSCAN_API_KEY", "")
     key_rotator = settings.get("URLSCAN_KEY_ROTATOR")
-    max_results = settings.get("URLSCAN_MAX_RESULTS", 500)
+    from recon.helpers import circuit_breaker as cb
+    keyed = cb.KeyPool(key_rotator, api_key or "", label="URLScan").has_key
+    max_results = effective_max_results(settings, keyed)
+    budget = search_budget(settings)
 
     print(f"\n[PHASE] URLScan.io Passive Enrichment")
     print("-" * 40)
-    if api_key:
-        print(f"[+][URLScan] Using API key for higher rate limits")
+    if keyed:
+        print(f"[+][URLScan] Using an API key: how far back urlscan answers depends on its plan")
     else:
-        print(f"[*][URLScan] No API key — using public results only")
-    print(f"[*][URLScan] Querying for domain: {domain} (max {max_results} results)")
+        print(f"[*][URLScan] No API key: urlscan returns only the last 30 days, "
+              f"{KEYLESS_PAGE_SIZE} visits per search, at most {KEYLESS_MAX_RESULTS} read")
+    print(f"[*][URLScan] Querying for domain: {domain} (max {max_results} results, "
+          f"{budget.remaining()} search(es) left this run)")
 
-    from recon.helpers import circuit_breaker as cb
     urlscan_scope = cb.scope("urlscan", label="URLScan", unit="search(es)")
-    results = _urlscan_search(domain, api_key, max_results, key_rotator=key_rotator)
+    results = _urlscan_search(domain, api_key, max_results, key_rotator=key_rotator, budget=budget)
+    coverage = _coverage(results, max_results)
+    _note_coverage_gap(domain, results)
 
     if not results:
         print(f"[-][URLScan] No results found for {domain}")
@@ -195,8 +420,10 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             "urls_with_paths": [],
             "entries": [],
             "rate_limited": isinstance(results, RateLimitedResults),
+            "coverage": coverage,
         }
-        urlscan_scope.finish("urlscan_enrich", payload=combined_result["urlscan"])
+        urlscan_scope.finish("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES,
+                             payload=combined_result["urlscan"])
         return combined_result
 
     # Parse results
@@ -316,6 +543,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "urls_with_paths": urls_with_paths,
         "entries": entries,
         "external_domains": external_domain_entries,
+        "coverage": coverage,
     }
 
     print(f"[+][URLScan] {len(results)} scans found")
@@ -325,9 +553,50 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     if domain_age_days is not None:
         print(f"[+][URLScan] Domain age: {domain_age_days} days")
 
-    urlscan_scope.finish("urlscan_enrich", payload=urlscan_data)
+    if coverage["truncated"]:
+        print(f"[!][URLScan] Read {len(results)} of {coverage.get('total') or 'more'} matching "
+              f"visits ({coverage['cut_reason']})")
+    urlscan_scope.finish("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES, payload=urlscan_data)
     combined_result["urlscan"] = urlscan_data
     return combined_result
+
+
+def _coverage(results: SearchResults, max_results: int) -> dict:
+    """How much of urlscan's answer this run read: kept in the recon JSON."""
+    times = [((r.get("task") or {}).get("time") or "") for r in results if isinstance(r, dict)]
+    times = [t for t in times if t]
+    return {
+        "truncated": bool(getattr(results, "truncated", False)),
+        "cut_reason": getattr(results, "cut_reason", "") or "",
+        "visits_read": len(results),
+        "total": getattr(results, "total", None),
+        "max_results": max_results,
+        "oldest_seen": min(times) if times else None,
+        "searches_used": getattr(results, "searches", 0),
+        "search_date_limit_days": getattr(results, "date_limit_days", None),
+    }
+
+
+def _note_coverage_gap(domain: str, results: SearchResults) -> None:
+    """Record a cut-short read for the run's coverage record.
+
+    A spent budget or a refused later page leaves visits unread, so the earlier
+    urlscan findings are kept (no prune of URLSCAN_FINDING_SOURCES). The result
+    cap is the operator's own limit: recorded as a gap only.
+    """
+    from recon.helpers import circuit_breaker as cb
+    reason = getattr(results, "cut_reason", "")
+    if not getattr(results, "truncated", False) or not reason:
+        return
+    if reason == "result cap reached":
+        unread = max(0, (getattr(results, "total", 0) or 0) - len(results))
+        cb.note_degraded("urlscan_enrich", entries=[{
+            "source": "urlscan", "reason": f"urlscan: result cap reached for {domain}",
+            "skipped": unread}])
+        return
+    label = "search budget reached" if getattr(results, "budget_exhausted", False) else reason
+    cb.note_degraded("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES,
+                     reason=f"urlscan: {label}")
 
 
 def run_urlscan_discovery_only(domain: str, settings: dict[str, Any]) -> dict:

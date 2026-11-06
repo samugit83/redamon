@@ -250,7 +250,8 @@ class TestUrlscanSearch(unittest.TestCase):
         mock_get.assert_called_once()
         call_kwargs = mock_get.call_args
         self.assertEqual(call_kwargs.kwargs["params"]["q"], "page.domain:example.com")
-        self.assertEqual(call_kwargs.kwargs["params"]["size"], 500)
+        # Without a key urlscan answers at most 100 per search, whatever is asked.
+        self.assertEqual(call_kwargs.kwargs["params"]["size"], 100)
         self.assertEqual(call_kwargs.kwargs["headers"], {})
 
     @patch("urlscan_enrich.requests.get")
@@ -293,15 +294,16 @@ class TestUrlscanSearch(unittest.TestCase):
         self.assertEqual(results, [])
 
     @patch("urlscan_enrich.requests.get")
-    def test_max_results_capped_at_10000(self, mock_get):
+    def test_page_size_capped_at_10000_with_a_key_and_100_without(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"results": []}
         mock_get.return_value = mock_resp
 
+        _urlscan_search("example.com", "k", 99999)
+        self.assertEqual(mock_get.call_args.kwargs["params"]["size"], 10000)
         _urlscan_search("example.com", "", 99999)
-        call_kwargs = mock_get.call_args
-        self.assertEqual(call_kwargs.kwargs["params"]["size"], 10000)
+        self.assertEqual(mock_get.call_args.kwargs["params"]["size"], 100)
 
 
 # ─── Tests: run_urlscan_enrichment ───────────────────────────────────────────
@@ -453,23 +455,22 @@ class TestRunUrlscanEnrichment(unittest.TestCase):
         self.assertEqual(p["params"], {"next": "/dashboard"})
 
     @patch("urlscan_enrich._urlscan_search")
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_api_key_passed_through(self, mock_search):
         """API key from settings should be passed to _urlscan_search."""
         mock_search.return_value = []
         cr = _make_combined_result()
         run_urlscan_enrichment(cr, _enabled_settings(URLSCAN_API_KEY="test-key"))
 
-        mock_search.assert_called_once_with("example.com", "test-key", 500)
+        args = mock_search.call_args
+        self.assertEqual(args.args[:2], ("example.com", "test-key"))
 
     @patch("urlscan_enrich._urlscan_search")
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_max_results_passed_through(self, mock_search):
         mock_search.return_value = []
         cr = _make_combined_result()
         run_urlscan_enrichment(cr, _enabled_settings(URLSCAN_MAX_RESULTS=100))
 
-        mock_search.assert_called_once_with("example.com", "", 100)
+        self.assertEqual(mock_search.call_args.args[:3], ("example.com", "", 100))
 
     @patch("urlscan_enrich._urlscan_search")
     def test_missing_page_fields_handled(self, mock_search):

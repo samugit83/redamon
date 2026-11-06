@@ -279,7 +279,7 @@ def run_urlscan(config: dict) -> dict:
     Phase B (enrichment): enriches existing BaseURLs with screenshots/endpoints/parameters.
     A 429 is a rate-limited root (retried once); an empty answer is no_results.
     """
-    from recon.main_recon_modules.urlscan_enrich import run_urlscan_discovery_only
+    from recon.main_recon_modules.urlscan_enrich import run_urlscan_discovery_only, start_search_budget
 
     roots = scope_roots(config)
     user_id = os.environ.get("USER_ID", "")
@@ -295,6 +295,8 @@ def run_urlscan(config: dict) -> dict:
 
     # Force-enable URLScan for partial recon (user explicitly triggered it)
     settings["URLSCAN_ENABLED"] = True
+    # A partial run has its own search budget, every root's first page reserved.
+    start_search_budget(settings, roots)
 
     def _one_root(domain: str) -> str:
         # Run URLScan discovery (same function as full pipeline Phase A)

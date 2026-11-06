@@ -714,7 +714,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # URLScan.io Passive Enrichment
     'URLSCAN_ENABLED': True,
-    'URLSCAN_MAX_RESULTS': 50000,
+    'URLSCAN_MAX_RESULTS': 10000,
+    'URLSCAN_MAX_SEARCHES': 60,
 
     # OSINT & Threat Intelligence Enrichment
     'OSINT_ENRICHMENT_ENABLED': False,
@@ -2021,6 +2022,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     # URLScan.io Passive Enrichment
     settings['URLSCAN_ENABLED'] = project.get('urlscanEnabled', DEFAULT_SETTINGS['URLSCAN_ENABLED'])
     settings['URLSCAN_MAX_RESULTS'] = project.get('urlscanMaxResults', DEFAULT_SETTINGS['URLSCAN_MAX_RESULTS'])
+    settings['URLSCAN_MAX_SEARCHES'] = project.get('urlscanMaxSearches', DEFAULT_SETTINGS['URLSCAN_MAX_SEARCHES'])
 
     # OSINT & Threat Intelligence Enrichment
     settings['OSINT_ENRICHMENT_ENABLED'] = project.get('osintEnrichmentEnabled', DEFAULT_SETTINGS['OSINT_ENRICHMENT_ENABLED'])

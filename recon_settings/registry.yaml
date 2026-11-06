@@ -10222,9 +10222,28 @@ fields:
     stealth: { ceiling: 100 }
     governor: { model: budget, family: osint_result, floor: 100 }
     meaning: >-
-      The most results urlscan accumulates in one pass. The memory governor
-      budgets it against available RAM, so the effective value can be below what
-      is written here.
+      The most urlscan visits read per domain in one scan. Capped at scan start
+      at 10,000 with an API key and 1,000 without one (urlscan returns 100 visits
+      per search without a key and only the last 30 days), so a saved value above
+      that is read as the cap. The memory governor budgets it against available
+      RAM, so the effective value can be below what is written here.
+  urlscanMaxSearches:
+    tool: urlscan
+    runtime_key: "URLSCAN_MAX_SEARCHES"
+    unit: count
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 1, max: 1000 }
+    meaning: >-
+      The most searches one scan may send to urlscan, across every domain of the
+      project and every caller (the main search and its pages, the outbound
+      redirect search, Origin Discovery's file fingerprint search). Each domain's
+      first search is reserved first. When it runs out the scan stops asking,
+      records a coverage gap and keeps the earlier urlscan findings. Without a
+      key urlscan allows 30 searches a minute; the free plan allows 1,000 a day,
+      shared by every scan, scheduled ones included.
   useBruteforceForSubdomains:
     tool: pipeline
     runtime_key: "USE_BRUTEFORCE_FOR_SUBDOMAINS"
