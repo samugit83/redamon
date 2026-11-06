@@ -637,7 +637,9 @@ class OsintMixin:
         }
 
         urlscan_data = recon_data.get("urlscan", {})
-        if not urlscan_data or urlscan_data.get("results_count", 0) == 0:
+        # The redirect search can find start hosts when the main search found nothing.
+        if not urlscan_data or (urlscan_data.get("results_count", 0) == 0
+                                and not urlscan_data.get("redirect_start_hosts")):
             return stats
 
         domain = recon_data.get("domain", "")
@@ -750,6 +752,30 @@ class OsintMixin:
                 except Exception as e:
                     stats["errors"].append(f"IP history {subdomain}->{ip}: {e}")
 
+            # Hosts a visit STARTED on and urlscan saw nowhere else (the
+            # redirect search): no IP, since the visit's page.ip is the other
+            # site's address.
+            for host in urlscan_data.get("redirect_start_hosts") or []:
+                if not host or host in seen_subs or host.lower() in apexes:
+                    continue
+                seen_subs.add(host)
+                kind, root = attach_for_host(host, recon_data)
+                if kind != IN_SCOPE or not root:
+                    continue
+                try:
+                    session.run(
+                        """
+                        MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                        MERGE (s:Subdomain {name: $subdomain, user_id: $uid, project_id: $pid})
+                        ON CREATE SET s.source = 'urlscan', s.discovered_by = 'urlscan',
+                                      s.status = 'unverified', s.updated_at = datetime()
+                        MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+                        MERGE (s)-[:BELONGS_TO]->(d)
+                        """, domain=root, subdomain=host, uid=user_id, pid=project_id)
+                    stats["subdomains_created"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"Redirect start host {host}: {e}")
+
             # ── 2. Domain age enrichment ──
             domain_age = urlscan_data.get("domain_age_days")
             apex_age = urlscan_data.get("apex_domain_age_days")
@@ -797,7 +823,9 @@ class OsintMixin:
         }
 
         urlscan_data = recon_data.get("urlscan", {})
-        if not urlscan_data or urlscan_data.get("results_count", 0) == 0:
+        if not urlscan_data or (urlscan_data.get("results_count", 0) == 0
+                                and not urlscan_data.get("redirect_entries")
+                                and not urlscan_data.get("quarantined_urls")):
             return stats
 
         with self.driver.session() as session:
@@ -928,6 +956,45 @@ class OsintMixin:
 
                 except Exception as e:
                     stats["errors"].append(f"Endpoint {path}: {e}")
+
+            # ── 2b. Item 1: the target's own URL a visit started on before it
+            # was redirected away. Names only; the other site's origin is the
+            # redirect target, kept as a label and never scanned.
+            stats["redirect_endpoints"] = 0
+            for row in urlscan_data.get("redirect_entries") or []:
+                base_url = row.get("base_url", "")
+                path = normalize_endpoint_path(row.get("path") or "/")
+                if not base_url:
+                    continue
+                try:
+                    rec = session.run(
+                        """
+                        MATCH (bu:BaseURL {url: $base_url, user_id: $uid, project_id: $pid})
+                        MERGE (e:Endpoint {path: $path, method: 'GET', baseurl: $base_url,
+                                           user_id: $uid, project_id: $pid})
+                        ON CREATE SET e.source = 'urlscan', e.updated_at = datetime()
+                        SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
+                        SET e.urlscan_redirect_target = $target,
+                            e.has_parameters = coalesce(e.has_parameters, false) OR size($names) > 0
+                        MERGE (bu)-[:HAS_ENDPOINT]->(e)
+                        WITH e
+                        UNWIND (CASE WHEN size($names) = 0 THEN [null] ELSE $names END) AS name
+                        WITH e, name WHERE name IS NOT NULL
+                        MERGE (p:Parameter {name: name, position: 'query', endpoint_path: $path,
+                                            baseurl: $base_url, user_id: $uid, project_id: $pid})
+                        ON CREATE SET p.source = 'urlscan', p.is_injectable = false,
+                                      p.updated_at = datetime()
+                        MERGE (e)-[:HAS_PARAMETER]->(p)
+                        RETURN count(DISTINCT e) AS n
+                        """,
+                        base_url=base_url, path=path, target=row.get("end_origin") or "",
+                        names=[n for n in row.get("param_names") or [] if isinstance(n, str) and n],
+                        uid=user_id, pid=project_id,
+                    ).single()
+                    if rec is not None:
+                        stats["redirect_endpoints"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"Redirect endpoint {path}: {e}")
 
             # ── 3. Quarantined URLs: a leaked one-time link, a secret, a state-
             # changing link with a value, a web-shell trace. The Endpoint is

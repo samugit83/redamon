@@ -720,6 +720,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'URLSCAN_SECRETS_IN_URLS': True,
     'URLSCAN_SENSITIVE_FILES': True,
     'URLSCAN_DOCUMENT_LINKS': True,
+    'URLSCAN_REDIRECT_SEARCH': False,
 
     # OSINT & Threat Intelligence Enrichment
     'OSINT_ENRICHMENT_ENABLED': False,
@@ -2031,6 +2032,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['URLSCAN_SECRETS_IN_URLS'] = project.get('urlscanSecretsInUrls', DEFAULT_SETTINGS['URLSCAN_SECRETS_IN_URLS'])
     settings['URLSCAN_SENSITIVE_FILES'] = project.get('urlscanSensitiveFiles', DEFAULT_SETTINGS['URLSCAN_SENSITIVE_FILES'])
     settings['URLSCAN_DOCUMENT_LINKS'] = project.get('urlscanDocumentLinks', DEFAULT_SETTINGS['URLSCAN_DOCUMENT_LINKS'])
+    settings['URLSCAN_REDIRECT_SEARCH'] = project.get('urlscanRedirectSearch', DEFAULT_SETTINGS['URLSCAN_REDIRECT_SEARCH'])
 
     # OSINT & Threat Intelligence Enrichment
     settings['OSINT_ENRICHMENT_ENABLED'] = project.get('osintEnrichmentEnabled', DEFAULT_SETTINGS['OSINT_ENRICHMENT_ENABLED'])

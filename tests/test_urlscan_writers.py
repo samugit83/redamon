@@ -195,5 +195,27 @@ class TestB19ExternalDomainsAreAdditive(unittest.TestCase):
         self.assertNotIn("SET ed.sources = $sources", q)
 
 
+class TestRedirectWriters(unittest.TestCase):
+    """Item 1: written even when the main search returned nothing."""
+
+    def test_start_hosts_become_subdomains_without_an_ip(self):
+        w = _Writer(single={"n": 1})
+        w.update_graph_from_urlscan_discovery(
+            _recon({"results_count": 0, "redirect_start_hosts": ["new.example.test"]}), "u1", "p1")
+        q = next(q for q, p in w.session.calls if "MERGE (s:Subdomain" in q and p.get("subdomain") == "new.example.test")
+        self.assertIn("s.status = 'unverified'", q)
+        self.assertFalse([q for q, _p in w.session.calls if "MERGE (i:IP" in q])
+
+    def test_redirect_endpoint_carries_its_target_and_names_only(self):
+        w = _Writer(single={"n": 1})
+        row = {"start_url": "https://app.example.test/go?url=***", "base_url": "https://app.example.test",
+               "path": "/go", "param_names": ["url"], "end_origin": "https://outsider.other.test",
+               "end_domain": "outsider.other.test"}
+        w.update_graph_from_urlscan_enrichment(_recon({"results_count": 0, "redirect_entries": [row]}), "u1", "p1")
+        q, p = next((q, p) for q, p in w.session.calls if "urlscan_redirect_target" in q)
+        self.assertEqual((p["target"], p["names"], p["path"]), ("https://outsider.other.test", ["url"], "/go"))
+        self.assertNotIn("sample_value", q.replace("REMOVE p.sample_value", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

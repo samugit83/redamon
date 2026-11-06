@@ -14434,6 +14434,22 @@
    "type": "int",
    "unit": "count"
   },
+  "urlscanRedirectSearch": {
+   "default": false,
+   "form_section": "UrlscanSection",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "One extra urlscan search per domain (task.apexDomain:X AND NOT page.apexDomain:X): visits that started on the target and were redirected to another site. Gives open redirects proven by the visit (a parameter named the site the browser ended on), leaked reset or invite links and sign-in flows on the target's own URLs. The other sites are only recorded as External Domains, origin only, never scanned. Counts against urlscanMaxSearches.",
+   "optional": false,
+   "phase": "domain_discovery",
+   "prisma_type": "Boolean",
+   "roe_capped": false,
+   "runtime_key": "URLSCAN_REDIRECT_SEARCH",
+   "tool": "urlscan",
+   "traffic": "passive",
+   "type": "boolean",
+   "unit": "none"
+  },
   "urlscanSecretsInUrls": {
    "default": true,
    "form_section": "UrlscanSection",

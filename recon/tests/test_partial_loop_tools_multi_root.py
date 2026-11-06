@@ -147,7 +147,7 @@ class TestUrlscanPerRoot:
             "gamma.test": {"results_count": 0, "entries": []},
         }
         with patch("recon.main_recon_modules.urlscan_enrich.run_urlscan_discovery_only",
-                   side_effect=lambda domain, settings: answers[domain]):
+                   side_effect=lambda domain, settings, org_domain="": answers[domain]):
             statuses = osint_enrichment.run_urlscan(dict(BASE))
         # alpha is retried once and stays rate-limited; gamma has no results.
         assert statuses == {"alpha.test": "rate_limited", "beta.test": "rate_limited",
@@ -160,7 +160,7 @@ class TestUrlscanPerRoot:
         captured = {}
         client_written = []
         with patch("recon.main_recon_modules.urlscan_enrich.run_urlscan_discovery_only",
-                   side_effect=lambda domain, settings: good if domain == "beta.test"
+                   side_effect=lambda domain, settings, org_domain="": good if domain == "beta.test"
                    else {"results_count": 0}):
             import graph_db  # the mocked module
             graph_db.Neo4jClient.return_value.update_graph_from_urlscan_discovery.side_effect = \

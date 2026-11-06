@@ -1246,6 +1246,7 @@ model Project {
   urlscanSecretsInUrls                  Boolean  @default(true)  @map("urlscan_secrets_in_urls")
   urlscanSensitiveFiles                 Boolean  @default(true)  @map("urlscan_sensitive_files")
   urlscanDocumentLinks                  Boolean  @default(true)  @map("urlscan_document_links")
+  urlscanRedirectSearch                 Boolean  @default(false)  @map("urlscan_redirect_search")
 
   // OSINT & Threat Intelligence Master Switch
   osintEnrichmentEnabled                Boolean  @default(false) @map("osint_enrichment_enabled")

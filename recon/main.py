@@ -1648,7 +1648,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             if _settings.get('URLSCAN_ENABLED'):
                 from recon.main_recon_modules.urlscan_enrich import run_urlscan_discovery_only
                 g1_futures["urlscan"] = g1_exec.submit(
-                    run_urlscan_discovery_only, root_domain, _settings
+                    run_urlscan_discovery_only, root_domain, _settings,
+                    target_info.get("org_domain") or root_domain
                 )
 
             for name, future in g1_futures.items():
@@ -1721,7 +1722,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             if _settings.get('URLSCAN_ENABLED'):
                 from recon.main_recon_modules.urlscan_enrich import run_urlscan_discovery_only
                 g1_futures["urlscan"] = g1_exec.submit(
-                    run_urlscan_discovery_only, root_domain, _settings
+                    run_urlscan_discovery_only, root_domain, _settings,
+                    target_info.get("org_domain") or root_domain
                 )
 
             g1_results = {}

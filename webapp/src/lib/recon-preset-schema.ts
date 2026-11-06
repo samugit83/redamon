@@ -601,6 +601,7 @@ export const reconPresetSchema = z.object({
   urlscanSecretsInUrls: bool,
   urlscanSensitiveFiles: bool,
   urlscanDocumentLinks: bool,
+  urlscanRedirectSearch: bool,
   censysEnabled: bool,
   fofaEnabled: bool,
   fofaMaxResults: int,
@@ -1210,6 +1211,7 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - urlscanSecretsInUrls: boolean - Secrets for passwords, API keys, tokens and JWTs written in URLs seen on urlscan, stored masked
 - urlscanSensitiveFiles: boolean - findings for sensitive files (.env, .git, dumps, backups, keys, logs, installers, debug consoles) seen on urlscan
 - urlscanDocumentLinks: boolean - marks documents opened by direct link (PDF, Office, CSV, archives, JSON, raw text) on their urlscan endpoints
+- urlscanRedirectSearch: boolean - one extra urlscan search per domain for visits that started on the target and ended on another site (open redirects, leaked links); +1 search
 - censysEnabled: boolean
 - fofaEnabled: boolean
 - fofaMaxResults: integer

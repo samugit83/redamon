@@ -315,12 +315,16 @@ def run_urlscan(config: dict) -> dict:
 
     def _one_root(domain: str) -> str:
         # Run URLScan discovery (same function as full pipeline Phase A)
-        urlscan_data = run_urlscan_discovery_only(domain, settings)
+        from recon.partial_recon_modules.helpers import org_for_root
+        urlscan_data = run_urlscan_discovery_only(
+            domain, settings, org_for_root(domain, config.get("domain_groups") or []))
 
         if urlscan_data.get("rate_limited"):
             print(f"[!][Partial Recon] URLScan rate-limited for {domain}")
             return STATUS_RATE_LIMITED
-        if not urlscan_data or urlscan_data.get("results_count", 0) == 0:
+        if not urlscan_data or not (urlscan_data.get("results_count", 0)
+                                    or urlscan_data.get("redirect_entries")
+                                    or urlscan_data.get("findings")):
             print(f"[-][Partial Recon] URLScan returned no results for {domain}")
             return STATUS_NO_RESULTS
 

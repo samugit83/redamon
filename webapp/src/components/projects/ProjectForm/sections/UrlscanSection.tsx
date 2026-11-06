@@ -142,6 +142,14 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                 </div>
               </div>
 
+              <UrlscanToggle
+                checked={data.urlscanRedirectSearch ?? false}
+                onChange={(checked) => updateField('urlscanRedirectSearch', checked)}
+                label="Outbound Redirects"
+                description="One extra urlscan search per domain. Finds visits that started on the target and were redirected to another site: open redirects, leaked reset or invite links, and sign-in flows on the target's own URLs. The other sites are only recorded as External Domains, never scanned."
+                hint="+1 urlscan search per domain"
+              />
+
               <div className={styles.subSection}>
                 <h3 className={styles.subSectionTitle}>Leak Detection</h3>
                 <div className={`${styles.callout} ${styles.calloutInfo}`}>

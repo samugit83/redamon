@@ -10300,6 +10300,21 @@ fields:
       web pages (PDF, Word, Excel, CSV, ZIP, JSON and raw text) with
       Endpoint.document_type and urlscan_mime_type, for review. No finding and no
       extra searches.
+  urlscanRedirectSearch:
+    tool: urlscan
+    runtime_key: "URLSCAN_REDIRECT_SEARCH"
+    unit: none
+    phase: domain_discovery
+    traffic: passive
+    roe_capped: false
+    mcp: settable
+    meaning: >-
+      One extra urlscan search per domain (task.apexDomain:X AND NOT
+      page.apexDomain:X): visits that started on the target and were redirected to
+      another site. Gives open redirects proven by the visit (a parameter named the
+      site the browser ended on), leaked reset or invite links and sign-in flows on
+      the target's own URLs. The other sites are only recorded as External Domains,
+      origin only, never scanned. Counts against urlscanMaxSearches.
   useBruteforceForSubdomains:
     tool: pipeline
     runtime_key: "USE_BRUTEFORCE_FOR_SUBDOMAINS"

@@ -43,6 +43,7 @@ DEFAULT_MAX_SEARCHES = 60
 URLSCAN_FINDING_SOURCES = ("urlscan_leak", "urlscan")
 
 MAIN_BREAKER = "urlscan:search"
+REDIRECT_BREAKER = "urlscan:redirect"
 
 
 class SearchResults(list):
@@ -305,6 +306,28 @@ def main_query(domain: str) -> str:
     return f"page.domain:{domain}"
 
 
+def redirect_query(apex: str) -> str:
+    # task.apexDomain / page.apexDomain are the registrable domains of the start
+    # and the end, so subdomains are included without a (keyed-only) wildcard;
+    # NOT page.apexDomain asks what page.redirected:off-domain does, without
+    # depending on that field (absent when nothing redirected).
+    return f"task.apexDomain:{apex} AND NOT page.apexDomain:{apex}"
+
+
+def _under(host: str, root: str) -> bool:
+    host, root = (host or "").lower().strip("."), (root or "").lower().strip(".")
+    return bool(host) and (host == root or host.endswith("." + root))
+
+
+def _is_outbound(result: dict, root: str, apex: str) -> bool:
+    """A visit that started on this scan root (the query asks for the whole org)
+    and ended outside the org."""
+    task, page = (result or {}).get("task") or {}, (result or {}).get("page") or {}
+    start = (urlparse(task.get("url") or "").hostname or task.get("domain") or "").lower()
+    end = (page.get("domain") or urlparse(page.get("url") or "").hostname or "").lower()
+    return _under(start, root) and bool(end) and not _under(end, apex)
+
+
 def _urlscan_search(domain: str, api_key: str, max_results: int = DEFAULT_MAX_RESULTS,
                     key_rotator=None, *, budget: Optional[SearchBudget] = None) -> SearchResults:
     """The main search for one root (Q182)."""
@@ -377,6 +400,7 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             ("URLSCAN_ENABLED", "Toggle"),
             ("URLSCAN_MAX_RESULTS", "Limits"),
             ("URLSCAN_MAX_SEARCHES", "Limits"),
+            ("URLSCAN_REDIRECT_SEARCH", "Outbound redirects"),
             ("URLSCAN_LEAKED_LINKS", "Leak detection"),
             ("URLSCAN_SECRETS_IN_URLS", "Leak detection"),
             ("URLSCAN_SENSITIVE_FILES", "Exposed files"),
@@ -415,20 +439,24 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     coverage = _coverage(results, max_results)
     _note_coverage_gap(domain, results)
 
+    rate_limited = isinstance(results, RateLimitedResults)
     if not results:
         print(f"[-][URLScan] No results found for {domain}")
-        combined_result["urlscan"] = {
-            "results_count": 0,
-            "subdomains_discovered": [],
-            "ips_discovered": [],
-            "urls_with_paths": [],
-            "entries": [],
-            "rate_limited": isinstance(results, RateLimitedResults),
-            "coverage": coverage,
-        }
-        urlscan_scope.finish("urlscan_enrich", sources=URLSCAN_FINDING_SOURCES,
-                             payload=combined_result["urlscan"])
-        return combined_result
+
+    # Item 1: visits that STARTED on the target and ended on another site. A
+    # separate search, so they never push the target's own pages out of the
+    # main search's results; run whenever the main search was not rate
+    # limited (an empty main answer is no reason to skip it).
+    redirect_results: list = []
+    if settings.get("URLSCAN_REDIRECT_SEARCH") and not rate_limited:
+        apex = (combined_result.get("org_domain") or domain).lower()
+        redirect_results = urlscan_search(
+            redirect_query(apex), api_key, max_results=max_results, key_rotator=key_rotator,
+            breaker_key=REDIRECT_BREAKER, caller="redirect", root=domain,
+            local_refusals=True, budget=budget)
+        redirect_results = [r for r in redirect_results if _is_outbound(r, domain, apex)]
+        print(f"[*][URLScan] Outbound redirects: {len(redirect_results)} visit(s) started on "
+              f"{domain} and ended elsewhere")
 
     # Parse results
     entries = []
@@ -437,7 +465,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     urls_with_paths: list[dict] = []
     quarantined_urls: list[dict] = []
     seen_urls: set[str] = set()
-    quarantine = UrlQuarantine(_in_scope_urls(results, domain), hmac_key=_hmac_key())
+    redirect_starts = [((r.get("task") or {}).get("url") or "") for r in redirect_results]
+    quarantine = UrlQuarantine(_in_scope_urls(results, domain) + [u for u in redirect_starts if u],
+                               hmac_key=_hmac_key())
     scope = HostScope(settings, domain)
     leak_inputs: list = []
     from recon.helpers.url_leaks import mask_url
@@ -575,6 +605,10 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
     # Remove root domain from subdomain list (it's not a "discovery")
     subdomains.discard(domain)
 
+    redirect = _redirect_rows(redirect_results, domain, quarantine, scope, mask_url)
+    leak_inputs += redirect["leak_inputs"]
+    quarantined_urls += redirect["quarantined_urls"]
+    external_domain_entries += redirect["external_domains"]
     findings, url_secrets = _leak_findings(leak_inputs, quarantine, scope, settings)
     findings += _file_findings(leak_inputs, quarantine, scope, settings)
 
@@ -589,8 +623,12 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
         "entries": entries,
         "external_domains": external_domain_entries,
         "coverage": coverage,
-        "findings": findings,
+        "findings": findings + redirect["findings"],
         "url_secrets": url_secrets,
+        "redirect_entries": redirect["redirect_entries"],
+        "redirect_start_hosts": redirect["start_hosts"],
+        "open_redirects": redirect["open_redirects"],
+        "rate_limited": rate_limited,
     }
 
     print(f"[+][URLScan] {len(results)} scans found")
@@ -921,6 +959,92 @@ def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
     return out
 
 
+#: Sign-in flows send the user back to a registered address on purpose: an
+#: identity provider redirecting is no open redirect (OAuth / OpenID Connect, SAML).
+_SIGN_IN_PARAMS = frozenset({"client_id", "response_type", "redirect_uri", "state",
+                             "samlrequest", "samlresponse", "relaystate"})
+
+
+def _names_destination(value: str, end_domain: str) -> bool:
+    from urllib.parse import unquote
+    v = (value or "").lower()
+    for _ in range(3):
+        v = unquote(v)
+    end = (end_domain or "").lower()
+    return bool(end) and (f"//{end}" in v or v == end or v.startswith(end + "/"))
+
+
+def _redirect_rows(results: list, root: str, quarantine: "UrlQuarantine", scope: "HostScope",
+                   mask_url) -> dict:
+    """Item 1's lists from the outbound visits. The other site is recorded by its
+    origin only (its paths are often a third party's private links) and never
+    scanned; the start URL is the target's own, stored masked; the open-redirect
+    rule (N1) runs on the raw values in memory, before they are masked."""
+    from urllib.parse import parse_qsl
+    out = {"redirect_entries": [], "external_domains": [], "start_hosts": [], "open_redirects": [],
+           "findings": [], "quarantined_urls": [], "leak_inputs": []}
+    hosts, redirects = set(), {}
+    for r in results:
+        task, page = r.get("task") or {}, r.get("page") or {}
+        start = task.get("url") or ""
+        start_parts = urlparse(start)
+        host = (start_parts.hostname or "").lower()
+        if not host or not scope.host_ok(host):
+            continue
+        end_domain = (page.get("domain") or urlparse(page.get("url") or "").hostname or "").lower()
+        end_parts = urlparse(page.get("url") or "")
+        end_origin = (f"{end_parts.scheme}://{end_parts.netloc}" if end_parts.scheme and end_parts.netloc
+                      else f"https://{end_domain}")
+        held = quarantine.holds(start)
+        masked = mask_url(start) or ""
+        scan_time, scan_id = task.get("time") or "", task.get("uuid") or ""
+        out["leak_inputs"].append((start, r))
+        params = parse_qsl(start_parts.query, keep_blank_values=True)
+        names = sorted({n for n, _v in params})
+        if held:
+            out["quarantined_urls"].append(quarantine.row(start, "task", r))
+        else:
+            out["redirect_entries"].append({
+                "start_url": masked, "base_url": f"{start_parts.scheme}://{start_parts.netloc}",
+                "path": start_parts.path or "/", "param_names": names, "end_origin": end_origin,
+                "end_domain": end_domain, "scan_time": scan_time, "scan_id": scan_id,
+            })
+        out["external_domains"].append({"domain": end_domain, "source": "urlscan_redirect",
+                                        "url": end_origin, "redirect_from_url": masked})
+        if host != root.lower():
+            hosts.add(host)
+        if {n.lower() for n in names} & _SIGN_IN_PARAMS:
+            continue
+        for name, value in params:
+            if _names_destination(value, end_domain):
+                path = quarantine.verdict(start)["masked_path"] or start_parts.path or "/"
+                slot = redirects.setdefault((host, path, name), {
+                    "destination_domain": end_domain, "times": [], "scan_id": "", "newest": ""})
+                slot["times"].append(scan_time)
+                if not held and scan_time >= slot["newest"]:
+                    slot["newest"], slot["scan_id"] = scan_time, scan_id
+    out["start_hosts"] = sorted(hosts)
+    for (host, path, name), slot in sorted(redirects.items()):
+        first, last = _span(slot["times"])
+        out["open_redirects"].append({"host": host, "path": path, "param_name": name,
+                                      "destination_domain": slot["destination_domain"],
+                                      "first_seen": first, "last_seen": last,
+                                      "scan_id": slot["scan_id"]})
+        out["findings"].append({
+            "type": "open_redirect_seen", "kind": name, "kind_field": "",
+            "host": host, "path": path, "url": f"https://{host}{path}?{name}=***",
+            "severity": "medium", "name": "Open redirect seen on urlscan",
+            "description": (
+                f"A public urlscan scan on {last[:10] or 'unknown'} started on {host}{path} with the "
+                f"parameter {name} naming {slot['destination_domain']}, and the browser ended on that "
+                f"site: {host} redirects to a site a parameter names. RedAmon did not request it; "
+                f"test {name} with a site you control."),
+            "first_seen": first, "last_seen": last, "urlscan_scan_id": slot["scan_id"],
+            "props": {"param_name": name, "destination_domain": slot["destination_domain"]},
+        })
+    return out
+
+
 def _in_scope_urls(results: list, domain: str) -> list:
     urls = []
     for result in results:
@@ -971,7 +1095,7 @@ class UrlQuarantine:
         }
 
 
-def run_urlscan_discovery_only(domain: str, settings: dict[str, Any]) -> dict:
+def run_urlscan_discovery_only(domain: str, settings: dict[str, Any], org_domain: str = "") -> dict:
     """
     Run URLScan.io discovery and return only the 'urlscan' data dict.
 
@@ -994,6 +1118,7 @@ def run_urlscan_discovery_only(domain: str, settings: dict[str, Any]) -> dict:
     # Build a minimal combined_result just for the enrichment function
     fake_combined = {
         "domain": domain,
+        "org_domain": org_domain or domain,
         "metadata": {"ip_mode": False},
     }
     run_urlscan_enrichment(fake_combined, settings)
