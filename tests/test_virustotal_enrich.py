@@ -13,8 +13,6 @@ Covers:
 """
 from __future__ import annotations
 
-import pytest
-
 import sys
 import unittest
 from pathlib import Path
@@ -513,7 +511,6 @@ class TestRunVirustotalEnrichment(unittest.TestCase):
 
     @patch("virustotal_enrich.time.sleep")
     @patch("virustotal_enrich.requests.get")
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): throttle/sleep-between-requests behavior drifted (sleep not invoked as asserted); needs confirmation whether throttling regressed - see green-up report")
     def test_throttle_sleep_between_requests(self, mock_get, mock_sleep):
         def side(url, **_kw):
             if "/domains/" in url:
@@ -522,9 +519,24 @@ class TestRunVirustotalEnrichment(unittest.TestCase):
 
         mock_get.side_effect = side
         run_virustotal_enrichment(_combined_result(), _default_settings(VIRUSTOTAL_RATE_LIMIT=4))
-        # throttle = 60/4 = 15.0 — must sleep before the IP request
-        throttle_calls = [c for c in mock_sleep.call_args_list if c[0] and c[0][0] == 15.0]
-        self.assertGreaterEqual(len(throttle_calls), 1)
+        # throttle = 60/4 = 15s. The limiter is seeded with the domain request's
+        # time.time() and sleeps the slot's remainder, so the delay is 15s minus
+        # the few microseconds since then, never exactly 15.0.
+        throttle_calls = [c for c in mock_sleep.call_args_list
+                          if c[0] and 14.0 < c[0][0] <= 15.0]
+        self.assertEqual(len(throttle_calls), 1)
+
+    @patch("virustotal_enrich.time.sleep")
+    @patch("virustotal_enrich.requests.get")
+    def test_no_throttle_sleep_when_domain_lookup_skipped(self, mock_get, mock_sleep):
+        mock_get.return_value = _mock_response(200, _vt_ip_body())
+        cr = _combined_result()
+        cr["domain"] = ""
+        run_virustotal_enrichment(cr, _default_settings(VIRUSTOTAL_RATE_LIMIT=4))
+        # No domain request spent a rate slot, so the first IP lookup goes at once.
+        throttle_calls = [c for c in mock_sleep.call_args_list
+                          if c[0] and 14.0 < c[0][0] <= 15.0]
+        self.assertEqual(throttle_calls, [])
 
     @patch("virustotal_enrich.time.sleep")
     @patch("virustotal_enrich.requests.get")
