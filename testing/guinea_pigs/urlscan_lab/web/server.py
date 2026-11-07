@@ -138,7 +138,14 @@ def make_handler(site: Site, log_path: str):
     return Handler
 
 
-class TLSServer(ThreadingHTTPServer):
+class LabHTTPServer(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5: httpx's bursts (44 threads,
+    # ten JARM handshakes per URL) overflowed it and whole hosts went missing
+    # from a scan at random. A real server queues far more.
+    request_queue_size = 256
+
+
+class TLSServer(LabHTTPServer):
     """The handshake runs in the request's own thread, so a slow or broken
     client never blocks the accept loop."""
 
@@ -177,7 +184,7 @@ def main() -> int:
     class HttpsHandler(http_handler):
         scheme = "https"
 
-    plain = ThreadingHTTPServer(("0.0.0.0", a.http_port), http_handler)
+    plain = LabHTTPServer(("0.0.0.0", a.http_port), http_handler)
     secure = TLSServer(("0.0.0.0", a.https_port), HttpsHandler, site.tls_context())
     for srv in (plain, secure):
         srv.daemon_threads = True
