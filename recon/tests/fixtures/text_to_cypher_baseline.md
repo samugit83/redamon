@@ -576,6 +576,7 @@ Common properties (all sources):
 - type (string): "leaked_one_time_link" (a password-reset, account-setup, invite, payment or magic-login link of the target, published on urlscan), "sensitive_file_seen" (a .env, .git, dump, backup, key, log, installer, debug page or web-shell trace opened directly), "open_redirect_seen" (a visit started on the target with another site in a parameter and ended on that site), "takeover_page_seen" (a cloud provider's "deleted service" page, kept only when this scan's DNS or live page confirms it), and one per problem-page family: "open_console_seen", "debug_page_seen", "installer_seen", "dev_server_seen", "directory_listing_seen", "defaced_page_seen", "test_certificate_seen"
 - link_kind (string): for leaked_one_time_link, "password_reset", "account_setup", "invite", "payment" or "login_link"
 - link_count (integer): how many such links were seen on that host and path
+- masked_url (string): for leaked_one_time_link, the newest such link with every value "***" and a path token as "{token}"; never the link itself
 - file_kind (string): for sensitive_file_seen, "env", "vcs", "private_key", "db_dump", "backup", "log", "config", "debug_page", "installer", "web_shell_trace", "file_manager", "debug_console", "memory_dump" or "salesforce_aura"
 - sightings (integer): public visits that showed it
 - param_name (string): for open_redirect_seen, the parameter that named the other site and the site the browser ended on (never scanned)

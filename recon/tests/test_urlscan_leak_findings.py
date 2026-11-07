@@ -46,6 +46,8 @@ def test_one_finding_per_host_path_and_kind_with_a_count():
     by = {(f["host"], f["path"], f["kind"]): f for f in data["findings"]}
     reset = by[("auth.example.test", "/reset", "password_reset")]
     assert reset["props"]["link_count"] == 2
+    masked = reset["props"]["masked_url"]
+    assert ("***" in masked or "{token}" in masked) and masked == reset["url"]
     assert (reset["first_seen"][:10], reset["last_seen"][:10]) == ("2026-09-01", "2026-10-05")
     assert reset["severity"] == "high" and reset["kind_field"] == "link_kind"
     assert "urlscan_scan_id" not in reset

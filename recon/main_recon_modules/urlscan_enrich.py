@@ -913,7 +913,7 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
                 f"Make one-time links expire within minutes and work once, and ask urlscan to "
                 f"remove the scans; test the lifetime with a link for your own test account."),
             "first_seen": first, "last_seen": last,
-            "props": {"link_count": slot["count"]},
+            "props": {"link_count": slot["count"], "masked_url": slot["masked_url"]},
         })
     url_secrets = []
     for (host, stype, _ident), slot in sorted(secrets.items()):
