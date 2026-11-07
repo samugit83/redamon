@@ -272,6 +272,9 @@ def build_naabu_command(targets_file: str, output_file: str, settings: dict) -> 
 
     # Input/Output
     cmd.extend(["-list", f"/targets/{targets_filename}"])
+    # Resolve the hostnames as the DNS step did (recon/helpers/system_resolvers.py).
+    from recon.helpers.system_resolvers import resolver_args
+    cmd.extend(resolver_args())
     cmd.extend(["-o", f"/output/{output_filename}"])
     cmd.append("-json")
     cmd.append("-silent")

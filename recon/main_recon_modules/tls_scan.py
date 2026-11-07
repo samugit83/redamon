@@ -157,6 +157,9 @@ def build_tlsx_command(targets_file: str, targets_dir: str, settings: dict) -> l
     delay = settings.get("TLSX_DELAY")
     if delay:
         cmd += ["-delay", str(delay)]
+    # Resolve as the DNS step did (recon/helpers/system_resolvers.py).
+    from recon.helpers.system_resolvers import resolver_args
+    cmd += resolver_args()
     return cmd
 
 

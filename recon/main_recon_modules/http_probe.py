@@ -40,6 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # NOTE: import the module (not the names) so favicon-hash test patching of
 # AI_FAVICON_HASHES propagates through. The module-attribute access pattern
 # `_ai_catalog.AI_FAVICON_HASHES` always reads the current dict object.
+from helpers.system_resolvers import system_resolvers
 from helpers import ai_signal_catalog as _ai_catalog
 from helpers.ai_signal_catalog import (
     AI_HEADER_PATTERNS,
@@ -838,22 +839,6 @@ def _stop_httpx_at_budget(process, container: str, budget: int, url_count: int) 
         pass
 
 
-def system_resolvers(resolv_conf: str = "/etc/resolv.conf") -> List[str]:
-    """The nameservers the scan resolves with (its DNS step, naabu). The
-    recon container shares the host network, so this is the host's resolver."""
-    try:
-        with open(resolv_conf, encoding="utf-8") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return []
-    found = []
-    for line in lines:
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "nameserver" and parts[1] not in found:
-            found.append(parts[1])
-    return found
-
-
 def build_httpx_command(targets_file: str, output_file: str, settings: dict,
                         probe_hosts: List[str] = None, container_name: str = None) -> List[str]:
     """
@@ -1025,10 +1010,7 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
     if HTTPX_PATHS:
         cmd.extend(["-path", ",".join(HTTPX_PATHS)])
 
-    # httpx's own resolver list includes public resolvers: a name only the
-    # local DNS knows (an internal or split-horizon target, a lab) then fails
-    # at random and whole hosts drop out of the probe. Resolve as the DNS
-    # step did.
+    # Resolve as the DNS step did (recon/helpers/system_resolvers.py).
     resolvers = system_resolvers()
     if resolvers:
         cmd.extend(["-r", ",".join(resolvers)])

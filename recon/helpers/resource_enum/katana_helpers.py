@@ -15,6 +15,7 @@ from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
 from recon.helpers.docker_helpers import pull_image_or_use_local
+from recon.helpers.system_resolvers import resolver_args
 from recon.helpers.js_recon.urls import is_js_url
 from .form_helpers import parse_forms_from_html
 
@@ -140,6 +141,8 @@ def run_katana_crawler(
             # crawl example.com). Post-hoc filtering provides additional safety.
             "-fs", "fqdn",
         ])
+        # Resolve as the DNS step did (recon/helpers/system_resolvers.py).
+        cmd.extend(resolver_args())
 
         # JavaScript crawling
         if js_crawl:
