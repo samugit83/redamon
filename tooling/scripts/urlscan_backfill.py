@@ -42,12 +42,17 @@ recon.helpers.url_leaks; graph_db must not import recon):
     --entrypoint python redamon-recon tooling/scripts/urlscan_backfill.py --apply
 
 ./redamon.sh update runs it once with --apply.
+
+``--project <id>`` limits it to one project's graph and recon JSON files and
+writes no marker, so the deployment-wide run still happens: a lab or a
+support case can apply it to one project without touching the others.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -158,17 +163,17 @@ def backfill_project(session, uid: str, pid: str, *, apply: bool) -> dict:
     return counts
 
 
-def backfill_graph(driver, *, apply: bool) -> dict:
+def backfill_graph(driver, *, apply: bool, project: str | None = None) -> dict:
     with driver.session() as session:
-        if _marker_applied(session):
+        if project is None and _marker_applied(session):
             return {"skipped": "already applied"}
         totals: dict = {}
-        projects = _projects(session)
+        projects = [(u, p) for u, p in _projects(session) if project is None or p == project]
         for uid, pid in projects:
             for k, v in backfill_project(session, uid, pid, apply=apply).items():
                 totals[k] = totals.get(k, 0) + v
         totals["projects"] = len(projects)
-        if apply:
+        if apply and project is None:
             _mark_applied(session)
         return totals
 
@@ -254,12 +259,20 @@ def _write_atomic(path: Path, doc: dict) -> None:
         raise
 
 
-def backfill_json(output_dir: Path, *, apply: bool) -> dict:
+def _project_files(output_dir: Path, project: str | None) -> list:
+    if project is None:
+        return sorted(output_dir.glob("*.json"))
+    # recon_<id>.json, and the per-run copies recon_<id>__<run>.json
+    return sorted(p for p in output_dir.glob(f"recon_{project}*.json")
+                  if p.name == f"recon_{project}.json" or p.name.startswith(f"recon_{project}__"))
+
+
+def backfill_json(output_dir: Path, *, apply: bool, project: str | None = None) -> dict:
     marker = output_dir / JSON_MARKER
-    if marker.exists():
+    if project is None and marker.exists():
         return {"skipped": "already applied"}
     counts = {"files": 0, "files_changed": 0, "values_masked": 0, "files_unreadable": 0}
-    for path in sorted(output_dir.glob("*.json")):
+    for path in _project_files(output_dir, project):
         counts["files"] += 1
         try:
             doc = json.loads(path.read_text())
@@ -272,7 +285,7 @@ def backfill_json(output_dir: Path, *, apply: bool) -> dict:
             counts["values_masked"] += n
             if apply:
                 _write_atomic(path, doc)
-    if apply:
+    if apply and project is None:
         marker.write_text("applied\n")
     return counts
 
@@ -285,13 +298,17 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", default=os.environ.get("RECON_OUTPUT_PATH") or DEFAULT_OUTPUT)
     parser.add_argument("--skip-graph", action="store_true")
     parser.add_argument("--skip-json", action="store_true")
+    parser.add_argument("--project", help="one project id only; writes no marker")
     args = parser.parse_args(argv)
+    if args.project is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.project):
+        parser.error("--project takes a project id")
     mode = "apply" if args.apply else "dry run"
     rc = 0
     if not args.skip_json:
         out = Path(args.output_dir)
         if out.is_dir():
-            print(f"[urlscan-backfill] recon JSON ({mode}): {backfill_json(out, apply=args.apply)}")
+            print(f"[urlscan-backfill] recon JSON ({mode}): "
+                  f"{backfill_json(out, apply=args.apply, project=args.project)}")
         else:
             print(f"[urlscan-backfill] recon JSON: no output folder at {out}, skipped")
     if not args.skip_graph:
@@ -301,11 +318,12 @@ def main(argv=None) -> int:
                 os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
                 auth=(os.environ.get("NEO4J_USER", "neo4j"), os.environ.get("NEO4J_PASSWORD", "")))
             try:
-                print(f"[urlscan-backfill] graph ({mode}): {backfill_graph(driver, apply=args.apply)}")
+                print(f"[urlscan-backfill] graph ({mode}): "
+                      f"{backfill_graph(driver, apply=args.apply, project=args.project)}")
             finally:
                 driver.close()
             out = Path(args.output_dir)
-            if args.apply and out.is_dir():
+            if args.apply and args.project is None and out.is_dir():
                 (out / GRAPH_DONE_FILE).write_text("applied\n")
         except Exception as e:  # noqa: BLE001 - never print a value; the class says enough
             print(f"[urlscan-backfill] graph: failed ({type(e).__name__}); run it again by hand")

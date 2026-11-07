@@ -108,7 +108,7 @@ NEW_LIMITS = {"urlscanMaxSearches": 60}
 @dataclass
 class Run:
     project: str
-    kind: str = "full"                          # full | partial | collect
+    kind: str = "full"                          # full | partial | collect | baseline
     settings: dict = field(default_factory=dict)
     fail: dict | None = None                    # a /__lab/fail rule installed before the run
     key: str = "none"                           # the account's urlscan key state the run needs
@@ -122,7 +122,8 @@ class Run:
 NO_NUCLEI = {"nucleiEnabled": False}
 
 RUNS = {
-    "baseline": Run("baseline", note="step 0: A on HEAD, kept for D-01"),
+    "baseline": Run("baseline", kind="baseline", settings=NO_NUCLEI,
+                    note="step 0: A on the hooks commit's code, kept for L-03 and D-01"),
     "A": Run("A", triage=True, note="no key, every switch on, DAST on"),
     "P": Run("A", kind="partial", note="partial runs on project A"),
     "A2": Run("A", settings=NO_NUCLEI, note="A again in the same project (S-08)"),
@@ -424,11 +425,8 @@ def start_triage_in_app(pid: str):
     """Start the triage run the way the app does (trigger 'app'), for a token
     without the opt-in triage:run scope. The request is made inside the agent
     container, so its internal key is read there and never reaches this process."""
-    owner = run_cmd("docker", "exec", "redamon-postgres", "sh", "-c",
-                    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT user_id FROM projects '
-                    'WHERE id = \'$1\'"', "sh", labkit.check_pid(pid))
-    user_id = owner.stdout.strip()
-    if owner.returncode != 0 or not re.fullmatch(r"[a-z0-9]{20,40}", user_id):
+    user_id = project_owner(pid)
+    if not user_id:
         return {"error": "the project's owner could not be read"}, True
     out = run_cmd("docker", "exec", "redamon-agent", "python", "-c", _TRIAGE_START, user_id, pid)
     try:
@@ -437,6 +435,114 @@ def start_triage_in_app(pid: str):
         return {"error": (out.stderr or out.stdout).strip()[:300]}, True
     print(f"[*] triage started in the app channel: {json.dumps(answer)[:200]}", flush=True)
     return answer, answer.get("status") != 200
+
+
+def wait_triage(pid: str, timeout: int, every: int = 15) -> dict:
+    """get_triage_status names a live run in `liveRun` and has no top-level status."""
+    started = time.time()
+    deadline, last, seen_live = started + timeout, None, False
+    while time.time() < deadline:
+        time.sleep(every)
+        state, err = mcp_call("get_triage_status", {"projectId": pid}, fatal=False)
+        state = state if isinstance(state, dict) and not err else {}
+        live = state.get("liveRun")
+        seen_live |= bool(live)
+        view = f"{state.get('triageState')} live={(live or {}).get('status')}"
+        if view != last:
+            print(f"    {time.strftime('%H:%M:%S')} get_triage_status: {view}", flush=True)
+            last = view
+        # 'current' once a run completed, 'partial' when every run failed or stopped.
+        if (state and not live and state.get("triageState") in ("current", "partial")
+                and (seen_live or time.time() - started > 60)):
+            return state
+    raise SystemExit(f"[!] triage still running after {timeout}s")
+
+
+#: Step 0's code: the lab hooks and nothing of the feature. The baseline scan runs
+#: it from a `git archive` export, so the shared checkout is never switched.
+BASELINE_COMMIT = "73218809"
+BASELINE_SRC = labkit.REPO / "_local" / "urlscan_lab_baseline"
+BASELINE_PATHS = ("recon", "graph_db", "recon_settings", "scanners/supply_chain_common")
+
+# Runs inside the orchestrator container: the running orchestrator resolves the
+# scan's source from its own mounts, so a second ContainerManager with the
+# export's paths spawns the one baseline scan with every other part the same
+# (env, hooks, hardening, mounts).
+_BASELINE_SPAWN = r"""
+import asyncio, sys
+sys.path.insert(0, "/app")
+import api
+from container_manager import ContainerManager
+base, pid, uid = sys.argv[1], sys.argv[2], sys.argv[3]
+cm = ContainerManager(recon_image=api.RECON_IMAGE)
+cm.graph_db_host_path = base + "/graph_db"
+cm.recon_settings_host_path = base + "/recon_settings"
+cm.recon_host_path = base + "/recon"
+state = asyncio.run(cm.start_recon(project_id=pid, user_id=uid, webapp_api_url=api._spawned_webapp_url(),
+                                   recon_path=base + "/recon", custom_templates_path=api.CUSTOM_TEMPLATES_PATH,
+                                   scan_mode="new"))
+print("STARTED", state.status)
+"""
+
+
+def project_owner(pid: str) -> str | None:
+    owner = run_cmd("docker", "exec", "redamon-postgres", "sh", "-c",
+                    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT user_id FROM projects '
+                    'WHERE id = \'$1\'"', "sh", labkit.check_pid(pid))
+    user_id = owner.stdout.strip()
+    return user_id if owner.returncode == 0 and re.fullmatch(r"[a-z0-9]{20,40}", user_id) else None
+
+
+def export_baseline_source() -> Path:
+    if BASELINE_SRC.exists():
+        # The scan wrote root-owned files into the export's recon/output.
+        run_cmd("docker", "run", "--rm", "-v", f"{BASELINE_SRC}:/x", "--entrypoint", "sh",
+                "redamon-recon", "-c", "rm -rf /x/* /x/.[!.]*")
+        shutil.rmtree(BASELINE_SRC, ignore_errors=True)
+    BASELINE_SRC.mkdir(parents=True)
+    archive = subprocess.run(["git", "-C", str(labkit.REPO), "archive", BASELINE_COMMIT, *BASELINE_PATHS],
+                             capture_output=True)
+    if archive.returncode != 0:
+        raise SystemExit(f"[!] git archive {BASELINE_COMMIT} failed: {archive.stderr.decode()[:300]}")
+    subprocess.run(["tar", "-x", "-C", str(BASELINE_SRC)], input=archive.stdout, check=True)
+    (BASELINE_SRC / "recon" / "output").mkdir(exist_ok=True)
+    return BASELINE_SRC
+
+
+def baseline_run(name: str, run: Run, known: dict, timeout: int) -> None:
+    pid = project_id(run.project)
+    uid = project_owner(pid)
+    if not uid:
+        raise SystemExit("[!] the baseline project's owner could not be read")
+    dest = labkit.RUNS / name
+    if dest.exists():
+        shutil.rmtree(dest)
+    src = export_baseline_source()
+    settings, dropped = settings_for(run, known)
+    labkit.fake("POST", "/__lab/reset")
+    truncate_hits()
+    mcp_call("update_recon_settings", {"projectId": pid, "settings": settings})
+    write_run(dest, run=name, project=run.project, project_id=pid, kind="baseline",
+              code=BASELINE_COMMIT, started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              settings_applied=sorted(settings), settings_dropped=dropped)
+    out = run_cmd("docker", "exec", "-i", labkit.ORCHESTRATOR, "python", "-c", _BASELINE_SPAWN,
+                  str(src), pid, uid)
+    if "STARTED" not in out.stdout:
+        raise SystemExit(f"[!] the baseline scan did not start: {(out.stderr or out.stdout).strip()[-400:]}")
+    container = "redamon-recon-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", pid)
+    print(f"[+] {name}: recon started on {pid} from {BASELINE_COMMIT}'s code", flush=True)
+    tail = follow(container, dest / "recon.log", dest / "container_env.json")
+    waited = subprocess.run(["docker", "wait", container], capture_output=True, text=True, timeout=timeout)
+    if tail:
+        tail.terminate()
+    produced = src / "recon" / "output" / f"recon_{pid}.json"
+    if produced.is_file():
+        shutil.copyfile(produced, labkit.REPO / "recon" / "output" / f"recon_{pid}.json")
+    else:
+        print(f"[!] the baseline scan wrote no recon_{pid}.json")
+    save_logs(dest)
+    write_run(dest, finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              status="completed" if waited.stdout.strip() == "0" else f"exit {waited.stdout.strip()}")
 
 
 def full_run(name: str, run: Run, known: dict, timeout: int) -> None:
@@ -478,7 +584,7 @@ def full_run(name: str, run: Run, known: dict, timeout: int) -> None:
         if err:
             print(f"[!] triage start failed: {json.dumps(out)[:300]}")
         else:
-            wait_mcp("get_triage_status", pid, 1800)
+            wait_triage(pid, 1800)
     save_logs(dest)
     write_run(dest, finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
               status=final.get("status"), last_run=final.get("lastRun"))
@@ -543,6 +649,8 @@ def do_run(names: list[str], timeout: int) -> None:
         gate_idle(own)
         if run.kind == "partial":
             partial_runs(web, timeout)
+        elif run.kind == "baseline":
+            baseline_run(name, run, known, timeout)
         else:
             full_run(name, run, known, timeout)
         validator.collect(name)

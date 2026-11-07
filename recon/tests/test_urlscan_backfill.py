@@ -156,3 +156,41 @@ def test_cli_prints_counts_only(tmp_path):
     with redirect_stdout(out):
         bf.main(["--output-dir", str(tmp_path), "--skip-graph"])
     assert TOK not in out.getvalue() and "values_masked" in out.getvalue()
+
+
+class _TwoProjectSession(_Session):
+    def run(self, query, **params):
+        if "RETURN DISTINCT n.user_id" in query:
+            return _Result([{"uid": "u1", "pid": "p1"}, {"uid": "u2", "pid": "p2"}])
+        return super().run(query, **params)
+
+
+def test_one_project_touches_only_that_project_and_leaves_no_marker():
+    s = _TwoProjectSession()
+    totals = bf.backfill_graph(_Driver(s), apply=True, project="p2")
+    assert totals["projects"] == 1
+    assert s.writes and all(p.get("pid") == "p2" for q, p in s.writes if q != "marker")
+    assert not s.marker  # the deployment-wide run still happens
+
+
+def test_one_project_runs_even_after_the_deployment_wide_run():
+    s = _TwoProjectSession(marker=True)
+    assert bf.backfill_graph(_Driver(s), apply=False, project="p1")["projects"] == 1
+
+
+def test_one_project_masks_only_its_own_json_files(tmp_path):
+    for name in ("recon_p1.json", "recon_p1__run7.json", "recon_p10.json", "recon_p2.json"):
+        (tmp_path / name).write_text(json.dumps(_doc()))
+    counts = bf.backfill_json(tmp_path, apply=True, project="p1")
+    assert counts["files"] == 2
+    assert TOK not in (tmp_path / "recon_p1.json").read_text()
+    assert TOK not in (tmp_path / "recon_p1__run7.json").read_text()
+    assert TOK in (tmp_path / "recon_p10.json").read_text()
+    assert TOK in (tmp_path / "recon_p2.json").read_text()
+    assert not (tmp_path / ".urlscan_backfill_v1").exists()
+
+
+def test_cli_refuses_a_project_that_is_not_an_id(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit):
+        bf.main(["--output-dir", str(tmp_path), "--skip-graph", "--project", "p1*"])
