@@ -651,9 +651,8 @@ project, never with a new value on an old one. Unknown keys reject the **whole
 call by name**, never silently.
 
 **What replaced each deny class.** A rate above the engagement ceiling is
-rewritten to the ceiling at scan start. A container image outside the shipped
-set is pinned back to the default with a `[guardrail]` line — the precedent
-`sanitize_image_settings()` already set. A custom header may not carry CR, LF,
+rewritten to the ceiling at scan start. A container image is not a setting at
+all: every tool runs the image RedAmon ships. A custom header may not carry CR, LF,
 `Host`, `Authorization`, `Cookie` or `Proxy-*`, each of which would change where
 a request goes rather than annotate it. A wordlist or template path must resolve
 inside this project's own directories, checked at the write AND again at
@@ -689,7 +688,7 @@ server's tools. Assume an instruction embedded in a page title reaches the model
 | Loosen the engagement to make room | Nothing REFUSES it, and that is deliberate: a write-time direction rule covered five fields it could not actually check. What stops it mattering is that the limits are applied at scan start regardless, the change is audited with a before and an after, and `preflight_scope_check` reports the RESOLVED configuration rather than the written one. A queued job whose limits changed goes to `needs_review` instead of dispatching. |
 | Disable the engagement limits wholesale | There is no flag to write. `roeEnabled` is derived from whether any limit is SET, so removing a limit means removing it visibly rather than flipping one boolean and leaving every field displaying its old value. |
 | Point a scan tool at a local file | A wordlist or template path must resolve inside this project's own directories, checked at the write and again at settings load. |
-| Make the scan run an attacker's container | Every `*DockerImage` field is a closed list of the shipped images and an out-of-set value is REFUSED at the write. It used to be accepted and pinned back at scan start, which contained the danger but not the dishonesty: `get_recon_settings` echoed an image the scan would never run. |
+| Make the scan run an attacker's container | No container image is a setting: there is no column, form field, preset key or write for one, so a call that names one is refused as an unknown setting, and the loader pins every `*_DOCKER_IMAGE` key to the image RedAmon ships. |
 | Reconfigure a job already in the queue | The C-4 fingerprint covers every field that steers where or how hard a job scans, including every engagement limit and the DERIVED answer to whether they are live, so the job goes to `needs_review` instead of dispatching. |
 | Exfiltrate another tenant's data | Ownership check + `scope_query` + result post-validation. |
 | Exfiltrate secrets | No tool returns a stored credential. `query_graph` DOES return target-found secrets unredacted (`Secret.matched_text`, nuclei `extracted_results`) to any `recon:read` token: a known, pre-existing exposure. `get_finding_evidence` redacts secret shapes to their first four characters. |

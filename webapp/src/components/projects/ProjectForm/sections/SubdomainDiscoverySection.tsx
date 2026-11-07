@@ -523,7 +523,7 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
           )}
 
           <RegistryFields
-            keys={['amassDockerImage', 'purednsDockerImage', 'purednsSkipValidation', 'purednsWildcardBatch', 'subfinderDockerImage']}
+            keys={['purednsSkipValidation', 'purednsWildcardBatch']}
             data={data}
             updateField={updateField}
             title="Advanced"

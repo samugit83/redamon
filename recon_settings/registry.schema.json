@@ -147,7 +147,6 @@
     },
     "validator": {
       "enum": [
-        "docker_image",
         "http_header",
         "project_file",
         "project_file_name",

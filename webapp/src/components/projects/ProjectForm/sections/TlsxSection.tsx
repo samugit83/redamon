@@ -209,7 +209,7 @@ export function TlsxSection({ data, updateField, onRun }: TlsxSectionProps) {
           )}
 
           <RegistryFields
-            keys={['tlsxCipherConcurrency', 'tlsxDelay', 'tlsxDockerImage', 'tlsxMaxHostnamesPerIp', 'tlsxRetries', 'tlsxRunTimeout', 'tlsxScanMode']}
+            keys={['tlsxCipherConcurrency', 'tlsxDelay', 'tlsxMaxHostnamesPerIp', 'tlsxRetries', 'tlsxRunTimeout', 'tlsxScanMode']}
             data={data}
             updateField={updateField}
             title="Advanced"

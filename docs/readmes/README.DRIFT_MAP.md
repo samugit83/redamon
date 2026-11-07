@@ -436,7 +436,7 @@ model reads.
   and schema <-> catalog both directions (`recon-preset-schema.test.ts`).
 - Not guarded: a **new** column does not have to be added. The schema covers 489
   of the 653 preset fields; the 164 missing are mostly agent and attack fields,
-  `*DockerImage`, 15 trufflehog fields, and the gau/kiterunner method detection.
+  15 trufflehog fields, and the gau/kiterunner method detection.
 
 **Preset apply rules that are hand lists**
 

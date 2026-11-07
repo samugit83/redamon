@@ -53,7 +53,6 @@ function legalValue(key: string, spec: RegistryField): unknown {
       if (spec.values) return spec.values[0]
       if (spec.validator === 'project_file') return '/usr/share/seclists/a.txt'
       if (spec.validator === 'project_file_name') return 'mine.yaml'
-      if (spec.validator === 'docker_image') return 'vendor/tool:latest'
       if (spec.validator === 'url') return 'https://example.com'
       if (spec.validator === 'http_header') return 'X-Scan-Id: abc'
       if (spec.validator === 'status_codes') return '200'

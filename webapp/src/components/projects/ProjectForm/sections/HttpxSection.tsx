@@ -652,21 +652,11 @@ export function HttpxSection({ data, updateField, onRun }: HttpxSectionProps) {
               </div>
             )}
           </div>
-
-          <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>Docker Image</label>
-            <input
-              type="text"
-              className="textInput"
-              value={data.httpxDockerImage}
-              disabled
-            />
-          </div>
           </>
           )}
 
           <RegistryFields
-            keys={['httpxDockerImage', 'wappalyzerNpmVersion']}
+            keys={['wappalyzerNpmVersion']}
             data={data}
             updateField={updateField}
             title="Advanced"

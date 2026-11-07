@@ -7,7 +7,6 @@ import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { FileImportButton } from '../FileImportButton'
-import { RegistryFields } from '../RegistryFields'
 import { AiToggleLabel } from '../AiToggleLabel'
 import { JevEngineControl } from '../JevEngineControl'
 import { useHasJevProvider } from '@/hooks/useHasJevProvider'
@@ -200,26 +199,8 @@ export function HakrawlerSection({ data, updateField, onRun }: HakrawlerSectionP
                   <span className={styles.fieldHint}>One header per line (e.g., Cookie: value). Sent with every request</span>
                 </div>
               </div>
-
-              <div className={styles.fieldGroup}>
-                <label className={styles.fieldLabel}>Docker Image</label>
-                <input
-                  type="text"
-                  className="textInput"
-                  value={data.hakrawlerDockerImage}
-                  disabled
-                />
-              </div>
             </>
           )}
-
-          <RegistryFields
-            keys={['hakrawlerDockerImage']}
-            data={data}
-            updateField={updateField}
-            title="Advanced"
-            description="Settings this tool accepts that have no dedicated control. Bounds, options and descriptions come from the settings registry, so they are the same ones the API enforces."
-          />
         </div>
       )}
     </div>

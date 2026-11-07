@@ -107,7 +107,7 @@ The phase itself runs only when `port_scan` is in the project's scan modules (`S
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `NAABU_DOCKER_IMAGE` | `str` | `"projectdiscovery/naabu:latest"` | Docker image to use; a value outside the shipped allowlist is pinned back to the default at scan start |
+| `NAABU_DOCKER_IMAGE` | `str` | `"projectdiscovery/naabu:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 
 ### Port Selection
 

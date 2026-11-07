@@ -931,7 +931,6 @@ def test_prisma_schema_has_jsluice_verify_columns():
     content = schema_path.read_text()
     for field in [
         "jsluiceVerifyUrls",
-        "jsluiceVerifyDockerImage",
         "jsluiceVerifyTimeout",
         "jsluiceVerifyRateLimit",
         "jsluiceVerifyThreads",
@@ -951,7 +950,6 @@ def test_recon_preset_schema_includes_jsluice_verify_fields():
     content = schema_path.read_text()
     for field in [
         "jsluiceVerifyUrls",
-        "jsluiceVerifyDockerImage",
         "jsluiceVerifyTimeout",
         "jsluiceVerifyRateLimit",
         "jsluiceVerifyThreads",
@@ -1147,7 +1145,6 @@ def test_stealth_overrides_disable_hakrawler():
     print("PASS: test_stealth_overrides_disable_hakrawler")
 
 
-@pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
 def test_settings_camelcase_mapping():
     """fetch_project_settings should map camelCase to SCREAMING_SNAKE_CASE."""
     from recon.project_settings import fetch_project_settings
@@ -1185,7 +1182,8 @@ def test_settings_camelcase_mapping():
     assert settings['HAKRAWLER_MAX_URLS'] == 1000
     assert settings['HAKRAWLER_INCLUDE_SUBS'] is True
     assert settings['HAKRAWLER_INSECURE'] is False
-    assert settings['HAKRAWLER_DOCKER_IMAGE'] == "custom:latest"
+    # Images are fixed: the row's value never reaches the settings.
+    assert settings['HAKRAWLER_DOCKER_IMAGE'] == "jauderho/hakrawler:latest"
     assert settings['HAKRAWLER_CUSTOM_HEADERS'] == ["X-Custom: test"]
 
     assert settings['JSLUICE_ENABLED'] is False

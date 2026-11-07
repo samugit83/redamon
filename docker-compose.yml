@@ -412,9 +412,6 @@ services:
     environment:
       DOCKER_BROKER_UPSTREAM: /var/run/docker.sock
       DOCKER_BROKER_LISTEN: /var/run/broker/docker.sock
-      # Tool images the recon pipeline may run (V3 set is the broker default;
-      # operator extras flow through to keep parity with RECON_EXTRA_ALLOWED_IMAGES).
-      DOCKER_BROKER_ALLOWED_IMAGES: ${RECON_EXTRA_ALLOWED_IMAGES:-}
       # Host bind sources the tools legitimately mount: the shared scratch dir and
       # anything under the repo root (recon output, wordlists, custom templates).
       # Everything else (/, /etc, /root, the docker socket) is denied.
@@ -558,11 +555,6 @@ services:
       # (localhost:3000), not the `webapp` DNS name. Server-controlled, never the
       # client-supplied request.webapp_api_url (which would be an SSRF/key-leak).
       SPAWNED_WEBAPP_API_URL: http://localhost:3000
-      # V3: comma-separated extra tool Docker images the operator approves beyond
-      # the shipped allowlist (e.g. private-registry mirrors for air-gapped use:
-      # "myregistry.local/naabu:latest,myregistry.local/httpx:latest"). Empty =
-      # strict shipped-only. Forwarded to the recon pipeline by container_manager.
-      RECON_EXTRA_ALLOWED_IMAGES: ${RECON_EXTRA_ALLOWED_IMAGES:-}
       # Recon circuit breakers (recon/helpers/circuit_breaker.py). Only the exact
       # value "off" disables them: every failing dependency is then called for
       # every item again. Coverage recording and the prune guard stay on. Apply

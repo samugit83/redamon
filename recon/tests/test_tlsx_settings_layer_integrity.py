@@ -32,11 +32,16 @@ def _snake_to_camel(snake: str) -> str:
 
 
 def _tlsx_python_keys() -> list[str]:
-    """SCREAMING_SNAKE tlsx keys declared in recon DEFAULT_SETTINGS."""
+    """SCREAMING_SNAKE tlsx SETTINGS declared in recon DEFAULT_SETTINGS.
+
+    `TLSX_DOCKER_IMAGE` is left out: an image is fixed, not a setting, so it has
+    no column, fetch mapping or preset key by design.
+    """
     src = _read("recon/project_settings.py")
     block = re.search(r"DEFAULT_SETTINGS\s*[:=].*?\n\}", src, re.S)
     assert block, "DEFAULT_SETTINGS block not found"
-    return sorted(set(re.findall(r"'(TLSX_[A-Z0-9_]+)'\s*:", block.group(0))))
+    keys = set(re.findall(r"'(TLSX_[A-Z0-9_]+)'\s*:", block.group(0)))
+    return sorted(k for k in keys if not k.endswith("_DOCKER_IMAGE"))
 
 
 def test_default_settings_declares_tlsx_keys():
@@ -86,8 +91,5 @@ def test_tlsx_enabled_defaults_true_in_both_python_and_prisma():
 def test_preset_zod_schema_carries_every_tlsx_key():
     """Missing from Zod => AI-generated presets silently strip the setting."""
     zod = _read("webapp/src/lib/recon-preset-schema.ts")
-    # tlsxDockerImage is deliberately not preset-tunable (image pinning is an
-    # operator/deploy concern, not a scan-profile one).
-    missing = [_snake_to_camel(k) for k in _tlsx_python_keys()
-               if _snake_to_camel(k) not in zod and _snake_to_camel(k) != "tlsxDockerImage"]
+    missing = [_snake_to_camel(k) for k in _tlsx_python_keys() if _snake_to_camel(k) not in zod]
     assert not missing, f"preset Zod schema missing: {missing}"

@@ -202,7 +202,6 @@ export const reconPresetSchema = z.object({
 
   // -- Web Crawling: ZAP Ajax Spider --
   zapAjaxSpiderEnabled: bool,
-  zapAjaxSpiderDockerImage: str,
   zapAjaxSpiderSeedMode: str,
   zapAjaxSpiderMaxDuration: int,
   zapAjaxSpiderMaxCrawlDepth: int,
@@ -242,7 +241,6 @@ export const reconPresetSchema = z.object({
   jsluiceConcurrency: int,
   jsluiceParallelism: int,
   jsluiceVerifyUrls: bool,
-  jsluiceVerifyDockerImage: str,
   jsluiceVerifyTimeout: int,
   jsluiceVerifyRateLimit: int,
   jsluiceVerifyThreads: int,
@@ -309,7 +307,6 @@ export const reconPresetSchema = z.object({
 
   // -- GraphQL Cop (external Docker-based misconfig scanner) --
   graphqlCopEnabled: bool,
-  graphqlCopDockerImage: str,
   graphqlCopTimeout: int,
   graphqlCopForceScan: bool,
   graphqlCopDebug: bool,
@@ -441,7 +438,6 @@ export const reconPresetSchema = z.object({
   takeoverAiClassifier: bool,
   takeoverAiUseJev: bool,
   baddnsEnabled: bool,
-  baddnsDockerImage: str,
   baddnsModules: strArr,
   baddnsNameservers: strArr,
   baddnsRunTimeout: int,
@@ -478,7 +474,6 @@ export const reconPresetSchema = z.object({
   tlsxMaxTargets: int,
 
   webCachePoisonEnabled: bool,
-  webCachePoisonDockerImage: str,
   webCachePoisonScanProfile: str,
   webCachePoisonTimeout: int,
   webCachePoisonTimeoutPerReq: int,
@@ -823,7 +818,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 
 ## Web Crawling - ZAP Ajax Spider
 - zapAjaxSpiderEnabled: boolean - Enable browser-driven Ajax Spider crawling for modern SPAs and authenticated apps
-- zapAjaxSpiderDockerImage: string - Docker image used for the ZAP Ajax Spider runner
 - zapAjaxSpiderSeedMode: string - "base_urls" or "base_urls_and_endpoints" seed selection
 - zapAjaxSpiderMaxDuration: integer - Max Ajax Spider duration per seed in minutes
 - zapAjaxSpiderMaxCrawlDepth: integer - Max crawl depth per seed
@@ -863,7 +857,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - jsluiceConcurrency: integer
 - jsluiceParallelism: integer - Base URLs analyzed in parallel
 - jsluiceVerifyUrls: boolean - After extraction, run extracted URLs through httpx and a deny-list filter so only live, non-asset URLs reach the graph. Disable to keep all extracted URLs (legacy behavior).
-- jsluiceVerifyDockerImage: string - httpx Docker image used for verification
 - jsluiceVerifyTimeout: integer - Per-request httpx timeout in seconds
 - jsluiceVerifyRateLimit: integer - Max probe requests per second
 - jsluiceVerifyThreads: integer - httpx worker threads
@@ -923,7 +916,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 
 ## GraphQL Cop (external Docker-based misconfig scanner - Phase 2)
 - graphqlCopEnabled: boolean - Master toggle for graphql-cop (default false, opt-in)
-- graphqlCopDockerImage: string - Pinned image tag (default "dolevf/graphql-cop:1.14")
 - graphqlCopTimeout: integer - Per-endpoint timeout in seconds (default 120)
 - graphqlCopForceScan: boolean - -f flag: scan even if endpoint doesn't look GraphQL-like
 - graphqlCopDebug: boolean - -d flag: adds X-GraphQL-Cop-Test header per request
@@ -1056,7 +1048,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - takeoverAiClassifier: boolean - Use AI to disambiguate takeover findings from WAF "no host" block pages that match the same static fingerprint (requires aiInPipeline=true). For each finding the scanner probes the host, short-circuits on third-party vendor tokens, and otherwise asks the LLM to classify the body. AI-flagged collisions get score -40 (lands in manual_review). Default false.
 - takeoverAiUseJev: boolean - Engine for the takeover disambiguator: false uses the LLM in aiPipelineModel, true uses TypeSafe AI Jev (jev-1.13.0). Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId), else the hook uses its static fallback.
 - baddnsEnabled: boolean - Run the BadDNS sidecar (AGPL-3.0, isolated Docker container). Requires "docker compose --profile tools build baddns-scanner". Default false.
-- baddnsDockerImage: string - BadDNS image name. Default "redamon-baddns:latest" (built locally from baddns_scan/Dockerfile)
 - baddnsModules: string[] - Subset of BadDNS modules to run. Valid: cname, ns, mx, txt, spf, dmarc, wildcard, nsec, references, zonetransfer. (MTA-STS exists in baddns 2.1.0 but is not CLI-addressable due to an upstream validator regex bug -- omit.) Default: ["cname","ns","mx","txt","spf"]
 - baddnsNameservers: string[] - Optional custom DNS resolvers (e.g. ["1.1.1.1","8.8.8.8"]). Empty = system resolvers.
 - baddnsRunTimeout: integer - Hard wall clock for the BadDNS pass in seconds. Default 1800.
@@ -1092,7 +1083,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 
 ## Web Cache Poisoning (WCVS breadth engine + native 5-phase confirmation)
 - webCachePoisonEnabled: boolean - Master switch. Active scan: detects web cache poisoning + web cache deception on live BaseURLs/Endpoints. Sends header/param mutation probes plus repeated baseline/poison/clean fetches per URL. Default false.
-- webCachePoisonDockerImage: string - Docker image for the WCVS breadth engine (Hackmanit Web Cache Vulnerability Scanner), built locally. Default "redamon-wcvs:latest".
 - webCachePoisonScanProfile: string - "safe-confirm" (production, benign canaries, always isolated), "extended" (owned test targets), or "research" (lab only, enables CPDoS if allowed). Default "safe-confirm".
 - webCachePoisonTimeout: integer - WCVS subprocess timeout in seconds. Default 1800.
 - webCachePoisonTimeoutPerReq: integer - Native confirmation per-request timeout in seconds. Default 10.

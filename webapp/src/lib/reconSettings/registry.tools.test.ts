@@ -48,15 +48,13 @@ function shippedImages(): Set<string> {
   )
 }
 
-// --- T7: the image guardrail stays honest now that the field is open ------------------
+// --- T7: the image guardrail stays honest -------------------------------------------
 
 describe('T7 every tool image is one the runtime will actually accept', () => {
   test("every tools[].image is a shipped default, so the guardrail never pins it away", () => {
-    // The `*DockerImage` columns are OPEN now: the runtime pins a
-    // non-allowlisted value to the shipped default. That control is only
-    // meaningful if the tool's own declared image IS in the allowlist - an
-    // image the registry names but the runtime rejects would be pinned away on
-    // every scan, silently.
+    // The runtime pins every `*_DOCKER_IMAGE` key to its shipped default. A
+    // tool image the registry names but the runtime does not ship would be
+    // pinned away on every scan, silently.
     const allowed = shippedImages()
     const problems = toolIds()
       .filter(id => tools[id].image)
@@ -82,28 +80,24 @@ describe('T7 every tool image is one the runtime will actually accept', () => {
     expect(orphans, 'entrypoint.sh pulls images no tool claims').toEqual([])
   })
 
-  test('every image column default is one the runtime allows', () => {
-    // A tool may spawn more than one image: gau runs its own and then httpx for
-    // the verification pass, so `tools[].image` is the PRIMARY one and this is
-    // the property that actually matters - no image column can default to
-    // something the guardrail would pin away on every scan.
-    const allowed = shippedImages()
-    const problems = fieldsWhere((_s, key) => key.endsWith('DockerImage'))
-      .filter(f => typeof f.default === 'string' && f.default)
-      .filter(f => !allowed.has(f.default as string))
-      .map(f => `${f.key}: ${f.default}`)
-    expect(problems).toEqual([])
+  test('every *_DOCKER_IMAGE default is pulled at scan startup', () => {
+    // Including the secondary ones: gau runs its own image and then httpx for
+    // the verification pass, so `tools[].image` names only the primary one. An
+    // image only pulled mid-scan stalls the run, or fails on an air-gapped host.
+    const pulled = new Set(entrypointImages())
+    const missing = [...shippedImages()].filter(img => !pulled.has(img))
+    expect(missing).toEqual([])
   })
 
-  test('every image column default is pulled at scan startup', () => {
-    // Including the secondary ones. An image only pulled mid-scan stalls the
-    // run, or fails outright on an air-gapped host.
-    const pulled = new Set(entrypointImages())
-    const missing = fieldsWhere((_s, key) => key.endsWith('DockerImage'))
-      .filter(f => typeof f.default === 'string' && f.default)
-      .filter(f => !pulled.has(f.default as string))
-      .map(f => `${f.key}: ${f.default}`)
-    expect(missing).toEqual([])
+  test('no image is a project setting: every one is an internal runtime key', () => {
+    // A scan runs the image RedAmon ships. A field would put a column, a form
+    // control and an MCP write in front of `docker run` on the host daemon.
+    expect(fieldsWhere((_s, key) => key.endsWith('DockerImage')).map(f => f.key)).toEqual([])
+    const text = readFileSync(RECON_SETTINGS, 'utf8')
+    const keys = [...text.matchAll(/'([A-Z0-9_]+_DOCKER_IMAGE)':\s*'/g)].map(m => m[1])
+    expect(keys.length).toBeGreaterThan(0)
+    const notInternal = keys.filter(k => registry.runtime_only[k]?.source !== 'internal')
+    expect(notInternal).toEqual([])
   })
 })
 

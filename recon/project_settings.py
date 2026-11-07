@@ -915,22 +915,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
-# V3 — tool Docker image allowlist (anti image-injection)
+# V3 — tool Docker images are fixed (anti image-injection)
 # ---------------------------------------------------------------------------
-# Recon modules read `*_DOCKER_IMAGE` from project settings and pass them
-# verbatim to `docker run` on the host Docker daemon (often with `--net=host`).
-# These settings are user-editable (Prisma columns + project-settings UI) and
-# flow from the webapp API, so an unvalidated value is arbitrary-container
-# execution on the host. We pin every tool image to a known-good allowlist at the
-# settings chokepoint (`fetch_project_settings`).
-#
-# The allowlist is the set of images we ship (derived from DEFAULT_SETTINGS so it
-# stays in sync as tools are added/bumped) PLUS any images the *operator* approves
-# server-side via the `RECON_EXTRA_ALLOWED_IMAGES` env var (comma-separated). The
-# env is server-controlled (set on the orchestrator / spawned recon container),
-# NOT attacker-influenceable like project settings — so air-gapped / private-
-# registry deployments can keep their custom mirror images (e.g.
-# `myregistry.local/naabu:latest`) without re-opening the injection hole.
+# Recon modules pass `*_DOCKER_IMAGE` verbatim to `docker run` on the host Docker
+# daemon (often with `--net=host`), so a value a user could choose would be
+# arbitrary container execution on the host. No image is a project setting: there
+# is no column, form field, preset key or MCP write for one, and every key is
+# pinned to its shipped default at the settings chokepoint
+# (`fetch_project_settings`) in case some other path ever puts one in a dict.
 ALLOWED_TOOL_IMAGES = frozenset(
     v for k, v in DEFAULT_SETTINGS.items()
     if k.endswith('_DOCKER_IMAGE') and isinstance(v, str) and v
@@ -950,33 +942,26 @@ def _env_int(name: str, default: int) -> int:
     return val if val > 0 else default
 
 
-def _operator_allowed_images() -> frozenset:
-    """Operator-approved extra images from `RECON_EXTRA_ALLOWED_IMAGES` (env)."""
-    raw = os.environ.get('RECON_EXTRA_ALLOWED_IMAGES', '')
-    return frozenset(part.strip() for part in raw.split(',') if part.strip())
-
-
 def sanitize_image_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Force every `*_DOCKER_IMAGE` setting to a known-good image (V3).
+    """Pin every `*_DOCKER_IMAGE` setting to the image RedAmon ships for it (V3).
 
-    Allowed = shipped images (``ALLOWED_TOOL_IMAGES``) plus operator-approved
-    images from ``RECON_EXTRA_ALLOWED_IMAGES``. A value outside that set is
-    replaced with the shipped default for that key (or dropped if the key is
-    unknown, so the consumer falls back to its own hardcoded default). Mutates and
-    returns ``settings``.
+    Each key must equal its own default, not merely some shipped image: the
+    naabu key carrying the nuclei image is as wrong as a foreign one. A different
+    value is replaced with the default (or dropped if the key is unknown, so the
+    consumer falls back to its own hardcoded default). Mutates and returns
+    ``settings``.
     """
-    allowed = ALLOWED_TOOL_IMAGES | _operator_allowed_images()
     for key in list(settings.keys()):
         if not key.endswith('_DOCKER_IMAGE'):
             continue
         value = settings.get(key)
-        if isinstance(value, str) and value in allowed:
-            continue  # allowlisted — keep
         safe = DEFAULT_SETTINGS.get(key)
+        if safe is not None and value == safe:
+            continue
         if safe is not None:
             logger.warning(
-                f"[guardrail] Rejected non-allowlisted Docker image for {key}: "
-                f"{value!r} -> pinned to {safe!r}"
+                f"[guardrail] Rejected Docker image for {key}: "
+                f"{value!r} -> pinned to the shipped {safe!r}"
             )
             settings[key] = safe
         else:
@@ -1106,8 +1091,8 @@ def _is_safe_basename(raw: Any) -> bool:
 def sanitize_project_file_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Drop every path-valued setting that escapes its allowed directory.
 
-    Mirrors `sanitize_image_settings`: the column is OPEN and the runtime is the
-    control, so an escaping value is replaced with the shipped default and a
+    The column is OPEN and the runtime is the control, so an escaping value is
+    replaced with the shipped default and a
     `[guardrail]` line records it rather than the scan failing. The MCP write
     path rejects the same values outright; this is the authoritative half,
     because a row can also be written through the webapp, an import, or a
@@ -1543,7 +1528,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # Naabu Port Scanner
     settings['NAABU_ENABLED'] = project.get('naabuEnabled', DEFAULT_SETTINGS['NAABU_ENABLED'])
-    settings['NAABU_DOCKER_IMAGE'] = project.get('naabuDockerImage', DEFAULT_SETTINGS['NAABU_DOCKER_IMAGE'])
     settings['NAABU_TOP_PORTS'] = project.get('naabuTopPorts', DEFAULT_SETTINGS['NAABU_TOP_PORTS'])
     settings['NAABU_CUSTOM_PORTS'] = project.get('naabuCustomPorts', DEFAULT_SETTINGS['NAABU_CUSTOM_PORTS'])
     settings['NAABU_RATE_LIMIT'] = project.get('naabuRateLimit', DEFAULT_SETTINGS['NAABU_RATE_LIMIT'])
@@ -1581,7 +1565,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # httpx HTTP Probing
     settings['HTTPX_ENABLED'] = project.get('httpxEnabled', DEFAULT_SETTINGS['HTTPX_ENABLED'])
-    settings['HTTPX_DOCKER_IMAGE'] = project.get('httpxDockerImage', DEFAULT_SETTINGS['HTTPX_DOCKER_IMAGE'])
     settings['HTTPX_THREADS'] = project.get('httpxThreads', DEFAULT_SETTINGS['HTTPX_THREADS'])
     settings['HTTPX_TIMEOUT'] = project.get('httpxTimeout', DEFAULT_SETTINGS['HTTPX_TIMEOUT'])
     settings['HTTPX_RETRIES'] = project.get('httpxRetries', DEFAULT_SETTINGS['HTTPX_RETRIES'])
@@ -1660,7 +1643,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['NUCLEI_MAX_REDIRECTS'] = project.get('nucleiMaxRedirects', DEFAULT_SETTINGS['NUCLEI_MAX_REDIRECTS'])
     settings['NUCLEI_SCAN_ALL_IPS'] = project.get('nucleiScanAllIps', DEFAULT_SETTINGS['NUCLEI_SCAN_ALL_IPS'])
     settings['NUCLEI_INTERACTSH'] = project.get('nucleiInteractsh', DEFAULT_SETTINGS['NUCLEI_INTERACTSH'])
-    settings['NUCLEI_DOCKER_IMAGE'] = project.get('nucleiDockerImage', DEFAULT_SETTINGS['NUCLEI_DOCKER_IMAGE'])
     settings['NUCLEI_AI_TAGS'] = project.get('nucleiAiTags', DEFAULT_SETTINGS['NUCLEI_AI_TAGS'])
     settings['NUCLEI_TAGS_AI_USE_JEV'] = project.get('nucleiTagsAiUseJev', DEFAULT_SETTINGS['NUCLEI_TAGS_AI_USE_JEV'])
     settings['NUCLEI_AI_RESPONSE_FILTER'] = project.get('nucleiAiResponseFilter', DEFAULT_SETTINGS['NUCLEI_AI_RESPONSE_FILTER'])
@@ -1685,7 +1667,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['TAKEOVER_AI_CLASSIFIER'] = project.get('takeoverAiClassifier', DEFAULT_SETTINGS['TAKEOVER_AI_CLASSIFIER'])
     settings['TAKEOVER_AI_USE_JEV'] = project.get('takeoverAiUseJev', DEFAULT_SETTINGS['TAKEOVER_AI_USE_JEV'])
     settings['BADDNS_ENABLED'] = project.get('baddnsEnabled', DEFAULT_SETTINGS['BADDNS_ENABLED'])
-    settings['BADDNS_DOCKER_IMAGE'] = project.get('baddnsDockerImage', DEFAULT_SETTINGS['BADDNS_DOCKER_IMAGE'])
     settings['BADDNS_MODULES'] = project.get('baddnsModules', DEFAULT_SETTINGS['BADDNS_MODULES'])
     settings['BADDNS_NAMESERVERS'] = project.get('baddnsNameservers', DEFAULT_SETTINGS['BADDNS_NAMESERVERS'])
     settings['BADDNS_RUN_TIMEOUT'] = project.get('baddnsRunTimeout', DEFAULT_SETTINGS['BADDNS_RUN_TIMEOUT'])
@@ -1705,7 +1686,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # tlsx TLS certificate grab
     settings['TLSX_ENABLED'] = project.get('tlsxEnabled', DEFAULT_SETTINGS['TLSX_ENABLED'])
-    settings['TLSX_DOCKER_IMAGE'] = project.get('tlsxDockerImage', DEFAULT_SETTINGS['TLSX_DOCKER_IMAGE'])
     settings['TLSX_SCAN_MODE'] = project.get('tlsxScanMode', DEFAULT_SETTINGS['TLSX_SCAN_MODE'])
     settings['TLSX_CONCURRENCY'] = project.get('tlsxConcurrency', DEFAULT_SETTINGS['TLSX_CONCURRENCY'])
     settings['TLSX_TIMEOUT'] = project.get('tlsxTimeout', DEFAULT_SETTINGS['TLSX_TIMEOUT'])
@@ -1751,7 +1731,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # Katana Web Crawler
     settings['KATANA_ENABLED'] = project.get('katanaEnabled', DEFAULT_SETTINGS['KATANA_ENABLED'])
-    settings['KATANA_DOCKER_IMAGE'] = project.get('katanaDockerImage', DEFAULT_SETTINGS['KATANA_DOCKER_IMAGE'])
     settings['KATANA_DEPTH'] = project.get('katanaDepth', DEFAULT_SETTINGS['KATANA_DEPTH'])
     settings['KATANA_MAX_URLS'] = project.get('katanaMaxUrls', DEFAULT_SETTINGS['KATANA_MAX_URLS'])
     settings['KATANA_RATE_LIMIT'] = project.get('katanaRateLimit', DEFAULT_SETTINGS['KATANA_RATE_LIMIT'])
@@ -1775,7 +1754,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # ZAP Ajax Spider Browser Crawler
     settings['ZAP_AJAX_SPIDER_ENABLED'] = project.get('zapAjaxSpiderEnabled', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_ENABLED'])
-    settings['ZAP_AJAX_SPIDER_DOCKER_IMAGE'] = project.get('zapAjaxSpiderDockerImage', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_DOCKER_IMAGE'])
     settings['ZAP_AJAX_SPIDER_SEED_MODE'] = project.get('zapAjaxSpiderSeedMode', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_SEED_MODE'])
     settings['ZAP_AJAX_SPIDER_MAX_DURATION'] = project.get('zapAjaxSpiderMaxDuration', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_MAX_DURATION'])
     settings['ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH'] = project.get('zapAjaxSpiderMaxCrawlDepth', DEFAULT_SETTINGS['ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH'])
@@ -1797,7 +1775,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # Hakrawler Web Crawler
     settings['HAKRAWLER_ENABLED'] = project.get('hakrawlerEnabled', DEFAULT_SETTINGS['HAKRAWLER_ENABLED'])
-    settings['HAKRAWLER_DOCKER_IMAGE'] = project.get('hakrawlerDockerImage', DEFAULT_SETTINGS['HAKRAWLER_DOCKER_IMAGE'])
     settings['HAKRAWLER_DEPTH'] = project.get('hakrawlerDepth', DEFAULT_SETTINGS['HAKRAWLER_DEPTH'])
     settings['HAKRAWLER_THREADS'] = project.get('hakrawlerThreads', DEFAULT_SETTINGS['HAKRAWLER_THREADS'])
     settings['HAKRAWLER_TIMEOUT'] = project.get('hakrawlerTimeout', DEFAULT_SETTINGS['HAKRAWLER_TIMEOUT'])
@@ -1817,7 +1794,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['JSLUICE_CONCURRENCY'] = project.get('jsluiceConcurrency', DEFAULT_SETTINGS['JSLUICE_CONCURRENCY'])
     settings['JSLUICE_PARALLELISM'] = project.get('jsluiceParallelism', DEFAULT_SETTINGS['JSLUICE_PARALLELISM'])
     settings['JSLUICE_VERIFY_URLS'] = project.get('jsluiceVerifyUrls', DEFAULT_SETTINGS['JSLUICE_VERIFY_URLS'])
-    settings['JSLUICE_VERIFY_DOCKER_IMAGE'] = project.get('jsluiceVerifyDockerImage', DEFAULT_SETTINGS['JSLUICE_VERIFY_DOCKER_IMAGE'])
     settings['JSLUICE_VERIFY_TIMEOUT'] = project.get('jsluiceVerifyTimeout', DEFAULT_SETTINGS['JSLUICE_VERIFY_TIMEOUT'])
     settings['JSLUICE_VERIFY_RATE_LIMIT'] = project.get('jsluiceVerifyRateLimit', DEFAULT_SETTINGS['JSLUICE_VERIFY_RATE_LIMIT'])
     settings['JSLUICE_VERIFY_THREADS'] = project.get('jsluiceVerifyThreads', DEFAULT_SETTINGS['JSLUICE_VERIFY_THREADS'])
@@ -1915,7 +1891,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # GAU Passive URL Discovery
     settings['GAU_ENABLED'] = project.get('gauEnabled', DEFAULT_SETTINGS['GAU_ENABLED'])
-    settings['GAU_DOCKER_IMAGE'] = project.get('gauDockerImage', DEFAULT_SETTINGS['GAU_DOCKER_IMAGE'])
     settings['GAU_PROVIDERS'] = project.get('gauProviders', DEFAULT_SETTINGS['GAU_PROVIDERS'])
     settings['GAU_MAX_URLS'] = project.get('gauMaxUrls', DEFAULT_SETTINGS['GAU_MAX_URLS'])
     settings['GAU_TIMEOUT'] = project.get('gauTimeout', DEFAULT_SETTINGS['GAU_TIMEOUT'])
@@ -1924,7 +1899,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['GAU_YEAR_RANGE'] = project.get('gauYearRange', DEFAULT_SETTINGS['GAU_YEAR_RANGE'])
     settings['GAU_VERBOSE'] = project.get('gauVerbose', DEFAULT_SETTINGS['GAU_VERBOSE'])
     settings['GAU_VERIFY_URLS'] = project.get('gauVerifyUrls', DEFAULT_SETTINGS['GAU_VERIFY_URLS'])
-    settings['GAU_VERIFY_DOCKER_IMAGE'] = project.get('gauVerifyDockerImage', DEFAULT_SETTINGS['GAU_VERIFY_DOCKER_IMAGE'])
     settings['GAU_VERIFY_TIMEOUT'] = project.get('gauVerifyTimeout', DEFAULT_SETTINGS['GAU_VERIFY_TIMEOUT'])
     settings['GAU_VERIFY_RATE_LIMIT'] = project.get('gauVerifyRateLimit', DEFAULT_SETTINGS['GAU_VERIFY_RATE_LIMIT'])
     settings['GAU_VERIFY_THREADS'] = project.get('gauVerifyThreads', DEFAULT_SETTINGS['GAU_VERIFY_THREADS'])
@@ -2080,7 +2054,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['ZOOMEYE_WORKERS'] = project.get('zoomEyeWorkers', DEFAULT_SETTINGS['ZOOMEYE_WORKERS'])
     settings['UNCOVER_ENABLED'] = project.get('uncoverEnabled', DEFAULT_SETTINGS['UNCOVER_ENABLED'])
     settings['UNCOVER_MAX_RESULTS'] = int(project.get('uncoverMaxResults', DEFAULT_SETTINGS['UNCOVER_MAX_RESULTS']) or DEFAULT_SETTINGS['UNCOVER_MAX_RESULTS'])
-    settings['UNCOVER_DOCKER_IMAGE'] = project.get('uncoverDockerImage', DEFAULT_SETTINGS['UNCOVER_DOCKER_IMAGE'])
 
     # Subdomain Discovery Tool Toggles
     settings['SUBDOMAIN_DISCOVERY_ENABLED'] = project.get('subdomainDiscoveryEnabled', DEFAULT_SETTINGS['SUBDOMAIN_DISCOVERY_ENABLED'])
@@ -2107,18 +2080,15 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['KNOCKPY_RECON_MAX_RESULTS'] = project.get('knockpyReconMaxResults', DEFAULT_SETTINGS['KNOCKPY_RECON_MAX_RESULTS'])
     settings['SUBFINDER_ENABLED'] = project.get('subfinderEnabled', DEFAULT_SETTINGS['SUBFINDER_ENABLED'])
     settings['SUBFINDER_MAX_RESULTS'] = project.get('subfinderMaxResults', DEFAULT_SETTINGS['SUBFINDER_MAX_RESULTS'])
-    settings['SUBFINDER_DOCKER_IMAGE'] = project.get('subfinderDockerImage', DEFAULT_SETTINGS['SUBFINDER_DOCKER_IMAGE'])
     settings['AMASS_ENABLED'] = project.get('amassEnabled', DEFAULT_SETTINGS['AMASS_ENABLED'])
     settings['AMASS_MAX_RESULTS'] = project.get('amassMaxResults', DEFAULT_SETTINGS['AMASS_MAX_RESULTS'])
     settings['AMASS_TIMEOUT'] = project.get('amassTimeout', DEFAULT_SETTINGS['AMASS_TIMEOUT'])
     settings['AMASS_ACTIVE'] = project.get('amassActive', DEFAULT_SETTINGS['AMASS_ACTIVE'])
     settings['AMASS_BRUTE'] = project.get('amassBrute', DEFAULT_SETTINGS['AMASS_BRUTE'])
     settings['AMASS_BRUTE_WORDLISTS'] = project.get('amassBruteWordlists', DEFAULT_SETTINGS['AMASS_BRUTE_WORDLISTS'])
-    settings['AMASS_DOCKER_IMAGE'] = project.get('amassDockerImage', DEFAULT_SETTINGS['AMASS_DOCKER_IMAGE'])
 
     # Puredns (wildcard filtering)
     settings['PUREDNS_ENABLED'] = project.get('purednsEnabled', DEFAULT_SETTINGS['PUREDNS_ENABLED'])
-    settings['PUREDNS_DOCKER_IMAGE'] = project.get('purednsDockerImage', DEFAULT_SETTINGS['PUREDNS_DOCKER_IMAGE'])
     settings['PUREDNS_THREADS'] = project.get('purednsThreads', DEFAULT_SETTINGS['PUREDNS_THREADS'])
     settings['PUREDNS_RATE_LIMIT'] = project.get('purednsRateLimit', DEFAULT_SETTINGS['PUREDNS_RATE_LIMIT'])
     settings['PUREDNS_WILDCARD_BATCH'] = project.get('purednsWildcardBatch', DEFAULT_SETTINGS['PUREDNS_WILDCARD_BATCH'])
@@ -2280,7 +2250,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # GraphQL Cop (external scanner) - Phase 2 §17
     settings['GRAPHQL_COP_ENABLED'] = project.get('graphqlCopEnabled', DEFAULT_SETTINGS['GRAPHQL_COP_ENABLED'])
-    settings['GRAPHQL_COP_DOCKER_IMAGE'] = project.get('graphqlCopDockerImage', DEFAULT_SETTINGS['GRAPHQL_COP_DOCKER_IMAGE'])
     settings['GRAPHQL_COP_TIMEOUT'] = project.get('graphqlCopTimeout', DEFAULT_SETTINGS['GRAPHQL_COP_TIMEOUT'])
     settings['GRAPHQL_COP_FORCE_SCAN'] = project.get('graphqlCopForceScan', DEFAULT_SETTINGS['GRAPHQL_COP_FORCE_SCAN'])
     settings['GRAPHQL_COP_DEBUG'] = project.get('graphqlCopDebug', DEFAULT_SETTINGS['GRAPHQL_COP_DEBUG'])
@@ -2299,7 +2268,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
 
     # Web Cache Poisoning
     settings['WEB_CACHE_POISON_ENABLED'] = project.get('webCachePoisonEnabled', DEFAULT_SETTINGS['WEB_CACHE_POISON_ENABLED'])
-    settings['WEB_CACHE_POISON_DOCKER_IMAGE'] = project.get('webCachePoisonDockerImage', DEFAULT_SETTINGS['WEB_CACHE_POISON_DOCKER_IMAGE'])
     settings['WEB_CACHE_POISON_SCAN_PROFILE'] = project.get('webCachePoisonScanProfile', DEFAULT_SETTINGS['WEB_CACHE_POISON_SCAN_PROFILE'])
     settings['WEB_CACHE_POISON_TIMEOUT'] = project.get('webCachePoisonTimeout', DEFAULT_SETTINGS['WEB_CACHE_POISON_TIMEOUT'])
     settings['WEB_CACHE_POISON_TIMEOUT_PER_REQ'] = project.get('webCachePoisonTimeoutPerReq', DEFAULT_SETTINGS['WEB_CACHE_POISON_TIMEOUT_PER_REQ'])
@@ -2345,7 +2313,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     # RoE: cap every rate the engagement ceiling applies to.
     apply_roe_rate_cap(settings)
 
-    # V3: reject any attacker-influenced tool Docker image before it can reach
+    # V3: every tool Docker image is the shipped one before it can reach
     # `docker run` on the host daemon.
     sanitize_image_settings(settings)
 

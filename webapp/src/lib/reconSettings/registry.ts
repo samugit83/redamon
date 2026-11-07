@@ -34,7 +34,7 @@ export type Unit =
   | 'rps' | 'seconds' | 'minutes' | 'milliseconds' | 'threads' | 'count'
   | 'bytes' | 'depth' | 'percent' | 'ratio' | 'port' | 'none'
 export type Validator =
-  | 'docker_image' | 'http_header' | 'project_file' | 'project_file_name'
+  | 'http_header' | 'project_file' | 'project_file_name'
   | 'status_codes' | 'severity' | 'scan_modules' | 'hostname' | 'hostname_list' | 'url'
   | 'url_path_list' | 'port_spec' | 'free_text' | 'identifier' | 'json_object' | 'attack_skill_config'
   | 'github_name' | 'github_repo_list' | 'provider_reference'

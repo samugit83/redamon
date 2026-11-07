@@ -7,7 +7,6 @@ import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
-import { RegistryFields } from '../RegistryFields'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -450,14 +449,6 @@ export function OsintEnrichmentSection({ data, updateField, onRun, onRunUncover 
 
           </>
           )}
-
-          <RegistryFields
-            keys={['uncoverDockerImage']}
-            data={data}
-            updateField={updateField}
-            title="Advanced"
-            description="Settings this tool accepts that have no dedicated control. Bounds, options and descriptions come from the settings registry, so they are the same ones the API enforces."
-          />
         </div>
       )}
     </div>

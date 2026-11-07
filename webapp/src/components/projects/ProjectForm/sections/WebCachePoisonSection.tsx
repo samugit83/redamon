@@ -256,7 +256,7 @@ export function WebCachePoisonSection({ data, updateField, onRun }: WebCachePois
           )}
 
           <RegistryFields
-            keys={['webCachePoisonCacheBusterParam', 'webCachePoisonDockerImage', 'webCachePoisonTimeout', 'webCachePoisonTimeoutPerReq', 'webCachePoisonVerifySsl']}
+            keys={['webCachePoisonCacheBusterParam', 'webCachePoisonTimeout', 'webCachePoisonTimeoutPerReq', 'webCachePoisonVerifySsl']}
             data={data}
             updateField={updateField}
             title="Advanced"

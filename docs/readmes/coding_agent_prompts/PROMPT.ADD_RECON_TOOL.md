@@ -149,7 +149,9 @@ Integrate **[TOOL_NAME]** into the RedAmon recon pipeline.
   1. Add it to `RECON_FINDING_SOURCES` in `recon/helpers/finding_sources.py`. **Nothing fails if you skip this**: the end-of-run prune never removes the tool's stale findings, and the Mute Rules sweep never mutes them, because both are scoped to that tuple (see "How a Run Ends" in `README.RECON.md`). A source stamped only on asset nodes (BaseURL, Endpoint) goes in too.
   2. Claim it in `graph_db/node_filters/catalog.yaml`: in the `sources` and `select` of the kind its findings belong to (a new kind needs `fields` for what an operator would filter on), or under `asset_sources` or `unfiltered_sources` with the reason. Then run `python3 graph_db/node_filters/build.py`, which rewrites `graph_db/node_filters/catalog.json` and `webapp/src/lib/nodeFilters/catalog.json`. The unit gate runs `build.py --check` and fails on a source no kind claims, on a field naming a property the schema does not declare, and on a stale copy. Rebuild the agent afterwards: it runs the Mute Rules preview and apply from its baked copy of `graph_db`.
 - [ ] Docker image added to `recon/entrypoint.sh` IMAGES array (if Docker-based)
-- [ ] Docker image setting (e.g. `TOOL_DOCKER_IMAGE`) in `DEFAULT_SETTINGS` (if Docker-based)
+- [ ] Docker image key (e.g. `TOOL_DOCKER_IMAGE`) in `DEFAULT_SETTINGS` (if Docker-based). It is fixed, never a
+      setting: no Prisma column, form control or preset key. Declare it under `runtime_only` in
+      `recon_settings/registry.yaml` (`source: internal`) and give the tool an `image:` in the registry's `tools:` block
 - [ ] Temp files in `/tmp/redamon/`, cleaned up in `finally` block
 - [ ] Frontend section component in `webapp/src/components/projects/ProjectForm/sections/`
 - [ ] Section imported and rendered in `ProjectForm.tsx` under the correct tab

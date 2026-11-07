@@ -1241,10 +1241,6 @@ class ContainerManager:
                     "PROJECT_ID": project_id,
                     "USER_ID": user_id,
                     "WEBAPP_API_URL": webapp_api_url,
-                    # V3: operator-approved extra tool images (empty = strict
-                    # shipped-only allowlist). Server-controlled; forwarded to the
-                    # recon pipeline so air-gapped/private-registry deployments work.
-                    "RECON_EXTRA_ALLOWED_IMAGES": os.environ.get("RECON_EXTRA_ALLOWED_IMAGES", ""),
                     # Operator off switch for the recon circuit breakers; only
                     # the exact value "off" disables them (compose defaults "on").
                     "RECON_CIRCUIT_BREAKERS": os.environ.get("RECON_CIRCUIT_BREAKERS", "on"),
@@ -2979,10 +2975,6 @@ class ContainerManager:
                     "PROJECT_ID": project_id,
                     "USER_ID": user_id,
                     "WEBAPP_API_URL": webapp_api_url,
-                    # V3: operator-approved extra tool images (empty = strict
-                    # shipped-only allowlist). Server-controlled; forwarded to the
-                    # recon pipeline so air-gapped/private-registry deployments work.
-                    "RECON_EXTRA_ALLOWED_IMAGES": os.environ.get("RECON_EXTRA_ALLOWED_IMAGES", ""),
                     "PYTHONUNBUFFERED": "1",
                     "AI_ATTACK_CONFIG": str(config_path),
                     "AI_ATTACK_RUN_ID": run_id,
@@ -3361,10 +3353,6 @@ class ContainerManager:
                     "PROJECT_ID": project_id,
                     "USER_ID": user_id,
                     "WEBAPP_API_URL": webapp_api_url,
-                    # V3: operator-approved extra tool images (empty = strict
-                    # shipped-only allowlist). Server-controlled; forwarded to the
-                    # recon pipeline so air-gapped/private-registry deployments work.
-                    "RECON_EXTRA_ALLOWED_IMAGES": os.environ.get("RECON_EXTRA_ALLOWED_IMAGES", ""),
                     "PYTHONUNBUFFERED": "1",
                     # Forward Neo4j credentials from orchestrator environment
                     "NEO4J_URI": os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
@@ -3893,10 +3881,6 @@ class ContainerManager:
                     "PROJECT_ID": project_id,
                     "USER_ID": user_id,
                     "WEBAPP_API_URL": webapp_api_url,
-                    # V3: operator-approved extra tool images (empty = strict
-                    # shipped-only allowlist). Server-controlled; forwarded to the
-                    # recon pipeline so air-gapped/private-registry deployments work.
-                    "RECON_EXTRA_ALLOWED_IMAGES": os.environ.get("RECON_EXTRA_ALLOWED_IMAGES", ""),
                     "PYTHONUNBUFFERED": "1",
                     # Forward Neo4j credentials from orchestrator environment
                     "NEO4J_URI": os.environ.get("NEO4J_URI", "bolt://localhost:7687"),

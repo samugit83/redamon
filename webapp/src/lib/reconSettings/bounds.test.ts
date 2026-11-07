@@ -8,13 +8,8 @@
  * still nominally honoured, and a rate ceiling whose own maximum is ten million
  * is not a ceiling.
  *
- * The image fields were the same failure wearing different clothes. All 17
- * accepted any string and had it silently replaced at scan start by
- * `sanitize_image_settings()`. The DANGER was contained; the DISHONESTY was not,
- * because `get_recon_settings` echoed the value the caller wrote while the scan
- * ran a different one. That is exactly the failure the allowlist's own "nothing
- * is silently stripped" rule exists to prevent, so the set is closed and an
- * out-of-set value is refused AT THE WRITE.
+ * Container images are not settings at all: each tool runs the image RedAmon
+ * ships, so there is no field, no form control and no write that names one.
  *
  * @vitest-environment node
  */
@@ -112,71 +107,33 @@ describe('P6: no counting or concurrency field declares a fake maximum', () => {
   })
 })
 
-describe('P6: a container image is a closed list, never free text', () => {
-  const images = () => fieldsWhere((_f, key) => key.endsWith('DockerImage'))
-
-  test('all seventeen are covered, not only the eight with no input', () => {
-    expect(images()).toHaveLength(17)
+describe('P6: no container image is a project setting', () => {
+  // A scan runs the image RedAmon ships for each tool. An image a caller could
+  // choose would be `docker run` of anything on the host daemon, and a list of
+  // shipped images to pick from changes nothing a person needs to change.
+  test('the registry has no image field', () => {
+    expect(fieldsWhere((_f, key) => key.endsWith('DockerImage')).map(f => f.key)).toEqual([])
   })
 
-  test('every one declares a non-empty closed value set', () => {
-    const problems = images()
-      .filter(f => !f.values || f.values.length === 0)
-      .map(f => `${f.key}: no values list`)
-    expect(problems).toEqual([])
+  test('an image key is refused at the write, the shipped image included', () => {
+    for (const value of ['projectdiscovery/nuclei:latest', 'attacker/evil:latest']) {
+      const r = filterReconSettings({ nucleiDockerImage: value })
+      expect(r.ok, value).toBe(false)
+      if (!r.ok) expect(r.error).toMatch(/is not a recon setting/)
+    }
   })
 
-  test('the shipped default is inside its own set', () => {
-    // Otherwise the field ships unsettable-to-its-own-value, which the form
-    // would render as a select with the current value missing.
-    const problems = images()
-      .filter(f => typeof f.default === 'string' && f.default && !f.values!.includes(f.default))
-      .map(f => `${f.key}: default ${String(f.default)} is not in its own set`)
-    expect(problems).toEqual([])
-  })
-
-  test('an out-of-set image is REFUSED, not accepted and reverted', () => {
-    const problems: string[] = []
-    for (const f of images()) {
-      const r = filterReconSettings({ [f.key]: 'attacker/evil:latest' })
-      if (r.ok) problems.push(`${f.key}: accepted a non-shipped image`)
-      else if (!r.error.includes('must be one of')) {
-        problems.push(`${f.key}: refused without naming the permitted set`)
+  test('no form control writes an image', () => {
+    const writes: string[] = []
+    for (const full of formFiles(FORM_DIR)) {
+      const text = readFileSync(full, 'utf8')
+      for (const m of text.matchAll(/updateField\(\s*'([A-Za-z0-9_]*DockerImage)'/g)) {
+        writes.push(`${path.basename(full)}: ${m[1]}`)
       }
     }
-    expect(problems).toEqual([])
-  })
-
-  test('an operator-approved mirror is accepted, and only from the server env', () => {
-    // An air-gapped or private-registry deployment mirrors the shipped images.
-    // The operator names the mirrors in an env var the SERVER controls, which
-    // is not attacker-influenceable the way a project setting is - so it widens
-    // the closed list without re-opening the hole the list exists to close.
-    const before = process.env.RECON_EXTRA_ALLOWED_IMAGES
-    try {
-      expect(filterReconSettings({ nucleiDockerImage: 'myregistry.local/nuclei:v3' }).ok)
-        .toBe(false)
-      process.env.RECON_EXTRA_ALLOWED_IMAGES = 'myregistry.local/nuclei:v3'
-      expect(filterReconSettings({ nucleiDockerImage: 'myregistry.local/nuclei:v3' }).ok)
-        .toBe(true)
-      // Still not anything at all.
-      expect(filterReconSettings({ nucleiDockerImage: 'attacker/evil:latest' }).ok)
-        .toBe(false)
-    } finally {
-      if (before === undefined) delete process.env.RECON_EXTRA_ALLOWED_IMAGES
-      else process.env.RECON_EXTRA_ALLOWED_IMAGES = before
-    }
-  })
-
-  test('a shipped image is accepted', () => {
-    const problems = images()
-      .filter(f => typeof f.default === 'string' && f.default)
-      .filter(f => !filterReconSettings({ [f.key]: f.default as string }).ok)
-      .map(f => `${f.key}: refused its own default`)
-    expect(problems).toEqual([])
+    expect(writes).toEqual([])
   })
 })
-
 
 // --- the form half of the closed list ---------------------------------------------
 
@@ -194,7 +151,7 @@ const FORM_DIR = fileURLToPath(
  * an arrow function in `onChange={(e) => ...}` contains a `>`, so a non-greedy
  * element match ends before it reaches the `updateField` call and the field is
  * never seen. That false negative is how a free-text control over a closed value
- * set sat here unnoticed while a scan reported every image field as a select.
+ * set sat here unnoticed while a scan reported every such field as a select.
  */
 function controlFor(text: string, index: number): string | null {
   const before = text.slice(0, index)
@@ -263,8 +220,8 @@ describe('P6: the form cannot offer a value the write will refuse', () => {
   test('the backwards parser really finds a control', () => {
     // A parser that found nothing would make the assertion above vacuous, which
     // is exactly the failure it was written to replace.
-    const text = readFileSync(path.join(SECTIONS_DIR, 'GraphqlScanSection.tsx'), 'utf8')
-    const m = /updateField\(\s*'graphqlCopDockerImage'/.exec(text)
+    const text = readFileSync(path.join(SECTIONS_DIR, 'ZapAjaxSpiderSection.tsx'), 'utf8')
+    const m = /updateField\(\s*'zapAjaxSpiderSeedMode'/.exec(text)
     expect(m).not.toBeNull()
     expect(controlFor(text, m!.index)).toBe('select')
   })

@@ -560,7 +560,6 @@ model Project {
 
   // ========== NAABU PORT SCANNER ==========
   naabuEnabled                Boolean  @default(true) @map("naabu_enabled")
-  naabuDockerImage            String   @default("projectdiscovery/naabu:latest") @map("naabu_docker_image")
   naabuTopPorts               String   @default("1000") @map("naabu_top_ports")
   naabuCustomPorts            String   @default("") @map("naabu_custom_ports")
   naabuRateLimit              Int      @default(1000) @map("naabu_rate_limit")
@@ -601,7 +600,6 @@ model Project {
 
   // ========== HTTPX HTTP PROBING ==========
   httpxEnabled                Boolean  @default(true)  @map("httpx_enabled")
-  httpxDockerImage            String   @default("projectdiscovery/httpx:latest") @map("httpx_docker_image")
   httpxThreads                Int      @default(50) @map("httpx_threads")
   httpxTimeout                Int      @default(10) @map("httpx_timeout")
   httpxRetries                Int      @default(2) @map("httpx_retries")
@@ -685,7 +683,6 @@ model Project {
   nucleiMaxRedirects          Int      @default(10) @map("nuclei_max_redirects")
   nucleiScanAllIps            Boolean  @default(false) @map("nuclei_scan_all_ips")
   nucleiInteractsh            Boolean  @default(true) @map("nuclei_interactsh")
-  nucleiDockerImage           String   @default("projectdiscovery/nuclei:latest") @map("nuclei_docker_image")
   nucleiAiTags                Boolean  @default(false) @map("nuclei_ai_tags")
   nucleiTagsAiUseJev          Boolean  @default(false) @map("nuclei_tags_ai_use_jev")
   nucleiAiResponseFilter      Boolean  @default(false) @map("nuclei_ai_response_filter")
@@ -714,7 +711,6 @@ model Project {
   takeoverCertValidationEnabled    Boolean  @default(true)  @map("takeover_cert_validation_enabled")
   // BadDNS (AGPL-3.0 isolated sidecar — off by default, opt-in)
   baddnsEnabled                    Boolean  @default(false) @map("baddns_enabled")
-  baddnsDockerImage                String   @default("redamon-baddns:latest") @map("baddns_docker_image")
   baddnsModules                    String[] @default(["cname", "ns", "mx", "txt", "spf"]) @map("baddns_modules")
   baddnsNameservers                String[] @default([]) @map("baddns_nameservers")
   baddnsRunTimeout                 Int      @default(1800) @map("baddns_run_timeout")
@@ -736,7 +732,6 @@ model Project {
   // GROUP 3.6 active scanner: one TLS handshake per open non-HTTP port. Default
   // ON (quieter than httpx -jarm which is already on). Loud sub-probes off.
   tlsxEnabled                      Boolean  @default(true) @map("tlsx_enabled")
-  tlsxDockerImage                  String   @default("projectdiscovery/tlsx:latest") @map("tlsx_docker_image")
   tlsxScanMode                     String   @default("auto") @map("tlsx_scan_mode")
   tlsxConcurrency                  Int      @default(50) @map("tlsx_concurrency")
   tlsxTimeout                      Int      @default(5) @map("tlsx_timeout")
@@ -757,7 +752,6 @@ model Project {
   // ========== WEB CACHE POISONING ==========
   // Active GROUP 6 scanner: WCVS breadth engine + native 5-phase confirmation.
   webCachePoisonEnabled            Boolean  @default(false) @map("web_cache_poison_enabled")
-  webCachePoisonDockerImage        String   @default("redamon-wcvs:latest") @map("web_cache_poison_docker_image")
   webCachePoisonScanProfile        String   @default("safe-confirm") @map("web_cache_poison_scan_profile")
   webCachePoisonTimeout            Int      @default(1800) @map("web_cache_poison_timeout")
   webCachePoisonTimeoutPerReq      Int      @default(10) @map("web_cache_poison_timeout_per_req")
@@ -837,7 +831,6 @@ model Project {
 
   // ========== KATANA WEB CRAWLER ==========
   katanaEnabled               Boolean  @default(true) @map("katana_enabled")
-  katanaDockerImage           String   @default("projectdiscovery/katana:latest") @map("katana_docker_image")
   katanaDepth                 Int      @default(2) @map("katana_depth")
   katanaMaxUrls               Int      @default(300000) @map("katana_max_urls")
   katanaRateLimit             Int      @default(50) @map("katana_rate_limit")
@@ -860,7 +853,6 @@ model Project {
 
   // ========== ZAP AJAX SPIDER ==========
   zapAjaxSpiderEnabled           Boolean  @default(false) @map("zap_ajax_spider_enabled")
-  zapAjaxSpiderDockerImage       String   @default("ghcr.io/zaproxy/zaproxy:stable") @map("zap_ajax_spider_docker_image")
   zapAjaxSpiderSeedMode          String   @default("base_urls") @map("zap_ajax_spider_seed_mode")
   zapAjaxSpiderMaxDuration       Int      @default(10) @map("zap_ajax_spider_max_duration")
   zapAjaxSpiderMaxCrawlDepth     Int      @default(5) @map("zap_ajax_spider_max_crawl_depth")
@@ -882,7 +874,6 @@ model Project {
 
   // ========== HAKRAWLER WEB CRAWLER ==========
   hakrawlerEnabled            Boolean  @default(true) @map("hakrawler_enabled")
-  hakrawlerDockerImage        String   @default("jauderho/hakrawler:latest") @map("hakrawler_docker_image")
   hakrawlerDepth              Int      @default(2) @map("hakrawler_depth")
   hakrawlerThreads            Int      @default(5) @map("hakrawler_threads")
   hakrawlerTimeout            Int      @default(30) @map("hakrawler_timeout")
@@ -902,7 +893,6 @@ model Project {
   jsluiceConcurrency          Int      @default(5) @map("jsluice_concurrency")
   jsluiceParallelism          Int      @default(5) @map("jsluice_parallelism")
   jsluiceVerifyUrls           Boolean  @default(true) @map("jsluice_verify_urls")
-  jsluiceVerifyDockerImage    String   @default("projectdiscovery/httpx:latest") @map("jsluice_verify_docker_image")
   jsluiceVerifyTimeout        Int      @default(5) @map("jsluice_verify_timeout")
   jsluiceVerifyRateLimit      Int      @default(50) @map("jsluice_verify_rate_limit")
   jsluiceVerifyThreads        Int      @default(50) @map("jsluice_verify_threads")
@@ -973,7 +963,6 @@ model Project {
 
   // ========== GRAPHQL COP (external misconfig scanner) ==========
   graphqlCopEnabled                   Boolean @default(false) @map("graphql_cop_enabled")
-  graphqlCopDockerImage               String  @default("dolevf/graphql-cop:1.14") @map("graphql_cop_docker_image")
   graphqlCopTimeout                   Int     @default(120)   @map("graphql_cop_timeout")
   graphqlCopForceScan                 Boolean @default(false) @map("graphql_cop_force_scan")
   graphqlCopDebug                     Boolean @default(false) @map("graphql_cop_debug")
@@ -1029,7 +1018,6 @@ model Project {
 
   // ========== GAU PASSIVE URL DISCOVERY ==========
   gauEnabled                  Boolean  @default(false) @map("gau_enabled")
-  gauDockerImage              String   @default("sxcurity/gau:latest") @map("gau_docker_image")
   gauProviders                String[] @default(["wayback", "commoncrawl", "otx", "urlscan"]) @map("gau_providers")
   gauMaxUrls                  Int      @default(50000) @map("gau_max_urls")
   gauTimeout                  Int      @default(60) @map("gau_timeout")
@@ -1038,7 +1026,6 @@ model Project {
   gauYearRange                String[] @default([]) @map("gau_year_range")
   gauVerbose                  Boolean  @default(false) @map("gau_verbose")
   gauVerifyUrls               Boolean  @default(true) @map("gau_verify_urls")
-  gauVerifyDockerImage        String   @default("projectdiscovery/httpx:latest") @map("gau_verify_docker_image")
   gauVerifyTimeout            Int      @default(5) @map("gau_verify_timeout")
   gauVerifyRateLimit          Int      @default(100) @map("gau_verify_rate_limit")
   gauVerifyThreads            Int      @default(50) @map("gau_verify_threads")
@@ -1284,7 +1271,6 @@ model Project {
   zoomEyeWorkers                        Int      @default(5) @map("zoomeye_workers")
   uncoverEnabled                        Boolean  @default(false)  @map("uncover_enabled")
   uncoverMaxResults                     Int      @default(50000)    @map("uncover_max_results")
-  uncoverDockerImage                    String   @default("projectdiscovery/uncover:latest") @map("uncover_docker_image")
 
   // Subdomain Discovery Master Switch
   subdomainDiscoveryEnabled             Boolean  @default(true)  @map("subdomain_discovery_enabled")
@@ -1302,18 +1288,15 @@ model Project {
   knockpyReconMaxResults                Int      @default(5000)  @map("knockpy_recon_max_results")
   subfinderEnabled                      Boolean  @default(true)  @map("subfinder_enabled")
   subfinderMaxResults                   Int      @default(5000)  @map("subfinder_max_results")
-  subfinderDockerImage                  String   @default("projectdiscovery/subfinder:latest") @map("subfinder_docker_image")
   amassEnabled                          Boolean  @default(false) @map("amass_enabled")
   amassMaxResults                       Int      @default(50000)  @map("amass_max_results")
   amassTimeout                          Int      @default(10)    @map("amass_timeout")
   amassActive                           Boolean  @default(false) @map("amass_active")
   amassBrute                            Boolean  @default(false) @map("amass_brute")
   amassBruteWordlists                  Json     @default("[\"default\"]") @map("amass_brute_wordlists")
-  amassDockerImage                      String   @default("caffix/amass:latest") @map("amass_docker_image")
 
   // Puredns (wildcard filtering)
   purednsEnabled                        Boolean  @default(true)  @map("puredns_enabled")
-  purednsDockerImage                    String   @default("frost19k/puredns:latest") @map("puredns_docker_image")
   purednsThreads                        Int      @default(0)     @map("puredns_threads")
   purednsRateLimit                      Int      @default(0)     @map("puredns_rate_limit")
   purednsWildcardBatch                  Int      @default(0)     @map("puredns_wildcard_batch")

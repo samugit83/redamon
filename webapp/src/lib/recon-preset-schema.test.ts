@@ -195,10 +195,9 @@ describe('reconPresetSchema', () => {
   // ============================================================
   // graphql-cop fields (Phase 2 §17.7)
   // ============================================================
-  test('accepts all 17 graphqlCop* fields round-trip', () => {
+  test('accepts all 16 graphqlCop* fields round-trip', () => {
     const copBlock = {
       graphqlCopEnabled: true,
-      graphqlCopDockerImage: 'dolevf/graphql-cop:1.14',
       graphqlCopTimeout: 150,
       graphqlCopForceScan: false,
       graphqlCopDebug: false,
@@ -230,12 +229,14 @@ describe('reconPresetSchema', () => {
     expect(result.success).toBe(false)
   })
 
-  test('accepts custom graphqlCopDockerImage string', () => {
+  test('a container image in a preset is stripped, never applied', () => {
+    // Images are fixed: a preset (or a model writing one) cannot choose one.
     const result = reconPresetSchema.safeParse({
+      graphqlCopEnabled: true,
       graphqlCopDockerImage: 'my.registry.internal/forks/graphql-cop:custom-1.15',
     })
     expect(result.success).toBe(true)
-    expect(result.data!.graphqlCopDockerImage).toBe('my.registry.internal/forks/graphql-cop:custom-1.15')
+    expect(result.data).toEqual({ graphqlCopEnabled: true })
   })
 })
 

@@ -180,28 +180,32 @@ IMAGE_KEYS = sorted(k for k in DEFAULT_SETTINGS if k.endswith("_DOCKER_IMAGE"))
 
 
 @pytest.mark.parametrize("key", IMAGE_KEYS)
-def test_a_non_allowlisted_image_resolves_to_the_shipped_default(key):
+@pytest.mark.parametrize("value", ["attacker/evil:latest", "projectdiscovery/nuclei:latest"])
+def test_any_other_image_resolves_to_the_keys_own_default(key, value):
     """
-    The registry leaves every image column OPEN, because the runtime is the
-    control. This is that control, for all of them rather than for one.
+    Every key is pinned to ITS OWN shipped image, not merely to some shipped
+    image: the naabu key carrying the nuclei image is as wrong as a foreign one.
     """
+    if DEFAULT_SETTINGS[key] == value:
+        pytest.skip("the value under test is this key's own default")
     settings = dict(DEFAULT_SETTINGS)
-    settings[key] = "attacker/evil:latest"
-    resolved = sanitize_image_settings(settings)[key]
-    assert resolved != "attacker/evil:latest"
-    assert resolved in ALLOWED_TOOL_IMAGES
+    settings[key] = value
+    assert sanitize_image_settings(settings)[key] == DEFAULT_SETTINGS[key]
 
 
-def test_every_image_field_has_a_registry_entry_with_the_docker_image_validator():
-    """A new image column that skipped the validator would be open with no control."""
+def test_every_image_key_is_internal_never_a_field():
+    """
+    An image field would put a column, a form control and an MCP write in front
+    of `docker run` on the host daemon. Every image is an internal runtime key.
+    """
     by_key = reg.by_runtime_key()
+    runtime_only = reg.runtime_only()
     problems = []
     for key in IMAGE_KEYS:
-        entry = by_key.get(key)
-        if not entry:
-            problems.append(f"{key}: no registry entry")
-        elif entry.get("validator") != "docker_image":
-            problems.append(f"{key}: validator is {entry.get('validator')!r}")
+        if key in by_key:
+            problems.append(f"{key}: is a settings field")
+        elif runtime_only.get(key, {}).get("source") != "internal":
+            problems.append(f"{key}: not an internal runtime-only key")
     assert problems == [], problems
 
 

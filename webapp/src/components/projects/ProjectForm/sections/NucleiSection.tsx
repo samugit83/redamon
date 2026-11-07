@@ -622,21 +622,11 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
               />
             </div>
           </div>
-
-          <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>Docker Image</label>
-            <input
-              type="text"
-              className="textInput"
-              value={data.nucleiDockerImage}
-              disabled
-            />
-          </div>
           </>
           )}
 
           <RegistryFields
-            keys={['nucleiDockerImage', 'nucleiTakeoverRunTimeout']}
+            keys={['nucleiTakeoverRunTimeout']}
             data={data}
             updateField={updateField}
             title="Advanced"

@@ -147,15 +147,13 @@ class NumericAndStringSettingsArriveVerbatim(unittest.TestCase):
         self.assertNotIn("-delay", argv_for({"tlsxDelay": ""}))
         self.assertEqual(flag_value(argv_for({"tlsxDelay": "2s"}), "-delay"), "2s")
 
-    def test_an_allowlisted_image_is_used_verbatim(self):
+    def test_the_shipped_image_is_what_runs(self):
         from recon.project_settings import DEFAULT_SETTINGS
-        shipped = DEFAULT_SETTINGS['TLSX_DOCKER_IMAGE']
-        self.assertIn(shipped, argv_for({"tlsxDockerImage": shipped}))
+        self.assertIn(DEFAULT_SETTINGS['TLSX_DOCKER_IMAGE'], argv_for({}))
 
-    def test_an_image_outside_the_allowlist_is_pinned_back(self):
-        """`sanitize_image_settings` is the control that stops a project row
-        from running an arbitrary image as a sibling container. The settings
-        column is operator input, so this is a real boundary, not a formality."""
+    def test_an_image_on_the_project_row_is_ignored(self):
+        """No image is a project setting, so a row that still carries one (an
+        old export, a stale client) cannot run an arbitrary sibling container."""
         from recon.project_settings import DEFAULT_SETTINGS
         argv = argv_for({"tlsxDockerImage": "attacker/evil:latest"})
         self.assertNotIn("attacker/evil:latest", argv)

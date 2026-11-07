@@ -1283,41 +1283,6 @@
    "unit": "none",
    "validator": "json_object"
   },
-  "amassDockerImage": {
-   "default": "caffix/amass:latest",
-   "form_section": "SubdomainDiscoverySection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for amass. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "domain_discovery",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "AMASS_DOCKER_IMAGE",
-   "tool": "amass",
-   "traffic": "passive",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "amassEnabled": {
    "default": false,
    "form_section": "SubdomainDiscoverySection",
@@ -1643,41 +1608,6 @@
    "type": "json",
    "unit": "none",
    "validator": "attack_skill_config"
-  },
-  "baddnsDockerImage": {
-   "default": "redamon-baddns:latest",
-   "form_section": "TakeoverSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for baddns. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "vuln_scan",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "BADDNS_DOCKER_IMAGE",
-   "tool": "baddns",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "baddnsEnabled": {
    "default": false,
@@ -3364,41 +3294,6 @@
    "type": "boolean",
    "unit": "none"
   },
-  "gauDockerImage": {
-   "default": "sxcurity/gau:latest",
-   "form_section": "GauSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for gau. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "GAU_DOCKER_IMAGE",
-   "tool": "gau",
-   "traffic": "passive",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "gauEnabled": {
    "default": false,
    "form_section": "GauSection",
@@ -3646,41 +3541,6 @@
    "type": "number-list",
    "unit": "none",
    "validator": "status_codes"
-  },
-  "gauVerifyDockerImage": {
-   "default": "projectdiscovery/httpx:latest",
-   "form_section": "GauSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for gau. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "GAU_VERIFY_DOCKER_IMAGE",
-   "tool": "gau",
-   "traffic": "passive",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "gauVerifyRateLimit": {
    "bounds": {
@@ -4045,41 +3905,6 @@
    "traffic": "active",
    "type": "boolean",
    "unit": "none"
-  },
-  "graphqlCopDockerImage": {
-   "default": "dolevf/graphql-cop:1.14",
-   "form_section": "GraphqlScanSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for GraphQL Cop. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "vuln_scan",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "GRAPHQL_COP_DOCKER_IMAGE",
-   "tool": "graphql_cop",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "graphqlCopEnabled": {
    "default": false,
@@ -4735,41 +4560,6 @@
    "type": "int",
    "unit": "depth"
   },
-  "hakrawlerDockerImage": {
-   "default": "jauderho/hakrawler:latest",
-   "form_section": "HakrawlerSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for hakrawler. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "HAKRAWLER_DOCKER_IMAGE",
-   "tool": "hakrawler",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "hakrawlerEnabled": {
    "default": true,
    "form_section": "HakrawlerSection",
@@ -5033,41 +4823,6 @@
    "type": "string-list",
    "unit": "none",
    "validator": "http_header"
-  },
-  "httpxDockerImage": {
-   "default": "projectdiscovery/httpx:latest",
-   "form_section": "HttpxSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for httpx. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "http_probe",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "HTTPX_DOCKER_IMAGE",
-   "tool": "httpx",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "httpxEnabled": {
    "default": true,
@@ -6784,41 +6539,6 @@
    "unit": "none",
    "validator": "status_codes"
   },
-  "jsluiceVerifyDockerImage": {
-   "default": "projectdiscovery/httpx:latest",
-   "form_section": "JsluiceSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for jsluice. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "js_recon",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "JSLUICE_VERIFY_DOCKER_IMAGE",
-   "tool": "jsluice",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "jsluiceVerifyRateLimit": {
    "bounds": {
     "min": 1,
@@ -6971,41 +6691,6 @@
    "traffic": "active",
    "type": "int",
    "unit": "depth"
-  },
-  "katanaDockerImage": {
-   "default": "projectdiscovery/katana:latest",
-   "form_section": "KatanaSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for katana. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "KATANA_DOCKER_IMAGE",
-   "tool": "katana",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "katanaEnabled": {
    "default": true,
@@ -8165,41 +7850,6 @@
    "type": "boolean",
    "unit": "none"
   },
-  "naabuDockerImage": {
-   "default": "projectdiscovery/naabu:latest",
-   "form_section": "NaabuSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for naabu. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "port_scan",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "NAABU_DOCKER_IMAGE",
-   "tool": "naabu",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "naabuEnabled": {
    "default": true,
    "form_section": "NaabuSection",
@@ -8791,41 +8441,6 @@
    "traffic": "active",
    "type": "boolean",
    "unit": "none"
-  },
-  "nucleiDockerImage": {
-   "default": "projectdiscovery/nuclei:latest",
-   "form_section": "NucleiSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for nuclei. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "vuln_scan",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "NUCLEI_DOCKER_IMAGE",
-   "tool": "nuclei",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "nucleiEnabled": {
    "default": true,
@@ -9968,41 +9583,6 @@
    "traffic": "none",
    "type": "boolean",
    "unit": "none"
-  },
-  "purednsDockerImage": {
-   "default": "frost19k/puredns:latest",
-   "form_section": "SubdomainDiscoverySection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for puredns. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "domain_discovery",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "PUREDNS_DOCKER_IMAGE",
-   "tool": "puredns",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "purednsEnabled": {
    "default": true,
@@ -12892,41 +12472,6 @@
    "type": "boolean",
    "unit": "none"
   },
-  "subfinderDockerImage": {
-   "default": "projectdiscovery/subfinder:latest",
-   "form_section": "SubdomainDiscoverySection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for subfinder. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "domain_discovery",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "SUBFINDER_DOCKER_IMAGE",
-   "tool": "subfinder",
-   "traffic": "passive",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "subfinderEnabled": {
    "default": true,
    "form_section": "SubdomainDiscoverySection",
@@ -13740,41 +13285,6 @@
    "unit": "none",
    "validator": "free_text"
   },
-  "tlsxDockerImage": {
-   "default": "projectdiscovery/tlsx:latest",
-   "form_section": "TlsxSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for tlsx. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "http_probe",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "TLSX_DOCKER_IMAGE",
-   "tool": "tlsx",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "tlsxEnabled": {
    "default": true,
    "form_section": "TlsxSection",
@@ -14344,41 +13854,6 @@
    "type": "string",
    "unit": "none",
    "validator": "free_text"
-  },
-  "uncoverDockerImage": {
-   "default": "projectdiscovery/uncover:latest",
-   "form_section": "OsintEnrichmentSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for uncover. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "domain_discovery",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "UNCOVER_DOCKER_IMAGE",
-   "tool": "uncover",
-   "traffic": "passive",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "uncoverEnabled": {
    "default": false,
@@ -15368,41 +14843,6 @@
    "type": "boolean",
    "unit": "none"
   },
-  "webCachePoisonDockerImage": {
-   "default": "redamon-wcvs:latest",
-   "form_section": "WebCachePoisonSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for Web cache poisoning. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "standalone",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "WEB_CACHE_POISON_DOCKER_IMAGE",
-   "tool": "web_cache_poison",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
-  },
   "webCachePoisonEnabled": {
    "default": false,
    "form_section": "WebCachePoisonSection",
@@ -15650,41 +15090,6 @@
    "type": "string-list",
    "unit": "none",
    "validator": "http_header"
-  },
-  "zapAjaxSpiderDockerImage": {
-   "default": "ghcr.io/zaproxy/zaproxy:stable",
-   "form_section": "ZapAjaxSpiderSection",
-   "group": "image",
-   "has_default": true,
-   "mcp": "settable",
-   "meaning": "The container image spawned for zap. Any value outside the shipped allowlist is silently pinned back to the default at scan start, with a [guardrail] line recording it, so the field is open and the runtime is the control.",
-   "optional": false,
-   "phase": "resource_enum",
-   "prisma_type": "String",
-   "roe_capped": false,
-   "runtime_key": "ZAP_AJAX_SPIDER_DOCKER_IMAGE",
-   "tool": "zap",
-   "traffic": "active",
-   "type": "string",
-   "unit": "none",
-   "validator": "docker_image",
-   "values": [
-    "caffix/amass:latest",
-    "dolevf/graphql-cop:1.14",
-    "frost19k/puredns:latest",
-    "ghcr.io/zaproxy/zaproxy:stable",
-    "jauderho/hakrawler:latest",
-    "projectdiscovery/httpx:latest",
-    "projectdiscovery/katana:latest",
-    "projectdiscovery/naabu:latest",
-    "projectdiscovery/nuclei:latest",
-    "projectdiscovery/subfinder:latest",
-    "projectdiscovery/tlsx:latest",
-    "projectdiscovery/uncover:latest",
-    "redamon-baddns:latest",
-    "redamon-wcvs:latest",
-    "sxcurity/gau:latest"
-   ]
   },
   "zapAjaxSpiderEnabled": {
    "default": false,
@@ -16069,12 +15474,26 @@
   }
  },
  "runtime_only": {
+  "AMASS_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for Amass. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "amass",
+   "unit": "none"
+  },
   "AUTH_PROFILE": {
    "meaning": "The authenticated session the scan replays: cookies, headers and the login steps that produced them. Deliberately a RELATION rather than a Project column, because GET /api/projects/[id] spreads every Project scalar to the browser and a credential stored as a column would leak. It arrives in the same API payload the settings load reads, so the pipeline sees it as a runtime key with no column behind it.",
    "roe_capped": false,
    "secret": true,
    "source": "project_relation",
    "tool": "auth_profile",
+   "unit": "none"
+  },
+  "BADDNS_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for BadDNS. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "baddns",
    "unit": "none"
   },
   "CENSYS_API_TOKEN": {
@@ -16109,6 +15528,62 @@
    "tool": "fofa",
    "unit": "none"
   },
+  "GAU_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for gau. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "gau",
+   "unit": "none"
+  },
+  "GAU_VERIFY_DOCKER_IMAGE": {
+   "meaning": "The httpx image GAU's verification pass spawns. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "gau",
+   "unit": "none"
+  },
+  "GRAPHQL_COP_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for GraphQL Cop. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "graphql_cop",
+   "unit": "none"
+  },
+  "HAKRAWLER_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for hakrawler. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "hakrawler",
+   "unit": "none"
+  },
+  "HTTPX_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for httpx. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "httpx",
+   "unit": "none"
+  },
+  "JSLUICE_VERIFY_DOCKER_IMAGE": {
+   "meaning": "The httpx image jsluice's verification pass spawns. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "jsluice",
+   "unit": "none"
+  },
+  "KATANA_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for Katana. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "katana",
+   "unit": "none"
+  },
+  "NAABU_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for naabu. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "naabu",
+   "unit": "none"
+  },
   "NETLAS_API_KEY": {
    "meaning": "The user's own API credential for this data source, fetched per scan from the user account. Never a project column, so it is not reachable from any project-scoped surface.",
    "roe_capped": false,
@@ -16128,6 +15603,13 @@
    "source": "internal",
    "tool": "netlas",
    "unit": "count"
+  },
+  "NUCLEI_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for Nuclei. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "nuclei",
+   "unit": "none"
   },
   "NVD_API_KEY": {
    "meaning": "The user's own API credential for this data source, fetched per scan from the user account. Never a project column, so it is not reachable from any project-scoped surface.",
@@ -16162,6 +15644,13 @@
    "source": "internal",
    "unit": "none"
   },
+  "PUREDNS_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for puredns. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "puredns",
+   "unit": "none"
+  },
   "SCOPE_GROUPS": {
    "meaning": "The project's scope as scan-root groups, read from the scopeGroups field the webapp derives on every GET, then re-validated by recon (charset and its own Public Suffix List). A batch with no usable group, or a target that is a public suffix, refuses the run. Never configured.",
    "roe_capped": false,
@@ -16183,6 +15672,13 @@
    "secret": true,
    "source": "user_account",
    "tool": "shodan",
+   "unit": "none"
+  },
+  "SUBFINDER_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for subfinder. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "subfinder",
    "unit": "none"
   },
   "SUPPLY_CHAIN_IMPORT_MAX_BYTES": {
@@ -16214,6 +15710,20 @@
    "roe_capped": false,
    "source": "internal",
    "tool": "takeover",
+   "unit": "none"
+  },
+  "TLSX_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for tlsx. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "tlsx",
+   "unit": "none"
+  },
+  "UNCOVER_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for uncover. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "uncover",
    "unit": "none"
   },
   "UNCOVER_DRIFTNET_API_KEY": {
@@ -16338,6 +15848,20 @@
    "secret": true,
    "source": "user_account",
    "tool": "cve_lookup",
+   "unit": "none"
+  },
+  "WEB_CACHE_POISON_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for Web cache poisoning. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "web_cache_poison",
+   "unit": "none"
+  },
+  "ZAP_AJAX_SPIDER_DOCKER_IMAGE": {
+   "meaning": "The container image spawned for ZAP Ajax Spider. Not a project setting: a scan always runs the image RedAmon ships, and the scan-start chokepoint pins this key back to that default whatever a settings dict carries, so no form, preset, API or MCP write can point a scan at another image.",
+   "roe_capped": false,
+   "source": "internal",
+   "tool": "zap",
    "unit": "none"
   },
   "ZOOMEYE_API_KEY": {

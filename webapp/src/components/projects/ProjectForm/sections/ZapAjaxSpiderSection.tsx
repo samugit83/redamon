@@ -8,7 +8,6 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { FileImportButton } from '../FileImportButton'
-import { RegistryFields } from '../RegistryFields'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -309,26 +308,8 @@ export function ZapAjaxSpiderSection({ data, updateField, onRun }: ZapAjaxSpider
                   <span className={styles.fieldHint}>Regexes for logout routes, static assets, and noisy browser paths</span>
                 </div>
               </div>
-
-              <div className={styles.fieldGroup}>
-                <label className={styles.fieldLabel}>Docker Image</label>
-                <input
-                  type="text"
-                  className="textInput"
-                  value={data.zapAjaxSpiderDockerImage}
-                  disabled
-                />
-              </div>
             </>
           )}
-
-          <RegistryFields
-            keys={['zapAjaxSpiderDockerImage']}
-            data={data}
-            updateField={updateField}
-            title="Advanced"
-            description="Settings this tool accepts that have no dedicated control. Bounds, options and descriptions come from the settings registry, so they are the same ones the API enforces."
-          />
         </div>
       )}
     </div>

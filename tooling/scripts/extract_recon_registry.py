@@ -615,6 +615,37 @@ for _key, _tool in [
         ),
     }
 
+# Every tool container image: fixed, never a project column.
+for _key, _tool, _lead in [
+    ("AMASS_DOCKER_IMAGE", "amass", "The container image spawned for Amass."),
+    ("BADDNS_DOCKER_IMAGE", "baddns", "The container image spawned for BadDNS."),
+    ("GAU_DOCKER_IMAGE", "gau", "The container image spawned for gau."),
+    ("GAU_VERIFY_DOCKER_IMAGE", "gau", "The httpx image GAU's verification pass spawns."),
+    ("GRAPHQL_COP_DOCKER_IMAGE", "graphql_cop", "The container image spawned for GraphQL Cop."),
+    ("HAKRAWLER_DOCKER_IMAGE", "hakrawler", "The container image spawned for hakrawler."),
+    ("HTTPX_DOCKER_IMAGE", "httpx", "The container image spawned for httpx."),
+    ("JSLUICE_VERIFY_DOCKER_IMAGE", "jsluice", "The httpx image jsluice's verification pass spawns."),
+    ("KATANA_DOCKER_IMAGE", "katana", "The container image spawned for Katana."),
+    ("NAABU_DOCKER_IMAGE", "naabu", "The container image spawned for naabu."),
+    ("NUCLEI_DOCKER_IMAGE", "nuclei", "The container image spawned for Nuclei."),
+    ("PUREDNS_DOCKER_IMAGE", "puredns", "The container image spawned for puredns."),
+    ("SUBFINDER_DOCKER_IMAGE", "subfinder", "The container image spawned for subfinder."),
+    ("TLSX_DOCKER_IMAGE", "tlsx", "The container image spawned for tlsx."),
+    ("UNCOVER_DOCKER_IMAGE", "uncover", "The container image spawned for uncover."),
+    ("WEB_CACHE_POISON_DOCKER_IMAGE", "web_cache_poison",
+     "The container image spawned for Web cache poisoning."),
+    ("ZAP_AJAX_SPIDER_DOCKER_IMAGE", "zap", "The container image spawned for ZAP Ajax Spider."),
+]:
+    RUNTIME_ONLY[_key] = {
+        "source": "internal", "tool": _tool, "unit": "none", "roe_capped": False,
+        "meaning": (
+            f"{_lead} Not a project setting: a scan always runs the image RedAmon ships, "
+            "and the scan-start chokepoint pins this key back to that default whatever a "
+            "settings dict carries, so no form, preset, API or MCP write can point a scan "
+            "at another image."
+        ),
+    }
+
 SEVERITY_VALUES = ["info", "low", "medium", "high", "critical", "unknown"]
 SCAN_MODULE_VALUES = [
     "domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan", "js_recon",
@@ -818,10 +849,10 @@ PARTIAL_RECON_MODULE: dict[str, str] = {
 # tool -> the ProjectForm section file that configures it, without the .tsx.
 # Several tools share one section, which is why this is not derived from the
 # filename: a section is a UI grouping and a tool is a pipeline unit.
-# A tool whose enable flag or image column is not named `<tool>Enabled` /
-# `<tool>DockerImage`. Each was found by the alignment test, which is the point
-# of having one: a tool with no enable flag runs whenever its phase does, which
-# is a different product decision from "on by default".
+# A tool whose enable flag is not named `<tool>Enabled`. Each was found by the
+# alignment test, which is the point of having one: a tool with no enable flag
+# runs whenever its phase does, which is a different product decision from "on
+# by default".
 ENABLED_FIELD_OVERRIDE: dict[str, str] = {
     "graphql": "graphqlSecurityEnabled",
     "knockpy": "knockpyReconEnabled",
@@ -842,15 +873,19 @@ ENABLED_FIELD_OVERRIDE: dict[str, str] = {
     "graphql_cop": "graphqlCopEnabled",
 }
 
-IMAGE_FIELD_OVERRIDE: dict[str, str] = {
-    "zap": "zapAjaxSpiderDockerImage",
-    "graphql_cop": "graphqlCopDockerImage",
-    "web_cache_poison": "webCachePoisonDockerImage",
-    # gau spawns TWO images: its own, and httpx for the verification pass. The
-    # tool's `image` is its primary one; every image column is still checked
-    # against the runtime allowlist by the alignment test.
-    "gau": "gauDockerImage",
+# A tool whose image key is not `<TOOL>_DOCKER_IMAGE`. Images are not project
+# columns: each is a fixed `DEFAULT_SETTINGS` entry in recon/project_settings.py.
+# gau spawns TWO images (its own, and httpx for the verification pass); the
+# tool's `image` is the primary one.
+IMAGE_KEY_OVERRIDE: dict[str, str] = {
+    "zap": "ZAP_AJAX_SPIDER_DOCKER_IMAGE",
 }
+
+
+def _shipped_images() -> dict[str, str]:
+    """`*_DOCKER_IMAGE` key -> image, from recon's DEFAULT_SETTINGS."""
+    text = RECON_SETTINGS_PY.read_text(encoding="utf-8")
+    return dict(re.findall(r"'([A-Z0-9_]+_DOCKER_IMAGE)':\s*'([^']+)'", text))
 
 
 FORM_SECTION: dict[str, str] = {
@@ -1299,8 +1334,6 @@ def build() -> str:
             entry["validator"] = "project_file_name"
         elif name in HOSTNAME_LIST_FIELDS:
             entry["validator"] = "hostname_list"
-        elif name.endswith("DockerImage"):
-            entry["validator"] = "docker_image"
         elif HEADER_FIELDS_RE.search(name):
             entry["validator"] = "http_header"
         elif name == "engagementKind":
@@ -1355,10 +1388,10 @@ def build() -> str:
         {f["tool"] for f in fields.values()}
         | {r["tool"] for r in RUNTIME_ONLY.values() if r.get("tool")}
     )
-    # The enable flag and the container image are DERIVED from the fields, not
-    # listed again: `<tool>Enabled`'s runtime key is the enable flag, and
-    # `<tool>DockerImage`'s Prisma default is the image. A second copy of either
-    # is a second thing to keep in step.
+    # The enable flag and the container image are DERIVED, not listed again:
+    # `<tool>Enabled`'s runtime key is the enable flag, and the tool's
+    # `*_DOCKER_IMAGE` default is the image. A second copy of either is a second
+    # thing to keep in step.
     def _field_for(tool: str, suffix: str) -> dict | None:
         for name, entry in fields.items():
             if entry["tool"] == tool and name.endswith(suffix):
@@ -1367,6 +1400,7 @@ def build() -> str:
                     return {"name": name, **entry}
         return None
 
+    shipped_images = _shipped_images()
     tools: dict[str, dict] = {}
     for tool in used_tools:
         phase, traffic = TOOL_PHASE_TRAFFIC.get(tool, ("standalone", "none"))
@@ -1383,16 +1417,9 @@ def build() -> str:
         )
         if enabled and enabled.get("runtime_key"):
             entry["enabled_key"] = enabled["runtime_key"]
-        image_name = IMAGE_FIELD_OVERRIDE.get(tool)
-        image_field = (
-            {"name": image_name, **fields[image_name]}
-            if image_name and image_name in fields
-            else _field_for(tool, "DockerImage")
-        )
-        if image_field:
-            default = columns[image_field["name"]].default_value
-            if isinstance(default, str) and default:
-                entry["image"] = default
+        image = shipped_images.get(IMAGE_KEY_OVERRIDE.get(tool, f"{tool.upper()}_DOCKER_IMAGE"))
+        if image:
+            entry["image"] = image
         wiring = TOOL_WIRING.get(tool, {})
         for key in ("module", "isolated_fn", "graph_writer"):
             if key in wiring:

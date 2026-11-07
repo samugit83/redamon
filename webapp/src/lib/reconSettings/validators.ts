@@ -8,9 +8,7 @@
  * engagement ceiling.
  *
  * So the allowlist stops being the control and validation at the point of use
- * becomes it. The precedent already shipped: `sanitize_image_settings()` lets
- * any value be written to a `*DockerImage` column and pins it to the shipped
- * default at scan start. The field is open; the VALUE is controlled.
+ * becomes it. The field is open; the VALUE is controlled.
  *
  * Two postures, and the difference is deliberate:
  *
@@ -19,7 +17,7 @@
  *                         fix it, and a silently rewritten value means the
  *                         caller believes a setting applied when it did not.
  *
- *   PIN AT SCAN START     for `docker_image` and `project_file`, where the
+ *   PIN AT SCAN START     for `project_file`, where the
  *                         column is also written by the webapp, a project
  *                         import and a version restore. Those paths do not come
  *                         through here, so the check that has to hold is the one
@@ -193,23 +191,6 @@ function checkHostnameList(value: unknown): string | null {
   return null
 }
 
-/**
- * Container images the OPERATOR approved beyond the shipped set.
- *
- * Mirrors `_operator_allowed_images()` in `recon/project_settings.py`, which is
- * the copy that actually holds at scan start. `RECON_EXTRA_ALLOWED_IMAGES` is
- * set on the server, so unlike a project setting it is not something a caller
- * can influence - which is why it may widen a closed list that exists to refuse
- * caller-supplied values.
- *
- * Read per call rather than cached: the value is an env var and a test that
- * stubs it must see the change.
- */
-export function operatorAllowedImages(): Set<string> {
-  const raw = process.env.RECON_EXTRA_ALLOWED_IMAGES ?? ''
-  return new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
-}
-
 export interface ValidationContext {
   /** What the field is called, for the message. */
   key: string
@@ -243,13 +224,6 @@ function checkScalar(validator: string, value: unknown, ctx: ValidationContext):
       return typeof value === 'string' && SCAN_MODULE_VALUES.includes(value)
         ? null
         : `must be one of ${SCAN_MODULE_VALUES.join(', ')}`
-    case 'docker_image':
-      // Reached only for an image the registry's closed `values:` list did not
-      // match, which is the operator-approved extra case below. Everything else
-      // is refused by the value set before it gets here.
-      return typeof value === 'string' && !/[\s\0]/.test(value)
-        ? null
-        : 'must be a container image reference with no whitespace'
     case 'json_object':
       return value !== null && typeof value === 'object' ? null : 'must be an object'
     case 'attack_skill_config':
@@ -348,13 +322,6 @@ export function validateValue(
     case 'string': {
       if (spec.values) {
         if (typeof value === 'string' && spec.values.includes(value)) return null
-        // An air-gapped or private-registry deployment mirrors the shipped
-        // images, and the operator names the mirrors in an env var the SERVER
-        // controls. That is not attacker-influenceable the way a project
-        // setting is, so it widens the set without re-opening the hole.
-        if (spec.validator === 'docker_image' && operatorAllowedImages().has(String(value))) {
-          return checkScalar('docker_image', value, ctx)
-        }
         return `must be one of ${spec.values.join(', ')}`
       }
       // A single header column's default is "" for "send no header", so clearing

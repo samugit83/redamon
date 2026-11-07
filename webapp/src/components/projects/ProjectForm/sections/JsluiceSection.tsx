@@ -200,7 +200,7 @@ export function JsluiceSection({ data, updateField, onRun }: JsluiceSectionProps
           )}
 
           <RegistryFields
-            keys={['jsluiceExcludePatterns', 'jsluiceVerifyAcceptStatus', 'jsluiceVerifyDockerImage']}
+            keys={['jsluiceExcludePatterns', 'jsluiceVerifyAcceptStatus']}
             data={data}
             updateField={updateField}
             title="Advanced"

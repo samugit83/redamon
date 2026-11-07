@@ -627,7 +627,7 @@ Naming convention: `web_cache_poison_*` (DB column) → `webCachePoison*`
 | Setting | Default | Meaning |
 |---|---|---|
 | `…_ENABLED` | `false` | Master toggle (active, opt-in) |
-| `…_DOCKER_IMAGE` | `redamon-wcvs:latest` | WCVS image (locally built) |
+| `…_DOCKER_IMAGE` | `redamon-wcvs:latest` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `…_SCAN_PROFILE` | `safe-confirm` | safe-confirm \| extended \| research |
 | `…_TIMEOUT` | `1800` | WCVS subprocess timeout (s) |
 | `…_TIMEOUT_PER_REQ` | `10` | native confirmation per-request timeout (s) |

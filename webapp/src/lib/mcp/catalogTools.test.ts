@@ -54,7 +54,8 @@ describe('describe_recon_settings covers exactly the settable surface', () => {
     // Not merely useless: advertising a field the caller will then be refused
     // for is the exact surprise describe_recon_settings exists to prevent. The
     // SET changed with the registry - the scope and the Rules of Engagement are
-    // still refused, and a docker image or a rate limit no longer is.
+    // still refused, a rate limit no longer is, and a container image is no
+    // setting at all.
     const described = new Set(allSettings().map(s => s.key))
     for (const refused of [
       'targetDomain', 'targetIps', 'ipMode',        // scope: create_project owns it
@@ -63,6 +64,7 @@ describe('describe_recon_settings covers exactly the settable surface', () => {
       'updateGraphDb',                              // a debug switch, not tuning
       'cypherfixGithubToken', 'activationState',    // never a pipeline parameter
       'jsReconUploadedFiles',                       // upload-managed
+      'nucleiDockerImage',                          // images are fixed, not settings
     ]) {
       expect(described.has(refused), `${refused} must not be advertised`).toBe(false)
     }
@@ -73,7 +75,6 @@ describe('describe_recon_settings covers exactly the settable surface', () => {
     const described = new Set(allSettings().map(s => s.key))
     for (const opened of [
       'naabuRateLimit', 'takeoverRateLimit', 'ffufRate',   // every rate, not 3 of 15
-      'nucleiDockerImage',                                  // open; the runtime pins it
       'httpxCustomHeaders',                                 // open; the validator checks it
       'ffufWordlist',                                       // open; the path is validated
       'stealthMode', 'nucleiTags', 'arjunTimeout',

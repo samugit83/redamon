@@ -8,7 +8,6 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { FileImportButton } from '../FileImportButton'
-import { RegistryFields } from '../RegistryFields'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -245,15 +244,6 @@ export function GauSection({ data, updateField, onRun }: GauSectionProps) {
                         />
                         <span className={styles.fieldHint}>Concurrent verification threads</span>
                       </div>
-                      <div className={styles.fieldGroup}>
-                        <label className={styles.fieldLabel}>Verify Docker Image</label>
-                        <input
-                          type="text"
-                          className="textInput"
-                          value={data.gauVerifyDockerImage}
-                          disabled
-                        />
-                      </div>
                     </div>
 
                     <div className={styles.fieldGroup}>
@@ -338,26 +328,8 @@ export function GauSection({ data, updateField, onRun }: GauSectionProps) {
                   </>
                 )}
               </div>
-
-              <div className={styles.fieldGroup}>
-                <label className={styles.fieldLabel}>Docker Image</label>
-                <input
-                  type="text"
-                  className="textInput"
-                  value={data.gauDockerImage}
-                  disabled
-                />
-              </div>
             </>
           )}
-
-          <RegistryFields
-            keys={['gauDockerImage', 'gauVerifyDockerImage']}
-            data={data}
-            updateField={updateField}
-            title="Advanced"
-            description="Settings this tool accepts that have no dedicated control. Bounds, options and descriptions come from the settings registry, so they are the same ones the API enforces."
-          />
         </div>
       )}
     </div>

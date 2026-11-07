@@ -349,7 +349,7 @@ export function TakeoverSection({ data, updateField, onRun }: TakeoverSectionPro
           )}
 
           <RegistryFields
-            keys={['baddnsDockerImage', 'baddnsNameservers', 'baddnsRunTimeout', 'subjackRunTimeout', 'subjackTimeout', 'takeoverCertValidationEnabled']}
+            keys={['baddnsNameservers', 'baddnsRunTimeout', 'subjackRunTimeout', 'subjackTimeout', 'takeoverCertValidationEnabled']}
             data={data}
             updateField={updateField}
             title="Advanced"

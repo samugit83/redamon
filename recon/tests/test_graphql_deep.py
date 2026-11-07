@@ -546,7 +546,6 @@ class TestSettingsFlow(unittest.TestCase):
     """Verify camelCase DB fields round-trip through fetch_project_settings
     into SCREAMING_SNAKE_CASE Python settings, and then into correct cmd args."""
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_every_camelcase_key_mapped_to_snake_case(self):
         """Mock the webapp HTTP call; verify every graphqlCop* field round-trips."""
         from project_settings import fetch_project_settings
@@ -575,7 +574,8 @@ class TestSettingsFlow(unittest.TestCase):
         with patch('requests.get', return_value=mock_resp):
             out = fetch_project_settings('p1', 'http://webapp:3000')
         self.assertTrue(out['GRAPHQL_COP_ENABLED'])
-        self.assertEqual(out['GRAPHQL_COP_DOCKER_IMAGE'], 'custom:1.0')
+        # Images are fixed: the row's value never reaches the settings.
+        self.assertEqual(out['GRAPHQL_COP_DOCKER_IMAGE'], 'dolevf/graphql-cop:1.14')
         self.assertEqual(out['GRAPHQL_COP_TIMEOUT'], 99)
         self.assertTrue(out['GRAPHQL_COP_FORCE_SCAN'])
         self.assertTrue(out['GRAPHQL_COP_DEBUG'])

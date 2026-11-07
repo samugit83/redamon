@@ -383,24 +383,14 @@ describe('update_recon_settings refuses what would redirect the platform', () =>
     }
   })
 
-  test('a docker image outside the shipped set is REFUSED at the write', async () => {
-    // It used to be accepted and then pinned back to the shipped default at scan
-    // start. The danger was contained; the DISHONESTY was not, because
-    // get_recon_settings echoed the value the caller wrote while the scan ran a
-    // different one, so a caller believed a setting applied when it did not.
-    // That is exactly what "nothing is silently stripped" exists to prevent, so
-    // the field carries a closed value set and the write is refused by name.
-    await expect(updateReconSettings(ctx(), 'p1', { nucleiDockerImage: 'attacker/evil:latest' }))
-      .rejects.toThrow(/must be one of/)
+  test('a container image is refused by name, the shipped one included', async () => {
+    // Every tool runs the image RedAmon ships; no image is a setting, so a
+    // write naming one is refused rather than stored and silently ignored.
+    for (const image of ['attacker/evil:latest', 'projectdiscovery/nuclei:latest']) {
+      await expect(updateReconSettings(ctx(), 'p1', { nucleiDockerImage: image }))
+        .rejects.toThrow(/is not a recon setting/)
+    }
     expect(h.updateManyProjects).not.toHaveBeenCalled()
-  })
-
-  test('a shipped image is accepted', async () => {
-    const r = await updateReconSettings(ctx(), 'p1', {
-      nucleiDockerImage: 'projectdiscovery/nuclei:latest',
-    })
-    expect(r.projectId).toBe('p1')
-    expect(h.updateManyProjects).toHaveBeenCalled()
   })
 
   test('a path outside the project directory is still refused at the write', async () => {

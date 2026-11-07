@@ -83,9 +83,10 @@ def test_no_stale_baseline():
 # of the case is that a guardrail ERASED its input. Named, so that a case which
 # resolves identically for any OTHER reason still fails.
 RESOLVES_TO_DEFAULTS = {
-    # sanitize_image_settings pins every non-allowlisted image back to the
-    # shipped default, so a hostile row resolves to the default row. That
-    # identity IS the assertion, and it is checked by name below.
+    # No image is a project setting: the loader never reads one from the row,
+    # and sanitize_image_settings pins every key to its shipped default, so a
+    # hostile row resolves to the default row. That identity IS the assertion,
+    # and it is checked by name below.
     "hostile_docker_image",
     # Same shape: sanitize_project_file_settings drops a path that escapes its
     # allowed roots back to the shipped default.
@@ -156,9 +157,9 @@ def test_a_hostile_docker_image_is_pinned_to_the_shipped_default():
     """
     The one case whose success looks like a no-op.
 
-    `hostile_docker_image` writes `attacker/evil:latest` to two image columns.
-    The registry leaves those columns open on purpose: the field is open and the
-    RUNTIME is the control. This is that control, observed.
+    `hostile_docker_image` puts `attacker/evil:latest` under two image keys on
+    the project row, as an old export or a stale client could. Images are not
+    settings, so the row's values never reach the resolved settings.
     """
     resolved = _baseline("hostile_docker_image")
     assert resolved["NUCLEI_DOCKER_IMAGE"] == "projectdiscovery/nuclei:latest"

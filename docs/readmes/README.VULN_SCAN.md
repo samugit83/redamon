@@ -447,7 +447,7 @@ The AI-in-pipeline switch (`AI_IN_PIPELINE`) turns `NUCLEI_AI_TAGS`, `NUCLEI_AI_
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `NUCLEI_DOCKER_IMAGE` | `str` | `"projectdiscovery/nuclei:latest"` | Docker image to use; a value outside the shipped allowlist is pinned back to the default at scan start |
+| `NUCLEI_DOCKER_IMAGE` | `str` | `"projectdiscovery/nuclei:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 
 **Docker Mode Advantages:**
 - No Go installation required

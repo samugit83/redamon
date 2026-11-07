@@ -110,7 +110,7 @@ At scan start the engagement ceiling caps `HTTPX_RATE_LIMIT`, the memory governo
 | Parameter | Type | Default | httpx Flag | Description |
 |-----------|------|---------|------------|-------------|
 | `HTTPX_ENABLED` | `bool` | `True` | - | Run the probe. The phase runs only when `http_probe` is in the project's scan modules. |
-| `HTTPX_DOCKER_IMAGE` | `str` | `"projectdiscovery/httpx:latest"` | - | Docker image to use; a value outside the shipped allowlist is pinned back to the default at scan start. |
+| `HTTPX_DOCKER_IMAGE` | `str` | `"projectdiscovery/httpx:latest"` | - | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `HTTPX_THREADS` | `int` | `50` | `-t` | Number of concurrent HTTP requests. Higher = faster but uses more CPU/memory. |
 | `HTTPX_TIMEOUT` | `int` | `10` | `-timeout` | Seconds to wait for each HTTP response before giving up. |
 | `HTTPX_RETRIES` | `int` | `2` | `-retries` | Number of retry attempts for failed/timeout requests. |

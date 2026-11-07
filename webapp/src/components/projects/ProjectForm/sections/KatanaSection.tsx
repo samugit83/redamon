@@ -213,21 +213,11 @@ export function KatanaSection({ data, updateField, onRun }: KatanaSectionProps) 
               <span className={styles.fieldHint}>Browser-like headers help avoid detection during DAST crawling</span>
             </div>
           </div>
-
-          <div className={styles.fieldGroup}>
-            <label className={styles.fieldLabel}>Docker Image</label>
-            <input
-              type="text"
-              className="textInput"
-              value={data.katanaDockerImage}
-              disabled
-            />
-          </div>
             </>
           )}
 
           <RegistryFields
-            keys={['katanaDockerImage', 'katanaScope']}
+            keys={['katanaScope']}
             data={data}
             updateField={updateField}
             title="Advanced"

@@ -232,7 +232,6 @@ const projectRow = (over: Record<string, unknown> = {}) => ({
   nucleiRateLimit: 150,
   takeoverRateLimit: 50,
   ffufRate: 0,
-  nucleiDockerImage: 'projectdiscovery/nuclei:latest',
   naabuEnabled: true,
   ffufEnabled: true,
   ffufWordlist: '/usr/share/seclists/Discovery/Web-Content/common.txt',
@@ -680,21 +679,6 @@ describe('preflight_scope_check reports RESOLVED values', () => {
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(r.ratesExceedingCeiling).toEqual([])
     for (const rate of r.resolvedRates) expect(rate.resolved, rate.field).toBeLessThanOrEqual(3)
-  })
-
-  test('a non-allowlisted image is reported as pinned', async () => {
-    // get_recon_settings will echo what was written. This is the only place a
-    // caller learns which image actually runs.
-    h.findProject.mockResolvedValue(projectRow({ nucleiDockerImage: 'attacker/evil:latest' }))
-    const r = await preflightScopeCheck(ctx(), 'p1')
-    const rewrite = r.rewrittenAtScanStart.find(x => x.field === 'nucleiDockerImage')!
-    expect(rewrite.written).toBe('attacker/evil:latest')
-    expect(rewrite.willRun).toBe('projectdiscovery/nuclei:latest')
-  })
-
-  test('a shipped image is NOT reported as rewritten', async () => {
-    const r = await preflightScopeCheck(ctx(), 'p1')
-    expect(r.rewrittenAtScanStart.some(x => x.field === 'nucleiDockerImage')).toBe(false)
   })
 
   test('an escaping wordlist path is reported as dropped', async () => {

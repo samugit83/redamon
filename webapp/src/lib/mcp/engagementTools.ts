@@ -59,7 +59,7 @@ import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 import { settingsFingerprint } from '@/lib/jobQueue'
 import { filterReconSettings, reconSettingsSelect } from '@/lib/reconSettings/filter'
-import { fieldsWhere, field, loadRegistry } from '@/lib/reconSettings/registry'
+import { fieldsWhere, field } from '@/lib/reconSettings/registry'
 import { checkHeader, isInsideProjectFileRoot } from '@/lib/reconSettings/validators'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { JEV_PROVIDER_TYPES } from '@/lib/llmProviderKinds'
@@ -611,8 +611,6 @@ function resolveRates(row: Record<string, unknown>, ceiling: number | null): Res
   return out
 }
 
-const ALLOWED_IMAGE_SUFFIX = 'DockerImage'
-
 /**
  * The recon hooks that can run on Jev. An `engine` hook is an LLM hook with an
  * LLM | Jev switch: false means the LLM. An `enable` hook is Jev-only: false
@@ -730,9 +728,8 @@ function noOpReason(
  *
  * The distinction that earns its place: it reports RESOLVED values, not written
  * ones. `get_recon_settings` echoes what a caller wrote, and for the fields the
- * runtime corrects - a rate above the ceiling, a container image outside the
- * shipped set, a wordlist path outside the project directory - those are two
- * different answers. An agent that only read the first would believe a rejected
+ * runtime corrects - a rate above the ceiling, a wordlist path outside the
+ * project directory - those are two different answers. An agent that only read the first would believe a rejected
  * value was accepted.
  */
 export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
@@ -762,26 +759,7 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
   const ceiling = engagement.ceilingRps
   const rates = resolveRates(row, ceiling)
 
-  const registry = loadRegistry()
   const rewritten: { field: string; written: unknown; willRun: unknown; why: string }[] = []
-
-  // A docker image outside the shipped set is accepted at the write and pinned
-  // at scan start. This is the only place a caller can see which one will run.
-  const allowedImages = new Set(
-    Object.entries(registry.fields)
-      .filter(([k, f]) => k.endsWith(ALLOWED_IMAGE_SUFFIX) && typeof f.default === 'string' && f.default)
-      .map(([, f]) => f.default as string)
-  )
-  for (const [key, value] of Object.entries(row)) {
-    if (!key.endsWith(ALLOWED_IMAGE_SUFFIX) || typeof value !== 'string' || !value) continue
-    if (allowedImages.has(value)) continue
-    rewritten.push({
-      field: key,
-      written: value,
-      willRun: field(key)?.default ?? null,
-      why: 'not in the shipped image allowlist; pinned to the default at scan start',
-    })
-  }
 
   for (const f of fieldsWhere(s => s.validator === 'project_file')) {
     const value = row[f.key]
@@ -945,9 +923,8 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       'Values here are RESOLVED, not written. get_recon_settings echoes what you wrote; this ' +
         'reports what the scan will actually run with, which differs wherever a validator or ' +
         'the engagement ceiling rewrites a value.',
-      'rewrittenAtScanStart is not an error. A container image outside the shipped set and a ' +
-        'wordlist path outside the project directory are both corrected rather than refused, ' +
-        'and each is logged with a [guardrail] line during the scan.',
+      'rewrittenAtScanStart is not an error. A wordlist path outside the project directory is ' +
+        'corrected rather than refused, and logged with a [guardrail] line during the scan.',
       'silentNoOps is the two-level model biting: a tool can be enabled inside a phase that ' +
         'is not running. The scan succeeds, nothing is scanned by that tool, and no result ' +
         'field says why.',

@@ -376,7 +376,9 @@ def test_defaults_match_prisma():
     import json
     from recon.project_settings import DEFAULT_SETTINGS
 
-    puredns_keys = {k for k in DEFAULT_SETTINGS if k.startswith('PUREDNS_')}
+    # The image is fixed, not a setting, so it has no column by design.
+    puredns_keys = {k for k in DEFAULT_SETTINGS
+                    if k.startswith('PUREDNS_') and not k.endswith('_DOCKER_IMAGE')}
     # The registry's default is the Prisma @default (registry.prisma.test.ts).
     registry = Path(__file__).resolve().parents[2] / 'recon_settings' / 'registry.json'
     fields = json.loads(registry.read_text(encoding='utf-8'))['fields']
@@ -398,7 +400,9 @@ def test_fetch_mapping_completeness():
     from recon.project_settings import fetch_project_settings, DEFAULT_SETTINGS
 
     source = inspect.getsource(fetch_project_settings)
-    puredns_keys = [k for k in DEFAULT_SETTINGS if k.startswith('PUREDNS_')]
+    # The image is fixed, not a setting, so the loader never reads it.
+    puredns_keys = [k for k in DEFAULT_SETTINGS
+                    if k.startswith('PUREDNS_') and not k.endswith('_DOCKER_IMAGE')]
 
     for key in puredns_keys:
         assert f"settings['{key}']" in source, \

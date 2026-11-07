@@ -147,7 +147,7 @@ All parameters are configured via the webapp project settings (stored in Postgre
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `KATANA_DOCKER_IMAGE` | `str` | `"projectdiscovery/katana:latest"` | Docker image to use |
+| `KATANA_DOCKER_IMAGE` | `str` | `"projectdiscovery/katana:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `KATANA_DEPTH` | `int` | `3` | Maximum crawl depth (how many links deep to follow) |
 | `KATANA_MAX_URLS` | `int` | `1000` | Maximum URLs to discover per target |
 | `KATANA_RATE_LIMIT` | `int` | `150` | Requests per second |
@@ -283,7 +283,7 @@ GAU (GetAllUrls) provides passive URL discovery from historical archives. It run
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `GAU_ENABLED` | `bool` | `True` | Enable/disable GAU discovery |
-| `GAU_DOCKER_IMAGE` | `str` | `"sxcurity/gau:latest"` | Docker image to use |
+| `GAU_DOCKER_IMAGE` | `str` | `"sxcurity/gau:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `GAU_PROVIDERS` | `list` | `["wayback", "commoncrawl", "otx", "urlscan"]` | Data sources to query |
 | `GAU_MAX_URLS` | `int` | `1000` | Maximum URLs per domain (0 = unlimited) |
 | `GAU_TIMEOUT` | `int` | `60` | Timeout per provider in seconds |
@@ -326,7 +326,7 @@ GAU URLs are verified to check if they're still live before adding to results.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `GAU_VERIFY_URLS` | `bool` | `True` | Enable HTTP verification |
-| `GAU_VERIFY_DOCKER_IMAGE` | `str` | `"projectdiscovery/httpx:latest"` | httpx image for verification |
+| `GAU_VERIFY_DOCKER_IMAGE` | `str` | `"projectdiscovery/httpx:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `GAU_VERIFY_TIMEOUT` | `int` | `5` | Timeout per URL in seconds |
 | `GAU_VERIFY_RATE_LIMIT` | `int` | `100` | Requests per second |
 | `GAU_VERIFY_THREADS` | `int` | `50` | Concurrent verification threads |
@@ -523,7 +523,7 @@ Hakrawler is a DOM-aware web crawler that runs as a Docker container (`jauderho/
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `HAKRAWLER_ENABLED` | `bool` | `True` | Enable/disable Hakrawler crawling |
-| `HAKRAWLER_DOCKER_IMAGE` | `str` | `"jauderho/hakrawler:latest"` | Docker image to use |
+| `HAKRAWLER_DOCKER_IMAGE` | `str` | `"jauderho/hakrawler:latest"` | Fixed: the image RedAmon ships for this tool. Not a project setting. |
 | `HAKRAWLER_DEPTH` | `int` | `2` | Crawl depth (how many links deep to follow) |
 | `HAKRAWLER_THREADS` | `int` | `5` | Concurrent threads |
 | `HAKRAWLER_TIMEOUT` | `int` | `30` | Per-URL timeout in seconds |
