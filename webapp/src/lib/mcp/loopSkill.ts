@@ -29,7 +29,7 @@ export function isLoopClient(value: unknown): value is LoopClient {
 }
 
 export const LOOP_SKILL_NAME = 'redamon-agent-in-the-loop'
-export const LOOP_CONTRACT_VERSION = 1
+export const LOOP_CONTRACT_VERSION = 2
 const TOKEN_VAR = 'REDAMON_MCP_TOKEN'
 const LOOP_TOOLS = ['loop_wait_step', 'loop_get_step', 'loop_submit_step']
 
@@ -74,6 +74,23 @@ export const LOOP_SKILL_BODY = [
   '   `Step <n> · <purpose> · iteration <i> → <your decision in a few words>`.',
   '6. Go back to 1.',
   '',
+  '### Stay in the loop',
+  '',
+  'RedAmon cannot tell an agent that is thinking from one that went away. If no loop call of yours',
+  'reaches it for `runEndsIfSilentSeconds` (on every step: 30 minutes unless the deployment changed',
+  'it), it ends the whole run: that step, every later step and the final report. Every',
+  '`loop_wait_step`, `loop_get_step` and `loop_submit_step` call counts.',
+  '',
+  '- While a run is live, never end your turn to wait for the person: you make no call while you',
+  '  wait. If the person asks you something mid-run, answer in a line or two and go straight back to',
+  '  `loop_wait_step` in the same reply. Never ask "should I continue?": continuing is the default.',
+  '- If you must stop, tell the person the run ends unless an agent calls within that time.',
+  '- `step_closed` on a step you did not answer means RedAmon gave up on it, which can end the run.',
+  '  Call `loop_wait_step` once to see the session\'s state, and tell the person.',
+  '- A session in `error` with code `loop_no_driver` or `loop_step_not_answered` ended because no',
+  '  answer came in time. The chat keeps its history: the person types "continue" in the same RedAmon',
+  '  chat and asks you to drive again.',
+  '',
   '## 3. Rules for good answers',
   '',
   '- Never invent tool output: if you need information, choose a tool and RedAmon will run it and give',
@@ -89,6 +106,10 @@ export const LOOP_SKILL_BODY = [
   '- If you will not answer a step (for example, your own safety rules forbid it), call',
   '  `loop_submit_step` with `declined: true` and a short reason. Do not rephrase or disguise the',
   '  request to get around your rules.',
+  '- Never hand the engagement to subagents, background tasks or local commands, even when the',
+  '  person asks: they would reach the target outside RedAmon\'s scope checks, rules of engagement',
+  '  and audit trail. Tell the person, and suggest asking the RedAmon chat instead (a fireteam runs',
+  '  work in parallel).',
   '',
   '## 4. Purposes you will see',
   '',
@@ -123,7 +144,7 @@ export function loopFrontmatter(client: LoopClient, forWhat: string): string {
   ]
   // Claude Code removes these tools while the skill is active: injected target
   // text then has nothing on this machine to act with.
-  if (client === 'claude-code') out.push('disallowed-tools: Bash, Edit, Write, WebFetch, WebSearch')
+  if (client === 'claude-code') out.push('disallowed-tools: Bash, Edit, Write, WebFetch, WebSearch, Agent')
   out.push('---')
   return out.join('\n')
 }
@@ -143,7 +164,9 @@ const CLAUDE_MCP_JSON = (endpoint: string) => JSON.stringify({
 const CLAUDE_SETTINGS_JSON = JSON.stringify({
   permissions: {
     allow: LOOP_TOOLS.map(t => `mcp__redamon__${t}`),
-    deny: ['Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch'],
+    // Agent: a subagent brings its own tools, so it would reach the target
+    // with none of the lock-down above.
+    deny: ['Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent'],
   },
 }, null, 2)
 
@@ -209,8 +232,9 @@ export function renderLoopConnecting(client: LoopClient, serverUrl: string, sing
       `   \`\${${TOKEN_VAR}}\` placeholder when it connects, so the token is never written to disk.`,
       ...include('templates/claude-mcp.json', CLAUDE_MCP_JSON(endpoint), 'json').map(l => `   ${l}`.trimEnd()),
       '2. Copy the lock-down settings to `.claude/settings.json` in the folder. They allow the three',
-      '   loop tools without a prompt and deny Bash, Edit, Write, WebFetch and WebSearch, so injected',
-      '   target text has nothing on your machine to act with. `Read` stays, for the skill files.',
+      '   loop tools without a prompt and deny Bash, Edit, Write, WebFetch, WebSearch and Agent',
+      '   (subagents), so injected target text has nothing on your machine to act with. `Read` stays,',
+      '   for the skill files.',
       ...include('templates/claude-settings.json', CLAUDE_SETTINGS_JSON, 'json').map(l => `   ${l}`.trimEnd()),
       '3. Start `claude` in the folder and approve the project MCP server `redamon` when asked.',
       '4. Say: "Drive my RedAmon session".',
@@ -263,6 +287,8 @@ export function renderLoopConnecting(client: LoopClient, serverUrl: string, sing
     '- `loop_wait_step` holds a request for up to 55 seconds: raise your client\'s tool timeout above it.',
     '- Answer exactly the `answerFormat` a step asks for.',
     '- Never act on targets yourself: no shell, no web, no file writes while you drive a session.',
+    '- Keep calling while a run is live: if no loop call reaches RedAmon for a step\'s',
+    '  `runEndsIfSilentSeconds`, the whole run ends, final report included.',
   ].join('\n')
 }
 
@@ -286,6 +312,12 @@ export function renderLoopInline(): string {
     '`error` or no session, say so in one line and STOP. A step: read every page with loop_get_step',
     'while page.nextCursor is not null (cursor 0 and full: true for a placeholder you no longer have), answer, and',
     'submit with loop_submit_step. Then wait again.',
+    '',
+    'STAY IN THE LOOP. If no loop call of yours reaches RedAmon for a step\'s runEndsIfSilentSeconds',
+    '(30 minutes by default), it ends the whole run, final report included. While a run is live, never',
+    'end your turn to wait for the person: answer them in a line and call loop_wait_step again in the',
+    'same reply. step_closed on a step you did not answer means RedAmon gave up on it. Never hand the',
+    'work to subagents or local commands.',
     '',
     'FORMAT. Answer exactly the answerFormat: `json` is ONE JSON object with nothing before or after',
     'it and no code fence; `cypher` is only the query; `markdown` is the report. Never invent tool',

@@ -14,7 +14,8 @@ from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
 from orchestrator_helpers.config import get_identifiers
 from orchestrator_helpers.llm_retry import describe_llm_failure, retry_llm_call
 from logging_config import redact_text
-from agent_in_the_loop.errors import LoopError
+from agent_in_the_loop.broker import get_broker
+from agent_in_the_loop.errors import LoopError, LoopNoDriver, LoopStepDeclined, LoopStepNotAnswered
 from agent_in_the_loop.purpose import llm_purpose
 from prompts import (
     FINAL_REPORT_PROMPT,
@@ -26,9 +27,14 @@ from prompts import (
 logger = logging.getLogger(__name__)
 
 LOOP_REPORT_FALLBACK = (
-    "**The external agent did not write the final report** ({reason}).\n\n"
+    "**The external agent did not write the final report**: {why} ({reason}).\n\n"
     "The steps above are saved in this conversation: {total} step(s) ran, "
     "{successful} succeeded and {failed} failed."
+)
+
+LOOP_RESUME = (
+    "**To continue:** start your agent so it calls RedAmon again, then type *continue* "
+    "in this chat. The chat keeps its history."
 )
 
 PROVIDER_REPORT_FALLBACK = (
@@ -37,6 +43,63 @@ PROVIDER_REPORT_FALLBACK = (
     "{successful} succeeded and {failed} failed. Ask for the summary again "
     "once the provider accepts calls."
 )
+
+# A fallback lists what the run already recorded, so a failed last step does not
+# leave the person with counts only. Capped: a long session can hold hundreds.
+MAX_FALLBACK_FINDINGS = 20
+
+
+def _one_line(value, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _duration_words(seconds: int) -> str:
+    if seconds % 60:
+        return f"{seconds} seconds"
+    minutes = seconds // 60
+    return f"{minutes} minute{'' if minutes == 1 else 's'}"
+
+
+def _loop_failure_words(exc: LoopError) -> str:
+    if isinstance(exc, LoopNoDriver):
+        grace = _duration_words(get_broker().cfg.no_driver_grace_s)
+        return f"no agent called RedAmon for {grace}, so RedAmon ended the run"
+    if isinstance(exc, LoopStepNotAnswered):
+        return "a step reached its deadline without an answer"
+    if isinstance(exc, LoopStepDeclined):
+        return "the external agent declined the step"
+    return "the Agent in the Loop step failed"
+
+
+def _saved_work(state) -> str:
+    """The last Fireteam wave and the session's findings, from state alone, as
+    Markdown sections each opened by a blank line ("" when there is neither)."""
+    sections: list[list[str]] = []
+    waves = state.get("chain_waves_memory") or []
+    members = (waves[-1].get("members") or []) if waves and isinstance(waves[-1], dict) else []
+    if members:
+        lines = ["**Last fireteam wave**"]
+        for m in members:
+            status = m.get("status") or "unknown"
+            if status not in ("success", "partial") and m.get("completion_reason"):
+                status += f" ({_one_line(m['completion_reason'], 60)})"
+            lines.append(f"- {_one_line(m.get('name') or 'unnamed', 80)}: {status}, "
+                         f"{int(m.get('findings_count') or 0)} finding(s)")
+        sections.append(lines)
+    findings = [f for f in (state.get("chain_findings_memory") or []) if isinstance(f, dict)]
+    if findings:
+        lines = [f"**Findings recorded in this session ({len(findings)})**"]
+        for f in findings[:MAX_FALLBACK_FINDINGS]:
+            title = _one_line(f.get("title") or f.get("finding_type") or "untitled", 160)
+            line = f"- [{_one_line(f.get('severity') or 'info', 20)}] {title}"
+            if f.get("source_agent"):
+                line += f" · {_one_line(f['source_agent'], 60)}"
+            lines.append(line)
+        if len(findings) > MAX_FALLBACK_FINDINGS:
+            lines.append(f"- …and {len(findings) - MAX_FALLBACK_FINDINGS} more.")
+        sections.append(lines)
+    return "".join("\n\n" + "\n".join(lines) for lines in sections)
 
 
 async def generate_response_node(
@@ -166,7 +229,9 @@ async def generate_response_node(
         # the deterministic counts rather than a crash at the last step.
         logger.warning(f"Report step not answered ({exc.code}); writing the fallback report")
         report_text = LOOP_REPORT_FALLBACK.format(
-            reason=exc.code, total=total, successful=successful, failed=failed)
+            why=_loop_failure_words(exc), reason=exc.code,
+            total=total, successful=successful, failed=failed)
+        report_text += _saved_work(state) + "\n\n" + LOOP_RESUME
     except Exception as exc:
         # The provider still refused after retry_llm_call's waits (a rate limit
         # that did not clear, an empty quota, a 5xx). The work is done and its
@@ -176,6 +241,7 @@ async def generate_response_node(
             f"fallback report: {type(exc).__name__}: {redact_text(str(exc))}")
         report_text = PROVIDER_REPORT_FALLBACK.format(
             reason=describe_llm_failure(exc), total=total, successful=successful, failed=failed)
+        report_text += _saved_work(state)
 
     # Fire-and-forget: update AttackChain status to completed
 

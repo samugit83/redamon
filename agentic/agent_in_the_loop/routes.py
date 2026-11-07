@@ -41,9 +41,12 @@ ERRORS = {
     "loop_disabled": (404, "Agent in the Loop is turned off on this deployment."),
     "bad_args": (422, "The request is not valid."),
     "not_found": (404, "No such step is open for this driver."),
-    "step_closed": (409, "This step is already answered, expired or cancelled."),
+    "step_closed": (409, "This step is already answered, expired or cancelled. If you did not "
+                         "answer it, RedAmon gave up on it, which can end the run."),
     "answer_too_large": (413, "The answer is larger than this deployment accepts."),
 }
+
+UNANSWERED_CODES = ("loop_no_driver", "loop_step_not_answered")
 
 AWAITING_HUMAN = {
     "approval": "approve a phase change",
@@ -136,6 +139,10 @@ def hint(step: Optional[dict], sessions: list[dict]) -> str:
         return "RedAmon is preparing the next step; call loop_wait_step again."
     if state == "stopped":
         return "A person stopped the session; stop driving and tell the person."
+    if state == "error" and detail.get("code") in UNANSWERED_CODES:
+        return ("RedAmon ended this run because no agent answered a step in time. Stop driving "
+                "and tell the person in one line. To resume, they type continue in the same "
+                "RedAmon chat (it keeps its history) and ask you to drive again.")
     if state == "error":
         return ("The session ended with an error; stop driving and tell the person what "
                 "the chat shows.")

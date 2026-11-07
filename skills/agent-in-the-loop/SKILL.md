@@ -44,6 +44,17 @@ metadata:
   the marker first. A new loop that retries on ANY exception must `break` on
   `getattr(e, "no_retry", False)` ([errors.py](../../agentic/agent_in_the_loop/errors.py),
   [phase.py](../../agentic/orchestrator_helpers/phase.py) is the example).
+- **A limit that can end a run is told to both sides.** An interactive driver makes no call
+  while its person talks to it, so the driver reads `runEndsIfSilentSeconds` on every step
+  and the pack tells it never to end its turn while a run is live; the drawer gets
+  `noDriverEndsInSeconds` and shows the clock time the run ends. A new timer or cap that ends
+  a run goes into both, or a driver that read only `deadlineInSeconds` believes it has longer.
+  Keep `LOOP_STEP_DEADLINE_S` above `LOOP_NO_DRIVER_GRACE_S`: the deadline counts from the
+  step's opening, so a lower one ends a pause first.
+- **A run that ends for want of an answer keeps what it found.** The report node's fallback
+  is built from state alone (last Fireteam wave, session findings, how to resume), since
+  after a lost driver every later step, the report included, fails at once
+  ([generate_response_node.py](../../agentic/orchestrator_helpers/nodes/generate_response_node.py)).
 - **A new model call site gets an `llm_purpose(...)` label**, or its step reaches the driver
   as `other` with a `text` answer format ([purpose.py](../../agentic/agent_in_the_loop/purpose.py)).
 - **A loop run follows the project's `REQUIRE_TOOL_CONFIRMATION`, and an unattended run
@@ -79,6 +90,7 @@ metadata:
 | MCP tools, client, driver-token rule | `webapp/src/lib/mcp/loopTools.ts`, `loopClient.ts`, `loopScopes.ts` |
 | Skill pack per client | `webapp/src/lib/mcp/loopSkill.ts` |
 | Drawer status strings | `webapp/src/app/graph/components/AIAssistantDrawer/hooks/loopStatus.ts` |
+| Fallback report when a loop step fails | `agentic/orchestrator_helpers/nodes/generate_response_node.py` |
 
 ## Resources
 

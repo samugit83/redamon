@@ -911,13 +911,13 @@ services:
       # chat run (agentic/agent_in_the_loop). On by default; the webapp reads
       # the same switch. The tunables are bounded in code (a bad value warns).
       AGENT_IN_THE_LOOP_ENABLED: ${AGENT_IN_THE_LOOP_ENABLED:-true}
-      LOOP_STEP_DEADLINE_S: ${LOOP_STEP_DEADLINE_S:-900}
+      LOOP_STEP_DEADLINE_S: ${LOOP_STEP_DEADLINE_S:-3600}
       LOOP_LEASE_S: ${LOOP_LEASE_S:-90}
       LOOP_WAIT_MAX_S: ${LOOP_WAIT_MAX_S:-55}
       LOOP_PAGE_CHARS: ${LOOP_PAGE_CHARS:-40000}
       LOOP_ANSWER_MAX_CHARS: ${LOOP_ANSWER_MAX_CHARS:-262144}
       LOOP_MAX_OPEN_STEPS_PER_USER: ${LOOP_MAX_OPEN_STEPS_PER_USER:-16}
-      LOOP_NO_DRIVER_GRACE_S: ${LOOP_NO_DRIVER_GRACE_S:-300}
+      LOOP_NO_DRIVER_GRACE_S: ${LOOP_NO_DRIVER_GRACE_S:-1800}
       LOOP_DRIVER_SEEN_S: ${LOOP_DRIVER_SEEN_S:-60}
       LOOP_STATE_TTL_S: ${LOOP_STATE_TTL_S:-3600}
       # MCP tool servers (internal docker network)

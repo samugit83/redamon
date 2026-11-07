@@ -178,7 +178,9 @@ export async function loopSubmitStep(
   }
   if (!STEP_ID_RE.test(input.stepId) || owned.ids.length === 0) {
     throw new McpToolError(
-      'This step is already answered, expired or cancelled. Call loop_wait_step for the next one.',
+      'This step is already answered, expired or cancelled. If you did not answer it, RedAmon ' +
+      'gave up on it, which can end the run: call loop_wait_step to see the session\'s state, ' +
+      'and tell the person.',
       'step_closed'
     )
   }

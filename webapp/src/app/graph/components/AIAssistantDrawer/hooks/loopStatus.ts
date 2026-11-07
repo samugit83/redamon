@@ -29,6 +29,27 @@ export const LOOP_FIRST_USE =
 export const LOOP_ACT_AS =
   'This chat is answered by the external agent of the user you are acting as. Your own token ' +
   'cannot drive it.'
+export const LOOP_RESUME_HINT =
+  'Start your agent, then type "continue" here: the chat keeps its history.'
+
+/** A status frame as the drawer holds it: when it arrived turns its countdown into a clock time. */
+export type LoopStatusView = LoopStatusPayload & { receivedAtMs?: number }
+
+export function stampLoopStatus(payload: LoopStatusPayload | null | undefined, now: number): LoopStatusView | null {
+  return payload ? { ...payload, receivedAtMs: now } : null
+}
+
+/** "at 14:32" (or "in about 25 min" without an arrival time) for a run with no agent, or null. */
+export function loopEndsAt(status: LoopStatusView): string | null {
+  const seconds = status.noDriverEndsInSeconds
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return null
+  if (typeof status.receivedAtMs === 'number') {
+    const clock = new Date(status.receivedAtMs + seconds * 1000)
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return `at ${clock}`
+  }
+  return `in about ${Math.max(1, Math.round(seconds / 60))} min`
+}
 
 const PURPOSE_LABEL: Record<string, string> = {
   think: 'next action',
@@ -70,19 +91,16 @@ function errorNotice(detail: LoopStatusPayload['detail']): LoopNotice | null {
           : 'Your agent declined this step.',
       }
     case 'loop_step_not_answered':
-      return { tone: 'error', text: 'Your agent did not answer in time. The run ended.' }
+      return { tone: 'error', text: `Your agent did not answer in time, so the run ended. ${LOOP_RESUME_HINT}` }
     case 'loop_no_driver':
-      return {
-        tone: 'error',
-        text: 'No agent answered within 5 minutes. Start your agent and send the message again.',
-      }
+      return { tone: 'error', text: `No agent called RedAmon in time, so the run ended. ${LOOP_RESUME_HINT}` }
     default:
       return null
   }
 }
 
 export function loopDisplay(
-  status: LoopStatusPayload | null | undefined,
+  status: LoopStatusView | null | undefined,
   opts: { actingAs?: boolean } = {},
 ): LoopDisplay {
   if (!status) return NONE
@@ -105,7 +123,18 @@ export function loopDisplay(
   } else if (step?.state === 'open') {
     statusWord = 'Waiting for your agent…'
     if (status.driver && !status.driver.connected) {
-      notices.push({ tone: 'info', text: LOOP_FIRST_USE, links: true })
+      const endsAt = loopEndsAt(status)
+      if (status.driver.lastSeenSeconds == null) {
+        notices.push({ tone: 'info', text: LOOP_FIRST_USE, links: true })
+        if (endsAt) notices.push({ tone: 'info', text: `Unless an agent connects, this run ends ${endsAt}.` })
+      } else {
+        // An agent served this chat and went quiet: an interactive client makes
+        // no call while its person talks to it, and the run ends if that lasts.
+        notices.push({
+          tone: 'warning',
+          text: `Your agent stopped responding. Unless it calls RedAmon again, this run ends ${endsAt ?? 'soon'}.`,
+        })
+      }
     }
   } else if (status.state === 'running_tool' && status.detail?.tool) {
     statusWord = `RedAmon is running ${status.detail.tool}`

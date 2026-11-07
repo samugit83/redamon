@@ -15,7 +15,7 @@ logger = logging.getLogger("agent_in_the_loop")
 LOOP_PREFIX = "loop/"
 LOOP_MODEL_ID = "loop/mcp"
 LOOP_MODEL_LABEL = "Agent in the Loop"
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 
 def is_loop_model(model_id: str | None) -> bool:
@@ -52,14 +52,18 @@ class LoopSettings:
 
 # (env key, default, min, max). wait_max_s stays under Codex's 60 s default
 # tool timeout; page_chars under Claude Code's 50 000-char spill-to-file limit.
+# The driver is usually an interactive client that makes no call while its
+# person talks to it, so no_driver_grace_s leaves room for a conversation, and
+# step_deadline_s stays above it: the deadline counts from the step's opening,
+# not from the driver's last call.
 _TUNABLES = {
-    "step_deadline_s": ("LOOP_STEP_DEADLINE_S", 900, 30, 7200),
+    "step_deadline_s": ("LOOP_STEP_DEADLINE_S", 3600, 30, 7200),
     "lease_s": ("LOOP_LEASE_S", 90, 15, 600),
     "wait_max_s": ("LOOP_WAIT_MAX_S", 55, 1, 55),
     "page_chars": ("LOOP_PAGE_CHARS", 40000, 4000, 200000),
     "answer_max_chars": ("LOOP_ANSWER_MAX_CHARS", 262144, 1024, 1048576),
     "max_open_steps_per_user": ("LOOP_MAX_OPEN_STEPS_PER_USER", 16, 1, 256),
-    "no_driver_grace_s": ("LOOP_NO_DRIVER_GRACE_S", 300, 60, 3600),
+    "no_driver_grace_s": ("LOOP_NO_DRIVER_GRACE_S", 1800, 60, 3600),
     "driver_seen_s": ("LOOP_DRIVER_SEEN_S", 60, 10, 600),
     "state_ttl_s": ("LOOP_STATE_TTL_S", 3600, 600, 86400),
 }

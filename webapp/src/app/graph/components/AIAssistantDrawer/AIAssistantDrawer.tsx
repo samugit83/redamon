@@ -30,10 +30,10 @@ import { usePendingNodeQuery } from './hooks/usePendingNodeQuery'
 // External hooks
 import { useAgentWebSocket } from '@/hooks/useAgentWebSocket'
 import { useAgentHealth } from '@/hooks/useAgentHealth'
-import { ConnectionStatus, type ConnectedPayload, type LoopStatusPayload } from '@/lib/websocket-types'
+import { ConnectionStatus, type ConnectedPayload } from '@/lib/websocket-types'
 import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useOptionalProject } from '@/providers/ProjectProvider'
-import { loopDisplay } from './hooks/loopStatus'
+import { loopDisplay, stampLoopStatus, type LoopStatusView } from './hooks/loopStatus'
 import { useRateLimitWait } from './hooks/rateLimitWait'
 import { useConversations } from '@/hooks/useConversations'
 import { useChatPersistence } from '@/hooks/useChatPersistence'
@@ -92,7 +92,7 @@ export function AIAssistantDrawer({
   const [activeSkill, setActiveSkill] = useState<ActiveSkill | null>(null)
   const statusWord = useLoadingWord()
   // Agent in the Loop: the live status of this session's run (null otherwise).
-  const [loopStatus, setLoopStatus] = useState<LoopStatusPayload | null>(null)
+  const [loopStatus, setLoopStatus] = useState<LoopStatusView | null>(null)
   useEffect(() => { setLoopStatus(null) }, [sessionId])
   // Under act-as the run is driven by the impersonated user's own token.
   const effectiveUserId = useOptionalProject()?.userId ?? null
@@ -314,7 +314,7 @@ export function AIAssistantDrawer({
     // believed to be going, and take the spinner state from the server's live
     // agent_running instead of trusting events that may have been lost.
     onConnect: useCallback((payload: ConnectedPayload) => {
-      setLoopStatus(payload?.loop_state ?? null)
+      setLoopStatus(stampLoopStatus(payload?.loop_state, Date.now()))
       resyncActiveConversation(sessionId, {
         agentRunning: payload?.agent_running,
         clientRunning: isLoadingRef.current,

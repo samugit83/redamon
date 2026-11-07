@@ -146,7 +146,7 @@ class Flow(RouteCase):
         data = resp.json()
         view = data["step"]
         self.assertEqual(view["stepId"], step.id)
-        self.assertEqual(view["contractVersion"], 1)
+        self.assertEqual(view["contractVersion"], 2)
         self.assertEqual((view["purpose"], view["iteration"], view["answerFormat"]), ("think", 1, "json"))
         self.assertEqual(view["sessionId"], "session_ab")
         self.assertTrue(data["hint"].startswith("Answer this step with loop_submit_step"))
@@ -249,6 +249,20 @@ class Hints(unittest.TestCase):
         # A live session wins over an ended one.
         mixed = s("finished") + s("running_tool", tool="execute_curl")
         self.assertIn("execute_curl", hint(None, mixed))
+
+    def test_a_run_ended_for_want_of_an_answer_says_how_to_resume(self):
+        s = lambda state, **d: [{"state": state, "detail": d}]
+        for code in ("loop_no_driver", "loop_step_not_answered"):
+            with self.subTest(code=code):
+                text = hint(None, s("error", code=code))
+                self.assertIn("no agent answered a step in time", text)
+                self.assertIn("type continue in the same RedAmon chat", text)
+        other = hint(None, s("error", code="loop_step_declined"))
+        self.assertIn("tell the person what the chat shows", other)
+
+    def test_step_closed_says_the_run_may_have_given_up(self):
+        from agent_in_the_loop.routes import ERRORS
+        self.assertIn("RedAmon gave up on it", ERRORS["step_closed"][1])
 
 
 if __name__ == "__main__":

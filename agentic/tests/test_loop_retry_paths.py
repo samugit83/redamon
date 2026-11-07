@@ -102,10 +102,12 @@ class Report(unittest.IsolatedAsyncioTestCase):
     }
     CONFIG = {"configurable": {"user_id": "u1", "project_id": "p1", "thread_id": "s1"}}
 
-    async def run_report(self, llm):
-        with mock.patch.object(report_mod.chain_graph, "fire_update_chain_status") as chain:
+    async def run_report(self, llm, **extra_state):
+        broker = mock.Mock(cfg=mock.Mock(no_driver_grace_s=1800))
+        with mock.patch.object(report_mod.chain_graph, "fire_update_chain_status") as chain, \
+                mock.patch.object(report_mod, "get_broker", return_value=broker):
             out = await report_mod.generate_response_node(
-                dict(self.STATE), self.CONFIG, llm=llm, streaming_callbacks={},
+                {**self.STATE, **extra_state}, self.CONFIG, llm=llm, streaming_callbacks={},
                 neo4j_creds=("bolt://x", "u", "p"))
         return out, chain
 
@@ -115,10 +117,66 @@ class Report(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.purposes, ["report"])
         text = out["messages"][0].content
         self.assertIn("The external agent did not write the final report", text)
+        self.assertIn("no agent called RedAmon for 30 minutes, so RedAmon ended the run", text)
         self.assertIn("loop_no_driver", text)
         self.assertIn("2 step(s) ran, 1 succeeded and 1 failed", text)
+        self.assertIn('type *continue* in this chat. The chat keeps its history.', text)
         self.assertTrue(out["task_complete"])
         chain.assert_called_once()
+
+    async def test_each_loop_error_says_why_in_words(self):
+        for exc, words in ((LoopStepNotAnswered(), "a step reached its deadline without an answer"),
+                           (LoopStepDeclined("no"), "the external agent declined the step")):
+            with self.subTest(exc=type(exc).__name__):
+                out, _ = await self.run_report(FailingLLM(exc))
+                text = out["messages"][0].content
+                self.assertIn(words, text)
+                self.assertIn(exc.code, text)
+
+    async def test_the_fallback_lists_the_last_wave_and_the_findings(self):
+        waves = [
+            {"members": [{"name": "Old Op", "status": "success", "findings_count": 9}]},
+            {"members": [
+                {"name": "Web Op", "status": "success", "findings_count": 1,
+                 "completion_reason": "Task completed"},
+                {"name": "API Op", "status": "error", "findings_count": 0,
+                 "completion_reason": "llm_error: LoopNoDriver"},
+            ]},
+        ]
+        findings = [
+            {"title": "Reflected XSS on\n/search", "severity": "high", "source_agent": "Web Op"},
+            {"finding_type": "custom", "severity": "info"},
+        ]
+        out, _ = await self.run_report(FailingLLM(LoopNoDriver()),
+                                       chain_waves_memory=waves, chain_findings_memory=findings)
+        text = out["messages"][0].content
+        # Each section opens with a blank line, or Markdown runs it into the counts.
+        self.assertIn("1 failed.\n\n**Last fireteam wave**\n- Web Op", text)
+        self.assertIn("0 finding(s)\n\n**Findings recorded in this session (2)**", text)
+        self.assertIn("- Web Op: success, 1 finding(s)", text)
+        self.assertIn("- API Op: error (llm_error: LoopNoDriver), 0 finding(s)", text)
+        self.assertNotIn("Old Op", text)
+        self.assertIn("**Findings recorded in this session (2)**", text)
+        self.assertIn("- [high] Reflected XSS on /search · Web Op", text)
+        self.assertIn("- [info] custom", text)
+        # The resume line closes the report, after the saved work.
+        self.assertTrue(text.rstrip().endswith("The chat keeps its history."))
+
+    async def test_the_findings_list_is_capped(self):
+        findings = [{"title": f"finding {i}", "severity": "low"} for i in range(25)]
+        out, _ = await self.run_report(FailingLLM(LoopNoDriver()), chain_findings_memory=findings)
+        text = out["messages"][0].content
+        self.assertIn("- [low] finding 19", text)
+        self.assertNotIn("finding 20", text)
+        self.assertIn("- …and 5 more.", text)
+
+    async def test_the_provider_fallback_lists_the_saved_work_without_the_loop_resume(self):
+        out, _ = await self.run_report(
+            FailingLLM(RuntimeError("provider down")),
+            chain_findings_memory=[{"title": "Open admin panel", "severity": "medium"}])
+        text = out["messages"][0].content
+        self.assertIn("- [medium] Open admin panel", text)
+        self.assertNotIn("type *continue*", text)
 
     async def test_any_other_error_writes_the_provider_fallback(self):
         # The work is done and saved: a failed summary ends the run with the

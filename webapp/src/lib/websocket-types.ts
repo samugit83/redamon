@@ -401,8 +401,12 @@ export interface LoopStatusPayload {
     /** A decline's reason, sanitized by the agent (one line, at most 300 characters). */
     reason?: string
   }
+  /** `claimed` only while an agent's lease on the step is live; a lapsed claim is `open`. */
   step?: { stepId: string; state: 'open' | 'claimed' | string; purpose: string; iteration?: number | null }
   driver: { connected: boolean; lastSeenSeconds: number | null }
+  /** Sent while a step waits and no agent is connected: seconds until the run
+   *  ends unless an agent calls (the no-driver rule or a step deadline). */
+  noDriverEndsInSeconds?: number
   openSteps: number
   sinceSeconds: number
   /** The run's REQUIRE_TOOL_CONFIRMATION; false means dangerous tools run without asking.

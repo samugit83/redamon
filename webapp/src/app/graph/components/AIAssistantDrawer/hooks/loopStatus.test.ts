@@ -3,7 +3,9 @@
  */
 import { describe, test, expect } from 'vitest'
 import type { LoopStatusPayload } from '@/lib/websocket-types'
-import { LOOP_ACT_AS, LOOP_FIRST_USE, answeredViaLine, loopDisplay } from './loopStatus'
+import {
+  LOOP_ACT_AS, LOOP_FIRST_USE, LOOP_RESUME_HINT, answeredViaLine, loopDisplay, loopEndsAt, stampLoopStatus,
+} from './loopStatus'
 
 const base = (over: Partial<LoopStatusPayload> = {}): LoopStatusPayload => ({
   state: 'thinking', detail: {}, driver: { connected: true, lastSeenSeconds: 3 },
@@ -29,6 +31,50 @@ describe('loopDisplay', () => {
     expect(on.notices).toEqual([])
   })
 
+  test('an agent that served the chat and went quiet: a warning with the clock time the run ends', () => {
+    const receivedAtMs = Date.UTC(2026, 10, 7, 12, 0, 0)
+    const status = stampLoopStatus(base({
+      step: openStep, driver: { connected: false, lastSeenSeconds: 91 }, noDriverEndsInSeconds: 1709,
+    }), receivedAtMs)!
+    const clock = new Date(receivedAtMs + 1709 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const d = loopDisplay(status)
+    expect(d.statusWord).toBe('Waiting for your agent…')
+    expect(d.notices).toEqual([{
+      tone: 'warning',
+      text: `Your agent stopped responding. Unless it calls RedAmon again, this run ends at ${clock}.`,
+    }])
+  })
+
+  test('a quiet agent with no countdown from an older agent still warns', () => {
+    const d = loopDisplay(base({ step: openStep, driver: { connected: false, lastSeenSeconds: 200 } }))
+    expect(d.notices.map(n => n.text))
+      .toEqual(['Your agent stopped responding. Unless it calls RedAmon again, this run ends soon.'])
+  })
+
+  test('no agent yet: the first-use notice, then when the run ends', () => {
+    const status = stampLoopStatus(base({
+      step: openStep, driver: { connected: false, lastSeenSeconds: null }, noDriverEndsInSeconds: 1800,
+    }), 0)!
+    const d = loopDisplay(status)
+    expect(d.notices[0]).toEqual({ tone: 'info', text: LOOP_FIRST_USE, links: true })
+    expect(d.notices[1]).toEqual({ tone: 'info', text: `Unless an agent connects, this run ends ${loopEndsAt(status)}.` })
+  })
+
+  test('loopEndsAt: a clock time once stamped, minutes without, nothing without a countdown', () => {
+    expect(loopEndsAt(base({ noDriverEndsInSeconds: 1500 }))).toBe('in about 25 min')
+    expect(loopEndsAt(base({ noDriverEndsInSeconds: 10 }))).toBe('in about 1 min')
+    expect(loopEndsAt(stampLoopStatus(base({ noDriverEndsInSeconds: 60 }), 0)!)).toMatch(/^at \S/)
+    expect(loopEndsAt(base())).toBeNull()
+    expect(loopEndsAt(base({ noDriverEndsInSeconds: -1 }))).toBeNull()
+  })
+
+  test('stampLoopStatus keeps the frame and adds when it arrived; null stays null', () => {
+    const frame = base({ step: openStep })
+    expect(stampLoopStatus(frame, 42)).toEqual({ ...frame, receivedAtMs: 42 })
+    expect(stampLoopStatus(null, 42)).toBeNull()
+    expect(stampLoopStatus(undefined, 42)).toBeNull()
+  })
+
   test('a claimed step names the purpose and the iteration', () => {
     const d = loopDisplay(base({ step: { ...openStep, state: 'claimed' } }))
     expect(d.statusWord).toBe('Your agent is answering · next action · iteration 4')
@@ -49,8 +95,8 @@ describe('loopDisplay', () => {
   test.each([
     ['loop_step_declined', { reason: 'out of scope host' }, 'Your agent declined this step: out of scope host'],
     ['loop_step_declined', {}, 'Your agent declined this step.'],
-    ['loop_step_not_answered', {}, 'Your agent did not answer in time. The run ended.'],
-    ['loop_no_driver', {}, 'No agent answered within 5 minutes. Start your agent and send the message again.'],
+    ['loop_step_not_answered', {}, `Your agent did not answer in time, so the run ended. ${LOOP_RESUME_HINT}`],
+    ['loop_no_driver', {}, `No agent called RedAmon in time, so the run ended. ${LOOP_RESUME_HINT}`],
   ])('error %s', (code, extra, text) => {
     const d = loopDisplay(base({ state: 'error', detail: { code, ...extra } }))
     expect(d.notices.map(n => n.text)).toEqual([text])

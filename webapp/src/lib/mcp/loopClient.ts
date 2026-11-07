@@ -59,6 +59,8 @@ export interface LoopStepView {
   page: { cursor: number; nextCursor: number | null; totalChars: number }
   leaseExpiresInSeconds: number
   deadlineInSeconds: number
+  /** If no loop call of the driver reaches RedAmon for this long, the whole run ends. */
+  runEndsIfSilentSeconds: number
 }
 
 export interface LoopSessionView {
@@ -90,8 +92,9 @@ const FIXED: Record<string, string> = {
   agent_outdated: 'The RedAmon agent does not support Agent in the Loop yet: rebuild and ' +
     'restart the agent.',
   not_found: 'No such step is open for you. Call loop_wait_step for the next one.',
-  step_closed: 'This step is already answered, expired or cancelled. Call loop_wait_step for ' +
-    'the next one.',
+  step_closed: 'This step is already answered, expired or cancelled. If you did not answer it, ' +
+    'RedAmon gave up on it, which can end the run: call loop_wait_step to see the session\'s ' +
+    'state, and tell the person.',
   answer_too_large: 'The answer is larger than this RedAmon deployment accepts.',
   bad_args: 'The agent refused the request as invalid.',
   loop_too_many_steps: 'Too many steps are waiting. Answer the open ones first.',

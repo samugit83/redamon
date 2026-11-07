@@ -149,7 +149,7 @@ test('1. happy path: a confirmed tool, a phase approval, the report', async ({ p
   await expect(page.getByRole('img', { name: UNATTENDED_ICON })).toHaveCount(0)
 
   const think1 = await d.firstThink()
-  expect(think1.contractVersion).toBe(1)
+  expect(think1.contractVersion).toBe(2)
   expect(think1.answerFormat).toBe('json')
   expect(think1.fullPrompt).not.toContain('[[part')
 
@@ -326,4 +326,60 @@ test('14. an imported project never arrives on Agent in the Loop', async () => {
   expect(body.warnings.join('\n')).toMatch(/used Agent in the Loop; it was imported with/)
   const imported = await (await api.get(`/api/projects/${body.projectId}`)).json()
   expect(imported.agentOpenaiModel).not.toMatch(/^loop\//)
+})
+
+test('15. an agent that goes quiet: the chat says when the run ends, the run keeps its work, continue resumes it', async ({ page }) => {
+  // An interactive driver makes no call while its person talks to it. RedAmon waits
+  // LOOP_NO_DRIVER_GRACE_S (30 min by default), too long for a test: this scenario
+  // runs only against an agent started with a short grace, for example
+  //   LOOP_NO_DRIVER_GRACE_S=120 LOOP_LEASE_S=15 LOOP_DRIVER_SEEN_S=10 docker compose up -d agent
+  test.setTimeout(600_000)
+  const d = new Driver(api, driveToken)   // no driver name: the resumed prompt arrives in full
+  await openChat(page)
+  await send(page, d)
+
+  const think1 = await d.firstThink()
+  const grace = think1.runEndsIfSilentSeconds as number
+  expect(grace).toBeGreaterThan(0)
+  expect(grace).toBeLessThanOrEqual(think1.deadlineInSeconds)
+  test.skip(grace > 300 || think1.leaseExpiresInSeconds >= grace,
+    `the agent's silence limit is ${grace} s; start it with a short LOOP_NO_DRIVER_GRACE_S (see above)`)
+
+  // The driver holds think1 and goes quiet. Once its lease lapses and no call came for
+  // LOOP_DRIVER_SEEN_S, the chat no longer claims the agent is answering.
+  await expect(page.getByText(/^Your agent stopped responding\. Unless it calls RedAmon again, this run ends at /))
+    .toBeVisible({ timeout: (think1.leaseExpiresInSeconds + 90) * 1000 })
+  await expect(page.getByText(/Your agent is answering/)).toHaveCount(0)
+  await page.screenshot({ path: test.info().outputPath('1-agent-quiet.png') })
+
+  // At the limit the run ends, with a report written from what the run kept.
+  await expect(page.getByText(/^No agent called RedAmon in time, so the run ended\. Start your agent/))
+    .toBeVisible({ timeout: (grace + 90) * 1000 })
+  await expect(page.getByText(/so RedAmon ended the run \(loop_no_driver\)/).first()).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText(/then type continue in this chat\. The chat keeps its history\./).first()).toBeVisible()
+  await page.screenshot({ path: test.info().outputPath('2-run-ended.png') })
+
+  // The driver comes back late: its answer is refused with what that means, and the
+  // session list tells it how the person resumes.
+  const late = await d.submit(think1.stepId, ANSWERS.complete)
+  expect(late.isError).toBe(true)
+  expect(late.text).toMatch(/If you did not answer it, RedAmon gave up on it/)
+  const after = await d.wait(1)
+  const mine = after.sessions.find((s: Step) => s.sessionId === d.session)
+  expect(mine?.state).toBe('error')
+  expect(mine?.detail.code).toBe('loop_no_driver')
+  expect(after.hint).toMatch(/type continue in the same RedAmon chat/)
+
+  // "continue" in the same chat starts a new run of the same session, with its history.
+  const input = page.getByPlaceholder('Ask a question or type /skill...')
+  await expect(input).toBeEnabled({ timeout: 30_000 })
+  await input.fill('continue')
+  await page.getByRole('button', { name: 'Send message' }).click()
+  const think2 = await d.firstThink()
+  expect(think2.fullPrompt).toContain(OBJECTIVE)
+  await d.submit(think2.stepId, ANSWERS.complete)
+  await d.finish()
+  await expect(page.getByText('This report was written by the e2e driver.')).toBeVisible({ timeout: 60_000 })
+  await page.screenshot({ path: test.info().outputPath('3-resumed.png') })
+  await d.until('finished', [projectId, ...cleanupProjects])
 })

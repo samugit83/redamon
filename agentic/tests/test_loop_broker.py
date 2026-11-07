@@ -83,7 +83,7 @@ class WaitAndAnswer(BrokerCase):
         step = await self.open(scope)
         got = await self.wait()
         self.assertEqual(got["step"]["stepId"], step.id)
-        self.assertEqual(got["step"]["contractVersion"], 1)
+        self.assertEqual(got["step"]["contractVersion"], 2)
         self.assertEqual(got["step"]["answerFormat"], "json")
         self.assertEqual(step.state, "claimed")
         self.assertEqual(step.claimed_by, "t1:cc-a")
@@ -450,6 +450,78 @@ class Scopes(BrokerCase):
         await asyncio.sleep(0.03)
         self.assertFalse(rec.payloads[-1]["driver"]["connected"])
         self.assertEqual(rec.payloads[-1]["driver"]["lastSeenSeconds"], 91)
+
+
+class SilenceCountdown(BrokerCase):
+    """The limit that ends a run when the driver goes quiet, shown to both sides:
+    the driver on every step, the person in the status frame."""
+
+    async def test_the_step_tells_the_driver_how_long_it_may_stay_silent(self):
+        scope = await self.scope()
+        await self.open(scope)
+        view = (await self.wait())["step"]
+        self.assertEqual(view["runEndsIfSilentSeconds"], 300)
+        self.assertEqual(view["deadlineInSeconds"], 900)
+
+    async def test_a_nearer_deadline_bounds_the_silence(self):
+        self.make(step_deadline_s=200)
+        scope = await self.scope()
+        await self.open(scope)
+        self.assertEqual((await self.wait())["step"]["runEndsIfSilentSeconds"], 200)
+
+    async def test_a_live_claim_shows_claimed_and_no_countdown(self):
+        rec = Recorder()
+        scope = await self.scope(callback=rec)
+        step = await self.open(scope)
+        self.awaiting(step)
+        await self.wait()
+        await asyncio.sleep(0.02)
+        payload = rec.payloads[-1]
+        self.assertEqual(payload["step"]["state"], "claimed")
+        self.assertTrue(payload["driver"]["connected"])
+        self.assertNotIn("noDriverEndsInSeconds", payload)
+
+    async def test_a_lapsed_claim_shows_open_with_the_time_left(self):
+        # The driver claimed the step and went quiet: the person must not keep
+        # reading "your agent is answering" until the run ends.
+        rec = Recorder()
+        scope = await self.scope(callback=rec)
+        step = await self.open(scope)
+        task = self.awaiting(step)
+        await self.wait()                           # last driver call at t=1000
+        self.clock.t += 91                          # lease (90 s) and LOOP_DRIVER_SEEN_S passed
+        await asyncio.sleep(0.03)
+        payload = rec.payloads[-1]
+        self.assertEqual(payload["step"]["state"], "open")
+        self.assertFalse(payload["driver"]["connected"])
+        self.assertEqual(payload["noDriverEndsInSeconds"], 300 - 91)
+        self.assertEqual(step.state, "claimed")     # the broker state itself is unchanged
+        self.assertFalse(task.done())
+
+    async def test_a_chat_no_agent_ever_served_counts_from_the_step(self):
+        rec = Recorder()
+        scope = await self.scope(callback=rec)
+        step = await self.open(scope)
+        self.awaiting(step)
+        self.clock.t += 40
+        await asyncio.sleep(0.03)
+        payload = self.broker.status_payload(session_key("u1", "p1", "s1"))
+        self.assertIsNone(payload["driver"]["lastSeenSeconds"])
+        self.assertEqual(payload["noDriverEndsInSeconds"], 300 - 40)
+
+    async def test_the_countdown_is_the_moment_the_no_driver_rule_fires(self):
+        scope = await self.scope()
+        step = await self.open(scope)
+        task = self.awaiting(step)
+        await self.wait()
+        self.clock.t += 100
+        left = self.broker.status_payload(session_key("u1", "p1", "s1"))["noDriverEndsInSeconds"]
+        self.clock.t += left - 1
+        await asyncio.sleep(0.03)
+        self.assertFalse(task.done())
+        self.clock.t += 1
+        with self.assertRaises(LoopNoDriver):
+            await asyncio.wait_for(task, 1)
 
 
 class Dedup(BrokerCase):

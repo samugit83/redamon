@@ -144,6 +144,9 @@ const NOT_TOOLS = new Set([
   'graph_data_missing',
   // The refusal code of a driver token that also holds a write or exec scope.
   'loop_token_too_broad',
+  // A loop run that ended for want of an answer: codes a driver reads in the
+  // session list, and the pack tells it how to resume after each.
+  'loop_no_driver', 'loop_step_not_answered',
 ])
 
 describe('P8: every tool named in an agent-facing string exists', () => {

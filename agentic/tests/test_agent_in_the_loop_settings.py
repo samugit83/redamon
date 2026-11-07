@@ -65,15 +65,18 @@ class Settings(unittest.TestCase):
     def test_defaults(self):
         with _clean_env():
             s = settings()
-        self.assertEqual(s.step_deadline_s, 900)
+        self.assertEqual(s.step_deadline_s, 3600)
         self.assertEqual(s.lease_s, 90)
         self.assertEqual(s.wait_max_s, 55)
         self.assertEqual(s.page_chars, 40000)
         self.assertEqual(s.answer_max_chars, 262144)
         self.assertEqual(s.max_open_steps_per_user, 16)
-        self.assertEqual(s.no_driver_grace_s, 300)
+        self.assertEqual(s.no_driver_grace_s, 1800)
         self.assertEqual(s.driver_seen_s, 60)
         self.assertEqual(s.state_ttl_s, 3600)
+        # The deadline counts from the step's opening, so it must outlast the
+        # silence an interactive driver is allowed, or it ends that pause first.
+        self.assertGreater(s.step_deadline_s, s.no_driver_grace_s)
 
     def test_in_bounds_values_are_kept(self):
         with _clean_env(LOOP_STEP_DEADLINE_S="1200", LOOP_LEASE_S="120", LOOP_WAIT_MAX_S="30",
@@ -88,7 +91,7 @@ class Settings(unittest.TestCase):
 
     def test_out_of_bounds_and_malformed_fall_back_to_the_default(self):
         cases = {
-            "LOOP_STEP_DEADLINE_S": ("5", "step_deadline_s", 900),
+            "LOOP_STEP_DEADLINE_S": ("5", "step_deadline_s", 3600),
             "LOOP_LEASE_S": ("9999", "lease_s", 90),
             "LOOP_WAIT_MAX_S": ("56", "wait_max_s", 55),
             "LOOP_PAGE_CHARS": ("abc", "page_chars", 40000),
@@ -110,7 +113,7 @@ class Settings(unittest.TestCase):
     def test_a_bad_value_never_raises(self):
         with _clean_env(LOOP_STEP_DEADLINE_S="nine hundred", LOOP_LEASE_S="1e9"):
             s = settings()
-        self.assertEqual((s.step_deadline_s, s.lease_s), (900, 90))
+        self.assertEqual((s.step_deadline_s, s.lease_s), (3600, 90))
 
 
 class _no_logs:

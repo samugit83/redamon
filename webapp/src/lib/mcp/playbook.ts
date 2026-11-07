@@ -22,6 +22,7 @@
  * generator cannot catch them drifting. onboarding.test.ts pins each of them
  * against the module that owns it instead.
  */
+import { LOOP_CONTRACT_VERSION } from './loopSkill'
 
 export interface CapabilityArea {
   id: string
@@ -781,7 +782,9 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
       '`finished` or `stopped` means the session is over: stop calling it and say so in one line.',
       'A step\'s prompt may have more pages: read them all while `page.nextCursor` is not null.',
       'Choose one short driver name for this conversation and send it on every call, or every step arrives in full.',
-      'A `contractVersion` other than 1 means this guidance is out of date: stop and tell the person.',
+      `A \`contractVersion\` other than ${LOOP_CONTRACT_VERSION} means this guidance is out of date: stop and tell the person.`,
+      'If no loop call of yours reaches RedAmon for a step\'s `runEndsIfSilentSeconds`, the whole run ends, final report included. While a run is live, never end your turn to wait for the person: answer briefly and call it again in the same reply.',
+      '`error` with code `loop_no_driver` or `loop_step_not_answered` means no answer came in time. The chat keeps its history: the person types "continue" in it and asks you to drive again.',
     ],
     workflowRefs: ['drive-a-session'],
   },
@@ -1179,12 +1182,16 @@ export const WORKFLOWS: Workflow[] = [
       '2. Call `loop_wait_step`. If `step` is null, read `sessions[].state`: keep waiting quietly while it',
       '   is `thinking` or `running_tool`; say once what the person must do if it is `awaiting_human`;',
       '   stop if it is `finished`, `stopped` or `error`, or there is no session.',
-      '3. If a step came back, check `contractVersion` is 1, then read every page with `loop_get_step` while',
+      `3. If a step came back, check \`contractVersion\` is ${LOOP_CONTRACT_VERSION}, then read every page with \`loop_get_step\` while`,
       '   `page.nextCursor` is not null (from `cursor: 0` with `full: true` if a placeholder points at text you no longer have).',
       '4. Answer exactly what the last instruction asks, in `answerFormat`: one JSON object for `json`, only the',
       '   query for `cypher`, the report for `markdown`.',
       '5. Call `loop_submit_step` with `stepId` and `answer` (or `declined: true` and a short reason), print',
       '   one line about your decision, and go back to 2.',
+      '',
+      'Stay in the loop: if no loop call of yours reaches RedAmon for a step\'s `runEndsIfSilentSeconds`',
+      '(30 minutes by default), it ends the whole run, final report included. While a run is live, never end',
+      'your turn to wait for the person: answer them briefly and go back to 2 in the same reply.',
     ],
   },
 ]

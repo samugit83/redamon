@@ -391,7 +391,7 @@ inside the agent loop**: what it returns is parsed as the agent's own decision.
 | An automated path switches a project to an outside brain | MCP writes, presets, imports and remembered user defaults refuse or drop a `loop/` model: a person picks it in the project form |
 | A loop model is called with no run to answer it (a hang, or a revert that routes `loop/mcp` to OpenAI) | Every builder outside a chat run refuses it (`loop_model_not_supported_here`); the revert procedure resets loop rows first |
 | A driver's Cypher writes the graph | The agent's own `query_graph` runs in a READ-access Neo4j session |
-| Long headless runs exhaust memory | The session cap counts live runs as well as connections; a run with no driver for 5 minutes ends |
+| Long headless runs exhaust memory | The session cap counts live runs as well as connections; a run with no driver for 30 minutes ends |
 
 **Residual:** the step prompt carries target data and RedAmon's prompts to a
 client RedAmon does not control, which may hold shell, web or file tools on the

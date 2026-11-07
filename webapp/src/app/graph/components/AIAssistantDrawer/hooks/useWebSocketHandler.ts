@@ -24,6 +24,7 @@ import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } fro
 import { findToolCardIndex, settleRunningTools } from './toolCardState'
 import { agentErrorText, isPersistFailedNotice, type AgentErrorPayload } from './agentErrorText'
 import { endsRateLimitWait, rateLimitWaitFromPayload, type RateLimitWait } from './rateLimitWait'
+import { stampLoopStatus, type LoopStatusView } from './loopStatus'
 import {
   handleFireteamDeployed,
   handleFireteamMemberStarted,
@@ -74,7 +75,7 @@ interface WebSocketHandlerDeps {
   // Debounced internally so concurrent wave tools coalesce into one refetch.
   onGraphMutation?: () => void
   // Agent in the Loop: the live status of a loop run (never persisted).
-  setLoopStatus?: (status: LoopStatusPayload | null) => void
+  setLoopStatus?: (status: LoopStatusView | null) => void
   // A model call waiting for the provider's rate limit (never persisted).
   setRateLimitWait?: (wait: RateLimitWait | null) => void
 }
@@ -123,7 +124,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
         break
 
       case MessageType.LOOP_STATUS:
-        setLoopStatus?.(message.payload as LoopStatusPayload)
+        setLoopStatus?.(stampLoopStatus(message.payload as LoopStatusPayload, Date.now()))
         break
 
       case MessageType.RATE_LIMIT_WAIT:

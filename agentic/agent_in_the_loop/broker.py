@@ -114,6 +114,12 @@ def _driver_key(token_id: str, driver_name: Optional[str]) -> str:
     return f"{token_id}:{driver_name or ''}"
 
 
+def _served(step: "Step", now: float) -> bool:
+    """A driver holds the step right now. A claim whose lease ran out is not
+    served: only a later driver call turns it back to open."""
+    return step.state == CLAIMED and step.lease_until > now
+
+
 class StepBroker:
     def __init__(self, now: Callable[[], float] = time.monotonic,
                  config: Optional[LoopSettings] = None, poll_s: float = DEFAULT_POLL_S):
@@ -240,11 +246,22 @@ class StepBroker:
             "toolConfirmation": status.tool_confirmation,
         }
         if steps:
-            shown = next((s for s in steps if s.state == CLAIMED), steps[0])
-            payload["step"] = {"stepId": shown.id, "state": shown.state,
+            shown = next((s for s in steps if _served(s, now)), steps[0])
+            payload["step"] = {"stepId": shown.id,
+                               "state": CLAIMED if _served(shown, now) else OPEN,
                                "purpose": shown.purpose,
                                "iteration": shown.meta.get("iteration")}
+            if not connected:
+                payload["noDriverEndsInSeconds"] = self._no_driver_ends_in(key, steps, now)
         return payload
+
+    def _no_driver_ends_in(self, key: str, steps: list[Step], now: float) -> int:
+        """Seconds until await_answer ends the run if no driver calls: its
+        no-driver rule or a step's deadline, whichever comes first."""
+        since = self._seen.get(key, 0.0)
+        ends = min(min(max(s.opened_at, since) + self.cfg.no_driver_grace_s, s.deadline_at)
+                   for s in steps)
+        return int(max(0.0, ends - now))
 
     def _emit(self, key: str) -> None:
         scope = next(iter(reversed(self._live_scopes(key))), None)
@@ -539,6 +556,10 @@ class StepBroker:
             "page": {"cursor": cursor, "nextCursor": next_cursor, "totalChars": len(text)},
             "leaseExpiresInSeconds": int(max(0.0, step.lease_until - now)),
             "deadlineInSeconds": int(max(0.0, step.deadline_at - now)),
+            # The limit a driver must know before it stops calling: the deadline
+            # alone overstates how long it may stay silent.
+            "runEndsIfSilentSeconds": int(max(0.0, min(float(self.cfg.no_driver_grace_s),
+                                                       step.deadline_at - now))),
         }
         if step.meta.get("iteration") is not None:
             view["iteration"] = step.meta["iteration"]

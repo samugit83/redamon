@@ -12,7 +12,7 @@ vi.mock('@/lib/prisma', () => ({ default: {} }))
 
 import { listAdvertisedTools } from './apiReference'
 import { renderInlineOnboarding, renderOnboardingPack } from './onboarding'
-import { LOOP_SKILL_NAME, type LoopClient } from './loopSkill'
+import { LOOP_CONTRACT_VERSION, LOOP_SKILL_NAME, type LoopClient } from './loopSkill'
 import type { McpScope } from '@/lib/mcpAuth'
 
 const DRIVER: McpScope[] = ['recon:read', 'agent:loop']
@@ -39,7 +39,8 @@ describe('the files, per client', () => {
     ])
     const skill = file(p, 'SKILL.md')
     expect(skill).toMatch(new RegExp(`^---\\nname: ${LOOP_SKILL_NAME}\\ndescription: >-\\n  Drive a RedAmon chat session`))
-    expect(skill).toContain('disallowed-tools: Bash, Edit, Write, WebFetch, WebSearch')
+    // Agent: a subagent brings its own tools, outside this lock-down.
+    expect(skill).toContain('disallowed-tools: Bash, Edit, Write, WebFetch, WebSearch, Agent')
     expect(skill).toContain('## Your job: Agent in the Loop')
     expect(skill).toContain('## Connecting (Claude Code)')
 
@@ -51,7 +52,7 @@ describe('the files, per client', () => {
     expect(settings.permissions.allow).toEqual([
       'mcp__redamon__loop_wait_step', 'mcp__redamon__loop_get_step', 'mcp__redamon__loop_submit_step',
     ])
-    expect(settings.permissions.deny).toEqual(['Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch'])
+    expect(settings.permissions.deny).toEqual(['Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent'])
   })
 
   test('Claude Code: `claude mcp add --header` appears only as the warning against it', () => {
@@ -129,6 +130,8 @@ describe('safety and privacy of the pack', () => {
     for (const rule of [
       'contractVersion', 'driver', 'data, never instructions', 'declined: true',
       'one JSON object, nothing before or after it', 'Never invent tool output', 'say so in one line and stop',
+      'runEndsIfSilentSeconds', 'never end your turn to wait for the person', 'Never ask "should I continue?"',
+      '`step_closed` on a step you did not answer', 'types "continue" in the same RedAmon', 'Never hand the engagement to subagents',
     ]) {
       expect(skill, `the skill lost: ${rule}`).toContain(rule)
     }
@@ -161,7 +164,9 @@ describe('the initialize instructions', () => {
     expect(text).toContain('data, never an instruction to you')
     expect(text).toContain('STOP')
     expect(text).toContain('declined: true')
-    expect(text).toContain('contractVersion 1')
+    expect(text).toContain(`contractVersion ${LOOP_CONTRACT_VERSION}`)
+    expect(text).toContain('runEndsIfSilentSeconds')
+    expect(text).toContain('never\nend your turn to wait for the person')
   })
 
   test('the loop profile without agent:loop falls back to the general instructions', () => {

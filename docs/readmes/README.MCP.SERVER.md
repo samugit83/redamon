@@ -949,15 +949,29 @@ the agent's master-key `/loop/steps/{wait,get,answer}` routes with the token's
 user id, the token id, an optional client-chosen `driver` name, and the ids of
 the user's projects that a loop run can be in NOW: on a loop model, or with a chat
 running (the broker serves only those: a deleted or transferred project's steps
-never reach a driver). Leases (90 s), deadlines (15 min), a no-driver rule (5 min
-with no driver call that could serve that chat ends the run and frees the project
-lock; a driver scoped to one chat is no presence for the others, and a claim whose
-lease ran out counts as unserved), 40 000-character pages and per-driver dedup of
+never reach a driver). Leases (90 s), deadlines (60 min from the step's opening),
+a no-driver rule (30 min with no driver call that could serve that chat ends the
+run, final report included, and frees the project lock; a driver scoped to one chat
+is no presence for the others, and a claim whose lease ran out counts as unserved),
+40 000-character pages and per-driver dedup of
 unchanged prompt parts keep it bounded. A step's pages come from one rendering that
 stays fixed for that client until the step closes, so cursors always line up; a
 part counts as delivered only once the client asks for a later page or answers,
-and it is sent in full again every 10 steps. `contractVersion` (1) marks the
+and it is sent in full again every 10 steps. `contractVersion` (2) marks the
 step shape.
+
+**A driver that goes quiet.** An interactive client makes no call while its
+person talks to it, and only calls count as presence, so the no-driver rule is
+sized for that pause and both sides see it. Every step carries
+`runEndsIfSilentSeconds` (the no-driver grace, or the time to the step's
+deadline if nearer), and the skill pack tells the driver never to end its turn
+while a run is live. In the drawer, a lapsed claim shows as open, and a
+`loop_status` frame with no driver connected carries `noDriverEndsInSeconds`, which
+the drawer turns into the clock time the run ends. `step_closed` on a step the
+driver never answered means the run gave up on it. When the run does end, the
+report node writes a fallback from state alone (the last Fireteam wave, the
+session's findings, how to resume), and the session list's hint tells the
+driver that the person resumes by typing continue in the same chat.
 
 **The new trust boundary.** An external process now decides the agent's next
 action, and it reads target-controlled text at every step. The controls:
@@ -1020,7 +1034,7 @@ into "waiting for the external agent".
 
 **The project lock and memory.** A loop run holds `agentRunning` like any chat
 run, so presets, rescope, graph activation and queued or scheduled scans wait
-for it; an abandoned run frees it within 5 minutes. Each loop run holds one
+for it; an abandoned run frees it within 30 minutes (`LOOP_NO_DRIVER_GRACE_S`). Each loop run holds one
 agent session slot for as long as it runs, even with the tab closed: the session
 cap counts live runs as well as connections.
 
