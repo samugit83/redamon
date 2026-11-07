@@ -29,7 +29,7 @@ import {
   INPUT_NODE_WIDTH,
   INPUT_NODE_HEIGHT,
 } from './workflowLayout'
-import { useWorkflowGraph } from './useWorkflowGraph'
+import { useWorkflowGraph, applyEdgeSelection } from './useWorkflowGraph'
 
 
 // ---------------------------------------------------------------------------
@@ -635,6 +635,71 @@ describe('useWorkflowGraph edges', () => {
       expect(edge.selectable, `${edge.id} is selectable`).toBe(false)
       expect(edge.focusable, `${edge.id} is focusable`).toBe(false)
     }
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Edge animation: static until a node is selected
+// ---------------------------------------------------------------------------
+
+describe('applyEdgeSelection', () => {
+  // Only Naabu is on, so its edges flow and Masscan's (same inputs) do not.
+  const formData = { naabuEnabled: true, masscanEnabled: false }
+  const graphEdges = () => renderHook(() => useWorkflowGraph(formData)).result.current.edges
+  const animated = (edges: ReturnType<typeof applyEdgeSelection>) =>
+    edges.filter(e => (e.data as { shouldAnimate?: boolean }).shouldAnimate)
+  const touching = (edges: ReturnType<typeof applyEdgeSelection>, nodeId: string) =>
+    new Set(edges.filter(e => e.source === nodeId || e.target === nodeId).map(e => e.id))
+
+  test('with nothing selected no edge animates, flowing or not', () => {
+    const edges = graphEdges()
+    expect(edges.some(e => (e.data as { flowing?: boolean }).flowing)).toBe(true)
+    expect(animated(applyEdgeSelection(edges, new Set(), false))).toEqual([])
+  })
+
+  test('selecting an enabled tool animates exactly its own edges', () => {
+    const edges = graphEdges()
+    const ids = touching(edges, 'tool-Naabu')
+    expect(ids.size).toBeGreaterThan(0)
+    const moving = animated(applyEdgeSelection(edges, ids, true))
+    expect(new Set(moving.map(e => e.id))).toEqual(ids)
+  })
+
+  test('the edges of a selected but disabled tool stay static', () => {
+    const edges = graphEdges()
+    const ids = touching(edges, 'tool-Masscan')
+    expect(ids.size).toBeGreaterThan(0)
+    expect(animated(applyEdgeSelection(edges, ids, true))).toEqual([])
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Discovery & OSINT column
+// ---------------------------------------------------------------------------
+
+describe('Discovery & OSINT column', () => {
+  const COLUMN = ['SubdomainDiscovery', 'Urlscan', 'Shodan', 'OsintEnrichment']
+
+  test('Uncover has no node of its own (its settings live in OSINT Enrichment)', () => {
+    expect(WORKFLOW_TOOLS.some(t => t.id === 'Uncover')).toBe(false)
+  })
+
+  test('the four tools stack top to bottom in one column', () => {
+    const { result } = renderHook(() => useWorkflowGraph({}))
+    const pos = COLUMN.map(id => result.current.nodes.find(n => n.id === `tool-${id}`)!.position)
+    expect(new Set(pos.map(p => p.x)).size).toBe(1)
+    for (let i = 1; i < pos.length; i++) expect(pos[i].y).toBeGreaterThan(pos[i - 1].y)
+  })
+
+  test('no other tool shares that column', () => {
+    const { result } = renderHook(() => useWorkflowGraph({}))
+    const x = result.current.nodes.find(n => n.id === 'tool-Urlscan')!.position.x
+    const inColumn = result.current.nodes
+      .filter(n => n.type === 'toolNode' && n.position.x === x)
+      .map(n => (n.data as { toolId: string }).toolId)
+    expect(inColumn).toEqual(COLUMN)
   })
 })
 

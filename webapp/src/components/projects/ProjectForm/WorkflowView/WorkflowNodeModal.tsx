@@ -136,7 +136,6 @@ export function WorkflowNodeModal({
       case 'CveLookup':         return <CveLookupSection {...baseProps} />
       case 'Mitre':             return <MitreSection {...baseProps} />
       case 'SecurityChecks':    return <SecurityChecksSection {...baseProps} />
-      case 'Uncover':           return <OsintEnrichmentSection {...baseProps} />
       case 'input':             return (
         <>
           {mode === 'create' && onOpenRoe && (

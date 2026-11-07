@@ -9,7 +9,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { Project } from '@prisma/client'
-import { useWorkflowGraph } from './useWorkflowGraph'
+import { useWorkflowGraph, applyEdgeSelection } from './useWorkflowGraph'
 import { ToolNode } from './ToolNode'
 import { DataNode } from './DataNode'
 import { InputNode } from './InputNode'
@@ -205,21 +205,10 @@ export function WorkflowView({ formData, updateField, projectId, mode, onSave, o
     })
   }, [rawNodes, handleToggle, handleOpenSettings, onRunPartial, handleNodeClick, connectedNodeIds, hasHighlight, mode, projectId, dataNodeCounts, handleBadgeClick, hasExplicitPrefixes, subdomainDiscoveryLockReason])
 
-  const edges = useMemo(() => {
-    if (!hasHighlight) return graphEdges
-
-    return graphEdges.map(edge => {
-      const isConnected = connectedEdgeIds.has(edge.id)
-      return {
-        ...edge,
-        style: {
-          ...edge.style,
-          opacity: isConnected ? 1 : 0.08,
-          strokeWidth: isConnected ? 2.5 : (edge.style?.strokeWidth ?? 2),
-        },
-      }
-    })
-  }, [graphEdges, connectedEdgeIds, hasHighlight])
+  const edges = useMemo(
+    () => applyEdgeSelection(graphEdges, connectedEdgeIds, hasHighlight),
+    [graphEdges, connectedEdgeIds, hasHighlight],
+  )
 
   return (
     <div className={styles.canvas}>

@@ -21,14 +21,14 @@ function openApiIdle(d: Record<string, unknown>): boolean {
 }
 
 export const WORKFLOW_TOOLS: WorkflowToolDef[] = [
-  // Group 1 - Discovery
+  // Group 1 - Discovery & OSINT, stacked in one column.
+  // Uncover has no node: its settings live inside OSINT Enrichment and the scan
+  // runs it only while OSINT Enrichment is on, so a node of its own opened the
+  // same dialog and could show it on while the scan skipped it.
   { id: 'SubdomainDiscovery', label: 'Subdomain Discovery', enabledField: 'subdomainDiscoveryEnabled', group: 1, badge: 'both' },
   { id: 'Urlscan',           label: 'URLScan',             enabledField: 'urlscanEnabled',             group: 1, badge: 'passive' },
-  { id: 'Uncover',           label: 'Uncover',             enabledField: 'uncoverEnabled',             group: 1, badge: 'passive' },
-
-  // Group 2 - OSINT
-  { id: 'Shodan',           label: 'Shodan',              enabledField: 'shodanEnabled',              group: 2, badge: 'passive' },
-  { id: 'OsintEnrichment',  label: 'OSINT Enrichment',    enabledField: 'osintEnrichmentEnabled',     group: 2, badge: 'passive' },
+  { id: 'Shodan',           label: 'Shodan',              enabledField: 'shodanEnabled',              group: 1, badge: 'passive' },
+  { id: 'OsintEnrichment',  label: 'OSINT Enrichment',    enabledField: 'osintEnrichmentEnabled',     group: 1, badge: 'passive' },
 
   // Group 3 - Port Scanning
   { id: 'Naabu',   label: 'Naabu',   enabledField: 'naabuEnabled',   group: 3, badge: 'active' },
@@ -139,8 +139,7 @@ export function getNodeColor(nodeType: string): string {
 // Group stage metadata
 export const WORKFLOW_GROUPS: { group: number; label: string; color: string }[] = [
   { group: 0,   label: 'Input',          color: '#6b7280' },
-  { group: 1,   label: 'Discovery',      color: '#3b82f6' },
-  { group: 2,   label: 'OSINT',          color: '#8b5cf6' },
+  { group: 1,   label: 'Discovery & OSINT', color: '#3b82f6' },
   { group: 3,   label: 'Port Scanning',  color: '#06b6d4' },
   { group: 4,   label: 'HTTP Probing',   color: '#22c55e' },
   { group: 5,   label: 'Resource Enum',  color: '#f59e0b' },

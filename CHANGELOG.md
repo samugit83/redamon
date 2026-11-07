@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **urlscan pages through its results.** Without an API key urlscan answers at most 100 visits per search, whatever is asked, so RedAmon used to see only the newest 100. It now pages with `search_after` (100 a page without a key, up to 10,000 with one) until the answer, Max Results or the search budget ends. **Max Results defaults to 10,000** for new projects and is capped at scan start: 10,000 with a key, 1,000 without. Existing projects keep their saved value (often 50,000), which is simply read as the cap: nothing is rewritten.
 - The URLScan section says what a missing key costs: only the last 30 days, 100 visits per search, no urlscan verdicts.
+- The workflow view drops the Uncover node (its settings live in OSINT Enrichment, which it needs to run), stacks Subdomain Discovery, URLScan, Shodan and OSINT Enrichment in one column, and animates only the selected node's edges.
 
 ### Fixed
 

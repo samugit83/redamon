@@ -259,13 +259,14 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
 
     // ---- 8. Build React Flow edges ----
     // Normal edges are dashed (6 3). Enrich edges are dotted (2 4).
-    // Animated dashes show direction when the producing tool is enabled.
+    // `flowing` marks an edge whose data really moves (its tool is enabled);
+    // applyEdgeSelection animates it only while one of its ends is selected.
     const rfEdges: Edge[] = uniqueEdges.map((edge, i) => {
       const sourceIsData = edge.source.startsWith('data-')
       const targetIsData = edge.target.startsWith('data-')
       const isEnrich = edge.edgeType === 'enrich'
 
-      let animated = false
+      let flowing = false
       let strokeColor = '#4b5563'
       let strokeOpacity = 0.6
       const strokeDasharray = isEnrich ? '2 4' : '6 3'
@@ -284,7 +285,7 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
           const toolId = edge.target.replace('tool-', '')
           const tool = WORKFLOW_TOOLS.find(t => t.id === toolId)
           const toolEnabled = tool ? !!formData[tool.enabledField] : false
-          animated = toolEnabled
+          flowing = toolEnabled
           strokeOpacity = toolEnabled ? 0.5 : 0.15
         }
       } else if (targetIsData) {
@@ -295,7 +296,7 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
         if (edge.source === 'input') {
           strokeColor = nodeColor
           strokeOpacity = 0.4
-          animated = true
+          flowing = true
         } else {
           const toolId = edge.source.replace('tool-', '')
           const tool = WORKFLOW_TOOLS.find(t => t.id === toolId)
@@ -308,7 +309,7 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
             strokeColor = enabled ? nodeColor : '#4b5563'
             strokeOpacity = enabled ? 0.5 : 0.15
           }
-          animated = enabled
+          flowing = enabled
         }
       }
 
@@ -323,7 +324,7 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
         selectable: false,
         focusable: false,
         animated: false,
-        data: { shouldAnimate: animated, isEnrich },
+        data: { flowing, isEnrich },
         style: {
           stroke: strokeColor,
           strokeWidth,
@@ -336,4 +337,31 @@ export function useWorkflowGraph(formData: Record<string, unknown>) {
     return { nodes: rfNodes, edges: rfEdges, dataNodeStatus }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledKey])
+}
+
+/**
+ * Edges are static until a node is selected; then only that node's flowing
+ * edges animate and every other edge fades. A canvas where every enabled edge
+ * moves at once is noise, and each moving edge keeps a CSS animation running.
+ */
+export function applyEdgeSelection(
+  edges: Edge[],
+  connectedEdgeIds: ReadonlySet<string>,
+  hasSelection: boolean,
+): Edge[] {
+  return edges.map(edge => {
+    const isConnected = connectedEdgeIds.has(edge.id)
+    const flowing = (edge.data as { flowing?: boolean } | undefined)?.flowing === true
+    const data = { ...edge.data, shouldAnimate: isConnected && flowing }
+    if (!hasSelection) return { ...edge, data }
+    return {
+      ...edge,
+      data,
+      style: {
+        ...edge.style,
+        opacity: isConnected ? 1 : 0.08,
+        strokeWidth: isConnected ? 2.5 : (edge.style?.strokeWidth ?? 2),
+      },
+    }
+  })
 }
