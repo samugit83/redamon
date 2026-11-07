@@ -51,12 +51,15 @@ describe.skipIf(!available)('the full pipeline is RECON_TOTAL_PHASES phases', ()
 })
 
 describe.skipIf(!available)('a partial run is phase 1 of PARTIAL_RECON_TOTAL_PHASES', () => {
-  test('stream_partial_logs pins every event to that phase number', () => {
+  test('stream_partial_logs reports every event as PARTIAL_RECON_PHASE_NUMBER, which is that count', () => {
     const src = readFileSync(CONTAINER_MANAGER, 'utf8')
+    const constant = /^PARTIAL_RECON_PHASE_NUMBER = (\d+)$/m.exec(src)
+    expect(constant, 'PARTIAL_RECON_PHASE_NUMBER not found in container_manager.py').toBeTruthy()
+    expect(Number(constant![1])).toBe(PARTIAL_RECON_TOTAL_PHASES)
     const fn = /\n    async def stream_partial_logs\([\s\S]*?(?=\n    (?:async )?def )/.exec(src)
     expect(fn, 'stream_partial_logs not found in container_manager.py').toBeTruthy()
-    const pins = [...fn![0].matchAll(/event\.phase_number = (\d+)/g)].map(m => Number(m[1]))
-    expect(pins.length).toBeGreaterThan(0)
-    expect(new Set(pins)).toEqual(new Set([PARTIAL_RECON_TOTAL_PHASES]))
+    expect(fn![0]).toContain('PARTIAL_RECON_PHASE_NUMBER')
+    // The pipeline's phase parser would name and number a line from its text.
+    expect(fn![0]).not.toMatch(/_parse_log_line|PhaseTracker/)
   })
 })

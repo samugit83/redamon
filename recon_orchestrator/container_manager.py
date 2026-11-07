@@ -241,9 +241,9 @@ def _stage_safe_run_id(run_id: str) -> str:
     """The run id as trufflehog_bridge.run_id() writes it into a dir name."""
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(run_id))[:64]
 
-# Tool-name phase patterns, for a log with no pipeline header yet (partial recon,
-# or a container from before the headers). Order matters - more specific patterns
-# should come first within each phase.
+# Tool-name phase patterns, for a log with no pipeline header yet (a container
+# from before the headers). Order matters - more specific patterns should come
+# first within each phase.
 PHASE_PATTERNS = [
     (r"\[Phase 1\]|\[PHASE 1\]|Phase 1:|domain.*discovery|Domain Reconnaissance", "Domain Discovery", 1),
     (r"\[Phase 2\]|\[PHASE 2\]|Phase 2:|NAABU PORT SCANNER|port.*scan", "Port Scanning", 2),
@@ -280,6 +280,11 @@ PIPELINE_HEADER_PHASES = [
 ]
 _PIPELINE_HEADERS = [(re.compile(p), name, n) for p, name, n in PIPELINE_HEADER_PHASES]
 _TOOL_PHASES = [(re.compile(p, re.IGNORECASE), name, n) for p, name, n in PHASE_PATTERNS]
+
+# A partial run is one tool, so its log is one phase, named after the tool. The
+# tool-name patterns above would name it from whatever a line mentions: an Httpx
+# run read "Vulnerability Scanning" once one line held "nuclei" or "vuln…scan".
+PARTIAL_RECON_PHASE_NUMBER = 1
 
 # A status poll with no log stream attached reads new log lines at most this often.
 PHASE_POLL_INTERVAL_S = 10.0
@@ -342,6 +347,16 @@ def _stamp_datetime(stamp: str) -> Optional[datetime]:
         return datetime.fromisoformat(key[:26] + "+00:00")
     except ValueError:
         return None
+
+
+def _split_docker_stamp(line: str) -> tuple[Optional[datetime], str]:
+    """A `timestamps=True` Docker log line as (time, text), or (None, line) when
+    it carries no stamp. A blank print() arrives as the stamp alone once its
+    trailing space is stripped, so the text can be empty: callers skip it
+    rather than show the stamp as the line."""
+    stamp, _, text = line.partition(" ")
+    at = _stamp_datetime(stamp)
+    return (at, text) if at is not None else (None, line)
 
 
 class _PhaseCursor:
@@ -2246,32 +2261,14 @@ class ContainerManager:
 
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
                     if decoded_line:
-                        # Parse Docker timestamp prefix (RFC3339Nano format)
-                        docker_ts = None
-                        log_text = decoded_line
-                        # Docker timestamps look like: 2024-01-15T10:30:00.123456789Z <log line>
-                        if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                            space_idx = decoded_line.find(' ')
-                            if space_idx > 0:
-                                ts_str = decoded_line[:space_idx]
-                                try:
-                                    # Truncate nanoseconds to microseconds for stdlib compatibility
-                                    # Docker: 2024-01-15T10:30:00.123456789Z -> 2024-01-15T10:30:00.123456+00:00
-                                    ts_clean = ts_str.replace('Z', '+00:00')
-                                    dot_idx = ts_clean.find('.')
-                                    plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                    if dot_idx > 0 and plus_idx > 0:
-                                        frac = ts_clean[dot_idx + 1:plus_idx][:6]  # max 6 digits
-                                        ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                    docker_ts = datetime.fromisoformat(ts_clean)
-                                    log_text = decoded_line[space_idx + 1:]
-                                except (ValueError, OverflowError):
-                                    pass
+                        docker_ts, log_text = _split_docker_stamp(decoded_line)
 
                         # The run's shared cursor parses each line once; a line
                         # it saw already (a stream attached late replays the log
                         # from the start) is shown with the current phase.
                         changed = self._feed_phase_cursor(project_id, decoded_line)
+                        if not log_text:
+                            continue
                         tracker = self._phase_cursor(project_id).tracker
                         yield self._log_event(
                             ANSI_ESCAPE.sub('', log_text), tracker.phase, tracker.phase_number,
@@ -2685,8 +2682,8 @@ class ContainerManager:
                 pass
 
     async def stream_partial_logs(self, project_id: str, run_id: str) -> AsyncGenerator[ReconLogEvent, None]:
-        """Stream logs from a specific partial recon container.
-        Reuses the same log parsing logic as full recon.
+        """Stream logs from a specific partial recon container, every line in
+        the one phase named after the run's tool (PARTIAL_RECON_PHASE_NUMBER).
         """
         state = await self.get_partial_recon_status(project_id, run_id)
 
@@ -2698,9 +2695,8 @@ class ContainerManager:
             )
             return
 
-        current_phase: Optional[str] = "Partial Recon"
-        current_phase_num: Optional[int] = 1
-        tracker = PhaseTracker(current_phase, current_phase_num)
+        phase = state.tool_id or "Partial Recon"
+        announced = False
 
         try:
             container = self.client.containers.get(state.container_id)
@@ -2760,43 +2756,21 @@ class ContainerManager:
                         break
 
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
-                    if decoded_line:
-                        # Parse Docker timestamp
-                        docker_ts = None
-                        log_text = decoded_line
-                        if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                            space_idx = decoded_line.find(' ')
-                            if space_idx > 0:
-                                ts_str = decoded_line[:space_idx]
-                                try:
-                                    ts_clean = ts_str.replace('Z', '+00:00')
-                                    dot_idx = ts_clean.find('.')
-                                    plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                    if dot_idx > 0 and plus_idx > 0:
-                                        frac = ts_clean[dot_idx + 1:plus_idx][:6]
-                                        ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                    docker_ts = datetime.fromisoformat(ts_clean)
-                                    log_text = decoded_line[space_idx + 1:]
-                                except (ValueError, OverflowError):
-                                    pass
-
-                        event = self._parse_log_line(log_text, current_phase, current_phase_num,
-                                                     timestamp=docker_ts, tracker=tracker)
-                        # Partial recon always runs a single tool/phase, so pin
-                        # phase_number to 1 regardless of which full-pipeline
-                        # pattern the line happens to match (e.g. NUCLEI => 5).
-                        event.phase_number = 1
-                        if event.is_phase_start:
-                            current_phase = event.phase
-                            current_phase_num = 1
-                        # Track the high-water mark so a reconnecting SSE client
-                        # resumes after this line instead of replaying history.
-                        if docker_ts is not None:
-                            if project_id in self.partial_recon_states and run_id in self.partial_recon_states[project_id]:
-                                cur = self.partial_recon_states[project_id][run_id].last_log_timestamp
-                                if cur is None or docker_ts > cur:
-                                    self.partial_recon_states[project_id][run_id].last_log_timestamp = docker_ts
-                        yield event
+                    docker_ts, log_text = _split_docker_stamp(decoded_line)
+                    if not log_text:
+                        continue
+                    event = self._log_event(
+                        ANSI_ESCAPE.sub('', log_text), phase, PARTIAL_RECON_PHASE_NUMBER,
+                        not announced, docker_ts or datetime.now(timezone.utc))
+                    announced = True
+                    # Track the high-water mark so a reconnecting SSE client
+                    # resumes after this line instead of replaying history.
+                    if docker_ts is not None:
+                        if project_id in self.partial_recon_states and run_id in self.partial_recon_states[project_id]:
+                            cur = self.partial_recon_states[project_id][run_id].last_log_timestamp
+                            if cur is None or docker_ts > cur:
+                                self.partial_recon_states[project_id][run_id].last_log_timestamp = docker_ts
+                    yield event
 
                 except asyncio.TimeoutError:
                     try:
@@ -3203,25 +3177,9 @@ class ContainerManager:
                     if line is None:
                         break
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
-                    if not decoded_line:
+                    docker_ts, log_text = _split_docker_stamp(decoded_line)
+                    if not log_text:
                         continue
-                    docker_ts = None
-                    log_text = decoded_line
-                    if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                        space_idx = decoded_line.find(' ')
-                        if space_idx > 0:
-                            ts_str = decoded_line[:space_idx]
-                            try:
-                                ts_clean = ts_str.replace('Z', '+00:00')
-                                dot_idx = ts_clean.find('.')
-                                plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                if dot_idx > 0 and plus_idx > 0:
-                                    frac = ts_clean[dot_idx + 1:plus_idx][:6]
-                                    ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                docker_ts = datetime.fromisoformat(ts_clean)
-                                log_text = decoded_line[space_idx + 1:]
-                            except (ValueError, OverflowError):
-                                pass
 
                     event = self._parse_ai_attack_log_line(log_text, current_phase, current_phase_num, timestamp=docker_ts)
                     if event.is_phase_start:
@@ -3741,24 +3699,9 @@ class ContainerManager:
 
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
                     if decoded_line:
-                        # Parse Docker timestamp prefix
-                        docker_ts = None
-                        log_text = decoded_line
-                        if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                            space_idx = decoded_line.find(' ')
-                            if space_idx > 0:
-                                ts_str = decoded_line[:space_idx]
-                                try:
-                                    ts_clean = ts_str.replace('Z', '+00:00')
-                                    dot_idx = ts_clean.find('.')
-                                    plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                    if dot_idx > 0 and plus_idx > 0:
-                                        frac = ts_clean[dot_idx + 1:plus_idx][:6]
-                                        ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                    docker_ts = datetime.fromisoformat(ts_clean)
-                                    log_text = decoded_line[space_idx + 1:]
-                                except (ValueError, OverflowError):
-                                    pass
+                        docker_ts, log_text = _split_docker_stamp(decoded_line)
+                        if not log_text:
+                            continue
 
                         event = self._parse_gvm_log_line(log_text, current_phase, current_phase_num, timestamp=docker_ts)
 
@@ -4178,24 +4121,9 @@ class ContainerManager:
 
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
                     if decoded_line:
-                        # Parse Docker timestamp prefix
-                        docker_ts = None
-                        log_text = decoded_line
-                        if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                            space_idx = decoded_line.find(' ')
-                            if space_idx > 0:
-                                ts_str = decoded_line[:space_idx]
-                                try:
-                                    ts_clean = ts_str.replace('Z', '+00:00')
-                                    dot_idx = ts_clean.find('.')
-                                    plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                    if dot_idx > 0 and plus_idx > 0:
-                                        frac = ts_clean[dot_idx + 1:plus_idx][:6]
-                                        ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                    docker_ts = datetime.fromisoformat(ts_clean)
-                                    log_text = decoded_line[space_idx + 1:]
-                                except (ValueError, OverflowError):
-                                    pass
+                        docker_ts, log_text = _split_docker_stamp(decoded_line)
+                        if not log_text:
+                            continue
 
                         event = self._parse_github_hunt_log_line(log_text, current_phase, current_phase_num, timestamp=docker_ts)
 
@@ -6036,24 +5964,9 @@ exit $RC
 
                     decoded_line = line.decode("utf-8", errors="replace").rstrip()
                     if decoded_line:
-                        # Parse Docker timestamp prefix
-                        docker_ts = None
-                        log_text = decoded_line
-                        if len(decoded_line) > 30 and decoded_line[4] == '-' and decoded_line[10] == 'T':
-                            space_idx = decoded_line.find(' ')
-                            if space_idx > 0:
-                                ts_str = decoded_line[:space_idx]
-                                try:
-                                    ts_clean = ts_str.replace('Z', '+00:00')
-                                    dot_idx = ts_clean.find('.')
-                                    plus_idx = ts_clean.find('+', dot_idx) if dot_idx > 0 else -1
-                                    if dot_idx > 0 and plus_idx > 0:
-                                        frac = ts_clean[dot_idx + 1:plus_idx][:6]
-                                        ts_clean = ts_clean[:dot_idx + 1] + frac + ts_clean[plus_idx:]
-                                    docker_ts = datetime.fromisoformat(ts_clean)
-                                    log_text = decoded_line[space_idx + 1:]
-                                except (ValueError, OverflowError):
-                                    pass
+                        docker_ts, log_text = _split_docker_stamp(decoded_line)
+                        if not log_text:
+                            continue
 
                         if th_sources is not None:
                             log_text = th_sources.redact(log_text, dict(os.environ))

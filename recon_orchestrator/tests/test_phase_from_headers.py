@@ -9,7 +9,7 @@ nobody watching, get_recon_status (UI and MCP) showed no phase or an old one.
 
 Once a log has shown one of recon/main.py's `[*][Pipeline] GROUP …` headers,
 only headers move the phase; the old patterns serve a log with no header yet
-(partial recon) and never move it backwards. A per-project cursor parses each
+(a container from before the headers) and never move it backwards. A per-project cursor parses each
 line once, from the stream or from a status poll.
 """
 import asyncio

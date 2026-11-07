@@ -2132,7 +2132,7 @@ export default function GraphPage() {
           isOpen={activeLogsDrawer === `partialRecon:${run.run_id}`}
           onClose={() => setActiveLogsDrawer(null)}
           logs={partialReconLogsMap[run.run_id] || []}
-          currentPhase={partialReconPhaseMap[run.run_id]?.phase || null}
+          currentPhase={WORKFLOW_TOOLS.find(t => t.id === run.tool_id)?.label || run.tool_id || null}
           currentPhaseNumber={partialReconPhaseMap[run.run_id]?.phaseNumber || null}
           status={(run.status as ReconStatus) || 'idle'}
           errorMessage={run.error}

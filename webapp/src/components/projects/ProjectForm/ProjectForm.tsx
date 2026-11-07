@@ -92,6 +92,7 @@ import { VhostSniSection } from './sections/VhostSniSection'
 import { WebCachePoisonSection } from './sections/WebCachePoisonSection'
 import { RouteExposureSection } from './sections/RouteExposureSection'
 import { PartialReconModal } from './WorkflowView/PartialReconModal'
+import { usePartialLogsRun } from './usePartialLogsRun'
 import { ReconPresetModal } from './ReconPresetModal'
 import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
 import {
@@ -398,9 +399,6 @@ export function ProjectForm({
   // Partial Recon
   const [partialReconToolId, setPartialReconToolId] = useState<string | null>(null)
   const [isPartialReconStarting, setIsPartialReconStarting] = useState(false)
-  const [activePartialLogsRunId, setActivePartialLogsRunId] = useState<string | null>(null)
-  // Locally tracked run state for immediate drawer rendering before polling catches up
-  const [localPartialRun, setLocalPartialRun] = useState<PartialReconState | null>(null)
 
   // Recon Preset
   const [isPresetModalOpen, setIsPresetModalOpen] = useState(false)
@@ -634,11 +632,15 @@ export function ProjectForm({
       .map(r => r.tool_id)
   )
 
-  // Find the active run for the logs drawer from the full run list so the drawer
-  // keeps showing final status (completed/error) until the backend auto-cleans it.
-  // Fall back to local state for the brief window before the first poll picks it up.
-  const activePartialLogsRun = allPartialReconRuns.find(r => r.run_id === activePartialLogsRunId)
-    ?? (localPartialRun?.run_id === activePartialLogsRunId ? localPartialRun : null)
+  const {
+    runId: activePartialLogsRunId,
+    run: activePartialLogsRun,
+    setRunId: setActivePartialLogsRunId,
+    showStarted: showStartedPartialRun,
+  } = usePartialLogsRun(allPartialReconRuns)
+  const partialLogsToolLabel = activePartialLogsRun
+    ? WORKFLOW_TOOLS.find(t => t.id === activePartialLogsRun.tool_id)?.label || activePartialLogsRun.tool_id
+    : null
 
   // SSE logs for the currently visible partial recon drawer
   const {
@@ -1141,15 +1143,15 @@ export function ProjectForm({
       const data: PartialReconState = await response.json()
       setPartialReconToolId(null)
       toast.success('Partial recon started')
-      // Store locally for immediate drawer rendering, then open it
-      setLocalPartialRun(data)
-      setActivePartialLogsRunId(data.run_id)
+      showStartedPartialRun(data)
+      // List the run now, which also polls at the running pace, not the idle one.
+      void refetchPartialReconStatuses()
     } catch (err) {
       toast.error(toApiError(err, 'Failed to start partial recon').message)
     } finally {
       setIsPartialReconStarting(false)
     }
-  }, [projectId, toast, handlePartialStartFailure])
+  }, [projectId, toast, handlePartialStartFailure, showStartedPartialRun, refetchPartialReconStatuses])
 
   // A refused or unanswered stop leaves the run going, so it is said, and the
   // logs drawer stays open on it.
@@ -1664,7 +1666,7 @@ export function ProjectForm({
           isOpen={!!activePartialLogsRunId}
           onClose={() => setActivePartialLogsRunId(null)}
           logs={partialReconLogsMap[activePartialLogsRunId!] || []}
-          currentPhase={partialReconPhaseMap[activePartialLogsRunId!]?.phase || null}
+          currentPhase={partialLogsToolLabel}
           currentPhaseNumber={partialReconPhaseMap[activePartialLogsRunId!]?.phaseNumber || null}
           status={(activePartialLogsRun.status as ReconStatus) || 'idle'}
           errorMessage={activePartialLogsRun.error}
@@ -1674,7 +1676,7 @@ export function ProjectForm({
               setActivePartialLogsRunId(null)
             }
           }}
-          title={`Partial Recon: ${WORKFLOW_TOOLS.find(t => t.id === activePartialLogsRun.tool_id)?.label || 'Running'}`}
+          title={`Partial Recon: ${partialLogsToolLabel || 'Running'}`}
           totalPhases={PARTIAL_RECON_TOTAL_PHASES}
           hidePhaseProgress
         />
