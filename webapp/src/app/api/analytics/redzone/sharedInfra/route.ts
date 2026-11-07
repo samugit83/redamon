@@ -56,11 +56,12 @@ export async function GET(request: NextRequest) {
     )
 
     // Cluster type 2: ASN grouping
-    //   Subdomains resolving to IPs sharing the same ASN.
+    //   Subdomains resolving to IPs sharing the same ASN. Only addresses a name
+    //   resolves to NOW: an IP node can be history (urlscan's old visits) or an
+    //   origin candidate, and listing it here would present it as live.
     const asnResult = await session.run(
-      `MATCH (ip:IP {project_id: $pid})
-       WHERE ip.asn IS NOT NULL AND ip.asn <> ''
-       OPTIONAL MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
+      `MATCH (sd:Subdomain)-[dnsr:RESOLVES_TO]->(ip:IP {project_id: $pid})
+       WHERE ${currentDns('dnsr')} AND ip.asn IS NOT NULL AND ip.asn <> ''
        WITH ip.asn AS asnKey,
             max(ip.updated_at)                                     AS asnUpdatedAt,
             collect(DISTINCT ip.country)                           AS countries,

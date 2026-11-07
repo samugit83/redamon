@@ -260,8 +260,8 @@ describe('/api/analytics/redzone/sharedInfra', () => {
     await sharedInfraRoute.GET(makeRequest('p1'))
     expect(runCalls).toHaveLength(3)
     expect(runCalls[0].cypher).toMatch(/MATCH \(cert:Certificate \{project_id: \$pid\}\)/)
-    expect(runCalls[1].cypher).toMatch(/MATCH \(ip:IP \{project_id: \$pid\}\)/)
-    expect(runCalls[1].cypher).toMatch(/WHERE ip\.asn IS NOT NULL/)
+    expect(runCalls[1].cypher).toMatch(/MATCH \(sd:Subdomain\)-\[dnsr:RESOLVES_TO\]->\(ip:IP \{project_id: \$pid\}\)/)
+    expect(runCalls[1].cypher).toMatch(/ip\.asn IS NOT NULL/)
     expect(runCalls[2].cypher).toMatch(/MATCH \(ip:IP \{project_id: \$pid\}\)/)
   })
 
@@ -274,6 +274,15 @@ describe('/api/analytics/redzone/sharedInfra', () => {
     const certCypher = runCalls[0].cypher
     expect(certCypher).toMatch(/coalesce\(cert\.cert_key, toString\(id\(cert\)\)\) AS clusterKey/)
     expect(certCypher).not.toMatch(/cert\.subject_cn[^\n]*AS clusterKey/)
+  })
+
+  // An IP node can be history (urlscan's old visits) or an origin candidate; the
+  // ASN cluster lists the addresses names resolve to now, so its edge is required.
+  test('the ASN cluster lists only addresses a name currently resolves to', async () => {
+    await sharedInfraRoute.GET(makeRequest('p1'))
+    const asn = runCalls[1].cypher
+    expect(asn).not.toMatch(/OPTIONAL MATCH \(sd:Subdomain\)-\[dnsr:RESOLVES_TO\]/)
+    expect(asn).toMatch(/WHERE dnsr\.source IS NULL AND ip\.asn/)
   })
 
   test('each cluster query enforces hostCount >= 2', async () => {
