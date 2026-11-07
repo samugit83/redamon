@@ -838,6 +838,22 @@ def _stop_httpx_at_budget(process, container: str, budget: int, url_count: int) 
         pass
 
 
+def system_resolvers(resolv_conf: str = "/etc/resolv.conf") -> List[str]:
+    """The nameservers the scan resolves with (its DNS step, naabu). The
+    recon container shares the host network, so this is the host's resolver."""
+    try:
+        with open(resolv_conf, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "nameserver" and parts[1] not in found:
+            found.append(parts[1])
+    return found
+
+
 def build_httpx_command(targets_file: str, output_file: str, settings: dict,
                         probe_hosts: List[str] = None, container_name: str = None) -> List[str]:
     """
@@ -1008,6 +1024,14 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
     # /header/* + /title/* showroom. Join with commas so all paths probe.
     if HTTPX_PATHS:
         cmd.extend(["-path", ",".join(HTTPX_PATHS)])
+
+    # httpx's own resolver list includes public resolvers: a name only the
+    # local DNS knows (an internal or split-horizon target, a lab) then fails
+    # at random and whole hosts drop out of the probe. Resolve as the DNS
+    # step did.
+    resolvers = system_resolvers()
+    if resolvers:
+        cmd.extend(["-r", ",".join(resolvers)])
 
     # Custom headers
     if HTTPX_CUSTOM_HEADERS:
