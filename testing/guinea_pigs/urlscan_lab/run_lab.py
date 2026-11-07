@@ -438,8 +438,9 @@ def start_triage_in_app(pid: str):
     return answer, not 200 <= int(answer.get("status") or 0) < 300
 
 
-def wait_triage(pid: str, timeout: int, every: int = 15) -> dict:
-    """get_triage_status names a live run in `liveRun` and has no top-level status."""
+def wait_triage(pid: str, timeout: int, every: int = 15, run_id: str | None = None) -> dict:
+    """get_triage_status names a live run in `liveRun` and has no top-level status.
+    With `run_id`, waits for that run among `recentRuns`, not just any finished one."""
     started = time.time()
     deadline, last, seen_live = started + timeout, None, False
     while time.time() < deadline:
@@ -452,6 +453,12 @@ def wait_triage(pid: str, timeout: int, every: int = 15) -> dict:
         if view != last:
             print(f"    {time.strftime('%H:%M:%S')} get_triage_status: {view}", flush=True)
             last = view
+        if run_id:
+            mine = next((r for r in state.get("recentRuns") or [] if r.get("id") == run_id), None)
+            if mine and not live and mine.get("finishedAt"):
+                print(f"    triage run {run_id}: {mine.get('status')}", flush=True)
+                return state
+            continue
         # 'current' once a run completed, 'partial' when every run failed or stopped.
         if (state and not live and state.get("triageState") in ("current", "partial")
                 and (seen_live or time.time() - started > 60)):
@@ -605,7 +612,8 @@ def full_run(name: str, run: Run, known: dict, timeout: int) -> None:
         if err:
             print(f"[!] triage start failed: {json.dumps(out)[:300]}")
         else:
-            wait_triage(pid, 1800)
+            run_id = (out.get("body") or {}).get("runId") if "body" in out else out.get("runId")
+            wait_triage(pid, 1800, run_id=run_id)
     save_logs(dest)
     write_run(dest, finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
               status=final.get("status"), last_run=final.get("lastRun"))
