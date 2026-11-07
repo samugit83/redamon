@@ -407,6 +407,38 @@ def wait_mcp(tool: str, pid: str, timeout: int, every: int = 20) -> dict:
     raise SystemExit(f"[!] {tool} still running after {timeout}s")
 
 
+_TRIAGE_START = r"""
+import json, os, sys, urllib.request, urllib.error
+body = json.dumps({"user_id": sys.argv[1], "project_id": sys.argv[2], "trigger": "app"}).encode()
+req = urllib.request.Request("http://localhost:8080/triage/runs", data=body, method="POST",
+    headers={"Content-Type": "application/json", "x-internal-key": os.environ.get("INTERNAL_API_KEY", "")})
+try:
+    with urllib.request.urlopen(req, timeout=60) as r:
+        print(json.dumps({"status": r.status, "body": json.loads(r.read() or b"{}")}))
+except urllib.error.HTTPError as e:
+    print(json.dumps({"status": e.code, "body": e.read().decode("utf-8", "replace")[:300]}))
+"""
+
+
+def start_triage_in_app(pid: str):
+    """Start the triage run the way the app does (trigger 'app'), for a token
+    without the opt-in triage:run scope. The request is made inside the agent
+    container, so its internal key is read there and never reaches this process."""
+    owner = run_cmd("docker", "exec", "redamon-postgres", "sh", "-c",
+                    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT user_id FROM projects '
+                    'WHERE id = \'$1\'"', "sh", labkit.check_pid(pid))
+    user_id = owner.stdout.strip()
+    if owner.returncode != 0 or not re.fullmatch(r"[a-z0-9]{20,40}", user_id):
+        return {"error": "the project's owner could not be read"}, True
+    out = run_cmd("docker", "exec", "redamon-agent", "python", "-c", _TRIAGE_START, user_id, pid)
+    try:
+        answer = json.loads(out.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"error": (out.stderr or out.stdout).strip()[:300]}, True
+    print(f"[*] triage started in the app channel: {json.dumps(answer)[:200]}", flush=True)
+    return answer, answer.get("status") != 200
+
+
 def full_run(name: str, run: Run, known: dict, timeout: int) -> None:
     pid = project_id(run.project)
     dest = labkit.RUNS / name
@@ -441,8 +473,10 @@ def full_run(name: str, run: Run, known: dict, timeout: int) -> None:
         tail.terminate()
     if run.triage:
         out, err = mcp_call("start_triage_run", {"projectId": pid}, fatal=False)
+        if err and "triage:run" in json.dumps(out):
+            out, err = start_triage_in_app(pid)
         if err:
-            print(f"[!] start_triage_run failed: {json.dumps(out)[:300]}")
+            print(f"[!] triage start failed: {json.dumps(out)[:300]}")
         else:
             wait_mcp("get_triage_status", pid, 1800)
     save_logs(dest)
