@@ -78,6 +78,16 @@ class TestTheSwitch(unittest.TestCase):
         self.assertTrue(od._urlscan_source_on(_settings()))
 
 
+class TestFrontedHostsAreNames(unittest.TestCase):
+    def test_the_edges_own_address_is_no_fronted_host(self):
+        combined = _combined()
+        combined["http_probe"]["by_url"][f"https://{EDGE}"] = {
+            "host": EDGE, "ip": EDGE, "is_cdn": True, "cdn": "cloudflare", "status_code": 403}
+        with patch.object(od, "_resolve_ips", return_value=set()):
+            fronted = od._select_fronted_hosts(combined, od._RunCtx(_settings()))
+        self.assertEqual(sorted(fronted), [HOST])
+
+
 class TestOldAddresses(unittest.TestCase):
     def test_newest_first_without_cdn_current_or_other_hosts_at_most_five(self):
         rows = [_entry(f"192.88.97.{i}", f"2026-0{i}-01T00:00:00Z") for i in range(1, 8)]
@@ -150,6 +160,17 @@ class TestOwnFile(unittest.TestCase):
 
 def _visit(domain, ip, when="2026-10-01T00:00:00Z"):
     return {"page": {"domain": domain, "ip": ip}, "task": {"time": when}}
+
+
+class TestOwnFileDownload(unittest.TestCase):
+    def test_the_own_copy_is_read_through_the_cdn(self):
+        src, _ = _source()
+        ref = {"html": '<script src="/assets/app.8f3a91c2.js"></script>', "final_url": f"https://{HOST}/"}
+        with patch.object(od, "_file_sha256", return_value=SHA) as dl, \
+                patch.object(od._UrlscanSource, "in_scope", lambda self, h: True):
+            own = src.own_file(HOST, ref)
+        self.assertEqual((own["sha256"], own["path"], own["host"]), (SHA, "/assets/app.8f3a91c2.js", HOST))
+        self.assertIs(dl.call_args.kwargs.get("from_edge_ok"), True)
 
 
 class TestFileSearch(unittest.TestCase):
@@ -270,6 +291,12 @@ class TestFileCheck(unittest.TestCase):
                 self.assertIsNone(od._file_sha256(url, HOST, ctx))
             with patch.object(od.requests, "get", return_value=_Resp(10, status=302)):
                 self.assertIsNone(od._file_sha256(url, HOST, ctx))
+            # Through the edge: no proof from a suspect, but the site's own copy.
+            edge = _Resp(10)
+            edge.headers = {"Server": "cloudflare", "CF-RAY": "1-LAB"}
+            with patch.object(od.requests, "get", return_value=edge):
+                self.assertIsNone(od._file_sha256(url, HOST, ctx))
+                self.assertEqual(len(od._file_sha256(f"https://{HOST}/a.js", "", ctx, from_edge_ok=True)), 64)
         with patch.object(od, "is_url_safe_to_probe", return_value=False), \
                 patch.object(od.requests, "get") as get:
             self.assertIsNone(od._file_sha256("https://10.0.0.5/a.js", "", ctx))

@@ -345,7 +345,10 @@ def _select_fronted_hosts(combined_result: dict, ctx: _RunCtx) -> Dict[str, dict
         if not is_cdn:
             continue
         host = info.get("host") or urlparse(url).hostname
-        if not host:
+        # An origin serves a NAME the CDN fronts. The edge's own address, which
+        # the port scan probes too (naabu reports addresses only), fronts
+        # nothing: unmasking it would credit a name's origin to the edge.
+        if not host or _is_ip(str(host)):
             continue
         entry = fronted.setdefault(host, {
             "favicon_hash": None, "cdn_name": None, "edge_ip": None, "resolved_ips": set(),
@@ -964,10 +967,12 @@ def _own_script(host: str, html: str, base_url: str, js_urls: List[str], in_scop
     return (preferred or kept)[0]
 
 
-def _file_sha256(url: str, host_header: str, ctx: _RunCtx) -> Optional[str]:
+def _file_sha256(url: str, host_header: str, ctx: _RunCtx, from_edge_ok: bool = False) -> Optional[str]:
     """SHA256 of the uncompressed body (what urlscan indexes), or None: a
-    redirect is never followed, a body over 20 MB is skipped, and a response
-    an edge or WAF answered is no file."""
+    redirect is never followed and a body over 20 MB is skipped. A suspect's
+    answer that carries an edge's headers went through the CDN, so it proves
+    no bypass; the site's own copy, read from the fronted host, always does
+    (``from_edge_ok``)."""
     import hashlib
     if not is_url_safe_to_probe(url):
         return None
@@ -979,8 +984,8 @@ def _file_sha256(url: str, host_header: str, ctx: _RunCtx) -> Optional[str]:
         resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=False,
                             headers=headers, stream=True)
         try:
-            if resp.status_code != 200 or edge_from_headers(
-                    {k.lower(): v for k, v in resp.headers.items()}) is not None:
+            if resp.status_code != 200 or (not from_edge_ok and edge_from_headers(
+                    {k.lower(): v for k, v in resp.headers.items()}) is not None):
                 return None
             body = resp.raw.read(_MAX_OWN_FILE_BYTES + 1, decode_content=True) or b""
         finally:
@@ -1278,7 +1283,7 @@ class _UrlscanSource:
             _log("-", f"{host}: no own file")
             return None
         parsed = urlparse(url)
-        sha = _file_sha256(url, "", self.ctx)
+        sha = _file_sha256(url, "", self.ctx, from_edge_ok=True)
         if not sha:
             return None
         return {"url": url, "path": parsed.path + (f"?{parsed.query}" if parsed.query else ""),
