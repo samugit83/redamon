@@ -80,7 +80,10 @@ MODULES = {
     "urlscanEnabled": True, "urlscanMaxResults": 1000,
     "naabuEnabled": True, "naabuCustomPorts": "80,443", "naabuTopPorts": "",
     "httpxEnabled": True, "katanaEnabled": True, "openapiEnabled": True, "openapiAutoDiscover": False,
-    "nucleiEnabled": True, "nucleiDastMode": True,
+    # The DAST pass (which builds URLs from stored endpoints, the risk the S/B
+    # rows guard) ignores tags by design; "tech" only shrinks the detection
+    # pass, whose 5,224 templates over ~260 lab URLs took about 5 hours.
+    "nucleiEnabled": True, "nucleiDastMode": True, "nucleiTags": ["tech"],
     "securityCheckEnabled": True, "routeExposureEnabled": True,
     "subdomainTakeoverEnabled": True, "subjackEnabled": True, "nucleiTakeoversEnabled": True,
     "originDiscoveryEnabled": True, "originDiscoveryKeyless": False, "originDiscoveryScanners": False,
