@@ -639,6 +639,9 @@ Web cache poisoning properties (source="cache_poisoning"):
 - cache_signals (list[string]): cache fingerprint evidence (e.g. "x-cache: hit", "age: 30")
 - cache_buster (string): the isolated cache-buster used so the test never poisoned the real entry
 - source_engine (string): "wcvs" (surfaced by the WCVS breadth engine) or "hypothesis" (native framework/generic pack)
+- detection_mode (string): how the clean read showed the poisoning, "reflected" (the canary came back), "differential" (the cached response changed against the clean profile), "both", or "deception" for web cache deception
+- cross_vantage (boolean): the scan ran with the second-vantage re-confirmation option on (webCachePoisonCrossVantage)
+- vulnerability_id (string): the same value as `id`
 - poc_link (string), curl_verify (string): reproduction; evidence (string): JSON blob with baseline/poisoned/clean hashes, clean_cache_state ("hit"/"unknown" of the victim read), baseline_stable, control_check ("passed": a never-poisoned slot did not show the effect) and xss_context ("proven"/"unverified"/"")
 - id pattern: `cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}` — deterministic, MERGE-safe
 - Typical query: "list confirmed cache poisoning findings" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'cache_poisoning'}) WHERE v.confidence_tier = 'Confirmed' RETURN e.url, v.cache_header, v.cache_impact, v.confidence, v.poc_link`
@@ -1001,6 +1004,9 @@ never report an uploaded-SBOM hit as something found on the target.
 Additional properties present on this node type, not yet described:
 - discovered_at (string)
 - sample_urls (list[string])
+Object-reference and cloud-asset properties (finding_type object_reference or cloud_asset):
+- potential_idor (boolean): on an object_reference, the identifier sits where a request names one object (a path or parameter), so another user's object may answer to it
+- cloud_provider (string), cloud_asset_type (string): on a cloud_asset, the provider and the kind of asset the URL names (a bucket, a function...)
 Package properties on dependency and framework findings:
 - package_name (string), package_version (string): the package the finding names
 Source-map properties (finding_type source_map_exposure or source_map_reference):
@@ -1164,6 +1170,7 @@ not so you can query for one.
 - muted_reason (string): Optional operator note
 - muted_channel (string): How the mute arrived: absent = a person in the UI, `mcp` = an external agent holding that person's access token; `multi` = a person's Multi mute, and `muted_token` then holds the batch id
 - muted_token (string): The access-token prefix of an `mcp` mute; never the token
+- stale_since (datetime): When a scan first stopped reporting a finding it could not delete: one a person muted or judged, kept so their decision stays visible. Shown as resolved; removed if a later scan reports it again
 - triage_priority_score (float): 0-100, the sort key. Bigger is more urgent. The FINAL score, after review and decision
 - triage_math_score (float): The rules-only score (the BASE layer), before any review or decision
 - triage_risk (float): C x L x I x R, 0-1, before the tier is folded into the score. The project-level risk roll-up combines these

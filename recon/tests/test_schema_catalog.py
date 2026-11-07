@@ -307,6 +307,15 @@ _TENANT_KEYS = {"user_id", "project_id"}
 _TRIAGE_PREFIX = "triage"
 
 
+def _retired(label: str) -> set:
+    """Properties no current writer sets on `label`, which older scans left on
+    their nodes: legacy data, not schema drift."""
+    if label != "Domain":
+        return set()
+    from graph_db.mixins.recon.domain_mixin import RETIRED_DOMAIN_RUN_PROPS
+    return set(RETIRED_DOMAIN_RUN_PROPS)
+
+
 def _neo4j_driver():
     """Connect, or return None so the caller skips. Credentials from the env."""
     import os
@@ -356,6 +365,7 @@ def test_no_property_in_the_live_graph_is_missing_from_the_schema():
                     for r in rows
                     if r["propertyName"] not in _TENANT_KEYS
                     and not r["propertyName"].startswith(_TRIAGE_PREFIX)
+                    and r["propertyName"] not in _retired(lab)
                     and r["propertyName"] not in doc
                 ]
                 if missing:
