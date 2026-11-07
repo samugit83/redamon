@@ -19,7 +19,7 @@ import os
 import uuid
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import sys
 
 # Add project root to path for imports
@@ -314,7 +314,8 @@ def build_naabu_command(targets_file: str, output_file: str, settings: dict) -> 
 # Result Parsing
 # =============================================================================
 
-def parse_naabu_output(output_file: str, settings: dict = None) -> Dict:
+def parse_naabu_output(output_file: str, settings: dict = None,
+                       ip_to_hostnames: Optional[Dict[str, list]] = None) -> Dict:
     """
     Parse Naabu JSON Lines output into structured format.
 
@@ -327,6 +328,12 @@ def parse_naabu_output(output_file: str, settings: dict = None) -> Dict:
         settings: Optional settings dict; when provided, AI surface recon
             port-catalogue annotation runs against each port_details entry
             (gated by PORT_SCAN_AI_PORT_CATALOG_ENABLED).
+
+        ip_to_hostnames: the run's own names per address (extract_targets_from_recon).
+            naabu 2.6 writes no "host" for any target, a hostname included, so
+            every name that resolves to a scanned address takes that address's
+            open ports: by_host is what httpx probes, and keyed by address alone
+            no virtual host is ever probed.
 
     Returns:
         Structured dictionary with by_host, by_ip, and summary sections
@@ -424,6 +431,19 @@ def parse_naabu_output(output_file: str, settings: dict = None) -> Dict:
 
                 if port and port not in by_ip[ip]["ports"]:
                     by_ip[ip]["ports"].append(port)
+
+    for ip, ip_entry in by_ip.items():
+        for name in (ip_to_hostnames or {}).get(ip) or []:
+            if not isinstance(name, str) or not name or name in by_host:
+                continue
+            by_host[name] = {
+                "host": name, "ip": ip, "ports": list(ip_entry["ports"]),
+                "port_details": [{"port": p, "protocol": "tcp", "service": get_service_name(p)}
+                                 for p in ip_entry["ports"]],
+                "cdn": ip_entry.get("cdn"), "is_cdn": ip_entry.get("is_cdn", False),
+            }
+            if name not in ip_entry["hostnames"]:
+                ip_entry["hostnames"].append(name)
 
     # Sort ports
     for host in by_host:
@@ -665,7 +685,8 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
 
         # Parse results
         print(f"[*][Naabu] Parsing results...")
-        results = parse_naabu_output(str(naabu_output), settings=settings)
+        results = parse_naabu_output(str(naabu_output), settings=settings,
+                                     ip_to_hostnames=ip_to_hostnames)
         if results.get("summary", {}).get("ai_ports_annotated"):
             print(f"[+][Naabu] AI port catalog matched {results['summary']['ai_ports_annotated']} port(s)")
 

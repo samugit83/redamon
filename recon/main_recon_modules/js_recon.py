@@ -20,6 +20,7 @@ import shutil
 import hashlib
 import uuid
 import requests
+import urllib3
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
@@ -27,6 +28,8 @@ from typing import NamedTuple, Optional
 
 from recon.helpers import catchall
 from recon.helpers.roe_scope import _is_roe_excluded
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from recon.helpers.js_recon.patterns import (
     SUPERSEDED_BY_TRUFFLEHOG, scan_js_content, scan_dev_comments, load_custom_patterns,
 )
@@ -105,7 +108,11 @@ def _safe_redirect_get(url, *, timeout, headers, max_redirects=5):
         if not _download_allowed(current):
             print(f"[!][JsRecon] {current} -- blocked (SSRF guard)")
             return None
-        resp = requests.get(current, timeout=timeout, headers=headers, allow_redirects=False)
+        # The target's own files: its certificate may be self-signed or from an
+        # internal CA, as httpx and katana already accepted. Never the key
+        # validators, which send a secret to a third party.
+        resp = requests.get(current, timeout=timeout, headers=headers, allow_redirects=False,
+                            verify=False)
         if resp.status_code in (301, 302, 303, 307, 308):
             loc = resp.headers.get('Location') or resp.headers.get('location')
             if not loc:
@@ -1415,6 +1422,7 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
                 timeout=timeout,
                 headers=headers,
                 allow_redirects=False,
+                verify=False,
             )
             status_code = int(getattr(response, 'status_code', 0))
             _js_alive(resolved_url)  # any response is life
@@ -1440,7 +1448,7 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
         def fetch_control(url):
             try:
                 answer = requester(probe_method, url, timeout=timeout, headers=headers,
-                                   allow_redirects=False)
+                                   allow_redirects=False, verify=False)
             except Exception as exc:
                 _js_failed(url, exc)
                 raise

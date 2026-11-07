@@ -50,6 +50,10 @@ def _format_value(key: str, value, masked: bool) -> str:
     """Render a setting value for the dump in a readable, bounded form."""
     if value is None:
         return "<unset>"
+    # A switch named after what it looks for (URLSCAN_SECRETS_IN_URLS) holds
+    # no credential: a boolean is never masked.
+    if isinstance(value, bool):
+        return repr(value)
     # Empty credentials should render as <unset> (not '') so the operator can
     # tell at a glance that the slot is empty. Only applies to masked keys --
     # for non-credential settings an empty string can be a legitimate value

@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 import requests
+import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 from typing import Optional
@@ -21,6 +22,8 @@ try:
 except ImportError:  # spawned-container path where CWD is on sys.path
     from ip_filter import is_url_safe_to_probe
 from recon.helpers.user_agent import DEFAULT_BROWSER_UA
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # Default paths to probe for source maps
@@ -77,7 +80,7 @@ def _missing_key_control(map_url: str, timeout: int) -> str:
         return 'failed'
     try:
         resp = requests.get(control, timeout=timeout, headers={'User-Agent': DEFAULT_BROWSER_UA},
-                            allow_redirects=False)
+                            allow_redirects=False, verify=False)
     except requests.RequestException:
         return 'failed'
     return 'denied' if resp.status_code == 403 else 'passed'
@@ -214,7 +217,10 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
     head_timeout = min(timeout, 5)
 
     try:
-        head = requests.head(url, timeout=head_timeout, allow_redirects=True, headers=headers)
+        # The target's own file: a self-signed or internal-CA certificate is
+        # accepted, as by the bundle download.
+        head = requests.head(url, timeout=head_timeout, allow_redirects=True, headers=headers,
+                             verify=False)
         # Skip definite misses without paying for a body download. Other statuses
         # (200, 403, 405, 5xx) fall through to GET — some servers misreport HEAD.
         if head.status_code in (404, 410):
@@ -226,7 +232,7 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
         return None
 
     try:
-        resp = requests.get(url, timeout=timeout, headers=headers)
+        resp = requests.get(url, timeout=timeout, headers=headers, verify=False)
     except requests.RequestException:
         outcome['reason'] = 'unreachable'
         return None

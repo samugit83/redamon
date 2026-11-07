@@ -136,6 +136,11 @@ class TestFormatValue:
         # None always renders as <unset> regardless of masked flag
         assert _format_value("API_KEY", None, masked=True) == "<unset>"
 
+    def test_a_boolean_switch_with_a_secret_shaped_name_is_shown(self):
+        # URLSCAN_SECRETS_IN_URLS is a switch: a bool holds no credential.
+        assert _format_value("URLSCAN_SECRETS_IN_URLS", True, masked=True) == "True"
+        assert _format_value("JSLUICE_EXTRACT_SECRETS", False, masked=True) == "False"
+
 
 # ===========================================================================
 # print_effective_settings
