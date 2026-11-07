@@ -191,8 +191,13 @@ rows:
     runs: [baseline-after]
     checks:
       - no_token: [T1, T2, T3, T4, J1, J2, K1]
-      - cypher: "MATCH (s:Subdomain {project_id: $pid, name: 'app.uslab.test'})-[r:RESOLVES_TO]->(i:IP {project_id: $pid, address: '192.88.97.98'}) RETURN r.source AS v"
+      # Step 0 reads only the newest 100 visits without a key, and the .98 visit is
+      # the 183rd, so step 0 never wrote app -> .98. The edges it did write with no
+      # record type (the urlscan-only names) are the old edges the backfill marks.
+      - cypher: "MATCH (:Subdomain {project_id: $pid})-[r:RESOLVES_TO]->(:IP {project_id: $pid}) WHERE r.record_type IS NULL RETURN DISTINCT coalesce(r.source, 'none') AS v"
         equals: [legacy_unknown]
+      - cypher: "MATCH (s:Subdomain {project_id: $pid})-[r:RESOLVES_TO {source: 'legacy_unknown'}]->(:IP) RETURN s.name AS v"
+        superset: [legacy.uslab.test]
       - manual: "run the backfill job a second time; its log reports 0 changes (tooling/scripts/urlscan_backfill.py)"
 
   # ------------------------------------------------------------------ Items

@@ -549,6 +549,21 @@ def backfill_project(pid: str, *, apply: bool) -> str:
     return text
 
 
+def copy_baseline_json(src: Path, pid: str) -> None:
+    """The scan's recon JSON into the real output folder, where the validator and
+    the backfill read it. Scan containers own that folder (root), so a container
+    copies it."""
+    name = f"recon_{labkit.check_pid(pid)}.json"
+    if not (src / "recon" / "output" / name).is_file():
+        print(f"[!] the baseline scan wrote no {name}")
+        return
+    out = run_cmd("docker", "run", "--rm", "-v", f"{src / 'recon' / 'output'}:/s:ro",
+                  "-v", f"{labkit.REPO / 'recon' / 'output'}:/o", "--entrypoint", "cp",
+                  "redamon-recon", f"/s/{name}", f"/o/{name}")
+    if out.returncode != 0:
+        raise SystemExit(f"[!] could not copy {name}: {out.stderr.strip()[:300]}")
+
+
 def baseline_run(name: str, run: Run, known: dict, timeout: int) -> None:
     pid = project_id(run.project)
     uid = project_owner(pid)
@@ -575,11 +590,7 @@ def baseline_run(name: str, run: Run, known: dict, timeout: int) -> None:
     waited = subprocess.run(["docker", "wait", container], capture_output=True, text=True, timeout=timeout)
     if tail:
         tail.terminate()
-    produced = src / "recon" / "output" / f"recon_{pid}.json"
-    if produced.is_file():
-        shutil.copyfile(produced, labkit.REPO / "recon" / "output" / f"recon_{pid}.json")
-    else:
-        print(f"[!] the baseline scan wrote no recon_{pid}.json")
+    copy_baseline_json(src, pid)
     save_logs(dest)
     write_run(dest, finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
               status="completed" if waited.stdout.strip() == "0" else f"exit {waited.stdout.strip()}")

@@ -62,6 +62,8 @@ class _Session:
             return _Result([{"uid": "u1", "pid": "p1"}])
         if "RETURN elementId(e) AS eid" in query:
             return _Result([dict(e) for e in ENDPOINTS])
+        if "RETURN elementId(v) AS vid" in query:
+            return _Result([])  # a read: no finding holds a leaked link here
         if "count(" in query:
             if "RETURN count(*)" in query:
                 self.writes.append((query, params))
@@ -194,3 +196,62 @@ def test_cli_refuses_a_project_that_is_not_an_id(tmp_path):
     import pytest
     with pytest.raises(SystemExit):
         bf.main(["--output-dir", str(tmp_path), "--skip-graph", "--project", "p1*"])
+
+
+def _finding_doc():
+    leaked = f"https://auth.example.test/password/reset/{TOK}"
+    return {
+        "urlscan": {"urls_with_paths": [{"path": f"/password/reset/{TOK}", "params": {}}]},
+        "vuln_scan": {"security_checks": {"findings": [{
+            "type": "no_rate_limiting", "url": leaked, "endpoint": f"/password/reset/{TOK}",
+            "description": f"Sent 10 requests to {leaked}. No 429 came back.",
+        }], "by_type": {"no_rate_limiting": [{"url": leaked}]}}},
+        "http_probe": {"by_url": {"https://app.example.test/about": {"title": "About"}}},
+    }
+
+
+def test_json_masks_a_leaked_link_wherever_an_old_scan_wrote_it():
+    doc = _finding_doc()
+    assert bf.mask_recon_document(doc) >= 4
+    text = json.dumps(doc)
+    assert TOK not in text
+    finding = doc["vuln_scan"]["security_checks"]["findings"][0]
+    assert finding["url"] == "https://auth.example.test/password/reset/{token}"
+    assert finding["endpoint"] == "/password/reset/{token}"
+    assert finding["description"] == ("Sent 10 requests to https://auth.example.test/password/reset/{token}. "
+                                      "No 429 came back.")
+    assert doc["urlscan"]["urls_with_paths"][0]["path"] == "/password/reset/{token}"
+    # an ordinary link is left alone, and a second pass changes nothing
+    assert "https://app.example.test/about" in doc["http_probe"]["by_url"]
+    assert bf.mask_recon_document(doc) == 0
+
+
+class _FindingSession(_Session):
+    def run(self, query, **params):
+        if "RETURN elementId(v) AS vid" in query:
+            return _Result([
+                {"vid": "v1", "props": {"id": "f-1", "url": f"https://auth.example.test/password/reset/{TOK}",
+                                        "description": f"tested https://auth.example.test/password/reset/{TOK}",
+                                        "severity": "medium"}},
+                {"vid": "v2", "props": {"id": "f-2", "url": "https://app.example.test/login"}},
+            ])
+        return super().run(query, **params)
+
+
+def test_graph_masks_the_findings_that_kept_a_leaked_link():
+    s = _FindingSession()
+    totals = bf.backfill_graph(_Driver(s), apply=True, project="p1")
+    assert totals["findings_masked"] == 1
+    sets = [p for q, p in s.writes if q != "marker" and "SET v += $changed" in q]
+    assert len(sets) == 1 and sets[0]["vid"] == "v1" and sets[0]["pid"] == "p1"
+    assert sets[0]["changed"] == {
+        "url": "https://auth.example.test/password/reset/{token}",
+        "description": "tested https://auth.example.test/password/reset/{token}",
+    }
+    assert TOK not in json.dumps(sets)
+
+
+def test_graph_dry_run_counts_findings_and_writes_none():
+    s = _FindingSession()
+    assert bf.backfill_graph(_Driver(s), apply=False)["findings_masked"] == 1
+    assert not [q for q, _p in s.writes if "SET v += $changed" in q]

@@ -25,11 +25,17 @@ Graph, per project:
   - a ``RESOLVES_TO`` edge with neither ``record_type`` nor ``source`` (the DNS
     writers always set record_type; urlscan's old writer set nothing) ->
     ``source = 'legacy_unknown'``, so it no longer counts as current DNS;
-  - an ``IP`` urlscan wrote that no relationship holds any more -> deleted.
+  - an ``IP`` urlscan wrote that no relationship holds any more -> deleted;
+  - a ``Vulnerability`` whose text names a link the quarantine holds (the old
+    "No Rate Limiting on Login" check requested leaked reset and login links,
+    and its findings kept them in ``url``, ``matched_at`` and ``description``)
+    -> that link masked wherever it appears.
 Recon JSON files (every ``*.json`` at the top of the output folder):
   - query values masked in ``urlscan.entries[].url``, ``urlscan.urls_with_paths``,
     ``urlscan.external_domains[].url``, the aggregated external domains'
-    ``redirect_*_urls``, ``resource_enum.discovered_urls`` and ``archived_urls``;
+    ``redirect_*_urls``, ``resource_enum.discovered_urls`` and ``archived_urls``,
+    the path tokens of ``urlscan.urls_with_paths[].path``, and any other link the
+    quarantine holds, wherever it appears (scan findings, their descriptions);
   - written atomically (a temporary file, then a rename), with NO backup copy:
     a backup would keep the tokens.
 
@@ -114,9 +120,92 @@ def plan_endpoint(row: dict) -> tuple:
     return "keep", None
 
 
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>()\[\]{}|\\^`]+")
+_PATH_KEYS = frozenset({"path", "endpoint", "endpoint_path"})
+_KEEP_KEYS = frozenset({"id", "user_id", "project_id"})
+
+
+def mask_leaked_text(text: str) -> str:
+    """`text` with every link the quarantine holds replaced by its masked form."""
+    ul = _url_leaks()
+
+    def repl(m):
+        url, trail = m.group(0), ""
+        while url and url[-1] in ".,;:!?":
+            url, trail = url[:-1], url[-1] + trail
+        if url and ul.is_quarantined(url):
+            return (ul.mask_url(url) or "[link removed]") + trail
+        return m.group(0)
+    return _URL_IN_TEXT.sub(repl, text) if "://" in text else text
+
+
+def mask_leaked_value(key: str, value):
+    """One stored value with its leaked links masked: text, a bare path under a
+    path-like key, or a list of either. Anything else is returned as it is."""
+    if isinstance(value, list):
+        return [mask_leaked_value(key, v) for v in value]
+    if not isinstance(value, str):
+        return value
+    if key in _PATH_KEYS and value.startswith("/"):
+        ul = _url_leaks()
+        if ul.is_quarantined("http://x" + value):
+            return ul.mask_path(value) or value
+        return value
+    return mask_leaked_text(value)
+
+
+def mask_leaked_links(node, key: str = "") -> int:
+    """Mask, in place, every leaked link in a JSON document; the count changed."""
+    changed = 0
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, (dict, list)) and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+                changed += mask_leaked_links(v, k)
+            else:
+                m = mask_leaked_value(k, v)
+                if m != v:
+                    node[k] = m
+                    changed += 1
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            if isinstance(v, (dict, list)):
+                changed += mask_leaked_links(v, key)
+            else:
+                m = mask_leaked_value(key, v)
+                if m != v:
+                    node[i] = m
+                    changed += 1
+    return changed
+
+
+def backfill_findings(session, uid: str, pid: str, *, apply: bool) -> int:
+    """Mask the leaked links a project's Vulnerability nodes carry; the count."""
+    rows = session.run(
+        "MATCH (v:Vulnerability {user_id: $uid, project_id: $pid}) "
+        "RETURN elementId(v) AS vid, properties(v) AS props", uid=uid, pid=pid)
+    masked = 0
+    for row in [dict(r) for r in rows]:
+        props = row.get("props") or {}
+        changed = {}
+        for key, value in props.items():
+            if key in _KEEP_KEYS:
+                continue
+            m = mask_leaked_value(key, value)
+            if m != value:
+                changed[key] = m
+        if not changed:
+            continue
+        masked += 1
+        if apply:
+            session.run("MATCH (v:Vulnerability {user_id: $uid, project_id: $pid}) WHERE elementId(v) = $vid "
+                        "SET v += $changed", vid=row["vid"], changed=changed, uid=uid, pid=pid)
+    return masked
+
+
 def backfill_project(session, uid: str, pid: str, *, apply: bool) -> dict:
     counts = {"endpoints_masked": 0, "endpoints_deleted": 0, "endpoints_quarantined": 0,
-              "sample_values_removed": 0, "edges_marked_legacy": 0, "orphan_ips_deleted": 0}
+              "sample_values_removed": 0, "edges_marked_legacy": 0, "orphan_ips_deleted": 0,
+              "findings_masked": 0}
     rows = session.run(
         "MATCH (e:Endpoint {user_id: $uid, project_id: $pid}) WHERE e.source = 'urlscan' "
         "RETURN elementId(e) AS eid, e.baseurl AS baseurl, e.path AS path, "
@@ -160,6 +249,7 @@ def backfill_project(session, uid: str, pid: str, *, apply: bool) -> dict:
         else:
             row = session.run(f"{match} RETURN count({var}) AS n", uid=uid, pid=pid).single()
         counts[key] = int((row or {}).get("n", 0) or 0) if row is not None else 0
+    counts["findings_masked"] = backfill_findings(session, uid, pid, apply=apply)
     return counts
 
 
@@ -217,6 +307,10 @@ def mask_recon_document(doc: dict) -> int:
                 m = mask(row["full_url"]) or row["full_url"]
                 changed += m != row["full_url"]
                 row["full_url"] = m
+            if isinstance(row.get("path"), str) and row["path"].startswith("/"):
+                m = ul.mask_path(row["path"]) or row["path"]
+                changed += m != row["path"]
+                row["path"] = m
             params = row.get("params")
             if isinstance(params, dict):
                 for name, value in list(params.items()):
@@ -241,6 +335,9 @@ def mask_recon_document(doc: dict) -> int:
         for field in ("discovered_urls", "archived_urls"):
             resource_enum[field], n = _mask_list(resource_enum.get(field), mask)
             changed += n
+    # Whatever else an older scan wrote a leaked link into (its findings, their
+    # descriptions): the quarantine decides, wherever the link appears.
+    changed += mask_leaked_links(doc)
     return changed
 
 
