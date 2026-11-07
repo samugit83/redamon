@@ -7,7 +7,9 @@ repository `.env` (read by name, never pasted anywhere). Use only the lab projec
 Screenshots go to `generated/ui/` (git-ignored with the rest of `generated/`).
 
 The texts below are the plan's; a difference in the UI is a FAIL of U-02 unless the
-plan was changed on purpose.
+plan was changed on purpose. U-02 is automated by
+`testing/e2e/tests/urlscanLabSettings.spec.ts` (run it once without a urlscan key and
+once in run B's window); its screenshots land in `generated/ui/`.
 
 ## URLScan.io Enrichment section (U-02)
 
@@ -23,7 +25,7 @@ plan was changed on purpose.
 | Leak Detection sub-section: the line "Links containing tokens or passwords are never opened by RedAmon." is information, not a toggle | [ ] | |
 | Leaked One-Time Links, Secrets in URLs: default on; flip/save/reload; MCP and net agree | [ ] | |
 | Exposed Files: Sensitive Files and Pages, Documents Opened by Direct Link: default on; flip/save/reload | [ ] | |
-| Sensitive Files info line with Route Exposure **off**: "Route Exposure is off: turn it on to check if they are still online."; with Route Exposure **on**: "Route Exposure will check if they are still online." | [ ] | |
+| Sensitive Files info line with Route Exposure **off**: "Turn on Route Exposure to check whether they are still online."; with Route Exposure **on**: "Route Exposure will check whether they are still online." (the item-3 table's text; the plan's Final UI mockup paraphrases it) | [ ] | |
 | Problem Pages: Takeover Pages, Problem Pages from Titles and Certificates: default on; flip/save/reload | [ ] | |
 | Takeover Pages info line with Subdomain Takeover **off**: "Subdomain Takeover is off: these hosts get only the DNS and live-page check."; **on**: "These hosts are added to Subdomain Takeover's list." | [ ] | |
 | No "(item n)" tag is visible anywhere | [ ] | |
@@ -48,6 +50,8 @@ plan was changed on purpose.
 
 ## Red Zone (U-03, on the A project after run A; T's tab after run T)
 
+U-03 to U-05 are automated by `testing/e2e/tests/urlscanLabRedZone.spec.ts` (`URLSCAN_LAB_RUN=A-p2`, then `URLSCAN_LAB_RUN=T` for the Takeover tab): it reads each tab's route and the page, takes its expected numbers from the project's own graph (MCP `query_graph`), and saves a screenshot per tab in `generated/ui/`.
+
 | Check | Result | Screenshot |
 | --- | --- | --- |
 | Takeover tab lists `takeover_page_seen` (run T: brokenapp-cname, gone) and `takeover_error_page` with their source | [ ] | |
@@ -64,7 +68,7 @@ plan was changed on purpose.
 | Nuclei: the graph-input count excludes the quarantined endpoints (`/reset`, `/password/reset/{token}`, `/invite/{token}`, `/unsubscribe`, `/api/data`, `/x`, `/auth/magic/{token}`, `/shell.php`) | [ ] | |
 | RouteExposure: the same | [ ] | |
 | Httpx: the IP count excludes `192.88.97.98` | [ ] | |
-| The modal's texts about current DNS say what `currentDns` means (an edge with no source) | [ ] | |
+| The counts use the tools' own filters: no quarantined endpoint (Nuclei, Route Exposure), only addresses reached through current DNS, an edge with no source (Httpx); the plan asks no new modal text | [ ] | |
 
 ## Current-DNS readers (U-05, on the A project after run A)
 
