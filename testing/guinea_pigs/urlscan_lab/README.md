@@ -197,7 +197,7 @@ settings without contacting anything.
 | `unlisted` | unlisted | not in `REDAMON_LAB_PROJECT_IDS` (its URLScan reaches the **real** urlscan with the anonymous `.test` query) | L-04 |
 | `T` | T | takeover DNS; seeds add the three takeover hosts | I5-06, B02 |
 | `B` | B | the account's key is `lab-key` | I7-01, I7-03/04, B29, B36, S-01, S-06 |
-| `baseline` / `baseline-after` | baseline | A on HEAD at step 0 / re-collected after the backfill | L-03, D-01 |
+| `baseline` / `baseline-after` | baseline | A on step 0's code (the hooks commit, exported with `git archive` and spawned through the orchestrator's own container manager, so the shared checkout never moves) / the backfill applied to that project alone (`urlscan_backfill.py --project`, twice), then re-collected | L-03, D-01 |
 
 Settings come from `run_lab.py`: nested_wildcard_lab's offline set (masscan, puredns,
 brute force, every passive provider, Shodan, OTX, GAU, ParamSpider, WHOIS, CVE lookup,
@@ -247,11 +247,15 @@ the lab, the host would resolve their targets on the internet.
 - **B01 on HEAD.** B01's path (an RoE-excluded name discovery resolved) needs a
   discovery source; here `excluded` arrives only through urlscan (F1) and the apex
   certificate's SAN, so on HEAD B01 may pass for want of a path rather than fail.
-- **naabu** gets `80,443` as the plan says; nested_wildcard_lab found naabu cannot
-  resolve lab names (its own resolvers). When it finds nothing, httpx probes the
-  resolved hosts itself (`build_targets_from_dns`).
+- **naabu** gets `80,443` as the plan says. naabu, httpx, katana and tlsx now resolve
+  through the scan container's own resolvers (`-r`, `recon/helpers/system_resolvers.py`):
+  their built-in lists mix public resolvers in, which made lab names fail at random
+  (found by this lab).
 - **Run B is manual for the key.** The urlscan key is an account-wide Global Setting,
   not a project setting: set `lab-key` for run B only, with nothing else scanning.
+- **Triage on run A.** `start_triage_run` needs the opt-in `triage:run` scope. Without it
+  the runner starts the run as the app does (trigger `app`, from inside the agent
+  container, so the internal key never leaves it) and waits for that run id.
 - **Unrelated domains.** The shared-file case needs more than 5 registrable domains;
   the lab uses `www.uslab-other-1.test` .. `-7.test` (reserved `.test`, never in any
   zone, never requested).
@@ -280,7 +284,7 @@ the lab, the host would resolve their targets on the internet.
 | `run_lab.py` | `--plan`, `--prepare`, `--run`, `--collect` |
 | `validate_urlscan_lab.py`, `expected_results.yaml` | PASS / FAIL per §11 ID |
 | `labkit.py` | shared helpers: a YAML-subset loader, `.env` by name, cypher-shell, the webapp session |
-| `ui_checklist.md` | the switches, greyed states and hints, by hand |
+| `ui_checklist.md` | the UI rows; U-02 to U-05 and M-03 are automated by `testing/e2e/tests/urlscanLab{Settings,RedZone,Agent}.spec.ts` (Agent spends model credits: `URLSCAN_LAB_AGENT=1`) |
 
 Tests: `recon/tests/test_urlscan_lab_fixtures.py` (unit: fixtures, schema, the query
 language, the control API, the matrix coverage of `expected_results.yaml`) and
