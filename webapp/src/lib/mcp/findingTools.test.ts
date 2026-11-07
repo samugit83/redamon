@@ -701,3 +701,17 @@ describe('REGRESSION: an agent older than this build is reported', () => {
     expect(hits).toHaveLength(1)
   })
 })
+
+describe('list_findings names what kind each finding is', () => {
+  test('a finding carries its detector, a Secret never does', async () => {
+    agentReturns({ findings: [
+      finding({ id: 'v1', label: 'Vulnerability', triage_detector: 'urlscan_leak:leaked_one_time_link:invite' }),
+      finding({ id: 'v2', label: 'Vulnerability', triage_detector: '' }),
+      finding({ id: 's1', label: 'Secret', triage_detector: 'urlscan:api_key' }),
+    ], total: 3 })
+    const rows = (await listFindings(ctx(), 'p1')).findings as Array<Record<string, unknown>>
+    const by = Object.fromEntries(rows.map(r => [r.id, r.detector]))
+    expect(by).toEqual({ v1: 'urlscan_leak:leaked_one_time_link:invite', v2: undefined, s1: undefined })
+    expect(JSON.stringify(rows)).not.toContain('api_key')
+  })
+})

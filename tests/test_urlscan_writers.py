@@ -219,3 +219,29 @@ class TestRedirectWriters(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVulnWriterStoresNoParameterValue(unittest.TestCase):
+    """B10/B15: the DAST URLs the vuln writer turns into Parameters can be
+    urlscan's (masked) or GAU's (raw); neither value is stored, under either name."""
+
+    def test_dast_url_parameters_carry_no_value(self):
+        from graph_db.mixins.recon.vuln_mixin import VulnMixin
+
+        class _VulnWriter(VulnMixin):
+            def __init__(self):
+                self.session = _Session()
+                self.driver = MagicMock()
+                self.driver.session.return_value = self.session
+
+        w = _VulnWriter()
+        recon = {"domain": "example.test", "subdomains": ["app.example.test"],
+                 "vuln_scan": {"discovered_urls": {"dast_urls_with_params": [
+                     "https://app.example.test/search?q=***&page=***",
+                     f"https://app.example.test/account?session={TOK}"]}}}
+        w.update_graph_from_vuln_scan(recon, "u1", "p1")
+        param_writes = [(q, p) for q, p in w.session.calls if "MERGE (p:Parameter" in q]
+        self.assertEqual({p["name"] for _q, p in param_writes}, {"q", "page", "session"})
+        for q, p in w.session.calls:
+            self.assertNotIn("sample_value", q)
+            self.assertNotIn(TOK, json.dumps(p, default=str))

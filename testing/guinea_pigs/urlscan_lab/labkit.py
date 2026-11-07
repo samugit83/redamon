@@ -20,6 +20,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -323,7 +324,13 @@ def cypher_rows(query: str, pid: str) -> list:
     cmd = ["docker", "exec", "-i", NEO4J, "sh", "-c",
            'cypher-shell -u neo4j -p "${NEO4J_AUTH#neo4j/}" --format plain -P "$1"', "sh",
            f'pid => "{pid}"']
-    out = subprocess.run(cmd, input=wrapped, capture_output=True, text=True, timeout=300)
+    for _ in range(6):
+        out = subprocess.run(cmd, input=wrapped, capture_output=True, text=True, timeout=300)
+        # Neo4j locks the user name for a few seconds after any client's third
+        # wrong password; another client's mistake must not fail a lab check.
+        if out.returncode == 0 or "too many times in a row" not in out.stderr:
+            break
+        time.sleep(6)
     if out.returncode != 0:
         raise RuntimeError(f"cypher-shell failed ({out.returncode}): {out.stderr.strip()[:300]}")
     rows = []

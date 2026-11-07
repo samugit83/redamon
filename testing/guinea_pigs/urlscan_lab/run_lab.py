@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -434,7 +435,7 @@ def start_triage_in_app(pid: str):
     except (ValueError, IndexError):
         return {"error": (out.stderr or out.stdout).strip()[:300]}, True
     print(f"[*] triage started in the app channel: {json.dumps(answer)[:200]}", flush=True)
-    return answer, answer.get("status") != 200
+    return answer, not 200 <= int(answer.get("status") or 0) < 300
 
 
 def wait_triage(pid: str, timeout: int, every: int = 15) -> dict:
@@ -507,6 +508,26 @@ def export_baseline_source() -> Path:
     subprocess.run(["tar", "-x", "-C", str(BASELINE_SRC)], input=archive.stdout, check=True)
     (BASELINE_SRC / "recon" / "output").mkdir(exist_ok=True)
     return BASELINE_SRC
+
+
+def backfill_project(pid: str, *, apply: bool) -> str:
+    """tooling/scripts/urlscan_backfill.py on one project, as ./redamon.sh update runs
+    it (the recon image, the host network), limited by --project so no other
+    project's data is touched. It prints counts only."""
+    env = dict(os.environ, NEO4J_PASSWORD=labkit.env_value("NEO4J_PASSWORD") or "")
+    port = labkit.env_value("NEO4J_BOLT_PORT") or "7687"
+    cmd = ["docker", "run", "--rm", "--network", "host",
+           "-v", f"{labkit.REPO}:/repo:ro", "-v", f"{labkit.REPO / 'recon' / 'output'}:/data/recon-output",
+           "-w", "/repo", "-e", "PYTHONPATH=/repo:/repo/recon", "-e", "HOME=/tmp",
+           "-e", f"NEO4J_URI=bolt://localhost:{port if port.isdigit() else '7687'}",
+           "-e", f"NEO4J_USER={labkit.env_value('NEO4J_USER') or 'neo4j'}", "-e", "NEO4J_PASSWORD",
+           "--entrypoint", "python", "redamon-recon", "tooling/scripts/urlscan_backfill.py",
+           "--project", labkit.check_pid(pid), *(["--apply"] if apply else [])]
+    out = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    text = (out.stdout + out.stderr).strip()
+    if out.returncode != 0:
+        raise SystemExit(f"[!] the backfill failed ({out.returncode}): {text[-400:]}")
+    return text
 
 
 def baseline_run(name: str, run: Run, known: dict, timeout: int) -> None:
@@ -640,6 +661,13 @@ def do_run(names: list[str], timeout: int) -> None:
             pid = project_id(run.project)
             write_run(labkit.RUNS / name, run=name, project=run.project, project_id=pid, kind="collect",
                       started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            if name == "baseline-after":
+                # What ./redamon.sh update does, on the baseline project alone; the
+                # second pass is D-01's "a second run changes nothing".
+                first = backfill_project(pid, apply=True)
+                second = backfill_project(pid, apply=True)
+                print(f"[*] backfill:\n{first}\n[*] backfill again:\n{second}", flush=True)
+                write_run(labkit.RUNS / name, backfill_first=first, backfill_second=second)
             validator.collect(name)
             continue
         pid = project_id(run.project)

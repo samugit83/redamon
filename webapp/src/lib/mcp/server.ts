@@ -523,6 +523,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'Each finding carries two ids. `id` is the finding\'s key: set_finding_verdict takes it. ' +
         '`nodeId` is the graph Node ID the RedAmon Priority Board shows in its leftmost column, ' +
         'and the one query_graph looks up with `id(n)`.\n\n' +
+        '`detector` names what kind of finding it is, its source then its type, colon-separated ' +
+        '(`check:waf_bypass`, `urlscan_leak:leaked_one_time_link:invite`); findings sharing it ' +
+        'are one kind. A Secret carries none. Absent until a triage run has scored the finding.\n\n' +
         'The score has layers. `triage_priority_score` is FINAL; `triage_math_score` is the ' +
         'rules-only score; `triage_decided_by` says which layer set the final one (rules, ' +
         'review, or person); `reviewedBy` and `reviewCurrent` say who reviewed it and whether ' +

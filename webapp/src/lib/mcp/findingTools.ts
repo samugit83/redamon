@@ -57,9 +57,9 @@ const MUTED_FETCH_CEILING = 2000
  * context, and `triage_ai_quote` is literally quoted target output - it is
  * behind an explicit argument and never travels without the untrusted-data
  * note. No property outside this list reaches a caller (bar `nodeId`, which
- * `graphNodeId` admits only as digits, and the `disposition` and `blocker`
- * derived from the row), which is also what keeps `Secret.matched_text` and
- * its kind off this surface by construction.
+ * `graphNodeId` admits only as digits, the `detector` of a non-Secret, and the
+ * `disposition` and `blocker` derived from the row), which is also what keeps
+ * `Secret.matched_text` and its kind off this surface by construction.
  */
 const FINDING_FIELDS = [
   'id', 'label', 'name', 'severity', 'source', 'location', 'host', 'section',
@@ -97,6 +97,12 @@ function projectFinding(raw: TriageFinding, includeQuote: boolean): Record<strin
   }
   const nodeId = graphNodeId(raw.node_id)
   if (nodeId) out.nodeId = nodeId
+  // What kind of finding it is, in the score model's words (`check:waf_bypass`,
+  // `urlscan_leak:leaked_one_time_link:invite`). Not for a Secret, whose kind
+  // stays off this surface.
+  if (raw.label !== 'Secret' && typeof raw.triage_detector === 'string' && raw.triage_detector) {
+    out.detector = raw.triage_detector
+  }
   const section = typeof raw.section === 'number' ? raw.section : null
   if (section !== null) out.sectionName = SECTION_NAMES[section] ?? 'unknown'
   // Can it go in a report? The same answer the report and the board give.

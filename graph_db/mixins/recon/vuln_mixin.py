@@ -432,23 +432,22 @@ class VulnMixin:
                     # Parse and create Parameter nodes from query string
                     if query_string:
                         params = parse_qs(query_string, keep_blank_values=True)
-                        for param_name, param_values in params.items():
+                        for param_name in params:
                             param_key = (path, param_name, "query")
                             if param_key not in created_parameters:
-                                sample_value = param_values[0] if param_values else ""
-
+                                # No value: a DAST URL can be an archived one (urlscan's
+                                # are masked, GAU's are raw) and the resource writer owns
+                                # `sample_values` for what a crawler saw (B10, B15).
                                 session.run(
                                     """
                                     MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                     SET p.user_id = $user_id,
                                         p.project_id = $project_id,
-                                        p.sample_value = $sample_value,
                                         p.is_injectable = coalesce(p.is_injectable, false),
                                         p.updated_at = datetime()
                                     """,
                                     name=param_name, position="query", endpoint_path=path, baseurl=base_url,
                                     user_id=user_id, project_id=project_id,
-                                    sample_value=sample_value
                                 )
                                 stats["parameters_created"] += 1
                                 created_parameters.add(param_key)
