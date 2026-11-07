@@ -113,28 +113,34 @@ class Run:
     note: str = ""
 
 
+# A variant checks one or two urlscan rows and none of them reads nuclei, whose
+# DAST pass is most of a run's time (about 1.5 h on the lab). The vulnerability
+# scan module still runs with it off: the Security Checks need nothing else.
+NO_NUCLEI = {"nucleiEnabled": False}
+
 RUNS = {
     "baseline": Run("baseline", note="step 0: A on HEAD, kept for D-01"),
     "A": Run("A", triage=True, note="no key, every switch on, DAST on"),
     "P": Run("A", kind="partial", note="partial runs on project A"),
-    "A2": Run("A", note="A again in the same project (S-08)"),
-    "A-429": Run("A", fail={"query_regex": MAIN_QUERY, "status": 429, "times": 1000},
+    "A2": Run("A", settings=NO_NUCLEI, note="A again in the same project (S-08)"),
+    "A-429": Run("A", settings=NO_NUCLEI, fail={"query_regex": MAIN_QUERY, "status": 429, "times": 1000},
                  note="the main search rate-limited (S-09)"),
-    "A-budget": Run("A", settings={"urlscanMaxSearches": 2}, note="a search budget of 2 (S-11)"),
-    "A-p2": Run("A-p2", note="A in a second project (S-08)"),
-    "A-429p2": Run("A-429p2", fail={"query_regex": MAIN_QUERY, "status": 429, "times": 1000, "search_after": True},
+    "A-budget": Run("A", settings={**NO_NUCLEI, "urlscanMaxSearches": 2}, note="a search budget of 2 (S-11)"),
+    "A-p2": Run("A-p2", settings=NO_NUCLEI, note="A in a second project (S-08)"),
+    "A-429p2": Run("A-429p2", settings=NO_NUCLEI, fail={"query_regex": MAIN_QUERY, "status": 429, "times": 1000, "search_after": True},
                    note="429 on page 2 of the main search (B29)"),
-    "A-400": Run("A-400", fail={"query_regex": MAIN_QUERY, "status": 400, "times": 1000},
+    "A-400": Run("A-400", settings=NO_NUCLEI, fail={"query_regex": MAIN_QUERY, "status": 400, "times": 1000},
                  note="the main search refused (I1-05)"),
-    "A-nohttpx": Run("A-nohttpx", settings={"httpxEnabled": False}, note="httpx off (S-10, B14)"),
-    "A-openapi": Run("A-openapi", settings={"openapiAutoDiscover": True}, note="OpenAPI auto-discover (I4-03)"),
-    "A-noorigin": Run("A-noorigin", settings={"originDiscoveryUrlscan": False},
+    "A-nohttpx": Run("A-nohttpx", settings={**NO_NUCLEI, "httpxEnabled": False}, note="httpx off (S-10, B14)"),
+    "A-openapi": Run("A-openapi", settings={**NO_NUCLEI, "openapiAutoDiscover": True},
+                     note="OpenAPI auto-discover (I4-03)"),
+    "A-noorigin": Run("A-noorigin", settings={**NO_NUCLEI, "originDiscoveryUrlscan": False},
                       note="only ORIGIN_DISCOVERY_URLSCAN off (I7-07)"),
-    "A-off": Run("A-off", settings={**{k: False for k in NEW_SWITCHES}, "urlscanEnabled": False},
+    "A-off": Run("A-off", settings={**NO_NUCLEI, **{k: False for k in NEW_SWITCHES}, "urlscanEnabled": False},
                  note="every new switch off and URLScan off"),
-    "I": Run("I", note="IP mode over 192.88.97.10"),
-    "unlisted": Run("unlisted", note="NOT in REDAMON_LAB_PROJECT_IDS (L-04)"),
-    "T": Run("T", note="takeover DNS (UL_TAKEOVER_DNS=1 ./up.sh)"),
+    "I": Run("I", settings=NO_NUCLEI, note="IP mode over 192.88.97.10"),
+    "unlisted": Run("unlisted", settings=NO_NUCLEI, note="NOT in REDAMON_LAB_PROJECT_IDS (L-04)"),
+    "T": Run("T", settings=NO_NUCLEI, note="takeover DNS (UL_TAKEOVER_DNS=1 ./up.sh)"),
     "B": Run("B", key="lab", note="keyed: the account's urlscan key is lab-key"),
     "baseline-after": Run("baseline", kind="collect", note="after ./redamon.sh update (D-01)"),
 }
@@ -155,11 +161,18 @@ def mcp_call(tool: str, args: dict, *, fatal: bool = True):
     if not getattr(mcp_call, "ready", False):
         mcp.init()
         mcp_call.ready = True
-    try:
-        out, err = mcp.call(tool, args)
-    except RuntimeError as e:
-        # A JSON-RPC error (an unknown tool on an older deployment, a scope error).
-        out, err = {"error": str(e)[:300]}, True
+    for _ in range(10):
+        try:
+            out, err = mcp.call(tool, args)
+        except RuntimeError as e:
+            # A JSON-RPC error (an unknown tool on an older deployment, a scope error).
+            out, err = {"error": str(e)[:300]}, True
+        # The token's rate limit says how long to wait: a lab window makes many calls.
+        wait = re.search(r"Try again in (\d+)s", json.dumps(out)) if err else None
+        if not wait:
+            break
+        print(f"[*] {tool} rate-limited, waiting {wait.group(1)}s", flush=True)
+        time.sleep(int(wait.group(1)) + 2)
     if err and fatal:
         raise SystemExit(f"[!] {tool} failed: {json.dumps(out)[:600]}")
     return out, err
