@@ -25,6 +25,7 @@ the graph-side checks of expected_results.yaml are frozen there
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -172,6 +173,17 @@ def mcp_call(tool: str, args: dict, *, fatal: bool = True):
         except RuntimeError as e:
             # A JSON-RPC error (an unknown tool on an older deployment, a scope error).
             out, err = {"error": str(e)[:300]}, True
+        except (OSError, http.client.HTTPException) as e:
+            # The webapp restarting, or a dropped connection: wait and ask again,
+            # with a new MCP session.
+            print(f"[*] {tool}: {type(e).__name__}, retrying", flush=True)
+            time.sleep(15)
+            try:
+                mcp.SESSION["id"] = None
+                mcp.init()
+            except (OSError, http.client.HTTPException, RuntimeError):
+                pass
+            out, err = {"error": f"{type(e).__name__}: Try again in 1s"}, True
         # The token's rate limit says how long to wait: a lab window makes many calls.
         wait = re.search(r"Try again in (\d+)s", json.dumps(out)) if err else None
         if not wait:
