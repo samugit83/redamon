@@ -138,11 +138,26 @@ cd webapp && npm run test     # vitest run --no-file-parallelism
 cd webapp && npm run type-check && npm run lint
 ```
 
-Credentials for the local stack live in the repo-root `.env` (gitignored). To sign
-in to the UI in a browser, use `UI_LOGIN_USERNAME` / `UI_LOGIN_PASSWORD`. To call
-the MCP server, send `MCP_SERVER_TOKEN` as `Authorization: Bearer` to
-`http://localhost:3000/api/mcp-server` (the port is `WEBAPP_PORT` if changed).
-Read the values from `.env` when needed; never print them.
+## CREDENTIALS
+
+Never write a credential value into a tracked file (this one is public on GitHub)
+and never echo one: read it inline, into the command that needs it.
+
+- **Local stack**: repo-root `.env` (gitignored). For UI / browser e2e tests sign
+  in with `UI_LOGIN_USERNAME` / `UI_LOGIN_PASSWORD`. For the inbound MCP server
+  send `MCP_SERVER_TOKEN` as `Authorization: Bearer` to
+  `http://localhost:3000/api/mcp-server` (the port is `WEBAPP_PORT` if changed).
+- **GitHub (`gh`)**: the maintainer's `.env.local` (gitignored, may be absent)
+  holds fine-grained PATs: `GH_TOKEN_REDAMON` for `samugit83/redamon`,
+  `GH_TOKEN_REDAMON_PLUGINS` for `samugit83/redamon-plugins`. Its comments record
+  what each token was verified to allow; read them before a write.
+
+```bash
+curl -s -H "Authorization: Bearer $(grep -m1 '^MCP_SERVER_TOKEN=' .env | cut -d= -f2-)" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' http://localhost:3000/api/mcp-server
+GH_TOKEN="$(grep -m1 '^GH_TOKEN_REDAMON=' .env.local | cut -d= -f2-)" gh pr list
+```
 
 ## QA CHECKLIST
 
