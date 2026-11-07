@@ -1881,6 +1881,22 @@
   color: var(--form-ink-muted);
 }
 
+/* A note that follows a description (what another switch changes here). The
+   reset makes an svg a block, so without the flex row the icon takes a line of
+   its own; the margin sets the note off from the text above it. */
+.iconNote {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1-5);
+}
+
+/* Centred on the first line of text: (11px x 1.5 line height - 12px icon) / 2. */
+.iconNote svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .formSkin .sectionDescription strong,
 .formSkin .fieldHint strong,
 .formSkin .toggleDescription strong {

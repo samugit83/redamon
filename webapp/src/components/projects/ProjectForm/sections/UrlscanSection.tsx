@@ -30,7 +30,7 @@ function UrlscanToggle({ checked, onChange, label, description, hint }: {
       <div>
         <span className={styles.toggleLabel}>{label}</span>
         <p className={styles.toggleDescription}>{description}</p>
-        {hint && <p className={styles.toggleDescription}><Info size={12} /> {hint}</p>}
+        {hint && <p className={`${styles.toggleDescription} ${styles.iconNote}`}><Info size={12} /><span>{hint}</span></p>}
       </div>
       <Toggle checked={checked} onChange={onChange} />
     </div>

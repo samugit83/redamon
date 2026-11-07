@@ -119,9 +119,12 @@ export function OriginDiscoverySection({ data, updateField, onRun }: OriginDisco
             it points anywhere private/internal before it is ever probed.
           </p>
           {data.httpxEnabled === false && (
-            <p className={styles.fieldHint}>
-              <Info size={12} /> httpx is off: in a full scan no host is known to be behind a CDN, so Origin
-              Discovery finds nothing. Partial recon still works on hosts you enter by hand.
+            <p className={`${styles.fieldHint} ${styles.iconNote}`}>
+              <Info size={12} />
+              <span>
+                httpx is off: in a full scan no host is known to be behind a CDN, so Origin
+                Discovery finds nothing. Partial recon still works on hosts you enter by hand.
+              </span>
             </p>
           )}
 
