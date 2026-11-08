@@ -308,12 +308,17 @@ class TestRunHostLookup(unittest.TestCase):
 
     @patch('shodan_enrich._shodan_get')
     @patch('shodan_enrich.time.sleep')
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_rate_limits_between_calls(self, mock_sleep, mock_get):
-        """Sleeps 1 second between each host lookup."""
+        """Keeps host lookups at least 1 second apart."""
         mock_get.return_value = SHODAN_HOST_RESPONSE
         _run_host_lookup(["1.1.1.1", "2.2.2.2", "3.3.3.3"], "test-key")
-        self.assertEqual(mock_sleep.call_count, 3)
+        # The limiter reserves one 1s slot per lookup: the first goes at once and
+        # the next two wait out theirs. sleep is mocked, so no time passes and
+        # the reservations stack to about 1s and 2s.
+        delays = sorted(c.args[0] for c in mock_sleep.call_args_list)
+        self.assertEqual(len(delays), 2, delays)
+        self.assertTrue(0.9 < delays[0] <= 1.0, delays)
+        self.assertTrue(1.9 < delays[1] <= 2.0, delays)
 
     @patch('shodan_enrich._shodan_get')
     @patch('shodan_enrich.time.sleep')
