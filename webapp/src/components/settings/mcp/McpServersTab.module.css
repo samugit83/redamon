@@ -46,6 +46,17 @@
   flex-shrink: 0;
 }
 
+/* The editor's header holds Save: it stays on screen while a long server
+   definition scrolls under it (AppLayout's `.main` is the scroll container). */
+.stickyHeader {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-secondary);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-default);
+}
+
 .muted {
   color: var(--text-tertiary);
   font-size: var(--text-sm);

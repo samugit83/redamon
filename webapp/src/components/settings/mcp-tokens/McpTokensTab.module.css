@@ -345,9 +345,33 @@
 }
 
 .formActions .primaryBtn,
-.formActions .secondaryBtn {
+.formActions .secondaryBtn,
+.formHeaderActions .primaryBtn,
+.formHeaderActions .secondaryBtn {
   height: 36px;
   padding: 0 var(--space-4);
+}
+
+/* The create and edit forms keep Cancel and Save in their header, which stays
+   on screen while the scope list scrolls under it (AppLayout's `.main` is the
+   scroll container). */
+.stickyFormHeader {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding-top: var(--space-2);
+}
+
+.formHeaderActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 /* --- list --- */

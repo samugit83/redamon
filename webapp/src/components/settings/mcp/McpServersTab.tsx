@@ -617,7 +617,7 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
 
   return (
     <div className={styles.section}>
-      <div className={styles.sectionHeader}>
+      <div className={`${styles.sectionHeader} ${styles.stickyHeader}`}>
         <h2 className={styles.sectionTitle}>
           <Server size={18} /> {isNew ? 'Add MCP' : `Edit MCP Tool Plugin: ${editing.id}`}
         </h2>

@@ -112,6 +112,26 @@ describe('U-1: a failed settings load never reaches a save', () => {
   })
 })
 
+describe('the keys tab Save is in its header, never a scroll away', () => {
+  test('there before any edit and disabled; an edit enables it and flags unsaved work; a save clears both', async () => {
+    renderPage()
+    const save = await screen.findByRole('button', { name: 'Save Settings' })
+    // Beside Import Keys, in the sticky header above both sections it saves.
+    expect(save.parentElement).toBe(screen.getByRole('button', { name: /Import Keys/ }).parentElement)
+    expect(save).toBeDisabled()
+    expect(screen.queryByText('Unsaved changes')).toBeNull()
+
+    fireEvent.change(await screen.findByPlaceholderText('e.g. http://your-vps.com:9090'), { target: { value: 'http://vps.example:9090' } })
+    expect(save).toBeEnabled()
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+
+    fireEvent.click(save)
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    await waitFor(() => expect(save).toBeDisabled())
+    expect(screen.queryByText('Unsaved changes')).toBeNull()
+  })
+})
+
 describe('U-17 / U-18: saving the keys', () => {
   async function editAndSave() {
     renderPage()

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useId } from 'react'
 import { Loader2, Eye, EyeOff, Search } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { ModelPicker } from '@/components/shared/ModelPicker'
@@ -239,6 +239,8 @@ export function TradecraftResourceForm({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [presetSearch, setPresetSearch] = useState('')
+  // The actions live in the modal's fixed footer, outside the <form>.
+  const formId = useId()
   const { ensureFeatureModel } = useFeatureModelGate()
 
   // Dirty tracking over the editable fields. Baseline captured from `resource`
@@ -346,6 +348,17 @@ export function TradecraftResourceForm({
       size="default"
       closeOnOverlayClick={false}
       closeOnEscape={true}
+      footer={
+        <>
+          <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)} disabled={submitting}>
+            Cancel
+          </button>
+          <button type="submit" form={formId} className="primaryButton" disabled={submitting || !isDirty}>
+            {submitting && <Loader2 size={14} className={styles.spin} />}
+            {isEdit ? 'Save changes' : 'Add Resource'}
+          </button>
+        </>
+      }
     >
       {/*
         Wrapping in a real <form> so submit-on-Enter works and so we can lock
@@ -356,6 +369,7 @@ export function TradecraftResourceForm({
         the token field with a saved password from an unrelated site.
       */}
       <form
+        id={formId}
         onSubmit={(e) => { e.preventDefault(); submit() }}
         autoComplete="off"
         style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
@@ -566,16 +580,6 @@ export function TradecraftResourceForm({
         </label>
 
         {error && <div className={styles.testError}>{error}</div>}
-
-        <div className={styles.formActions}>
-          <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)} disabled={submitting}>
-            Cancel
-          </button>
-          <button type="submit" className="primaryButton" disabled={submitting || !isDirty}>
-            {submitting && <Loader2 size={14} className={styles.spin} />}
-            {isEdit ? 'Save changes' : 'Add Resource'}
-          </button>
-        </div>
       </form>
     </Modal>
   )

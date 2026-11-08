@@ -1308,8 +1308,10 @@ export default function SettingsPage() {
       </div>}
 
       {/* Tab: API Keys & Tunneling */}
-      {activeTab === 'keys' && <><div className={styles.section}>
-        <div className={styles.sectionHeader}>
+      {activeTab === 'keys' && <>
+        {/* Outside the card: a sticky element only sticks inside its parent,
+            and this Save also covers the Reverse Shells section below. */}
+        <div className={`${styles.sectionHeader} ${styles.stickyHeader} ${styles.cardHeader}`}>
           <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
             <span>API Keys</span>
             <WikiInfoButton target="settings" title="Open Global Settings wiki page" />
@@ -1329,8 +1331,18 @@ export default function SettingsPage() {
               style={{ display: 'none' }}
               onChange={handleKeysFileSelect}
             />
+            {settingsLoaded && (
+              <>
+                {settingsDirty && <span className={styles.unsavedHint} role="status">Unsaved changes</span>}
+                <button className="primaryButton" onClick={saveSettings} disabled={!settingsDirty || settingsSaving}>
+                  {settingsSaving && <Loader2 size={14} className={styles.spin} />}
+                  Save Settings
+                </button>
+              </>
+            )}
           </div>
         </div>
+        <div className={`${styles.section} ${styles.cardBody}`}>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
         ) : settingsLoadError ? (
@@ -1745,13 +1757,6 @@ export default function SettingsPage() {
               onToggle={() => toggleFieldVisibility('chiselAuth')}
               onChange={v => updateSetting('chiselAuth', v)}
             />
-          </div>
-        )}
-        {settingsDirty && !settingsSaving && settingsLoaded && (
-          <div className={styles.formActions} style={{ justifyContent: 'flex-end', marginTop: '12px' }}>
-            <button className="primaryButton" onClick={saveSettings} disabled={settingsSaving}>
-              Save Settings
-            </button>
           </div>
         )}
       </div></>}

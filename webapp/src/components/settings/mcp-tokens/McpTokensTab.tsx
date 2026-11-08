@@ -566,11 +566,25 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
 
       {showForm && (
         <div className={styles.formBlock}>
-          <div className={styles.formHeader}>
-            <h4 className={styles.formTitle}>New access token</h4>
-            <p className={styles.formSubtitle}>
-              Name it after the agent that will use it, so a revoke later is an obvious choice.
-            </p>
+          <div className={`${styles.formHeader} ${styles.stickyFormHeader}`}>
+            <div>
+              <h4 className={styles.formTitle}>New access token</h4>
+              <p className={styles.formSubtitle}>
+                Name it after the agent that will use it, so a revoke later is an obvious choice.
+              </p>
+            </div>
+            <div className={styles.formHeaderActions}>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => { setShowForm(false); resetForm() }}
+                disabled={creating}
+              >
+                Cancel
+              </button>
+              <button className={styles.primaryBtn} onClick={() => void create()} disabled={creating}>
+                {creating ? <Loader2 className={styles.spin} size={14} /> : <Plus size={14} />} Create token
+              </button>
+            </div>
           </div>
 
           {formError && <div className={styles.errorBanner}>{formError}</div>}
@@ -637,30 +651,35 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               </span>
             </div>
           </div>
-
-          <div className={styles.formActions}>
-            <button
-              className={styles.secondaryBtn}
-              onClick={() => { setShowForm(false); resetForm() }}
-              disabled={creating}
-            >
-              Cancel
-            </button>
-            <button className={styles.primaryBtn} onClick={() => void create()} disabled={creating}>
-              {creating ? <Loader2 className={styles.spin} size={14} /> : <Plus size={14} />} Create token
-            </button>
-          </div>
         </div>
       )}
 
       {editing && (
         <div className={styles.formBlock}>
-          <div className={styles.formHeader}>
-            <h4 className={styles.formTitle}>Edit token</h4>
-            <p className={styles.formSubtitle}>
-              <code className={styles.prefix}>{editing.tokenPrefix}…</code> Changes apply to the
-              agent&apos;s very next call.
-            </p>
+          <div className={`${styles.formHeader} ${styles.stickyFormHeader}`}>
+            <div>
+              <h4 className={styles.formTitle}>Edit token</h4>
+              <p className={styles.formSubtitle}>
+                <code className={styles.prefix}>{editing.tokenPrefix}…</code> Changes apply to the
+                agent&apos;s very next call.
+              </p>
+            </div>
+            <div className={styles.formHeaderActions}>
+              <button className={styles.secondaryBtn} onClick={closeEdit} disabled={saving}>
+                Cancel
+              </button>
+              <button
+                className={styles.primaryBtn}
+                onClick={() => void saveEdit()}
+                disabled={
+                  saving || !editDirty || !editName.trim() || editScopes.length === 0 ||
+                  (editExpiry === 'date' && !editDate) ||
+                  (editNeedsPassword && !canMint)
+                }
+              >
+                {saving ? <Loader2 className={styles.spin} size={14} /> : <Check size={14} />} Save changes
+              </button>
+            </div>
           </div>
 
           {editing.revokedAt && (
@@ -791,23 +810,6 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                 </span>
               </div>
             )}
-          </div>
-
-          <div className={styles.formActions}>
-            <button className={styles.secondaryBtn} onClick={closeEdit} disabled={saving}>
-              Cancel
-            </button>
-            <button
-              className={styles.primaryBtn}
-              onClick={() => void saveEdit()}
-              disabled={
-                saving || !editDirty || !editName.trim() || editScopes.length === 0 ||
-                (editExpiry === 'date' && !editDate) ||
-                (editNeedsPassword && !canMint)
-              }
-            >
-              {saving ? <Loader2 className={styles.spin} size={14} /> : <Check size={14} />} Save changes
-            </button>
           </div>
         </div>
       )}

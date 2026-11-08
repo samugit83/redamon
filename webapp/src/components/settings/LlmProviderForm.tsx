@@ -283,13 +283,17 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
   return (
     <div className={embedded ? styles.formEmbedded : styles.formSection}>
       {!embedded && (
-        <div className={styles.formHeader}>
+        <div className={`${styles.formHeader} ${styles.stickyHeader}`}>
           <h3 className={styles.formTitle}>
             {isEditing ? 'Edit' : 'Add'} {providerDef?.name || ptype} Provider
           </h3>
-          {!isEditing && !lockedType && (
-            <button type="button" className="textButton" onClick={() => setStep('type')}>Change type</button>
-          )}
+          <div className={styles.sectionHeaderActions}>
+            {!isEditing && !lockedType && (
+              <button type="button" className="textButton" onClick={() => setStep('type')}>Change type</button>
+            )}
+            <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)}>Cancel</button>
+            {saveButton}
+          </div>
         </div>
       )}
       {apiKeyUrl && (
@@ -651,13 +655,6 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
           </div>
         )}
       </div>
-
-      {!embedded && (
-        <div className={styles.formActions}>
-          <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)}>Cancel</button>
-          {saveButton}
-        </div>
-      )}
     </div>
   )
 }
