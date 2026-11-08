@@ -475,6 +475,19 @@ the prod overlay's build-arg, so redamon.sh's own webapp rebuild bakes the right
 **All engagement data (Postgres, Neo4j, reports, GVM feeds, models) lives in named volumes
 that survive `update`.**
 
+The first `update` onto 7.7.0 also runs a one-off backfill (`tooling/scripts/urlscan_backfill.py
+--apply`, in the recon image). It masks the urlscan tokens earlier releases stored in clear, in
+the graph and in the recon JSON files, then writes two marker files in `recon/output/` so it
+never runs again. It only warns, and never fails the update, when Neo4j or the recon image is
+not up (`urlscan backfill skipped`) or the script fails (`did not finish`). An `update` with
+nothing new to pull does not retry it, so look for either line in the update log and, if you
+find one, run the `docker run` command in the script's header on the server.
+
+`REDAMON_SECRET_HMAC_KEY`, in the server `.env`, belongs with any Neo4j backup. A graph
+restored under a different key, for example onto a host that was re-initialised, gives every
+urlscan Secret a new id at the next scan, so mutes and Priority Board verdicts stay on the old
+nodes.
+
 The prod compose overlay (`compose/docker-compose.prod.yml`) is SCP'd to the host and installed
 at `$HOME/.redamon-deploy` (outside the checkout, so it never blocks `git pull --ff-only`). It
 sets `NEXT_PUBLIC_AGENT_WS_URL=wss://<host>/ws/agent` as the webapp build-arg. The deploy works
@@ -525,5 +538,11 @@ application `.env`.
 
 Intentionally hands-off (redamon.sh owns these; the deploy only verifies): `AUTH_SECRET`,
 `INTERNAL_API_KEY`, `SCANNER_API_KEY`, `ORCHESTRATOR_API_KEY`, `MCP_AUTH_TOKEN`,
-`AGENT_WS_TICKET_SECRET`, `TUNNEL_AUTH_TOKEN`, `POSTGRES_PASSWORD`, `NEO4J_PASSWORD`, and
-`SKIP_KB` (derived from the `.kbase-enabled` flag).
+`AGENT_WS_TICKET_SECRET`, `TUNNEL_AUTH_TOKEN`, `PLUGIN_RUNNER_KEY`,
+`PLUGIN_CALL_TOKEN_SECRET`, `POSTGRES_PASSWORD`, `NEO4J_PASSWORD`, and `SKIP_KB` (derived
+from the `.kbase-enabled` flag).
+
+`REDAMON_SECRET_HMAC_KEY` is redamon.sh's too, but the secrets gate does not check it. It
+keys the HMAC of a secret urlscan saw written in a URL, so the same secret is recognised
+across scans without storing it. Unset, nothing fails: those Secrets keep only their length.
+Never rotate it, and back it up with the data (see Update and rollback).
