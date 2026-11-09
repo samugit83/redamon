@@ -236,8 +236,8 @@ Your contributions earn you ranks. The naming follows red team terminology becau
 |------|---------------|------------|
 | **Scout** | 5 merged PRs or 5 confirmed bug reports + 1 merged PR | — |
 | **Broadcaster** | 1 published YouTube video featuring RedAmon | Video in README showcase |
-| **Hunter** | 10 merged PRs across at least 2 tracks | LinkedIn recommendation from maintainer |
-| **Elite** | 15 merged PRs including at least 1 major roadmap feature | Blog co-authorship, private contributor channel |
+| **Hunter** | 10 merged PRs across at least 2 tracks | LinkedIn recommendation from maintainer (optional) |
+| **Elite** | 15 merged PRs including at least 1 major roadmap feature | Blog co-authorship (optional), private contributor channel |
 | **Core** | Sustained contribution + demonstrated deep codebase knowledge | Push access, roadmap vote, release credits |
 
 **How it works:**
@@ -257,9 +257,9 @@ Every rank unlocks real rewards. No empty promises.
 | Reward | Starting rank | Details |
 |--------|--------------|---------|
 | Video in README showcase | Broadcaster | Your video listed in the [Community Showcase](README.md#community-showcase) section — visible to every visitor |
-| LinkedIn recommendation | Hunter | The maintainer writes a personalized LinkedIn recommendation highlighting your open-source contributions |
+| LinkedIn recommendation | Hunter | Optional, at the maintainers' discretion: offered only when you have integrated a feature we judge relevant. The maintainer then writes a personalized LinkedIn recommendation highlighting your open-source contributions |
 | Early access | Hunter | Access to feature branches before public release |
-| Blog co-authorship | Elite | Co-author technical writeups about features you built (published on project blog / Medium / dev.to) |
+| Blog co-authorship | Elite | Optional, at the maintainers' discretion: offered only when you have integrated a feature we judge relevant enough for a writeup. You then co-author a technical writeup about it (published on project blog / Medium / dev.to) |
 | Private contributor channel | Elite | Invitation to a private channel for contributor coordination and early discussions |
 | Push access | Core | Direct push to non-protected branches, ability to merge PRs |
 | Roadmap vote | Core | Participate in prioritization decisions for the project board |
