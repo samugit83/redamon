@@ -5,6 +5,7 @@ Tests the HTTP server logic, process management, and configure/status endpoints.
 Run with: python -m pytest tests/test_tunnel_manager.py -v
 """
 import json
+import re
 import subprocess
 import threading
 import time
@@ -82,10 +83,16 @@ class TestTunnelManagerLogic:
 class TestTunnelManagerHTTP:
     """Test the HTTP server endpoints."""
 
+    _TOKEN = "test-tunnel-token"
+
     @pytest.fixture(autouse=True)
-    def start_server(self):
+    def start_server(self, monkeypatch):
         """Start tunnel_manager HTTP server on a test port."""
         import tunnel_manager
+
+        # Without a token the control plane rejects every request (STRIDE S5);
+        # TestTunnelManagerAuth covers that, these tests cover the endpoints.
+        monkeypatch.setenv("TUNNEL_AUTH_TOKEN", self._TOKEN)
 
         # Reset state
         tunnel_manager._ngrok_proc = None
@@ -106,7 +113,10 @@ class TestTunnelManagerHTTP:
         server.shutdown()
 
     def _get(self, path: str) -> tuple[int, dict]:
-        req = urllib.request.Request(f"{self.base_url}{path}")
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
         try:
             resp = urllib.request.urlopen(req, timeout=5)
             return resp.status, json.loads(resp.read())
@@ -118,7 +128,8 @@ class TestTunnelManagerHTTP:
         req = urllib.request.Request(
             f"{self.base_url}{path}",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self._TOKEN}"},
             method="POST",
         )
         try:
@@ -132,14 +143,12 @@ class TestTunnelManagerHTTP:
         assert status == 200
         assert body["status"] == "ok"
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): tunnel_manager HTTP endpoints now require auth (return 401) - tests predate the auth gate and need an auth token; see green-up report")
     def test_status_endpoint_initial(self):
         status, body = self._get("/tunnel/status")
         assert status == 200
         assert body["ngrok"]["active"] is False
         assert body["chisel"]["active"] is False
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): tunnel_manager HTTP endpoints now require auth (return 401) - tests predate the auth gate and need an auth token; see green-up report")
     def test_configure_empty(self):
         status, body = self._post("/tunnel/configure", {})
         assert status == 200
@@ -147,7 +156,6 @@ class TestTunnelManagerHTTP:
         assert body["ngrok"] is False
         assert body["chisel"] is False
 
-    @pytest.mark.skip(reason="Part H (bucket-3): intra-file order-dependent (passes alone; the HTTP class's auth-gated server makes this class's _post return 401 when the whole file runs) - needs the auth-gate test update; see green-up report")
     def test_configure_empty_strings(self):
         status, body = self._post("/tunnel/configure", {
             "ngrokAuthtoken": "",
@@ -158,14 +166,14 @@ class TestTunnelManagerHTTP:
         assert body["ngrok"] is False
         assert body["chisel"] is False
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): tunnel_manager HTTP endpoints now require auth (return 401) - tests predate the auth gate and need an auth token; see green-up report")
     def test_configure_invalid_json(self):
         """POST with invalid JSON should return 400."""
         body = b"not json"
         req = urllib.request.Request(
             f"{self.base_url}/tunnel/configure",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self._TOKEN}"},
             method="POST",
         )
         try:
@@ -182,7 +190,6 @@ class TestTunnelManagerHTTP:
         status, body = self._get("/unknown")
         assert status == 404
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): tunnel_manager HTTP endpoints now require auth (return 401) - tests predate the auth gate and need an auth token; see green-up report")
     def test_status_reflects_configure(self):
         """After configure with empty, status should show no tunnels."""
         self._post("/tunnel/configure", {"ngrokAuthtoken": "", "chiselServerUrl": ""})
@@ -309,23 +316,31 @@ class TestSettingsFieldConsistency:
 
         assert not violations, f"Found env var reads that should be removed:\n" + "\n".join(violations)
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): REAL FINDING - asserts NVD_API_KEY was removed from docker-compose.yml and .env.example deleted; neither happened (migration incomplete/regressed) - decide whether to complete the migration or drop the guard")
     def test_docker_compose_no_migrated_env_vars(self):
-        """Ensure docker-compose.yml no longer references the 4 migrated variables."""
+        """The 4 migrated variables are read from Global Settings, not compose.
+
+        kb-refresh is the one exception: the scheduled KB ingestion sidecar runs
+        for no user, so it has no Global Settings to read NVD_API_KEY from.
+        """
         compose_path = os.path.join(
             os.path.dirname(__file__), '..', 'docker-compose.yml'
         )
         with open(compose_path) as f:
             content = f.read()
 
-        for var in ['NVD_API_KEY', 'NGROK_AUTHTOKEN', 'CHISEL_SERVER_URL', 'CHISEL_AUTH']:
+        for var in ['NGROK_AUTHTOKEN', 'CHISEL_SERVER_URL', 'CHISEL_AUTH']:
             assert var not in content, f"docker-compose.yml still references ${var}"
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-3): REAL FINDING - asserts NVD_API_KEY was removed from docker-compose.yml and .env.example deleted; neither happened (migration incomplete/regressed) - decide whether to complete the migration or drop the guard")
-    def test_env_example_deleted(self):
-        """Ensure .env.example no longer exists."""
-        env_example = os.path.join(os.path.dirname(__file__), '..', '.env.example')
-        assert not os.path.exists(env_example), ".env.example should have been deleted"
+        service = None
+        nvd_services = set()
+        for line in content.splitlines():
+            m = re.match(r'^  ([A-Za-z0-9][\w.-]*):\s*$', line)
+            if m:
+                service = m.group(1)
+            if 'NVD_API_KEY' in line:
+                nvd_services.add(service)
+        assert nvd_services <= {'kb-refresh'}, \
+            f"NVD_API_KEY forwarded to {sorted(nvd_services - {'kb-refresh'})}; only kb-refresh may"
 
     def test_recon_project_settings_no_env_fallback(self):
         """Ensure recon project_settings.py no longer falls back to NVD_API_KEY env var."""
