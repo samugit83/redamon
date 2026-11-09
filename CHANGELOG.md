@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.7.1] - 2026-11-09
+
+### Fixed
+
+- **`.env.example` no longer says an empty `MCP_AUTH_TOKEN` leaves the MCP servers open.** It said they "FAIL OPEN (dev only)". They fail closed: with the token empty they refuse every request, so the agent has no Kali tools at all. The comments in `agentic/tools.py`, `mcp/servers/_auth_middleware.py` and `mcp/servers/tunnel_manager.py` said the same and are corrected too; the tunnel manager's `TUNNEL_AUTH_TOKEN` also fails closed (#231, @rajyavardhan01). Comments only, nothing to rebuild.
+- **Seven parked tests check the code again.** After a refactor these tests were parked as a strict `xfail` or a `skip`, and a parked test stays green whatever the code does. Each one was traced to a stale assertion, not a product bug, and now runs. Test-only, nothing to rebuild.
+  - **Tunnel manager** (#230, @rajyavardhan01). The five HTTP endpoint tests predate the bearer-token gate and got a 401 on every request; they now send a token, and `TestTunnelManagerAuth` still covers the 401 paths. The compose guard keeps the ngrok and chisel variables out of `docker-compose.yml` and allows `NVD_API_KEY` only in `kb-refresh`, the scheduled Knowledge Base ingestion that runs for no user and so has no Global Settings to read the key from. `test_env_example_deleted` is removed: `.env.example` is back on purpose and `tests/test_env_example_keys.py` guards it.
+  - **Shodan** (#232, @rajyavardhan01). `test_rate_limits_between_calls` expected three sleeps for three lookups, but the slot-reserving limiter sends the first lookup at once and makes two. It now checks the spacing, about 1 s and 2 s, so it fails if the interval shrinks, if slots stop being reserved, or if the wait before the paid API call is dropped.
+- **The VirusTotal throttle test is exact** (#229, @rajyavardhan01). With no domain lookup, the IP lookups must not sleep at all: the test now asserts that no `time.sleep` call happens, where it only counted pauses between 14 and 15 s, so a stray pause of any other length went unnoticed. Test-only.
+
 ## [7.7.0] - 2026-11-07
 
 ### Added
