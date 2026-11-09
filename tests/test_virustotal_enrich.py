@@ -520,8 +520,8 @@ class TestRunVirustotalEnrichment(unittest.TestCase):
         mock_get.side_effect = side
         run_virustotal_enrichment(_combined_result(), _default_settings(VIRUSTOTAL_RATE_LIMIT=4))
         # throttle = 60/4 = 15s. The limiter is seeded with the domain request's
-        # time.time() and sleeps the slot's remainder, so the delay is 15s minus
-        # the few microseconds since then, never exactly 15.0.
+        # time.time() and sleeps the slot's remainder, so the delay is slightly
+        # less than 15.0.
         throttle_calls = [c for c in mock_sleep.call_args_list
                           if c[0] and 14.0 < c[0][0] <= 15.0]
         self.assertEqual(len(throttle_calls), 1)
@@ -534,9 +534,7 @@ class TestRunVirustotalEnrichment(unittest.TestCase):
         cr["domain"] = ""
         run_virustotal_enrichment(cr, _default_settings(VIRUSTOTAL_RATE_LIMIT=4))
         # No domain request spent a rate slot, so the first IP lookup goes at once.
-        throttle_calls = [c for c in mock_sleep.call_args_list
-                          if c[0] and 14.0 < c[0][0] <= 15.0]
-        self.assertEqual(throttle_calls, [])
+        mock_sleep.assert_not_called()
 
     @patch("virustotal_enrich.time.sleep")
     @patch("virustotal_enrich.requests.get")
