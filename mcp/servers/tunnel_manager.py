@@ -27,8 +27,8 @@ _ngrok_proc: subprocess.Popen | None = None
 _chisel_proc: subprocess.Popen | None = None
 
 # STRIDE I19/S14: inbound bearer token the webapp presents on config pushes.
-# Fail-open with a one-time warning when unset (dev), mirroring the MCP servers'
-# MCP_AUTH_TOKEN convention.
+# Fail CLOSED when unset (STRIDE S5): every /tunnel/* request gets a 401, with a
+# one-time warning, mirroring the MCP servers' MCP_AUTH_TOKEN convention.
 _warned_failopen = False
 
 
