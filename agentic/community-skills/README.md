@@ -24,6 +24,7 @@ Ready-to-use attack skill workflows contributed by the community. Download any `
 | [subdomain_takeover.md](subdomain_takeover.md) | [@samugit83](https://github.com/samugit83) | Dangling CNAME / orphaned NS / unverified provider claim across S3, GitHub Pages, Heroku, Azure, CloudFront, Fastly and ~80 more |
 | [insecure_file_uploads.md](insecure_file_uploads.md) | [@samugit83](https://github.com/samugit83) | Web shells, SVG/HTML stored XSS, magic-byte and config-drop bypass, ImageMagick/Ghostscript/ExifTool abuse, zip slip, presigned-URL tampering, processing-race AV bypass |
 | [php2shell_upload_progress.md](php2shell_upload_progress.md) | [@samugit83](https://github.com/samugit83) | php2shell (CVE-2026-109618/109619) exposure check: fingerprint PHP version, decide the affected range, corroborate the `session.upload_progress` path non-destructively, and verify the mitigation. Detection and triage only, no exploitation |
+| [exposed_config_secrets.md](exposed_config_secrets.md) | [@rajyavardhan01](https://github.com/rajyavardhan01) | Exposed config, source-control, and backup artifacts (`.git`, `.env`, `.bak`, `.svn`, `.DS_Store`, `appsettings.json`, cloud credential files): enumerate -> probe -> confirm -> triage by live-secret severity. Minimal-proof detection and triage, no secret reuse |
 
 ## Contributing
 
