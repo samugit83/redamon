@@ -269,8 +269,8 @@ def _build_system_mcp_servers():
 
     # STRIDE S10: authenticate to the Kali MCP servers with a shared bearer
     # token resolved at request time from MCP_AUTH_TOKEN. When the env var is
-    # unset, _resolve_auth_header emits no Authorization header, matching the
-    # servers' fail-open behaviour so nothing breaks in token-less dev stacks.
+    # unset, _resolve_auth_header emits no Authorization header and the servers,
+    # which fail closed (STRIDE S9), refuse the call: no token means no Kali tools.
     _mcp_auth = BearerAuth(token_env_var="MCP_AUTH_TOKEN")
 
     return [

@@ -28,7 +28,7 @@ import os
 
 logger = logging.getLogger("mcp-auth")
 
-# One-time fail-open warning guard (per process).
+# Warn once per process that MCP_AUTH_TOKEN is unset and requests are refused.
 _warned_failopen = False
 
 

@@ -3,7 +3,7 @@
 STRIDE S10 (client side). Two layers:
   1. mcp_registry plumbing: BearerAuth(token_env_var=...) -> to_mcp_servers_dict
      renders `Authorization: Bearer <token>` when the env var is set, and OMITS
-     the header (fail-open parity with the server) when it is unset.
+     the header when it is unset (the server, which fails closed, then refuses).
   2. tools._build_system_mcp_servers(): all 5 system servers carry that auth.
 
 Requires pydantic (mcp_registry). Layer 2 additionally needs the agent runtime
