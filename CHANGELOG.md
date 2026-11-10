@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.7.2] - 2026-11-10
+
+### Fixed
+
+- **Typing a digit no longer disconnects the RedAmon Terminal.** The Kali sandbox's terminal server (`mcp/servers/terminal_server.py`) parsed every keystroke as a possible JSON control message, and a keystroke that is valid JSON but not an object (any digit, or a pasted `true`, `null`, `[1]` or `"x"`) raised in its input loop and ended the session with `close 1000`. A text frame is now a control message only when it is a JSON object whose `type` is `resize` or `ping`; everything else reaches the shell, including a pasted run of `[` that made the parser raise `RecursionError`. An unexpected error that ends a session is now logged as a warning, no longer at debug level where this one stayed hidden. The tests call the server's own parser and type digits into a real shell. The sandbox reads the server from its source mount: restart `kali-sandbox` to pick it up, nothing to rebuild.
+
 ## [7.7.1] - 2026-11-09
 
 ### Fixed
