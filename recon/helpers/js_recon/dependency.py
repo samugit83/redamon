@@ -34,11 +34,12 @@ _npm_cache = {}
 _npm_cache_lock = threading.Lock()
 
 
-def _check_npm_registry(package_name: str, timeout: int = 10) -> bool:
+def _check_npm_registry(package_name: str, timeout: int = 10) -> Optional[bool]:
     """
     Check if a package exists on the public npm registry.
 
-    Returns True if the package exists, False if 404 (potential confusion target).
+    Returns True if the package exists, False if 404 (potential confusion
+    target), None when the registry gave no answer (not checked).
     """
     with _npm_cache_lock:
         if package_name in _npm_cache:
@@ -46,12 +47,14 @@ def _check_npm_registry(package_name: str, timeout: int = 10) -> bool:
 
     from recon.helpers import circuit_breaker as cb
     breaker = cb.get_breaker("npm", label="npm", threshold=cb.INTERNAL_THRESHOLD)
-    # A skipped call is treated as "exists": the dependency-confusion check only
-    # flags a 404, so an unreachable registry never invents a finding. The whole
-    # registry being down is recorded once, via the breaker, instead of costing
-    # 10s per package.
+    # The open breaker spares an unreachable registry 10s per package. A
+    # skipped or failed call is "not checked", never "published": read as
+    # published, an outage run looks clean and the prune deletes every earlier
+    # finding. detect_dependency_confusion hands such packages back to
+    # js_recon, which keeps their importing hosts' findings and whose report
+    # scope names the breaker.
     if not breaker.allow():
-        return True
+        return None
 
     def classify(resp):
         # 404 is a real answer ("not published"), not a failure.
@@ -64,7 +67,7 @@ def _check_npm_registry(package_name: str, timeout: int = 10) -> bool:
         classify)
     if not res.answered:
         # A failure is not cached: a later package retries once the breaker heals.
-        return True
+        return None
     exists = res.ok
     with _npm_cache_lock:
         _npm_cache[package_name] = exists
@@ -109,6 +112,7 @@ def extract_webpack_packages(content: str) -> list:
 def detect_dependency_confusion(
     js_files: list,
     settings: dict,
+    unchecked: Optional[list] = None,
 ) -> list:
     """
     Detect potential npm dependency confusion vulnerabilities.
@@ -116,6 +120,9 @@ def detect_dependency_confusion(
     Args:
         js_files: List of dicts with 'url' and 'content'
         settings: Project settings dict
+        unchecked: when given, receives, for each package the registry did
+            not answer for, the list of every file that imports it (or
+            ``custom_packages_file``); such a package yields no finding
 
     Returns:
         List of dependency confusion finding dicts
@@ -201,9 +208,12 @@ def detect_dependency_confusion(
     # Build findings sequentially (cheap CPU work)
     findings = []
     for package_name, scope, source_urls in candidates:
-        npm_exists = existence.get(package_name, True)
+        npm_exists = existence.get(package_name)
 
-        if not npm_exists:
+        if npm_exists is None:
+            if unchecked is not None:
+                unchecked.append(list(source_urls))
+        elif not npm_exists:
             finding_id = hashlib.sha256(f"depconf:{package_name}".encode()).hexdigest()[:16]
             findings.append({
                 'id': finding_id,

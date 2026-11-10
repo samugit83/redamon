@@ -77,7 +77,7 @@ class JsReconTimeoutTest(unittest.TestCase):
         def fast_sourcemaps(js_files, settings, **kwargs):
             return []
 
-        def fast_deps(js_files, settings):
+        def fast_deps(js_files, settings, **kwargs):
             return []
 
         def fast_frameworks(content, url, custom_signatures=None):

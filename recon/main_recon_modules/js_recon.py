@@ -865,9 +865,10 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
             futures['patterns'] = executor.submit(run_patterns)
 
         # 3. Dependency confusion
+        npm_unchecked: list = []
         if settings.get('JS_RECON_DEPENDENCY_CHECK', True):
             futures['dependencies'] = executor.submit(
-                detect_dependency_confusion, js_files, settings
+                detect_dependency_confusion, js_files, settings, unchecked=npm_unchecked
             )
 
         # 4. Endpoint extraction
@@ -988,6 +989,17 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
 
                 elif name == 'dependencies':
                     results['dependencies'] = result
+                    if npm_unchecked:
+                        # A package the registry did not answer for is not
+                        # "gone": its importing hosts keep their findings. One
+                        # only an upload or the custom-package list names has
+                        # no host to match, so the whole source is kept.
+                        importers = [[u for u in urls if isinstance(u, str)
+                                      and u.startswith(('http://', 'https://'))]
+                                     for urls in npm_unchecked]
+                        _note_unchecked("npm registry did not answer",
+                                        [u for urls in importers for u in urls]
+                                        if all(importers) else None)
 
                 elif name == 'endpoints':
                     results['endpoints'] = result
@@ -1788,7 +1800,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
 
     global _JS_SCOPE, _OWN_HOSTS
     from recon.helpers import circuit_breaker as _cb
-    _JS_SCOPE = _cb.scope((), label="JsRecon", unit="host(s)")
+    _JS_SCOPE = _cb.scope(("npm",), label="JsRecon", unit="package(s)")
     try:
         _OWN_HOSTS = _own_hosts(combined_result, settings)
     except Exception as e:  # noqa: BLE001 - every download then takes the strict rule
