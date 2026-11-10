@@ -97,15 +97,46 @@ class TestDnsChecksOnTheOrg:
         assert sc._dns_check_claims(['example.com'], ['example.com']) == []
         assert org_work.claimed_orgs('dns_checks') == []
 
-    def test_an_org_no_group_checked_keeps_its_findings(self, monkeypatch):
-        noted = []
-        monkeypatch.setattr(circuit_breaker, 'note_degraded', lambda m, **k: noted.append((m, k)))
+    def test_an_org_no_group_checked_keeps_only_its_dns_findings(self, monkeypatch):
+        """Not the whole security_check source (R-37): the enabled DNS types
+        are recorded on no host, so only the orgs that ran prune them, and
+        every header, TLS or port finding prunes as usual."""
+        monkeypatch.setattr(main, 'SCAN_MODULES', ['domain_discovery', 'vuln_scan'])
+        monkeypatch.setattr(main, '_settings', {'SECURITY_CHECK_ZONE_TRANSFER': False})
         main._note_run_org('example.com')
         main._note_run_org('b.test')
         sc._dns_check_claims(['b.test'], None)
         main._note_unchecked_dns_orgs()
-        assert noted == [('vuln_scan', {'sources': ['security_check'],
-                                        'reason': 'dns checks not run for example.com'})]
+        report = circuit_breaker.coverage_report()
+        assert report.degraded_sources == frozenset()
+        assert report.checked_types('security_check') == (
+            'dmarc_missing', 'dnssec_missing', 'spf_missing')
+        assert {report.checked_hostnames('security_check', t)
+                for t in report.checked_types('security_check')} == {()}
+
+    @pytest.mark.parametrize('modules, settings', [
+        (['domain_discovery'], {}),
+        (['domain_discovery', 'vuln_scan'], {'SECURITY_CHECK_ENABLED': False}),
+        (['domain_discovery', 'vuln_scan'], {f'SECURITY_CHECK_{t.upper()}': False
+                                             for t in sc.DNS_CHECK_TYPES}),
+    ])
+    def test_dns_checks_switched_off_record_nothing(self, monkeypatch, modules, settings):
+        """Switched off is pruned normally (README "Degraded vs. switched off")."""
+        monkeypatch.setattr(main, 'SCAN_MODULES', modules)
+        monkeypatch.setattr(main, '_settings', settings)
+        main._note_run_org('example.com')
+        main._note_unchecked_dns_orgs()
+        report = circuit_breaker.coverage_report()
+        assert report.degraded_sources == frozenset()
+        assert report.positive_sources == frozenset()
+
+    def test_every_org_checked_records_nothing_more(self, monkeypatch):
+        monkeypatch.setattr(main, 'SCAN_MODULES', ['vuln_scan'])
+        monkeypatch.setattr(main, '_settings', {})
+        main._note_run_org('example.com')
+        sc._dns_check_claims(['example.com'], None)
+        main._note_unchecked_dns_orgs()
+        assert circuit_breaker.coverage_report().positive_sources == frozenset()
 
     def test_a_refused_group_never_triggers_org_work(self, monkeypatch):
         monkeypatch.setattr(main, '_settings', {'ROE_ENABLED': True, 'ROE_EXCLUDED_HOSTS': ['api.example.com']})

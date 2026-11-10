@@ -2525,18 +2525,37 @@ def _note_run_org(org: str) -> None:
         _RUN_ORGS.append(org)
 
 
+def _enabled_dns_check_types() -> list:
+    """The DNS check types this run's settings mean to run, as vuln_scan reads them."""
+    from recon.helpers.security_checks import DNS_CHECK_TYPES
+    if "vuln_scan" not in SCAN_MODULES or not _settings.get("SECURITY_CHECK_ENABLED", True):
+        return []
+    return [t for t in DNS_CHECK_TYPES if _settings.get(f"SECURITY_CHECK_{t.upper()}", True)]
+
+
 def _note_unchecked_dns_orgs() -> None:
-    """Mark the security_check source degraded for each org whose DNS checks
-    (SPF, DMARC, DNSSEC) ran in no group this run: no live URL, the module or
-    the checks switched off. "Not reported" then means "not re-checked", and
-    the prune keeps the org's previous findings instead of deleting them."""
+    """Keep the previous DNS findings (SPF, DMARC, DNSSEC, zone transfer) of
+    each org whose DNS checks ran in no group this run (no live URL, an RoE
+    refusal), and only those.
+
+    The enabled DNS check types are recorded as re-checked on no host
+    (positive coverage, D1), so the prune deletes their findings only on the
+    orgs run_dns_checks did check, and every other security_check finding
+    prunes as usual. DNS checks switched off by configuration record nothing:
+    their findings are pruned (README "Degraded vs. switched off").
+    """
     from recon.helpers import circuit_breaker
     from recon.helpers.org_work import claimed_orgs
+    enabled = _enabled_dns_check_types()
+    if not enabled:
+        return
     checked = set(claimed_orgs("dns_checks"))
-    for org in _RUN_ORGS:
-        if org.lower() not in checked:
-            circuit_breaker.note_degraded(
-                "vuln_scan", sources=["security_check"], reason=f"dns checks not run for {org}")
+    unchecked = [org for org in _RUN_ORGS if org.lower() not in checked]
+    if not unchecked:
+        return
+    print(f"[*][graph-db] DNS checks ran for no group of {', '.join(unchecked)}: "
+          f"their DNS findings are kept")
+    circuit_breaker.note_checked("security_check", checks=enabled, module="security_checks")
 
 
 def _checked_prune_batches(report, sources) -> dict:

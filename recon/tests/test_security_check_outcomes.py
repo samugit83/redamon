@@ -1,4 +1,4 @@
-"""A security check that reached no verdict keeps its finding (R-24).
+"""A security check that reached no verdict keeps its finding (R-24, R-37).
 
 A DNS, Redis or SMTP check that times out has learned nothing, yet it used to
 return "no finding", so the end-of-run prune deleted the real finding with its
@@ -404,3 +404,28 @@ class TestThePruneCalls:
         (gap,) = cb.coverage_report().gaps
         assert re.fullmatch(r"[a-z0-9_]{1,64}", gap["source"])
         assert gap["module"] == "security_checks" and gap["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# R-37: an org whose DNS checks ran in no group
+# ---------------------------------------------------------------------------
+
+class TestAnOrgNoGroupChecked:
+    def test_dns_checks_switched_off_cut_nothing(self, recon_main, graph, monkeypatch):
+        monkeypatch.setitem(recon_main._settings, "SECURITY_CHECK_SPF_MISSING", False)
+        monkeypatch.setitem(recon_main._settings, "SECURITY_CHECK_DMARC_MISSING", False)
+        monkeypatch.setitem(recon_main._settings, "SECURITY_CHECK_DNSSEC_MISSING", False)
+        monkeypatch.setitem(recon_main._settings, "SECURITY_CHECK_ZONE_TRANSFER", False)
+        recon_main._note_run_org(ORG)
+        dmarc = _dns_finding("dmarc_missing")
+        assert _survivors(recon_main, graph, dmarc, HEADER) == []
+        assert "security_check" not in cb.coverage_report().degraded_sources
+
+    def test_only_the_unchecked_org_keeps_its_dns_findings(self, recon_main, graph, monkeypatch):
+        recon_main._note_run_org(ORG)
+        recon_main._note_run_org(ORG2)
+        assert sc._dns_check_claims([ORG2], None) == [ORG2]
+        _dns_run(monkeypatch, _clean_zone(ORG2), org=ORG2)
+        kept, checked = _dns_finding("dmarc_missing"), _dns_finding("dmarc_missing", ORG2)
+        assert _survivors(recon_main, graph, kept, checked, HEADER) == [kept]
+        assert "security_check" not in cb.coverage_report().degraded_sources
