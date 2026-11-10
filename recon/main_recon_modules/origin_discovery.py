@@ -143,12 +143,14 @@ class _SearchBudget:
 
     def __init__(self, limit: int):
         self._remaining = max(0, int(limit))
+        self._refused = 0
         self._lock = threading.Lock()
         self.exhausted_logged = False
 
     def take(self) -> bool:
         with self._lock:
             if self._remaining <= 0:
+                self._refused += 1
                 return False
             self._remaining -= 1
             return True
@@ -157,6 +159,12 @@ class _SearchBudget:
     def remaining(self) -> int:
         with self._lock:
             return self._remaining
+
+    @property
+    def refused(self) -> int:
+        """Searches the budget turned away; a host that saw one was not fully checked."""
+        with self._lock:
+            return self._refused
 
 
 class _RunCtx:
@@ -178,6 +186,19 @@ class _RunCtx:
         self.roe_excluded = settings.get("ROE_EXCLUDED_HOSTS", []) or []
         self._cache: Dict[Tuple[str, str], List[str]] = {}
         self._cache_lock = threading.Lock()
+        self._misses = 0
+
+    def note_miss(self) -> None:
+        """A candidate source gave no answer for the host being processed."""
+        with self._cache_lock:
+            self._misses += 1
+
+    @property
+    def misses(self) -> int:
+        """Hosts are processed one at a time, so the change across one host's
+        gathering is that host's: _process_host compares it before and after."""
+        with self._cache_lock:
+            return self._misses
 
     def cached(self, source: str, key: str, producer) -> List[str]:
         """Memoize a per-domain search by (source, key) for the whole run (G3).
@@ -186,7 +207,8 @@ class _RunCtx:
         genuine "nothing found" (NO_DATA) - is cached for every later host that
         shares the key, and a failure (timeout, 5xx, refused key, a paused
         source, an exhausted budget) never is, so a transient error cannot
-        black out the key for the rest of the run. A keyless producer returns a
+        black out the key for the rest of the run; it counts as a miss for the
+        host being processed instead. A keyless producer returns a
         plain list, which cannot tell "none" from "failed", so only a non-empty
         one is cached.
         """
@@ -201,6 +223,8 @@ class _RunCtx:
             if result.answered:
                 with self._cache_lock:
                     self._cache[ck] = ips
+            else:
+                self.note_miss()
             return ips
         ips = list(result or [])
         if ips:
@@ -212,7 +236,9 @@ class _RunCtx:
         """None when a keyed search may go out; else the typed skip to return.
 
         The breaker is checked BEFORE the budget, so a paused or refused source
-        never draws the keyed-search budget down.
+        never draws the keyed-search budget down. A budget refusal leaves the
+        breaker's skip count alone, which would cut the whole source: the
+        budget counts it, and _process_host cuts only the host it was for.
         """
         from recon.helpers.circuit_breaker import CallResult, Outcome
         if not breaker.allow():
@@ -1291,11 +1317,13 @@ class _UrlscanSource:
                 "sha256": sha}
 
     def _search(self, query: str, host: str) -> Optional[list]:
+        """The visits found, or None when the cap or the budget refused the search."""
         with self._lock:
-            if self._searches >= _URLSCAN_MAX_FILE_SEARCHES:
-                return None
-            self._searches += 1
-        if not self.ctx.budget.take():
+            refused = self._searches >= _URLSCAN_MAX_FILE_SEARCHES
+            if not refused:
+                self._searches += 1
+        if refused or not self.ctx.budget.take():
+            self.ctx.note_miss()
             return None
         from recon.main_recon_modules import urlscan_enrich as us
         results = us.urlscan_search(
@@ -1337,7 +1365,10 @@ class _UrlscanSource:
         if results is not None and not results and _BUILD_CODE_RE.search(own["name"]):
             source = "urlscan_filename"
             results = self._search(f'filename:"{own["name"]}"', host)
-        suspects = self._filter(results or [])
+        if results is None:
+            # Not an answer: a host sharing the file asks again, and is cut too.
+            return [], source
+        suspects = self._filter(results)
         with self._lock:
             self._by_sha[own["sha256"]] = suspects
         return suspects, source
@@ -1381,6 +1412,7 @@ def _gather_candidates(host: str, entry: dict, ctx: _RunCtx, meta: dict,
                 candidates.setdefault(ip, name)
                 methods.add(method)
         except Exception as e:  # never-raise per source
+            ctx.note_miss()
             meta.setdefault("errors", {})[name] = str(e)[:200]
             # surface it (e.g. an invalid API key) instead of a silent empty result
             _log("-", f"{host}: source '{name}' failed: {str(e)[:120]}")
@@ -1485,10 +1517,22 @@ def _own_file_source(ctx: _RunCtx, combined_result: dict, urlscan: Optional[_Url
     return urlscan if urlscan is not None else _UrlscanSource(combined_result, ctx)
 
 
+#: Why a fronted host was not fully checked: the reason its coverage gap gives.
+_CUT_BUDGET = "keyed-search budget exhausted"
+_CUT_SOURCE = "a candidate source did not answer"
+_CUT_REFERENCE = "the fronted host did not answer the reference fetch for comparison"
+_CUT_CHECK = "a candidate check failed"
+_CUT_CRASH = "processing the host failed"
+
+
 def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
                   flagged: Set[str] = frozenset(), urlscan: Optional[_UrlscanSource] = None,
                   files: Optional[_UrlscanSource] = None) -> Tuple[List[dict], dict]:
+    """The host's confirmed origins and its meta. ``meta["unchecked"]`` names
+    why the host was not fully checked: a source or a candidate the run never
+    asked would otherwise read as "no origin", and its findings be pruned."""
     meta: dict = {"candidates": [], "methods": [], "errors": {}}
+    misses, refused = ctx.misses, ctx.budget.refused
     reference = own = None
     if urlscan is not None:
         # The file search needs the reference page's scripts: the same request, earlier.
@@ -1496,6 +1540,12 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
         own = urlscan.own_file(host, reference)
     candidates = _gather_candidates(host, entry, ctx, meta, key=key, urlscan=urlscan,
                                     own_file=own, flagged=flagged)
+    if ctx.budget.refused > refused:
+        meta["unchecked"] = _CUT_BUDGET
+    elif ctx.misses > misses:
+        meta["unchecked"] = _CUT_SOURCE
+    elif urlscan is not None and reference is None:
+        meta["unchecked"] = _CUT_REFERENCE
     kept = _dedup_and_filter(candidates, entry, ctx, meta, flagged=flagged)
     meta["candidates"] = [ip for ip, _ in kept]
     if not kept:
@@ -1507,6 +1557,7 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
             own = files.own_file(host, reference)
     if reference is None:
         meta["errors"]["reference"] = "could not fetch the fronted host for comparison"
+        meta["unchecked"] = _CUT_REFERENCE
         return [], meta
     if own:
         meta["own_file"] = own["path"]
@@ -1521,6 +1572,7 @@ def _process_host(host: str, entry: dict, ctx: _RunCtx, key=_KEY_FROM_HOST,
             try:
                 match = fut.result()
             except Exception:
+                meta.setdefault("unchecked", _CUT_CHECK)
                 match = None
             if not match:
                 continue
@@ -1591,7 +1643,8 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
             confirmed, meta = _process_host(host, entry, ctx, key=key_for(host), flagged=flagged,
                                             urlscan=urlscan, files=files)
         except Exception as e:  # a host never sinks the whole module
-            payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]}}
+            payload["candidates_meta"][host] = {"errors": {"fatal": str(e)[:200]},
+                                                "unchecked": _CUT_CRASH}
             _log("!", f"{host}: {e}")
             continue
         all_confirmed.extend(confirmed)
@@ -1601,9 +1654,31 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     _log("*" if all_confirmed else "-",
          f"origin discovery complete: {len(all_confirmed)} confirmed origin(s) "
          f"across {len(fronted)} fronted host(s)")
+    _note_unchecked_hosts(payload["candidates_meta"])
     # A provider it could not ask cuts its own findings: keep the previous ones.
     od_scope.finish("origin_discovery", sources=["origin_discovery"], payload=payload)
     return combined_result
+
+
+def _note_unchecked_hosts(candidates_meta: Dict[str, dict]) -> None:
+    """Keep the earlier origin findings of every host this run did not fully check.
+
+    Cut for origin_discovery alone (the other tools did re-check these hosts),
+    so a host checked to the end with no origin still prunes. Never raises.
+    """
+    by_reason: Dict[str, List[str]] = {}
+    for host, meta in candidates_meta.items():
+        reason = (meta or {}).get("unchecked")
+        if reason:
+            by_reason.setdefault(reason, []).append(host)
+    if not by_reason:
+        return
+    from recon.helpers import circuit_breaker as cb
+    for reason, hosts in sorted(by_reason.items()):
+        cb.note_degraded("origin_discovery", hosts=sorted(hosts), host_source="origin_discovery",
+                         source_only_hosts=True, reason=reason)
+    _log("!", f"{sum(len(h) for h in by_reason.values())} fronted host(s) not fully checked "
+              f"({'; '.join(sorted(by_reason))}): their earlier origin findings are kept")
 
 
 # Every keyed provider origin discovery asks, by breaker key prefix.
