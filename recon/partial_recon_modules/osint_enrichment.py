@@ -441,7 +441,8 @@ def run_uncover(config: dict) -> dict:
     associated with each root. Uncover exposes no rate-limit signal, so an
     empty answer maps to no_results.
     """
-    from recon.main_recon_modules.uncover_enrich import run_uncover_expansion
+    from recon.main_recon_modules.uncover_enrich import merge_uncover_into_pipeline, run_uncover_expansion
+    from recon.partial_recon_modules.helpers import _group_for, include_root_for, org_for_root
 
     roots = scope_roots(config)
     user_id = os.environ.get("USER_ID", "")
@@ -500,6 +501,17 @@ def run_uncover(config: dict) -> dict:
         # `domains` keeps every root so the writer attaches a host under another
         # root to that root; a bare IP or URL falls back to the queried root.
         combined_result = {"domain": domain, "domains": list(roots)}
+        # The group's scope, stamped as the full pipeline stamps it, so
+        # merge_uncover_into_pipeline knows an EXACT group from an ENUMERATE one.
+        groups = config.get("domain_groups") or []
+        group = _group_for(domain, groups)
+        if group is not None and "mode" in group:
+            combined_result["metadata"] = {
+                "org_domain": org_for_root(domain, groups),
+                "scope_mode": group["mode"],
+                "include_root_domain": include_root_for(domain, groups),
+                "subdomain_filter": list(group.get("exactHosts") or []),
+            }
 
         # Run Uncover expansion (same function as full pipeline)
         uncover_data = run_uncover_expansion(combined_result, settings)
@@ -513,6 +525,10 @@ def run_uncover(config: dict) -> dict:
         print(f"[+][Partial Recon] IPs: {len(uncover_data.get('ips', []))}")
         print(f"[+][Partial Recon] URLs: {len(uncover_data.get('urls', []))}")
 
+        # update_graph_from_uncover writes every name, IP and port in the
+        # payload, and later partial scans read them back as targets: the full
+        # pipeline's guards (EXACT scope, RoE, syntax, non-routable) run first.
+        merge_uncover_into_pipeline(combined_result, uncover_data, domain, settings=settings)
         combined_result["uncover"] = uncover_data
 
         # Update the graph database
