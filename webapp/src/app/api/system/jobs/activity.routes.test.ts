@@ -173,12 +173,56 @@ describe('GET /api/system/jobs', () => {
   test("another user's dispatched full recon is not counted twice", async () => {
     h.jqFindMany.mockResolvedValue([])
     // Their running full_recon queue row and its ScanJob are the same scan.
-    h.jqGroupBy.mockResolvedValue([{ status: 'running', kind: 'full_recon', projectId: 'zz', _count: { _all: 1 } }])
+    h.jqGroupBy.mockResolvedValue([{ status: 'running', kind: 'full_recon', projectId: 'zz', scanJobId: 's1', _count: { _all: 1 } }])
     h.jqCount.mockResolvedValue(0)
     h.sjCount.mockResolvedValue(1)
 
     const body = await (await systemJobs(req())).json()
     expect(body.others.running).toBe(1)
+  })
+
+  // Every queue-dispatched kind but supply_chain_repo records a ScanJob too
+  // (L-12), so a queue row counts only while no ScanJob stands for its scan.
+  describe("another user's in-flight work counts each scan once", () => {
+    const others = async (groups: Record<string, unknown>[], scanJobs: number) => {
+      h.jqFindMany.mockResolvedValue([])
+      h.jqGroupBy.mockResolvedValue(groups.map(g => ({ projectId: 'zz', _count: { _all: 1 }, ...g })))
+      h.jqCount.mockResolvedValue(0)
+      h.sjCount.mockResolvedValue(scanJobs)
+      return (await (await systemJobs(req())).json()).others
+    }
+
+    test('the query groups the queue rows by the ScanJob they started', async () => {
+      await others([], 0)
+      const args = h.jqGroupBy.mock.calls[0][0]
+      expect(args.by).toEqual(expect.arrayContaining(['status', 'scanJobId']))
+    })
+
+    test.each(['gvm', 'partial_recon', 'ai_attack', 'trufflehog', 'github_hunt', 'supply_chain'])(
+      'a queue-dispatched %s and its ScanJob are one scan', async kind => {
+        expect((await others([{ status: 'running', kind, scanJobId: 'sj9' }], 1)).running).toBe(1)
+      })
+
+    test('a dispatching job has no ScanJob yet and is counted, a full recon too', async () => {
+      const o = await others([
+        { status: 'dispatching', kind: 'full_recon', scanJobId: null },
+        { status: 'dispatching', kind: 'gvm', scanJobId: null },
+      ], 0)
+      expect(o.running).toBe(2)
+    })
+
+    test('a running supply_chain_repo writes no ScanJob and is counted from its queue row', async () => {
+      expect((await others([{ status: 'running', kind: 'supply_chain_repo', scanJobId: null }], 0)).running).toBe(1)
+    })
+
+    test('a running queue row whose ScanJob could not be written is still counted', async () => {
+      expect((await others([{ status: 'running', kind: 'gvm', scanJobId: null }], 0)).running).toBe(1)
+    })
+
+    test('queued rows stay in the queued count', async () => {
+      expect(await others([{ status: 'queued', kind: 'gvm', scanJobId: null }], 0))
+        .toMatchObject({ queued: 1, running: 0 })
+    })
   })
 
   // The third source. GVM / TruffleHog / supply-chain / AI-attack write neither a
@@ -343,10 +387,11 @@ describe('GET /api/system/jobs', () => {
 
   test("another user's queued-then-dispatched gvm is counted once, not twice", async () => {
     h.jqFindMany.mockResolvedValue([])
-    // A queue-dispatched gvm has a queue row and no ScanJob, so it is counted here
-    // and the live entry for it must not add a second.
-    h.jqGroupBy.mockResolvedValue([{ status: 'running', kind: 'gvm', projectId: 'notMine', _count: { _all: 1 } }])
+    // A queue-dispatched gvm has a queue row and its ScanJob, counted once, and the
+    // live entry for it must not add a second.
+    h.jqGroupBy.mockResolvedValue([{ status: 'running', kind: 'gvm', projectId: 'notMine', scanJobId: 'sj-gvm', _count: { _all: 1 } }])
     h.jqCount.mockResolvedValue(0)
+    h.sjCount.mockResolvedValue(1)
     liveScans = [live({ kind: 'gvm', project_id: 'notMine' })]
 
     const body = await (await systemJobs(req())).json()

@@ -6,7 +6,7 @@
  *
  * "Running" is a union of three sources, because no single one sees every scan:
  *   1. JobQueue rows in running/dispatching - only work the QUEUE started.
- *   2. ScanJob rows - only full recon (nothing else writes one).
+ *   2. ScanJob rows - every scan that started, except a supply_chain_repo batch item.
  *   3. GET /system/active-scans on the orchestrator - every kind, but in-memory,
  *      so it is empty for scans that predate the orchestrator's last restart.
  * Deduplicated on kind|projectId|runId, preferring the source that carries the
@@ -187,9 +187,9 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
         select: SELECT,
       }),
       prisma.jobQueue.groupBy({
-        // projectId is in the grouping only so a live scan can be matched against
-        // these rows exactly, instead of by kind alone.
-        by: ['status', 'kind', 'projectId'],
+        // Grouped by the ScanJob a row started, so a dispatched scan already
+        // counted from its ScanJob is not counted again from its queue row.
+        by: ['status', 'scanJobId'],
         where: { userId: { not: eff.userId }, status: { in: ['running', 'dispatching', 'queued'] } },
         _count: { _all: true },
       }),
@@ -296,11 +296,12 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
     ]
 
     // Everyone else's in-flight work, as one anonymised number. Counted from the DB
-    // only: a scan is EITHER started directly (ScanJob, every kind) or by the queue
-    // (JobQueue row, and only full_recon then also writes a ScanJob). The live
-    // source is not consulted here - without per-project rows there is no key to
-    // de-duplicate it against, and after this change it can see nothing the DB
-    // does not already have.
+    // only: every scan that started writes a ScanJob, whether a button or the
+    // queue started it, except a supply_chain_repo batch item, and a queue row
+    // records the ScanJob it started when it goes `running`. So a queue row
+    // counts only while it has none: dispatching, supply_chain_repo, or a start
+    // whose history write failed. The live source is not consulted here -
+    // without per-project rows there is no key to de-duplicate it against.
     const othersAgg = {
       queued: 0,
       running: othersRunningScans,
@@ -309,7 +310,7 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
     for (const g of othersActive) {
       const n = g._count._all
       if (g.status === 'queued') othersAgg.queued += n
-      else if (g.kind !== 'full_recon') othersAgg.running += n // running + dispatching
+      else if (!g.scanJobId) othersAgg.running += n
     }
 
     // Best-effort ledger snapshot from the orchestrator (drives the "waiting for
