@@ -208,7 +208,12 @@ Archive URLs go through the quarantine first (`recon/helpers/url_leaks.py`): a U
 carrying a one-time link, a secret, a state-changing value or a web-shell trace
 never reaches `discovered_urls`, and the Endpoint it would have made is written
 `quarantined` (no `full_url`, no parameter values). The remaining archive values
-are masked before they enter the lists DAST reads. urlscan's addresses join
+are masked before they enter the lists DAST reads. The held GAU and ParamSpider
+URLs are reported, never requested: `resource_enum["archive_leaks"]`
+(`recon/helpers/archive_leaks.py`) groups their leaked one-time links and
+secrets like urlscan's, written as Vulnerability / Secret `{source: 'url_archive'}`
+with the value and the full links in the display-only fields
+(`graph_db/display_only.py`) that the UI shows and the agent never reads. urlscan's addresses join
 `by_base_url` only on bases that are live in this scan
 (`recon/helpers/resource_enum/urlscan_helpers.py`), before OpenAPI, so a
 Swagger address urlscan saw seeds the OpenAPI step; every source writes the same
