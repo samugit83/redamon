@@ -5,7 +5,12 @@ FROM debian:bullseye-slim
 
 # Install build dependencies
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
+# bullseye is out of support: deb.debian.org's security pool answers 404 for the
+# versions its index still lists. The image ships the matching snapshot.debian.org
+# lines commented out; use them (a frozen archive, hence no Valid-Until check).
+RUN sed -i -e 's|^# deb http://snapshot|deb http://snapshot|' -e '/^deb http:\/\/deb.debian.org/d' \
+        /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y \
     build-essential \
     wget \
     libapr1-dev \
