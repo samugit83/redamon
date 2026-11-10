@@ -395,7 +395,8 @@ def _probe_mcp(base_url: str, session: requests.Session, timeout: float,
                                 f"MCP tool '{t.get('name')}': {y['rule']}",
                                 base_url, det["path"], t.get("name"),
                                 owasp, atlas,
-                                json.dumps({"matched": y.get("matched"), "offset": y.get("offset")})))
+                                json.dumps({"matched": y.get("matched"), "offset": y.get("offset")}),
+                                rule=y["rule"]))
                 tools_out.append(entry)
             # server-instructions YARA
             if yara_on and mcp.get("instructions"):
@@ -403,7 +404,8 @@ def _probe_mcp(base_url: str, session: requests.Session, timeout: float,
                     findings.append(_mk_finding("mcp_prompt_injection", y["severity"],
                                     f"MCP server instructions: {y['rule']}",
                                     base_url, det["path"], None, "LLM01", "AML.T0051",
-                                    json.dumps({"matched": y.get("matched")})))
+                                    json.dumps({"matched": y.get("matched")}),
+                                    rule=y["rule"]))
             mcp["tools"] = tools_out
             mcp["tool_count"] = len(tools_out)
             mcp["tools_hash"] = hashlib.sha256(
@@ -414,9 +416,15 @@ def _probe_mcp(base_url: str, session: requests.Session, timeout: float,
     return {"mcp": mcp, "findings": findings}
 
 
-def _mk_finding(ftype, severity, desc, base_url, path, tool, owasp, atlas, evidence):
-    fid = "aisr_" + hashlib.sha256(
-        f"{ftype}|{base_url}|{path}|{tool}".encode()).hexdigest()[:16]
+def _mk_finding(ftype, severity, desc, base_url, path, tool, owasp, atlas, evidence,
+                rule=None):
+    # The YARA rule is part of a finding's identity: every rule that fires on a
+    # server's instructions is an mcp_prompt_injection with no tool, and a pack
+    # can hold several rules of one threat type for a tool. The rule name comes
+    # from the vendored pack, never from the target. A finding with no rule keeps
+    # the key it always had; tooling/scripts/aisr_finding_rekey.py moves the rest.
+    key = f"{ftype}|{base_url}|{path}|{tool}" + (f"|{rule}" if rule else "")
+    fid = "aisr_" + hashlib.sha256(key.encode()).hexdigest()[:16]
     return {"id": fid, "type": ftype, "severity": severity, "name": desc,
             "baseurl": base_url, "path": path, "tool_name": tool,
             "owasp_llm_id": owasp, "atlas_technique": atlas, "evidence": evidence}
