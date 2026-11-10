@@ -19,7 +19,7 @@ import requests
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Any, Set, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 import concurrent.futures
 
 from recon.helpers import catchall
@@ -1727,6 +1727,56 @@ SECURITY_HEADERS = {
 }
 
 
+def _hostname_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return ""
+
+
+def _get_on_host(url: str, timeout: int):
+    """GET ``url``, following redirects only while they stay on its host.
+
+    The header, cookie, CSP and form checks report on the host they probe, so
+    a page another host serves after a redirect (a third-party login, an apex
+    sending to www) is not this host's, and that host gets no request: the
+    walk stops before the first off-host hop and returns the last response
+    from this host, with the in-host hops before it as its ``history``
+    (_cookies_set_by reads cookies set on a hop). Scheme and port may change,
+    so http to https on the same name is still followed. As requests does
+    across a redirect, a cookie set on one hop is sent on the next, so a
+    cookie-check bounce still lands. Each hop goes through _hh_get.
+    """
+    host = _hostname_of(url)
+    jar = requests.cookies.RequestsCookieJar()
+    hops = []
+    current = url
+    for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
+        response = _hh_get(current, timeout=timeout, allow_redirects=False, verify=False,
+                           headers={"User-Agent": DEFAULT_BROWSER_UA},
+                           **({"cookies": jar} if len(jar) else {}))
+        set_now = getattr(response, "cookies", None)
+        if isinstance(set_now, requests.cookies.RequestsCookieJar):
+            jar.update(set_now)
+        location = catchall.header_map(response).get("location", "")
+        if catchall.status_of(response) not in requests.models.REDIRECT_STATI or not location:
+            break
+        try:
+            target = urljoin(current, location)
+            scheme = urlparse(target).scheme
+        except ValueError:  # a Location the target wrote, e.g. "http://[bad"
+            break
+        if scheme not in ("http", "https") or _hostname_of(target) != host:
+            break
+        hops.append(response)
+        current = target
+    else:
+        raise requests.exceptions.TooManyRedirects(
+            f"Exceeded {requests.models.DEFAULT_REDIRECT_LIMIT} redirects on {host}")
+    response.history = hops
+    return response
+
+
 def check_security_headers(
     hostname: str,
     port: int = 443,
@@ -1752,13 +1802,7 @@ def check_security_headers(
     url = f"{protocol}://{hostname}" if port in [80, 443] else f"{protocol}://{hostname}:{port}"
 
     try:
-        response = _hh_get(
-            url,
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,  # Allow self-signed for testing
-            headers={"User-Agent": DEFAULT_BROWSER_UA}
-        )
+        response = _get_on_host(url, timeout)
 
         # Only check successful responses
         if response.status_code != 200:
@@ -1811,13 +1855,7 @@ def check_cache_control_missing(hostname: str, port: int = 443, timeout: int = 1
     url = f"{protocol}://{hostname}" if port in [80, 443] else f"{protocol}://{hostname}:{port}"
 
     try:
-        response = _hh_get(
-            url,
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,
-            headers={"User-Agent": DEFAULT_BROWSER_UA}
-        )
+        response = _get_on_host(url, timeout)
 
         if response.status_code != 200:
             return None
@@ -1943,13 +1981,7 @@ def check_session_cookies(hostname: str, timeout: int = 10) -> List[Dict]:
     url = f"https://{hostname}/"
 
     try:
-        response = _hh_get(
-            url,
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,
-            headers={"User-Agent": DEFAULT_BROWSER_UA}
-        )
+        response = _get_on_host(url, timeout)
 
         session_indicators = ['session', 'sess', 'sid', 'token', 'auth', 'jwt', 'phpsessid', 'jsessionid', 'asp.net_sessionid']
 
@@ -2039,8 +2071,9 @@ def _cookies_set_by(response) -> List[Tuple[str, bool, bool]]:
     """(name, secure, httponly) for every cookie the response chain leaves set.
 
     Redirect hops count: a session cookie issued on a 302 is as exposed as one
-    on the final page. A cookie set twice is judged as the browser keeps it,
-    by its last Set-Cookie.
+    on the final page. The hops are the probed host's own (_get_on_host stops
+    before another host's), so a third party's cookies are never its. A
+    cookie set twice is judged as the browser keeps it, by its last Set-Cookie.
     """
     final: Dict[str, Tuple[str, bool, bool]] = {}
     for hop in list(getattr(response, "history", None) or []) + [response]:
@@ -3043,13 +3076,7 @@ def check_csp_unsafe_inline(hostname: str, timeout: int = 10) -> Optional[Dict]:
     url = f"https://{hostname}/"
 
     try:
-        response = _hh_get(
-            url,
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,
-            headers={"User-Agent": DEFAULT_BROWSER_UA}
-        )
+        response = _get_on_host(url, timeout)
 
         csp = response.headers.get('Content-Security-Policy', '')
 
@@ -3097,13 +3124,7 @@ def check_insecure_form_action(hostname: str, timeout: int = 10) -> List[Dict]:
     url = f"https://{hostname}/"
 
     try:
-        response = _hh_get(
-            url,
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,
-            headers={"User-Agent": DEFAULT_BROWSER_UA}
-        )
+        response = _get_on_host(url, timeout)
 
         if response.status_code == 200:
             content = response.text

@@ -65,12 +65,15 @@ def server():
 
 
 def _check(server, path):
+    """The check's first request is https://<host>/, served from `path`; the
+    redirect hops it follows on the same host are served from their own path."""
     real_get = requests.get
 
     def routed(url, *a, **k):
-        assert url == f"https://{HOST}/", url
+        assert url.startswith(f"https://{HOST}/"), url
         k.pop("verify", None)
-        return real_get(f"http://127.0.0.1:{server}{path}", *a, **k)
+        local = path if url == f"https://{HOST}/" else "/" + url.split("/", 3)[3]
+        return real_get(f"http://127.0.0.1:{server}{local}", *a, **k)
 
     with mock.patch.object(sc.requests, "get", side_effect=routed):
         return sc.check_session_cookies(HOST, timeout=5)
