@@ -598,7 +598,7 @@ const Jsluice = (
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
     <ul style={listStyle}>
-      <li>Each regex-matched secret in JS becomes a <strong>Secret</strong> node attached to the BaseURL via <span style={codeStyle}>HAS_SECRET</span>, with severity (HIGH / MEDIUM / INFO) and a redacted sample value.</li>
+      <li>Each regex-matched secret in JS becomes a <strong>Secret</strong> node attached to the BaseURL via <span style={codeStyle}>HAS_SECRET</span>, with severity (HIGH / MEDIUM / INFO) and its value, shown as its last four characters with a button that copies the full value.</li>
       <li>Each variable or API path extracted from JS source becomes either a new <strong>Endpoint</strong> + <strong>Parameter</strong> structure, or augments existing Endpoints if the path already exists.</li>
       <li>The BaseURL is enriched with the count of secrets found and an analysis timestamp.</li>
     </ul>

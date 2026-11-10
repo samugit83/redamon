@@ -1222,7 +1222,7 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - urlscanInjectMaxAgeDays: integer - days: urlscan host names seen within this window join the scan like discovered subdomains (default 90)
 - urlscanMaxInjectedHosts: integer - the most urlscan host names joining one scan per domain, newest first; 0 adds none (default 200)
 - urlscanLeakedLinks: boolean - findings for the target's leaked password-reset, invite, payment and login links seen on urlscan (never opened)
-- urlscanSecretsInUrls: boolean - Secrets for passwords, API keys, tokens and JWTs written in URLs seen on urlscan, stored masked
+- urlscanSecretsInUrls: boolean - Secrets for passwords, API keys, tokens and JWTs written in URLs seen on urlscan (the URL is never requested)
 - urlscanSensitiveFiles: boolean - findings for sensitive files (.env, .git, dumps, backups, keys, logs, installers, debug consoles) seen on urlscan
 - urlscanDocumentLinks: boolean - marks documents opened by direct link (PDF, Office, CSV, archives, JSON, raw text) on their urlscan endpoints
 - urlscanRedirectSearch: boolean - one extra urlscan search per domain for visits that started on the target and ended on another site (open redirects, leaked links); +1 search

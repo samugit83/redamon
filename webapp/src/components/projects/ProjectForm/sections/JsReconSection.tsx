@@ -65,7 +65,7 @@ Fields: name | regex | severity | confidence
 - severity: critical, high, medium, low, info
 - confidence: high, medium, low
 - severity and confidence are optional (default: medium)`,
-      howItWorks: 'Each pattern is compiled as a Python regex and applied line-by-line to every downloaded JS file. When a match is found, a finding is created with the specified severity and confidence. The matched text is redacted in the output (first 6 + last 4 chars shown). Patterns with a high false-positive rate should use confidence "low". Note: patterns run in Python (re module), not JavaScript. Avoid JS-only syntax like (?<name>...) named groups -- use (?P<name>...) or plain capture groups instead.',
+      howItWorks: 'Each pattern is compiled as a Python regex and applied line-by-line to every downloaded JS file. When a match is found, a finding is created with the specified severity and confidence. The full value is kept: the tables show its last four characters with a button that copies all of it. Patterns with a high false-positive rate should use confidence "low". Note: patterns run in Python (re module), not JavaScript. Avoid JS-only syntax like (?<name>...) named groups -- use (?P<name>...) or plain capture groups instead.',
     },
     validate: (content: string, filename: string) => {
       if (filename.endsWith('.json')) {

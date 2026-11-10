@@ -10210,9 +10210,11 @@ fields:
     mcp: settable
     meaning: >-
       Checks the URLs urlscan already returned for passwords, API keys, tokens and
-      JWTs written in the address. Each one becomes a Secret (source urlscan) stored
-      masked: its length and an HMAC, never the value. Such a URL is quarantined
-      whatever this switch says. No extra searches.
+      JWTs written in the address. Each one becomes a Secret (source urlscan) keyed
+      by an HMAC of its value; the value and the full URL are shown in the Secrets
+      table (the last four characters, a copy button for the rest) and never reach
+      the agent. Such a URL is quarantined whatever this switch says. No extra
+      searches.
   urlscanSensitiveFiles:
     tool: urlscan
     runtime_key: "URLSCAN_SENSITIVE_FILES"

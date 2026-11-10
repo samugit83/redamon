@@ -201,7 +201,7 @@ export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps
                   checked={data.urlscanSecretsInUrls ?? true}
                   onChange={(checked) => updateField('urlscanSecretsInUrls', checked)}
                   label="Secrets in URLs"
-                  description="Checks the URLs urlscan already returned for passwords, API keys, tokens and JWTs written in the address. Each one becomes a Secret, stored masked. No extra searches."
+                  description="Checks the URLs urlscan already returned for passwords, API keys, tokens and JWTs written in the address. Each one becomes a Secret: the Secrets table shows its last four characters with a copy button, and its link opens the full URL. RedAmon never opens the URL itself. No extra searches."
                 />
               </div>
 
