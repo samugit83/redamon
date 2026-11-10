@@ -1966,6 +1966,14 @@ def check_login_no_https(hostname: str, timeout: int = 10) -> List[Dict]:
     return findings
 
 
+#: Anti-CSRF cookies (Django csrftoken, the XSRF-TOKEN of Angular, Laravel and
+#: Spring, express _csrf, ASP.NET __RequestVerificationToken): the double-submit
+#: pattern has the page's JavaScript read the cookie and echo it in a header,
+#: so HttpOnly would break it. Their "token" made them look like session
+#: cookies; they still need Secure.
+_ANTI_CSRF_COOKIE = re.compile(r"[cx]srf|requestverificationtoken", re.IGNORECASE)
+
+
 def check_session_cookies(hostname: str, timeout: int = 10) -> List[Dict]:
     """
     Check session cookies for missing Secure and HttpOnly flags.
@@ -2003,7 +2011,7 @@ def check_session_cookies(hostname: str, timeout: int = 10) -> List[Dict]:
                     "recommendation": "Add the Secure flag to all session cookies.",
                 })
 
-            if not httponly:
+            if not httponly and not _ANTI_CSRF_COOKIE.search(name):
                 findings.append({
                     "type": "session_no_httponly",
                     "severity": "medium",
