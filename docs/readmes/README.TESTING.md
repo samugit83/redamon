@@ -185,6 +185,33 @@ printed, and the internal and scanner keys are read from `.env` only for their r
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
 real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
 
+### The RBAC upgrade harness
+
+`tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`
+without `exec node server.js`) against synthetic 7.7.x-shaped databases, in throwaway
+containers on a private network, and checks what the upgrade did. The scenarios are full dumps
+in `tests/fixtures/rbac_upgrade/` (one admin, several, none, passwordless admins, tunnel and
+capture rows, members with and without passwords), made with the pinned image
+`redamon-webapp:rbac-7.7.2` so they keep the 7.7.x shape while `redamon-webapp:latest` moves
+on. After every run it asserts that the row count of every table and every `users` column are
+unchanged, and diffs `checks.sql` against `expected/<scenario>.out`.
+
+```bash
+bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain
+RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
+bash tests/rbac_upgrade_live.sh serve several_admins   # 127.0.0.1:3901 until Ctrl-C
+```
+
+`twice` runs the list twice; `parallel` starts two containers at once (several webapp copies);
+`failure` deletes a backfill's marker, holds a lock on the table it reads and re-runs only that
+backfill with a 2 s `lock_timeout`: it must log the failure, exit 0 and write no marker, and the
+next run completes it. `serve` boots the server on the scenario database with fake secrets, the
+disposable instance for checks that would move or sign out the dev stack's own admin. It needs
+Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine`, and
+prints `SKIP` without one (it never pulls or builds); as a `*_live.sh` it is never in the gate.
+The fixtures' README explains the password, the regeneration (`regen` mode) and how to rebuild
+the pinned image with `git archive 442debbf:webapp | docker build -t redamon-webapp:rbac-7.7.2 -`.
+
 ### Two oracles, and only one of them runs in the gate
 
 Some unit-tier files mix hermetic checks with checks that need a live Neo4j and

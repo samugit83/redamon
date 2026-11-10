@@ -1,0 +1,18 @@
+== users (email, role, password state, created, updated)
+upg-admin-a@e2e.local|admin|password|2026-01-05 09:00:00|2026-01-05 09:00:00
+upg-member-a@e2e.local|standard|password|2026-02-01 09:00:00|2026-02-01 09:00:00
+upg-member-b@e2e.local|standard|password|2026-02-02 09:00:00|2026-02-02 09:00:00
+upg-member-c@e2e.local|standard|passwordless|2026-02-03 09:00:00|2026-02-03 09:00:00
+upg-member-d@e2e.local|standard|passwordless|2026-02-04 09:00:00|2026-02-04 09:00:00
+== settings (email, tunnels, ngrok token, chisel url, chisel auth, capture on, retention, store bodies, mcp servers, updated)
+upg-member-a@e2e.local|f||||t|14|t|1|2026-02-05 09:00:00
+== capture settings in force (the admin row saved last)
+== tunnel credentials in force (first configured row, no ORDER BY, as GET /api/global/tunnel-config)
+== projects (name, owner, target)
+upg-PA|upg-member-a@e2e.local|upg-a.test
+upg-PC|upg-member-c@e2e.local|upg-c.test
+== one-time markers (action, rows)
+system.jev_provider_selection_backfill|1
+system.jev_provider_selection_cutoff|1
+system.user_skill_toggles_backfill|1
+system.user_skill_toggles_cutoff|1
