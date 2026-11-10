@@ -1857,9 +1857,19 @@ def check_cache_control_missing(hostname: str, port: int = 443, timeout: int = 1
 # Authentication Security Checks
 # =============================================================================
 
+_PASSWORD_INPUT = re.compile(r"<input\b[^>]*\btype\s*=\s*[\"']?password\b", re.IGNORECASE)
+
+
 def check_login_no_https(hostname: str, timeout: int = 10) -> List[Dict]:
     """
     Check if login forms are served over HTTP (insecure).
+
+    A page counts only with a password input: a form and the word "login"
+    are on every homepage with a search box and a "Login" link. The hit is
+    then compared with a made-up path next to it (the catch-all control): a
+    server that answers that path alike says nothing about this one, so the
+    path is skipped; a control that got no answer keeps the finding as
+    ``control_check: failed``.
 
     Args:
         hostname: Hostname to check
@@ -1877,42 +1887,40 @@ def check_login_no_https(hostname: str, timeout: int = 10) -> List[Dict]:
         "/account/login", "/members/login", "/portal/login",
     ]
 
+    def fetch(u):
+        return _hh_get(u, timeout=timeout, allow_redirects=False,
+                       headers={"User-Agent": DEFAULT_BROWSER_UA})
+
+    controls = _CONTROL_CACHE if _CONTROL_CACHE is not None else catchall.ControlCache()
+
     # Check HTTP (insecure)
     for path in login_paths:
         url = f"http://{hostname}{path}"
         try:
-            response = _hh_get(
-                url,
-                timeout=timeout,
-                allow_redirects=False,
-                headers={"User-Agent": DEFAULT_BROWSER_UA}
-            )
+            response = fetch(url)
 
-            # Check if response contains login form indicators
-            if response.status_code == 200:
-                content = response.text.lower()
-                has_login_form = any([
-                    'type="password"' in content,
-                    "type='password'" in content,
-                    'name="password"' in content,
-                    'id="password"' in content,
-                    '<form' in content and 'login' in content,
-                ])
-
-                if has_login_form:
-                    findings.append({
-                        "type": "login_no_https",
-                        "severity": "high",
-                        "name": "Login Form Served Over HTTP",
-                        "description": f"A login form at {url} is served over unencrypted HTTP. "
-                                      "User credentials can be intercepted by attackers.",
-                        "url": url,
-                        "hostname": hostname,
-                        "path": path,
-                        "evidence": "Login form with password field found on HTTP",
-                        "recommendation": "Serve all login pages exclusively over HTTPS and redirect HTTP to HTTPS.",
-                    })
-                    break  # Found one, no need to check more paths
+            if response.status_code == 200 and _PASSWORD_INPUT.search(response.text or ""):
+                verdict = catchall.control_probe(fetch, url, response, cache=controls,
+                                                 roe_excluded=_ROE_EXCLUDED, note_module="vuln_scan")
+                if verdict.catch_all:
+                    continue
+                findings.append({
+                    "type": "login_no_https",
+                    "severity": "high",
+                    "name": "Login Form Served Over HTTP",
+                    "description": f"A login form at {url} is served over unencrypted HTTP. "
+                                  "User credentials can be intercepted by attackers.",
+                    "url": url,
+                    "hostname": hostname,
+                    "path": path,
+                    # Not verdict.reason: it names the random control path, and
+                    # the Recon Delta would read every run as a changed finding.
+                    "evidence": (f"Login form with password field found on HTTP; "
+                                 f"control_check: {verdict.control_check}"),
+                    "control_check": verdict.control_check,
+                    "recommendation": "Serve all login pages exclusively over HTTPS and redirect HTTP to HTTPS.",
+                })
+                break  # Found one, no need to check more paths
 
         except requests.exceptions.RequestException:
             pass
