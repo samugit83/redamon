@@ -8,6 +8,7 @@ import {
   isValidPortList, isValidStatusCodeList, isValidHeaderList, isValidTopPorts,
   validateProjectForm,
 } from './validation'
+import { roeExclusionProblem } from './roeScope'
 
 // === IPv4 ===
 describe('REGEX_IPV4', () => {
@@ -254,5 +255,44 @@ describe('validateProjectForm', () => {
       cypherfixGithubToken: '',
     }
     expect(validateProjectForm(data)).toEqual([])
+  })
+})
+
+// The form refused path and `*.domain` exclusions that the scan matcher applies
+// and MCP, presets and the RoE parser store, so a project holding one could not
+// be saved from the form at all (R-3b). It now asks the registry's question.
+describe('validateProjectForm: RoE excluded hosts', () => {
+  const baseData = { name: 'Test', ipMode: false, targetDomain: 'example.com', targetIps: [], subdomainList: [] }
+  const excluded = (hosts: unknown[]) => validateProjectForm({ ...baseData, roeExcludedHosts: hosts })
+
+  const APPLIED = [
+    'pay.example.com', 'intranet', '*.example.test', '192.0.2.11', '192.0.2.0/24',
+    '10.0.0.0/255.255.255.0', '2001:db8::1', '2001:db8::/32', '192.0.2.11/admin',
+    'admin.example.com/login', 'https://admin.example.com/x?y=1', 'Admin.Example.COM.:8443',
+    '*.example.com/admin', '', '  ',
+  ]
+  const EXCLUDE_NOTHING = ['0.5', '010.0.0.5', '10.0.0.0/33', '*.', '*.192.0.2.1', 'admin example.com', 'user@example.com']
+
+  test('every entry the matcher applies, path and *.domain forms included, saves', () => {
+    expect(excluded(APPLIED)).toEqual([])
+  })
+
+  test.each(EXCLUDE_NOTHING.map(e => [e]))('%j is refused because it would exclude nothing', (entry) => {
+    const errors = excluded(['example.com', entry])
+    expect(errors).toHaveLength(1)
+    expect(errors[0].field).toBe('roeExcludedHosts')
+    expect(errors[0].message).toContain('Excluded host 2')
+    expect(errors[0].message).toContain('would exclude nothing')
+    expect(errors[0].message).toContain(JSON.stringify(entry))
+  })
+
+  test('the form refuses exactly what the registry validator refuses', () => {
+    for (const entry of [...APPLIED, ...EXCLUDE_NOTHING]) {
+      expect(excluded([entry]).length === 0, entry).toBe(roeExclusionProblem(entry) === null)
+    }
+  })
+
+  test('a non-string entry is refused, not thrown on', () => {
+    expect(excluded([5]).map(e => e.field)).toEqual(['roeExcludedHosts'])
   })
 })

@@ -1,6 +1,7 @@
 import { INVALID_REASON_TEXT, groupHostsByScanRoot } from './domainBatch'
 import { resolveScopeGroups } from './scopeGroups'
 import { REGEX_GITHUB_ORG } from '@/lib/reconSettings/validators'
+import { roeExclusionProblem } from '@/lib/roeScope'
 
 // === IP / Network ===
 export const REGEX_IPV4 = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/
@@ -268,13 +269,13 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
     }
   }
 
-  // RoE excluded hosts
-  const roeExcluded = data.roeExcludedHosts as string[] || []
-  for (const host of roeExcluded) {
-    if (host.trim() && !isValidIpOrCidr(host) && !isValidDomain(host)) {
-      errors.push({ field: 'roeExcludedHosts', message: `Invalid excluded host: ${host}. Must be IP, CIDR, or domain.` })
-    }
-  }
+  // The registry validator's rule, so the form accepts every entry MCP, a preset
+  // or the RoE parser can store (paths, `*.domain`) and refuses the same ones.
+  const roeExcluded = (data.roeExcludedHosts as unknown[]) || []
+  roeExcluded.forEach((host, i) => {
+    const problem = roeExclusionProblem(host)
+    if (problem) errors.push({ field: 'roeExcludedHosts', message: `Excluded host ${i + 1} ${problem}` })
+  })
 
   // RoE engagement dates
   const roeStart = data.roeEngagementStartDate as string
