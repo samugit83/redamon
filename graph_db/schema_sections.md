@@ -188,7 +188,7 @@ Additional properties present on this node type, not yet described:
 - version (string): service version
 - cpe (string): CPE string from Nmap
 - banner (string): raw banner
-- source (string): which tool detected it
+- source (string): the passive provider that first reported the Service ("shodan", "censys", "fofa", "netlas", "zoomeye", "criminalip"), set on create only; absent on a Service the port scan, nmap or httpx created
 - extended_service_name (string): more specific label from Censys (e.g. "HTTPS")
 - labels (list[string]): service classification tags from Censys
 - http_title (string): HTML page title from HTTP response (Censys, Netlas, or FOFA title field)
@@ -353,6 +353,7 @@ Additional properties present on this node type, not yet described:
 - category (string): "web-server", "cms", "javascript-framework"
 - source (string): "nmap" for Nmap-detected, null for httpx-detected
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:apache:tomcat:8.5.19")
+- detected_by (string): every detector that saw it, comma-joined (e.g. "httpx,wappalyzer"), with "gvm" kept last ("httpx,gvm"). Match one with CONTAINS, not equality
 Additional properties present on this node type, not yet described:
 - cpe_product
 - cpe_vendor
@@ -648,7 +649,7 @@ VHost & SNI properties (source="vhost_sni_enum"):
 Web cache poisoning properties (source="cache_poisoning"):
 - vulnerability_type (string): always "web_cache_poisoning"
 - cache_header (string): the unkeyed request header used as the poisoning vector (e.g. "X-Forwarded-Host"), empty if the vector was a parameter
-- cache_param (string): the unkeyed query parameter vector, empty if the vector was a header
+- cache_param (string): the unkeyed query parameter vector, empty if the vector was a header; on a web cache deception finding, the URL shape that leaked, "static-suffix:<delimiter><suffix>" (e.g. "static-suffix:/.css")
 - cache_vector_type (string): "header" | "param" | "fat_get" (param in the GET body) | "path_param" (a ;matrix param) | "path" (path confusion or web cache deception)
 - cache_impact (string): decided from what the confirmation observed, "stored_xss" (the canary is the host of a cached <script src>) | "reflected_script" (canary cached inside an executable script context, XSS breakout unverified) | "open_redirect" (a cached Location points at the canary host) | "deception" | "dos" (a cached error status) | "reflected" | "response_change" (a cached behaviour change carrying no attacker-chosen content)
 - cache_technique (string): e.g. "unkeyed_header", "unkeyed_param", "cache_deception", "framework_next", "framework_remix"
