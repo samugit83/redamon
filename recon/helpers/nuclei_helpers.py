@@ -5,6 +5,7 @@ Functions for building Nuclei commands, parsing output, and detecting false posi
 """
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -346,14 +347,91 @@ def _classify_fp_ai(response_text: str, template_id: str, tags: list) -> Optiona
     return result
 
 
+def _tag_list(tags) -> list:
+    """Nuclei tags as a list; a template may carry them as one comma-separated string."""
+    if not tags:
+        return []
+    if isinstance(tags, str):
+        return [t.strip() for t in tags.split(",") if t.strip()]
+    return [str(t) for t in tags if t is not None]
+
+
+def _words(text: str) -> list:
+    return [w for w in re.split(r"[^a-z0-9]+", text.lower()) if w]
+
+
+_TIMING_TAGS = frozenset({"time-based", "blind", "time-based-sqli"})
+
+
+def _is_timing_template(template_id: str, tags: list) -> bool:
+    # Whole words of the id: "time" inside uptime-kuma-panel or iptime-router
+    # is a product name, not a template that measures the server's delay.
+    if any(t.lower() in _TIMING_TAGS for t in tags):
+        return True
+    words = _words(template_id)
+    return "time" in words or "blind" in words
+
+
+# Copy a throttling server writes on its 429/503 page. It counts only once the
+# response head says the server throttled: on a served page these are ordinary
+# words ("Loading, please wait..." above an exposed /.git/config).
+_THROTTLE_PHRASES = (
+    "too many requests",
+    "rate limit",
+    "too many attempts",
+    "please wait",
+    "try again later",
+    "temporarily blocked",
+    "request blocked",
+)
+
+_STATUS_LINE = re.compile(r"HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s|$)")
+_MAX_HEAD_LINES = 100
+
+
+def _response_head(response: str) -> tuple:
+    """(status, lower-cased header names) of a raw HTTP response.
+
+    Nuclei's JSONL has no status field; its `response` is the raw dump, status
+    line first. A DNS, network or file template's response is no HTTP head:
+    (None, set()).
+    """
+    lines = response.lstrip().splitlines()
+    match = _STATUS_LINE.match(lines[0]) if lines else None
+    if not match:
+        return None, set()
+    names = set()
+    for line in lines[1:_MAX_HEAD_LINES]:
+        if not line.strip():
+            break
+        name, sep, _ = line.partition(":")
+        if sep:
+            names.add(name.strip().lower())
+    return int(match.group(1)), names
+
+
+def _throttle_marker(response: str) -> Optional[str]:
+    """What shows the server throttled this response, or None."""
+    status, header_names = _response_head(response)
+    if status == 429:
+        return "HTTP 429"
+    if status != 503 and "retry-after" not in header_names:
+        return None
+    lowered = response.lower()
+    return next((p for p in _THROTTLE_PHRASES if p in lowered), None)
+
+
 def is_false_positive(finding: dict) -> tuple:
     """
     Detect common false positive patterns in nuclei findings.
 
     False positive indicators:
-    1. Rate limiting (429 status) - timing-based attacks become unreliable
+    1. Rate limiting, for time-based and blind templates only: the server
+       throttled the response (status 429, or status 503 / a Retry-After
+       header with throttle wording), so the delay the template measured is
+       the throttle's, not the payload's. Any other template keeps its match,
+       and throttle wording on a page the server did not throttle is copy.
     2. WAF/firewall blocks - response doesn't reflect actual vulnerability
-    3. Generic error pages - timing variations due to error handling
 
     When the AI cascade is enabled (per-scan via set_fp_ai_ctx), responses
     that the static keyword list missed but still LOOK like block pages
@@ -374,24 +452,8 @@ def is_false_positive(finding: dict) -> tuple:
     response = finding.get("response") or ""
     template_id = finding.get("template-id") or ""
     info = finding.get("info") or {}
-    tags = info.get("tags") or []
-    
-    # Patterns that indicate false positives
-    rate_limit_indicators = [
-        "429 Too Many Requests",
-        "HTTP/1.1 429",
-        "HTTP/2 429",
-        "Too Many Requests",
-        "rate limit",
-        "Rate Limit",
-        "too many attempts",
-        "Too many attempts",
-        "please wait",
-        "try again later",
-        "temporarily blocked",
-        "Request blocked",
-    ]
-    
+    tags = _tag_list(info.get("tags"))
+
     waf_block_indicators = [
         "403 Forbidden",
         "Access Denied",
@@ -404,18 +466,11 @@ def is_false_positive(finding: dict) -> tuple:
         "AWS WAF",
     ]
     
-    # Check for rate limiting - especially bad for time-based attacks
-    is_time_based = any(t in ["time-based", "blind", "time-based-sqli"] for t in tags) or \
-                    "time" in template_id.lower() or "blind" in template_id.lower()
-    
-    for indicator in rate_limit_indicators:
-        if indicator.lower() in response.lower():
-            if is_time_based:
-                return True, f"Rate limiting detected ('{indicator}') - invalidates time-based attack detection"
-            else:
-                # For non-time-based, rate limiting is less critical but still suspicious
-                return True, f"Rate limiting detected ('{indicator}') - response may not reflect actual vulnerability"
-    
+    if _is_timing_template(template_id, tags):
+        marker = _throttle_marker(response)
+        if marker:
+            return True, f"Rate limiting detected ('{marker}') - invalidates time-based attack detection"
+
     # Check for WAF blocks on injection attacks
     is_injection = any(t in ["sqli", "xss", "rce", "lfi", "ssti", "injection"] for t in tags)
     
