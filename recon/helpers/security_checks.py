@@ -1747,14 +1747,26 @@ def _get_on_host(url: str, timeout: int):
     across a redirect, a cookie set on one hop is sent on the next, so a
     cookie-check bounce still lands. Each hop goes through _hh_get.
     """
+    return _send_on_host(url, timeout)
+
+
+def _send_on_host(url: str, timeout: int, post_data: Optional[Dict] = None):
+    """_get_on_host's walk. With ``post_data`` the first request POSTs it
+    (through _hh_post), and a redirect changes the method as requests does:
+    301, 302 and 303 go on as a GET with no body, 307 and 308 POST the data
+    again."""
     host = _hostname_of(url)
     jar = requests.cookies.RequestsCookieJar()
     hops = []
     current = url
     for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
-        response = _hh_get(current, timeout=timeout, allow_redirects=False, verify=False,
-                           headers={"User-Agent": DEFAULT_BROWSER_UA},
-                           **({"cookies": jar} if len(jar) else {}))
+        kwargs = {"timeout": timeout, "allow_redirects": False, "verify": False,
+                  "headers": {"User-Agent": DEFAULT_BROWSER_UA},
+                  **({"cookies": jar} if len(jar) else {})}
+        if post_data is None:
+            response = _hh_get(current, **kwargs)
+        else:
+            response = _hh_post(current, data=post_data, **kwargs)
         set_now = getattr(response, "cookies", None)
         if isinstance(set_now, requests.cookies.RequestsCookieJar):
             jar.update(set_now)
@@ -1768,6 +1780,8 @@ def _get_on_host(url: str, timeout: int):
             break
         if scheme not in ("http", "https") or _hostname_of(target) != host:
             break
+        if catchall.status_of(response) in (301, 302, 303):
+            post_data = None
         hops.append(response)
         current = target
     else:
@@ -1775,6 +1789,13 @@ def _get_on_host(url: str, timeout: int):
             f"Exceeded {requests.models.DEFAULT_REDIRECT_LIMIT} redirects on {host}")
     response.history = hops
     return response
+
+
+def _stopped_off_host(response) -> bool:
+    """True when an on-host walk ended at a redirect it would not follow (to
+    another host, a non-http scheme or an unparsable Location)."""
+    return (catchall.status_of(response) in requests.models.REDIRECT_STATI
+            and bool(catchall.header_map(response).get("location")))
 
 
 def check_security_headers(
@@ -3235,6 +3256,11 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
     """
     Check if rate limiting is missing on login/auth endpoints.
 
+    The GET and every login POST walk redirects as _get_on_host does: a
+    same-host hop is followed (a failed login landing on its error page is
+    judged there), a hop to another host is never requested, so an SSO
+    provider or the apex's www gets neither the burst nor a say in it.
+
     Args:
         urls: List of URLs discovered from recon (e.g., from resource_enum)
         hostname: Hostname being checked
@@ -3285,13 +3311,7 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
             endpoint = parsed.path
 
             # First check if endpoint exists
-            response = _hh_get(
-                url,
-                timeout=timeout,
-                verify=False,
-                allow_redirects=True,
-                headers={"User-Agent": DEFAULT_BROWSER_UA}
-            )
+            response = _get_on_host(url, timeout)
 
             # Skip if endpoint doesn't exist
             if response.status_code == 404:
@@ -3303,13 +3323,8 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
 
             for i in range(10):
                 try:
-                    resp = _hh_post(
-                        url,
-                        timeout=timeout,
-                        verify=False,
-                        data={"username": f"test{i}", "password": "test"},
-                        headers={"User-Agent": DEFAULT_BROWSER_UA}
-                    )
+                    resp = _send_on_host(url, timeout,
+                                         post_data={"username": f"test{i}", "password": "test"})
 
                     # Check for rate limiting indicators
                     if resp.status_code == 429:  # Too Many Requests
@@ -3326,8 +3341,10 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
                         break
 
                     # All ten must be processed attempts for a finding, so the
-                    # first refusal ends the burst.
-                    if not _login_attempt_processed(resp.status_code):
+                    # first refusal ends the burst. A redirect off the host is
+                    # not one either: the attempt's outcome, if any, is on a
+                    # host this check does not judge.
+                    if _stopped_off_host(resp) or not _login_attempt_processed(resp.status_code):
                         break
 
                     success_count += 1
