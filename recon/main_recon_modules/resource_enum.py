@@ -105,6 +105,7 @@ from recon.helpers.resource_enum import (
 # Import via the module (not the names) so monkey-patched catalogues in tests
 # are picked up at call time.
 from recon.helpers import ai_signal_catalog as _ai_catalog
+from recon.helpers.archive_leaks import report_archive_leaks
 
 
 def _build_parent_ai_map(recon_data: dict) -> dict[str, bool]:
@@ -235,18 +236,6 @@ _GAU_PROVIDER_BREAKERS = {
     "otx": ("otx", "otx:url_list"),
     "urlscan": ("urlscan", "urlscan:search"),
 }
-
-
-def _archive_leaks(quarantined: list, settings: dict, recon_data: dict) -> dict:
-    """The leaked links and secrets of the archive URLs the quarantine held."""
-    from recon.helpers.archive_leaks import build_archive_leaks
-    from recon.main_recon_modules.urlscan_enrich import _hmac_key
-    leaks = build_archive_leaks(quarantined, settings, recon_data.get("domain") or "",
-                                hmac_key=_hmac_key())
-    if leaks["findings"] or leaks["url_secrets"]:
-        print(f"[+][ArchiveLeaks] {len(leaks['findings'])} leaked link finding(s), "
-              f"{len(leaks['url_secrets'])} secret(s) in archive URLs")
-    return leaks
 
 
 def _archive_preflight(domain: str, archives) -> None:
@@ -1787,7 +1776,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
             'categories': {}
         },
         'jsluice_secrets': jsluice_result.get("secrets", []),
-        'archive_leaks': _archive_leaks(archive_quarantined, settings, recon_data),
+        'archive_leaks': report_archive_leaks(archive_quarantined, settings,
+                                              recon_data.get("domain") or ""),
         'external_domains': (
             gau_external_domains
             + katana_meta.get("external_domains", [])

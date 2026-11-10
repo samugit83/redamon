@@ -19,6 +19,21 @@ ARCHIVE_LABEL = {"gau": "GAU (Wayback Machine, Common Crawl, OTX, urlscan)",
                  "paramspider": "ParamSpider (Wayback Machine)"}
 
 
+def report_archive_leaks(quarantined: Iterable, settings: dict, domain: str) -> dict:
+    """`resource_enum.archive_leaks` for a run (full or partial), keyed by the
+    deployment's HMAC key like urlscan's secrets. Never raises."""
+    try:
+        from recon.main_recon_modules.urlscan_enrich import _hmac_key
+        key = _hmac_key()
+    except Exception:  # noqa: BLE001 - no key means one Secret per host, type and parameter
+        key = ""
+    leaks = build_archive_leaks(quarantined, settings, domain, hmac_key=key)
+    if leaks["findings"] or leaks["url_secrets"]:
+        print(f"[+][ArchiveLeaks] {len(leaks['findings'])} leaked link finding(s), "
+              f"{len(leaks['url_secrets'])} secret(s) in archive URLs")
+    return leaks
+
+
 def build_archive_leaks(quarantined: Iterable, settings: dict, domain: str,
                         hmac_key: str = "") -> dict:
     """{"findings", "url_secrets"} from [(archive, url)] the quarantine held."""

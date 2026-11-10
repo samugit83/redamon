@@ -30,6 +30,7 @@ from recon.partial_recon_modules.graph_builders import (
 )
 from recon.partial_recon_modules.user_inputs import _create_user_subdomains_in_graph
 from recon.helpers import build_target_urls, extract_targets_from_recon
+from recon.helpers.archive_leaks import report_archive_leaks
 from recon.helpers.auth_profile import merge_auth_headers
 
 
@@ -102,11 +103,13 @@ def run_paramspider(config: dict) -> None:
 
     # Run ParamSpider discovery
     print(f"[*][Partial Recon] Running ParamSpider on {len(target_domains)} domains...")
+    archive_quarantined: list = []
     paramspider_urls, paramspider_urls_by_domain = run_paramspider_discovery(
         target_domains,
         PARAMSPIDER_PLACEHOLDER,
         PARAMSPIDER_TIMEOUT,
         settings.get('PARAMSPIDER_WORKERS', 5),
+        quarantined_out=archive_quarantined,
     )
     print(f"[+][Partial Recon] ParamSpider discovered {len(paramspider_urls)} parameterized URLs")
 
@@ -142,6 +145,7 @@ def run_paramspider(config: dict) -> None:
             "by_base_url": by_base_url,
             "forms": [],
             "jsluice_secrets": [],
+            "archive_leaks": report_archive_leaks(archive_quarantined, settings, domain),
             "scan_metadata": {
                 "paramspider_stats": paramspider_stats,
             },

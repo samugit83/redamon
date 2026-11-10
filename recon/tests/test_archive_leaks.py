@@ -80,3 +80,23 @@ def test_a_broken_input_never_raises():
     assert build_archive_leaks([("gau", None), ("gau", 5)], {}, "example.test") == \
         {"findings": [], "url_secrets": []}
     assert build_archive_leaks(None, None, "") == {"findings": [], "url_secrets": []}
+
+
+def test_the_report_helper_reads_the_hmac_key_and_never_raises(monkeypatch):
+    from recon.helpers.archive_leaks import report_archive_leaks
+    monkeypatch.setenv("REDAMON_SECRET_HMAC_KEY", "lab-key")
+    out = report_archive_leaks([("gau", f"https://app.example.test/api?apikey={K1}")], {}, "example.test")
+    sec, = out["url_secrets"]
+    assert len(sec["value_hmac"]) == 64
+    assert report_archive_leaks(None, None, "") == {"findings": [], "url_secrets": []}
+
+
+def test_both_pipelines_hand_the_held_urls_to_the_report():
+    root = PROJECT_ROOT / "recon"
+    full = (root / "main_recon_modules" / "resource_enum.py").read_text(encoding="utf-8")
+    assert full.count("quarantined_out=archive_quarantined") == 2
+    assert "report_archive_leaks(archive_quarantined" in full
+    for module in ("web_crawling.py", "parameter_discovery.py"):
+        src = (root / "partial_recon_modules" / module).read_text(encoding="utf-8")
+        assert "quarantined_out=archive_quarantined" in src, module
+        assert '"archive_leaks": report_archive_leaks(archive_quarantined' in src, module

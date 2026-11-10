@@ -30,6 +30,7 @@ from recon.partial_recon_modules.graph_builders import (
 )
 from recon.partial_recon_modules.user_inputs import _create_user_subdomains_in_graph
 from recon.helpers import build_target_urls, extract_targets_from_recon
+from recon.helpers.archive_leaks import report_archive_leaks
 from recon.helpers.auth_profile import merge_auth_headers
 
 
@@ -1364,6 +1365,7 @@ def run_gau(config: dict) -> None:
 
     # Run GAU discovery
     print(f"[*][Partial Recon] Running GAU on {len(target_domains)} domains...")
+    archive_quarantined: list = []
     gau_urls, gau_urls_by_domain = run_gau_discovery(
         target_domains,
         GAU_DOCKER_IMAGE,
@@ -1376,6 +1378,7 @@ def run_gau(config: dict) -> None:
         GAU_VERBOSE,
         URLSCAN_API_KEY,
         settings.get('GAU_WORKERS', 10),
+        quarantined_out=archive_quarantined,
     )
     print(f"[+][Partial Recon] GAU discovered {len(gau_urls)} total URLs")
 
@@ -1462,6 +1465,7 @@ def run_gau(config: dict) -> None:
             "by_base_url": by_base_url,
             "forms": [],
             "jsluice_secrets": [],
+            "archive_leaks": report_archive_leaks(archive_quarantined, settings, domain),
             "scan_metadata": {
                 "gau_urls_found_total": len(gau_urls),
                 "gau_urls_in_scope": len(in_scope_gau_urls),
