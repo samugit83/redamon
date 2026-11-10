@@ -1216,6 +1216,7 @@ Object-reference and cloud-asset properties (finding_type object_reference or cl
 Package properties on dependency and framework findings:
 - package_name (string): the package the finding names
 - package_version (string): the package the finding names
+- source_urls (list[string]): on a dependency_confusion finding, every JS file that imports the package (at most 5, sorted), or "custom_packages_file" when only the project's internal-package list names it. Its first file is the finding's source_url and parent js_file, and that file's origin its base_url. Absent on a finding written before this field existed: it carries base_url 'upload' and no parent file until JS Recon runs again
 
 Source-map properties (finding_type source_map_exposure or source_map_reference):
 - map_url (string): the source map URL the script references or the probe found
