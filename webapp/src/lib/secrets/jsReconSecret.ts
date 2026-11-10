@@ -13,6 +13,7 @@ export const JS_RECON_TRUFFLEHOG_SOURCE = 'TruffleHog (JS Recon)'
 export function secretSourceLabel(source: unknown, detectionMethod: unknown): string | null {
   if (source === 'js_recon' && detectionMethod === 'trufflehog') return JS_RECON_TRUFFLEHOG_SOURCE
   if (source === 'urlscan') return 'urlscan history'
+  if (source === 'url_archive') return 'web archives'
   return typeof source === 'string' && source ? source : null
 }
 

@@ -22,6 +22,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 describe('urlscan secrets', () => {
   test('the source reads as urlscan history', () => {
     expect(secretSourceLabel('urlscan', null)).toBe('urlscan history')
+    expect(secretSourceLabel('url_archive', null)).toBe('web archives')
     expect(secretSourceLabel('jsluice', null)).toBe('jsluice')
   })
 
