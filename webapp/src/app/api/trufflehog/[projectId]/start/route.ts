@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getEffectiveUser } from '@/lib/session'
 import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
+import { assertEngagementStartable } from '@/lib/engagementGate'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -49,6 +50,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!resolved.ok) {
       return NextResponse.json({ error: resolved.error }, { status: resolved.status })
     }
+
+    const engagementBlocked = await assertEngagementStartable(projectId)
+    if (engagementBlocked) return engagementBlocked
 
     // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
     const roeTextSha256 = await currentRoeTextSha256(projectId)
