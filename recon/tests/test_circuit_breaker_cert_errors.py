@@ -101,10 +101,37 @@ class _Server:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _read_request(tls) -> None:
+        """Read the whole request, body included, before answering.
+
+        urllib3 writes a POST body after its headers, and one TLS recv returns
+        one record. Closing with the body unread makes the kernel reset the
+        connection, and a client that has not read the answer yet then sees a
+        connection failure: three of those mark the host down.
+        """
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = tls.recv(65536)
+            if not chunk:
+                return
+            data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            name, _, value = line.partition(b":")
+            if name.strip().lower() == b"content-length":
+                length = int(value.strip() or 0)
+        while len(body) < length:
+            chunk = tls.recv(65536)
+            if not chunk:
+                return
+            body += chunk
+
     def _answer(self, conn):
         if self.mode == "tls":
             with self.ctx.wrap_socket(conn, server_side=True) as tls:
-                tls.recv(65536)
+                self._read_request(tls)
                 tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
                             b"Connection: close\r\n\r\nok")
         elif self.mode == "eof":
@@ -377,7 +404,12 @@ def test_graphql_keeps_its_findings_on_a_host_whose_certificate_it_refused(
 @pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 def test_graphql_that_did_not_verify_the_certificate_keeps_nothing(tls_server, recon_main):
     rm, graph = recon_main
-    _run_graphql(tls_server, GRAPHQL_VERIFY_SSL=False)
+    payload = _run_graphql(tls_server, GRAPHQL_VERIFY_SSL=False)
+    # Every guessed path got the server's answer (not JSON, so not GraphQL):
+    # the host was checked, and never skipped as down.
+    errors = [data.get("error") for data in payload["endpoints"].values()]
+    assert errors == ["Response is not valid JSON"] * len(GUESSED)
+    assert cb.host_health.unreachable() == []
     rm._prune_recon_findings()
     assert "localhost" not in graph.keep_hosts_for("graphql_scan")
     assert "localhost" not in graph.keep_hosts_for("graphql_cop")
