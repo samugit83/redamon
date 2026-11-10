@@ -1484,15 +1484,29 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         "paramspider_overlap": 0,
         "paramspider_out_of_scope": 0,
     }
+    in_scope_paramspider = []
 
     if PARAMSPIDER_ENABLED and paramspider_urls:
+        # `paramspider -d` returns every archived host under the domain: a
+        # sibling the RoE excludes, a child of a listed host. Its URLs feed the
+        # graph, nuclei's targets and its DAST list, so only a host this run
+        # scans passes, as for GAU (the merge's own filter admits any subdomain).
+        from recon.helpers.roe_scope import _is_roe_excluded, _url_hostname
+        _roe_excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+        for url in paramspider_urls:
+            host = _url_hostname(url)
+            if host in target_domains and not (_roe_excluded and _is_roe_excluded(host, _roe_excluded)):
+                in_scope_paramspider.append(url)
+
         print("\n[*][ParamSpider] Merging parameterized endpoints into results...")
         organized_data['by_base_url'], paramspider_stats = merge_paramspider_into_by_base_url(
-            paramspider_urls,
+            in_scope_paramspider,
             organized_data['by_base_url'],
             target_domains,
             exact=_exact_group,
         )
+        paramspider_stats["paramspider_total"] = len(paramspider_urls)
+        paramspider_stats["paramspider_out_of_scope"] += len(paramspider_urls) - len(in_scope_paramspider)
 
         print(f"[+][ParamSpider] Total URLs: {paramspider_stats['paramspider_total']}")
         if paramspider_stats['paramspider_out_of_scope'] > 0:
@@ -1617,7 +1631,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     # quarantine's rules missed): nuclei DAST and the recon JSON get them
     # masked, as urlscan's are.
     from recon.helpers.url_leaks import mask_url
-    archive_masked = [m for m in (mask_url(u) for u in in_scope_gau + paramspider_urls) if m]
+    archive_masked = [m for m in (mask_url(u) for u in in_scope_gau + in_scope_paramspider) if m]
     jsluice_in_scope_urls = jsluice_result.get("urls", []) if JSLUICE_ENABLED else []
     ffuf_discovered_urls = [r["url"] for r in ffuf_results] if FFUF_ENABLED else []
     all_discovered_urls = sorted(set(
@@ -1635,7 +1649,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     live_seen = set(katana_urls + hakrawler_urls + crawl_js_urls + jsluice_in_scope_urls
                     + ffuf_discovered_urls + zap_ajax_urls)
     archived_only_urls = sorted(
-        {mask_url(u) for u in set(in_scope_gau + urlscan_urls + paramspider_urls) - live_seen} - {""})
+        {mask_url(u) for u in set(in_scope_gau + urlscan_urls + in_scope_paramspider) - live_seen} - {""})
 
     # Build result structure
     resource_enum_result = {
