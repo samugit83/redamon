@@ -2159,6 +2159,7 @@ def run_auth_checks(
 import dns.resolver
 import dns.zone
 import dns.query
+import dns.xfr
 
 #: The org-level checks, one finding type each; their findings name only the org.
 DNS_CHECK_TYPES = ("spf_missing", "dmarc_missing", "dnssec_missing", "zone_transfer")
@@ -2339,58 +2340,108 @@ def check_dnssec_missing(domain: str) -> Optional[Dict]:
     return None
 
 
-def check_zone_transfer(domain: str, timeout: int = 10) -> Optional[Dict]:
+def _nameserver_addresses(ns_host: str) -> Tuple[List[str], bool]:
+    """A nameserver's A and AAAA addresses, and whether a lookup gave no
+    answer. A name with neither record has none, which is an answer."""
+    addresses: List[str] = []
+    failed = False
+    for rtype in ("A", "AAAA"):
+        try:
+            answers = dns.resolver.resolve(ns_host, rtype)
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            continue
+        except Exception:  # noqa: BLE001 - a timeout or SERVFAIL
+            failed = True
+            continue
+        for rdata in answers:
+            try:
+                addresses.append(ipaddress.ip_address(str(rdata).strip()).compressed)
+            except ValueError:
+                continue
+    return addresses, failed
+
+
+def check_zone_transfer(domain: str, timeout: int = 10,
+                        roe_excluded_hosts: Optional[List[str]] = None) -> Optional[Dict]:
     """
     Check if DNS zone transfer (AXFR) is enabled.
+
+    The transfer is asked of each nameserver's addresses, one at a time with
+    the check's timeout: dnspython's xfr takes an IP, and given a name it
+    raises before sending anything. A nameserver name or address the RoE
+    excludes is never asked (an excluded name is not even resolved).
 
     Args:
         domain: Domain to check
         timeout: Query timeout
+        roe_excluded_hosts: ROE_EXCLUDED_HOSTS when RoE is on
 
     Returns:
-        Vulnerability dict if zone transfer is allowed, None otherwise
+        Vulnerability dict if a nameserver allows the transfer, None when
+        every address refused it or the domain has no nameserver
+
+    Raises:
+        CheckUnknown: no transfer succeeded and some nameserver gave no
+            answer, or was not asked because of the RoE
     """
+    from recon.helpers.roe_scope import _is_roe_excluded
+    excluded = [h for h in (roe_excluded_hosts or ()) if isinstance(h, str) and h.strip()]
     try:
-        # Get nameservers for the domain
         ns_answers = dns.resolver.resolve(domain, 'NS')
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return None
+    except Exception as exc:  # noqa: BLE001 - a timeout or SERVFAIL is not "no nameserver"
+        raise _no_answer(exc) from exc
 
-        for ns in ns_answers:
-            ns_host = str(ns.target).rstrip('.')
+    unchecked: List[str] = []
+    asked: Set[str] = set()
+    for ns in ns_answers:
+        ns_host = str(ns.target).rstrip('.').lower()
+        if excluded and _is_roe_excluded(ns_host, excluded):
+            unchecked.append(f"{ns_host} RoE excluded")
+            continue
+        addresses, failed = _nameserver_addresses(ns_host)
+        if failed:
+            unchecked.append(f"{ns_host} not resolved")
+        for address in addresses:
+            if address in asked:
+                continue
+            asked.add(address)
+            if excluded and _is_roe_excluded(address, excluded):
+                unchecked.append(f"{address} RoE excluded")
+                continue
             try:
-                # Try zone transfer
                 zone = dns.zone.from_xfr(
-                    dns.query.xfr(ns_host, domain, timeout=timeout, lifetime=timeout)
-                )
+                    dns.query.xfr(address, domain, timeout=timeout, lifetime=timeout))
+            except (dns.xfr.TransferError, ConnectionRefusedError):
+                continue
+            except Exception as exc:  # noqa: BLE001 - a timeout or a reset is no answer
+                unchecked.append(f"{address} {type(exc).__name__}")
+                continue
+            record_count = len(zone.nodes)
+            return {
+                "type": "zone_transfer",
+                "severity": "high",
+                "name": "DNS Zone Transfer Enabled",
+                "description": f"The nameserver {ns_host} allows zone transfers for {domain}. "
+                              f"An attacker can download all DNS records ({record_count} records found).",
+                "domain": domain,
+                "nameserver": ns_host,
+                "record_count": record_count,
+                "evidence": f"AXFR query to {ns_host} ({address}) succeeded",
+                "recommendation": "Restrict zone transfers to authorized secondary nameservers only.",
+            }
 
-                if zone:
-                    # Zone transfer succeeded - this is a vulnerability
-                    record_count = len(list(zone.nodes.keys()))
-                    return {
-                        "type": "zone_transfer",
-                        "severity": "high",
-                        "name": "DNS Zone Transfer Enabled",
-                        "description": f"The nameserver {ns_host} allows zone transfers for {domain}. "
-                                      f"An attacker can download all DNS records ({record_count} records found).",
-                        "domain": domain,
-                        "nameserver": ns_host,
-                        "record_count": record_count,
-                        "evidence": f"AXFR query to {ns_host} succeeded",
-                        "recommendation": "Restrict zone transfers to authorized secondary nameservers only.",
-                    }
-
-            except Exception:
-                continue  # This NS doesn't allow transfers, try next
-
-    except Exception:
-        pass
-
+    if unchecked:
+        raise CheckUnknown("; ".join(unchecked[:3]))
     return None
 
 
 def run_dns_checks(
     domain: str,
     enabled_checks: Dict[str, bool],
-    timeout: int = 10
+    timeout: int = 10,
+    roe_excluded_hosts: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     Run all enabled DNS security checks.
@@ -2404,16 +2455,20 @@ def run_dns_checks(
         domain: Domain to check
         enabled_checks: Dict of check_name -> enabled (bool)
         timeout: Query timeout
+        roe_excluded_hosts: the nameservers the zone transfer must not ask;
+            the run's RoE list (set by run_security_checks) when None
 
     Returns:
         List of vulnerability findings
     """
+    excluded = _ROE_EXCLUDED if roe_excluded_hosts is None else roe_excluded_hosts
     findings = []
     checks = (
         ("spf_missing", lambda: check_spf_missing(domain)),
         ("dmarc_missing", lambda: check_dmarc_missing(domain)),
         ("dnssec_missing", lambda: check_dnssec_missing(domain)),
-        ("zone_transfer", lambda: check_zone_transfer(domain, timeout=timeout)),
+        ("zone_transfer", lambda: check_zone_transfer(domain, timeout=timeout,
+                                                       roe_excluded_hosts=excluded)),
     )
     for check_type, check in checks:
         if not enabled_checks.get(check_type, True):

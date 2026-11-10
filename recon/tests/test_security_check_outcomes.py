@@ -1,4 +1,4 @@
-"""A security check that reached no verdict keeps its finding (R-24, R-37).
+"""A security check that reached no verdict keeps its finding (R-24, R-36, R-37).
 
 A DNS, Redis or SMTP check that times out has learned nothing, yet it used to
 return "no finding", so the end-of-run prune deleted the real finding with its
@@ -429,3 +429,113 @@ class TestAnOrgNoGroupChecked:
         kept, checked = _dns_finding("dmarc_missing"), _dns_finding("dmarc_missing", ORG2)
         assert _survivors(recon_main, graph, kept, checked, HEADER) == [kept]
         assert "security_check" not in cb.coverage_report().degraded_sources
+
+
+# ---------------------------------------------------------------------------
+# R-36: the zone transfer reaches the nameserver's address
+# ---------------------------------------------------------------------------
+
+class _Zone:
+    nodes = {"@": 1, "www": 1, "mail": 1}
+
+
+def _xfr_run(monkeypatch, outcome_by_address, table=None, **kwargs):
+    sent = []
+
+    def xfr(where, zone, *a, **k):
+        sent.append((where, str(zone)))
+        return where
+
+    def from_xfr(where, *a, **k):
+        outcome = outcome_by_address.get(where, dns.xfr.TransferError(5))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(sc.dns.query, "xfr", xfr)
+    monkeypatch.setattr(sc.dns.zone, "from_xfr", from_xfr)
+    zone = _clean_zone(override={(ORG, "NS"): [f"ns1.{ORG}."], (f"ns1.{ORG}", "A"): [NS_IP],
+                                 (f"ns1.{ORG}", "AAAA"): dns.resolver.NoAnswer})
+    zone.update(table or {})
+    findings, asked = _dns_run(monkeypatch, zone, enabled={"zone_transfer": True,
+                                                            "spf_missing": False,
+                                                            "dmarc_missing": False,
+                                                            "dnssec_missing": False}, **kwargs)
+    return findings, sent, asked
+
+
+class TestZoneTransfer:
+    def test_the_transfer_is_sent_to_the_nameserver_s_address(self, monkeypatch):
+        findings, sent, _ = _xfr_run(monkeypatch, {NS_IP: _Zone()})
+        assert sent == [(NS_IP, ORG)]
+        (finding,) = findings
+        assert finding["type"] == "zone_transfer" and finding["domain"] == ORG
+        assert finding["nameserver"] == f"ns1.{ORG}"
+
+    def test_a_refused_transfer_is_clean(self, monkeypatch, recon_main, graph):
+        findings, sent, _ = _xfr_run(monkeypatch, {NS_IP: dns.xfr.TransferError(5)})
+        assert findings == [] and sent == [(NS_IP, ORG)]
+        assert _survivors(recon_main, graph, _dns_finding("zone_transfer")) == []
+
+    def test_a_transfer_timeout_keeps_the_finding(self, monkeypatch, recon_main, graph):
+        findings, _, _ = _xfr_run(monkeypatch, {NS_IP: dns.exception.Timeout()})
+        assert findings == []
+        axfr = _dns_finding("zone_transfer")
+        assert _survivors(recon_main, graph, axfr) == [axfr]
+
+    def test_an_roe_excluded_nameserver_address_is_never_sent_a_packet(self, monkeypatch):
+        findings, sent, _ = _xfr_run(monkeypatch, {NS_IP: _Zone()},
+                                     roe_excluded_hosts=["192.0.2.0/24"])
+        assert sent == [] and findings == []
+
+    def test_an_roe_excluded_nameserver_name_is_not_even_resolved(self, monkeypatch):
+        findings, sent, asked = _xfr_run(monkeypatch, {NS_IP: _Zone()},
+                                         roe_excluded_hosts=[f"ns1.{ORG}"])
+        assert sent == [] and findings == []
+        assert not [q for q in asked if q[0] == f"ns1.{ORG}"]
+
+    def test_stealth_mode_turns_the_check_off(self):
+        from recon.project_settings import apply_stealth_overrides
+        settings = apply_stealth_overrides({"STEALTH_MODE": True, "SECURITY_CHECK_ZONE_TRANSFER": True})
+        assert settings["SECURITY_CHECK_ZONE_TRANSFER"] is False
+
+    def test_the_second_nameserver_is_asked_when_the_first_refuses(self, monkeypatch):
+        ns2_ip = "192.0.2.54"
+        findings, sent, _ = _xfr_run(
+            monkeypatch, {NS_IP: dns.xfr.TransferError(5), ns2_ip: _Zone()},
+            table={(ORG, "NS"): [f"ns1.{ORG}.", f"ns2.{ORG}.", f"ns3.{ORG}."],
+                   (f"ns2.{ORG}", "A"): [ns2_ip], (f"ns2.{ORG}", "AAAA"): dns.resolver.NoAnswer,
+                   (f"ns3.{ORG}", "A"): [NS_IP], (f"ns3.{ORG}", "AAAA"): dns.resolver.NoAnswer})
+        assert sent == [(NS_IP, ORG), (ns2_ip, ORG)], "an address two names share is asked once"
+        assert findings[0]["nameserver"] == f"ns2.{ORG}"
+
+    def test_a_nameserver_that_does_not_resolve_is_no_verdict(self, monkeypatch, recon_main, graph):
+        findings, sent, _ = _xfr_run(monkeypatch, {}, table={(f"ns1.{ORG}", "A"): _timeout()})
+        assert findings == [] and sent == []
+        axfr = _dns_finding("zone_transfer")
+        assert _survivors(recon_main, graph, axfr) == [axfr]
+
+    def test_an_ns_lookup_timeout_is_no_verdict(self, monkeypatch, recon_main, graph):
+        _xfr_run(monkeypatch, {}, table={(ORG, "NS"): _timeout()})
+        axfr = _dns_finding("zone_transfer")
+        assert _survivors(recon_main, graph, axfr) == [axfr]
+
+    def test_an_org_with_no_nameserver_is_clean(self, monkeypatch, recon_main, graph):
+        findings, sent, _ = _xfr_run(monkeypatch, {}, table={(ORG, "NS"): dns.resolver.NoAnswer})
+        assert findings == [] and sent == []
+        assert _survivors(recon_main, graph, _dns_finding("zone_transfer")) == []
+
+    def test_the_run_s_roe_list_reaches_the_transfer(self, monkeypatch):
+        """run_security_checks hands its RoE list to the DNS checks."""
+        sent = []
+        monkeypatch.setattr(sc.dns.query, "xfr", lambda where, *a, **k: sent.append(where))
+        monkeypatch.setattr(sc.dns.zone, "from_xfr", lambda *a, **k: _Zone())
+        resolve, _ = _resolver(_clean_zone(override={
+            (ORG, "NS"): [f"ns1.{ORG}."], (f"ns1.{ORG}", "A"): [NS_IP],
+            (f"ns1.{ORG}", "AAAA"): dns.resolver.NoAnswer}))
+        monkeypatch.setattr(sc.dns.resolver, "resolve", resolve)
+        out = sc.run_security_checks({"domain": ORG, "dns": {"domain": {}, "subdomains": {}}},
+                                     {"zone_transfer": True}, timeout=1,
+                                     roe_excluded_hosts=["192.0.2.0/24"])
+        assert sent == []
+        assert out["security_checks"]["findings"] == []
