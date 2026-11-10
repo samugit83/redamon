@@ -92,7 +92,11 @@ graph-write rules it depends on.
   on those hosts (`prune_unseen_findings(..., only_hosts=, types=)`), so a host
   it never reached keeps its findings even when nobody called `note_degraded`.
   Degraded still wins. Skip it when switched off by configuration, and for a
-  source whose findings carry no host field.
+  source whose findings carry no host field. A source that records only some of
+  its finding types (`checks=`, as `security_check` does for its DNS and service
+  probes) also gets one source-level prune for every other type
+  (`_checked_prune_batches` passes `exclude_types=`), so the types it does not
+  record still prune as before.
 - **NEVER attach to `Domain {name: <scan root>}`.** A writer decides scope and
   attach separately (`graph_db/mixins/recon/scope.py`): `scan_root_for_host` /
   `attach_for_host` say whether a host is in scope, and `org_for_scan_root` names
