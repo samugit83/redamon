@@ -201,48 +201,87 @@ class TestConnectionLimits:
             os.environ.pop("TERMINAL_MAX_SESSIONS", None)
 
 
-class TestResizeMessageParsing:
-    """Test that resize JSON messages are correctly detected."""
+class TestControlFrame:
+    """_control_frame decides whether a text frame is a control message or keystrokes."""
 
-    def test_valid_resize_json(self):
-        """A valid resize message should parse without error."""
-        msg = json.dumps({"type": "resize", "rows": 30, "cols": 120})
-        parsed = json.loads(msg)
-        assert parsed["type"] == "resize"
-        assert parsed["rows"] == 30
-        assert parsed["cols"] == 120
+    def test_resize_is_control(self):
+        from terminal_server import _control_frame
+        msg = _control_frame(json.dumps({"type": "resize", "rows": 30, "cols": 120}))
+        assert msg == {"type": "resize", "rows": 30, "cols": 120}
 
-    def test_resize_message_defaults(self):
-        """Missing rows/cols should use defaults."""
-        msg = json.dumps({"type": "resize"})
-        parsed = json.loads(msg)
-        rows = parsed.get("rows", 24)
-        cols = parsed.get("cols", 80)
-        assert rows == 24
-        assert cols == 80
+    def test_ping_is_control(self):
+        from terminal_server import _control_frame
+        assert _control_frame(json.dumps({"type": "ping"})) == {"type": "ping"}
 
-    def test_non_resize_message_not_intercepted(self):
-        """Non-resize messages should not be treated as control messages."""
-        msg = "ls -la"
-        try:
-            parsed = json.loads(msg)
-            assert parsed.get("type") != "resize"
-        except (json.JSONDecodeError, TypeError):
-            pass  # Expected for plain text input
+    @pytest.mark.parametrize("frame", ["ls -la", "echo hello", "a", "-", "\r", "\x1b[A", ""])
+    def test_plain_input_is_keystrokes(self, frame):
+        from terminal_server import _control_frame
+        assert _control_frame(frame) is None
 
-    def test_invalid_json_passes_through(self):
-        """Invalid JSON should be treated as terminal input, not error."""
-        msg = "echo hello"
-        is_json = False
-        try:
-            json.loads(msg)
-            is_json = True
-        except (json.JSONDecodeError, TypeError):
-            pass
-        assert not is_json
+    # Each of these parses as JSON but is not an object: typing any digit used to
+    # close the terminal session.
+    @pytest.mark.parametrize("frame", ["5", "0", "42", "-1", "1e5", "true", "false", "null", '"x"', "[1]", "[]"])
+    def test_json_scalars_and_arrays_are_keystrokes(self, frame):
+        from terminal_server import _control_frame
+        assert _control_frame(frame) is None
 
-    def test_ping_message_recognized(self):
-        """A ping message should be valid JSON with type 'ping'."""
-        msg = json.dumps({"type": "ping"})
-        parsed = json.loads(msg)
-        assert parsed["type"] == "ping"
+    @pytest.mark.parametrize("frame", [
+        json.dumps({"type": "init"}),
+        json.dumps({"type": "exec"}),
+        json.dumps({"rows": 1, "cols": 1}),
+        json.dumps({"type": []}),
+        json.dumps({"type": {"a": 1}}),
+    ])
+    def test_objects_without_a_known_type_are_keystrokes(self, frame):
+        from terminal_server import _control_frame
+        assert _control_frame(frame) is None
+
+    def test_deeply_nested_paste_does_not_raise(self):
+        from terminal_server import _control_frame
+        assert _control_frame("[" * 200_000) is None
+
+
+class TestWriteLoopSurvivesJsonInput:
+    """End to end over a real PTY: JSON-looking keystrokes reach the shell and the session stays up."""
+
+    def test_json_looking_keystrokes_reach_the_shell(self):
+        import asyncio
+        import terminal_server
+
+        # Typed one key per frame, as xterm sends them. The PTY echoes the input
+        # line back, so assert on "X42Y true null": only the shell's own output
+        # has the arithmetic evaluated.
+        frames = ["echo X$((", "4", "0", "+", "2", "))Y ", "true", " ", "null",
+                  json.dumps({"type": "resize", "rows": 40, "cols": 100}),
+                  json.dumps({"type": "ping"}), "\r"]
+        expected = b"X42Y true null"
+
+        class FakeWs:
+            def __init__(self):
+                self.sent = []
+                self._frames = list(frames)
+
+            async def recv(self):
+                return json.dumps({"type": "init", "user_id": "u", "project_id": "p"})
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._frames:
+                    return self._frames.pop(0)
+                # Hold the socket open until the shell has printed the result.
+                for _ in range(200):
+                    if expected in b"".join(self.sent):
+                        break
+                    await asyncio.sleep(0.05)
+                raise StopAsyncIteration
+
+            async def send(self, data):
+                self.sent.append(data)
+
+        ws = FakeWs()
+        asyncio.run(asyncio.wait_for(terminal_server._run_pty_session(ws), timeout=20))
+        output = b"".join(ws.sent)
+        assert expected in output, output[-500:]
+        assert b"resize" not in output and b"ping" not in output

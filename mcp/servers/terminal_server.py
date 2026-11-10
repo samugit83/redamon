@@ -202,6 +202,8 @@ async def _run_pty_session(ws):
 
     async def write_pty():
         """Read from WebSocket and forward to PTY master."""
+        from websockets.exceptions import ConnectionClosed
+
         try:
             async for message in ws:
                 if close_event.is_set():
@@ -210,22 +212,19 @@ async def _run_pty_session(ws):
                 if isinstance(message, bytes):
                     os.write(master_fd, message)
                 elif isinstance(message, str):
-                    # Handle JSON control messages
-                    try:
-                        msg = json.loads(message)
-                        msg_type = msg.get("type")
-                        if msg_type == "resize":
-                            rows = msg.get("rows", 24)
-                            cols = msg.get("cols", 80)
-                            _set_pty_size(master_fd, rows, cols)
-                            continue
-                        if msg_type == "ping":
-                            continue
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                    os.write(master_fd, message.encode("utf-8"))
-        except Exception as e:
+                    control = _control_frame(message)
+                    if control is None:
+                        os.write(master_fd, message.encode("utf-8"))
+                    elif control["type"] == "resize":
+                        _set_pty_size(
+                            master_fd, control.get("rows", 24), control.get("cols", 80)
+                        )
+        except (ConnectionClosed, OSError) as e:
+            # The browser went away, or EIO once the shell has exited.
             logger.debug("PTY write loop ended: %s", e)
+        except Exception as e:
+            # Anything else ends a live session for a bug, so it must reach the log.
+            logger.warning("PTY write loop failed: %r", e)
         finally:
             close_event.set()
 
@@ -261,6 +260,27 @@ async def _run_pty_session(ws):
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError, PermissionError):
                 pass
+
+
+_CONTROL_TYPES = ("resize", "ping")
+
+
+def _control_frame(message: str):
+    """The control message a text frame carries, or None when it is keystrokes.
+
+    Keystrokes and control messages share text frames, so a frame is control only
+    when it is a JSON object naming a known type. Input that merely parses as JSON
+    (a digit, `true`, `null`, a quoted word, a pasted array) is keystrokes; reading
+    it as a message raises in the write loop and ends the session with close 1000.
+    """
+    try:
+        msg = json.loads(message)
+    except (ValueError, RecursionError):
+        return None
+    # A tuple, not a set: membership by ==, so an unhashable "type" cannot raise.
+    if isinstance(msg, dict) and msg.get("type") in _CONTROL_TYPES:
+        return msg
+    return None
 
 
 def _set_pty_size(fd: int, rows: int, cols: int):
