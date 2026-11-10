@@ -661,8 +661,10 @@ def check_ip_api_exposed(ip: str, timeout: int = 10) -> Optional[Dict]:
                     "path": path,
                     "status_code": response.status_code,
                     "content_type": content_type,
+                    # Not verdict.reason: it names the random control path, and
+                    # the Recon Delta would read every run as a changed finding.
                     "evidence": (f"API endpoint returned {response.status_code} with {content_type}; "
-                                 f"control_check: {verdict.control_check} ({verdict.reason})"),
+                                 f"control_check: {verdict.control_check}"),
                     "control_check": verdict.control_check,
                 }
 

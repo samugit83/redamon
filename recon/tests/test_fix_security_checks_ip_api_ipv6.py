@@ -14,7 +14,6 @@ Addresses are RFC 5737 / RFC 3849 documentation ranges.
 from __future__ import annotations
 
 import json
-import re
 from unittest import mock
 
 import pytest
@@ -59,7 +58,6 @@ def _ip_api(responses_by_path, ip=V4):
 class TestIpApiExposedSeverity:
     def test_a_json_200_is_still_high_and_unchanged(self):
         f, _ = _ip_api({"/api": _resp(200, {"Content-Type": "application/json"}, '{"ok":1}')})
-        f["evidence"] = re.sub(r"/rdm-[0-9a-f]{12}", "/rdm-*", f["evidence"])
         assert f == {
             "type": "ip_api_exposed",
             "severity": "high",
@@ -71,8 +69,7 @@ class TestIpApiExposedSeverity:
             "path": "/api",
             "status_code": 200,
             "content_type": "application/json",
-            "evidence": "API endpoint returned 200 with application/json; control_check: passed "
-                        "(/rdm-* answered 404, the hit 200)",
+            "evidence": "API endpoint returned 200 with application/json; control_check: passed",
             "control_check": "passed",
         }
 
@@ -383,7 +380,7 @@ class TestChallengePages:
             return CHALLENGE_PAGE if "/rdm-" in url else NOT_FOUND
         with mock.patch.object(sc.requests, "get", side_effect=answer):
             f = sc.check_ip_api_exposed(V4, timeout=1)
-        assert f["control_check"] == "failed" and "challenge page" in f["evidence"]
+        assert f["control_check"] == "failed" and f["evidence"].endswith("control_check: failed")
         assert [g["reason"] for g in _challenge_gaps()] == [V4]
 
     def test_an_ordinary_403_is_not_a_challenge(self):
