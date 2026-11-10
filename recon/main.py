@@ -198,6 +198,62 @@ def _eligible_batch_roots(groups: list) -> list:
     return roots
 
 
+def _root_refusal(group: dict) -> list:
+    """Why run_domain_group would refuse this group's root, as the lines it
+    prints; empty when the root may be scanned. The same checks in the same
+    order as there and in _eligible_batch_roots: RoE first (an excluded root
+    gets no TXT lookup), then the cached ownership answer. A check that raises
+    refuses."""
+    root = group.get('scanRoot') if isinstance(group, dict) else ''
+    if not root:
+        return ["[!][Pipeline] A scope group has no scan root"]
+    if _roe_refuses_root(root):
+        return [f"[RoE] BLOCKED: Root domain '{root}' is in ROE excluded hosts list."]
+    if not VERIFY_DOMAIN_OWNERSHIP:
+        return []
+    try:
+        ownership = _group_ownership(group)
+    except Exception as e:  # noqa: BLE001 - an unanswered check is a failed check
+        return [f"[!][Pipeline] Domain ownership verification failed for {root}: "
+                f"the check raised {type(e).__name__}"]
+    if ownership['verified']:
+        return []
+    lines = [f"[!][Pipeline] Domain ownership verification failed for {root}"]
+    if ownership.get('error'):
+        lines.append(f"[!][Pipeline] {ownership['error']}")
+    lines.append(f"[!][Pipeline] Add TXT {' OR '.join(ownership['record_names'])} → "
+                 f"\"{ownership['expected_value']}\"")
+    return lines
+
+
+def _refuse_before_clear(groups: list) -> bool:
+    """True when no scan root of this run may be scanned. Asked BEFORE the
+    one-time graph clear (R-5).
+
+    run_domain_group refuses a root the RoE excludes or whose ownership does
+    not verify, but it runs after the clear: a refused run deleted the
+    project's assets and rebuilt none. The ownership answers given here are
+    cached for the run, so the group's own check does not ask again. A batch
+    with one eligible root clears and runs; its refused groups still refuse
+    in the loop.
+    """
+    # A latch left open would refuse the TXT lookup as "resolver down" (12.10).
+    from recon.main_recon_modules.domain_recon import resolver_breaker
+    resolver_breaker.recheck()
+    refusals = []
+    for group in groups:
+        lines = _root_refusal(group)
+        if not lines:
+            return False
+        refusals.extend(lines)
+    print("\n[!][Pipeline] SCAN ABORTED: no scan root passed the Rules of Engagement "
+          "and ownership checks")
+    for line in refusals:
+        print(line)
+    print("[!][Pipeline] Nothing was cleared: the project's graph is left as it was")
+    return True
+
+
 def _stamp_project_roots(recon_data: dict) -> dict:
     """Carry the project's scope groups and roots (§4.10 output contract).
 
@@ -3093,19 +3149,21 @@ def _run_pipeline():
         # through to a single-domain run with an empty target.
         print("[!][Batch] Domain batch with no group to run: refusing.")
         return 1
+    single = [] if groups else settings_scope_groups(_settings)
+    if not groups and not single:
+        print("[!][Pipeline] No target domain is configured: refusing.")
+        return 1
+    if _refuse_before_clear(groups or single[:1]):
+        return 1
 
     # ONCE per run, before any group: this is what lets a batch's groups
     # accumulate into a single graph instead of each wiping the last.
     _clear_recon_graph()
-    _start_urlscan_budget(groups or settings_scope_groups(_settings))
+    _start_urlscan_budget(groups or single)
 
     if groups:
         return run_domain_batch(groups, start_time)
 
-    single = settings_scope_groups(_settings)
-    if not single:
-        print("[!][Pipeline] No target domain is configured: refusing.")
-        return 1
     rc = run_domain_group(single[0], start_time=start_time)
     if rc == 0:
         _prune_recon_findings()
