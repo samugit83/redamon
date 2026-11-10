@@ -275,9 +275,14 @@ def test_a_wrapper_never_writes_into_what_it_was_handed(wrapper, monkeypatch):
     assert handed == before
 
 
-def test_no_fan_out_in_main_submits_the_live_result():
+@pytest.mark.parametrize("path", [
+    "recon/main.py",
+    *sorted(str(p.relative_to(PROJECT_ROOT))
+            for p in (PROJECT_ROOT / "recon" / "partial_recon_modules").glob("*.py")),
+])
+def test_no_fan_out_submits_the_live_result(path):
     """A new fan-out that hands a worker combined_result itself fails here."""
-    tree = ast.parse((PROJECT_ROOT / "recon" / "main.py").read_text())
+    tree = ast.parse((PROJECT_ROOT / path).read_text())
     offenders = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -285,4 +290,117 @@ def test_no_fan_out_in_main_submits_the_live_result():
             args = list(node.args) + [kw.value for kw in node.keywords]
             if any(isinstance(a, ast.Name) and a.id == "combined_result" for a in args):
                 offenders.append(node.lineno)
-    assert offenders == [], f"submit(..., combined_result, ...) at main.py lines {offenders}"
+    assert offenders == [], f"submit(..., combined_result, ...) at {path} lines {offenders}"
+
+
+class _Session:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def run(self, *_a, **_k):
+        result = mock.MagicMock()
+        result.__iter__ = lambda _s: iter([])
+        result.single.return_value = None
+        return result
+
+
+@pytest.fixture
+def partial_osint(monkeypatch):
+    """Partial OsintEnrichment over one root, with a fake graph; yields the
+    root's live recon dict (the one the fan-out merges into) and the client."""
+    from recon.partial_recon_modules import helpers, osint_enrichment
+
+    client = mock.MagicMock()
+    client.__enter__.return_value = client
+    client.verify_connection.return_value = True
+    client.driver.session.side_effect = lambda: _Session()
+    for method in ("update_graph_from_censys", "update_graph_from_otx"):
+        getattr(client, method).return_value = {}
+    graph_db = mock.MagicMock()
+    graph_db.Neo4jClient.return_value = client
+    monkeypatch.setitem(sys.modules, "graph_db", graph_db)
+    monkeypatch.setattr(helpers.time, "sleep", lambda *_: None)
+
+    live = {"domain": "example.com",
+            "dns": {"domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
+                    "subdomains": {"www.example.com": {"ips": {"ipv4": [IP], "ipv6": []},
+                                                       "has_records": True}}},
+            "metadata": {"include_root_domain": False}}
+    monkeypatch.setattr(osint_enrichment, "_build_recon_data_from_graph",
+                        lambda *a, **k: live)
+
+    def run():
+        return osint_enrichment.run_osint_enrichment({
+            "_settings": {"CENSYS_ENABLED": True, "CENSYS_API_KEY": "synthetic-key",
+                          "OTX_ENABLED": True},
+            "domain": "example.com", "domains": ["example.com"],
+        })
+
+    return live, client, run
+
+
+class TestPartialOsintFanOut:
+    def test_regression_a_merge_mid_copy_lost_the_next_enricher(self, partial_osint, monkeypatch):
+        """Censys is merged into the root's dict while OTX is still copying it."""
+        from recon.main_recon_modules import censys_enrich, otx_enrich
+
+        live, client, run = partial_osint
+        hold = _HoldUntilMerged(live, "censys")
+        live["hold"] = hold
+        real_otx_wrapper = otx_enrich.run_otx_enrichment_isolated
+
+        def otx_thread(combined, settings):
+            hold.thread = threading.get_ident()
+            return real_otx_wrapper(combined, settings)
+
+        def fast_censys(snapshot, settings):
+            hold.parked.wait(timeout=5)
+            snapshot["censys"] = {"hosts": [IP]}
+            return snapshot
+
+        def otx(snapshot, settings):
+            snapshot["otx"] = {"ip_reports": [{"ip": IP}]}
+            return snapshot
+
+        monkeypatch.setattr(censys_enrich, "run_censys_enrichment", fast_censys)
+        monkeypatch.setattr(otx_enrich, "run_otx_enrichment", otx)
+        monkeypatch.setattr(otx_enrich, "run_otx_enrichment_isolated", otx_thread)
+
+        assert run() == {"example.com": "ok"}
+        assert live["censys"] == {"hosts": [IP]}
+        assert live["otx"] == {"ip_reports": [{"ip": IP}]}
+        assert client.update_graph_from_otx.call_args.kwargs["recon_data"]["otx"] == live["otx"]
+
+    def test_every_enricher_gets_a_copy(self, partial_osint, monkeypatch):
+        from recon.main_recon_modules import censys_enrich, otx_enrich
+
+        live, _client, run = partial_osint
+        calls = []
+        monkeypatch.setattr(censys_enrich, "run_censys_enrichment_isolated",
+                            _Recorder(calls, "censys", {"hosts": [IP]}))
+        monkeypatch.setattr(otx_enrich, "run_otx_enrichment_isolated",
+                            _Recorder(calls, "otx", {"ip_reports": [{"ip": IP}]}))
+        assert run() == {"example.com": "ok"}
+        _assert_every_worker_got_a_copy(calls, live, ["censys", "otx"])
+        assert live["censys"] == {"hosts": [IP]} and live["otx"] == {"ip_reports": [{"ip": IP}]}
+
+
+class _HoldUntilMerged(_CopyHold):
+    """Parks the marked worker's copy until the main thread merged `key` into
+    the live dict (the partial fan-in has no other hook between two answers)."""
+
+    def __init__(self, live: dict, key: str):
+        super().__init__()
+        self.live, self.key = live, key
+
+    def __deepcopy__(self, memo):
+        if threading.get_ident() == self.thread:
+            self.parked.set()
+            for _ in range(1000):
+                if self.key in self.live:
+                    break
+                threading.Event().wait(0.005)
+        return self

@@ -721,12 +721,18 @@ def run_osint_enrichment(config: dict) -> dict:
 
         # Run enabled sub-tools in parallel (same pattern as main.py)
         osint_workers = min(len(enabled_osint), 5)
+        # One copy for every worker, taken before the first submit: a wrapper
+        # deep-copies its input in its own thread while the loop below merges
+        # finished answers into combined_result, and a copy of the dict being
+        # merged raises "dictionary changed size during iteration" (R-31).
+        import copy
+        osint_input = copy.deepcopy(combined_result)
         with ThreadPoolExecutor(max_workers=osint_workers, thread_name_prefix="osint") as osint_exec:
             osint_futures = {}
             for name, (_, module_path, func_name, _) in enabled_osint.items():
                 mod = importlib.import_module(module_path)
                 fn = getattr(mod, func_name)
-                osint_futures[name] = osint_exec.submit(fn, combined_result, settings)
+                osint_futures[name] = osint_exec.submit(fn, osint_input, settings)
 
             for name, future in osint_futures.items():
                 try:
