@@ -1,0 +1,48 @@
+# Authoritative only. There is no `.` block and no `forward`, so a query for any
+# other name is REFUSED: the lab DNS can never resolve, or leak, a real name.
+# gen_lab.py renders this folder into generated/dns (the folder the container
+# mounts) with a fresh SOA serial; `reload` picks up a re-rendered zone (the
+# file plugin reloads only when the serial grows).
+#
+# lab-agency.gov is the hard-guardrail fixture (a .gov name). The host routes it
+# here only while host_dns_enable.sh is in force; host_dns_disable.sh removes it.
+
+example-a.test:53 {
+    file /etc/coredns/example-a.test.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+example-b.test:53 {
+    file /etc/coredns/example-b.test.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+lab-c.example:53 {
+    file /etc/coredns/lab-c.example.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+lab-agency.gov:53 {
+    file /etc/coredns/lab-agency.gov.db {
+        reload 5s
+    }
+    log
+    errors
+}
+
+98.88.192.in-addr.arpa:53 {
+    file /etc/coredns/98.88.192.in-addr.arpa.db {
+        reload 5s
+    }
+    log
+    errors
+}

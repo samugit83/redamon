@@ -1,0 +1,183 @@
+# RedAmon IP-hostnames lab: the guinea pigs for "Hostnames on target IPs"
+# (plan _local/internal/new_plans/ip_mode, 06_testing.md §4).
+#
+#   ./up.sh      render generated/, start, routing gate, smoke checks from inside the lab
+#   ./down.sh    revert the host DNS (if still set), stop
+#
+# 192.88.98.0/24 is public address space: recon's Python SSRF guard refuses
+# private, loopback and TEST-NET ranges as discovered names, and Python counts
+# this prefix as global (up.sh asserts it in the recon image). Scans run with
+# host networking and reach the lab over this bridge; no host port is
+# published. While the bridge is down the prefix routes to the INTERNET, which
+# is why every script and the driver check `ip route get 192.88.98.10` first.
+
+name: iphn
+
+x-caps: &caps
+  # A separate compose project: redamon.sh's resource caps and memory governor
+  # never see it, so each service carries its own small limits.
+  mem_limit: 128m
+  pids_limit: 128
+  cpus: 0.5
+  restart: unless-stopped
+
+x-nginx: &nginx
+  <<: *caps
+  image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+
+x-py: &py
+  <<: *caps
+  image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+  read_only: true
+  # The invoking user (up.sh exports it), so the hit logs on the host stay theirs.
+  user: "${IPHN_UID:-1000}:${IPHN_GID:-1000}"
+
+services:
+
+  dns:
+    <<: *caps
+    image: coredns/coredns:1.11.3@sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e
+    container_name: iphn-dns
+    command: ["-conf", "/etc/coredns/Corefile"]
+    # A directory bind, not a file bind: a file is bound by inode, so a
+    # re-rendered zone (set_moved.sh) would stay invisible until the container
+    # is recreated.
+    volumes:
+      - ./generated/dns:/etc/coredns:ro
+    networks:
+      lab: { ipv4_address: 192.88.98.53 }
+
+  web:
+    <<: *nginx
+    container_name: iphn-web
+    command: ["nginx", "-c", "/etc/nginx/lab/web.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/iphn-web:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.10 }
+
+  plain:
+    <<: *nginx
+    container_name: iphn-plain
+    command: ["nginx", "-c", "/etc/nginx/lab/plain.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/logs/iphn-plain:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.11 }
+
+  mismatch:
+    <<: *nginx
+    container_name: iphn-mismatch
+    command: ["nginx", "-c", "/etc/nginx/lab/plain.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/logs/iphn-mismatch:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.12 }
+
+  split:
+    <<: *nginx
+    container_name: iphn-split
+    command: ["nginx", "-c", "/etc/nginx/lab/split.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/iphn-split:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.13 }
+
+  urlscan:
+    <<: *py
+    container_name: iphn-urlscan
+    # urlscan_lab's fake urlscan.io, reused read-only with this lab's fixtures:
+    # one implementation of urlscan's format to keep honest, not two.
+    command: ["python", "-u", "/lab/server.py", "--fixtures", "/fixtures/visits.json", "--port", "80",
+              "--log-dir", "/logs"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      USLAB_PUBLIC_BASE: "http://192.88.98.30"
+      USLAB_LAB_KEY: "lab-key"
+    volumes:
+      - ../urlscan_lab/fake_urlscan:/lab:ro
+      - ./generated/fixtures:/fixtures:ro
+      - ./generated/logs/iphn-urlscan:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.30 }
+
+  edge:
+    <<: *py
+    container_name: iphn-edge
+    command: ["python", "-u", "/lab/server.py", "--certs", "/certs", "--logs", "/logs"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./edge:/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/iphn-edge:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.40 }
+
+  outsider:
+    <<: *nginx
+    container_name: iphn-outsider
+    command: ["nginx", "-c", "/etc/nginx/lab/outsider.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/iphn-outsider:/logs
+    networks:
+      lab: { ipv4_address: 192.88.98.99 }
+
+  # Every packet the outsider receives, except ARP, in generated/pcap/outsider.pcap:
+  # a SYN that never became an HTTP request (naabu) leaves no hit line, only a packet.
+  # It shares the outsider's network namespace, so it sees exactly its traffic.
+  # A restart (the driver's pre-flight) moves the old capture aside.
+  pcap:
+    build: ./tools
+    image: iphn-tools:local
+    container_name: iphn-pcap
+    network_mode: "service:outsider"
+    cap_add: [NET_RAW]
+    restart: unless-stopped
+    mem_limit: 64m
+    pids_limit: 32
+    depends_on: [outsider]
+    # -Q in: received packets only; -p: no promiscuous mode (needs no NET_ADMIN);
+    # -U: written per packet, so a copy taken right after a run is complete;
+    # -Z root: keep writing into the bind mount after the privilege drop.
+    command: ["sh", "-c",
+              "mv -f /pcap/outsider.pcap /pcap/outsider.prev.pcap 2>/dev/null; exec tcpdump -i eth0 -p -Q in -U -n -s 160 -Z root -w /pcap/outsider.pcap not arp"]
+    volumes:
+      - ./generated/pcap:/pcap
+
+  # Row E10's private target. Started by up.sh only when redamon-network exists
+  # (the RedAmon stack is up); its address is read back, never pinned: other
+  # labs hold fixed addresses on that network.
+  intra:
+    <<: *nginx
+    profiles: ["intra"]
+    container_name: iphn-intra
+    command: ["nginx", "-c", "/etc/nginx/lab/intra.conf", "-g", "daemon off;"]
+    volumes:
+      - ./nginx:/etc/nginx/lab:ro
+      - ./generated/certs:/certs:ro
+      - ./generated/logs/iphn-intra:/logs
+    networks:
+      - redamon
+
+networks:
+  lab:
+    name: redamon_iphn_lab
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.88.98.0/24
+          gateway: 192.88.98.1
+  redamon:
+    name: redamon-network
+    external: true

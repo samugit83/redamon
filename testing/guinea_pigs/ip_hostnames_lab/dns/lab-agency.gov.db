@@ -1,0 +1,12 @@
+; lab-agency.gov - rendered by gen_lab.py into generated/dns. TTL 1 s: see example-a.test.db.
+; The hard-guardrail fixture: a government name the selection rule must refuse
+; (hard_blocked) before any other check. The host routes ~lab-agency.gov to this
+; server only while host_dns_enable.sh is in force, and the driver refuses to
+; scan unless portal.lab-agency.gov resolves here: no lab scan may ever ask the
+; public DNS about it.
+$ORIGIN lab-agency.gov.
+$TTL 1
+@        IN SOA ns1.lab-agency.gov. hostmaster.lab-agency.gov. @SERIAL@ 3600 600 86400 1
+@        IN NS  ns1.lab-agency.gov.
+ns1      IN A   192.88.98.53
+portal   IN A   192.88.98.10

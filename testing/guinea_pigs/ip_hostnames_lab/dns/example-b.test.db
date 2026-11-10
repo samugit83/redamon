@@ -1,0 +1,18 @@
+; example-b.test - rendered by gen_lab.py into generated/dns. TTL 1 s: see example-a.test.db.
+$ORIGIN example-b.test.
+$TTL 1
+@        IN SOA ns1.example-b.test. hostmaster.example-b.test. @SERIAL@ 3600 600 86400 1
+@        IN NS  ns1.example-b.test.
+ns1      IN A   192.88.98.53
+
+; A .10 vhost under a second registrable domain.
+shop     IN A   192.88.98.10
+
+; In .10's default certificate, but it lives on the outsider.
+outside  IN A   192.88.98.99
+; .12's PTR name; its forward address is the outsider (bug B-01's leak).
+mismatch IN A   192.88.98.99
+
+; The CDN-like edge: a certificate name and its PTR name.
+cdn2     IN A   192.88.98.40
+edge-40  IN A   192.88.98.40

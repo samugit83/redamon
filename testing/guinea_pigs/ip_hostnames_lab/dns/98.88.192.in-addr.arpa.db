@@ -1,0 +1,13 @@
+; Reverse zone of the lab range - rendered by gen_lab.py into generated/dns.
+; TTL 1 s: see example-a.test.db.
+;
+; .10 has TWO PTR names (today only the first answer is used, B-04); .11 and .13
+; have none (NXDOMAIN); .12's name forward-resolves to the outsider (.99).
+$ORIGIN 98.88.192.in-addr.arpa.
+$TTL 1
+@        IN SOA ns1.example-a.test. hostmaster.example-a.test. @SERIAL@ 3600 600 86400 1
+@        IN NS  ns1.example-a.test.
+10       IN PTR web.example-a.test.
+10       IN PTR app.example-a.test.
+12       IN PTR mismatch.example-b.test.
+40       IN PTR edge-40.example-b.test.

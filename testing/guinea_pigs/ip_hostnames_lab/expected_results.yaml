@@ -1,0 +1,994 @@
+# Expected results of the IP-hostnames end-to-end matrix (plan _local/internal/new_plans/ip_mode,
+# 06_testing.md §5): one entry per row E0-E25. Read by e2e_ip_hostnames.py (what to create and run)
+# and validate_ip_hostnames.py (what to assert); the check grammar is in validate_ip_hostnames.py's
+# docstring. Lab range 192.88.98.0/24 and reserved names only.
+#
+# A row:
+#   needs_step   plan step(s) whose code the row exercises; the driver skips the row until they are
+#                declared landed (--landed). E0 needs none: it records TODAY's IP mode.
+#   kind         full (default) | governance (create/rescope/REST answers) | external (driven by
+#                another tool or by hand: `how` says what to run)
+#   projects     label -> {targets, engagementKind, settings, policy, expect_create}. `policy` holds
+#                the hostname-policy fields (they exist from P2). Default: one project `main` on
+#                defaults.targets.
+#   lab          hooks: [urlscan, cdn] (orchestrator lab hooks: --prepare first), urlscan_key: lab
+#   sequence     run | partial | partial_wait | rescope | mcp | rest | zone | wait (default: run main);
+#                `project: <label>` picks the project a step acts on (default main), `label:` names
+#                a non-run step. Never the key `on:`: YAML 1.1 reads it as a boolean.
+#   checks       `step:` names the step a check reads (default: the last run); `common: true` adds
+#                common_checks to every run (and the outsider ones to every partial)
+#   same_checks_as  {row, step, as}: reuse another row's checks for one of this row's steps
+#
+# Names in the lab (06_testing.md §4.1): .10 hosts web/app/hidden/moved.example-a.test,
+# shop.example-b.test, api.lab-c.example, portal.lab-agency.gov (SNI vhosts); its default
+# certificate lists web, app, shop, api, moved, outside, nodns, portal and *.wild; PTR .10 -> web
+# AND app; .11 no PTR; .12 PTR mismatch.example-b.test (A -> .99); .13's certificate names
+# split.example-a.test (A -> .13 and .99); .40 is the CDN-like edge (cdn1, cdn2; PTR edge-40);
+# hidden and gone come only from the urlscan stub; .99 is the outsider.
+
+version: 1
+
+defaults:
+  targets: [192.88.98.10, 192.88.98.11, 192.88.98.12, 192.88.98.13]
+  engagementKind: internal
+
+# 06_testing.md §4.3: nothing non-deterministic, nothing that reaches the internet. Names then come
+# only from PTR, certificates (tlsx/httpx/IP attribution), redirects and the urlscan stub.
+# httpxProbeTlsInfo is deliberately NOT set: each row runs the IP-mode default of the code under
+# test (E0 records today's). masscan is also forced off by the driver, whatever a row says.
+determinism:
+  masscanEnabled: false
+  whoisEnabled: false
+  shodanEnabled: false
+  osintEnrichmentEnabled: false
+  otxEnabled: false
+  censysEnabled: false
+  fofaEnabled: false
+  netlasEnabled: false
+  virusTotalEnabled: false
+  zoomEyeEnabled: false
+  criminalIpEnabled: false
+  uncoverEnabled: false
+  urlscanEnabled: false
+  crtshEnabled: false
+  hackerTargetEnabled: false
+  subfinderEnabled: false
+  amassEnabled: false
+  purednsEnabled: false
+  knockpyReconEnabled: false
+  useBruteforceForSubdomains: false
+  cveLookupEnabled: false
+  mitreEnabled: false
+  aiInPipeline: false
+  targetGuardrailEnabled: false       # the soft guardrail asks an LLM about the targets
+  triageReviewBudget: 0
+  stealthMode: false
+  # every per-tool AI / Jev hook (aiInPipeline=false alone leaves the Jev-only ones on)
+  portScanAiPortCatalogEnabled: false
+  masscanAiPortCatalogEnabled: false
+  nmapAiVersionRegexEnabled: false
+  httpProbeAiHeaderScanEnabled: false
+  httpProbeAiFaviconHashEnabled: false
+  httpProbeAiTitleDetectionEnabled: false
+  httpProbeAiWappalyzerEnabled: false
+  httpxJevPageType: false
+  resourceEnumAiClassifierEnabled: false
+  resourceEnumAiPathClassifierEnabled: false
+  resourceEnumAiRagPathFlagEnabled: false
+  resourceEnumAiParamInjectableFlagEnabled: false
+  resourceEnumAiToolArgPathEnabled: false
+  resourceEnumJevToolHealth: false
+  domainReconAiTxtHintEnabled: false
+  domainReconAiNsHintEnabled: false
+  ffufAiExtensions: false
+  ffufJevBasePaths: false
+  hakrawlerJevSeedOrder: false
+  nucleiAiTags: false
+  nucleiAiResponseFilter: false
+  wafAiClassifier: false
+  takeoverAiClassifier: false
+  routeExposureJevAssess: false
+  routeExposureJevRank: false
+  routeExposureJevWallCheck: false
+  serializedScanJevRank: false
+  jsReconAiSdkDetectionEnabled: false
+  # modules that reach third parties or are irrelevant here
+  aiSurfaceReconEnabled: false
+  captureProxyEnabled: false
+  supplyChainReconEnabled: false
+  originDiscoveryEnabled: false
+  subdomainTakeoverEnabled: false
+  subjackEnabled: false
+  nucleiTakeoversEnabled: false
+  baddnsEnabled: false
+  vhostSniEnabled: false
+  webCachePoisonEnabled: false
+  graphqlSecurityEnabled: false
+  serializedScanEnabled: false
+  routeExposureEnabled: false
+  zapAjaxSpiderEnabled: false
+  gauEnabled: false
+  paramspiderEnabled: false
+  jsReconEnabled: false
+  jsReconDependencyCheck: false
+  jsReconValidateKeys: false
+  jsReconValidateEndpoints: false
+  wappalyzerAutoUpdate: false
+  nucleiAutoUpdateTemplates: false
+  nucleiInteractsh: false
+  nucleiDastMode: false
+  # the minimal module set: ~3-10 min a row
+  scanModules: [domain_discovery, port_scan, http_probe, resource_enum, vuln_scan]
+  dnsEnabled: true
+  naabuEnabled: true
+  naabuCustomPorts: "80,443"
+  naabuTopPorts: ""
+  nmapEnabled: false
+  bannerGrabEnabled: false
+  httpxEnabled: true
+  tlsxEnabled: true
+  tlsxIncludeHttpPorts: true          # the lab's certificates are on 443: tlsx skips it by default
+  ipAttributionEnabled: true
+  katanaEnabled: true
+  katanaDepth: 1
+  katanaJsCrawl: false
+  hakrawlerEnabled: false
+  ffufEnabled: false
+  arjunEnabled: false
+  jsluiceEnabled: false
+  kiterunnerEnabled: false
+  openapiEnabled: false
+  nucleiEnabled: true
+  nucleiTags: [tech]
+  securityCheckEnabled: true
+
+# 06_testing.md §4.4: three independent signals per row, plus the graph.
+common_checks:
+  - id: run_completed
+    run: status
+    equals: [completed]
+    applies: [run]
+  - id: no_ip_node_outside_targets
+    cypher: "MATCH (i:IP) RETURN i.address AS v"
+    subset: [$targets]
+    applies: [run]
+  - id: outsider_received_no_packet
+    pcap: outsider
+    count: 0
+    applies: [run, partial, partial_wait]
+  - id: outsider_received_no_request
+    hits: iphn-outsider
+    count: 0
+    applies: [run, partial, partial_wait]
+
+rows:
+
+  # ------------------------------------------------------------------ E0: today's IP mode
+  E0:
+    title: Baseline, today's IP mode (run once, before P0)
+    proves: the leak exists; the before picture for RESULTS.md
+    needs_step: null
+    snapshot: true
+    projects:
+      main: {}
+    checks:
+      - id: run_completed
+        run: status
+        equals: [completed]
+      - id: outsider_receives_packets
+        note: "the leak, recorded: B-01 (.12's PTR name forward-resolves to .99) and B-06 (-tls-probe on outside/split). PASS means it was observed"
+        pcap: outsider
+        min: 1
+      - id: outsider_packets_come_from_the_scanner_host
+        pcap: outsider
+        where: {src: 192.88.98.1}
+        min: 1
+      - id: outsider_ports_reached
+        pcap: outsider
+        where: {src: 192.88.98.1}
+        field: dport
+        record: true
+      - id: outsider_is_an_ip_node
+        note: "B-01: the foreign address becomes an IP node"
+        cypher: "MATCH (i:IP) RETURN i.address AS v"
+        superset: [192.88.98.99]
+      - id: outsider_requests_by_host
+        hits: iphn-outsider
+        field: host_name
+        record: true
+      - id: ip_nodes
+        cypher: "MATCH (i:IP) RETURN i.address AS v"
+        record: true
+      - id: subdomains
+        cypher: "MATCH (s:Subdomain) RETURN s.name + ' mock=' + toString(coalesce(s.is_mock, false)) AS v"
+        record: true
+      - id: base_urls
+        cypher: "MATCH (b:BaseURL) RETURN b.url AS v"
+        record: true
+      - id: external_domains
+        cypher: "MATCH (e:ExternalDomain) RETURN e.domain AS v"
+        record: true
+      - id: ptr_queries
+        dnslog: coredns
+        where: {qtype: PTR}
+        field: ptr_ip
+        record: true
+      - id: forward_queries
+        dnslog: coredns
+        where: {qtype: A}
+        field: name
+        record: true
+      - id: sni_sent_to_the_shared_host
+        hits: iphn-web
+        field: sni
+        record: true
+      - id: recon_dns_entries
+        recon_json: dns.subdomains
+        record: true
+
+  # ------------------------------------------------------------------ E1: M2 ip_only
+  E1:
+    title: M2 ip_only, default settings
+    proves: I-7 (nothing name-related), I-1
+    needs_step: P3
+    common: true
+    projects:
+      main:
+        policy: {ipHostnameMode: ip_only}
+    checks:
+      - id: no_ptr_query
+        dnslog: coredns
+        where: {qtype: PTR}
+        count: 0
+      - id: dns_queries_seen
+        dnslog: coredns
+        field: name
+        record: true
+      - id: placeholders_only
+        cypher: "MATCH (s:Subdomain) RETURN s.name + ' mock=' + toString(coalesce(s.is_mock, false)) AS v"
+        equals: ["192-88-98-10 mock=true", "192-88-98-11 mock=true", "192-88-98-12 mock=true", "192-88-98-13 mock=true"]
+      - id: four_ip_nodes
+        cypher: "MATCH (i:IP) RETURN i.address AS v"
+        equals: [$targets]
+      - id: base_urls_on_target_ips_only
+        cypher: "MATCH (b:BaseURL) RETURN b.host AS v"
+        subset: [$targets]
+      - id: no_seen_on
+        cypher: "MATCH (e:ExternalDomain)-[r:SEEN_ON]->(i:IP) RETURN e.domain AS v"
+        count: 0
+      - id: no_sni_sent
+        hits: all
+        where: {sni: "*"}
+        count: 0
+      - id: host_header_is_a_target_ip
+        hits: all
+        where: {host_name: "*"}
+        field: host_name
+        subset: [$targets]
+      - id: hook_says_ip_only
+        scan_log: "IP only: hostname discovery off"
+        min: 1
+
+  # ------------------------------------------------------------------ E2: M3 record_only
+  E2:
+    title: M3 record_only
+    proves: recording with evidence, I-4 (recorded names are never targets)
+    needs_step: P3
+    common: true
+    projects:
+      main:
+        policy: {ipHostnameMode: record_only}
+    checks:
+      - id: recorded_names_seen_on_their_ip
+        note: "moved is in .10's default certificate too, so it is recorded like the others (06_testing.md §5 omits it from the list)"
+        cypher: "MATCH (e:ExternalDomain)-[r:SEEN_ON]->(i:IP) RETURN e.domain + '@' + i.address + '=' + r.reason AS v"
+        superset:
+          - web.example-a.test@192.88.98.10=record_only
+          - app.example-a.test@192.88.98.10=record_only
+          - shop.example-b.test@192.88.98.10=record_only
+          - api.lab-c.example@192.88.98.10=record_only
+          - moved.example-a.test@192.88.98.10=record_only
+          - outside.example-b.test@192.88.98.10=record_only
+          - nodns.example-a.test@192.88.98.10=record_only
+          - portal.lab-agency.gov@192.88.98.10=hard_blocked
+          - mismatch.example-b.test@192.88.98.12=record_only
+          - split.example-a.test@192.88.98.13=record_only
+      - id: both_ptr_names_carry_the_ptr_source
+        cypher: "MATCH (e:ExternalDomain)-[r:SEEN_ON]->(i:IP {address: '192.88.98.10'}) WHERE 'ptr' IN r.sources RETURN e.domain AS v"
+        equals: [web.example-a.test, app.example-a.test]
+      - id: wildcard_san_and_urlscan_only_names_absent
+        cypher: "MATCH (e:ExternalDomain) RETURN e.domain AS v"
+        disjoint: [wild.example-a.test, "*.wild.example-a.test", hidden.example-a.test, gone.example-a.test]
+      - id: recorded_names_are_never_subdomains
+        cypher: "MATCH (s:Subdomain) WHERE NOT coalesce(s.is_mock, false) RETURN s.name AS v"
+        count: 0
+      - id: ptr_asked_for_every_target
+        dnslog: coredns
+        where: {qtype: PTR}
+        field: ptr_ip
+        superset: [$targets]
+      - id: base_urls_on_target_ips_only
+        cypher: "MATCH (b:BaseURL) RETURN b.host AS v"
+        subset: [$targets]
+      - id: no_sni_sent
+        hits: all
+        where: {sni: "*"}
+        count: 0
+      - id: mode_in_recon_json
+        recon_json: ip_hostnames.mode
+        equals: [record_only]
+      - id: reasons_in_recon_json
+        recon_json: ip_hostnames.candidates
+        pairs: reason
+        superset:
+          - web.example-a.test=record_only
+          - app.example-a.test=record_only
+          - split.example-a.test=record_only
+          - mismatch.example-b.test=record_only
+          - portal.lab-agency.gov=hard_blocked
+
+  # ------------------------------------------------------------------ E3: M4 filter
+  E3:
+    title: M4 record_filter, include *.example-a.test, exclude nodns.example-a.test
+    proves: selection, pinning, I-1
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+    checks:
+      - id: org_domain_marked_without_ip_mode
+        cypher: "MATCH (d:Domain) WHERE d.ip_hostname_org = true RETURN d.name + ' ip_mode=' + toString(coalesce(d.ip_mode, false)) AS v"
+        equals: ["example-a.test ip_mode=false"]
+      - id: scanned_names_under_the_org
+        note: "moved is in .10's default certificate and resolves to .10 (set_moved.sh 10): it is selected too"
+        cypher: "MATCH (s:Subdomain)-[:BELONGS_TO]->(d:Domain {name: 'example-a.test'}) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name AS v"
+        equals: [app.example-a.test, moved.example-a.test, web.example-a.test]
+      - id: scanned_names_pinned_to_10
+        cypher: "MATCH (s:Subdomain)-[:RESOLVES_TO]->(i:IP) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name + '->' + i.address AS v"
+        equals: [app.example-a.test->192.88.98.10, moved.example-a.test->192.88.98.10, web.example-a.test->192.88.98.10]
+      - id: base_url_by_name
+        cypher: "MATCH (b:BaseURL) WHERE b.url STARTS WITH 'https://app.example-a.test' RETURN b.url AS v"
+        min: 1
+      - id: sni_app_reached_its_vhost_on_10
+        hits: iphn-web
+        where: {sni: app.example-a.test, vhost: app.example-a.test}
+        min: 1
+      - id: no_sni_outside_the_selection
+        hits: all
+        where: {sni: "*"}
+        field: sni
+        subset: [app.example-a.test, moved.example-a.test, web.example-a.test]
+      - id: recorded_reasons
+        cypher: "MATCH (e:ExternalDomain) WHERE e.ip_hostname_reason IS NOT NULL RETURN e.domain + '=' + e.ip_hostname_reason AS v"
+        superset:
+          - split.example-a.test=resolves_outside_targets
+          - nodns.example-a.test=filter_excluded
+          - shop.example-b.test=filter_no_match
+          - api.lab-c.example=filter_no_match
+          - outside.example-b.test=filter_no_match
+          - mismatch.example-b.test=filter_no_match
+          - portal.lab-agency.gov=hard_blocked
+      - id: reasons_in_recon_json
+        recon_json: ip_hostnames.candidates
+        pairs: reason
+        superset:
+          - app.example-a.test=scanned
+          - web.example-a.test=scanned
+          - split.example-a.test=resolves_outside_targets
+          - nodns.example-a.test=filter_excluded
+          - shop.example-b.test=filter_no_match
+          - portal.lab-agency.gov=hard_blocked
+
+  # ------------------------------------------------------------------ E4: M4 + passive expansion
+  E4:
+    title: M4 + passive expansion (urlscan stub supplies hidden.example-a.test)
+    proves: P5
+    needs_step: P5
+    common: true
+    lab:
+      hooks: [urlscan]
+      urlscan_key: lab
+    projects:
+      main:
+        settings: {urlscanEnabled: true}
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: true
+    checks:
+      - id: hidden_scanned
+        cypher: "MATCH (s:Subdomain {name: 'hidden.example-a.test'}) RETURN s.ip_hostname_reason AS v"
+        equals: [scanned]
+      - id: hidden_reached_its_vhost_by_sni
+        hits: iphn-web
+        where: {sni: hidden.example-a.test, vhost: hidden.example-a.test}
+        min: 1
+      - id: gone_recorded_outside_targets
+        cypher: "MATCH (e:ExternalDomain {domain: 'gone.example-a.test'}) RETURN e.ip_hostname_reason AS v"
+        equals: [resolves_outside_targets]
+      - id: hidden_comes_from_the_passive_search
+        recon_json: [ip_hostnames, candidates, hidden.example-a.test, sources]
+        superset: [passive_urlscan]
+      - id: passive_search_log_line
+        scan_log: "Passive search: 1 domain"
+        min: 1
+
+  # ------------------------------------------------------------------ E5: M1 scan all
+  E5:
+    title: M1 scan_all (internal), targets .10 .12 .13 .40, confirmation on
+    proves: M1 rules, I-2, shared edges never scanned by name
+    needs_step: P4
+    common: true
+    lab:
+      hooks: [cdn]
+    projects:
+      main:
+        targets: [192.88.98.10, 192.88.98.12, 192.88.98.13, 192.88.98.40]
+        policy: {ipHostnameMode: scan_all, ipHostnameScanAllConfirmed: true}
+    checks:
+      - id: scanned_on_10
+        note: "hidden is not discovered without expansion; moved is in .10's default certificate"
+        cypher: "MATCH (s:Subdomain) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name AS v"
+        equals: [api.lab-c.example, app.example-a.test, moved.example-a.test, shop.example-b.test, web.example-a.test]
+      - id: recorded_reasons
+        cypher: "MATCH (e:ExternalDomain) WHERE e.ip_hostname_reason IS NOT NULL RETURN e.domain + '=' + e.ip_hostname_reason AS v"
+        superset:
+          - cdn1.example-a.test=shared_edge_ip
+          - cdn2.example-b.test=shared_edge_ip
+          - edge-40.example-b.test=shared_edge_ip
+          - portal.lab-agency.gov=hard_blocked
+          - mismatch.example-b.test=resolves_outside_targets
+          - split.example-a.test=resolves_outside_targets
+          - outside.example-b.test=resolves_outside_targets
+          - nodns.example-a.test=no_current_resolution
+      - id: org_domains
+        cypher: "MATCH (d:Domain) WHERE d.ip_hostname_org = true RETURN d.name AS v"
+        equals: [example-a.test, example-b.test, lab-c.example]
+      - id: nothing_by_name_on_the_edge
+        hits: iphn-edge
+        where: {sni: "*"}
+        count: 0
+      - id: edge_host_header_is_its_ip
+        hits: iphn-edge
+        where: {host_name: "*"}
+        field: host_name
+        subset: [192.88.98.40]
+
+  # ------------------------------------------------------------------ E6: M1 cap
+  E6:
+    title: M1 cap (ipHostnameMaxScanned=2), run twice
+    proves: deterministic cap, coverage notes
+    needs_step: P4
+    common: true
+    lab:
+      hooks: [cdn]
+    projects:
+      main:
+        targets: [192.88.98.10, 192.88.98.12, 192.88.98.13, 192.88.98.40]
+        policy: {ipHostnameMode: scan_all, ipHostnameScanAllConfirmed: true, ipHostnameMaxScanned: 2}
+    sequence:
+      - run: run1
+      - run: run2
+    checks:
+      - id: first_two_by_sorted_name
+        step: run1
+        cypher: "MATCH (s:Subdomain) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name AS v"
+        equals: [api.lab-c.example, app.example-a.test]
+      - id: the_rest_cap_reached
+        step: run1
+        cypher: "MATCH (e:ExternalDomain) WHERE e.ip_hostname_reason IS NOT NULL RETURN e.domain + '=' + e.ip_hostname_reason AS v"
+        superset: [moved.example-a.test=cap_reached, shop.example-b.test=cap_reached, web.example-a.test=cap_reached]
+      - id: same_two_on_the_second_run
+        step: run2
+        cypher: "MATCH (s:Subdomain) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name AS v"
+        equals: [api.lab-c.example, app.example-a.test]
+      - id: coverage_record_on_the_mock_root
+        step: run2
+        cypher: "MATCH (d:Domain) WHERE d.is_mock = true RETURN d.recon_coverage_gaps AS v"
+        record: true
+      - id: capped_names_findings_kept
+        step: run2
+        manual: "a finding on a capped name survives the prune: the lab names carry no finding, so this is pinned by recon/tests/test_ip_hostnames_coverage_notes.py; read coverage_record_on_the_mock_root"
+
+  # ------------------------------------------------------------------ E7: governance
+  E7:
+    title: Governance (third-party scan_all, widening authorization, unconfirmed scan_all)
+    proves: P2 rules (D-03, D-04)
+    needs_step: P2
+    kind: governance
+    projects:
+      tp_scan_all:
+        engagementKind: third_party
+        policy: {ipHostnameMode: scan_all, ipHostnameScanAllConfirmed: true}
+        expect_create: refused
+      int_unconfirmed:
+        policy: {ipHostnameMode: scan_all, ipHostnameScanAllConfirmed: false}
+        expect_create: refused
+      tp_record:
+        engagementKind: third_party
+        policy: {ipHostnameMode: record_only}
+      int_scan_all:
+        policy: {ipHostnameMode: scan_all, ipHostnameScanAllConfirmed: true}
+    sequence:
+      - label: widen_without_authorization
+        project: tp_record
+        rescope:
+          changes: {ipHostnameMode: record_filter, ipHostnameInclude: ["*.example-a.test"]}
+      - label: widen_with_authorization
+        project: tp_record
+        rescope:
+          changes: {ipHostnameMode: record_filter, ipHostnameInclude: ["*.example-a.test"]}
+          authorization: true
+      - label: post_scan_all_unconfirmed
+        rest:
+          method: POST
+          path: /api/projects
+          body:
+            name: iphn-E7-post-unconfirmed
+            ipMode: true
+            targetIps: [192.88.98.10]
+            engagementKind: internal
+            masscanEnabled: false
+            ipHostnameMode: scan_all
+            ipHostnameScanAllConfirmed: false
+          cleanup: {method: DELETE, path: "/api/projects/{resp.id}"}
+      - label: put_unconfirm_only
+        project: int_scan_all
+        rest:
+          method: PUT
+          path: "/api/projects/{pid}"
+          body: {ipHostnameScanAllConfirmed: false}
+    checks:
+      - id: third_party_scan_all_refused
+        step: create-tp_scan_all
+        result: refused
+        "true": true
+      - id: third_party_scan_all_says_why
+        step: create-tp_scan_all
+        result: text
+        contains: [scan_all]
+      - id: unconfirmed_scan_all_refused_over_mcp
+        step: create-int_unconfirmed
+        result: refused
+        "true": true
+      - id: third_party_record_only_created
+        step: create-tp_record
+        result: ok
+        "true": true
+      - id: widening_without_authorization_refused
+        step: widen_without_authorization
+        result: refused
+        "true": true
+      - id: widening_refusal_names_the_authorization
+        step: widen_without_authorization
+        result: text
+        contains: [authorization_required]
+      - id: widening_with_authorization_accepted
+        step: widen_with_authorization
+        result: ok
+        "true": true
+      - id: unconfirmed_scan_all_refused_over_post
+        step: post_scan_all_unconfirmed
+        result: refused
+        "true": true
+      - id: put_of_the_confirmation_alone_refused
+        note: "judged on the effective row (stored scan_all + this change), not on the body alone (B-25)"
+        step: put_unconfirm_only
+        result: refused
+        "true": true
+
+  # ------------------------------------------------------------------ E8: moved name
+  E8:
+    title: Moved name (moved.example-a.test .10 -> .99 between two runs of an E3 project)
+    proves: the live re-check before every scan
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+    sequence:
+      - label: zone10
+        zone: {moved: 10}
+      - run: run1
+      - label: zone99
+        zone: {moved: 99}
+      - run: run2
+    checks:
+      - id: moved_scanned_while_on_10
+        step: run1
+        cypher: "MATCH (s:Subdomain {name: 'moved.example-a.test'}) RETURN s.ip_hostname_reason AS v"
+        equals: [scanned]
+      - id: moved_recorded_once_it_points_outside
+        step: run2
+        cypher: "MATCH (e:ExternalDomain {domain: 'moved.example-a.test'}) RETURN e.ip_hostname_reason AS v"
+        equals: [resolves_outside_targets]
+      - id: moved_no_longer_a_subdomain
+        step: run2
+        cypher: "MATCH (s:Subdomain {name: 'moved.example-a.test'}) RETURN s.name AS v"
+        count: 0
+      - id: moved_not_sent_as_sni
+        step: run2
+        hits: all
+        where: {sni: moved.example-a.test}
+        count: 0
+
+  # ------------------------------------------------------------------ E9: DNS off
+  E9:
+    title: DNS off (E3 + dnsEnabled=false)
+    proves: fail closed (I-6)
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        settings: {dnsEnabled: false}
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+    checks:
+      - id: filter_matches_get_dns_disabled
+        note: "no PTR without DNS: web/app/moved come from .10's certificate, split from .13's"
+        recon_json: ip_hostnames.candidates
+        pairs: reason
+        superset: [web.example-a.test=dns_disabled, app.example-a.test=dns_disabled, moved.example-a.test=dns_disabled, split.example-a.test=dns_disabled]
+      - id: only_refusals
+        note: "checks 2, 5, 6 run before the DNS check (02_target_design.md §4.2)"
+        recon_json: ip_hostnames.candidates.*.reason
+        subset: [dns_disabled, filter_no_match, filter_excluded, hard_blocked]
+      - id: nothing_scanned_by_name
+        cypher: "MATCH (s:Subdomain) WHERE s.ip_hostname_reason = 'scanned' RETURN s.name AS v"
+        count: 0
+      - id: no_sni_sent
+        hits: all
+        where: {sni: "*"}
+        count: 0
+      - id: no_ptr_query
+        dnslog: coredns
+        where: {qtype: PTR}
+        count: 0
+
+  # ------------------------------------------------------------------ E10: private target
+  E10:
+    title: Private target (iphn-intra on redamon-network), M4 include *.example-a.test
+    proves: private targets allowed (B-28), D-13 (tlsx on listed private targets)
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        targets: [$intra]
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnamePassiveExpand: false
+    checks:
+      - id: intra_scanned
+        cypher: "MATCH (s:Subdomain {name: 'intra.example-a.test'}) RETURN s.ip_hostname_reason AS v"
+        equals: [scanned]
+      - id: intra_reached_its_vhost_by_sni
+        hits: iphn-intra
+        where: {sni: intra.example-a.test, vhost: intra.example-a.test}
+        min: 1
+
+  # ------------------------------------------------------------------ E11: partial recon per mode
+  E11:
+    title: Partial recon per mode (M2, M3, M4 projects)
+    proves: P0c, P6
+    needs_step: P6
+    common: true
+    projects:
+      m2:
+        policy: {ipHostnameMode: ip_only}
+      m3:
+        policy: {ipHostnameMode: record_only}
+      m4:
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+    sequence:
+      - {run: m2-full, project: m2}
+      - {run: m3-full, project: m3}
+      - {run: m4-full, project: m4}
+      - {label: m2-httpx, project: m2, partial: {tool_id: Httpx}}
+      - {label: m2-nuclei, project: m2, partial: {tool_id: Nuclei, settings_overrides: {CVE_LOOKUP_ENABLED: false, MITRE_ENABLED: false, SECURITY_CHECK_ENABLED: false}}}
+      - {label: m2-katana, project: m2, partial: {tool_id: Katana}}
+      - {label: m2-subdomain-discovery, project: m2, partial: {tool_id: SubdomainDiscovery}}
+      - {label: m2-typed-name, project: m2, partial: {tool_id: Httpx, include_graph_targets: false, user_targets: {subdomains: [app.example-a.test], ips: []}}}
+      - {label: m2-typed-outsider-ip, project: m2, partial: {tool_id: Naabu, include_graph_targets: false, user_targets: {subdomains: [], ips: [192.88.98.99]}}}
+      - {label: m2-typed-url, project: m2, partial: {tool_id: Katana, include_graph_targets: false, user_targets: {urls: ["https://192.88.98.10/"]}}}
+      - {label: m3-httpx, project: m3, partial: {tool_id: Httpx}}
+      - {label: m3-subdomain-discovery, project: m3, partial: {tool_id: SubdomainDiscovery}}
+      - {label: m3-typed-name, project: m3, partial: {tool_id: Httpx, include_graph_targets: false, user_targets: {subdomains: [app.example-a.test], ips: []}}}
+      - {label: m3-typed-outsider-ip, project: m3, partial: {tool_id: Naabu, include_graph_targets: false, user_targets: {subdomains: [], ips: [192.88.98.99]}}}
+      - {label: m3-typed-url, project: m3, partial: {tool_id: Katana, include_graph_targets: false, user_targets: {urls: ["https://192.88.98.10/"]}}}
+      - {label: m4-httpx, project: m4, partial: {tool_id: Httpx}}
+      - {label: m4-typed-name, project: m4, partial: {tool_id: Httpx, include_graph_targets: false, user_targets: {subdomains: [app.example-a.test], ips: []}}}
+      - {label: m4-typed-other-org, project: m4, partial: {tool_id: Httpx, include_graph_targets: false, user_targets: {subdomains: [shop.example-b.test], ips: []}}}
+      - {label: m4-typed-outsider-ip, project: m4, partial: {tool_id: Naabu, include_graph_targets: false, user_targets: {subdomains: [], ips: [192.88.98.99]}}}
+    checks:
+      - {id: m2_httpx_accepted, step: m2-httpx, result: accepted, "true": true}
+      - {id: m2_httpx_ip_literals_only, step: m2-httpx, hits: all, where: {sni: "*"}, count: 0}
+      - {id: m2_nuclei_accepted, step: m2-nuclei, result: accepted, "true": true}
+      - {id: m2_katana_accepted, step: m2-katana, result: accepted, "true": true}
+      - {id: m2_subdomain_discovery_refused, step: m2-subdomain-discovery, result: refused, "true": true}
+      - {id: m2_typed_name_refused, step: m2-typed-name, result: refused, "true": true}
+      - {id: m2_typed_outsider_ip_refused, step: m2-typed-outsider-ip, result: refused, "true": true}
+      - {id: m2_typed_url_accepted, step: m2-typed-url, result: accepted, "true": true}
+      - {id: m3_httpx_ip_literals_only, step: m3-httpx, hits: all, where: {sni: "*"}, count: 0}
+      - {id: m3_subdomain_discovery_refused, step: m3-subdomain-discovery, result: refused, "true": true}
+      - {id: m3_typed_name_refused, step: m3-typed-name, result: refused, "true": true}
+      - {id: m3_typed_outsider_ip_refused, step: m3-typed-outsider-ip, result: refused, "true": true}
+      - {id: m3_typed_url_accepted, step: m3-typed-url, result: accepted, "true": true}
+      - {id: m4_httpx_sni_only_selected, step: m4-httpx, hits: all, where: {sni: "*"}, field: sni, subset: [app.example-a.test, moved.example-a.test, web.example-a.test]}
+      - {id: m4_typed_name_accepted, step: m4-typed-name, result: accepted, "true": true}
+      - {id: m4_typed_name_probed_with_sni, step: m4-typed-name, hits: iphn-web, where: {sni: app.example-a.test}, min: 1}
+      - {id: m4_typed_other_org_refused, step: m4-typed-other-org, result: refused, "true": true}
+      - {id: m4_typed_outsider_ip_refused, step: m4-typed-outsider-ip, result: refused, "true": true}
+
+  # ------------------------------------------------------------------ E12: rescope over MCP
+  E12:
+    title: Rescope over MCP (record_only project with an enabled schedule -> record_filter)
+    proves: widening pauses schedules (D-04); the next run behaves like E3
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        policy: {ipHostnameMode: record_only}
+    sequence:
+      - label: schedule_enabled
+        rest:
+          method: POST
+          path: "/api/projects/{pid}/schedules"
+          # Far in the future and deleted at the end of the row: it must never fire, since a
+          # scheduled scan of 192.88.98.x while the lab is down would route to the internet.
+          body: {mode: once, runAt: "{future_iso}", enabled: true, label: "iphn E12 (lab, never fires)"}
+          save: {schedule_id: schedule.id}
+          cleanup: {method: DELETE, path: "/api/projects/{pid}/schedules/{schedule_id}"}
+      - label: widen
+        rescope:
+          changes:
+            ipHostnameMode: record_filter
+            ipHostnameInclude: ["*.example-a.test"]
+            ipHostnameExclude: [nodns.example-a.test]
+            ipHostnamePassiveExpand: false
+      - run: main
+    same_checks_as: {row: E3, step: main, as: main}
+    checks:
+      - id: schedule_created
+        step: schedule_enabled
+        result: ok
+        "true": true
+      - id: widening_accepted
+        step: widen
+        result: ok
+        "true": true
+      - id: schedules_paused
+        step: widen
+        result: body.pausedSchedules
+        min: 1
+
+  # ------------------------------------------------------------------ E13: upgrade path
+  E13:
+    title: Upgrade path (an IP project created before P2, then the P2+ deploy)
+    proves: D-01 (existing IP projects read ip_only), next run like E1
+    needs_step: [P2, P3]
+    common: true
+    requires_prepared: true
+    how: >
+      Before P2 lands, on the code of that day: `python3 e2e_ip_hostnames.py --prepare --rows E13 --force`
+      (creates the project with today's IP mode; optionally run E0-style once on it). After the P2/P3
+      deploy: `python3 e2e_ip_hostnames.py --rows E13 --landed P2,P3`. The CHANGELOG Upgrade note is a
+      manual check.
+    projects:
+      main: {}
+    sequence:
+      - label: settings_after_upgrade
+        mcp: {tool: get_recon_settings, args: {projectId: "{pid}"}}
+      - run: main
+    same_checks_as: {row: E1, step: main, as: main}
+    checks:
+      - id: mode_defaults_to_ip_only
+        step: settings_after_upgrade
+        result: body.settings.ipHostnameMode
+        equals: [ip_only]
+      - id: changelog_upgrade_note
+        step: settings_after_upgrade
+        manual: "CHANGELOG.md has the Upgrade note for existing IP projects (D-01)"
+
+  # ------------------------------------------------------------------ E14-E25: other tools / by hand
+  E14:
+    title: Domain-mode regression (nested_wildcard_lab single domain)
+    proves: no breaking change in domain mode
+    needs_step: null
+    kind: external
+    how: >
+      On master BEFORE P0: bring nested_wildcard_lab up (its README), run its single-domain scenario and
+      validate_nested_wildcards.py, then `python3 e2e_ip_hostnames.py --snapshot <pid> --label E14-before`.
+      After the change: the same scenario on a new project, `--snapshot <pid> --label E14-after`, then
+      `python3 e2e_ip_hostnames.py --compare generated/baselines/E14-before generated/baselines/E14-after`
+      (add --volatile with the differences two identical baseline runs show). Expect 0 unexpected.
+
+  E15:
+    title: Domain-batch regression (urlscan_lab batch expectations)
+    proves: no breaking change; urlscan_lab's "must receive 0" hosts still 0
+    needs_step: null
+    kind: external
+    how: >
+      urlscan_lab's own driver (its README, "Run it"): baseline before P0, the same run after, its
+      validate_urlscan_lab.py, plus --snapshot/--compare as in E14. Its URLSCAN_API_BASE hook points at
+      192.88.97.30, this lab's E4 at 192.88.98.30: restart the orchestrator with the right value between them.
+
+  E16:
+    title: fp lab regression (fp_regression_target IP-mode scenarios)
+    proves: no breaking change, except the documented M2 default (no PTR names)
+    needs_step: null
+    kind: external
+    how: >
+      fp_regression_target: `python3 e2e_fp.py --ip-ownership --no-triage` (needs its Shodan stub hooks,
+      its README) and validate_e2e.py, before P0 and after; snapshot/compare as in E14. The only allowed
+      difference: no PTR-derived names in M2 (the new default).
+
+  E17:
+    title: UI (Playwright ipHostnameModes.spec.ts)
+    proves: P8
+    needs_step: P8
+    kind: external
+    how: >
+      `cd testing/e2e && npx playwright test ipHostnameModes` (precedent ipOwnership.spec.ts): four cards,
+      default IP only, info modals with the diagram, M1 save blocked until confirmed, the M4 preview counts
+      on the E2 project, at 1280/768/390 px and inside the workflow node modal, every preview state.
+
+  E18:
+    title: GVM (if installed), E3 project
+    proves: B-26 (GVM targets are the IPs only)
+    needs_step: P0b
+    kind: external
+    how: >
+      Optional. Create an E3 project (`--rows E3`), run a GVM scan on it from the UI, and check that the
+      GVM targets list holds the four IPs only.
+
+  E19:
+    title: Agent scope (optional, needs an LLM key), E3 project
+    proves: P7
+    needs_step: P7
+    kind: external
+    how: >
+      Optional. New agent session on an E3 project: the system prompt's scope block lists the 4 IPs and the
+      scanned names; asking it to scan split.example-a.test is declined by the prompt rule.
+
+  E20:
+    title: AI attack-surface scanner, E3 project
+    proves: admission per target; findings attach to the scanned name's Subdomain
+    needs_step: P4
+    kind: external
+    how: >
+      E3 project; mark the app.example-a.test and https://192.88.98.10 Endpoints as chat surfaces (a Cypher
+      WRITE seeding ai_interface_type: query_graph is read-only, so through cypher-shell in redamon-neo4j);
+      run the scanner on all chat Endpoints; only targets and current scanned names are loaded, findings on
+      app.example-a.test attach to its Subdomain under Domain example-a.test; outsider capture empty.
+
+  E21:
+    title: Agent replay after a DNS change
+    proves: P7 (the agent's IP-mode check on replay/browser)
+    needs_step: P7
+    kind: external
+    how: >
+      E3 project with capture on; capture a request to moved.example-a.test while `./set_moved.sh 10`;
+      `./set_moved.sh 99`; replay through the agent's /traffic/replay; refused with host and reason; the
+      outsider capture stays empty. `./set_moved.sh 10` afterwards.
+
+  E22:
+    title: Narrowing rescope (E3 project -> record_only), widening back, edit during a partial run
+    proves: D-19 (narrowing marks out_of_policy), readers re-apply the policy
+    needs_step: P4
+    common: true
+    projects:
+      main:
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+      second:
+        policy:
+          ipHostnameMode: record_filter
+          ipHostnameInclude: ["*.example-a.test"]
+          ipHostnameExclude: [nodns.example-a.test]
+          ipHostnamePassiveExpand: false
+    sequence:
+      - run: main-run
+      - run: second-run
+        project: second
+      - label: narrow
+        rescope:
+          changes: {ipHostnameMode: record_only, ipHostnameInclude: [], ipHostnameExclude: []}
+      - label: widen_back
+        rescope:
+          changes: {ipHostnameMode: record_filter, ipHostnameInclude: ["*.example-a.test"]}
+      - label: put_narrow
+        project: second
+        rest:
+          method: PUT
+          path: "/api/projects/{pid}"
+          body: {ipHostnameMode: record_only, ipHostnameInclude: [], ipHostnameExclude: []}
+      - label: busy-partial
+        partial: {tool_id: Httpx, wait: false}
+      - label: edit_while_partial
+        rescope:
+          changes: {ipHostnameExclude: [web.example-a.test]}
+      - partial_wait: busy-partial
+    checks:
+      - id: narrowing_marked_the_graph
+        step: narrow
+        result: body.hostnamePolicyMarked
+        "true": true
+      - id: scanned_names_now_out_of_policy
+        step: narrow
+        cypher: "MATCH (s:Subdomain) WHERE s.name IN ['web.example-a.test', 'app.example-a.test'] RETURN s.name + '=' + s.ip_hostname_reason AS v"
+        equals: [web.example-a.test=out_of_policy, app.example-a.test=out_of_policy]
+      - id: widening_back_leaves_the_graph
+        step: widen_back
+        cypher: "MATCH (s:Subdomain) WHERE s.name IN ['web.example-a.test', 'app.example-a.test'] RETURN s.name + '=' + s.ip_hostname_reason AS v"
+        equals: [web.example-a.test=out_of_policy, app.example-a.test=out_of_policy]
+      - id: form_put_narrowing_marked
+        step: put_narrow
+        result: body.hostnamePolicyMarked
+        "true": true
+      - id: form_put_names_out_of_policy
+        step: put_narrow
+        cypher: "MATCH (s:Subdomain) WHERE s.name IN ['web.example-a.test', 'app.example-a.test'] RETURN s.name + '=' + s.ip_hostname_reason AS v"
+        equals: [web.example-a.test=out_of_policy, app.example-a.test=out_of_policy]
+      - id: edit_refused_while_a_partial_runs
+        step: edit_while_partial
+        result: refused
+        "true": true
+      - id: edit_refusal_says_busy
+        step: edit_while_partial
+        result: text
+        contains: [busy]
+      - id: activation_and_readers
+        step: edit_while_partial
+        manual: "activate the version saved before the narrowing (Scan Timeline): the names stay out of every reader (preview scanned list, partial-recon S, agent prompt unit check)"
+
+  E23:
+    title: Report, DNS drift and views per mode (E1, E2, E3 projects)
+    proves: report IP map, drift filter, RoE viewer / Insights / MCP view labels
+    needs_step: P8
+    kind: external
+    how: >
+      Generate the PDF/HTML report and open the DNS-drift table for the E1, E2 and E3 projects: IP Target
+      Map says "IP only: hostnames not looked up" (M2), the recorded count + names (M3), the scanned names
+      (M4); no placeholder listed; drift shows no recorded-only name; the RoE viewer, the Insights header
+      and the MCP project view show the mode and the policy.
+
+  E24:
+    title: Volume (5,000 recorded names on one project)
+    proves: preview paging and latency
+    needs_step: P8
+    kind: external
+    how: >
+      Seed 5,000 recorded ExternalDomains with SEEN_ON on a lab project (seed_recorded_names.py, written
+      with P10: Cypher only, tenant-keyed); preview route p95 < 1 s per page with exact totals; the unseen
+      count route within its budget; the graph page still loads (record the time).
+
+  E25:
+    title: Rollback drill (throwaway stack only)
+    proves: the previous webapp image starts after the columns exist; restore brings the policy back
+    needs_step: P10
+    kind: external
+    how: >
+      On a disposable copy of the stack: deploy, create an M4 project, back up the seven policy columns
+      (COPY ... TO), redeploy the previous webapp image (db push --accept-data-loss drops them), recon runs
+      as before; re-upgrade and restore bring the policy back.

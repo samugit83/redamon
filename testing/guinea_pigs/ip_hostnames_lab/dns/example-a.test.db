@@ -1,0 +1,34 @@
+; example-a.test - rendered by gen_lab.py into generated/dns: the serial, the
+; address of moved and the intra record are filled in there. Not DNSSEC-signed.
+;
+; TTL and negative TTL are 1 s: systemd-resolved on the host caches by TTL, and a
+; cached answer never reaches CoreDNS's query log, so a "0 PTR queries" check
+; would pass on a cache hit. With 1 s nothing survives from one run to the next.
+$ORIGIN example-a.test.
+$TTL 1
+@        IN SOA ns1.example-a.test. hostmaster.example-a.test. @SERIAL@ 3600 600 86400 1
+@        IN NS  ns1.example-a.test.
+ns1      IN A   192.88.98.53
+
+; .10's SNI vhosts. web and app are also .10's two PTR names.
+web      IN A   192.88.98.10
+app      IN A   192.88.98.10
+; Only the urlscan stub (.30) names it: not in any certificate, no PTR.
+hidden   IN A   192.88.98.10
+; Swapped between .10 and .99 by set_moved.sh (E8, E21).
+moved    IN A   @MOVED_IP@
+
+; Resolves to a target AND the outsider: never scannable by name.
+split    IN A   192.88.98.13
+split    IN A   192.88.98.99
+
+; Behind the CDN-like edge.
+cdn1     IN A   192.88.98.40
+
+; Only the urlscan stub names it, and it points at the outsider.
+gone     IN A   192.88.98.99
+
+; nodns: in .10's default certificate and deliberately without any record.
+; *.wild: a wildcard SAN in .10's default certificate, deliberately without records.
+
+@INTRA_RECORD@

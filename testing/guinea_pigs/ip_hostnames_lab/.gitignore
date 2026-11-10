@@ -1,0 +1,4 @@
+# Certificates and keys, rendered zones, fixtures, hit logs, packet captures and
+# run evidence: regenerated per lab, lab-only. Never commit them.
+generated/
+__pycache__/

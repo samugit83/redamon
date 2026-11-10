@@ -1,0 +1,8 @@
+; lab-c.example - rendered by gen_lab.py into generated/dns. TTL 1 s: see example-a.test.db.
+; A third registrable domain on .10, under a different reserved TLD.
+$ORIGIN lab-c.example.
+$TTL 1
+@        IN SOA ns1.lab-c.example. hostmaster.lab-c.example. @SERIAL@ 3600 600 86400 1
+@        IN NS  ns1.lab-c.example.
+ns1      IN A   192.88.98.53
+api      IN A   192.88.98.10
