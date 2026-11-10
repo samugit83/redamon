@@ -373,6 +373,15 @@ def _note_writer_failed(update_method_name: str, why: str) -> None:
     _note_phase_error(phase, reason=f"graph write failed ({update_method_name})")
 
 
+def _note_write_errors(update_method_name: str, stats) -> str:
+    """Treat a finished write's item errors on findings as a failed write.
+    Returns them summarised, or "" for a clean write."""
+    failure = _finding_write_errors(stats)
+    if failure:
+        _note_writer_failed(update_method_name, failure)
+    return failure
+
+
 def _graph_update_bg(update_method_name: str, combined_result: dict,
                      user_id: str, project_id: str):
     """Submit a graph DB update to the background thread.
@@ -395,23 +404,22 @@ def _graph_update_bg(update_method_name: str, combined_result: dict,
     snapshot = copy.deepcopy(combined_result)
 
     def _do_update():
-        stats, failure = None, ""
+        stats = None
         try:
             from graph_db import Neo4jClient
             with Neo4jClient() as client:
                 if client.verify_connection():
                     method = getattr(client, update_method_name)
                     stats = method(snapshot, user_id, project_id)
-                    failure = _finding_write_errors(stats)
                     print(f"[graph-db] {update_method_name} complete")
-                else:
-                    failure = "Neo4j not reachable"
-                    print(f"[!][graph-db] Neo4j not reachable — skipped {update_method_name}")
+                    return _WriteResult(update_method_name, stats,
+                                        _note_write_errors(update_method_name, stats))
+                failure = "Neo4j not reachable"
+                print(f"[!][graph-db] Neo4j not reachable — skipped {update_method_name}")
         except Exception as e:
             failure = type(e).__name__
             print(f"[!][graph-db] Background graph update ({update_method_name}) failed: {e}")
-        if failure:
-            _note_writer_failed(update_method_name, failure)
+        _note_writer_failed(update_method_name, failure)
         return _WriteResult(update_method_name, stats, failure)
 
     future = _graph_executor.submit(_do_update)
@@ -3517,16 +3525,20 @@ def run_domain_group(group: dict, start_time=None) -> int:
                                 domain_result["metadata"]["graph_db_resource_enum_updated"] = True
                                 domain_result["metadata"]["graph_db_resource_enum_stats"] = resource_stats
                                 print(f"[+][graph-db] Graph database updated with resource enumeration data")
+                                _note_write_errors("update_graph_from_resource_enum", resource_stats)
                             else:
                                 print(f"[!][graph-db] Could not connect to Neo4j - skipping resource enum graph update")
                                 domain_result["metadata"]["graph_db_resource_enum_updated"] = False
+                                _note_writer_failed("update_graph_from_resource_enum", "Neo4j not reachable")
                     except ImportError:
                         print(f"[!][graph-db] Neo4j client not available - skipping resource enum graph update")
                         domain_result["metadata"]["graph_db_resource_enum_updated"] = False
+                        _note_writer_failed("update_graph_from_resource_enum", "ImportError")
                     except Exception as e:
                         print(f"[!][graph-db] Resource enum graph update failed: {e}")
                         domain_result["metadata"]["graph_db_resource_enum_updated"] = False
                         domain_result["metadata"]["graph_db_resource_enum_error"] = str(e)
+                        _note_writer_failed("update_graph_from_resource_enum", type(e).__name__)
 
                     with open(output_file, 'w') as f:
                         json.dump(domain_result, f, indent=2)
@@ -3552,12 +3564,16 @@ def run_domain_group(group: dict, start_time=None) -> int:
                         from graph_db import Neo4jClient
                         with Neo4jClient() as graph_client:
                             if graph_client.verify_connection():
-                                graph_client.update_graph_from_js_recon(domain_result, USER_ID, PROJECT_ID)
+                                js_stats = graph_client.update_graph_from_js_recon(domain_result, USER_ID, PROJECT_ID)
                                 domain_result["metadata"]["graph_db_js_recon_updated"] = True
                                 print(f"[+][graph-db] Graph database updated with JS Recon data")
+                                _note_write_errors("update_graph_from_js_recon", js_stats)
+                            else:
+                                _note_writer_failed("update_graph_from_js_recon", "Neo4j not reachable")
                     except Exception as e:
                         print(f"[!][graph-db] JS Recon graph update failed: {e}")
                         domain_result["metadata"]["graph_db_js_recon_updated"] = False
+                        _note_writer_failed("update_graph_from_js_recon", type(e).__name__)
 
                     with open(output_file, 'w') as f:
                         json.dump(domain_result, f, indent=2)
@@ -3595,16 +3611,20 @@ def run_domain_group(group: dict, start_time=None) -> int:
                                 domain_result["metadata"]["graph_db_vuln_scan_updated"] = True
                                 domain_result["metadata"]["graph_db_vuln_scan_stats"] = vuln_stats
                                 print(f"[+][graph-db] Graph database updated with vuln scan data")
+                                _note_write_errors("update_graph_from_vuln_scan", vuln_stats)
                             else:
                                 print(f"[!][graph-db] Could not connect to Neo4j - skipping vuln scan graph update")
                                 domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                                _note_writer_failed("update_graph_from_vuln_scan", "Neo4j not reachable")
                     except ImportError:
                         print(f"[!][graph-db] Neo4j client not available - skipping vuln scan graph update")
                         domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
+                        _note_writer_failed("update_graph_from_vuln_scan", "ImportError")
                     except Exception as e:
                         print(f"[!][graph-db] Vuln scan graph update failed: {e}")
                         domain_result["metadata"]["graph_db_vuln_scan_updated"] = False
                         domain_result["metadata"]["graph_db_vuln_scan_error"] = str(e)
+                        _note_writer_failed("update_graph_from_vuln_scan", type(e).__name__)
 
                     with open(output_file, 'w') as f:
                         json.dump(domain_result, f, indent=2)

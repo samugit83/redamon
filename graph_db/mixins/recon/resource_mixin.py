@@ -727,6 +727,9 @@ class ResourceMixin:
                 leaks = self.update_graph_from_archive_leaks(recon_data, user_id, project_id)
                 stats["archive_findings_written"] = leaks.get("findings_written", 0)
                 stats["secrets_created"] += leaks.get("secrets_written", 0)
+                # The pipeline reads only the errors this writer returns: a
+                # url_archive finding that failed here must not read as gone.
+                stats["errors"].extend(f"Archive leaks: {e}" for e in leaks.get("errors") or [])
             except Exception as e:
                 stats["errors"].append(f"Archive leaks failed: {e}")
 

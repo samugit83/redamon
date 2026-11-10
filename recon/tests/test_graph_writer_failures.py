@@ -141,6 +141,14 @@ class TestAFailedWriteKeepsItsFindings:
         recon_main._prune_recon_findings()
         assert not VULN_SOURCES & _pruned(graph)
 
+    def test_an_archive_leak_item_error_keeps_the_resource_sources(self, recon_main, graph):
+        # The resource writer passes its archive-leak sub-writer's errors on.
+        graph.writers["update_graph_from_resource_enum"] = {"errors": [
+            "Archive leaks: urlscan finding leaked_link: ConstraintError"]}
+        _write(recon_main, "update_graph_from_resource_enum")
+        recon_main._prune_recon_findings()
+        assert not {"resource_enum", "jsluice", "url_archive"} & _pruned(graph)
+
     def test_an_unreachable_graph_keeps_the_writers_sources(self, recon_main, graph):
         graph.reachable = False
         _write(recon_main, "update_graph_from_js_recon")
