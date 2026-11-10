@@ -22,7 +22,7 @@ import {
   filterRowsByText,
 } from './formatters'
 import { normalizeSeverity } from './types'
-import { redactSecret } from './redact'
+import { SecretValue } from '@/components/ui'
 import rowStyles from './RedZoneTableRow.module.css'
 import { type ValidationTone, validationLabel, validationTone } from '@/lib/secrets/validationStatus'
 
@@ -32,15 +32,22 @@ interface SecretRow {
     | 'GithubSecret' | 'GithubSensitiveFile' | 'ChainFinding' | string
   id: string
   secretType: string
+  /** A stored partial value (TruffleHog's and the GitHub hunt's redacted form). */
   valueSample: string | null
   matchedText: string | null
+  /** The full secret, shown as its last four characters with a copy button. */
+  secretValue?: string | null
+  /** The other half of a key pair (an AWS secret access key). */
+  pairedSecret?: string | null
+  /** The full link it was seen in, secret included (urlscan, web archives). */
+  unmaskedUrl?: string | null
   entropy: number | null
   confidence: string | number | null
   severity: string
   sourceModule: string | null
   sourceUrl: string | null
   secretBaseUrl: string | null
-  /** urlscan secrets: stored masked, never sampled. Absent on other rows. */
+  /** Where a urlscan or archive secret was seen, masked. Absent on other rows. */
   maskedUrl?: string | null
   valueLength?: number | null
   keyType: string | null
@@ -87,7 +94,8 @@ function ValidationChip({ status, origin }: { status: string | null; origin: str
 }
 
 /** Module-level: the filter profiles are keyed off these, and a fresh array
- *  literal per render would re-profile every row. */
+ *  literal per render would re-profile every row. No secret value is a filter
+ *  column: a filter lists a column's values, which would print every secret. */
 const COLUMNS: RedZoneFilterColumn[] = [
   NODE_ID_COLUMN,
   { key: 'origin', header: 'Origin' },
@@ -98,8 +106,7 @@ const COLUMNS: RedZoneFilterColumn[] = [
   { key: 'location', header: 'Location' },
   { key: 'secretType', header: 'Type' },
   { key: 'keyType', header: 'Category' },
-  { key: 'valueSample', header: 'Redacted Sample' },
-  { key: 'matchedText', header: 'Redacted Match' },
+  { key: 'valueSample', header: 'Stored Sample' },
   { key: 'entropy', header: 'Entropy' },
   { key: 'confidence', header: 'Confidence' },
   { key: 'severity', header: 'Severity' },
@@ -112,6 +119,44 @@ const COLUMNS: RedZoneFilterColumn[] = [
   { key: 'subdomain', header: 'Subdomain' },
   UPDATED_AT_COLUMN,
 ]
+
+/** The export carries every secret whole: it is the operator's own file. */
+const EXPORT_COLUMNS: RedZoneFilterColumn[] = [
+  ...COLUMNS.slice(0, COLUMNS.findIndex(c => c.key === 'valueSample')),
+  { key: 'secretValue', header: 'Secret' },
+  { key: 'pairedSecret', header: 'Paired Secret' },
+  ...COLUMNS.slice(COLUMNS.findIndex(c => c.key === 'valueSample')),
+]
+
+/** The value cell: the full secret as its last four characters with a copy
+ *  button; a scanner that stores only a partial value shows that, marked. */
+function SecretCell({ row }: { row: SecretRow }) {
+  if (row.secretValue) {
+    return (
+      <span className={rowStyles.secretStack}>
+        <SecretValue value={row.secretValue} />
+        {row.pairedSecret && <SecretValue label="secret" value={row.pairedSecret} />}
+      </span>
+    )
+  }
+  if (row.valueSample) {
+    return (
+      <span title="The scanner stores only a redacted form of this value">
+        <Mono>{row.valueSample}</Mono>{' '}
+        <span className={rowStyles.listChip}>partial</span>
+      </span>
+    )
+  }
+  if (row.maskedUrl) {
+    return (
+      <span title="Written before RedAmon kept the value: run the scan again to see it">
+        <span className={rowStyles.listChip}>masked</span>{' '}
+        <Mono>{row.valueLength != null ? `${row.valueLength} chars` : 'value not stored'}</Mono>
+      </span>
+    )
+  }
+  return <span className={rowStyles.nullCell}>-</span>
+}
 
 interface Props { projectId: string | null }
 
@@ -131,10 +176,10 @@ export const SecretsTable = memo(function SecretsTable({ projectId }: Props) {
   const exportConfig = useMemo<RedZoneExportConfig | undefined>(() =>
     rows.length > 0
       ? {
-          rows: sortedRows.map(r => ({ ...r, valueSample: redactSecret(r.valueSample), matchedText: redactSecret(r.matchedText) })),
+          rows: sortedRows,
           sheetName: 'Secrets',
           fileSlug: 'redzone-secrets',
-          columns: COLUMNS,
+          columns: EXPORT_COLUMNS,
         }
       : undefined,
     [sortedRows, rows.length],
@@ -162,7 +207,7 @@ export const SecretsTable = memo(function SecretsTable({ projectId }: Props) {
             <NodeIdTh />
             <th>Type</th>
             <th>Category</th>
-            <th>Redacted Sample</th>
+            <th>Secret</th>
             <th>Entropy</th>
             <th>Conf.</th>
             <th>Sev</th>
@@ -191,10 +236,7 @@ export const SecretsTable = memo(function SecretsTable({ projectId }: Props) {
                 )}
               </td>
               <td>{r.keyType ? <span className={rowStyles.listChip}>{r.keyType}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
-              <td>{r.valueSample || r.matchedText || !r.maskedUrl
-                ? <Mono>{redactSecret(r.valueSample || r.matchedText)}</Mono>
-                : <span title={r.maskedUrl}><span className={rowStyles.listChip}>masked</span>{' '}
-                    <Mono>{r.valueLength != null ? `${r.valueLength} chars` : 'value not stored'}</Mono></span>}</td>
+              <td><SecretCell row={r} /></td>
               <td>{r.entropy != null ? <span className={rowStyles.numCell}>{r.entropy.toFixed(2)}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
               <td>{r.confidence != null ? <span className={rowStyles.numCell}>{String(r.confidence)}</span> : <span className={rowStyles.nullCell}>-</span>}</td>
               <td><SeverityBadge severity={normalizeSeverity(r.severity)} /></td>

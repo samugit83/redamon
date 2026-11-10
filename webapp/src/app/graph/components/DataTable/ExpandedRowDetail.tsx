@@ -73,7 +73,7 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
                   <span className={styles.propValue}>
                     {key === 'name' && nodeUrl
                       ? <ExternalLink href={nodeUrl}>{String(value)}</ExternalLink>
-                      : renderPropertyValue(value)}
+                      : renderPropertyValue(value, key, row.node.type)}
                   </span>
                 </div>
               ))}

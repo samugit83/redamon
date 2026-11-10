@@ -28,6 +28,22 @@ describe('buildNodeContext', () => {
     expect(out).toContain('- references: https://example.test/a, https://example.test/b')
   })
 
+  it('never hands over a secret or a full link with its secret in it', () => {
+    const secret = node('7', 'Secret', 'api_key', {
+      secret_type: 'api_key',
+      masked_url: 'https://app.example.test/api?apikey=***',
+      secret_value: 'SECRET-VALUE-XYZ1',
+      paired_secret: 'PAIRED-XYZ2',
+      raw_context: 'k = "SECRET-VALUE-XYZ1"',
+      unmasked_url: 'https://app.example.test/api?apikey=SECRET-VALUE-XYZ1',
+    })
+    const out = buildNodeContext(secret, null, {})
+    expect(out).toContain('- masked_url: https://app.example.test/api?apikey=***')
+    expect(out).not.toContain('SECRET-VALUE-XYZ1')
+    expect(out).not.toContain('PAIRED-XYZ2')
+    expect(out).not.toContain('unmasked_url')
+  })
+
   it('never hands over review or agent-written triage text (C1, B20)', () => {
     const vuln = node('9', 'Vulnerability', 'Exposed .env', {
       severity: 'high',

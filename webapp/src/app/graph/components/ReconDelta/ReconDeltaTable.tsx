@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, ArrowRight, Plus, Minus, RefreshCw, ShieldAlert, Download, X } from 'lucide-react'
 import type { ScanVersionSummary } from '../../hooks/useScanVersions'
 import type { GraphNode, DeltaState } from '../../types'
-import { WikiInfoButton } from '@/components/ui'
+import { SecretValue, WikiInfoButton } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { GraphCanvas } from '../GraphCanvas'
 import { useDimensions } from '../../hooks'
@@ -18,6 +18,8 @@ import {
   type SortDir,
 } from '../RedZoneTables/updatedAt'
 import { NodeIdCell, NodeIdTh } from '../RedZoneTables/nodeId'
+import { isSecretValueProp } from '@/lib/secrets/secretProps'
+import { secretTail } from '@/lib/secrets/secretTail'
 
 interface FieldChange { field: string; from: unknown; to: unknown }
 interface DeltaNode {
@@ -413,7 +415,7 @@ function NodeList({ nodes, kind, sortDir, onToggleSort }: {
               {Object.entries(n.properties)
                 .filter(([k]) => !['project_id', 'user_id'].includes(k))
                 .slice(0, 6)
-                .map(([k, v]) => `${k}=${renderValue(v)}`)
+                .map(([k, v]) => `${k}=${isSecretValueProp(k, n.type) ? secretTail(String(v ?? '')) : renderValue(v)}`)
                 .join('  ')}
             </td>
             <td><UpdatedAtCell value={nodeUpdatedAt(n.properties)} /></td>
@@ -441,8 +443,12 @@ function ChangedList({ nodes, sortDir, onToggleSort }: {
               <td>{i === 0 ? n.type : ''}</td>
               <td>{i === 0 ? describe(n) : ''}</td>
               <td className={styles.field}>{c.field}</td>
-              <td className={styles.removed}>{renderValue(c.from)}</td>
-              <td className={styles.added}>{renderValue(c.to)}</td>
+              <td className={styles.removed}>
+                {isSecretValueProp(c.field, n.type) ? <SecretValue value={c.from == null ? '' : String(c.from)} /> : renderValue(c.from)}
+              </td>
+              <td className={styles.added}>
+                {isSecretValueProp(c.field, n.type) ? <SecretValue value={c.to == null ? '' : String(c.to)} /> : renderValue(c.to)}
+              </td>
               {/* One node spans several change rows; stamp only its first. */}
               <td>{i === 0 ? <UpdatedAtCell value={nodeUpdatedAt(n.properties)} /> : null}</td>
             </tr>

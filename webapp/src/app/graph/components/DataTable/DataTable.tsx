@@ -220,7 +220,10 @@ export const DataTable = memo(function DataTable({
         const method = typeof props.method === 'string' ? props.method.toUpperCase() : ''
 
         if (node.type === 'Endpoint' && method === 'GET') {
-          const fullUrl = typeof props.full_url === 'string' ? props.full_url : ''
+          // The full archived link (secret included) before the masked one.
+          const fullUrl = typeof props.unmasked_url === 'string' && props.unmasked_url
+            ? props.unmasked_url
+            : typeof props.full_url === 'string' ? props.full_url : ''
           const baseurl = typeof props.baseurl === 'string' ? props.baseurl : ''
           const path = typeof props.path === 'string' ? props.path : ''
           let href = fullUrl

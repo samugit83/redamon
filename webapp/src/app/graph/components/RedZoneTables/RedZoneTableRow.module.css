@@ -146,6 +146,13 @@
   opacity: 0.5;
 }
 
+/* A key and the other half of its pair, one under the other. */
+.secretStack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* A bare button so it inherits the cell's row striping; the dotted underline is
    the only hint it copies, since a filled chip on ~40 sheets would be noise. */
 .nodeIdBtn {

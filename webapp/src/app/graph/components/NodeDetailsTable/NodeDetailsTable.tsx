@@ -35,7 +35,7 @@ import {
 import type { GraphData } from '../../types'
 import { NODE_COLORS } from '../../config'
 import { HIDDEN_KEYS, getNodeUrl } from '../../utils'
-import { renderPropertyValue } from '../../utils/renderPropertyValue'
+import { propertyTitle, renderPropertyValue } from '../../utils/renderPropertyValue'
 import { ExpandedRowDetail } from '../DataTable/ExpandedRowDetail'
 import { ExternalLink } from '@/components/ui'
 import { useTableData, type TableRow } from '../../hooks/useTableData'
@@ -237,8 +237,9 @@ export function NodeDetailsTable({ data, isLoading, error, projectId = null }: N
         size: 200,
         filterFn: advancedFilterFn,
         cell: info => (
-          <span className={styles.propCell} title={String(info.getValue() ?? '')}>
-            {renderPropertyValue(info.getValue())}
+          <span className={styles.propCell}
+            title={propertyTitle(info.getValue(), key, info.row.original.node.type)}>
+            {renderPropertyValue(info.getValue(), key, info.row.original.node.type)}
           </span>
         ),
       })

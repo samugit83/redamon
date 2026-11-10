@@ -1,9 +1,8 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
-import { Loader2, AlertTriangle, Copy, Check } from 'lucide-react'
-import { ExternalLink } from '@/components/ui'
-import { copyText } from '@/lib/copyText'
+import { Loader2, AlertTriangle } from 'lucide-react'
+import { ExternalLink, SecretValue } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
 import styles from './JsReconTable.module.css'
 import { ColumnFilterButton, ActiveFilterChips } from '../ColumnFilterPanel'
@@ -152,7 +151,7 @@ function buildJsReconSheets(data: JsReconData): JsReconSheet[] {
   const N = NODE_ID_KEY
   // Subdomains are bare strings with no node behind them, so no Node ID.
   return [
-    { name: 'Secrets', rows: (data.secrets || []).map(withJoinedAlternateNames), columns: [N, 'severity', 'name', 'alternate_names', 'redacted_value', 'matched_text', 'category', 'source_url', 'line_number', 'context', 'detection_method', 'validation.status', 'confidence', 'validator_ref', 'updatedAt'] },
+    { name: 'Secrets', rows: (data.secrets || []).map(withJoinedAlternateNames), columns: [N, 'severity', 'name', 'alternate_names', 'redacted_value', 'matched_text', 'secret_value', 'paired_secret', 'category', 'source_url', 'line_number', 'context', 'raw_context', 'detection_method', 'validation.status', 'confidence', 'validator_ref', 'updatedAt'] },
     { name: 'Endpoints', rows: data.endpoints || [], columns: [N, 'severity', 'method', 'path', 'full_url', 'type', 'category', 'base_url', 'source_js', 'parameters', 'line_number', 'updatedAt'] },
     { name: 'Dependencies', rows: data.dependencies || [], columns: [N, 'severity', 'finding_type', 'package_name', 'scope', 'npm_exists', 'confidence', 'title', 'detail', 'recommendation', 'source_urls', 'updatedAt'] },
     { name: 'Source Maps', rows: data.source_maps || [], columns: [N, 'severity', 'finding_type', 'js_url', 'map_url', 'accessible', 'discovery_method', 'files_count', 'source_files', 'secrets_in_source', 'secrets', 'updatedAt'] },
@@ -464,33 +463,12 @@ function filterRows(rows: readonly any[], search: string): any[] {
   })
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  const handleCopy = useCallback(() => {
-    copyText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
-  }, [text])
-  if (!text) return null
-  return (
-    <button
-      type="button"
-      className={styles.copyButton}
-      onClick={handleCopy}
-      title="Copy full value"
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
-
 function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: readonly any[]; search: string; limit: number; sortDir: SortDir; onToggleSort: () => void }) {
   const filtered = sortByUpdatedAt(sortSecrets(filterRows(rows, search)), sortDir).slice(0, limit)
   if (!filtered.length) return <div className={styles.stateContainer}>No secrets found.</div>
   return (
     <table className={styles.table}>
-      <thead><tr><NodeIdTh /><th>Severity</th><th>Type</th><th>Redacted Value</th><th>Source</th><th>Line</th><th>Detection</th><th>Validation</th><th>Confidence</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
+      <thead><tr><NodeIdTh /><th>Severity</th><th>Type</th><th>Secret</th><th>Source</th><th>Line</th><th>Detection</th><th>Validation</th><th>Confidence</th><UpdatedAtTh dir={sortDir} onToggle={onToggleSort} /><th /></tr></thead>
       <tbody>
         {filtered.map((s, i) => (
           <tr key={s.id || i}>
@@ -503,8 +481,10 @@ function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: re
               )}
             </td>
             <td>
-              <code className={styles.mono}>{s.redacted_value}</code>
-              <CopyButton text={s.matched_text || ''} />
+              <span className={styles.secretStack}>
+                <SecretValue value={s.secret_value || s.matched_text} />
+                {s.paired_secret && <SecretValue label="secret" value={s.paired_secret} />}
+              </span>
             </td>
             <td className={styles.truncate} title={s.source_url}><ExternalLink href={s.source_url}>{s.source_url}</ExternalLink></td>
             <td>{typeof s.line_number === 'number' ? s.line_number : <span className={styles.nullCell}>—</span>}</td>

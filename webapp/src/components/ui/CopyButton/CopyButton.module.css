@@ -1,0 +1,26 @@
+.copyButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-left: 4px;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: var(--transition-all);
+}
+
+.copyButton:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.copyButton[data-copy-state='failed'] {
+  color: var(--status-error, var(--text-primary));
+}

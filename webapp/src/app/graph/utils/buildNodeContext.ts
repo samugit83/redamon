@@ -4,12 +4,22 @@ import { formatNeo4jDateTime } from './formatters'
 import { getNodeId } from './linkHelpers'
 import { getNodeSeverity, getNodeUrl } from './nodeHelpers'
 import { TRIAGE_TEXT_PROPERTIES } from '@/lib/triage/properties'
+import { DISPLAY_ONLY_PROPS } from '@/lib/secrets/secretProps'
 import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
 
 // Text a review model or an external MCP agent wrote, and the JSON blobs that
 // carry it. The agent this context goes to has tools, so none of it is handed
 // over; the agent fences the rest as untrusted too (prompt_safety).
-const DROPPED_KEYS: ReadonlySet<string> = new Set(TRIAGE_TEXT_PROPERTIES)
+// A secret and a full link with its secret in it are for the operator's UI:
+// the agent reads the masked fields, as its graph queries do.
+const DROPPED_KEYS: ReadonlySet<string> = new Set([...TRIAGE_TEXT_PROPERTIES, ...DISPLAY_ONLY_PROPS])
+
+/** The node as the agent may see it: no display-only property, so its URL is the masked one. */
+function agentView(node: GraphNode): GraphNode {
+  const properties = Object.fromEntries(
+    Object.entries(node.properties || {}).filter(([key]) => !DISPLAY_ONLY_PROPS.has(key)))
+  return { ...node, properties }
+}
 
 // The 30-per-type cap keeps a hub node (a Domain wired to hundreds of
 // subdomains) from producing a context blob too large to be useful as a prompt.
@@ -109,7 +119,7 @@ function relationLines(relations: Relation[]): string[] {
       // id the agent can query by, and the URL when it says something new.
       const name = oneLine(other.name)
       const extra = [`id ${other.id}`]
-      const url = getNodeUrl(other)
+      const url = getNodeUrl(agentView(other))
       if (url && oneLine(url) !== name) extra.push(oneLine(url))
       lines.push(`    - ${name} (${extra.join(', ')})`)
     }
@@ -162,7 +172,7 @@ export function buildNodeContext(
     `Graph ID: ${node.id}`,
   ]
   if (severity && severity !== 'unknown') identity.push(`Severity: ${severity}`)
-  const url = getNodeUrl(node)
+  const url = getNodeUrl(agentView(node))
   if (url) identity.push(`URL: ${url}`)
   sections.push(`## Node\n${identity.map(l => `- ${l}`).join('\n')}`)
 

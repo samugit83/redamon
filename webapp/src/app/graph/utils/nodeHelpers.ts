@@ -64,12 +64,14 @@ const getEndpointUrl = (props: Record<string, unknown>, name: string): string | 
 
 /**
  * Build a browser-openable URL for a node, or null if it's not web-addressable.
- * Prefers an explicit `url`/`endpoint`/`href` property, then handles Endpoint
- * nodes (baseurl + path), then derives one from the node type + name.
+ * Prefers the full link recon kept with its secret in it (`unmasked_url`: a
+ * leaked reset link, a URL that carried a key) so a click opens what was
+ * found, then an explicit `url`/`endpoint`/`href` property, then handles
+ * Endpoint nodes (baseurl + path), then derives one from the node type + name.
  */
 export const getNodeUrl = (node: GraphNode): string | null => {
   const props = node.properties || {}
-  const candidates = [props.url, props.endpoint, props.href]
+  const candidates = [props.unmasked_url, props.url, props.endpoint, props.href]
   for (const c of candidates) {
     if (isHttpUrl(c)) return c
   }

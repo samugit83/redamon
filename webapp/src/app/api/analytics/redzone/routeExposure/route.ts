@@ -17,6 +17,10 @@ function toList(val: unknown): string {
   return Array.isArray(val) ? val.filter((v): v is string => typeof v === 'string').join(', ') : ''
 }
 
+function stringList(val: unknown): string[] {
+  return Array.isArray(val) ? val.filter((v): v is string => typeof v === 'string') : []
+}
+
 // Red-zone lens: the route exposure scan's leads and signature findings.
 // Vulnerability {source:'route_exposure'} nodes (graph_db/mixins/recon/route_exposure_mixin.py),
 // linked from their Endpoint (leads) and BaseURL (every finding). A pending lead
@@ -56,6 +60,8 @@ export async function GET(request: NextRequest) {
               v.signature                    AS signature,
               v.generated_by                 AS generatedBy,
               v.evidence_snippet             AS evidenceSnippet,
+              v.secret_values                AS secretValues,
+              v.secret_value_types           AS secretValueTypes,
               v.updated_at                   AS updatedAt
        ORDER BY CASE status WHEN 'pending' THEN 1 ELSE 0 END, v.confidence DESC, v.path
        LIMIT ${rowCap()}`,
@@ -80,6 +86,10 @@ export async function GET(request: NextRequest) {
       signature: r.get('signature') as string | null,
       generatedBy: r.get('generatedBy') as string | null,
       evidenceSnippet: r.get('evidenceSnippet') as string | null,
+      // The secrets the anonymous answer held, shown as their last four
+      // characters with a copy button; the types match index by index.
+      secretValues: stringList(r.get('secretValues')),
+      secretValueTypes: stringList(r.get('secretValueTypes')),
       updatedAt: r.get('updatedAt') ?? null,
     }))
 

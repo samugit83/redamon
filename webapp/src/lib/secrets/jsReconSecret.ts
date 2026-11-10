@@ -51,6 +51,14 @@ export interface JsReconSecretRow {
   public_client_key: boolean
   redacted_value: unknown
   matched_text: unknown
+  /** The key itself (a keyword rule's quoted value, else the match); shown as its last four characters. */
+  secret_value: unknown
+  /** The other half of a key pair (an AWS secret access key), when found. */
+  paired_secret: unknown
+  /** The code around the key, every secret in it masked. */
+  context: unknown
+  /** The same code with nothing masked. */
+  raw_context: unknown
   category: unknown
   source_url: unknown
   /** Null on a node written before JS Recon stored it. */
@@ -89,6 +97,10 @@ export function jsReconSecretFromRecord(get: (key: string) => unknown): JsReconS
     public_client_key: publicClientKey,
     redacted_value: get('redacted_value'),
     matched_text: get('matched_text'),
+    secret_value: get('secret_value') ?? get('matched_text'),
+    paired_secret: get('paired_secret') ?? null,
+    context: get('context') ?? null,
+    raw_context: get('raw_context') ?? null,
     category: get('category'),
     source_url: get('source_url'),
     line_number: intOrNull(get('line_number')),

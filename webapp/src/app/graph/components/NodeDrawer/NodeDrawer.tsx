@@ -375,7 +375,7 @@ export function NodeDrawer({
                   <span className={styles.propertyValue}>
                     {nodeUrl
                       ? <ExternalLink href={nodeUrl}>{String(value)}</ExternalLink>
-                      : renderPropertyValue(value)}
+                      : renderPropertyValue(value, key, displayNode?.type)}
                   </span>
                 </div>
               )

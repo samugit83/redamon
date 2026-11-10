@@ -18,6 +18,7 @@ import type { Project, Remediation } from '@prisma/client'
 import { corroborateAttackFindings } from './aiAttackFindings'
 import type { AiAttackFindingRecord, RawAttackRow } from './aiAttackFindings'
 import { currentDns } from '@/lib/graph/forwardDns'
+import { secretTail } from '@/lib/secrets/secretTail'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1661,7 +1662,8 @@ export async function querySecrets(session: any, pid: string) {
      RETURN s.secret_type AS secretType, s.severity AS severity,
             s.source AS source, s.source_url AS sourceUrl,
             s.sample AS sample, s.validation_status AS validationStatus,
-            s.confidence AS confidence, s.key_type AS keyType
+            s.confidence AS confidence, s.key_type AS keyType,
+            coalesce(s.secret_value, s.matched_text) AS secretValue
      ORDER BY CASE s.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
      LIMIT 50`,
     { pid }
@@ -1686,7 +1688,8 @@ export async function querySecrets(session: any, pid: string) {
       severity: (r.get('severity') as string) || 'unknown',
       source: (r.get('source') as string) || 'unknown',
       sourceUrl: r.get('sourceUrl') as string | null,
-      sample: r.get('sample') as string | null,
+      // A report leaves the operator's hands: the last four characters only.
+      sample: r.get('secretValue') ? secretTail(r.get('secretValue') as string) : r.get('sample') as string | null,
       validationStatus: r.get('validationStatus') as string | null,
       confidence: r.get('confidence') as string | null,
       keyType: r.get('keyType') as string | null,

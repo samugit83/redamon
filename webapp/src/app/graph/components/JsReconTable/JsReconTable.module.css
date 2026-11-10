@@ -177,26 +177,11 @@
   font-size: 11px;
 }
 
-.copyButton {
+/* A key and the other half of its pair, one under the other. */
+.secretStack {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-left: 4px;
-  padding: 0;
-  background: none;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  color: var(--text-tertiary);
-  cursor: pointer;
-  vertical-align: middle;
-  transition: var(--transition-all);
-}
-
-.copyButton:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  flex-direction: column;
+  gap: 2px;
 }
 
 .truncate {
