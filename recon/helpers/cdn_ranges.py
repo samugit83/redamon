@@ -81,6 +81,15 @@ CDN_CERT_ISSUER_MARKERS: dict[str, str] = {
     "imperva": "imperva",
 }
 
+# Cloudflare's Origin CA ("CloudFlare Origin SSL [ECC] Certificate Authority";
+# its leaves carry OU "CloudFlare Origin CA") signs the certificate an ORIGIN
+# presents to the edge, and the edge never serves it to the public. Its
+# organisation still reads "CloudFlare, Inc.", so it must be ruled out before
+# the markers: tagging the origin as an edge hides it from origin discovery and
+# suppresses its direct-IP findings.
+_ORIGIN_CA_ISSUER_RE = re.compile(
+    r"\borigin (?:ssl (?:\w+ )?certificate authority|ca)\b")
+
 
 def cdn_from_certificate(issuer) -> Optional[str]:
     """Return a CDN name from a certificate issuer, or None.
@@ -94,6 +103,8 @@ def cdn_from_certificate(issuer) -> Optional[str]:
     if isinstance(issuer, (list, tuple)):
         issuer = ", ".join(str(x) for x in issuer if x)
     lowered = str(issuer).lower()
+    if _ORIGIN_CA_ISSUER_RE.search(lowered):
+        return None
     for marker, name in CDN_CERT_ISSUER_MARKERS.items():
         if marker in lowered:
             return name
