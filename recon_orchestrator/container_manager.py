@@ -456,6 +456,10 @@ def _stop_grace_s() -> float:
     return value if value > 0 else 45.0
 
 
+# Docker container states in which a scan process still exists (or is about to
+# run again), so its container must not be removed to make room for a new one.
+_LIVE_CONTAINER_STATUSES = frozenset({"running", "paused", "restarting"})
+
 # A run in any of these is live: its container exists and may still write the
 # graph, so it keeps its reservation and blocks a conflicting start. STOPPING is
 # one of them, because a stopped run drains for up to RECON_STOP_GRACE_S.
@@ -1100,6 +1104,12 @@ class ContainerManager:
                     if container.status == "paused":
                         state.status = ReconStatus.PAUSED
                     elif container.status == "running":
+                        # The container is the truth while it lives: a resume,
+                        # or a failed Pause call, may have left another status.
+                        if state.status != ReconStatus.RUNNING:
+                            state.status = ReconStatus.RUNNING
+                            state.error = None
+                            state.completed_at = None
                         self._poll_phase_cursor(project_id, container)
                     elif container.status != "running":
                         # Container stopped - check exit code
@@ -1126,10 +1136,12 @@ class ContainerManager:
                         state.status = ReconStatus.ERROR
                         state.error = "Container not found"
                 except APIError as e:
-                    logger.warning(f"Docker API error checking recon container for {project_id}: {e}")
-                    if state.status not in (ReconStatus.COMPLETED, ReconStatus.ERROR):
-                        state.status = ReconStatus.ERROR
-                        state.error = f"Docker API error: {e}"
+                    # A daemon 5xx says nothing about the scan. Failing it here
+                    # recorded a live run as failed, refused its Stop and let the
+                    # next start remove it, so the last status stands until
+                    # Docker answers again (NotFound is the real "gone").
+                    logger.warning(f"Docker API error checking recon container for {project_id}, "
+                                   f"keeping status {state.status.value}: {e}")
 
             return state
 
@@ -1150,6 +1162,23 @@ class ContainerManager:
             project_id=project_id,
             status=ReconStatus.IDLE,
         )
+
+    def _leftover_recon_container(self, project_id: str, container_name: str):
+        """The finished container still holding this project's recon name, for
+        the start to remove, or None. Blocking: call through _run_blocking.
+
+        Raises ValueError while that container is live, whatever the in-memory
+        state says: a stale `error` (or a lost entry) must never let a start
+        force-remove a running scan. An APIError propagates for the same reason:
+        a start that cannot tell whether the old run lives removes nothing.
+        """
+        try:
+            container = self.client.containers.get(container_name)
+        except NotFound:
+            return None
+        if container.status in _LIVE_CONTAINER_STATUSES:
+            raise ValueError(f"Recon already active for project {project_id}")
+        return container
 
     async def start_recon(
         self,
@@ -1179,6 +1208,10 @@ class ContainerManager:
         if self._count_active_partial_recons(project_id) > 0:
             raise ValueError(f"Partial recon(s) running for project {project_id}. Stop them first.")
 
+        container_name = self._get_container_name(project_id)
+        leftover = await self._run_blocking(
+            self._leftover_recon_container, project_id, container_name)
+
         # Memory admission (Part 1): reserve this scan's RAM envelope or reject.
         await self._admit_scan("full_recon", project_id, user_id=user_id)
 
@@ -1194,14 +1227,13 @@ class ContainerManager:
         # transaction with it so the /traffic UI can group "this scan's traffic".
         recon_run_id = str(uuid.uuid4())
 
-        # Clean up any existing container
-        container_name = self._get_container_name(project_id)
-        try:
-            old_container = self.client.containers.get(container_name)
-            old_container.remove(force=True)
-            logger.info(f"Removed old container {container_name}")
-        except NotFound:
-            pass
+        # By id, not by name: the name may already belong to a newer container.
+        if leftover is not None:
+            try:
+                leftover.remove(force=True)
+                logger.info(f"Removed old container {container_name}")
+            except NotFound:
+                pass
 
         # Create new state
         state = ReconState(
