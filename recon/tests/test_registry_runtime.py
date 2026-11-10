@@ -64,9 +64,51 @@ def test_every_capped_rate_resolves_at_or_below_the_ceiling(key, written):
         value = 1_000_000
 
     resolved = apply_roe_rate_cap(_with_roe(**{key: value}))[key]
-    assert resolved <= CEILING, (
-        f"{key} written as {value} resolved to {resolved}, above the {CEILING} rps ceiling"
+    # `> 0` as well: readers treat a 0 rate as "no limit" (graphql's delay, a
+    # nuclei or httpx command with no rate flag), so a 0 that passes a
+    # `<= ceiling` check is the fastest value, not the slowest.
+    assert 0 < resolved <= CEILING, (
+        f"{key} written as {value} resolved to {resolved}, outside (0, {CEILING}] rps"
     )
+
+
+@pytest.mark.parametrize("key", NUMERIC_CAPPED)
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_zero_or_negative_capped_rate_becomes_the_ceiling_whatever_zero_means(key, value):
+    """
+    R-7: the capper used to rewrite a 0 only for keys marked `zero_means:
+    unlimited`. `nucleiRateLimit: 0` written by a REST save or an import left
+    nuclei on its own built-in rate under a 3 rps engagement.
+    """
+    assert apply_roe_rate_cap(_with_roe(**{key: value}))[key] == CEILING
+
+
+@pytest.mark.parametrize("key", NUMERIC_CAPPED)
+@pytest.mark.parametrize("gate", ["roe_off", "ceiling_zero"])
+def test_without_a_ceiling_a_zero_rate_is_left_alone(key, gate):
+    """No engagement ceiling, no rewrite: the capper must not invent a limit."""
+    settings = _with_roe(**{key: 0})
+    if gate == "roe_off":
+        settings["ROE_ENABLED"] = False
+    else:
+        settings["ROE_GLOBAL_MAX_RPS"] = 0
+    assert apply_roe_rate_cap(settings)[key] == 0
+
+
+def test_a_capped_field_that_accepts_zero_says_what_zero_means():
+    """
+    A rate whose bounds admit 0 reaches readers that run a 0 unthrottled. The
+    registry has to say so (`zero_means`), or the write surfaces present 0 as
+    the gentlest value: `graphqlRateLimit` accepted 0 over MCP with no hint.
+    """
+    problems = sorted(
+        column
+        for column, entry in reg.fields().items()
+        if entry.get("roe_capped")
+        and (entry.get("bounds") or {}).get("min", 1) <= 0
+        and not entry.get("zero_means")
+    )
+    assert problems == [], f"capped fields that accept 0 without zero_means: {problems}"
 
 
 @pytest.mark.parametrize("key", sorted(reg.unlimited_zero_runtime_keys()))

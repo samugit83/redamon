@@ -20,6 +20,7 @@ import { internalKeyHeaders } from '@/lib/agentAuth'
 import { writeAudit } from '@/lib/audit'
 import { canonicalJson } from '@/lib/fingerprint'
 import { field, fieldsWhere } from '@/lib/reconSettings/registry'
+import { validateValue } from '@/lib/reconSettings/validators'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
@@ -73,6 +74,26 @@ function auditsValue(key: string): boolean {
 /** canonicalJson renders every Date as `{}`, which would hide a changed timestamp. */
 function comparable(value: unknown): string {
   return value instanceof Date ? value.toISOString() : canonicalJson(value)
+}
+
+/**
+ * The registry bounds the MCP write tools apply, refused in MCP's own words and
+ * never clamped. Without them this route was the door around them: a
+ * `nucleiRateLimit: 0` the MCP tools refuse was saved here, and nuclei then
+ * ran at its built-in rate.
+ */
+function numericBoundsRefusal(
+  data: Record<string, unknown>,
+  skip: (key: string) => boolean,
+): { key: string; error: string } | null {
+  for (const [key, value] of Object.entries(data)) {
+    const spec = field(key)
+    if (!spec?.bounds || (spec.type !== 'int' && spec.type !== 'float')) continue
+    if ((value === null && spec.optional) || skip(key)) continue
+    const problem = validateValue(key, spec, value)
+    if (problem) return { key, error: `'${key}' ${problem}` }
+  }
+  return null
 }
 
 // GET /api/projects/[id] - Get project with all params
@@ -503,6 +524,15 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       where: { id },
       select: Object.fromEntries(Object.keys(updateData).map(k => [k, true])) as any,
     }) ?? {}) as Record<string, unknown>
+
+    // Only a value this save CHANGES is judged, as for the skill toggles above:
+    // the form PUTs the whole row back, and a number stored before its bound
+    // existed must not block an unrelated edit.
+    const outOfBounds = numericBoundsRefusal(
+      updateData, key => comparable(updateData[key]) === comparable(before[key]))
+    if (outOfBounds) {
+      return NextResponse.json({ ...outOfBounds, code: 'setting_rejected' }, { status: 400 })
+    }
 
     updateData.updatedById = eff.userId
     let project

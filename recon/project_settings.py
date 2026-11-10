@@ -989,21 +989,27 @@ def apply_roe_rate_cap(settings: dict[str, Any]) -> dict[str, Any]:
       * `WEB_CACHE_POISON_MAX_RPS_PER_HOST` has the same 0-means-unlimited
         default and was in neither list.
 
-    Deriving both from `roe_capped` and `zero_means` closes all three, and the
+    Deriving the key list from `roe_capped` closes all three, and the
     registry's own tests make it impossible to add a fourth: an active `rps`
     field that is not `roe_capped` fails the build.
+
+    A value at or below 0 is raised to the ceiling for EVERY capped key, not
+    only the ones marked `zero_means: unlimited`. The readers decide what a 0
+    does, not the registry: graphql's delay is 0 at rate 0, and a nuclei or
+    httpx command built from a 0 carries no rate flag, so the tool's own
+    default applies. A REST save or an import that writes 0 must not turn a
+    3 rps engagement into an unthrottled one.
     """
     roe_max_rps = settings.get('ROE_GLOBAL_MAX_RPS', 0)
     if not settings.get('ROE_ENABLED', False) or not roe_max_rps or roe_max_rps <= 0:
         return settings
 
-    unlimited_at_zero = _registry.unlimited_zero_runtime_keys()
     for key in _registry.roe_capped_runtime_keys():
         value = settings.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             continue
-        if value == 0 and key in unlimited_at_zero:
-            logger.info(f"RoE: capping {key} from unlimited (0) to {roe_max_rps} rps")
+        if value <= 0:
+            logger.info(f"RoE: capping {key} from {value} (no limit) to {roe_max_rps} rps")
             settings[key] = roe_max_rps
         elif value > roe_max_rps:
             logger.info(f"RoE: capping {key} from {value} to {roe_max_rps} rps")

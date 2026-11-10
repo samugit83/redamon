@@ -4243,7 +4243,7 @@
    "form_section": "GraphqlScanSection",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Requests per second graphql sends. Capped to the engagement ceiling at scan start, so a value above the ceiling is rewritten rather than refused.",
+   "meaning": "Requests per second graphql sends. ZERO MEANS UNLIMITED, so 0 is the most aggressive value available and not the safest. Under an engagement ceiling a 0 here, or a value above the ceiling, is rewritten to the ceiling at scan start rather than refused.",
    "optional": false,
    "phase": "vuln_scan",
    "prisma_type": "Int",
@@ -4255,7 +4255,8 @@
    "tool": "graphql",
    "traffic": "active",
    "type": "int",
-   "unit": "rps"
+   "unit": "rps",
+   "zero_means": "unlimited"
   },
   "graphqlRetryBackoff": {
    "bounds": {

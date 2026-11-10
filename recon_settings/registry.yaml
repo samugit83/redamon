@@ -3561,10 +3561,13 @@ fields:
     roe_capped: true
     mcp: settable
     bounds: { min: 0, max: 100 }
+    zero_means: unlimited
     stealth: { set: 2 }
     meaning: >-
-      Requests per second graphql sends. Capped to the engagement ceiling at scan
-      start, so a value above the ceiling is rewritten rather than refused.
+      Requests per second graphql sends. ZERO MEANS UNLIMITED, so 0 is the most
+      aggressive value available and not the safest. Under an engagement ceiling
+      a 0 here, or a value above the ceiling, is rewritten to the ceiling at scan
+      start rather than refused.
   graphqlRetryBackoff:
     tool: graphql
     runtime_key: "GRAPHQL_RETRY_BACKOFF"

@@ -28,6 +28,8 @@ import { sanitizeImportedRoeParsedJson } from '@/lib/roe/createRoe'
 import { sanitizeImportedOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { importRevision, MAX_IMPORTED_REVISIONS, REVISIONS_BUNDLE_PATH } from '@/lib/roe/revisionBundle'
 import { jevImportWarnings } from '@/lib/reconSettings/jevEngine'
+import { field } from '@/lib/reconSettings/registry'
+import { validateValue } from '@/lib/reconSettings/validators'
 import { PROJECT_EXPORT_EXCLUDED, isPluginArchivePath } from '@/lib/projectExport/pluginExclusion'
 import { validateSerializedScanChange } from '@/lib/reconSettings/serializedScanGate'
 import { skillToggleWarnings, trimImportedSkillToggles } from '@/lib/userSkills'
@@ -53,6 +55,18 @@ export function coerceDegradedSources(value: unknown): number | null {
   if (typeof value === 'string' && value.trim() === '') return null
   const n = Number(value)
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
+/** The first registry-bounded number MCP's validator would refuse, in its words. */
+function numericBoundsRefusal(data: Record<string, unknown>): { key: string; error: string } | null {
+  for (const [key, value] of Object.entries(data)) {
+    const spec = field(key)
+    if (!spec?.bounds || (spec.type !== 'int' && spec.type !== 'float')) continue
+    if (value === null && spec.optional) continue
+    const problem = validateValue(key, spec, value)
+    if (problem) return { key, error: `'${key}' ${problem}` }
+  }
+  return null
 }
 
 export const maxDuration = 300
@@ -289,6 +303,21 @@ export async function POST(request: NextRequest) {
     // The OpenAPI columns create and update validate: a bad row is dropped, a
     // number clamped, so an older or edited bundle still imports.
     sanitizeImportedOpenApiSettings(projectFields)
+
+    // Every other number gets the registry bound create_project applies, refused
+    // as create_project refuses it: a `nucleiRateLimit: 0` imported here ran
+    // nuclei at its built-in rate.
+    const outOfBounds = numericBoundsRefusal(projectFields)
+    if (outOfBounds) {
+      return NextResponse.json(
+        {
+          ...outOfBounds,
+          error: `${outOfBounds.error} The bundle was not imported.`,
+          code: 'setting_rejected',
+        },
+        { status: 400 }
+      )
+    }
 
     // Import is a SECOND creation path, and it has to apply the same rule
     // create_project does or it is the way around it. A bundle that claims a
