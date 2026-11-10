@@ -390,6 +390,35 @@ class VulnMixin:
         )
         return list(rows)
 
+    def backfill_security_check_domains(self, user_id: str, project_id: str) -> int:
+        """Give older domain-level security_check findings the `domain` they now store.
+
+        SPF, DMARC, DNSSEC and zone-transfer findings name no url, host or
+        IP: their org is their only host field, and the prune deletes one
+        only on an org its check re-checked. One written before the field
+        existed would never match, so it would never be pruned once its
+        record is fixed. The org is the Domain it hangs off, picked the way
+        the writer picks a domain-level finding. Run before the prune. Never
+        writes `updated_at`; idempotent.
+        """
+        with self.driver.session() as session:
+            record = session.run(
+                """
+                MATCH (d:Domain {user_id: $uid, project_id: $pid})-[:HAS_VULNERABILITY]->
+                      (v:Vulnerability {user_id: $uid, project_id: $pid, source: 'security_check'})
+                WHERE v.domain IS NULL AND coalesce(v.url, '') = ''
+                  AND v.matched_ip IS NULL AND v.hostname IS NULL
+                WITH v, min(toLower(d.name)) AS org
+                SET v.domain = org
+                RETURN count(v) AS backfilled
+                """,
+                uid=user_id, pid=project_id,
+            ).single()
+        count = int((record["backfilled"] if record else 0) or 0)
+        if count:
+            print(f"[*][graph-db] Backfilled domain on {count} older DNS security finding(s)")
+        return count
+
     def update_graph_from_vuln_scan(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         """
         Update the Neo4j graph database with vulnerability scan data.
@@ -1130,8 +1159,9 @@ class VulnMixin:
                     # would hash to one node; a batch keys it on its org. A
                     # single-domain project keeps the id its fix items and mute
                     # exemptions already reference (D-23).
-                    finding_domain = (org_for_scan_root(finding.get("domain") or "", recon_data)
-                                      if domain_batch and not (url or matched_ip or hostname) else "")
+                    org = (org_for_scan_root(finding.get("domain") or "", recon_data)
+                           if not (url or matched_ip or hostname) else "")
+                    finding_domain = org if domain_batch else ""
                     vuln_id = stable_vuln_id(finding_type, url,
                                              ip_port_key or matched_ip or hostname or finding_domain,
                                              user_id, project_id)
@@ -1158,6 +1188,10 @@ class VulnMixin:
                         vuln_props["matched_ip"] = matched_ip
                     if hostname:
                         vuln_props["hostname"] = hostname
+                    if org:
+                        # The org is a domain-level finding's only host: the
+                        # prune keeps or deletes it by org (_KEEP_HOST_FIELDS).
+                        vuln_props["domain"] = org.strip().lower().rstrip(".")
                     if evidence:
                         vuln_props["evidence"] = evidence
                     if status_code:

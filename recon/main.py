@@ -2540,22 +2540,38 @@ def _note_unchecked_dns_orgs() -> None:
 
 
 def _checked_prune_batches(report, sources) -> dict:
-    """``(keep_hosts, only_hosts, types)`` -> the positive sources pruned with them.
+    """``(keep_hosts, only_hosts, types, exclude_types)`` -> the positive
+    sources pruned with them.
 
     A source that recorded what it re-checked (``circuit_breaker.note_checked``)
     is pruned once per check it recorded, on the hosts it re-checked minus
     those cut for it. The cut hosts are also passed as kept, so a finding that
     names one in any host field stays (degraded wins). Sources with the same
     record share one call, as Shodan's source values do.
+
+    A source that recorded only some of its checks (security_check's DNS and
+    service probes) is also pruned once by the source-level rule for every
+    other finding type (``only_hosts`` None, those checks excluded), so a
+    check that records nothing, or is switched off, prunes as before.
     """
     batches: dict = {}
     for source in sources:
         keep = report.keep_hostnames(source)
-        for check in report.checked_types(source):
+        checks = report.checked_types(source)
+        for check in checks:
             key = (keep, report.checked_hostnames(source, check),
-                   None if check == "*" else (check,))
+                   None if check == "*" else (check,), None)
             batches.setdefault(key, []).append(source)
+        if "*" not in checks:
+            batches.setdefault((keep, None, None, checks), []).append(source)
     return batches
+
+
+def _org_check_batch(key) -> bool:
+    """A per-type batch of a check whose findings name only their org (DNS)."""
+    from recon.helpers.security_checks import DNS_CHECK_TYPES
+    types = key[2]
+    return bool(types) and set(types) <= set(DNS_CHECK_TYPES)
 
 
 def _prune_recon_findings():
@@ -2580,7 +2596,8 @@ def _prune_recon_findings():
     A source that recorded the hosts it re-checked (positive coverage, D1) is
     pruned on those hosts only, so a host it never reached keeps its findings
     even when nothing noted it degraded. Every other source keeps the rule
-    above.
+    above, and so do the finding types a source recorded nothing for
+    (security_check records only its DNS and service probes).
     """
     if not UPDATE_GRAPH_DB or not _RUN_STARTED_AT:
         return
@@ -2634,12 +2651,31 @@ def _prune_recon_findings():
                                for keep, batch in batches.items()}
                     checked_batches = {key: [s for s in batch if s not in passive]
                                        for key, batch in checked_batches.items()}
+                # DNS findings are matched on their org, which ones written
+                # before they stored it get first.
+                if any("security_check" in batch and _org_check_batch(key)
+                       for key, batch in checked_batches.items()):
+                    try:
+                        graph_client.backfill_security_check_domains(USER_ID, PROJECT_ID)
+                    except Exception as e:  # noqa: BLE001 - fail closed for those checks only
+                        print(f"[!][graph-db] Could not backfill DNS finding orgs ({e}) - "
+                              f"DNS security findings are not pruned this run")
+                        checked_batches = {
+                            key: [s for s in batch
+                                  if not (s == "security_check" and _org_check_batch(key))]
+                            for key, batch in checked_batches.items()}
                 for keep, batch in batches.items():
                     graph_client.prune_unseen_findings(
                         USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
                         keep_hosts=keep)
-                for (keep, hosts, types), batch in checked_batches.items():
-                    if batch:
+                for (keep, hosts, types, others), batch in checked_batches.items():
+                    if not batch:
+                        continue
+                    if hosts is None:
+                        graph_client.prune_unseen_findings(
+                            USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
+                            keep_hosts=keep, exclude_types=others)
+                    else:
                         graph_client.prune_unseen_findings(
                             USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
                             keep_hosts=keep, only_hosts=hosts, types=types)

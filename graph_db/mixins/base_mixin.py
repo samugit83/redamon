@@ -59,10 +59,12 @@ _FINDING_LABEL_PREDICATE = " OR ".join(f"n:`{label}`" for label in FINDING_LABEL
 #: `ip_address`. ai_surface_recon stores none, so its skips are source-level.
 #: GVM's Vulnerability and ExploitGvm use `target_ip`/`target_hostname`, which
 #: no other finding label carries, so they change no other source's prune.
+#: `domain` is the org of a security_check DNS finding (SPF, DMARC, DNSSEC,
+#: zone transfer), its only host field; no other finding stores it.
 _KEEP_HOST_FIELDS = (
     "host", "hostname", "ip", "ip_address", "matched_ip",
     "url", "matched_at", "base_url", "source_url", "endpoint", "probe_url",
-    "target_ip", "target_hostname",
+    "target_ip", "target_hostname", "domain",
 )
 
 #: What a hostname in `keep_hosts` must look like before it is regex-escaped:
@@ -271,7 +273,7 @@ class BaseMixin:
 
     def prune_unseen_findings(self, user_id: str, project_id: str,
                               sources, run_started_at: str, keep_hosts=(), *,
-                              only_hosts=None, types=None) -> dict:
+                              only_hosts=None, types=None, exclude_types=None) -> dict:
         """Ingest-then-prune: remove a source's findings it stopped reporting.
 
         WHY THIS REPLACED CLEAR-THEN-INGEST
@@ -316,6 +318,11 @@ class BaseMixin:
         the prune to findings whose `type` is one of these, for a source that
         records coverage per check type (`security_check`). With both None the
         query is the older, source-level one.
+
+        `exclude_types` leaves findings of these types out: the source-level
+        rule for the types such a source did not record, so a check that has
+        not adopted D1, or is switched off, prunes exactly as before while the
+        recorded types prune on their own hosts. None changes nothing.
         """
         sources = [s for s in (sources or []) if s]
         if not sources or not run_started_at:
@@ -330,6 +337,9 @@ class BaseMixin:
         only = None if only_hosts is None else _host_names(only_hosts)
         types = None if types is None else sorted({str(t) for t in types if t})
         types_clause = "" if types is None else "\n          AND coalesce(n.type, '') IN $types"
+        excluded = None if exclude_types is None else sorted({str(t) for t in exclude_types if t})
+        if excluded:
+            types_clause += "\n          AND NOT coalesce(n.type, '') IN $exclude_types"
         only_clause = "" if only is None else _ONLY_HOSTS_CLAUSE
         prunes_something = only != [] and types != []
 
@@ -394,6 +404,8 @@ class BaseMixin:
                 params["only_hosts"] = only
             if types is not None:
                 params["types"] = types
+            if excluded:
+                params["exclude_types"] = excluded
             record = session.run(query, **params).single() if prunes_something else None
 
         stats = {

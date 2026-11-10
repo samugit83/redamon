@@ -2160,6 +2160,41 @@ import dns.resolver
 import dns.zone
 import dns.query
 
+#: The org-level checks, one finding type each; their findings name only the org.
+DNS_CHECK_TYPES = ("spf_missing", "dmarc_missing", "dnssec_missing", "zone_transfer")
+
+
+class CheckUnknown(Exception):
+    """A check that reached no verdict: the resolver or the service did not
+    answer (a timeout, a reset, a SERVFAIL). It is neither a finding nor
+    clean, so the finding an earlier run reported must survive the prune."""
+
+
+def _note_check_outcome(check_type: str, host: str, no_verdict: str = "") -> None:
+    """Record one check on one host for the positive-coverage prune (D1).
+
+    A verdict (a finding or clean) marks ``host`` checked for ``check_type``
+    alone, so the prune may delete that type's stale finding there and
+    nowhere else. No verdict still records the type, with no host: its
+    finding on ``host`` is kept instead of falling back to the source-level
+    rule, and a coverage gap says why.
+    """
+    from recon.helpers import circuit_breaker as cb
+    cb.note_checked("security_check", hosts=[] if no_verdict else [host],
+                    checks=[check_type], module="security_checks")
+    if no_verdict:
+        print(f"[!][SecurityCheck] {check_type} on {host}: no verdict ({no_verdict}); "
+              f"its earlier finding is kept")
+        cb.note_degraded("security_checks", entries=[{
+            "source": "security_check",
+            "reason": f"{check_type} on {host} not checked: {no_verdict}",
+            "skipped": 1,
+        }])
+
+
+def _no_answer(exc: BaseException) -> CheckUnknown:
+    return CheckUnknown(type(exc).__name__)
+
 
 def check_spf_missing(domain: str) -> Optional[Dict]:
     """
@@ -2170,6 +2205,9 @@ def check_spf_missing(domain: str) -> Optional[Dict]:
 
     Returns:
         Vulnerability dict if SPF is missing, None otherwise
+
+    Raises:
+        CheckUnknown: the resolver gave no answer (NXDOMAIN and NoAnswer are answers)
     """
     try:
         answers = dns.resolver.resolve(domain, 'TXT')
@@ -2202,8 +2240,8 @@ def check_spf_missing(domain: str) -> Optional[Dict]:
             "evidence": "No TXT records found",
             "recommendation": "Add an SPF record to specify which mail servers can send email for your domain.",
         }
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - a timeout or SERVFAIL is not "record present"
+        raise _no_answer(exc) from exc
 
 
 def check_dmarc_missing(domain: str) -> Optional[Dict]:
@@ -2215,6 +2253,9 @@ def check_dmarc_missing(domain: str) -> Optional[Dict]:
 
     Returns:
         Vulnerability dict if DMARC is missing, None otherwise
+
+    Raises:
+        CheckUnknown: the resolver gave no answer (NXDOMAIN and NoAnswer are answers)
     """
     dmarc_domain = f"_dmarc.{domain}"
 
@@ -2256,8 +2297,8 @@ def check_dmarc_missing(domain: str) -> Optional[Dict]:
             "evidence": f"No TXT records at _dmarc.{domain}",
             "recommendation": "Add a DMARC record to define your email authentication policy.",
         }
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - a timeout or SERVFAIL is not "record present"
+        raise _no_answer(exc) from exc
 
 
 def check_dnssec_missing(domain: str) -> Optional[Dict]:
@@ -2269,6 +2310,9 @@ def check_dnssec_missing(domain: str) -> Optional[Dict]:
 
     Returns:
         Vulnerability dict if DNSSEC is missing, None otherwise
+
+    Raises:
+        CheckUnknown: the resolver gave no answer (NXDOMAIN and NoAnswer are answers)
     """
     try:
         # Try to get DNSKEY records - their presence indicates DNSSEC
@@ -2289,8 +2333,8 @@ def check_dnssec_missing(domain: str) -> Optional[Dict]:
         }
     except dns.resolver.NXDOMAIN:
         return None
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - a timeout or SERVFAIL is not "signed"
+        raise _no_answer(exc) from exc
 
     return None
 
@@ -2351,6 +2395,11 @@ def run_dns_checks(
     """
     Run all enabled DNS security checks.
 
+    Each check ends in a finding, clean, or no verdict (CheckUnknown). The
+    org is recorded as checked only for the checks that reached a verdict,
+    so a lookup that timed out keeps that check's earlier finding instead of
+    reading as "record present".
+
     Args:
         domain: Domain to check
         enabled_checks: Dict of check_name -> enabled (bool)
@@ -2360,24 +2409,21 @@ def run_dns_checks(
         List of vulnerability findings
     """
     findings = []
-
-    if enabled_checks.get("spf_missing", True):
-        result = check_spf_missing(domain)
-        if result:
-            findings.append(result)
-
-    if enabled_checks.get("dmarc_missing", True):
-        result = check_dmarc_missing(domain)
-        if result:
-            findings.append(result)
-
-    if enabled_checks.get("dnssec_missing", True):
-        result = check_dnssec_missing(domain)
-        if result:
-            findings.append(result)
-
-    if enabled_checks.get("zone_transfer", True):
-        result = check_zone_transfer(domain, timeout=timeout)
+    checks = (
+        ("spf_missing", lambda: check_spf_missing(domain)),
+        ("dmarc_missing", lambda: check_dmarc_missing(domain)),
+        ("dnssec_missing", lambda: check_dnssec_missing(domain)),
+        ("zone_transfer", lambda: check_zone_transfer(domain, timeout=timeout)),
+    )
+    for check_type, check in checks:
+        if not enabled_checks.get(check_type, True):
+            continue
+        try:
+            result = check()
+        except CheckUnknown as exc:
+            _note_check_outcome(check_type, domain, str(exc) or "no answer")
+            continue
+        _note_check_outcome(check_type, domain)
         if result:
             findings.append(result)
 
@@ -2487,33 +2533,41 @@ def check_redis_no_auth(ip: str, port: int = 6379, timeout: int = 5) -> Optional
         timeout: Connection timeout
 
     Returns:
-        Vulnerability dict if Redis has no auth, None otherwise
+        Vulnerability dict if Redis has no auth, None when the port is closed
+        or Redis refuses the command
+
+    Raises:
+        CheckUnknown: no answer (a timeout, a reset, an empty reply)
     """
     try:
         # create_connection, not an AF_INET socket: it also reaches IPv6.
         sock = socket.create_connection((ip, port), timeout=timeout)
-
-        # Send PING command
+    except ConnectionRefusedError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - unreachable now is not "closed"
+        raise _no_answer(exc) from exc
+    try:
         sock.send(b"PING\r\n")
         response = sock.recv(1024).decode('utf-8', errors='ignore')
+    except Exception as exc:  # noqa: BLE001
+        raise _no_answer(exc) from exc
+    finally:
         sock.close()
 
-        if "+PONG" in response:
-            return {
-                "type": "redis_no_auth",
-                "severity": "critical",
-                "name": "Redis Without Authentication",
-                "description": f"Redis at {ip}:{port} responds to commands without authentication. "
-                              "An attacker can read/write data, execute Lua scripts, or potentially get shell access.",
-                "ip": ip,
-                "port": port,
-                "evidence": "PING command returned PONG without authentication",
-                "recommendation": "Enable Redis AUTH and use strong passwords. Never expose Redis to the internet.",
-            }
-
-    except Exception:
-        pass
-
+    if "+PONG" in response:
+        return {
+            "type": "redis_no_auth",
+            "severity": "critical",
+            "name": "Redis Without Authentication",
+            "description": f"Redis at {ip}:{port} responds to commands without authentication. "
+                          "An attacker can read/write data, execute Lua scripts, or potentially get shell access.",
+            "ip": ip,
+            "port": port,
+            "evidence": "PING command returned PONG without authentication",
+            "recommendation": "Enable Redis AUTH and use strong passwords. Never expose Redis to the internet.",
+        }
+    if not response.strip():
+        raise CheckUnknown("no reply")
     return None
 
 
@@ -2613,33 +2667,45 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
         timeout: Connection timeout
 
     Returns:
-        Vulnerability dict if open relay, None otherwise
+        Vulnerability dict if open relay, None when the port is closed or the
+        server refuses the relay
+
+    Raises:
+        CheckUnknown: no answer (a timeout, a reset, a closed connection), or
+            a 4xx reply: busy, greylisting, try again later
     """
     try:
         sock = socket.create_connection((ip, port), timeout=timeout)
+    except ConnectionRefusedError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - unreachable now is not "closed"
+        raise _no_answer(exc) from exc
 
-        # Read banner
-        banner = sock.recv(1024).decode('utf-8', errors='ignore')
+    def reply(command: bytes = b"") -> str:
+        if command:
+            sock.send(command)
+        return sock.recv(1024).decode('utf-8', errors='ignore')
+
+    def refused(answer: str) -> None:
+        """Return when ``answer`` is a final no; raise when it is no answer."""
+        code = answer.strip()[:3]
+        if not code or code.startswith("4"):
+            raise CheckUnknown(f"SMTP reply {code}" if code else "no reply")
+
+    try:
+        banner = reply()
         if '220' not in banner:
-            sock.close()
+            refused(banner)
             return None
-
-        # Send HELO
-        sock.send(b"HELO test.example.com\r\n")
-        response = sock.recv(1024).decode('utf-8', errors='ignore')
-
-        # Try to send from external domain
-        sock.send(b"MAIL FROM:<test@external-domain.com>\r\n")
-        response = sock.recv(1024).decode('utf-8', errors='ignore')
-
+        reply(b"HELO test.example.com\r\n")
+        response = reply(b"MAIL FROM:<test@external-domain.com>\r\n")
         if '250' in response:
-            # Try recipient at another external domain
-            sock.send(b"RCPT TO:<test@another-external-domain.com>\r\n")
-            response = sock.recv(1024).decode('utf-8', errors='ignore')
-
+            response = reply(b"RCPT TO:<test@another-external-domain.com>\r\n")
             if '250' in response or '251' in response:
-                sock.send(b"QUIT\r\n")
-                sock.close()
+                try:
+                    sock.send(b"QUIT\r\n")
+                except OSError:
+                    pass
                 return {
                     "type": "smtp_open_relay",
                     "severity": "high",
@@ -2651,14 +2717,18 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
                     "evidence": "Server accepted RCPT TO for external domain",
                     "recommendation": "Configure SMTP to only relay mail for authenticated users or authorized domains.",
                 }
-
-        sock.send(b"QUIT\r\n")
+        refused(response)
+        try:
+            sock.send(b"QUIT\r\n")
+        except OSError:
+            pass
+        return None
+    except CheckUnknown:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _no_answer(exc) from exc
+    finally:
         sock.close()
-
-    except Exception:
-        pass
-
-    return None
 
 
 def _port_number(value) -> Optional[int]:
@@ -2706,6 +2776,30 @@ def _open_ports_by_ip(port_scan: Dict[str, Any]) -> Dict[str, Tuple[List[int], D
     return {ip: (sorted(ports), entry) for ip, (ports, entry) in found.items() if ports}
 
 
+#: The port checks that send a probe, and the port each one needs open. The
+#: others read the port scan alone, so they always reach a verdict.
+_PROBED_PORT_CHECKS = {"redis_no_auth": 6379, "smtp_open_relay": 25}
+
+
+def _probed_port_check(check_type: str, ip: str, open_ports: List[int], probe) -> Optional[Dict]:
+    """One service probe on one IP under the three outcomes (R-24).
+
+    A port the scan did not find open is a verdict, as it always was: clean.
+    No verdict leaves ``ip`` unchecked for ``check_type``, so its earlier
+    finding is kept.
+    """
+    if _PROBED_PORT_CHECKS[check_type] not in open_ports:
+        _note_check_outcome(check_type, ip)
+        return None
+    try:
+        result = probe()
+    except CheckUnknown as exc:
+        _note_check_outcome(check_type, ip, str(exc) or "no answer")
+        return None
+    _note_check_outcome(check_type, ip)
+    return result
+
+
 def run_port_service_checks(
     recon_data: Dict[str, Any],
     enabled_checks: Dict[str, bool],
@@ -2729,6 +2823,14 @@ def run_port_service_checks(
         List of vulnerability findings
     """
     findings = []
+
+    # The probed checks are tracked per IP from here on: an IP this run does
+    # not reach (no port data, a CDN edge, RoE, a host down) keeps its
+    # findings rather than reading as clean.
+    probed = [c for c in _PROBED_PORT_CHECKS if enabled_checks.get(c, True)]
+    if probed:
+        from recon.helpers import circuit_breaker as _cb
+        _cb.note_checked("security_check", checks=probed, module="security_checks")
 
     port_scan = recon_data.get("port_scan") or {}
     if not isinstance(port_scan, dict):
@@ -2767,8 +2869,9 @@ def run_port_service_checks(
             results = check_database_ports_exposed(ip, open_ports, timeout)
             ip_findings.extend(results)
 
-        if enabled_checks.get("redis_no_auth", True) and 6379 in open_ports:
-            result = check_redis_no_auth(ip, timeout=timeout)
+        if enabled_checks.get("redis_no_auth", True):
+            result = _probed_port_check("redis_no_auth", ip, open_ports,
+                                        lambda: check_redis_no_auth(ip, timeout=timeout))
             if result:
                 ip_findings.append(result)
 
@@ -2778,8 +2881,9 @@ def run_port_service_checks(
             if result:
                 ip_findings.append(result)
 
-        if enabled_checks.get("smtp_open_relay", True) and 25 in open_ports:
-            result = check_smtp_open_relay(ip, timeout=timeout)
+        if enabled_checks.get("smtp_open_relay", True):
+            result = _probed_port_check("smtp_open_relay", ip, open_ports,
+                                        lambda: check_smtp_open_relay(ip, timeout=timeout))
             if result:
                 ip_findings.append(result)
 

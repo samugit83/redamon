@@ -5,7 +5,9 @@ its host fields names a host the source re-checked, however the writer stores
 it (a bare host, host:port, a URL with a port, userinfo or a path, a bracketed
 IPv6 address, a passive CVE's `target_ip`). Every other finding of the source
 is left as it is; a kept host still wins; `types` limits it to one check's
-findings; an empty `only_hosts` prunes nothing. Hosts are example.com names and
+findings, `exclude_types` leaves a check's findings out of the source-level
+rule; an empty `only_hosts` prunes nothing; a DNS finding's org (`domain`) is
+one of the host fields. Hosts are example.com names and
 RFC 5737 / 3849 addresses.
 
 Self-skips unless the neo4j driver imports AND a database answers. To run it
@@ -67,6 +69,7 @@ ON_CHECKED = {
     "bare-ipv6": {"ip": "2001:db8::1"},
     "passive-cve": {"target_ip": "198.51.100.7"},
     "two-fields-one-checked": {"hostname": "z.example.com", "matched_ip": "198.51.100.7"},
+    "dns-org": {"domain": "A.example.com", "url": "", "matched_at": ""},
 }
 ON_UNCHECKED = {
     "other-host": {"host": "b.example.com"},
@@ -76,6 +79,7 @@ ON_UNCHECKED = {
     "userinfo-without-scheme": {"host": "user@a.example.com"},
     "no-host-field": {"name": "SPF missing"},
     "other-ip": {"target_ip": "198.51.100.8"},
+    "dns-parent-org": {"domain": "example.com", "url": "", "matched_at": ""},
 }
 
 
@@ -149,6 +153,65 @@ class TestPositivePruneGraphLive(unittest.TestCase):
     def test_without_only_hosts_every_stale_finding_is_pruned_as_before(self):
         self._prune()
         self.assertEqual(self._left(), set())
+
+    def test_excluded_types_are_left_alone_and_the_rest_pruned_as_before(self):
+        self._prune(exclude_types=["missing_hsts"])
+        self.assertEqual(self._left(), {"bare-host"})
+
+    def test_a_kept_org_keeps_only_the_finding_that_names_it(self):
+        self._prune(keep_hosts=["example.com"])
+        self.assertEqual(self._left(), {"dns-parent-org"})
+
+
+@unittest.skipUnless(_ALIVE, _SKIP_REASON or "no Neo4j reachable")
+class TestSecurityCheckDomainBackfillLive(unittest.TestCase):
+    """Older SPF/DMARC/DNSSEC/zone-transfer findings get their org from the
+    Domain they hang off, so the per-org prune can match them."""
+
+    @classmethod
+    def setUpClass(cls):
+        from graph_db.neo4j_client import Neo4jClient
+        cls.client = Neo4jClient(_URI, _USER, _PASSWORD)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close()
+
+    def setUp(self):
+        run = uuid.uuid4().hex[:8]
+        self.uid, self.pid = f"d1dns-{run}", f"D1DNS_{run}"
+        with self.client.driver.session() as s:
+            s.run(
+                """
+                CREATE (d:Domain {name: 'Example.com', user_id: $u, project_id: $p})
+                CREATE (d)-[:HAS_VULNERABILITY]->(:Vulnerability {id: 'spf', user_id: $u,
+                    project_id: $p, source: 'security_check', type: 'spf_missing',
+                    url: '', matched_at: '', updated_at: datetime('2026-01-01T00:00:00Z')})
+                CREATE (d)-[:HAS_VULNERABILITY]->(:Vulnerability {id: 'url', user_id: $u,
+                    project_id: $p, source: 'security_check', type: 'missing_coop',
+                    url: 'https://example.com', updated_at: datetime('2026-01-01T00:00:00Z')})
+                CREATE (d)-[:HAS_VULNERABILITY]->(:Vulnerability {id: 'nuclei', user_id: $u,
+                    project_id: $p, source: 'nuclei', url: ''})
+                """, u=self.uid, p=self.pid)
+
+    def tearDown(self):
+        with self.client.driver.session() as s:
+            s.run("MATCH (n) WHERE n.user_id = $u DETACH DELETE n", u=self.uid)
+
+    def _domains(self):
+        with self.client.driver.session() as s:
+            return {r["id"]: (r["domain"], r["at"]) for r in s.run(
+                "MATCH (v:Vulnerability {user_id: $u, project_id: $p}) "
+                "RETURN v.id AS id, v.domain AS domain, toString(v.updated_at) AS at",
+                u=self.uid, p=self.pid)}
+
+    def test_only_domain_level_security_findings_get_the_org(self):
+        self.assertEqual(self.client.backfill_security_check_domains(self.uid, self.pid), 1)
+        found = self._domains()
+        self.assertEqual(found["spf"], ("example.com", "2026-01-01T00:00:00Z"))
+        self.assertIsNone(found["url"][0])
+        self.assertIsNone(found["nuclei"][0])
+        self.assertEqual(self.client.backfill_security_check_domains(self.uid, self.pid), 0)
 
 
 if __name__ == "__main__":
