@@ -189,6 +189,7 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | deleted bundled data stays deleted; `cpe_resolver` reads the cache `http_probe` refreshes | `recon/tests/test_dead_bundled_data.py` |
 | nothing in `agentic/` shadows a file the agent image bakes earlier | `tests/test_agent_image_no_shadowed_copy.py` |
 | broker allowlist <-> every image recon runs, both ways (a broker image recon does not run needs a named caller); the entrypoint `IMAGES` == the `*_DOCKER_IMAGE` defaults | `services/docker_broker/test_image_parity.py` |
+| broker API routes, repository bind subdirectories (`REPO_TOOL_SUBDIRS`), writable volumes and networks <-> every docker call site under `recon/` and `scanners/supply_chain_common/`, both ways (one missing or unused fails) | `services/docker_broker/test_tool_invocations.py` |
 | a stop removes its own run's tool containers, of any image, by the broker's run labels (no image list to keep); `remove_redamon_images` removes every third-party image (it reads the entrypoint `IMAGES`) | `recon_orchestrator/tests/test_run_label_cleanup.py`, `services/docker_broker/test_run_labels.py`, `tests/redamon_runtime_images_test.sh` |
 | what `update` rebuilds: every COPY/ADD source of every image compose builds must rebuild it (or restart it under a compose bind mount), derived from the compose file and the Dockerfiles | `tests/redamon_update_map_test.sh` |
 | OSV ecosystems in 4 places (`SEED_MANIFESTS`, `_OSV_SYNC_ECOSYSTEMS`, `OSV_ALL_ECOSYSTEMS`, compose `OSV_DB_ECOSYSTEMS`) | `tests/test_supply_chain_osv_refresh.py` |
@@ -499,7 +500,7 @@ relationships) and `graph_db/schema_keys.py` (uniqueness keys, 45 labels).
 | Wiki | `redamon.wiki/Attack-Surface-Graph.md` | node-type counts: TEST (`tests/test_docs_not_stale.py` P21) | |
 | Graph export / import / restore | `graphSerialize.ts`, `graphRestore.ts`, `projectExport/`, `api/projects/import/route.ts` | integration tests | a new label must be exported and restored |
 | Mixin split snapshot | `tests/fixtures/recon_mixin_snapshot.json` (2026-04-18) | `tests/test_recon_mixin_split.py` | a one-time refactor guard that ages with the mixins |
-| One-shot graph migrations | `tooling/scripts/{triage_graph_migrate,dns_finding_rekey,js_secret_rekey,netlas_finding_rekey,mute_provenance_cleanup,node_filters_rollback}.py` | NONE | written against the schema of their day |
+| One-shot graph migrations | `tooling/scripts/{triage_graph_migrate,dns_finding_rekey,js_secret_rekey,netlas_finding_rekey,cache_deception_rekey,aisr_finding_rekey,mute_provenance_cleanup,node_filters_rollback}.py` | NONE | written against the schema of their day |
 
 ### 4.8 Inbound MCP server and API docs
 

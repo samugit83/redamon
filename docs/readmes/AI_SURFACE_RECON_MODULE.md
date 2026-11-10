@@ -135,7 +135,7 @@ module touches six node types and creates one:
 | **`Technology`** | confirmed AI products (`ai-runtime`, `ai-vector-db`, …). | MERGE, linked `USES_TECHNOLOGY` (from Endpoint) or `HAS_TECHNOLOGY` (from Port) |
 | **`Port` / `IP`** | vector-DB confirmation attaches Technology to the Port. | reused (read-only match) |
 | **`BaseURL` / `Subdomain` / `Domain`** | fallback attachment points for findings. | reused (read-only match) |
-| **`Vulnerability`** | MCP tool-poisoning / injection findings. | **CREATE** (idempotent by deterministic id) |
+| **`Vulnerability`** | MCP tool-poisoning / injection findings, one per YARA rule that fired. | **CREATE** (idempotent by deterministic id: type, base URL, path, tool and the YARA rule) |
 
 **Naming convention:** every AI property is prefixed `ai_` or `is_ai_`, and any
 AI *value* on a generically-named field (`Technology.category`) is prefixed
@@ -267,7 +267,7 @@ tools can't be called.
 3. **Statically analyze each tool:**
    - **hash** each tool (`{name, description, inputSchema}`) + an aggregate `tools_hash` + `instructions_hash` — **rug-pull pins**: a silent later swap changes the hash.
    - **annotation mismatch** — a tool declaring `readOnlyHint:true` but whose name implies mutation (`delete`/`write`/`exec`…) → finding.
-   - **YARA** — run vendored Cisco MCP rules over each tool's description + inputSchema + the server instructions; each hit maps through `_MCP_THREAT_MAP` to a kind + OWASP-LLM id + MITRE ATLAS technique.
+   - **YARA** — run vendored Cisco MCP rules over each tool's description + inputSchema + the server instructions; each hit maps through `_MCP_THREAT_MAP` to a kind + OWASP-LLM id + MITRE ATLAS technique. Each rule that fires is its own finding: the id (`_mk_finding`) is a hash of type, base URL, path, tool and the rule name (from the vendored pack, never the target's text), so several rules on the server instructions, or several rules of one threat type on a tool, never collapse into one node. A finding with no rule (`mcp_annotation_mismatch`) keeps the id without it. Findings written before the rule joined the id are moved by `tooling/scripts/aisr_finding_rekey.py` (dry run by default; `--apply` with the agent, webapp and orchestrator stopped, before the first scan on the new release).
 
 #### Output (JSON)
 ```python
@@ -284,7 +284,7 @@ Three distinct graph effects:
 |---|---|---|
 | `Endpoint` (**POST `/mcp`**) | the MCP server | `ai_interface_type='mcp'`, `ai_mcp_server_name/version`, `ai_mcp_protocol_version`, `ai_mcp_tool_count/resource_count/prompt_count`, `ai_mcp_caps`, `ai_mcp_auth_required`, `ai_mcp_tools_hash`, `ai_mcp_instructions_hash` |
 | `Parameter` (one per tool arg) | injectable surface | `is_ai_prompt_injectable`, `ai_tool_arg_path`; linked `(:Endpoint POST /mcp)-[:HAS_PARAMETER]->(:Parameter)` |
-| `Vulnerability` (per finding) | tool poisoning / injection | `type`, `severity`, `ai_owasp_llm_id`, `ai_atlas_technique`, `ai_payload_class='mcp_static'`; attached most-specific-first to `Endpoint` → `BaseURL` → `Subdomain` → `Domain` via `HAS_VULNERABILITY` |
+| `Vulnerability` (per finding, one per YARA rule) | tool poisoning / injection | `type`, `severity`, `ai_owasp_llm_id`, `ai_atlas_technique`, `ai_payload_class='mcp_static'`; attached most-specific-first to `Endpoint` → `BaseURL` → `Subdomain` → `Domain` via `HAS_VULNERABILITY` |
 
 `Input node: Endpoint(mcp) → Output nodes: Endpoint(POST /mcp) + N×Parameter + M×Vulnerability.`
 
@@ -429,13 +429,15 @@ For each candidate, try each recipe in [`AI_VECTOR_DB_READS`](../../recon/helper
 "vector_db": [ {service, host, ip, port, tech_name, confirmed_via: "read"} ]
 ```
 
+`ip` is the address httpx recorded for the candidate, else the host when it is an IP literal.
+
 #### Output nodes / enrichment
 Unlike the others, this attaches to a **`Port`**:
 
 | Output node | What | Properties / edge |
 |---|---|---|
 | `Technology` | the confirmed vector DB | `category='ai-vector-db'`, `source='ai-surface-recon'` |
-| `HAS_TECHNOLOGY` edge | links it to the port | `(:Port)-[:HAS_TECHNOLOGY {detected_by:'ai-surface-recon-probe'}]->(:Technology)` (only if the `IP`/`Port` exist — otherwise the Technology stands unlinked, no crash) |
+| `HAS_TECHNOLOGY` / `USES_TECHNOLOGY` edge | links it to the service | `(:IP)-[:HAS_PORT]->(:Port)-[:HAS_TECHNOLOGY {detected_by:'ai-surface-recon-probe'}]->(:Technology)` when that IP's Port exists; else `(:BaseURL)-[:USES_TECHNOLOGY]->` from the BaseURL of exactly that host and port (the url compared whole, a default port matching the bare host); else `(:IP)-[:HAS_TECHNOLOGY]->`. A candidate with neither a host nor an IP writes nothing |
 
 `Input node: IP→Port (or BaseURL fingerprint) → Output nodes: Technology(ai-vector-db) + HAS_TECHNOLOGY edge.`
 

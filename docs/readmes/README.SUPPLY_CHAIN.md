@@ -441,11 +441,14 @@ flowchart LR
 | **DIRTY->CLEAN boundary** (S5) - schema-validate the artifact | `validate_artifact` |
 | **SSRF guard** (S4) - L2 makes no new fetches; it parses data JS-recon already downloaded | `harvest.py` (no `requests.get`) |
 | **Tenant isolation** (S10) - every MERGE key includes `user_id` + `project_id` | `supply_chain_mixin.py` |
-| **Broker allowlist** - `redamon-supply-chain-analyzer` + `redamon-supply-chain` images + `redamon-osv-db` volume | `services/docker_broker/broker.py` |
+| **Broker allowlist** - `redamon-supply-chain-analyzer` image, `redamon-osv-db` and `redamon-sca-intel` volumes read-only, `redamon-supply-chain-net` network | `services/docker_broker/broker.py` |
 
-The `redamon-supply-chain-analyzer` and `redamon-supply-chain` images and the
-`redamon-osv-db` volume are on the docker-broker allowlist; a non-allowlisted
-image is denied.
+The `redamon-supply-chain-analyzer` image is on the docker-broker allowlist; a
+non-allowlisted image is denied. The L1 `redamon-supply-chain` image is not on it:
+the orchestrator starts L1 on the real socket. Through the broker the
+`redamon-osv-db` volume (and the `redamon-sca-intel` incident intel) mount
+read-only only, so a spawned scanner cannot poison the database every tenant's
+verdicts are computed from; the broker refuses a read-write mount of either.
 
 ---
 
@@ -878,7 +881,7 @@ budgeted: GuardDog runs the packages sequentially, so that knob bounds wall-cloc
 |---|---|
 | **recon-orchestrator** | Owns the L1 + L2 + analyzer lifecycle via the Docker SDK; `_active_scan_keys` + `_admit_scan` account for the 1.75 GB envelope (and for in-flight L3 GuardDog jobs); `cleanup()` and `refresh_all_scan_states()` sweep supply-chain so containers and reservations never leak. |
 | **Memory governor** | Fully accounted, see [Memory accounting](#memory-accounting): per-scan envelopes for L1 and the supply-chain partial, a `supply_chain_analyzer` **tool** envelope shared by all three analyzer spawn paths, ledger admission for L3 GuardDog, and byte-budgeted import-mining caps. Details in [README.MEMORY_GOVERNOR.md](README.MEMORY_GOVERNOR.md). |
-| **docker-broker** | The two images + the `redamon-osv-db` volume are allowlisted; a look-alike image is denied. |
+| **docker-broker** | The analyzer image is allowlisted (L1 is started on the real socket) and the `redamon-osv-db` volume mounts read-only; a look-alike image or a read-write OSV mount is denied. |
 | **Neo4j / graph_db** | `SupplyChainMixin` is added to `Neo4jClient`; two `CREATE CONSTRAINT`s in `graph_db/schema.py`. The agent's `query_graph` sees `Package` / `MalPackageFinding` like any other node. |
 | **Webapp** | Prisma fields (`supplyChain*`, `supplyChainRecon*`); `/api/supply-chain/[projectId]/*` proxy routes + SBOM upload; `useSupplyChainStatus` / `useSupplyChainSSE` hooks; a Supply Chain card in the Other Scans modal (run controls + logs drawer) and the Supply Chain Scanner settings section that owns its input. |
 | **Graph tables** | The **Supply-Chain SCA** table (`/api/analytics/redzone/supplyChainSca`) reads this model directly: three sheets (Verdicts / Packages / Advisories) over `Package`, `MalPackageFinding` and `Vulnerability {source:'osv'}`. Not to be confused with **JS Dep Signals** (formerly labelled "Supply-Chain"), which reads `JsReconFinding` nodes. See [the table section](#the-supply-chain-sca-table). |

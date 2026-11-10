@@ -160,7 +160,7 @@ The recon module uses a **Docker-in-Docker (DinD)** pattern where the main recon
 
 ### How It Works
 
-The recon container reaches the host's Docker daemon through a **filtering broker** rather than the raw socket. The broker validates every container-creation request — permitting only the known tool images, with mounts restricted to the shared scratch / output directories — and forwards the approved ones to the host daemon. All tool containers are therefore **siblings** managed by the same host daemon, while the recon container itself cannot create a container that mounts the host filesystem, runs privileged, or uses an unapproved image.
+The recon container reaches the host's Docker daemon through a **filtering broker** (`services/docker_broker/broker.py`) rather than the raw socket. The broker blocks by default: it forwards only the Docker API calls the tools' own `docker` invocations send (create, pull, attach, start/wait/kill/stop, logs, remove, and inspect or create of the tool volumes and networks) and refuses anything else with a 403 before the daemon sees it. A container create may use only the known tool images, bind only the shared scratch dir `/tmp/redamon` (read-write) and three repository subdirectories (`recon/wordlists`, `mcp/nuclei-templates`, `scanners/supply_chain_common`, read-only), and mount named volumes read-only except `nuclei-templates`. Verbs on an existing container work only on containers the broker created. All tool containers are therefore **siblings** managed by the same host daemon, while the recon container itself cannot create a container that mounts the host filesystem, runs privileged, or uses an unapproved image.
 
 ```mermaid
 flowchart TB
@@ -169,7 +169,7 @@ flowchart TB
             Socket["/var/run/docker.sock"]
         end
 
-        Broker["🛡️ docker-broker<br/>validates container creates<br/>allowlisted images + scratch mounts only"]
+        Broker["🛡️ docker-broker<br/>default-deny API allowlist<br/>tool images + scratch mounts only"]
 
         subgraph Containers["Sibling Containers"]
             Recon["redamon-recon<br/>Python Orchestrator<br/>📋 Coordinates all scans"]
@@ -181,11 +181,11 @@ flowchart TB
             PurednsC["puredns<br/>frost19k/puredns<br/>🧹 Wildcard Filter"]
         end
 
-        Volume["📁 Shared Volume<br/>recon/output/"]
+        Volume["📁 Shared scratch dir<br/>/tmp/redamon/"]
     end
 
     Broker -.->|filtered socket| Recon
-    Broker -.->|approved creates| Socket
+    Broker -.->|allowlisted calls| Socket
     Recon -->|docker run| NaabuC
     Recon -->|docker run| HttpxC
     Recon -->|docker run| NucleiC
@@ -753,6 +753,36 @@ What follows from that:
   provider never degrades the whole source, or its stale findings would never
   be pruned. The provider names one coverage gap: `note_degraded(aliases=...)`
   cuts its other source values with it.
+- **A source can prune only the hosts it re-checked (positive coverage).** A
+  module that calls `circuit_breaker.note_checked(source, hosts=..., checks=...,
+  module=...)` records the hosts it reached a verdict on, and
+  `_checked_prune_batches` prunes that source through
+  `prune_unseen_findings(only_hosts=..., types=...)`: a host it never reached
+  keeps its findings even when nothing noted it degraded. Degraded wins: a host
+  cut for the source, or for every source, leaves its checked set and is kept.
+  Hosts match by hostname, so any port checked counts the host as checked. An
+  empty `only_hosts` prunes nothing (the revive still runs).
+  `coverage_stamps.note_rows_checked(source, rows)` turns a per-host coverage
+  record into the same note: `complete` is checked, `partial` or `failed` is cut
+  for that host and source, `no_input` is neither. A source that records
+  nothing keeps the source-level rule above.
+- **`security_check` records per finding type.** The DNS checks (SPF, DMARC,
+  DNSSEC, zone transfer) record each verdict on the org (`Vulnerability.domain`),
+  Redis No Auth and SMTP Open Relay on the IP. A check with no verdict (a
+  timeout, SERVFAIL, a reset: `CheckUnknown`) records its type on no host, so
+  its finding there is kept, and leaves a coverage gap. Every type the source
+  did not record (headers, TLS, cookies, a switched-off check) is pruned by one
+  more source-level call with `exclude_types=`, as before. DNS findings written
+  before they stored `domain` get the org of the Domain they hang off first
+  (`backfill_security_check_domains`); if that fails, the DNS types prune
+  nothing that run.
+- **Restored findings prune like any others.** The export and the Scan Timeline
+  snapshot flatten Neo4j DateTimes to ISO strings. A restore writes RedAmon's
+  own timestamps (`updated_at`, `stale_since`, `created_at`, the triage and
+  coverage `*_at`) back as DateTimes (`webapp/src/lib/graphRestore.ts`), and the
+  prune and its revive also read an ISO-string `updated_at`, so a graph
+  restored by an earlier release needs no rescan. A value that is no timestamp
+  keeps its finding.
 - **Older passive CVEs get their host first.** `backfill_passive_cve_hosts`
   sets `target_ip` from the id (`shodan-<cve>-<ip>`, `criminalip-<cve>-<ip>`)
   on rows written before the writers stored it, so the by-host keep can match
@@ -771,6 +801,17 @@ What follows from that:
   `tooling/scripts/netlas_finding_rekey.py` (dry run by default; `--apply`
   with the services stopped, before the first scan on the new release) moves
   their mutes, layers, proof edges and Postgres references.
+- **An AI Surface Recon MCP finding is per YARA rule.** Its id hashes type,
+  base URL, path, tool and the rule name (`_mk_finding` in
+  `recon/main_recon_modules/ai_surface_recon.py`). Rows from earlier releases
+  merged every rule on a server into one node; `tooling/scripts/aisr_finding_rekey.py`
+  (dry run by default; `--apply` with the services stopped, before the first
+  scan on the new release) moves each to the id of the rule its stored `name`
+  gives, and the other rules come back as new findings.
+- **A web-cache-deception finding is keyed on the page, not the plant URL.**
+  `cache_param` holds the leaked shape (`static-suffix:/.css`) and the random
+  plant URL stays in `poc_link`. `tooling/scripts/cache_deception_rekey.py`
+  (same usage) moves rows from earlier releases, which got a new id every run.
 - **A JS Recon Secret's id is a hash of its pattern, match and file**
   (`_make_finding_id` in `recon/helpers/js_recon/patterns.py`). The keyword
   gap of about 70 patterns is now `[^\n]{0,120}?` (the nearest value, at most
@@ -1041,9 +1082,10 @@ dead resolver every lookup would then wait out dnspython's 5 s timeout.
 WHOIS, Shodan domain DNS, OTX/VirusTotal/Criminal IP domain reports and FOFA
 `domain=` are asked for the org by the org's first group that passed RoE and
 ownership, and its other groups get a copy (`[*][...] <org>: answered earlier
-this run, reused`). SPF/DMARC/DNSSEC run on the org once, inside vuln_scan, for
-the first group of that org that reaches it; when no group of an org reached
-them, `security_check` is marked degraded so the prune keeps the old findings.
+this run, reused`). SPF/DMARC/DNSSEC and the zone transfer run on the org once,
+inside vuln_scan, for the first group of that org that reaches it; when no group
+of an org reached them, that org keeps its DNS findings and only those
+(`_note_unchecked_dns_orgs`): the rest of `security_check` prunes as usual.
 Origin discovery keys its candidate sources on the org only when the org is in
 scope (some group's scan root is the org, or ownership was proven at the org),
 else on the scan root (`[*][Origin] candidate key: <root> (org not in scope)`).

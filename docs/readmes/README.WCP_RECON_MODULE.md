@@ -517,6 +517,18 @@ subgraph). Node id is deterministic and tenant-scoped so re-scans dedupe via MER
 cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}   (sanitised)
 ```
 
+The formula is `cache_vuln_id` in `cache_mixin.py`, and every input must be the same
+on every run. A per-run token (a cache buster, the deception plant's marker) stays in
+the evidence. A native deception finding (`deception.py`) is therefore keyed on the
+**page** it leaked (`/account`, without a trailing slash) and on the URL shape that
+leaked it as its vector: `cache_param` is `static-suffix:/.css` or `static-suffix:;.js`
+(`deception_vector`). The plant URL with its random marker
+(`/account/rdmn1a2b3c.css`) is the reproduction in `poc_link` / `curl_verify`, and
+the finding hangs off the page's Endpoint. Findings written before this keying hold
+a plant URL in their id; `tooling/scripts/cache_deception_rekey.py --all` (a dry
+run; `--apply` with the agent, webapp and orchestrator stopped) moves them to the
+stable id with their mute, Priority Board layers and Postgres references.
+
 Persisted properties: `source`, `vulnerability_type="web_cache_poisoning"`, `name`,
 `description`, `severity`, `cvss_score`, `confidence`, `confidence_tier`,
 `cache_header`, `cache_param`, `cache_vector_type`, `cache_impact`, `cache_technique`,

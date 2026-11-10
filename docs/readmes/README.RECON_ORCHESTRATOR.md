@@ -380,20 +380,24 @@ networks:
 > (held only by the webapp), so even a host-network peer that can reach
 > `127.0.0.1:8010` cannot drive the API without the key. The recon and partial-recon
 > containers it spawns do **not** receive the raw Docker socket — they mount a
-> filtering broker socket that only permits creating the known tool containers
-> (allowlisted images), so a compromised recon container cannot mount the host
-> filesystem, run privileged, or escape to the host. As of wave 2 (STRIDE E1) the
-> broker also gates **operate-on-existing** verbs (`exec`/`attach`/`start`/`kill`/
-> `archive`/`commit`/etc.) by an owner label (`redamon.broker-owned`): a request is
-> denied unless the target container carries the marker the broker stamps on every
-> container it creates, and container listing is scoped to owned containers only, so
-> a compromised worker can no longer `exec` into the orchestrator/broker (the
-> raw-socket holders) or enumerate infra. The broker also enforces the
-> mount **mode** (STRIDE T1/T2): a host path may be bound read-write only if it is
-> under `ALLOWED_RW_PREFIXES` (default `/tmp/redamon`); source-tree binds must be
-> `:ro`, so a compromised worker cannot overwrite `recon/main.py` or an Agent
-> Skill on the host. Overridable via `DOCKER_BROKER_ALLOWED_RW_PREFIXES` /
-> `ALLOWED_RW_VOLUMES`.
+> filtering broker socket that blocks by default: only the Docker API calls the
+> tools' own `docker` invocations send are forwarded, and `exec`, `archive`,
+> `update`, `commit`, `build`, image push/tag/delete and the rest get a 403 before
+> the daemon is contacted. Creates are limited to the known tool images, so a
+> compromised recon container cannot mount the host filesystem, run privileged,
+> or escape to the host. The verbs it does allow on an existing container
+> (`attach`/`start`/`wait`/`kill`/`stop`/`pause`, logs, inspect, remove) are gated
+> by an owner label (`redamon.broker-owned`): a request is denied unless the
+> target container carries the marker the broker stamps on every container it
+> creates, and container listing is scoped to owned containers only, so a
+> compromised worker cannot touch the orchestrator/broker (the raw-socket
+> holders) or enumerate infra. The broker also enforces mounts (STRIDE T1/T2): a
+> host path may be bound read-write only under `/tmp/redamon`
+> (`DOCKER_BROKER_ALLOWED_RW_PREFIXES` adds more); of the repository only
+> `recon/wordlists`, `mcp/nuclei-templates` and `scanners/supply_chain_common`
+> may be bound, read-only, never the repository root that holds `.env`, so a
+> container spawned through the broker cannot write the source tree. Named volumes mount read-only except
+> `nuclei-templates` (`DOCKER_BROKER_ALLOWED_RW_VOLUMES` adds more).
 
 ## Container Management
 
@@ -401,7 +405,10 @@ networks:
 
 When starting a recon, the orchestrator:
 
-1. Removes any existing container with the same name
+1. Refuses with `409 Recon already active` while a container with the project's
+   recon name is running, paused or restarting, whatever the in-memory status
+   says, and removes nothing when Docker cannot be asked. A finished leftover is
+   removed by id.
 2. Creates a new container with:
    - `network_mode: host` for scanning capabilities
    - `NET_RAW` capability only (for `masscan`/`nmap` SYN scans), plus the D1
@@ -425,14 +432,29 @@ When starting a recon, the orchestrator:
 
 ### Log Streaming Implementation
 
-Logs are streamed using a thread-based approach:
+Every SSE log stream (full and partial recon, AI attack surface, GVM, GitHub
+hunt, TruffleHog, supply chain) uses one reader, `_follow_container_logs`:
 
-1. A background thread reads logs synchronously from Docker SDK
-2. Logs are pushed to an asyncio queue
-3. The async generator yields log events from the queue
-4. SSE events are sent to connected clients
+1. A worker of the shared 64-thread log pool follows `container.logs(follow=True)`
+   synchronously, so the Docker SDK never blocks the event loop
+2. Lines go into a bounded backlog: the reader stays at most
+   `LOG_STREAM_BUFFER_LINES` (1000) lines ahead of the consumer
+3. The async generator yields log events from that backlog as SSE events
+4. When the client disconnects (the generator is closed or its task cancelled),
+   the reader is told to stop and the Docker log stream is closed, which also
+   wakes a reader blocked on a quiet container. Callers wrap the generator in
+   `contextlib.aclosing`
 
-This ensures the Docker SDK's synchronous `container.logs()` doesn't block the async event loop.
+A dropped stream therefore gives its worker back at once instead of holding it
+until the container exits, so reconnects during long scans cannot exhaust the
+pool.
+
+### Status Tracking
+
+The status poll inspects the project's recon container. A running container
+always reads `running`, and a Docker `NotFound` is the real "gone". A Docker API
+error (a daemon 5xx) keeps the last status until Docker answers again, so a live
+run is never recorded as failed, refused a Stop, or removed by the next start.
 
 ## Integration with Webapp
 

@@ -714,7 +714,7 @@ ones are pushed to the orchestrator on the settings save.
 | `captureProxyEnabled` | UserSettings | false | global switch; spawns/stops containers |
 | `captureProxyEnabled` | Project | false | per-project routing gate |
 | `captureProxyScope` | UserSettings | `both` | which producers route (recon\|agent\|both) |
-| `captureProxyPort` | UserSettings | 8888 | proxy listen + publish port |
+| `captureProxyPort` | UserSettings | 8888 | proxy listen + publish port; forwarded to full and partial recon containers as `CAPTURE_PROXY_PORT` |
 | `captureProxyStoreBodies` | UserSettings | true | master switch: store bodies at all |
 | `captureProxyStoreReqBodies` | UserSettings | true | store request bodies (direction gate) |
 | `captureProxyStoreRespBodies` | UserSettings | true | store response bodies (direction gate) |
@@ -766,7 +766,8 @@ The eleven `captureEgress*` fields are pushed to the orchestrator on save (as th
 |---|---|---|---|
 | `CAPTURE_PROXY_ENABLED` | false | producers | routing gate (derived from `Project.captureProxyEnabled`) |
 | `CAPTURE_PROXY_IMAGE` | `redamon-capture-proxy:latest` | orchestrator | image (trusted env only) |
-| `CAPTURE_PROXY_MAX_BODY_KB` | 64 | proxy | inline (DB-vs-disk) text routing threshold |
+| `CAPTURE_PROXY_PORT` | 8888 | recon | the port recon dials the proxy on; the orchestrator sets it at each full or partial recon spawn to the port Docker publishes the proxy on (from `captureProxyPort`) |
+| `CAPTURE_PROXY_MAX_BODY_KB` | 64 | proxy, recon | inline (DB-vs-disk) text routing threshold; recon containers get `captureProxyMaxBodyKb` from the capture config at each spawn |
 | `CAPTURE_PROXY_STORE_BODIES` | true | proxy | master switch: store bodies at all |
 | `CAPTURE_STORE_REQ_BODIES` | true | proxy | store request bodies (direction gate) |
 | `CAPTURE_STORE_RESP_BODIES` | true | proxy | store response bodies (direction gate) |

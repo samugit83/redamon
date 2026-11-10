@@ -402,7 +402,7 @@ Three scanners can say an IP is a CDN edge, and all three reach the graph:
 |---|---|---|
 | naabu `-cdn` | GROUP 3, port scan | `update_graph_from_port_scan` sets `is_cdn` / `cdn_name` from `port_scan.by_ip` and `port_scan.by_host` (no `cdn_source`) |
 | httpx `-cdn` | GROUP 4, per URL | on the `Endpoint` (`is_cdn`, `cdn`); readers that need an IP's tag also read `http_probe.by_url` |
-| tlsx certificate issuer | GROUP 3.6 | `_attribute_cdn` (`recon/main_recon_modules/tls_scan.py`) fills a **blank** tag on `port_scan.by_ip` from the issuer (Cloudflare, Akamai, Fastly, Sucuri, Incapsula/Imperva; never Amazon, since ACM certificates sit on real origins) and lists those IPs in the tlsx payload as `cdn_by_ip` |
+| tlsx certificate issuer | GROUP 3.6 | `_attribute_cdn` (`recon/main_recon_modules/tls_scan.py`) fills a **blank** tag on `port_scan.by_ip` from the issuer (Cloudflare, Akamai, Fastly, Sucuri, Incapsula/Imperva; never Amazon, since ACM certificates sit on real origins, and never a Cloudflare Origin CA issuer, whose certificate only an origin presents; `cdn_from_certificate` in `recon/helpers/cdn_ranges.py`) and lists those IPs in the tlsx payload as `cdn_by_ip` |
 
 The port graph write runs **before** tlsx in a full run, so the tlsx graph writer
 (`update_graph_from_tlsx`) carries its own tag: for each IP in `cdn_by_ip` it

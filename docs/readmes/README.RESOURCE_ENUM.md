@@ -86,7 +86,7 @@ The `resource_enum.py` module provides comprehensive endpoint discovery and clas
 | **Hakrawler Crawling** | DOM-aware web crawling via Docker (active) |
 | **jsluice JS Analysis** | JavaScript analysis to extract URLs, endpoints, and secrets (downloads JS files from target) |
 | **FFuf Directory Fuzzing** | Brute-force directory/endpoint discovery using wordlists (built-in SecLists + custom uploads) |
-| **ParamSpider Parameter Mining** | Passive Wayback Machine CDX query for parameterized URLs — returns only URLs with query parameters, values replaced by placeholder (FUZZ) |
+| **ParamSpider Parameter Mining** | Passive Wayback Machine CDX query for parameterized URLs — returns only URLs with query parameters, values replaced by placeholder (FUZZ). `paramspider -d` answers for every archived host under the domain, so only URLs on a host the run targets (`target_domains`, as for GAU) and not RoE-excluded reach the merge, `discovered_urls` (Nuclei DAST) and `archived_urls`; the rest count as `paramspider_out_of_scope` |
 | **Arjun Parameter Discovery** | Discovers hidden HTTP query/body parameters on discovered endpoints using ~25,000 parameter names. Multi-method parallel execution (GET/POST/JSON/XML) |
 | **Parallel Execution** | Katana, Hakrawler, GAU, ParamSpider, and Kiterunner run simultaneously, then jsluice → FFuf → Arjun sequential (Arjun methods run in parallel internally) |
 | **URL Verification** | Verifies GAU URLs are live before adding to results |

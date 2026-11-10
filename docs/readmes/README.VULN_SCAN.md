@@ -90,7 +90,7 @@ When `NUCLEI_DAST_MODE = True`, a second Nuclei pass fuzzes the parameterized UR
 | **DAST Mode** | Active fuzzing for XSS, SQLi, SSTI, Command Injection |
 | **Auto-Update Templates** | Template update (`-ut`) before each scan, into a persistent Docker volume |
 | **Custom Templates** | Per-project selection of uploaded templates |
-| **False-Positive Filter** | Drops findings whose response is a rate-limit or WAF block page (optionally AI-assisted) |
+| **False-Positive Filter** | Drops a time-based or blind finding whose response the server throttled, and an injection finding whose response is a WAF block page (optionally AI-assisted) |
 | **AI Tag Selection** | Optionally lets an LLM prune `NUCLEI_TAGS` to the detected tech stack |
 | **Category Classification** | Auto-categorizes findings (XSS, SQLi, RCE, etc.) |
 | **Authenticated Scanning** | The project's authenticated-session headers, when every scanned host is in scope |
@@ -238,7 +238,7 @@ For a host whose responses name nginx 1.19.0 and PHP 5.6.40:
 }
 ```
 
-The graph writer (`update_graph_from_vuln_scan`) and MITRE enrichment (`recon/main_recon_modules/add_mitre.py`) read `technology_cves.by_technology`. In the domain pipeline's GROUP 6 fan-out, `run_vuln_scan_isolated()` returns only the `vuln_scan` key, so a `technology_cves` computed there stays on the wrapper's copy.
+The graph writer (`update_graph_from_vuln_scan`) and MITRE enrichment (`recon/main_recon_modules/add_mitre.py`) read `technology_cves.by_technology`. The writer also reads `vuln_scan.all_cves`, which MITRE enrichment fills with CWE and CAPEC, to link each nuclei finding to the CVEs its template cites: `(v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)-[:HAS_CWE]->(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)`. In the domain pipeline's GROUP 6 fan-out, `run_vuln_scan_isolated()` returns only the `vuln_scan` key, so a `technology_cves` computed there stays on the wrapper's copy.
 
 ### Nuclei Template CVEs vs Technology CVE Lookup
 
@@ -696,7 +696,7 @@ docker run --rm --net=host --name redamon-nuclei-detection-<id> \
 **Purpose:** Decides whether a raw nuclei finding is a false positive.
 
 **Rules:**
-1. A response with a rate-limit marker (`429`, "Too Many Requests", "try again later", ...) is a false positive, whatever the template
+1. For time-based and blind templates only (a `time-based`, `blind` or `time-based-sqli` tag, or `time` / `blind` as a whole word of the template id), a response the server throttled is a false positive: the delay the template measured is the throttle's. Throttled means the raw response's status line reads `429`, or it reads `503` or carries a `Retry-After` header and the response holds throttle wording ("too many requests", "rate limit", "please wait", "try again later", ...). Nuclei's JSONL has no status field, so the status and headers are parsed from the raw `response`. Any other template keeps its match, and the same wording on a page the server did not throttle ("Loading, please wait...") is ordinary copy
 2. For injection templates (`sqli`, `xss`, `rce`, `lfi`, `ssti`, `injection` tags), a `403` response with a WAF marker ("Access Denied", "ModSecurity", "Cloudflare", ...) is a false positive
 3. With `NUCLEI_AI_RESPONSE_FILTER` on, an injection finding the keyword lists missed, whose response's first 50 characters hold a suspicious status (403, 406, 418, 429, 503, 451), is classified by the LLM; a "blocked" verdict with confidence of at least 70 is a false positive
 
@@ -722,7 +722,7 @@ map fails the whole write. That list is what CVE enrichment, reports and the
 Mute Rules CVE fields (`has_cve`, `cve_year`, `cve_ids`) read. Regression tests:
 `recon/tests/test_nuclei_cve_findings_reach_graph.py`.
 
-**Category Classification:** the first tag that contains one of these keys (checked in this order) decides; no match is `general`.
+**Category Classification:** the first tag that names one of these keys (keys checked in this order) decides; no match is `general`. A key matches whole words of a tag, split on anything that is not a letter or digit, never a substring: `time-based-sqli` is sqli and `open-redirect` is open_redirect, while `ecommerce`, `salesforce` and `source` are not rce and `sqlite` is not sqli. The Priority Board ranks on this category.
 
 | Tag Containing | Category |
 |----------------|----------|
@@ -736,7 +736,7 @@ Mute Rules CVE fields (`has_cve`, `cve_year`, `cve_ids`) read. Regression tests:
 | `ssti` | ssti |
 | `cve` | cve |
 | `exposure` | exposure |
-| `misconfig` | misconfiguration |
+| `misconfig`, `misconfiguration` | misconfiguration |
 | `default-login`, `auth-bypass` | authentication |
 | `panel` | exposed_panel |
 | `tech` | technology |
