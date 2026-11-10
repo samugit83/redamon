@@ -502,6 +502,64 @@ def is_false_positive(finding: dict) -> tuple:
 # Nuclei Output Parsing
 # =============================================================================
 
+# Order matters: the first key a tag matches decides that tag's category.
+_CATEGORY_BY_TAG = {
+    "xss": "xss",
+    "sqli": "sqli",
+    "rce": "rce",
+    "lfi": "lfi",
+    "rfi": "rfi",
+    "ssrf": "ssrf",
+    "xxe": "xxe",
+    "ssti": "ssti",
+    "cve": "cve",
+    "exposure": "exposure",
+    "misconfig": "misconfiguration",
+    "misconfiguration": "misconfiguration",
+    "default-login": "authentication",
+    "auth-bypass": "authentication",
+    "panel": "exposed_panel",
+    "tech": "technology",
+    "takeover": "takeover",
+    "dos": "dos",
+    "idor": "idor",
+    "csrf": "csrf",
+    "redirect": "open_redirect",
+    "crlf": "crlf",
+    "injection": "injection",
+    "file-upload": "file_upload",
+    "traversal": "path_traversal",
+    "disclosure": "information_disclosure",
+    "ssl": "ssl_tls",
+    "tls": "ssl_tls",
+    "cloud": "cloud",
+    "aws": "cloud",
+    "azure": "cloud",
+    "gcp": "cloud",
+    "kubernetes": "cloud",
+    "docker": "cloud",
+}
+_CATEGORY_KEY_WORDS = tuple((tuple(_words(key)), category)
+                            for key, category in _CATEGORY_BY_TAG.items())
+
+
+def _category_from_tags(tags: list) -> str:
+    """Category of the first tag that names one, else "general".
+
+    A key matches whole words of a tag only (time-based-sqli is sqli,
+    open-redirect is open_redirect), never a substring: "source",
+    "ecommerce" and "salesforce" contain "rce", "sqlite" contains "sqli",
+    and the Priority Board ranks on this category.
+    """
+    for tag in tags:
+        words = tuple(_words(tag))
+        for key, category in _CATEGORY_KEY_WORDS:
+            n = len(key)
+            if any(words[i:i + n] == key for i in range(len(words) - n + 1)):
+                return category
+    return "general"
+
+
 def parse_nuclei_finding(finding: dict) -> dict:
     """
     Parse a single nuclei finding into standardized format.
@@ -546,58 +604,9 @@ def parse_nuclei_finding(finding: dict) -> dict:
                         "url": f"https://nvd.nist.gov/vuln/detail/{cid}"
                     })
     
-    # Extract tags
-    tags = info.get("tags", [])
-    if isinstance(tags, str):
-        tags = [t.strip() for t in tags.split(",")]
-    
-    # Determine category from tags
-    category = "general"
-    category_map = {
-        "xss": "xss",
-        "sqli": "sqli",
-        "rce": "rce",
-        "lfi": "lfi",
-        "rfi": "rfi",
-        "ssrf": "ssrf",
-        "xxe": "xxe",
-        "ssti": "ssti",
-        "cve": "cve",
-        "exposure": "exposure",
-        "misconfig": "misconfiguration",
-        "default-login": "authentication",
-        "auth-bypass": "authentication",
-        "panel": "exposed_panel",
-        "tech": "technology",
-        "takeover": "takeover",
-        "dos": "dos",
-        "idor": "idor",
-        "csrf": "csrf",
-        "redirect": "open_redirect",
-        "crlf": "crlf",
-        "injection": "injection",
-        "file-upload": "file_upload",
-        "traversal": "path_traversal",
-        "disclosure": "information_disclosure",
-        "ssl": "ssl_tls",
-        "tls": "ssl_tls",
-        "cloud": "cloud",
-        "aws": "cloud",
-        "azure": "cloud",
-        "gcp": "cloud",
-        "kubernetes": "cloud",
-        "docker": "cloud",
-    }
-    
-    for tag in tags:
-        tag_lower = tag.lower()
-        for key, cat in category_map.items():
-            if key in tag_lower:
-                category = cat
-                break
-        if category != "general":
-            break
-    
+    tags = _tag_list(info.get("tags"))
+    category = _category_from_tags(tags)
+
     # Build result
     result = {
         "template_id": finding.get("template-id", "unknown"),
