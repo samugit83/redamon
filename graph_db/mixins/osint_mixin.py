@@ -2194,8 +2194,11 @@ class OsintMixin:
                                 pnum = 0
                             if not pnum:
                                 continue
-                            proto = (row.get("protocol") or "tcp")
-                            protocol = (proto.lower() if isinstance(proto, str) else "tcp") or "tcp"
+                            # The Port key is the transport. The row's `protocol` is the
+                            # application (http, ssh) and names the Service below; a row
+                            # parsed before `transport` existed is tcp.
+                            transport = str(row.get("transport") or "").lower()
+                            protocol = transport if transport in ("tcp", "udp") else "tcp"
                             session.run(
                                 """
                                 MERGE (p:Port {number: $port, protocol: $protocol, ip_address: $ip,

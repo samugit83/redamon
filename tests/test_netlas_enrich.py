@@ -207,6 +207,19 @@ class TestNetlasItemToResult(unittest.TestCase):
         row = _netlas_item_to_result({"ip": "1.1.1.1", "protocol": "https", "prot7": "ftp"})
         self.assertEqual(row["protocol"], "https")
 
+    def test_transport_comes_from_prot4_never_the_app_protocol(self):
+        row = _netlas_item_to_result({"ip": "1.1.1.1", "prot4": "tcp", "prot7": "http",
+                                      "protocol": "https"})
+        self.assertEqual((row["transport"], row["protocol"]), ("tcp", "https"))
+        row = _netlas_item_to_result({"ip": "1.1.1.1", "prot4": "UDP", "prot7": "dns"})
+        self.assertEqual((row["transport"], row["protocol"]), ("udp", "dns"))
+
+    def test_transport_defaults_to_tcp(self):
+        for data in ({"ip": "1.1.1.1"}, {"ip": "1.1.1.1", "prot4": "http"},
+                     {"ip": "1.1.1.1", "prot4": None}, {"ip": "1.1.1.1", "prot4": 6}):
+            with self.subTest(data=data):
+                self.assertEqual(_netlas_item_to_result(data)["transport"], "tcp")
+
     # --- missing / malformed nested blocks ---
 
     def test_none_input_returns_none(self):
@@ -252,7 +265,7 @@ class TestNetlasItemToResult(unittest.TestCase):
         """Every expected key is present in the returned dict."""
         row = _netlas_item_to_result({})
         expected_keys = {
-            "host", "ip", "port", "protocol", "title", "http_status_code",
+            "host", "ip", "port", "protocol", "transport", "title", "http_status_code",
             "country", "city", "latitude", "longitude", "timezone",
             "isp", "asn_name", "asn_number", "asn_route",
             "banner", "cve_list",

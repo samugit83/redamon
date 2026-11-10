@@ -100,6 +100,16 @@ def _netlas_responses_get(q: str, keys, size: int, *, admitted: bool = False):
                            admitted=admitted)
 
 
+def _transport_protocol(data: dict) -> str:
+    """The item's layer-4 protocol, the Port's key: tcp unless Netlas says udp.
+
+    A Port keyed on the application protocol is a second node beside the port
+    scan's {443, tcp} for the same socket.
+    """
+    prot4 = str(data.get("prot4") or "").strip().lower()
+    return prot4 if prot4 in ("tcp", "udp") else "tcp"
+
+
 def _netlas_item_to_result(data: dict) -> dict | None:
     """Map one responses item's data blob to output row."""
     if not isinstance(data, dict):
@@ -165,6 +175,7 @@ def _netlas_item_to_result(data: dict) -> dict | None:
         port_i = int(port) if port is not None else 0
     except (TypeError, ValueError):
         port_i = 0
+    # The application protocol (http, ssh): it names the Service, never the Port.
     protocol = data.get("protocol") or data.get("prot7") or ""
 
     return {
@@ -172,6 +183,7 @@ def _netlas_item_to_result(data: dict) -> dict | None:
         "ip": str(ip) if ip is not None else "",
         "port": port_i,
         "protocol": str(protocol) if protocol is not None else "",
+        "transport": _transport_protocol(data),
         "title": str(title) if title is not None else "",
         "http_status_code": http_status_code,
         "country": country,

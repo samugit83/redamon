@@ -8,7 +8,9 @@ session; only a real database proves the order of events end to end:
     Both keep their status and discovery source, and the silent `resolved`
     host still becomes `no_http` at http_probe (audit L-2);
   * a Service the port scan made keeps its (absent) source when a passive
-    provider enriches it, while the provider's own banner lands (L-2).
+    provider enriches it, while the provider's own fields land (L-2);
+  * Netlas's https / ssh responses land on the port scan's tcp Port instead
+    of minting a second Port keyed on the application protocol (L-4).
 
 Self-skips unless the neo4j driver imports AND a database answers. To run it:
 
@@ -154,6 +156,27 @@ class TestOsintOwnerFieldsGraphLive(unittest.TestCase):
         rows = self._run("MATCH (svc:Service {name: 'http', port_number: 8080, project_id: $pid}) "
                          "RETURN svc.source AS source")
         self.assertEqual(rows, [{"source": "censys"}])
+
+    def test_netlas_lands_on_the_scanned_tcp_port(self):
+        self._run("""
+            MATCH (i:IP {address: $ip, user_id: $uid, project_id: $pid})
+            MERGE (p:Port {number: 443, protocol: 'tcp', ip_address: $ip, user_id: $uid, project_id: $pid})
+            SET p.state = 'open'
+            MERGE (i)-[:HAS_PORT]->(p)
+            """, ip=IP)
+        self.client.update_graph_from_netlas(_recon("netlas", {"results": [
+            {"ip": IP, "port": 443, "protocol": "https", "transport": "tcp", "title": "Home"},
+            # A row an older parser saved carries only the application protocol.
+            {"ip": IP, "port": 22, "protocol": "ssh", "banner": "SSH-2.0-OpenSSH_8.9"},
+        ]}), self.user, self.pid)
+        ports = self._run("MATCH (p:Port {ip_address: $ip, project_id: $pid}) "
+                          "RETURN p.number AS n, p.protocol AS proto, p.source AS source "
+                          "ORDER BY n", ip=IP)
+        self.assertEqual(ports, [{"n": 22, "proto": "tcp", "source": None},
+                                 {"n": 443, "proto": "tcp", "source": None}])
+        links = self._run("MATCH (p:Port {project_id: $pid})-[:RUNS_SERVICE]->(svc:Service) "
+                          "RETURN p.number AS n, svc.name AS name ORDER BY n")
+        self.assertEqual(links, [{"n": 22, "name": "ssh"}, {"n": 443, "name": "https"}])
 
 
 if __name__ == "__main__":
