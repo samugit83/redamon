@@ -1430,7 +1430,7 @@ class OsintMixin:
 
                                 sname = (svc.get("service_name") or "").strip()
                                 if sname:
-                                    svc_props: dict = {"source": "censys"}
+                                    svc_props: dict = {}
                                     ext = (svc.get("extended_service_name") or "").strip()
                                     if ext:
                                         svc_props["extended_service_name"] = ext
@@ -1458,7 +1458,7 @@ class OsintMixin:
                                         """
                                         MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                             user_id: $user_id, project_id: $project_id})
-                                        ON CREATE SET svc.updated_at = datetime()
+                                        ON CREATE SET svc.source = 'censys'
                                         SET svc += $props, svc.updated_at = datetime()
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
@@ -1520,7 +1520,10 @@ class OsintMixin:
                                         except Exception as e:
                                             stats["errors"].append(f"Censys cert {subject_cn}: {e}")
 
-                            # Reverse DNS → Subdomain nodes
+                            # Reverse DNS → Subdomain nodes. Status and source are
+                            # first-writer fields: DNS's `resolved` must survive a
+                            # passive sighting, or http_probe (which demotes only
+                            # `resolved` hosts) never marks a silent one `no_http`.
                             for hostname in host.get("reverse_dns_names") or []:
                                 root = attach_for_host(hostname, recon_data)[1] if hostname else None
                                 if not root:
@@ -1529,9 +1532,9 @@ class OsintMixin:
                                     session.run(
                                         """
                                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
-                                        ON CREATE SET s.discovered_at = datetime(), s.updated_at = datetime()
-                                        SET s.source = 'censys_rdns', s.status = 'unverified',
-                                            s.updated_at = datetime()
+                                        ON CREATE SET s.discovered_at = datetime(), s.source = 'censys_rdns',
+                                                      s.status = 'unverified'
+                                        SET s.updated_at = datetime()
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         SET i.updated_at = datetime()
                                         MERGE (s)-[r:RESOLVES_TO]->(i)
@@ -1646,8 +1649,8 @@ class OsintMixin:
                                     """
                                     MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                         user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET svc.updated_at = datetime()
-                                    SET svc.source = 'fofa', svc.updated_at = datetime(),
+                                    ON CREATE SET svc.source = 'fofa'
+                                    SET svc.updated_at = datetime(),
                                         svc.http_title   = CASE WHEN $http_title <> '' THEN $http_title ELSE svc.http_title END,
                                         svc.product      = CASE WHEN $product <> '' THEN $product ELSE svc.product END,
                                         svc.version      = CASE WHEN $version <> '' THEN $version ELSE svc.version END,
@@ -1713,8 +1716,8 @@ class OsintMixin:
                                 session.run(
                                     """
                                     MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET s.status = 'unverified', s.discovered_at = datetime(), s.updated_at = datetime()
-                                    SET s.source = 'fofa', s.updated_at = datetime()
+                                    ON CREATE SET s.status = 'unverified', s.source = 'fofa', s.discovered_at = datetime()
+                                    SET s.updated_at = datetime()
                                     MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                     SET i.updated_at = datetime()
                                     MERGE (s)-[r:RESOLVES_TO]->(i)
@@ -1835,11 +1838,14 @@ class OsintMixin:
                                     # The edge usually exists already from DNS
                                     # resolution, so the passive-DNS dates widen
                                     # its window rather than being set on create.
+                                    # The node's status and source stay the first
+                                    # writer's, as in the Censys rDNS write.
                                     session.run(
                                         """
                                         MERGE (s:Subdomain {name: $name, user_id: $user_id, project_id: $project_id})
-                                        ON CREATE SET s.discovered_at = datetime(), s.updated_at = datetime()
-                                        SET s.source = 'otx_passive_dns', s.status = 'unverified', s.updated_at = datetime()
+                                        ON CREATE SET s.discovered_at = datetime(), s.source = 'otx_passive_dns',
+                                                      s.status = 'unverified'
+                                        SET s.updated_at = datetime()
                                         WITH s
                                         MERGE (i:IP {address: $ip, user_id: $user_id, project_id: $project_id})
                                         SET i.updated_at = datetime()
@@ -2208,7 +2214,7 @@ class OsintMixin:
                             # --- Service node (enriched) ---
                             prot_name = (row.get("protocol") or "").strip()
                             if prot_name:
-                                svc_props: dict = {"source": "netlas"}
+                                svc_props: dict = {}
                                 title = row.get("title") or ""
                                 if title:
                                     svc_props["http_title"] = title
@@ -2225,7 +2231,7 @@ class OsintMixin:
                                     """
                                     MERGE (svc:Service {name: $name, port_number: $port, ip_address: $ip,
                                                         user_id: $user_id, project_id: $project_id})
-                                    ON CREATE SET svc.updated_at = datetime()
+                                    ON CREATE SET svc.source = 'netlas'
                                     SET svc += $props, svc.updated_at = datetime()
                                     WITH svc
                                     MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
@@ -2511,7 +2517,7 @@ class OsintMixin:
                                 # Service node — use app name; fall back to service field
                                 svc_name = (row.get("app") or row.get("service") or "").strip()
                                 if svc_name:
-                                    svc_props: dict = {"source": "zoomeye"}
+                                    svc_props: dict = {}
                                     banner = (row.get("banner") or "")[:500]
                                     if banner:
                                         svc_props["banner"] = banner
@@ -2529,7 +2535,7 @@ class OsintMixin:
                                         MERGE (svc:Service {name: $name, port_number: $port,
                                                             ip_address: $ip,
                                                             user_id: $user_id, project_id: $project_id})
-                                        ON CREATE SET svc.updated_at = datetime()
+                                        ON CREATE SET svc.source = 'zoomeye'
                                         SET svc += $props, svc.updated_at = datetime()
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol,
@@ -2735,8 +2741,8 @@ class OsintMixin:
                                         MERGE (svc:Service {name: $svc_name, port_number: $port,
                                                             ip_address: $ip, user_id: $user_id,
                                                             project_id: $project_id})
-                                        SET svc.source = 'criminalip',
-                                            svc.version = $version,
+                                        ON CREATE SET svc.source = 'criminalip'
+                                        SET svc.version = $version,
                                             svc.banner  = $banner,
                                             svc.updated_at = datetime()
                                         WITH svc
