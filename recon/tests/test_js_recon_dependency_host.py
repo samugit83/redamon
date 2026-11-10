@@ -145,6 +145,17 @@ def test_a_package_on_two_hosts_keeps_both_and_one_stable_parent():
         assert len([1 for q, _ in session.calls if "HAS_JS_FINDING" in q]) == 1
 
 
+def test_the_five_files_kept_do_not_depend_on_the_download_order():
+    """S-18: the producer keeps five importing files. Cut in download order,
+    a package imported by more files kept a different five, and so a
+    different first file and host, from one run to the next."""
+    urls = [f"https://app.example.com/static/js/chunk{i}.js" for i in range(8)]
+    files = [{"url": u, "content": IMPORT} for u in urls]
+    for order in (files, files[::-1]):
+        [finding] = _dependencies(order)
+        assert finding["source_urls"] == sorted(urls)[:5]
+
+
 def test_a_package_named_only_in_the_internal_list_gets_no_file_node(tmp_path):
     packages = tmp_path / "internal.txt"
     packages.write_text("@acme/billing-core\n")

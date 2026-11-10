@@ -191,7 +191,10 @@ def detect_dependency_confusion(
         scope = package_name.split('/')[0] if '/' in package_name else ''
         if scope in public_scopes:
             continue
-        candidates.append((package_name, scope, source_urls))
+        # Files download in completion order: sorted, a package imported by
+        # more than five keeps the same five (and the writer the same first
+        # file and host) from one run to the next.
+        candidates.append((package_name, scope, sorted(source_urls)))
 
     # Parallel npm registry lookups. npm rate-limits anonymous traffic, so
     # cap workers conservatively (<= 10) regardless of JS_RECON_CONCURRENCY.
