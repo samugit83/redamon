@@ -29,7 +29,7 @@ _dns_stub.__path__ = []  # make it a package
 for mod_name in [
     'dns', 'dns.resolver', 'dns.rdatatype', 'dns.name', 'dns.reversename',
     'dns.exception', 'dns.rcode', 'dns.zone', 'dns.query', 'dns.rdataclass',
-    'dns.tokenizer', 'dns.entropy',
+    'dns.tokenizer', 'dns.entropy', 'dns.xfr',
     'whois', 'docker', 'neo4j', 'knockpy',
 ]:
     if mod_name not in sys.modules:
@@ -41,6 +41,9 @@ for mod_name in [
             sys.modules[mod_name] = _dns_stub
         else:
             sys.modules[mod_name] = types.ModuleType(mod_name)
+# check_zone_transfer names it in an except clause, which must evaluate.
+if not hasattr(sys.modules['dns.xfr'], 'TransferError'):
+    sys.modules['dns.xfr'].TransferError = type('TransferError', (Exception,), {})
 
 
 # =============================================================================
