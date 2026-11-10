@@ -577,7 +577,9 @@ interface ResolvedRate {
  * because this runs in the webapp and that runs in a scan container. The two are
  * kept honest by the golden master on the Python side and by this tool's own
  * tests, and the rule is three lines: a value above the ceiling comes down to
- * it, and a 0 that means unlimited comes down to it too.
+ * it, and any value at or below 0 is raised to it, whatever its zero_means: a
+ * reader runs a 0 with no limit (graphql waits nothing, nuclei and httpx get
+ * no rate flag), so the scan treats every one as unlimited.
  */
 function resolveRates(row: Record<string, unknown>, ceiling: number | null): ResolvedRate[] {
   const out: ResolvedRate[] = []
@@ -588,10 +590,10 @@ function resolveRates(row: Record<string, unknown>, ceiling: number | null): Res
     let capped = false
     let wasUnlimited = false
     if (ceiling !== null) {
-      if (written === 0 && f.zero_means === 'unlimited') {
+      if (written <= 0) {
         resolved = ceiling
         capped = true
-        wasUnlimited = true
+        wasUnlimited = written === 0 && f.zero_means === 'unlimited'
       } else if (written > ceiling) {
         resolved = ceiling
         capped = true

@@ -114,7 +114,11 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                       type="number"
                       className="textInput"
                       value={(data as any).graphqlRateLimit ?? 10}
-                      onChange={(e) => updateField('graphqlRateLimit' as any, parseInt(e.target.value) || 10)}
+                      onChange={(e) => {
+                        // Not `|| 10`: 0 is a real value here (unlimited, per the hint).
+                        const n = parseInt(e.target.value)
+                        updateField('graphqlRateLimit' as any, Number.isNaN(n) ? 10 : n)
+                      }}
                       min={0}
                       max={100}
                     />

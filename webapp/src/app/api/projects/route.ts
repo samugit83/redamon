@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser, ownerScope } from '@/lib/access'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
+import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
 import { resolveScopeGroups, scopeGuardrailNames, softGuardrailNames } from '@/lib/scopeGroups'
@@ -359,6 +360,13 @@ export async function POST(request: NextRequest) {
     }
     if (typeof sanitizedParams.targetIps === 'object' && Array.isArray(sanitizedParams.targetIps)) {
       sanitizedParams.targetIps = (sanitizedParams.targetIps as string[]).map(s => s.trim()).filter(Boolean)
+    }
+
+    // Judged after the coercion above, so a number an LLM-parsed body sent as
+    // text gets the same verdict create_project gives it.
+    const outOfBounds = numericBoundsRefusal(sanitizedParams)
+    if (outOfBounds) {
+      return NextResponse.json({ ...outOfBounds, code: 'setting_rejected' }, { status: 400 })
     }
 
     // The user-skill toggles may name only the creator's own skills, at most 20 of them on.

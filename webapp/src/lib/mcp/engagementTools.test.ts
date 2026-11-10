@@ -671,6 +671,28 @@ describe('preflight_scope_check reports RESOLVED values', () => {
     expect(ffuf.wasUnlimited).toBe(true)
   })
 
+  test.each([0, -1])(
+    'a rate written as %s is reported at the ceiling whatever its zero_means, as the scan runs it',
+    async written => {
+      // R-7: apply_roe_rate_cap raises every capped value at or below 0. A
+      // stored nucleiRateLimit of 0 (min 1, no zero_means) was reported as 0
+      // while the scan ran it at the ceiling.
+      h.findProject.mockResolvedValue(projectRow({
+        roeEnabled: true, roeGlobalMaxRps: 3, nucleiRateLimit: written,
+      }))
+      const r = await preflightScopeCheck(ctx(), 'p1')
+      const nuclei = r.resolvedRates.find(x => x.field === 'nucleiRateLimit')!
+      expect(nuclei).toMatchObject({ written, resolved: 3, capped: true, wasUnlimited: false })
+    },
+  )
+
+  test('with no ceiling, a zero rate without zero_means is reported as written', async () => {
+    h.findProject.mockResolvedValue(projectRow({ nucleiRateLimit: 0 }))
+    const r = await preflightScopeCheck(ctx(), 'p1')
+    const nuclei = r.resolvedRates.find(x => x.field === 'nucleiRateLimit')!
+    expect(nuclei).toMatchObject({ written: 0, resolved: 0, capped: false, wasUnlimited: false })
+  })
+
   test('no rate ever resolves above the ceiling', async () => {
     h.findProject.mockResolvedValue(projectRow({
       roeEnabled: true, roeGlobalMaxRps: 3,
@@ -678,7 +700,10 @@ describe('preflight_scope_check reports RESOLVED values', () => {
     }))
     const r = await preflightScopeCheck(ctx(), 'p1')
     expect(r.ratesExceedingCeiling).toEqual([])
-    for (const rate of r.resolvedRates) expect(rate.resolved, rate.field).toBeLessThanOrEqual(3)
+    for (const rate of r.resolvedRates) {
+      expect(rate.resolved, rate.field).toBeLessThanOrEqual(3)
+      expect(rate.resolved, `${rate.field}: a 0 is no limit at all`).toBeGreaterThan(0)
+    }
   })
 
   test('an escaping wordlist path is reported as dropped', async () => {
