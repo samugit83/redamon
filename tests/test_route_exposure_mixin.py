@@ -96,6 +96,15 @@ class TestVulnerabilityWrite(unittest.TestCase):
             for anchor in ("e:Endpoint", "bu:BaseURL"):
                 self.assertRegex(query, rf"OPTIONAL MATCH \({anchor} \{{[^}}]*user_id: \$user_id, project_id: \$project_id\}}\)")
 
+    def test_the_secrets_in_a_response_are_written_beside_their_types(self):
+        f = _finding(exposure_kind="secret_in_response", vulnerability_type="exposed_secret",
+                     needs_agent_confirmation=False, severity="high",
+                     secret_types=["AWS Access Key ID"], secret_values=["AKIAQ7R2M9X4K1T8B3V6"],
+                     secret_value_types=["AWS Access Key ID"])
+        (_q, params), = _vuln_calls(_write({"findings": [f]})[0])
+        self.assertEqual(params["props"]["secret_values"], ["AKIAQ7R2M9X4K1T8B3V6"])
+        self.assertEqual(params["props"]["secret_value_types"], ["AWS Access Key ID"])
+
     def test_props_are_flat_and_carry_the_locators(self):
         (_q, params), = _vuln_calls(_write({"findings": [_finding()]})[0])
         props = params["props"]

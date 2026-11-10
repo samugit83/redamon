@@ -1359,9 +1359,9 @@ def match_ai_sdk(content: str, max_bytes: int = 524288) -> list[dict]:
             "severity": severity,
             "confidence": confidence,
             "matched_text": match.group(0)[:500],
-            # Full captured secret kept here so callers can dedup against the
-            # existing Secret taxonomy. NOT persisted as-is — the mixin uses
-            # this as a Cypher needle but stores only the redacted ``sample``.
+            # The full key: the mixin matches it against the existing Secrets
+            # and stores it as the display-only `secret_value`; `sample` is the
+            # redacted form.
             "captured_value": captured_value,
             "sample": _redact_secret(captured_value) if captured_value else "",
             "byte_offset": span[0],

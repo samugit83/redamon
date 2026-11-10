@@ -750,7 +750,8 @@ class JsReconMixin:
                             MATCH (s:Secret {user_id: $uid, project_id: $pid, source: 'js_recon'})
                             WHERE s.id IN $ids
                             RETURN s.id AS id, s.alternate_names AS alternate_names,
-                                   s.validation_info AS validation_info
+                                   s.validation_info AS validation_info,
+                                   s.paired_secret AS paired_secret
                             """,
                             uid=user_id, pid=project_id, ids=ids):
                         stored_trufflehog[record["id"]] = dict(record)
@@ -772,8 +773,10 @@ class JsReconMixin:
                     base_url = _derive_base_url(source_url)
                     validation = secret.get("validation", {})
                     alternate_names = [str(a) for a in secret.get("alternate_names") or []]
+                    paired_secret = secret.get("paired_secret") or None
                     if node_id in stored_trufflehog:
                         alternate_names, validation = _keep_trufflehog_data(secret, stored_trufflehog[node_id])
+                        paired_secret = paired_secret or stored_trufflehog[node_id].get("paired_secret")
                     line_number = secret.get("line_number")
 
                     session.run(
@@ -793,8 +796,11 @@ class JsReconMixin:
                             s.key_type = $key_type,
                             s.validation_status = $validation_status,
                             s.matched_text = $matched_text,
+                            s.secret_value = $secret_value,
+                            s.paired_secret = $paired_secret,
                             s.validation_info = $validation_info,
                             s.context = $context,
+                            s.raw_context = $raw_context,
                             s.public_client_key = $public_client_key,
                             s.line_number = $line_number,
                             s.alternate_names = $alternate_names,
@@ -807,6 +813,9 @@ class JsReconMixin:
                         alternate_names=alternate_names,
                         # Already masked by the detector; the cap guards the node.
                         context=(secret.get("context") or "")[:400],
+                        raw_context=(secret.get("raw_context") or "")[:400] or None,
+                        secret_value=secret.get("secret_value") or secret.get("matched_text") or None,
+                        paired_secret=paired_secret,
                         secret_type=secret.get("name", "unknown"),
                         severity=secret.get("severity", "info"),
                         source_url=source_url,
@@ -1009,6 +1018,7 @@ class JsReconMixin:
                         "detail": finding.get("matched_text", "")[:500],
                         "evidence": finding.get("matched_text", "")[:500],
                         "sample": finding.get("sample", ""),
+                        "secret_value": finding.get("captured_value") or None,
                         "sdk_name": sdk_name,
                         "ai_provider": sdk_name,
                         "byte_offset": int(finding.get("byte_offset", 0)),

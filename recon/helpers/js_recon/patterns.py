@@ -752,6 +752,15 @@ def _has_key_data(after: str) -> bool:
     return False
 
 
+def secret_value_of(name: str, matched_text: str) -> str:
+    """The key itself out of a match: the quoted value of a keyword rule
+    (`password = "x"` gives `x`), else the whole match."""
+    value_re = _GENERIC_VALUE_RE.get(name)
+    m = value_re.search(matched_text) if value_re else None
+    value = m.group(1).strip() if m else ''
+    return value or matched_text
+
+
 def _generic_value_is_uuid(name: str, matched_text: str) -> bool:
     """A generic rule whose value is a bare UUIDv4: a config, feature-flag or
     object id with no provider authority behind it."""
@@ -1143,6 +1152,7 @@ def scan_js_content(
                     'id': finding_id,
                     'name': name,
                     'matched_text': matched_text,
+                    'secret_value': secret_value_of(pattern['name'], matched_text),
                     'redacted_value': redact(matched_text),
                     'severity': 'info' if public else severity,
                     'public_client_key': public,
@@ -1163,6 +1173,9 @@ def scan_js_content(
         start, end = finding.pop('_span')
         finding['context'] = _finding_context(lines, spans_by_line,
                                               finding['line_number'], start, end)
+        # The same window with nothing masked, for the operator only: `context`
+        # is what reviewers and models read.
+        finding['raw_context'] = _finding_context(lines, {}, finding['line_number'], start, end)
     return findings, filtered_counts
 
 

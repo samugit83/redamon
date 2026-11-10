@@ -217,3 +217,49 @@ class TestTruffleHogFindings(unittest.TestCase):
         (read_q, read_kw), = [(q, k) for q, k in calls if "RETURN s.id AS id, s.alternate_names" in q]
         self.assertIn("user_id: $uid, project_id: $pid", read_q)
         self.assertEqual(read_kw["ids"], [node_id])
+
+
+class TestDisplayFields(unittest.TestCase):
+    """The key, the pair's other half and the unmasked context, for display."""
+
+    def test_the_value_pair_and_raw_context_are_written(self):
+        query, kwargs = _secret_write(_secret(
+            secret_value="AKIAQ7R2M9X4K1T8B3V6", paired_secret="wJalr0FAKE0FAKE0FAKE0FAKE0FAKE0FAKE0FAKE",
+            context="a='AKIAQ7...B3V6'", raw_context="a='AKIAQ7R2M9X4K1T8B3V6'"))
+        for prop in ("secret_value", "paired_secret", "raw_context"):
+            self.assertIn(f"s.{prop} = ${prop}", query)
+        self.assertEqual(kwargs["secret_value"], "AKIAQ7R2M9X4K1T8B3V6")
+        self.assertEqual(kwargs["paired_secret"], "wJalr0FAKE0FAKE0FAKE0FAKE0FAKE0FAKE0FAKE")
+        self.assertEqual(kwargs["raw_context"], "a='AKIAQ7R2M9X4K1T8B3V6'")
+        self.assertEqual(kwargs["context"], "a='AKIAQ7...B3V6'")
+
+    def test_an_older_finding_falls_back_to_its_match(self):
+        _query, kwargs = _secret_write(_secret())
+        self.assertEqual(kwargs["secret_value"], "AKIAQ7R2M9X4K1T8B3V6")
+        self.assertIsNone(kwargs["paired_secret"])
+        self.assertIsNone(kwargs["raw_context"])
+
+    def test_the_raw_context_is_capped(self):
+        _query, kwargs = _secret_write(_secret(raw_context="x" * 900))
+        self.assertEqual(len(kwargs["raw_context"]), 400)
+
+
+class TestAiSdkKeyValue(unittest.TestCase):
+    def test_the_captured_key_is_the_findings_secret_value(self):
+        client = _Client()
+        client.update_graph_from_js_recon({
+            "domain": "example.com",
+            "js_recon": {"scan_metadata": {"scan_timestamp": "2026-10-24T00:00:00Z"},
+                         "ai_sdk_findings": [{
+                             "category": "ai-sdk-key-literal", "sdk_name": "OpenAI",
+                             "severity": "high", "confidence": "high",
+                             "matched_text": "apiKey: 'sk-FAKE0FAKE0FAKE0FAKE0FAKE'",
+                             "captured_value": "sk-FAKE0FAKE0FAKE0FAKE0FAKE",
+                             "sample": "sk-FAK...FAKE", "byte_offset": 10,
+                             "source_url": "https://app.example.com/static/main.js",
+                             "id": "ai1"}]},
+        }, "u1", "p1")
+        props = next(kw["props"] for q, kw in client.session_obj.calls if "MERGE (jf:JsReconFinding" in q
+                     and kw.get("props", {}).get("sdk_name") == "OpenAI")
+        self.assertEqual(props["secret_value"], "sk-FAKE0FAKE0FAKE0FAKE0FAKE")
+        self.assertEqual(props["sample"], "sk-FAK...FAKE")

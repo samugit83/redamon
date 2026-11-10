@@ -339,11 +339,20 @@ def test_sensitive_fields_are_capped():
     assert len(s.sensitive_fields) == signals.MAX_SENSITIVE_FIELDS
 
 
-def test_secrets_keep_only_detector_names():
+def test_secrets_keep_detector_names_and_the_values_only_for_display():
     body = b'{"aws": "AKIAIOSFODNN7EXAMPLQ", "contact": "x@lab.invalid"}'
     s = signals.analyse(body, content_class="json", secrets=True, source_url="http://h/x")
     assert s.secret_types == ["AWS Access Key ID"] and "secret" in s.leak_signals
-    assert "AKIA" not in json.dumps(s.__dict__)
+    assert s.secret_values == ["AKIAIOSFODNN7EXAMPLQ"]
+    assert s.secret_value_types == ["AWS Access Key ID"]
+    shown = {k: v for k, v in s.__dict__.items() if k not in ("secret_values",)}
+    assert "AKIA" not in json.dumps(shown)
+
+
+def test_the_operator_snippet_keeps_tokens_the_model_body_does_not():
+    text = "token: Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd mail: a@lab.invalid id: 1234567"
+    assert signals.mask_text(text) == "token: <tok> mail: <email> id: <n>"
+    assert signals.mask_text(text, tokens=False) == "token: Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd mail: <email> id: <n>"
 
 
 def test_pii_off_and_binary_carry_nothing():

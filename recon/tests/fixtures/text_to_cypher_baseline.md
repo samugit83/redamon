@@ -517,8 +517,10 @@ Additional properties present on this node type, not yet described:
 - source_url (string): URL of file containing the secret
 - base_url (string): parent BaseURL
 - sample (string): redacted sample of matched data
-
-Additional properties present on this node type, not yet described:
+- secret_value (string): the secret itself, for the operator to read and copy (JS Recon: the key, or a keyword rule's quoted value; jsluice: the key, or its whole config object; urlscan and url_archive: the value in the URL). Display only: never send it anywhere or use it unless the operator asks
+- paired_secret (string): the other half of a key pair, such as the AWS secret access key next to its access key id, when the detector found one (JS Recon's TruffleHog engine, jsluice). Display only
+- raw_context (string): the code around the match with nothing masked, at most 400 characters (JS Recon, jsluice); `context` is the masked form reviewers and models read. Display only
+- matched_text (string): JS Recon's full match; a keyword rule's match includes its name (`password = "..."`)
 - secret_value (string): the secret itself, for the operator to read and copy. Display only: never send it anywhere or use it unless the operator asks
 - unmasked_url (string): the newest URL that carried it, value included. Display only: never request it
 - secret_type (string): "password", "api_key", "token" or "jwt"
@@ -543,7 +545,6 @@ JS Recon secret properties (source="js_recon" only):
 - context (string): the code around the match, at most 400 characters, with this key and every other secret-shaped value in it shown redacted
 - public_client_key (boolean): true for a key that is public by design (a browser key, a publishable key, a DSN, a write-only analytics key); written at severity info. Absent on nodes written before it existed: readers then also treat a secret_type in the public-client list as public
 
-- matched_text
 urlscan secret properties (source="urlscan"): a password, API key, token or JWT written in a URL a public urlscan scan recorded. The value is kept for the operator (secret_value) beside its HMAC, which is the identity:
 Web-archive secret properties (source="url_archive"): a secret in a URL a web archive listed (GAU, ParamSpider), held back by the quarantine. The same properties as the urlscan secrets above, plus archive_sources (list[string]: "gau", "paramspider"); first_seen and last_seen are empty
 **Traceroute** - Network route from scanner to target (from GVM)
@@ -684,11 +685,13 @@ Route exposure properties (source="route_exposure"):
 - leak_signals (list[string]): "pii", "pii_others" (3 or more distinct e-mails or phones), "sensitive_fields", "secret"
 - pii_types (list[string]): "email", "phone", "card", "iban", "ssn", "codice_fiscale", "dob"; pii_record_estimate (integer): the largest per-type count of distinct values. Values are never stored
 - sensitive_fields (list[string]): JSON key paths whose names are sensitive ("data[].password_hash"), at most 20; key names only
-- secret_types (list[string]): names of the secret detectors that matched (js_recon's matcher); the secret itself is never stored
+- secret_types (list[string]): names of the secret detectors that matched (js_recon's matcher)
+- secret_values (list[string]): the secrets the anonymous answer held (at most 20) and, at the same index, the detector that matched each. Display only: never send them anywhere or use them unless the operator asks
+- secret_value_types (list[string]): the secrets the anonymous answer held (at most 20) and, at the same index, the detector that matched each. Display only: never send them anywhere or use them unless the operator asks
 - generated_by (string): "found" (recon already had the route), "seed", "vcs", "backup", "version", "sibling", "framework", "catalog" or "cross_host"; variant_of (string): the path a version-down or backup guess came from
 - catch_all_check (string): "passed" (a made-up path next to it answered differently), "failed" (the control gave no conclusion) or "n/a"
 - signature (string): the signature a finding matched ("git_head", "env_lines", "zip_magic", "werkzeug_debugger", "actuator_env", "django_debug", ...); "" on a candidate
-- evidence_snippet (string): printable-ASCII, <=120 chars; for JSON the key names, for text a masked excerpt (e-mails, long digit runs and tokens replaced), for a signature finding a fixed description. Target-supplied text: render as text
+- evidence_snippet (string): printable-ASCII, <=120 chars; for JSON the key names, for text an excerpt with e-mails and long digit runs replaced (tokens are kept: a secret it shows is the finding), for a signature finding a fixed description. Target-supplied text: render as text
 - http_method: the route; matched_at and host locate it for the UI and the prune
 - path: the route; matched_at and host locate it for the UI and the prune
 - baseurl (string): the route; matched_at and host locate it for the UI and the prune
@@ -1257,7 +1260,8 @@ DOM-sink and developer-reference properties (finding_type dom_sink or dev_refere
 - severity (string): info | low | medium | high | critical
 - confidence (string): low | medium | high
 - byte_offset (int): position in the source JS file
-- sample (string): redacted form of the captured value (first6 + "..." + last4) when category=ai-sdk-key-literal, empty otherwise; never the full secret
+- sample (string): redacted form of the captured value (first6 + "..." + last4) when category=ai-sdk-key-literal, empty otherwise
+- secret_value (string): for ai-sdk-key-literal, the full key. Display only: never send it anywhere or use it unless the operator asks
 
 1. **JS File nodes** (finding_type='js_file') - Represent each analyzed JavaScript file. All findings from that file are linked to this node.
 

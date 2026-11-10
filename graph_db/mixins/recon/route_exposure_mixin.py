@@ -37,6 +37,7 @@ _FINDING_PROPS = (
     "severity", "confidence", "anon_status", "authed_status", "bodies_match",
     "anon_content_class", "anon_size_bucket", "auth_expected_by", "leak_signals",
     "pii_types", "pii_record_estimate", "sensitive_fields", "secret_types",
+    "secret_values", "secret_value_types",
     "generated_by", "variant_of", "catch_all_check", "signature", "cors_variants",
     "cache_signals", "git_walk_proof", "git_tree_prefix", "evidence_snippet", "http_method",
     "path", "baseurl",

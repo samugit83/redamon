@@ -1,7 +1,8 @@
 """Content signals of one response: PII shapes, sensitive key names, secrets.
 
-Nothing here keeps a value. PII becomes a list of types and one record count,
-sensitive fields become key paths, secrets become detector names; the body
+PII becomes a list of types and one record count, sensitive fields become key
+paths, secrets become detector names plus their values in ``secret_values``,
+the display-only copy the operator reads (graph_db/display_only.py); the body
 itself never leaves the function that read it. ``mask_text`` is the only way
 body text reaches a snippet or a model.
 """
@@ -20,6 +21,8 @@ MAX_KEY_PATHS = 60
 #: Secrets are matched in the head of a body: the matcher is regex-heavy and a
 #: secret in a JSON or env answer sits near its start.
 SECRET_SCAN_BYTES = 128 * 1024
+#: Distinct secret values one response keeps for display.
+MAX_SECRET_VALUES = 20
 _MAX_LEAVES = 20000
 
 #: The detector categories that name a credential; e-mail addresses, internal
@@ -52,10 +55,13 @@ _MASK_DIGITS = re.compile(r"\d{6,}")
 _PII_LOOKING_KEY = re.compile(r"@|\d{6,}")
 
 
-def mask_text(text: str) -> str:
-    """Replace e-mails, long digit runs and token-shaped strings with placeholders."""
+def mask_text(text: str, tokens: bool = True) -> str:
+    """Replace e-mails, long digit runs and (with `tokens`) token-shaped strings
+    with placeholders. The operator's evidence snippet keeps the tokens: a
+    secret it shows is the finding; what a model reads masks them."""
     text = _MASK_EMAIL.sub("<email>", text or "")
-    text = _MASK_TOKEN.sub("<tok>", text)
+    if tokens:
+        text = _MASK_TOKEN.sub("<tok>", text)
     return _MASK_DIGITS.sub("<n>", text)
 
 
@@ -89,6 +95,10 @@ class Signals:
     pii_others: bool = False
     sensitive_fields: list = field(default_factory=list)
     secret_types: list = field(default_factory=list)
+    #: The secrets themselves and, at the same index, their detector names.
+    #: Display only: never sent to a model.
+    secret_values: list = field(default_factory=list)
+    secret_value_types: list = field(default_factory=list)
     key_paths: list = field(default_factory=list)
     max_array_len: int = 0
     structured: bool = False
@@ -199,18 +209,19 @@ def _sensitive_fields(paths: dict) -> list:
     return out
 
 
-def _secret_types(text: str, source_url: str) -> list:
+def _secret_matches(text: str, source_url: str) -> list:
+    """[(detector name, secret value)] of the credentials in a body's head."""
     try:
         from recon.helpers.js_recon.patterns import scan_js_content
     except ImportError:  # pragma: no cover - spawned-container import shim
         from helpers.js_recon.patterns import scan_js_content
     findings, _ = scan_js_content(text[:SECRET_SCAN_BYTES], source_url, min_confidence="medium")
-    names = []
+    out = []
     for finding in findings:
-        # The matched text IS the secret: only the detector's name survives.
         if finding.get("category") in _SECRET_CATEGORIES and finding.get("name"):
-            names.append(str(finding["name"]))
-    return sorted(set(names))
+            value = finding.get("secret_value") or finding.get("matched_text") or ""
+            out.append((str(finding["name"]), str(value)))
+    return out
 
 
 def analyse(body: bytes, *, content_class: str, pii: bool = True, secrets: bool = False,
@@ -241,7 +252,13 @@ def analyse(body: bytes, *, content_class: str, pii: bool = True, secrets: bool 
             signals.pii_record_estimate = max((len(v) for v in found.values()), default=0)
             signals.pii_others = len(found["email"]) >= 3 or len(found["phone"]) >= 3
         if secrets:
-            signals.secret_types = _secret_types(text, source_url)
+            matches = _secret_matches(text, source_url)
+            signals.secret_types = sorted({name for name, _value in matches})
+            for name, value in matches:
+                if value and value not in signals.secret_values \
+                        and len(signals.secret_values) < MAX_SECRET_VALUES:
+                    signals.secret_values.append(value)
+                    signals.secret_value_types.append(name)
     except Exception:  # noqa: BLE001 - a body that breaks a detector carries no signal
         return Signals()
     return signals

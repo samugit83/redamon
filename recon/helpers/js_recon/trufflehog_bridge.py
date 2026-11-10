@@ -27,7 +27,8 @@ Three rules from measuring the binary decide the rest:
 Every docker call goes through `subprocess` with `env=None`: the inherited
 DOCKER_HOST and DOCKER_CONFIG make the broker stamp the run's labels on the
 sidecar, so a pause or stop of the run reaches it. A raw value, `RawV2` or
-`SecretParts` is never logged or stored.
+`SecretParts` is never logged; the key and its pair's other half are stored
+only in the display fields (`secret_value`, `paired_secret`, `raw_context`).
 """
 
 from __future__ import annotations
@@ -436,14 +437,18 @@ class ThResult:
     file: str  # staged file name
     line: Optional[int]
     extra: dict
-    #: The other secret parts (an AWS pair's secret, a session token) only to
-    #: MASK them in a context. Never stored, never logged.
+    #: The other secret parts (an AWS pair's secret, a session token), to mask
+    #: them in the reviewer-facing context. Never logged.
     mask_values: tuple = ()
+    #: The pair's other half (an AWS secret access key) kept for the operator as
+    #: `paired_secret`; "" when the detector has no second part.
+    paired: str = ""
 
 
 def parse_ndjson(stdout: str) -> tuple:
     """`(results, bad_lines)` from TruffleHog's stdout. Reads only what the merge
-    needs; `RawV2` and `SecretParts` serve masking and are dropped after."""
+    needs; `RawV2` and `SecretParts` give the pair's other half (`paired`, kept
+    for display) and the values to mask, and are dropped after."""
     results, bad = [], 0
     for line in (stdout or "").splitlines():
         line = line.strip()
@@ -474,8 +479,22 @@ def parse_ndjson(stdout: str) -> tuple:
             line=fs.get("line") if isinstance(fs.get("line"), int) else None,
             extra={k: str(extra[k])[:200] for k in EXTRA_DATA_ALLOWLIST if extra.get(k) not in (None, "")},
             mask_values=_mask_values(obj, raw),
+            paired=_paired_secret(obj, raw),
         ))
     return results, bad
+
+
+def _paired_secret(obj: dict, raw: str) -> str:
+    """The pair's other half: a `SecretParts` value whose name says secret, else
+    the first other part of `RawV2` ("AKID:SECRET"). "" when there is none."""
+    parts = obj.get("SecretParts")
+    if isinstance(parts, dict):
+        named = [v for k, v in parts.items() if isinstance(v, str) and v and v != raw
+                 and "://" not in v and "secret" in str(k).lower()]
+        if named:
+            return named[0]
+    others = _mask_values(obj, raw)
+    return others[0] if others else ""
 
 
 def _mask_values(obj: dict, raw: str) -> tuple:
@@ -593,12 +612,16 @@ def map_result(r: ThResult, manifest: dict, *, verify: bool, secret_values=()) -
     if where:
         line, start, end = where
         context = masked_context(content, start, end, {raw, *r.mask_values, *secret_values})
+        raw_context = masked_context(content, start, end, ())
     else:
-        line, context = r.line, ""
+        line, context, raw_context = r.line, "", ""
     return {
         "id": patterns._make_finding_id(name, raw, url),
         "name": name,
         "matched_text": raw,
+        "secret_value": raw,
+        "paired_secret": r.paired or None,
+        "raw_context": raw_context,
         "redacted_value": patterns.redact(raw),
         "severity": "info" if public else severity,
         "public_client_key": public,
@@ -679,6 +702,8 @@ def merge(regex_secrets: list, th_results: list, manifest: dict, *, verify: bool
                 label = f"TruffleHog:{r.detector}"
                 if label not in alt:
                     alt.append(label)
+                if r.paired and not s.get("paired_secret"):
+                    s["paired_secret"] = r.paired
                 s.setdefault("validation", {})["trufflehog"] = _stronger(
                     (s.get("validation") or {}).get("trufflehog"), info)
             continue

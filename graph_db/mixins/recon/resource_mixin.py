@@ -11,6 +11,29 @@ from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import build_host_scope, host_in_scope, org_for_scan_root
 from graph_db.endpoint_paths import normalize_endpoint_path
 
+def _jsluice_secret_values(data) -> tuple:
+    """(the key, the pair's other half) out of a jsluice secret's `data`: AWS
+    gives {key, secret}, the other kinds {key} or a config object."""
+    if isinstance(data, dict):
+        for name in ("key", "value", "match", "token"):
+            if isinstance(data.get(name), str) and data[name]:
+                secret = data.get("secret")
+                return data[name], secret if isinstance(secret, str) and name != "secret" else ""
+        if isinstance(data.get("secret"), str) and data["secret"]:
+            return data["secret"], ""
+        return (json.dumps(data, sort_keys=True) if data else ""), ""
+    return (str(data) if data else ""), ""
+
+
+def _redact_sample(text: str) -> str:
+    """The stored `sample`: its first and last characters, as JS Recon's."""
+    if len(text) > 12:
+        return text[:6] + '...' + text[-4:]
+    if len(text) > 4:
+        return text[:3] + '...'
+    return '***' if text else ''
+
+
 def _openapi_params(endpoint_info: dict, method: str) -> dict:
     """Cypher parameters for an endpoint's OpenAPI fields; None keeps what is stored.
 
@@ -543,9 +566,11 @@ class ResourceMixin:
                     if node_id in created_secrets:
                         continue
 
-                    # Redacted sample: first 6 chars + ...
-                    matched = data_field.get("match", "") if isinstance(data_field, dict) else str(data_field)
-                    sample = (matched[:6] + "...") if len(matched) > 6 else matched
+                    secret_value, paired_secret = _jsluice_secret_values(data_field)
+                    sample = _redact_sample(secret_value)
+                    context = secret.get("context")
+                    raw_context = (json.dumps(context, sort_keys=True) if isinstance(context, (dict, list))
+                                   else str(context or ""))[:400] or None
 
                     scan_ts = resource_enum_data.get("scan_metadata", {}).get("scan_timestamp", "")
 
@@ -561,6 +586,9 @@ class ResourceMixin:
                             s.source_url = $source_url,
                             s.base_url = $base_url,
                             s.sample = $sample,
+                            s.secret_value = $secret_value,
+                            s.paired_secret = $paired_secret,
+                            s.raw_context = $raw_context,
                             s.discovered_at = $discovered_at,
                             s.updated_at = datetime()
                         WITH s
@@ -570,7 +598,9 @@ class ResourceMixin:
                         id=node_id, user_id=user_id, project_id=project_id,
                         secret_type=secret_type, severity=severity,
                         source_url=source_url, base_url=base_url,
-                        sample=sample, discovered_at=scan_ts
+                        sample=sample, discovered_at=scan_ts,
+                        secret_value=secret_value or None, paired_secret=paired_secret or None,
+                        raw_context=raw_context,
                     )
                     created_secrets.add(node_id)
                     stats["secrets_created"] += 1

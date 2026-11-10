@@ -61,6 +61,10 @@ def build_finding(obs, *, kind: str, route_class: str, auth_expected_by: list,
         "pii_record_estimate": int(content.pii_record_estimate),
         "sensitive_fields": list(content.sensitive_fields),
         "secret_types": list(obs.anon_signals.secret_types),
+        # Display only (graph_db/display_only.py): the secrets the anonymous
+        # answer held and their detector names, index by index.
+        "secret_values": list(obs.anon_signals.secret_values),
+        "secret_value_types": list(obs.anon_signals.secret_value_types),
         "generated_by": route.generated_by,
         "variant_of": route.variant_of,
         "catch_all_check": obs.catch_all_check if obs.catch_all_check in ("passed", "failed") else "n/a",

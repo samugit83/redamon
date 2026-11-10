@@ -127,13 +127,27 @@ class Mapping(unittest.TestCase):
         f = self._map("GoogleGeminiAPIKey", key, f'k="{key}"')
         self.assertEqual((f["name"], f["severity"], f["public_client_key"]), ("GCP API Key", "info", True))
 
-    def test_the_finding_never_holds_rawv2_parts_or_redacted(self):
+    def test_the_pair_is_kept_only_in_the_display_fields(self):
         f = self._map("AWS", AWS_ID, f'a="{AWS_ID}";b="{AWS_SECRET}";', raw_v2=f"{AWS_ID}:{AWS_SECRET}",
                       parts={"secret_access_key": AWS_SECRET})
-        dumped = json.dumps(f)
-        self.assertNotIn(AWS_SECRET, dumped)
+        self.assertEqual(f["paired_secret"], AWS_SECRET)
+        self.assertEqual(f["secret_value"], AWS_ID)
+        self.assertIn(AWS_SECRET, f["raw_context"])
+        self.assertNotIn(AWS_SECRET, f["context"])
+        from graph_db.display_only import strip_display_only
+        self.assertNotIn(AWS_SECRET, json.dumps(strip_display_only(f)))
         for key in ("RawV2", "SecretParts", "Redacted", "raw_v2", "mask_values"):
             self.assertNotIn(key, f)
+
+    def test_the_pair_comes_from_rawv2_without_secret_parts(self):
+        (r,), _ = th.parse_ndjson(result("AWS", AWS_ID, raw_v2=f"{AWS_ID}:{AWS_SECRET}") + "\n")
+        self.assertEqual(r.paired, AWS_SECRET)
+
+    def test_a_single_part_detector_has_no_pair(self):
+        (r,), _ = th.parse_ndjson(result("Github", GH) + "\n")
+        self.assertEqual(r.paired, "")
+        f = self._map("Github", GH, f'k="{GH}"')
+        self.assertIsNone(f["paired_secret"])
 
     def test_a_file_not_in_the_manifest_maps_to_nothing(self):
         (r,), _ = th.parse_ndjson(result("Github", GH, file="/scan/f_09999.js"))
@@ -142,3 +156,17 @@ class Mapping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PairOnARegexFinding(unittest.TestCase):
+    def test_a_regex_key_truffleHog_also_found_gets_the_pair(self):
+        content = f'a="{AWS_ID}";b="{AWS_SECRET}";'
+        url = "https://app.example.com/main.js"
+        regex, _ = th.patterns.scan_js_content(content, url)
+        aws = [s for s in regex if s["matched_text"] == AWS_ID]
+        self.assertTrue(aws)
+        (r,), _ = th.parse_ndjson(result("AWS", AWS_ID, raw_v2=f"{AWS_ID}:{AWS_SECRET}",
+                                         parts={"secret_access_key": AWS_SECRET}))
+        merged, stats = th.merge(regex, [r], {"f_00001.js": {"url": url, "content": content}}, verify=False)
+        self.assertEqual(stats.merged, 1)
+        self.assertEqual(next(s for s in merged if s["matched_text"] == AWS_ID)["paired_secret"], AWS_SECRET)
