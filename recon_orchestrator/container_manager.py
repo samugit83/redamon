@@ -450,6 +450,17 @@ def _env_size(name: str, default: str) -> str:
     return raw if raw else default
 
 
+def _positive_int(value) -> Optional[int]:
+    """`value` as a positive int, or None when absent, blank, malformed or not positive."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _stop_grace_s() -> float:
     """How long a stopped recon or partial-recon run may drain before SIGKILL.
 
@@ -1267,6 +1278,8 @@ class ContainerManager:
                     rm=True,
                 )
 
+            capture_env = await self._run_blocking(self._capture_recon_env)
+
             # Start container with environment variables
             container = self.client.containers.run(
                 self.recon_image,
@@ -1324,6 +1337,7 @@ class ContainerManager:
                     # OAST providers). Sourced from the DB by api.py's
                     # capture-config reconciler; empty = shipped defaults.
                     "CAPTURE_IOC_IGNORE_SUFFIXES": getattr(self, "sca_intel_ignore_suffixes", "") or "",
+                    **capture_env,
                     # Operator overrides for the dirty analyzer L2 spawns itself.
                     **self._analyzer_env(),
                 },
@@ -1929,6 +1943,58 @@ class ContainerManager:
         except (TypeError, ValueError):
             return 8888
 
+    def _capture_published_port(self) -> Optional[int]:
+        """The host port Docker publishes the capture proxy on, or None.
+        Blocking. A compose-started proxy publishes CAPTURE_PROXY_PORT in front
+        of mitmdump's fixed 8888, so the host side is the one recon dials."""
+        try:
+            attrs = self.client.containers.get(self.CAPTURE_PROXY_NAME).attrs
+        except Exception:  # noqa: BLE001 - absent, or Docker cannot say
+            return None
+        bindings = (attrs.get("HostConfig") or {}).get("PortBindings") if isinstance(attrs, dict) else None
+        if not isinstance(bindings, dict):
+            return None
+        for published in bindings.values():
+            for binding in published or []:
+                port = _positive_int(binding.get("HostPort")) if isinstance(binding, dict) else None
+                if port:
+                    return port
+        return None
+
+    def _capture_effective_port(self) -> int:
+        """The port the capture proxy answers on: Docker's own record (it
+        outlives an orchestrator restart), else the last start's, else compose's.
+        Blocking."""
+        return (self._capture_published_port()
+                or _positive_int(getattr(self, "_capture_started_port", None))
+                or self._capture_port())
+
+    @staticmethod
+    def _capture_config_max_body_kb() -> Optional[int]:
+        """The operator's body cap from the capture config api.py's reconciler
+        writes from the DB. Read at each spawn: a cap change restarts no proxy."""
+        path = os.environ.get("CAPTURE_CONFIG_FILE", "/spool/.capture-config.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                body = json.load(f).get("body") or {}
+            return _positive_int(body.get("max_body_kb"))
+        except Exception:  # noqa: BLE001 - absent or malformed: the compose value
+            return None
+
+    def _capture_recon_env(self) -> dict:
+        """CAPTURE_PROXY_PORT and CAPTURE_PROXY_MAX_BODY_KB for a recon container.
+
+        Recon reads both from its environment (helpers/proxy_routing.py,
+        helpers/traffic_capture.py) and dials the proxy's loopback publish from
+        the host network, so without them a proxy on any port but 8888 looked
+        unreachable and the scan ran uncaptured. Blocking; never raises.
+        """
+        max_body_kb = (self._capture_config_max_body_kb()
+                       or _positive_int(os.environ.get("CAPTURE_PROXY_MAX_BODY_KB"))
+                       or 64)
+        return {"CAPTURE_PROXY_PORT": str(self._capture_effective_port()),
+                "CAPTURE_PROXY_MAX_BODY_KB": str(max_body_kb)}
+
     def _remove_container_if_exists(self, name: str) -> None:
         try:
             self.client.containers.get(name).remove(force=True)
@@ -2039,6 +2105,7 @@ class ContainerManager:
             restart_policy={"Name": "unless-stopped"},
             labels={"redamon.capture": "proxy"},
         )
+        self._capture_started_port = port
 
         # --- Ingest: redamon-network, scoped INSERT-only role + verify keys ---
         self.client.containers.run(
@@ -2112,7 +2179,7 @@ class ContainerManager:
             "proxy": proxy,
             "ingest": ingest,
             "running": proxy == "running" and ingest == "running",
-            "port": self._capture_port(),
+            "port": self._capture_effective_port(),
         }
 
     def _parse_log_line(self, line: str, current_phase: Optional[str], current_phase_num: Optional[int],
@@ -2597,6 +2664,8 @@ class ContainerManager:
             with open(config_path, "w") as f:
                 json.dump(config, f)
 
+            capture_env = await self._run_blocking(self._capture_recon_env)
+
             # Start container with the partial_recon.py entry point. containers.run
             # is blocking; run it in the thread pool so the spawn never stalls the
             # single event loop (this is the POST the freeze bug reported hanging).
@@ -2652,6 +2721,7 @@ class ContainerManager:
                     # OAST providers). Sourced from the DB by api.py's
                     # capture-config reconciler; empty = shipped defaults.
                     "CAPTURE_IOC_IGNORE_SUFFIXES": getattr(self, "sca_intel_ignore_suffixes", "") or "",
+                    **capture_env,
                     # Operator overrides for the dirty analyzer L2 spawns itself.
                     **self._analyzer_env(),
                 },
