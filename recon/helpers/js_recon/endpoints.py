@@ -193,6 +193,28 @@ def _extract_method(line: str, match: re.Match) -> str:
     return 'GET'
 
 
+def _endpoint_origin(url: str, source_url: str) -> str:
+    """The origin an extracted endpoint belongs to, for deduplication.
+
+    One run reads the bundles of many hosts, and ``/api/users`` called from
+    app.example.com and from admin.example.com are two endpoints. Keyed on the
+    path alone, the first file read would hide the other host's, and a
+    third-party absolute URL (which the writer drops) would hide every in-scope
+    one. An absolute or protocol-relative URL carries its own origin; a
+    relative path belongs to the file that named it, as the writer and the
+    endpoint probe resolve it. An uploaded file names no host, so its relative
+    paths share one origin, like the writer's single 'upload' base.
+    """
+    for candidate, schemes in ((url, None), (source_url, ('http', 'https'))):
+        try:
+            parts = urlsplit(candidate or '')
+        except ValueError:
+            continue
+        if parts.netloc and (schemes is None or parts.scheme.lower() in schemes):
+            return f"{parts.scheme}://{parts.netloc}".lower()
+    return ''
+
+
 def _extract_params_from_url(url: str) -> list:
     """Extract query parameter names from a URL."""
     try:
@@ -281,7 +303,9 @@ def extract_endpoints(
         except Exception as e:
             print(f"[!][JsRecon] Failed to load custom endpoint keywords: {e}")
 
-    all_endpoints = {}  # url -> endpoint_dict (for deduplication)
+    # Deduplication across every file of the run; each key carries the
+    # endpoint's origin (_endpoint_origin), and each id is that key's hash.
+    all_endpoints = {}
     graphql_findings = []
     websocket_findings = []
 
@@ -319,7 +343,7 @@ def extract_endpoints(
                             path = url
                             base = ''
 
-                        key = f"{method}:{path}"
+                        key = f"{method}:{_endpoint_origin(url, source_url)}:{path}"
                         if key not in all_endpoints:
                             finding_id = hashlib.sha256(f"ep:{key}".encode()).hexdigest()[:16]
                             all_endpoints[key] = {
@@ -345,9 +369,10 @@ def extract_endpoints(
                     for match in pattern.finditer(line):
                         url = match.group(1)
                         if _is_likely_path(url) or url.startswith('http'):
-                            key = f"CONFIG:{url}"
+                            origin = _endpoint_origin(url, source_url)
+                            key = f"CONFIG:{origin}:{url}"
                             if key not in all_endpoints:
-                                finding_id = hashlib.sha256(f"cfg:{url}".encode()).hexdigest()[:16]
+                                finding_id = hashlib.sha256(f"cfg:{origin}:{url}".encode()).hexdigest()[:16]
                                 all_endpoints[key] = {
                                     'id': finding_id,
                                     'method': 'GET',
@@ -366,7 +391,8 @@ def extract_endpoints(
             for match in _GRAPHQL_ENDPOINT_RE.finditer(content):
                 gql_url = match.group(1)
                 if _is_likely_path(gql_url):
-                    finding_id = hashlib.sha256(f"gql:{gql_url}".encode()).hexdigest()[:16]
+                    origin = _endpoint_origin(gql_url, source_url)
+                    finding_id = hashlib.sha256(f"gql:{origin}:{gql_url}".encode()).hexdigest()[:16]
                     graphql_findings.append({
                         'id': finding_id,
                         'method': 'POST',
@@ -399,7 +425,8 @@ def extract_endpoints(
             for pattern in _WEBSOCKET_PATTERNS:
                 for match in pattern.finditer(content):
                     ws_url = match.group(1)
-                    finding_id = hashlib.sha256(f"ws:{ws_url}".encode()).hexdigest()[:16]
+                    origin = _endpoint_origin(ws_url, source_url)
+                    finding_id = hashlib.sha256(f"ws:{origin}:{ws_url}".encode()).hexdigest()[:16]
                     websocket_findings.append({
                         'id': finding_id,
                         'method': 'WS',
@@ -418,9 +445,10 @@ def extract_endpoints(
                     route = match.group(1)
                     if len(route) > 2 and route.startswith('/') and _is_likely_path(route):
                         classification = _classify_path(route)
-                        key = f"ROUTE:{route}"
+                        origin = _endpoint_origin(route, source_url)
+                        key = f"ROUTE:{origin}:{route}"
                         if key not in all_endpoints:
-                            finding_id = hashlib.sha256(f"route:{route}".encode()).hexdigest()[:16]
+                            finding_id = hashlib.sha256(f"route:{origin}:{route}".encode()).hexdigest()[:16]
                             all_endpoints[key] = {
                                 'id': finding_id,
                                 'method': 'GET',
@@ -444,9 +472,10 @@ def extract_endpoints(
                     url_match = re.search(r'''['"]([^'"]*''' + re.escape(keyword) + r'''[^'"]*)['"]\s*''', context, re.IGNORECASE)
                     if url_match:
                         url = url_match.group(1)
-                        key = f"CUSTOM:{url}"
+                        origin = _endpoint_origin(url, source_url)
+                        key = f"CUSTOM:{origin}:{url}"
                         if key not in all_endpoints:
-                            finding_id = hashlib.sha256(f"custom:{url}".encode()).hexdigest()[:16]
+                            finding_id = hashlib.sha256(f"custom:{origin}:{url}".encode()).hexdigest()[:16]
                             all_endpoints[key] = {
                                 'id': finding_id,
                                 'method': 'GET',
