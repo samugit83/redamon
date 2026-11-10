@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -1511,6 +1512,30 @@ def _is_curl_available() -> bool:
 # =============================================================================
 # Output assembly helpers
 # =============================================================================
+def finding_id(hostname: str, ip: str, port, layer: str) -> str:
+    """The Vulnerability id of one (hostname, IP, port, layer) anomaly.
+
+    A hash of the exact values: folding punctuation to "_" made dev-api and
+    dev.api (and IPv6 addresses sharing their digits) one node, and a 253-char
+    name overran the 200-char id the Priority Board and MCP accept. The IP is
+    canonicalised so one address spelled two ways stays one finding.
+    tooling/scripts/vhost_finding_rekey.py computes the same id (a recon test
+    pins the two together); change both or neither.
+    """
+    host = str(hostname or "").strip().lower().rstrip(".")
+    addr = str(ip or "").strip()
+    try:
+        addr = ipaddress.ip_address(addr).compressed
+    except ValueError:
+        addr = addr.lower()
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        pass
+    key = f"{host}|{addr}|{port}|{str(layer or '').lower()}"
+    return "vhost_sni_" + hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:20]
+
+
 def _build_finding_record(anomaly: dict, ip: str, ip_result: dict) -> dict:
     """Convert an anomaly dict into a Vulnerability-shaped record for the graph."""
     hostname = anomaly["hostname"]
@@ -1561,15 +1586,8 @@ def _build_finding_record(anomaly: dict, ip: str, ip_result: dict) -> dict:
     if internal_kw:
         description += f" The hostname pattern '{internal_kw}' suggests an internal/admin application."
 
-    finding_id = "vhost_sni_{h}_{i}_{p}_{l}".format(
-        h=re.sub(r"[^a-z0-9]", "_", hostname.lower()),
-        i=re.sub(r"[^0-9.]", "_", ip),
-        p=port,
-        l=layer.lower(),
-    )
-
     return {
-        "id": finding_id,
+        "id": finding_id(hostname, ip, port, layer),
         "name": vuln_name,
         "type": vuln_type,
         "severity": severity,

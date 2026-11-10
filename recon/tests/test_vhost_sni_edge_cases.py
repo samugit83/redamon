@@ -457,8 +457,8 @@ class TestInternalKeywordEdgeCases:
 # ===========================================================================
 class TestFindingIdCollision:
     """
-    The deterministic ID sanitises hostname to [^a-z0-9.] -> '_'. Two hostnames
-    that differ only in punctuation could collide.
+    The deterministic ID is a hash of the exact hostname, IP, port and layer,
+    so two hostnames that differ only in punctuation stay two findings (R-46).
     """
 
     def _anomaly(self, hostname):
@@ -469,20 +469,10 @@ class TestFindingIdCollision:
             "severity": "low", "internal_pattern_match": None,
         }
 
-    def test_dot_vs_dash_currently_collide(self):
-        # admin.foo.com -> admin_foo_com (dots stripped via [^a-z0-9])
-        # admin-foo.com -> admin_foo_com (dashes stripped via [^a-z0-9])
-        # Same sanitised form -> SAME ID -> MERGE in graph
-        # This pins the current behavior; if you change the regex to preserve
-        # dots, this test will fail.
+    def test_dot_vs_dash_get_distinct_ids(self):
         f1 = _build_finding_record(self._anomaly("admin.foo.com"), "1.2.3.4", {})
         f2 = _build_finding_record(self._anomaly("admin-foo.com"), "1.2.3.4", {})
-        # Document the collision risk:
-        # NOTE: This currently produces DIFFERENT ids because '.' is kept and '-' becomes '_'
-        # Let's re-read the regex and assert what actually happens.
-        # Regex: re.sub(r"[^a-z0-9]", "_", hostname.lower())
-        # So '.' becomes '_' too. Both hostnames sanitise to 'admin_foo_com'.
-        assert f1["id"] == f2["id"]
+        assert f1["id"] != f2["id"]
 
     def test_different_ports_get_different_ids(self):
         a443 = self._anomaly("admin.example.com").copy(); a443["port"] = 443
