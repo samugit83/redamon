@@ -88,6 +88,33 @@ _RESTORED_UPDATED_AT = (
     f"CASE WHEN n.updated_at IS :: STRING AND n.updated_at =~ '{_ISO_DATETIME}' "
     "THEN datetime(n.updated_at) END")
 
+_HOST_FIELD_VALUES = ", ".join(f"toLower(toStringOrNull(n.{f}))" for f in _KEEP_HOST_FIELDS)
+
+#: Positive coverage (D1): only findings about a host the source re-checked.
+#: Each host field is read the way keep_host_patterns reads one (a bare host,
+#: host:port, [v6]:port, or a URL whose authority is the host, userinfo only
+#: after a scheme) and its hostname is looked up in $only_hosts. An exact
+#: lookup, not the keep regexes: the checked set is the whole scanned surface,
+#: and a regex per hundred hosts per field per candidate measured 10.8 s for
+#: 2,000 stale findings over 3,000 hosts, against 0.5 s for the lookup. A
+#: value it cannot read names no host, so its finding is kept.
+_ONLY_HOSTS_CLAUSE = f"""
+        WITH n, [v IN [{_HOST_FIELD_VALUES}] WHERE v IS NOT NULL |
+                 CASE WHEN v =~ '[a-z][a-z0-9+.-]*://.*'
+                      THEN {{scheme: true, rest: substring(v, size(split(v, '://')[0]) + 3)}}
+                      ELSE {{scheme: false, rest: v}} END] AS parsed
+        WITH n, [p IN parsed | {{scheme: p.scheme,
+                 authority: split(split(split(p.rest, '/')[0], '?')[0], '#')[0]}}] AS authorities
+        WITH n, [a IN authorities |
+                 CASE WHEN NOT a.authority CONTAINS '@' THEN a.authority
+                      WHEN a.scheme AND size(split(a.authority, '@')) = 2
+                           THEN split(a.authority, '@')[1] END] AS hostports
+        WHERE any(hp IN hostports WHERE hp IS NOT NULL AND
+                  CASE WHEN hp STARTS WITH '[' THEN substring(split(hp, ']')[0], 1)
+                       WHEN size(split(hp, ':')) = 2 AND split(hp, ':')[1] =~ '[0-9]+'
+                            THEN split(hp, ':')[0]
+                       ELSE hp END IN $only_hosts)"""
+
 
 def _keep_host_name(host) -> str:
     """A keep_hosts entry as findings store it: lowercased, and without the
@@ -96,6 +123,12 @@ def _keep_host_name(host) -> str:
         return ""
     name = str(host).strip().lower()
     return name[:-1] if name.endswith(".") else name
+
+
+def _host_names(hosts) -> list:
+    """The entries of `keep_hosts` / `only_hosts` that are hostnames, as findings store them."""
+    return sorted({n for n in (_keep_host_name(h) for h in hosts or ())
+                   if _KEEP_HOST_CHARS.match(n)})
 
 
 def keep_host_patterns(keep_hosts) -> list:
@@ -107,8 +140,7 @@ def keep_host_patterns(keep_hosts) -> list:
     set and `re.escape`d, and the patterns travel as query parameters - never
     concatenated into the Cypher text.
     """
-    names = sorted({n for n in (_keep_host_name(h) for h in keep_hosts or ())
-                    if _KEEP_HOST_CHARS.match(n)})
+    names = _host_names(keep_hosts)
     patterns = []
     for i in range(0, len(names), _KEEP_HOSTS_PER_PATTERN):
         alternation = "|".join(re.escape(n) for n in names[i:i + _KEEP_HOSTS_PER_PATTERN])
@@ -238,7 +270,8 @@ class BaseMixin:
         return stats
 
     def prune_unseen_findings(self, user_id: str, project_id: str,
-                              sources, run_started_at: str, keep_hosts=()) -> dict:
+                              sources, run_started_at: str, keep_hosts=(), *,
+                              only_hosts=None, types=None) -> dict:
         """Ingest-then-prune: remove a source's findings it stopped reporting.
 
         WHY THIS REPLACED CLEAR-THEN-INGEST
@@ -273,6 +306,16 @@ class BaseMixin:
         nor stamped stale), since the run never re-checked it. Per host rather
         than per source, so one permanently dead host cannot keep a whole
         source unpruned for ever. With it empty the query is unchanged.
+
+        `only_hosts` is the positive-coverage rule (design decision D1): when
+        given, only findings about one of these hostnames (the hosts the
+        sources re-checked this run, `CoverageReport.checked_hostnames`) are
+        deleted or stamped stale, and every other finding of the sources is
+        left as it is. Empty, nothing is pruned; the revive still runs.
+        `keep_hosts` still wins over it, finding by finding. `types` narrows
+        the prune to findings whose `type` is one of these, for a source that
+        records coverage per check type (`security_check`). With both None the
+        query is the older, source-level one.
         """
         sources = [s for s in (sources or []) if s]
         if not sources or not run_started_at:
@@ -284,6 +327,11 @@ class BaseMixin:
             checks = " OR ".join(
                 f"coalesce(toLower(toStringOrNull(n.{f})), '') =~ rx" for f in _KEEP_HOST_FIELDS)
             keep_clause = f"\n          AND NOT any(rx IN $keep_patterns WHERE {checks})"
+        only = None if only_hosts is None else _host_names(only_hosts)
+        types = None if types is None else sorted({str(t) for t in types if t})
+        types_clause = "" if types is None else "\n          AND coalesce(n.type, '') IN $types"
+        only_clause = "" if only is None else _ONLY_HOSTS_CLAUSE
+        prunes_something = only != [] and types != []
 
         query = f"""
         MATCH (n)
@@ -291,7 +339,7 @@ class BaseMixin:
           AND ({_FINDING_LABEL_PREDICATE})
           AND coalesce(n.source, '') IN $sources
           AND (n.updated_at IS NULL OR n.updated_at < datetime($since)
-               OR {_RESTORED_UPDATED_AT} < datetime($since)){keep_clause}
+               OR {_RESTORED_UPDATED_AT} < datetime($since)){keep_clause}{types_clause}{only_clause}
         // The write lock BEFORE `keep` reads n:Muted: a mute that committed
         // first is then kept, and one that starts later waits for the delete
         // and matches nothing. Without it a mute can land between the read
@@ -342,15 +390,20 @@ class BaseMixin:
                       "since": run_started_at}
             if keep_patterns:
                 params["keep_patterns"] = keep_patterns
-            record = session.run(query, **params).single()
+            if only is not None:
+                params["only_hosts"] = only
+            if types is not None:
+                params["types"] = types
+            record = session.run(query, **params).single() if prunes_something else None
 
         stats = {
             "pruned": int((record["pruned"] if record else 0) or 0),
             "stale": int((record["stale"] if record else 0) or 0),
             "revived": int((revived["revived"] if revived else 0) or 0),
         }
+        scope = "" if only is None else f" on {len(only)} re-checked host(s)"
         print(f"[*][graph-db] Pruned {stats['pruned']} findings no longer "
-              f"reported by {', '.join(sources)}; kept {stats['stale']} muted "
+              f"reported by {', '.join(sources)}{scope}; kept {stats['stale']} muted "
               f"or human-judged as stale; revived {stats['revived']}")
         return stats
 

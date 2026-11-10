@@ -2539,6 +2539,25 @@ def _note_unchecked_dns_orgs() -> None:
                 "vuln_scan", sources=["security_check"], reason=f"dns checks not run for {org}")
 
 
+def _checked_prune_batches(report, sources) -> dict:
+    """``(keep_hosts, only_hosts, types)`` -> the positive sources pruned with them.
+
+    A source that recorded what it re-checked (``circuit_breaker.note_checked``)
+    is pruned once per check it recorded, on the hosts it re-checked minus
+    those cut for it. The cut hosts are also passed as kept, so a finding that
+    names one in any host field stays (degraded wins). Sources with the same
+    record share one call, as Shodan's source values do.
+    """
+    batches: dict = {}
+    for source in sources:
+        keep = report.keep_hostnames(source)
+        for check in report.checked_types(source):
+            key = (keep, report.checked_hostnames(source, check),
+                   None if check == "*" else (check,))
+            batches.setdefault(key, []).append(source)
+    return batches
+
+
 def _prune_recon_findings():
     """Remove the findings this run stopped reporting. AFTER a successful run.
 
@@ -2557,6 +2576,11 @@ def _prune_recon_findings():
     host timeout) keeps that tool's findings alone, since the others re-checked
     it. If the run's coverage cannot be established at all, nothing is pruned
     (fail closed).
+
+    A source that recorded the hosts it re-checked (positive coverage, D1) is
+    pruned on those hosts only, so a host it never reached keeps its findings
+    even when nothing noted it degraded. Every other source keeps the rule
+    above.
     """
     if not UPDATE_GRAPH_DB or not _RUN_STARTED_AT:
         return
@@ -2583,11 +2607,17 @@ def _prune_recon_findings():
               f"findings on {len(keep_hosts)} unreachable host(s)")
         for source, hosts in report.source_hosts:
             print(f"[*][graph-db]   {len(hosts)} of those host(s) only for {source}")
+    positive = [s for s in sources if s in report.positive_sources]
+    if positive:
+        print(f"[*][graph-db] {len(positive)} source(s) prune only the hosts they "
+              f"re-checked ({', '.join(positive)})")
     # One prune per distinct keep set. With no per-source host every source
     # shares one set, which is the single call a run has always made.
     batches: dict = {}
     for source in sources:
-        batches.setdefault(report.keep_hostnames(source), []).append(source)
+        if source not in report.positive_sources:
+            batches.setdefault(report.keep_hostnames(source), []).append(source)
+    checked_batches = _checked_prune_batches(report, positive)
     try:
         from graph_db import Neo4jClient
         with Neo4jClient() as graph_client:
@@ -2602,10 +2632,17 @@ def _prune_recon_findings():
                     passive = {s for group in PASSIVE_CVE_SOURCES.values() for s in group}
                     batches = {keep: [s for s in batch if s not in passive]
                                for keep, batch in batches.items()}
+                    checked_batches = {key: [s for s in batch if s not in passive]
+                                       for key, batch in checked_batches.items()}
                 for keep, batch in batches.items():
                     graph_client.prune_unseen_findings(
                         USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
                         keep_hosts=keep)
+                for (keep, hosts, types), batch in checked_batches.items():
+                    if batch:
+                        graph_client.prune_unseen_findings(
+                            USER_ID, PROJECT_ID, batch, _RUN_STARTED_AT,
+                            keep_hosts=keep, only_hosts=hosts, types=types)
     except Exception as e:
         # Never fail a completed scan over housekeeping: a finding that should
         # have been pruned is visible and wrong, which beats losing the run.

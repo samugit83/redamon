@@ -85,6 +85,14 @@ graph-write rules it depends on.
   one locked unit of work: the first group of a run overwrites, later ones merge).
   They are in the webapp's `VOLATILE_PROPERTIES`, so they never make a `Domain`
   read as "changed" in the Recon Delta.
+- **ALWAYS give a new host-bound prune source positive coverage.** Record the
+  hosts it actually re-checked with `circuit_breaker.note_checked(source,
+  hosts=[...], checks=[...])` (a 09.1 coverage record does it through
+  `coverage_stamps.note_rows_checked`): the prune then deletes its findings only
+  on those hosts (`prune_unseen_findings(..., only_hosts=, types=)`), so a host
+  it never reached keeps its findings even when nobody called `note_degraded`.
+  Degraded still wins. Skip it when switched off by configuration, and for a
+  source whose findings carry no host field.
 - **NEVER attach to `Domain {name: <scan root>}`.** A writer decides scope and
   attach separately (`graph_db/mixins/recon/scope.py`): `scan_root_for_host` /
   `attach_for_host` say whether a host is in scope, and `org_for_scan_root` names

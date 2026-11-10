@@ -1333,11 +1333,43 @@ class CoverageReport:
     # ((source, (host, ...)), ...): hosts only that source gave up on. Each is
     # also in skipped_hosts; a host some note cut for every source is not here.
     source_hosts: tuple = ()
+    # ((source, ((check, (host, ...)), ...)), ...): what note_checked recorded;
+    # check "*" is every finding type of the source. Not a cut: no gap.
+    checked: tuple = ()
 
     @property
     def degraded(self) -> bool:
         return bool(self.degraded_sources or self.skipped_hosts or self.nuclei_truncated
                     or self.gaps)
+
+    @property
+    def positive_sources(self) -> frozenset:
+        """The sources that recorded what they re-checked (``note_checked``).
+        The prune deletes their stale findings only on those hosts; every
+        other source keeps the rule "not reported and not cut means gone".
+        A degraded one is listed too: the prune leaves it out first."""
+        return frozenset(source for source, _ in self.checked)
+
+    def checked_types(self, source: str) -> tuple:
+        """The checks ``source`` recorded: ``"*"`` (every finding type) first
+        when some note covered the whole source, then each finding ``type``
+        recorded on its own."""
+        checks = [check for check, _ in dict(self.checked).get(source, ())]
+        return tuple(sorted(checks, key=lambda c: (c != "*", c)))
+
+    def checked_hostnames(self, source: str, check: str = "*") -> tuple:
+        """The hostnames whose ``source`` findings (of type ``check``, or of
+        every type for ``"*"``) the prune may delete: those the source
+        re-checked, minus every host the run cut for it. Degraded always
+        wins: a source cut as a whole has none."""
+        if source in self.degraded_sources:
+            return ()
+        per_check = dict(dict(self.checked).get(source, ()))
+        hosts = set(per_check.get("*", ()))
+        if check != "*":
+            hosts.update(per_check.get(check, ()))
+        kept = set(self.keep_hostnames(source))
+        return tuple(h for h in _prune_hostnames(hosts) if h not in kept)
 
     def skipped_hostnames(self) -> tuple:
         """Hostnames (port stripped, lower-cased) safe to build a prune regex from."""
@@ -1430,11 +1462,56 @@ def note_degraded(module: str, *, sources: Iterable[str] = (), hosts: Iterable[s
         _mark_accumulator_broken()
 
 
+def note_checked(source: str, *, hosts: Iterable[str] = (), checks: Iterable[str] = (),
+                 module: str = "") -> None:
+    """Record, for the run, the hosts ``source`` positively re-checked. Never raises.
+
+    The positive-coverage prune (design decision D1). Once a finding source
+    calls this in a run, the end-of-run prune deletes its stale findings only
+    on these hosts and keeps every other one, so a host the module never
+    reached (a crash, a cap, a host discovery stopped finding) keeps its
+    findings without the module having to say so. A source that never calls
+    it keeps the older rule: whatever is not noted degraded is pruned. A
+    source switched off by configuration must not call it, so its old
+    findings are pruned (README "Degraded vs. switched off").
+
+    ``hosts``: ``host`` or ``host:port`` keys, as ``note_degraded`` takes them
+    (``host_key`` turns a URL into one). The prune matches findings by
+    hostname through ``_KEEP_HOST_FIELDS``, so a host counts as checked when
+    any of its ports was. Called with none, the source re-checked nothing and
+    prunes nothing. Findings with no host field are never pruned under this
+    rule, so a source whose findings carry none should not adopt it.
+    ``checks``: finding ``type`` values this record covers alone, for a
+    source made of independent checks (``security_check``); empty means every
+    type of the source.
+    Degraded always wins: a source noted degraded, or a host cut for it or for
+    every source, is kept even when also recorded here. Recording a check is
+    not a coverage gap: it changes no gap, keep set or degraded flag.
+    A fault here marks the accumulator broken, which makes the prune fail closed.
+    """
+    try:
+        token = _token(source)
+        if not token:
+            return
+        note = {
+            "kind": "checked",
+            "module": _token(module) or token,
+            "source": token,
+            "hosts": sorted({h for h in (_norm_host(x) for x in hosts) if h}),
+            "checks": sorted({_token(c) for c in checks if _token(c)}),
+        }
+        with _notes_lock:
+            _notes.append(note)
+    except Exception:  # noqa: BLE001
+        _mark_accumulator_broken()
+
+
 def _aggregate(notes: list[dict]) -> CoverageReport:
     degraded_sources: set[str] = set()
     skipped_hosts: set[str] = set()
     every_source_hosts: set[str] = set()
     per_source_hosts: dict[str, set[str]] = {}
+    checked: dict[str, dict[str, set[str]]] = {}
     truncated = False
     merged: dict[tuple[str, str], dict] = {}
 
@@ -1450,6 +1527,11 @@ def _aggregate(notes: list[dict]) -> CoverageReport:
             slot["reason"] = f"{slot['reason']}; {reason}" if slot["reason"] else reason
 
     for note in notes:
+        if note.get("kind") == "checked":
+            per_check = checked.setdefault(note["source"], {})
+            for check in note["checks"] or ("*",):
+                per_check.setdefault(check, set()).update(note["hosts"])
+            continue
         module = note["module"]
         aliases = note.get("aliases") or []
         truncated = truncated or note["nuclei_truncated"]
@@ -1477,8 +1559,11 @@ def _aggregate(notes: list[dict]) -> CoverageReport:
     source_hosts = tuple(sorted(
         (source, tuple(sorted(hosts - every_source_hosts)))
         for source, hosts in per_source_hosts.items() if hosts - every_source_hosts))
+    checked_record = tuple(sorted(
+        (source, tuple(sorted((check, tuple(sorted(hosts))) for check, hosts in per_check.items())))
+        for source, per_check in checked.items()))
     return CoverageReport(frozenset(degraded_sources), tuple(sorted(skipped_hosts)),
-                          truncated, gaps, source_hosts)
+                          truncated, gaps, source_hosts, checked_record)
 
 
 def coverage_report() -> CoverageReport:
