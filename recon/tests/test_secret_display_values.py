@@ -59,3 +59,28 @@ class TestJsluiceValues:
     def test_the_sample_is_redacted_like_js_recons(self):
         assert _redact_sample(AWS_ID) == patterns.redact(AWS_ID)
         assert _redact_sample("") == ""
+
+
+class TestSecretValueEdges:
+    def test_quotes_a_provider_rule_caught_are_dropped(self):
+        assert patterns.secret_value_of("Google Gemini API Key", '"AIzaSyFAKE0FAKE0FAKE0FAKE0FAKE0FAKE"') == \
+            "AIzaSyFAKE0FAKE0FAKE0FAKE0FAKE0FAKE"
+
+    def test_a_pem_rule_gives_the_whole_block(self):
+        body = "MIIEFAKEFAKE" * 30
+        after = f"-----BEGIN PRIVATE KEY-----\\n{body}\\n-----END PRIVATE KEY-----\";\nconst x = 1;"
+        value = patterns.secret_value_of("Generic Private Key", "-----BEGIN PRIVATE KEY-----", after)
+        assert value.startswith("-----BEGIN PRIVATE KEY-----") and value.endswith("-----END PRIVATE KEY-----")
+        assert body in value
+
+    def test_a_pem_rule_without_its_footer_keeps_the_match(self):
+        assert patterns.secret_value_of("Generic Private Key", "-----BEGIN PRIVATE KEY-----",
+                                        "-----BEGIN PRIVATE KEY-----\\nMIIE") == "-----BEGIN PRIVATE KEY-----"
+
+    def test_a_pem_key_in_a_bundle_gets_its_block(self):
+        body = "".join(chr(65 + (i * 7) % 26) for i in range(400))
+        content = f'var k = "-----BEGIN RSA PRIVATE KEY-----\\n{body}\\n-----END RSA PRIVATE KEY-----";\n'
+        findings, _ = patterns.scan_js_content(content, "https://app.example.test/main.js")
+        pem = [f for f in findings if "Private Key" in f["name"]]
+        assert pem, [f["name"] for f in findings]
+        assert all(f["secret_value"].endswith("-----END RSA PRIVATE KEY-----") for f in pem)

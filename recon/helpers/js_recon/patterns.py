@@ -752,13 +752,23 @@ def _has_key_data(after: str) -> bool:
     return False
 
 
-def secret_value_of(name: str, matched_text: str) -> str:
+_PEM_BLOCK = re.compile(r'-----BEGIN [A-Z0-9 ]*-----.*?-----END [A-Z0-9 ]*-----', re.S)
+_PEM_BLOCK_MAX = 16000
+
+
+def secret_value_of(name: str, matched_text: str, after: str = '') -> str:
     """The key itself out of a match: the quoted value of a keyword rule
-    (`password = "x"` gives `x`), else the whole match."""
+    (`password = "x"` gives `x`), the whole PEM block for a key rule that
+    matched only its header (`after` is the text from the header on), else the
+    match without the quotes a rule caught around it."""
+    if name in _PEM_KEY_NAMES and after:
+        block = _PEM_BLOCK.match(after[:_PEM_BLOCK_MAX])
+        if block:
+            return block.group(0)
     value_re = _GENERIC_VALUE_RE.get(name)
     m = value_re.search(matched_text) if value_re else None
     value = m.group(1).strip() if m else ''
-    return value or matched_text
+    return (value or matched_text.strip().strip('"\'`')) or matched_text
 
 
 def _generic_value_is_uuid(name: str, matched_text: str) -> bool:
@@ -1152,7 +1162,11 @@ def scan_js_content(
                     'id': finding_id,
                     'name': name,
                     'matched_text': matched_text,
-                    'secret_value': secret_value_of(pattern['name'], matched_text),
+                    'secret_value': secret_value_of(
+                        pattern['name'], matched_text,
+                        full_line[abs_start:abs_start + _PEM_BLOCK_MAX] + '\n'
+                        + '\n'.join(lines[line_num:line_num + 60])
+                        if pattern['name'] in _PEM_KEY_NAMES else ''),
                     'redacted_value': redact(matched_text),
                     'severity': 'info' if public else severity,
                     'public_client_key': public,
