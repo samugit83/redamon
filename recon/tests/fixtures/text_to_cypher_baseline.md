@@ -636,7 +636,7 @@ Nuclei-specific properties (source="nuclei"):
 - category (string): "xss", "sqli", "rce", "lfi", "ssrf", "exposure", etc.
 - tags (list): lowercase product/vendor/category tags — primary place a nuclei finding's product lives (e.g. ["aem","adobe","exposure"]). authors, references (list)
 - cwe_ids (list)
-- cves (list)
+- cves (list[string]): the CVE ids the template cites; each well-formed one also links `(v)-[:INCLUDES_CVE]->(:CVE)`, and that CVE's CWE / CAPEC chain once MITRE enrichment ran. A finding written before the link has only this property until its next scan
 - cvss_metrics (string)
 - matched_at (string): URL where vuln was found
 - matcher_name
@@ -862,7 +862,7 @@ You therefore CANNOT match them on their own — `MATCH (c:CVE) RETURN c` is
 refused, because a query has to be anchored to this project's data. Always reach
 them by traversing from a node that IS tenant-scoped:
   MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id, c.cvss
-  MATCH (v:Vulnerability)-[:HAS_CVE]->(c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN c.id, m.cwe_id
+  MATCH (v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN c.id, m.cwe_id
 **CVE** - Known CVE entries (linked to Technologies)
 - id (string): "CVE-2021-41773", "CVE-2021-44228"
 - name (string): same as id or descriptive name
@@ -1486,7 +1486,7 @@ not so you can query for one.
 - `(v:Vulnerability)-[:FOUND_AT]->(e:Endpoint)` - Vuln found at web endpoint
 - `(v:Vulnerability)-[:AFFECTS_PARAMETER]->(param:Parameter)` - Vuln affects parameter
 
-- `(v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)` - The scanner finding cites this CVE. Crosses the Vulnerability/CVE divide described above: the Vulnerability is what a scanner OBSERVED, the CVE is the public record it matched
+- `(v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)` - The scanner finding cites this CVE (nuclei, and the passive Shodan, InternetDB, Netlas and CriminalIP CVEs). Crosses the Vulnerability/CVE divide described above: the Vulnerability is what a scanner OBSERVED, the CVE is the public record it matched. A CVE first created by a nuclei finding has `source: "nuclei"` and only id, cve_id, name, url and cvss until the NVD lookup fills the rest
 
 **Nmap NSE Vulnerabilities (source="nmap_nse"):**
 - `(v:Vulnerability)-[:AFFECTS]->(p:Port)` - NSE vuln affects port (e.g. ftp-vsftpd-backdoor -> Port:21)
@@ -1507,7 +1507,7 @@ not so you can query for one.
 - Typical query: "show discovered origin IPs behind a CDN" → `MATCH (s:Subdomain)-[:HAS_ORIGIN]->(i:IP) RETURN s.name AS fronted_host, i.address AS origin_ip, i.origin_discovery_method, i.origin_confidence, i.cdn_fronting`
 - Typical query: "which origins were found through urlscan?" → `MATCH (s:Subdomain)-[r:HAS_ORIGIN]->(i:IP) WHERE r.origin_source STARTS WITH 'urlscan' RETURN s.name AS fronted_host, i.address AS origin_ip, r.origin_source, r.confidence`
 
-**NOTE:** Vulnerability nodes store CVE IDs as properties (`cves` list for nuclei, `cve_ids` list for GVM), NOT as relationships to CVE nodes. To find CVEs for a vulnerability, use the property: `v.cves` or `v.cve_ids`.
+**NOTE:** GVM findings store CVE IDs only as a property (`cve_ids`), NOT as relationships to CVE nodes. Nuclei findings keep the `cves` property AND link each CVE by INCLUDES_CVE (a finding written before the link has the property only, until its next scan). To list a vulnerability's CVE ids, read the property: `v.cves` or `v.cve_ids`.
 
 ### Product/vendor-named vulns (AEM, WordPress, Struts...)
 Nuclei findings carry product identity ONLY in free-text fields, NOT in Technology
@@ -1520,7 +1520,7 @@ hostname directly (nuclei vulns aren't linked to Domain/Subdomain via HAS_VULNER
      OR any(t IN coalesce(v.tags,[]) WHERE toLower(t) IN ['aem','adobe'])
   RETURN v.host, v.name, v.severity, v.matched_at, v.tags LIMIT 50
 
-**CVE → MITRE Chain (from Technology CVE lookup, NOT from Vulnerability nodes):**
+**CVE → MITRE Chain (from the Technology CVE lookup and from the CVEs nuclei findings cite):**
 - `(c:CVE)-[:HAS_CWE]->(m:MitreData)` - CVE has CWE weakness
 - `(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)` - CWE has CAPEC attack pattern
 
