@@ -72,3 +72,62 @@ test('a node written before the properties answers null for both', async () => {
   expect(body.secrets[0].line_number).toBeNull()
   expect(body.secrets[0].alternate_names).toBeNull()
 })
+
+/** Answer the JsReconFinding query with `findings`, every other query with nothing. */
+function graphWithFindings(findings: Record<string, unknown>[]) {
+  h.run.mockImplementation(async (cypher: string) => (/MATCH \(jf:JsReconFinding/.test(cypher) && !/HAS_ENDPOINT/.test(cypher) ? records(findings) : records([])))
+}
+
+const JS_FILE = { nodeId: '1', id: 'f1', findingType: 'js_file', sourceUrl: 'https://app.example.com/main.js', updatedAt: 't0' }
+
+// The writer stores every importing file in `source_urls` and the package in
+// `package_name` (R-49); the route answered neither, so the Dependencies export
+// had no sources and the Package column showed the finding's title.
+const DEPENDENCY = {
+  nodeId: '21', id: 'd1', findingType: 'dependency_confusion', severity: 'high',
+  title: 'Dependency confusion: @acme/internal-ui not on public npm', packageName: '@acme/internal-ui',
+  sourceUrl: 'https://app.example.com/main.js',
+  sourceUrls: ['https://app.example.com/main.js', 'https://app.example.com/vendor.js'], updatedAt: 't1',
+}
+
+test('a dependency finding answers its package name and every file that imports it', async () => {
+  graphWithFindings([JS_FILE, DEPENDENCY])
+  const body = await download()
+  expect(body.dependencies).toHaveLength(1)
+  expect(body.dependencies[0]).toMatchObject({
+    package_name: '@acme/internal-ui',
+    source_url: 'https://app.example.com/main.js',
+    source_urls: ['https://app.example.com/main.js', 'https://app.example.com/vendor.js'],
+  })
+  const cypher = h.run.mock.calls.map(c => String(c[0])).find(c => /MATCH \(jf:JsReconFinding/.test(c) && !/HAS_ENDPOINT/.test(c))!
+  expect(cypher).toMatch(/coalesce\(jf\.source_urls, \[jf\.source_url\]\) AS sourceUrls/)
+  expect(cypher).toMatch(/jf\.package_name AS packageName/)
+})
+
+test('a dependency node written before those properties falls back to its source_url and title', async () => {
+  graphWithFindings([JS_FILE, {
+    nodeId: '22', id: 'd2', findingType: 'dependency_confusion', title: 'Dependency confusion: @acme/old not on public npm',
+    sourceUrl: '', sourceUrls: [''], updatedAt: 't2',
+  }, {
+    nodeId: '23', id: 'd3', findingType: 'dependency_confusion', title: '@acme/legacy',
+    sourceUrl: 'https://app.example.com/legacy.js', sourceUrls: ['https://app.example.com/legacy.js'], updatedAt: 't3',
+  }])
+  const body = await download()
+  expect(body.dependencies[0]).toMatchObject({ package_name: 'Dependency confusion: @acme/old not on public npm', source_urls: [] })
+  expect(body.dependencies[1]).toMatchObject({ package_name: '@acme/legacy', source_urls: ['https://app.example.com/legacy.js'] })
+})
+
+// The browser revalidates its cached body by this tag alone. The one below is
+// what the route answered for this graph before it returned the dependency
+// fields; a 304 to it would keep a pre-upgrade body, sources missing, until the
+// graph next changed.
+test('a body cached before the dependency fields were answered is not revalidated as current', async () => {
+  const before = '"e683b0d0e021459f"'
+  graphWithFindings([JS_FILE, DEPENDENCY])
+  const res = await GET(
+    new NextRequest('http://localhost/api/js-recon/p1/download?fresh=1', { headers: { 'if-none-match': before } }),
+    { params: Promise.resolve({ projectId: 'p1' }) },
+  )
+  expect(res.status).toBe(200)
+  expect(res.headers.get('ETag')).not.toBe(before)
+})

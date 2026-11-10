@@ -49,8 +49,15 @@ interface JsReconResponse {
   }
 }
 
+/**
+ * Bump when the answer gains or changes fields. The browser revalidates its
+ * cached body by tag alone, so without it a body cached before the change gets
+ * a 304 and stays in use until the graph itself next changes.
+ */
+const RESPONSE_SHAPE = 2
+
 function generateEtag(data: JsReconResponse): string {
-  const raw = `${data.secrets.length}:${data.endpoints.length}:${data.dependencies.length}:${data.dom_sinks.length}:${data.frameworks.length}:${data.source_maps.length}:${data.dev_comments.length}:${data.emails.length}:${data.ip_addresses.length}:${data.dev_references.length}:${data.object_references.length}:${data.cloud_assets.length}:${data.external_domains.length}`
+  const raw = `shape${RESPONSE_SHAPE}:${data.secrets.length}:${data.endpoints.length}:${data.dependencies.length}:${data.dom_sinks.length}:${data.frameworks.length}:${data.source_maps.length}:${data.dev_comments.length}:${data.emails.length}:${data.ip_addresses.length}:${data.dev_references.length}:${data.object_references.length}:${data.cloud_assets.length}:${data.external_domains.length}`
   const hash = createHash('md5').update(raw)
   // A rescan recreates the nodes, usually with the same counts but new ids. A
   // count-only tag would 304 and leave the Node ID column pointing at deleted
@@ -129,6 +136,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
              jf.line AS line,
              jf.user_source AS userSource,
              jf.vendor AS vendor,
+             jf.package_name AS packageName,
+             coalesce(jf.source_urls, [jf.source_url]) AS sourceUrls,
              jf.updated_at AS updatedAt
       `,
       { pid: projectId }
@@ -218,12 +227,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         case 'js_file':
           jsFilesCount++
           break
-        case 'dependency_confusion':
+        case 'dependency_confusion': {
+          // A node written before source_urls carries only source_url, often
+          // empty; one written before package_name is named by its title.
+          const urls = record.get('sourceUrls')
           dependencies.push({
             ...base,
-            package_name: base.title,
+            package_name: record.get('packageName') ?? base.title,
+            source_urls: Array.isArray(urls) ? urls.filter((u: unknown) => typeof u === 'string' && u !== '') : [],
           })
           break
+        }
         case 'source_map_exposure':
         case 'source_map_reference':
           source_maps.push({
