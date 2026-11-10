@@ -9,13 +9,17 @@
  * version freeze). Every other kind forwards to its orchestrator start endpoint,
  * mirroring its /api/.../start route body exactly.
  */
+import type { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { loadEngagement } from '@/lib/engagement'
+import { currentRoeTextSha256 } from '@/lib/engagement'
+import { assertEngagementStartable } from '@/lib/engagementGate'
+import { assertGraphNotActivating } from '@/lib/activationLock'
+import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { resolveTrufflehogStart } from '@/lib/trufflehogStart'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { classifyOrchestratorThrow, startFullScan } from '@/lib/startFullScan'
-import { parseScanMode, type ScanTrigger } from '@/lib/scanTimeline'
+import { parseScanMode, recordScanStart, type ScanTrigger } from '@/lib/scanTimeline'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 
@@ -95,6 +99,57 @@ export async function stopScan(kind: string, projectId: string, runId = ''): Pro
   }
 }
 
+/** A start route's refusal response, in the shape the queue classifies. */
+async function routeRefusal(res: NextResponse): Promise<DispatchStartResult> {
+  const body = (await res.json().catch(() => ({}))) as { error?: unknown; activationInProgress?: unknown }
+  return {
+    ok: false,
+    status: res.status,
+    ...(typeof body.error === 'string' ? { error: body.error } : {}),
+    ...(body.activationInProgress === true ? { activationInProgress: true } : {}),
+  }
+}
+
+/**
+ * The checks the start buttons make before a run may write the live graph.
+ * Every kind waits out a version activation swapping the graph; a partial recon
+ * also waits out a mute-rule apply, which it would race for the same findings.
+ * Both are 409s the queue reads as a capacity wait: requeued, never started.
+ */
+async function graphBusyRefusal(kind: string, projectId: string): Promise<DispatchStartResult | null> {
+  const activating = await assertGraphNotActivating(projectId)
+  if (activating) return routeRefusal(activating)
+  if (kind !== 'partial_recon') return null
+  const applying = await describeNodeFilterWriter(projectId)
+  if (!applying) return null
+  return {
+    ok: false,
+    status: 409,
+    busy: applying,
+    error: `Cannot start a partial recon while ${applying}. Try again when it finishes.`,
+  }
+}
+
+/**
+ * The run id each kind's start button records its ScanJob under, which is how
+ * the reconcile matches a row to its run. supply_chain_repo has no button and
+ * no ScanJob: its history is the queue row.
+ */
+const HISTORY_RUN_ID: Partial<Record<string, (state: unknown, body: Record<string, unknown>) => string>> = {
+  partial_recon: state => runId(state),
+  ai_attack: state => runId(state),
+  trufflehog: (_state, body) => (typeof body.source === 'string' ? body.source : ''),
+  gvm: () => '',
+  github_hunt: () => '',
+  supply_chain: () => '',
+}
+
+/** The roots the orchestrator granted a partial recon, as its route records them. */
+function grantedRoots(state: unknown): string[] {
+  const roots = (state as { roots?: unknown } | null)?.roots
+  return Array.isArray(roots) ? roots.filter((r): r is string => typeof r === 'string') : []
+}
+
 export async function dispatchStart(
   kind: string,
   projectId: string,
@@ -130,6 +185,9 @@ export async function dispatchStart(
     }
   }
 
+  const graphBusy = await graphBusyRefusal(kind, projectId)
+  if (graphBusy) return graphBusy
+
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -157,19 +215,11 @@ export async function dispatchStart(
   // The queue dispatcher and the scheduler both arrive through this function
   // with nobody watching, which is exactly why the check is server-side: an
   // agent-facing rule that only applies when an agent is present is not a
-  // control.
-  const engagement = await loadEngagement(projectId)
-  if (engagement.blockers.length > 0) {
-    // 422 as in startFullScan: the queue reads a 409 as "busy" and would
-    // requeue this until a person fixed the engagement record.
-    return {
-      ok: false,
-      status: 422,
-      error:
-        'This is a third-party engagement and it is not startable: ' +
-        engagement.blockers.join(' '),
-    }
-  }
+  // control. The refusal is the manual routes': 422 and the full start's
+  // message. A 409 would read as "busy" to the queue and requeue this until a
+  // person fixed the engagement record.
+  const engagementBlocked = await assertEngagementStartable(projectId)
+  if (engagementBlocked) return routeRefusal(engagementBlocked)
 
   // 'org' is not an input this scan can read: it means "enumerate the account
   // and queue one scan per repo", which is a different kind (supply_chain_repo).
@@ -259,6 +309,11 @@ export async function dispatchStart(
     return { ok: false, status: 400, error: `Unknown scan kind: ${kind}` }
   }
 
+  const historyRunId = HISTORY_RUN_ID[kind]
+  // Read before the start, as the routes do, so a RoE replaced mid-start cannot
+  // misattribute the run.
+  const roeTextSha256 = historyRunId ? await currentRoeTextSha256(projectId) : null
+
   let response: Response
   try {
     response = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}${path}`, {
@@ -299,5 +354,17 @@ export async function dispatchStart(
   }
 
   const state = await response.json().catch(() => ({}))
-  return { ok: true, status: 200, state, runId: runId(state) }
+  const scanJobId = historyRunId
+    ? await recordScanStart({
+        projectId,
+        kind,
+        runId: historyRunId(state, body),
+        initiatedByUserId: opts.actorUserId ?? null,
+        // As for the queue's full recon: nobody pressed a button for this run.
+        trigger: 'scheduled',
+        targets: kind === 'partial_recon' ? grantedRoots(state) : [],
+        roeTextSha256,
+      })
+    : null
+  return { ok: true, status: 200, state, runId: runId(state), scanJobId }
 }

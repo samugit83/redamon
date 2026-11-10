@@ -277,7 +277,9 @@ export async function createScanJob(input: CreateScanJobInput): Promise<{ id: st
  * Record a non-full-recon scan that the orchestrator just accepted.
  *
  * Deliberately never throws: history is a side effect of starting a scan, and a
- * failure to write it must not fail the start the operator asked for.
+ * failure to write it must not fail the start the operator asked for. Returns
+ * the row's id, or null when it could not be written; the queue links its row
+ * to it so the same scan is not listed twice.
  */
 export async function recordScanStart(input: {
   projectId: string
@@ -285,13 +287,15 @@ export async function recordScanStart(input: {
   runId?: string
   initiatedByUserId?: string | null
   scheduleId?: string | null
+  /** Defaults to 'scheduled' with a scheduleId, else 'manual'. */
+  trigger?: ScanTrigger
   /** The roots the run covers (partial recon reports them). */
   targets?: string[]
   /** Read before the orchestrator was called, so a replace cannot misattribute the run. */
   roeTextSha256?: string | null
-}): Promise<void> {
+}): Promise<string | null> {
   try {
-    await createScanJob({
+    const job = await createScanJob({
       projectId: input.projectId,
       versionId: null,
       kind: input.kind,
@@ -299,13 +303,15 @@ export async function recordScanStart(input: {
       targets: input.targets ?? [],
       roeTextSha256: input.roeTextSha256 ?? null,
       // These kinds do not version the graph, so there is no mode to record.
-      trigger: input.scheduleId ? 'scheduled' : 'manual',
+      trigger: input.trigger ?? (input.scheduleId ? 'scheduled' : 'manual'),
       mode: null,
       initiatedByUserId: input.initiatedByUserId ?? null,
       scheduleId: input.scheduleId ?? null,
     })
+    return job.id
   } catch (err) {
     console.error(`[scanTimeline] could not record ${input.kind} start (continuing):`, err)
+    return null
   }
 }
 

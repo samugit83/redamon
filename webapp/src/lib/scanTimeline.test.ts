@@ -273,7 +273,19 @@ describe('recordScanStart', () => {
   // History is a side effect of starting a scan; it must never fail the start.
   test('a DB failure never propagates to the caller', async () => {
     prismaMock.scanJob.create.mockRejectedValue(new Error('db down'))
-    await expect(recordScanStart({ projectId: 'p1', kind: 'gvm' })).resolves.toBeUndefined()
+    await expect(recordScanStart({ projectId: 'p1', kind: 'gvm' })).resolves.toBeNull()
+  })
+
+  // The queue links its row to this id, or the jobs list shows the scan twice.
+  test('returns the id of the row it wrote', async () => {
+    prismaMock.scanJob.create.mockResolvedValue({ id: 'j9' })
+    await expect(recordScanStart({ projectId: 'p1', kind: 'gvm' })).resolves.toBe('j9')
+  })
+
+  test('an unattended start with no schedule can say so', async () => {
+    prismaMock.scanJob.create.mockResolvedValue({ id: 'j9' })
+    await recordScanStart({ projectId: 'p1', kind: 'gvm', trigger: 'scheduled' })
+    expect(prismaMock.scanJob.create.mock.calls[0][0].data).toMatchObject({ trigger: 'scheduled', scheduleId: null })
   })
 })
 
