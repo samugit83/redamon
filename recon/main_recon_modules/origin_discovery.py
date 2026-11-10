@@ -168,7 +168,8 @@ class _SearchBudget:
 
 
 class _RunCtx:
-    """Per-run shared state: rate limiter, budget, and the (source, key) cache."""
+    """Per-run shared state: rate limiter, budget, the (source, key) cache and
+    the fronted hosts' reference certificates."""
 
     def __init__(self, settings: dict):
         self.settings = settings
@@ -187,6 +188,25 @@ class _RunCtx:
         self._cache: Dict[Tuple[str, str], List[str]] = {}
         self._cache_lock = threading.Lock()
         self._misses = 0
+        self._ref_certs: Dict[Tuple[str, int], Optional[dict]] = {}
+        self._ref_cert_locks: Dict[Tuple[str, int], threading.Lock] = {}
+
+    def reference_cert(self, host: str, port: int, dial) -> Optional[dict]:
+        """The fronted host's certificate on ``port``, dialled once per run.
+
+        Every candidate is compared against the same certificate, so one
+        handshake to the host serves them all. A failed dial is kept as well:
+        an edge that does not serve TLS on a port would otherwise cost one
+        timeout per candidate. Candidates checked at the same time wait for
+        the first dial instead of each sending one.
+        """
+        key = (host.lower(), port)
+        with self._cache_lock:
+            lock = self._ref_cert_locks.setdefault(key, threading.Lock())
+        with lock:
+            if key not in self._ref_certs:
+                self._ref_certs[key] = dial()
+            return self._ref_certs[key]
 
     def note_miss(self) -> None:
         """A candidate source gave no answer for the host being processed."""
@@ -1096,9 +1116,15 @@ def _fetch_peer_cert(host_or_ip: str, sni: str, port: int, timeout: int) -> Opti
 
 
 def _compare_certs(host: str, ip: str, port: int, ctx: _RunCtx) -> float:
-    ref = _fetch_peer_cert(host, host, port, timeout=min(ctx.timeout, 5))
-    cand = _fetch_peer_cert(ip, host, port, timeout=min(ctx.timeout, 5))
-    if not ref or not cand:
+    def dial(target: str) -> Optional[dict]:
+        ctx.rate.wait()
+        return _fetch_peer_cert(target, host, port, timeout=min(ctx.timeout, 5))
+
+    ref = ctx.reference_cert(host, port, lambda: dial(host))
+    if not ref:
+        return 0.0
+    cand = dial(ip)
+    if not cand:
         return 0.0
     score = 0.0
     if ref["serial"] and cand["serial"] and ref["serial"] == cand["serial"]:
@@ -1186,6 +1212,8 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx,
     best_attempt: Optional[dict] = None
     port_timeout = max(2.0, min(ctx.timeout / 5.0, 5.0))  # unwaf: timeout/5, floor 2s
     for port in WEB_PORTS:
+        # A connect is a packet to the candidate like any fetch: same rate limit.
+        ctx.rate.wait()
         if not _port_open(ip, port, port_timeout):
             continue  # closed/filtered — don't spend HTTP + TLS timeouts on it
         scheme = "https" if port in _TLS_PORTS else "http"
