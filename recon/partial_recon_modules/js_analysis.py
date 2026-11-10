@@ -194,8 +194,12 @@ def run_jsrecon(config: dict) -> None:
 
     # A host analyzed with nothing found still gets its coverage stamp: that
     # "analyzed, no findings" is what tells it apart from "never analyzed".
+    # Every finding category is a list the writer ingests; a run that covered
+    # no host (uploads only, or every host RoE-excluded) can still have found
+    # DOM sinks or dependency-confusion packages.
     covered = (js_recon_data.get("scan_metadata") or {}).get("coverage", {}).get("hosts")
-    if not js_recon_data or (not secrets_count and not endpoints_count and not covered):
+    found = any(isinstance(rows, list) and rows for rows in js_recon_data.values())
+    if not js_recon_data or (not found and not covered):
         print("[*][Partial Recon] No JS Recon findings to update in graph")
         if not js_recon_data.get("scan_metadata", {}).get("js_files_analyzed", 0):
             print("[*][Partial Recon] No JS files were found/analyzed. Ensure target URLs contain .js files.")
