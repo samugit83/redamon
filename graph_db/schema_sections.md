@@ -253,8 +253,8 @@ Additional properties present on this node type, not yet described:
 - urlscan_redirect_target (string): the origin (scheme://host only) of the other site a public urlscan visit that started on this URL was redirected to; a label, never scanned. Set by URLScan's Outbound Redirects search
 - urlscan_file_kind (string): set when a public urlscan visit opened this path directly and it is a file that should never be public ("env", "vcs", "db_dump", "backup", "private_key", "log", "config", "debug_page", "installer", "file_manager", "debug_console", "memory_dump", "salesforce_aura"); the matching finding is `Vulnerability {source: 'urlscan_leak', type: 'sensitive_file_seen'}`. Route Exposure reads it to request the path the way the kind's signature needs (a heap dump with HEAD only, a dump or backup as a backup read)
 - quarantine_reasons (list[string]): why it is quarantined: "one_time_link", "secret", "jwt", "path_token", "state_changing", "web_shell" (the URL ran a command through a web shell), "web_shell_host" (another URL on the same host and path did)
-- unmasked_url (string): the full URL as an archive recorded it, values and tokens included (urlscan); on a quarantined endpoint the newest leaked link. **Display only, for the operator to open: never request it**, and never build a request from it; requests use baseurl + path or full_url
-- unmasked_urls (list[string]): on a quarantined endpoint, its distinct full links, newest first, at most 25. Display only, like unmasked_url
+- unmasked_url (string): the full URL as an archive recorded it, values and tokens included (urlscan); on a quarantined endpoint the newest leaked link. **For the operator's UI only: a graph query that names it is refused**, and a returned node comes without it; requests use baseurl + path or full_url
+- unmasked_urls (list[string]): on a quarantined endpoint, its distinct full links, newest first, at most 25. For the operator's UI only, like unmasked_url
 - openapi_operation_id (string): The specification's operationId, kept only when it is a plain identifier (letters, digits, `_ . : -`, at most 128); target-supplied
 - openapi_deprecated (boolean): The specification marks the operation deprecated
 - openapi_security (list[string]): Names of the security schemes the specification requires for the operation; target-supplied identifiers
@@ -400,13 +400,13 @@ Additional properties present on this node type, not yet described:
 - source_url (string): URL of file containing the secret
 - base_url (string): parent BaseURL
 - sample (string): redacted sample of matched data
-- secret_value (string): the secret itself, for the operator to read and copy (JS Recon: the key, or a keyword rule's quoted value; jsluice: the key, or its whole config object; urlscan and url_archive: the value in the URL). Display only: never send it anywhere or use it unless the operator asks
-- paired_secret (string): the other half of a key pair, such as the AWS secret access key next to its access key id, when the detector found one (JS Recon's TruffleHog engine, jsluice). Display only
-- raw_context (string): the code around the match with nothing masked, at most 400 characters (JS Recon, jsluice); `context` is the masked form reviewers and models read. Display only
+- secret_value (string): the secret itself, for the operator to read and copy (JS Recon: the key, or a keyword rule's quoted value; jsluice: the key, or its whole config object; urlscan and url_archive: the value in the URL). For the operator's UI only: a graph query that names it is refused, and a returned node comes without it
+- paired_secret (string): the other half of a key pair, such as the AWS secret access key next to its access key id, when the detector found one (JS Recon's TruffleHog engine, jsluice). For the operator's UI only: a graph query that names it is refused
+- raw_context (string): the code around the match with nothing masked, at most 400 characters (JS Recon, jsluice); `context` is the masked form reviewers and models read. For the operator's UI only: a graph query that names it is refused
 - matched_text (string): JS Recon's full match; a keyword rule's match includes its name (`password = "..."`)
 urlscan secret properties (source="urlscan"): a password, API key, token or JWT written in a URL a public urlscan scan recorded. The value is kept for the operator (secret_value) beside its HMAC, which is the identity:
-- secret_value (string): the secret itself, for the operator to read and copy. Display only: never send it anywhere or use it unless the operator asks
-- unmasked_url (string): the newest URL that carried it, value included. Display only: never request it
+- secret_value (string): the secret itself, for the operator to read and copy. For the operator's UI only: a graph query that names it is refused, and a returned node comes without it
+- unmasked_url (string): the newest URL that carried it, value included. For the operator's UI only: a graph query that names it is refused
 - secret_type (string): "password", "api_key", "token" or "jwt"
 - param_name (string): the parameter that carried it (pwd, apikey, access_token, jsessionid...), or "path" for a JWT in the path
 - value_length (integer): the value's length
@@ -467,8 +467,8 @@ urlscan history properties (source="urlscan_leak"): what public urlscan.io scans
 - link_kind (string): for leaked_one_time_link, "password_reset", "account_setup", "invite", "payment" or "login_link"
 - link_count (integer): how many such links were seen on that host and path
 - masked_url (string): for leaked_one_time_link, the newest such link with every value "***" and a path token as "{token}"
-- unmasked_url (string): the newest full URL the record is about, values and tokens included (for open_redirect_seen, the start URL; absent on a per-host problem). Display only: never request it
-- unmasked_urls (list[string]): for leaked_one_time_link, every distinct full link seen, newest first, at most 25. Display only
+- unmasked_url (string): the newest full URL the record is about, values and tokens included (for open_redirect_seen, the start URL; absent on a per-host problem). For the operator's UI only: a graph query that names it is refused
+- unmasked_urls (list[string]): for leaked_one_time_link, every distinct full link seen, newest first, at most 25. For the operator's UI only: a graph query that names it is refused
 - file_kind (string): for sensitive_file_seen, "env", "vcs", "private_key", "db_dump", "backup", "log", "config", "debug_page", "installer", "web_shell_trace", "file_manager", "debug_console", "memory_dump" or "salesforce_aura"
 - sightings (integer): public visits that showed it
 - param_name (string), destination_domain (string): for open_redirect_seen, the parameter that named the other site and the site the browser ended on (never scanned)
@@ -557,7 +557,7 @@ Route exposure properties (source="route_exposure"):
 - pii_types (list[string]): "email", "phone", "card", "iban", "ssn", "codice_fiscale", "dob"; pii_record_estimate (integer): the largest per-type count of distinct values. Values are never stored
 - sensitive_fields (list[string]): JSON key paths whose names are sensitive ("data[].password_hash"), at most 20; key names only
 - secret_types (list[string]): names of the secret detectors that matched (js_recon's matcher)
-- secret_values (list[string]), secret_value_types (list[string]): the secrets the anonymous answer held (at most 20) and, at the same index, the detector that matched each. Display only: never send them anywhere or use them unless the operator asks
+- secret_values (list[string]), secret_value_types (list[string]): the secrets the anonymous answer held (at most 20) and, at the same index, the detector that matched each. For the operator's UI only: a graph query that names them is refused, and a returned node comes without them
 - generated_by (string): "found" (recon already had the route), "seed", "vcs", "backup", "version", "sibling", "framework", "catalog" or "cross_host"; variant_of (string): the path a version-down or backup guess came from
 - catch_all_check (string): "passed" (a made-up path next to it answered differently), "failed" (the control gave no conclusion) or "n/a"
 - signature (string): the signature a finding matched ("git_head", "env_lines", "zip_magic", "werkzeug_debugger", "actuator_env", "django_debug", ...); "" on a candidate
@@ -1098,7 +1098,7 @@ Adversarial AI Phase 6 - JS Recon AI SDK detection (lap 3):
   - byte_offset (int): position in the source JS file
   - sample (string): redacted form of the captured value (first6 + "..." + last4)
      when category=ai-sdk-key-literal, empty otherwise
-  - secret_value (string): for ai-sdk-key-literal, the full key. Display only: never send it anywhere or use it unless the operator asks
+  - secret_value (string): for ai-sdk-key-literal, the full key. For the operator's UI only: a graph query that names it is refused, and a returned node comes without it
 
 When user asks about "JS findings", "JavaScript attack surface", "JS secrets", or "what did JS Recon find":
 - First query JS file nodes: MATCH (jf:JsReconFinding {finding_type: 'js_file'})
@@ -1143,7 +1143,7 @@ Additional properties present on this node type, not yet described:
 - domain (string): foreign domain name
 - sources (string[]): discovery sources (http_probe_redirect, urlscan, urlscan_redirect, gau, katana, hakrawler, zap_ajax_spider, jsluice, cert_discovery, otx_passive_dns). "urlscan_redirect": a public urlscan visit started on the target and ended on this site; its redirect_from_urls are the target's masked start URLs, its unmasked_redirect_from_urls the same start URLs whole, and its redirect_to_urls hold the origin only
 - redirect_from_urls (string[]): in-scope URLs that redirected to this domain
-- unmasked_redirect_from_urls (string[]): for urlscan_redirect, the target's start URLs with their values, newest first, at most 25. Display only: never request them
+- unmasked_redirect_from_urls (string[]): for urlscan_redirect, the target's start URLs with their values, newest first, at most 25. For the operator's UI only: a graph query that names them is refused
 - redirect_to_urls (string[]): foreign URLs encountered
 - status_codes_seen (string[]), titles_seen (string[]), servers_seen (string[])
 - ips_seen (string[]), countries_seen (string[])
