@@ -113,33 +113,29 @@ def run_ai_surface_recon(config: dict) -> None:
                 recon_data["http_probe"]["by_url"][base + "/"] = {
                     "is_ai_framework_detected": True}
 
-        # Open ports per IP. run_full's _confirm_vector_dbs filters these to AI
-        # vector-DB ports via the port catalogue and confirms with a benign read
-        # — the same catalogue-based confirmation the full pipeline performs over
-        # port_scan.by_host (which likewise contains all scanned ports).
-        vdb_rows = session.run(
+        # Addresses with ports, minus the ones the run's RoE excludes.
+        ip_rows = session.run(
             """
-            MATCH (ip:IP {user_id:$u, project_id:$p})-[:HAS_PORT]->(p:Port)
-            RETURN DISTINCT ip.address AS ip, p.number AS port
+            MATCH (ip:IP {user_id:$u, project_id:$p})-[:HAS_PORT]->(:Port)
+            RETURN DISTINCT ip.address AS ip
             """,
             u=user_id, p=project_id,
         )
-        for row in vdb_rows:
-            ip = row["ip"]
-            port = row["port"]
-            if ip is None or port is None:
-                continue
-            host = ip
-            rec = recon_data["port_scan"]["by_host"].setdefault(
-                host, {"ip": ip, "ports": []})
-            if port not in rec["ports"]:
-                rec["ports"].append(port)
+        port_ips = sorted({row["ip"] for row in ip_rows if row["ip"] and keep(row["ip"])})
 
     print(f"[*][AISurfaceRecon] Loaded {ep_total} AI-tagged endpoint(s) from graph")
     if ep_total == 0 and not recon_data["http_probe"]["by_url"]:
         print("[-][AISurfaceRecon] No AI surfaces in graph — nothing to probe")
         client.close()
         return
+
+    # run_full's _confirm_vector_dbs sends a read to every vector-DB port in
+    # port_scan.by_host, which in the full pipeline holds what its own active
+    # scan found. A port only a passive source reported (Shodan, Uncover...)
+    # is a third party's crawl, often of an address outside the engagement.
+    active_ports = client.active_open_ports(user_id, project_id, port_ips) if port_ips else {}
+    for ip, ports in active_ports.items():
+        recon_data["port_scan"]["by_host"][ip] = {"ip": ip, "ports": sorted(ports)}
 
     # Reuse the exact same runner as the full pipeline.
     recon_data = run_full(recon_data, output_file=None, settings=settings)
