@@ -1002,6 +1002,11 @@ def _probe_for_ai_disambiguation(hostname: str, timeout: int = 10):
     re-trims to 4KB anyway, so capturing more is wasted memory).
     Catches every exception class -- a probe failure must NEVER abort the
     takeover scan.
+
+    Judges the FIRST response and never follows a redirect: a takeover
+    candidate is a host someone else may control, so its Location must not
+    pick the next destination (cloud metadata, the stack's own services, an
+    RoE-excluded host). A 3xx is returned as-is, Location included as data.
     """
     import requests
     import urllib3
@@ -1014,7 +1019,7 @@ def _probe_for_ai_disambiguation(hostname: str, timeout: int = 10):
             r = requests.get(
                 f"{scheme}://{hostname}/",
                 timeout=timeout,
-                allow_redirects=True,
+                allow_redirects=False,
                 verify=False,
                 headers=headers_base,
             )
