@@ -587,11 +587,23 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
     # (tech, host, port) -> {"ip": str|None, "schemes": tuple}
     candidates: dict = {}
 
+    def _address(value, host):
+        """The IP a candidate runs on: the one recorded for it, else the host
+        when it is an address. The writer anchors the Technology on that IP's
+        Port, and a candidate with none can only be matched by host and port."""
+        import ipaddress
+        for v in (value, host):
+            try:
+                return str(ipaddress.ip_address(str(v).strip("[]")))
+            except ValueError:
+                continue
+        return None
+
     ps = combined_result.get("port_scan", {}).get("by_host", {}) or {}
     for host, rec in ps.items():
         if not isinstance(rec, dict):
             continue
-        ip = rec.get("ip")
+        ip = _address(rec.get("ip"), host)
         for p in rec.get("ports", []) or []:
             try:
                 port = int(p)
@@ -622,8 +634,11 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
         except ValueError:
             continue
         other = "https" if parsed.scheme == "http" else "http"
-        candidates.setdefault((tech, host, int(port)),
-                              {"ip": None, "schemes": (parsed.scheme or "http", other)})
+        ip = _address(info.get("ip"), host)
+        cand = candidates.setdefault((tech, host, int(port)),
+                                     {"ip": ip, "schemes": (parsed.scheme or "http", other)})
+        if not cand["ip"]:
+            cand["ip"] = ip
 
     for (tech, host, port), info in candidates.items():
         reads = cat.AI_VECTOR_DB_READS.get(tech) or []

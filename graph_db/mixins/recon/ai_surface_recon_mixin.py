@@ -23,6 +23,26 @@ from graph_db.endpoint_paths import normalize_endpoint_path
 # agent on startup (ModuleNotFoundError: No module named 'recon').
 
 
+def vector_db_base_urls(host, port) -> list:
+    """Every url a BaseURL for a service on host:port can carry. http_probe keys
+    a BaseURL by scheme://netloc as httpx printed it, which omits a default port."""
+    host = str(host or "").strip().lower().rstrip(".")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return []
+    if not host or not 0 < port < 65536:
+        return []
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    urls = [f"http://{host}:{port}", f"https://{host}:{port}"]
+    if port == 80:
+        urls.append(f"http://{host}")
+    elif port == 443:
+        urls.append(f"https://{host}")
+    return urls
+
+
 class AiSurfaceReconMixin:
     def update_graph_from_ai_surface_recon(self, recon_data: dict, user_id: str,
                                            project_id: str) -> dict:
@@ -298,7 +318,10 @@ class AiSurfaceReconMixin:
         tech = vdb.get("tech_name") or vdb.get("service")
         ip = vdb.get("ip")
         port = vdb.get("port")
-        if not tech:
+        base_urls = vector_db_base_urls(vdb.get("host") or ip, port)
+        # With neither an address nor a host:port there is nothing this service
+        # can be said to run on; a Technology written anyway would float free.
+        if not tech or not (ip or base_urls):
             return
         tech = resolve_tech_name(session, tech, user_id, project_id)
         version = resolve_tech_version(session, tech, "", user_id, project_id)
@@ -313,21 +336,24 @@ class AiSurfaceReconMixin:
             FOREACH (_ IN CASE WHEN p IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (p)-[r:HAS_TECHNOLOGY]->(t)
                 SET r.detected_by = 'ai-surface-recon-probe')
-            // Fallback so the Technology never orphans if the Port wasn't matched:
-            // attach to the IP, else any BaseURL on this host.
+            // No Port node: the BaseURL of exactly this host and port (it names
+            // the port, the IP does not), else the IP. The url is compared whole,
+            // never by substring: ':80' is inside every other host's ':8080'.
             WITH t, p
-            OPTIONAL MATCH (ip2:IP {address: $ip, user_id: $uid, project_id: $pid})
             OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
-              WHERE p IS NULL AND ip2 IS NULL AND (b.url CONTAINS ($ip + ':' + toString($port))
-                    OR b.url CONTAINS (':' + toString($port)))
-            WITH t, p, ip2, b
-            FOREACH (_ IN CASE WHEN p IS NULL AND ip2 IS NOT NULL THEN [1] ELSE [] END |
-                MERGE (ip2)-[r2:HAS_TECHNOLOGY]->(t)
-                SET r2.detected_by = 'ai-surface-recon-probe')
-            FOREACH (_ IN CASE WHEN p IS NULL AND ip2 IS NULL AND b IS NOT NULL THEN [1] ELSE [] END |
+              WHERE p IS NULL AND toLower(b.url) IN $base_urls
+            WITH t, p, collect(b) AS bases
+            FOREACH (b IN bases |
                 MERGE (b)-[r3:USES_TECHNOLOGY]->(t)
                 SET r3.detected_by = 'ai-surface-recon-probe')
+            WITH t, p, bases
+            OPTIONAL MATCH (ip2:IP {address: $ip, user_id: $uid, project_id: $pid})
+            FOREACH (_ IN CASE WHEN p IS NULL AND size(bases) = 0 AND ip2 IS NOT NULL
+                               THEN [1] ELSE [] END |
+                MERGE (ip2)-[r2:HAS_TECHNOLOGY]->(t)
+                SET r2.detected_by = 'ai-surface-recon-probe')
             """,
-            name=tech, version=version, ip=ip, port=port, uid=user_id, pid=project_id,
+            name=tech, version=version, ip=ip, port=port, base_urls=base_urls,
+            uid=user_id, pid=project_id,
         )
         stats["technologies_promoted"] += 1

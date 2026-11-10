@@ -232,6 +232,49 @@ def test_model_ids_none_when_absent_keeps_coalesce_noop():
     assert pr["model_ids"] is None
 
 
+# --- Vector-DB Technology anchor (recon audit L-3) ----------------------------
+def _vdb_call(sess):
+    return next(((q, pr) for q, pr in sess.queries if "ai-vector-db" in q), (None, None))
+
+
+def test_vector_db_without_an_ip_is_matched_to_its_own_baseurl_only():
+    payload = {"ai_surface_recon": {"vector_db": [
+        {"service": "weaviate", "host": "vdb.example.com", "ip": None, "port": 8080,
+         "tech_name": "weaviate", "confirmed_via": "read"}]}}
+    sess = FakeSession()
+    stats = FakeClient(sess).update_graph_from_ai_surface_recon(payload, "u", "p")
+    q, pr = _vdb_call(sess)
+    assert q is not None and stats["technologies_promoted"] == 1
+    # A substring test on the port matched every host's ':8080' (and ':80'
+    # matched ':8080'): the BaseURL is matched by its whole url.
+    assert "CONTAINS" not in q
+    assert "b.url" in q and "$base_urls" in q
+    assert sorted(pr["base_urls"]) == ["http://vdb.example.com:8080",
+                                       "https://vdb.example.com:8080"]
+
+
+def test_vector_db_with_neither_host_nor_ip_writes_nothing():
+    payload = {"ai_surface_recon": {"vector_db": [
+        {"service": "qdrant", "host": None, "ip": None, "port": 6333,
+         "tech_name": "qdrant", "confirmed_via": "read"}]}}
+    sess = FakeSession()
+    stats = FakeClient(sess).update_graph_from_ai_surface_recon(payload, "u", "p")
+    assert _vdb_call(sess) == (None, None)
+    assert stats["technologies_promoted"] == 0 and stats["errors"] == []
+
+
+def test_vector_db_base_urls_are_the_authorities_http_probe_writes():
+    from graph_db.mixins.recon.ai_surface_recon_mixin import vector_db_base_urls
+    assert vector_db_base_urls("VDB.example.com", 80) == [
+        "http://vdb.example.com:80", "https://vdb.example.com:80", "http://vdb.example.com"]
+    assert vector_db_base_urls("vdb.example.com", 443)[-1] == "https://vdb.example.com"
+    assert vector_db_base_urls("2001:db8::10", 6333) == [
+        "http://[2001:db8::10]:6333", "https://[2001:db8::10]:6333"]
+    assert vector_db_base_urls("", 6333) == []
+    assert vector_db_base_urls("vdb.example.com", None) == []
+    assert vector_db_base_urls("vdb.example.com", "x") == []
+
+
 if __name__ == "__main__":
     failures = []
     passed = 0

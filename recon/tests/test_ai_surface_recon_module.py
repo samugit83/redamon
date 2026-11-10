@@ -240,6 +240,32 @@ def test_confirm_vdb_second_endpoint_wins():
     assert len(out) == 1 and out[0]["service"] == "qdrant"
 
 
+def test_confirm_vdb_from_http_probe_carries_the_address_httpx_saw():
+    # The writer anchors the Technology on this IP (recon audit L-3); without it
+    # the only anchor left is the BaseURL.
+    cr = {"port_scan": {"by_host": {}},
+          "http_probe": {"by_url": {
+              "http://vdb.example.com:8000/": {"ai_framework_name": "chroma",
+                                               "ip": "203.0.113.5"},
+              "http://198.51.100.7:8080/": {"ai_framework_name": "weaviate", "ip": None}}}}
+    routes = {("GET", "/api/v2/heartbeat"): FakeResp(200, '{"nanosecond heartbeat": 1}'),
+              ("GET", "/v1/meta"): FakeResp(200, '{"modules": {}}')}
+    out = {(o["service"], o["host"]): o for o in
+           m._confirm_vector_dbs(cr, FakeSession(routes), timeout=2)}
+    assert out[("chroma", "vdb.example.com")]["ip"] == "203.0.113.5"
+    assert out[("weaviate", "198.51.100.7")]["ip"] == "198.51.100.7"
+
+
+def test_confirm_vdb_fills_a_port_scan_candidate_with_no_ip_from_http_probe():
+    cr = {"port_scan": {"by_host": {"vdb.example.com": {"ip": None, "ports": [6333]}}},
+          "http_probe": {"by_url": {"http://vdb.example.com:6333/": {
+              "ai_framework_name": "qdrant", "ip": "203.0.113.9"}}}}
+    routes = {("GET", "/"): FakeResp(200, '{"title":"qdrant"}')}
+    out = m._confirm_vector_dbs(cr, FakeSession(routes), timeout=2)
+    assert [(o["host"], o["ip"], o["port"]) for o in out] == [
+        ("vdb.example.com", "203.0.113.9", 6333)]
+
+
 def test_run_disabled_returns_early():
     cr = {"metadata": {}}
     out = m.run_ai_surface_recon(cr, settings={"AI_SURFACE_RECON_ENABLED": False})
