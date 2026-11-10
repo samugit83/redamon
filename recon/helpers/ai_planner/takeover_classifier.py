@@ -181,11 +181,14 @@ def classify_takeover_response(
     body_sample = response_text[:RESPONSE_SAMPLE_BYTES]
 
     # Trim headers to keep payload small; only include the ones useful
-    # for vendor classification.
+    # for vendor classification. Location rides along because the probe
+    # judges a 3xx without following it: where it points (a WAF challenge,
+    # the provider's claim page) is the model's only sign of what answers
+    # there, and it reaches the model as data, never as a request.
     interesting_headers = {}
     for k, v in (headers or {}).items():
         kl = k.lower()
-        if kl in ("server", "content-type", "x-powered-by", "set-cookie") \
+        if kl in ("server", "content-type", "x-powered-by", "set-cookie", "location") \
                 or kl.startswith("x-") or kl.startswith("cf-"):
             interesting_headers[k] = v
 

@@ -19,6 +19,7 @@ from requests.structures import CaseInsensitiveDict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from recon.helpers.ai_planner import takeover_classifier as tc  # noqa: E402
 from recon.main_recon_modules import subdomain_takeover as st  # noqa: E402
 
 CANDIDATE = "dangling.example.com"
@@ -142,4 +143,56 @@ def test_classifier_gets_the_first_response_with_location_as_data():
     assert kwargs["headers"].get("Location") == location
     assert kwargs["response_text"] == FIRST_BODY
     assert INTERNAL_BODY not in kwargs["response_text"]
+    assert "ai_waf_likely" not in findings[0]
+
+
+def _disambiguate_through_the_real_classifier(routes, findings):
+    """Real probe and real classifier: only the transport, the agent POST and
+    the process-wide breaker are stood in for."""
+    net = _Network(routes)
+
+    def fake_send(adapter, request, **kwargs):
+        return net.send(adapter, request, **kwargs)
+
+    gate = mock.MagicMock(allowed=True)
+    reply = mock.MagicMock(status_code=200)
+    reply.json.return_value = {"is_waf_block": False, "confidence": 30, "reason": "redirect only"}
+    with mock.patch.object(HTTPAdapter, "send", fake_send), \
+         mock.patch.object(tc, "agent_llm_gate", return_value=gate), \
+         mock.patch.object(tc.requests, "post", return_value=reply) as post:
+        st._apply_ai_waf_disambiguation(findings, model="m", user_id="u", project_id="p")
+    return net, post
+
+
+def test_location_reaches_the_classifier_payload_as_data():
+    location = "https://dangling.example.com/cdn-cgi/challenge-platform/h/b"
+    findings = [{"hostname": CANDIDATE, "takeover_provider": "heroku"}]
+    net, post = _disambiguate_through_the_real_classifier({
+        f"https://{CANDIDATE}/": (302, {
+            "Location": location,
+            "Server": "nginx",
+            "Date": "Thu, 01 Jan 2026 00:00:00 GMT",
+        }, FIRST_BODY),
+    }, findings)
+
+    assert net.urls() == [f"https://{CANDIDATE}/"]
+    assert post.call_count == 1
+    assert post.call_args.args[0].endswith("/llm/takeover-classify")
+    payload = post.call_args.kwargs["json"]
+    assert payload["status_code"] == 302
+    assert payload["headers"]["Location"] == location
+    assert payload["headers"]["Server"] == "nginx"
+    assert "Date" not in payload["headers"]
+    assert payload["response_sample"] == FIRST_BODY
+    assert "ai_waf_likely" not in findings[0]
+
+
+def test_redirect_with_an_empty_body_still_skips_the_llm():
+    findings = [{"hostname": CANDIDATE, "takeover_provider": "heroku"}]
+    net, post = _disambiguate_through_the_real_classifier({
+        f"https://{CANDIDATE}/": (301, {"Location": "http://169.254.169.254/"}, ""),
+    }, findings)
+
+    assert net.urls() == [f"https://{CANDIDATE}/"]
+    post.assert_not_called()
     assert "ai_waf_likely" not in findings[0]
