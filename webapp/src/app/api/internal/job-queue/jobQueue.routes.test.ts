@@ -575,10 +575,10 @@ describe('reconcile route - stuck ScanJob rows (phantom "running")', () => {
     expect(h.sjUpdateMany).not.toHaveBeenCalled()
   })
 
-  // Only kinds that WRITE a ScanJob per project are swept. partial_recon and
-  // trufflehog are run-keyed (the run-granular sweep below); ai_attack is closed
-  // from its own list poll; supply_chain_repo is queue-dispatched and writes no
-  // ScanJob (its history is the JobQueue row, closed by the queue reconcile).
+  // Only kinds that WRITE a ScanJob per project are swept. partial_recon,
+  // trufflehog and ai_attack are run-keyed (the run-granular sweep below);
+  // supply_chain_repo is queue-dispatched and writes no ScanJob (its history is
+  // the JobQueue row, closed by the queue reconcile).
   test('sweeps only the one-ScanJob-per-project kinds', async () => {
     await reconcile(post('http://x/api/internal/job-queue/reconcile', { activeProjects: [] }))
     const where = h.sjFindMany.mock.calls[0][0].where
@@ -727,14 +727,28 @@ describe('reconcile route - partial recon runs', () => {
     expect(outcomes()).toEqual({ x: 'canceled' })
   })
 
-  test('the run-keyed sweep covers partial recon and trufflehog, not AI attack', async () => {
+  // AI attack used to be left to the browser's list poll, which never sees a
+  // stopped run end and is gone once the tab closes.
+  test('the run-keyed sweep covers partial recon, trufflehog and AI attack', async () => {
     await reconcile(post('http://x/api/internal/job-queue/reconcile', { activeProjects: ['p1'] }))
     const runKeyed = h.sjFindMany.mock.calls.map(c => c[0].where).filter(w => w.kind.in.includes('partial_recon'))
     expect(runKeyed.length).toBeGreaterThan(0)
     for (const w of runKeyed) {
-      expect(w.kind.in).toEqual(expect.arrayContaining(['partial_recon', 'trufflehog']))
-      expect(w.kind.in).not.toContain('ai_attack')
+      expect(w.kind.in).toEqual(expect.arrayContaining(['partial_recon', 'trufflehog', 'ai_attack']))
     }
+  })
+
+  test('AI attack rows are closed from their own run in /ai-attack-surface/<project>/all', async () => {
+    h.sweep([
+      { id: 'done', projectId: 'p1', kind: 'ai_attack', runId: 'a1', startedAt: old() },
+      { id: 'live', projectId: 'p1', kind: 'ai_attack', runId: 'a2', startedAt: old() },
+      { id: 'gone', projectId: 'p1', kind: 'ai_attack', runId: 'a3', startedAt: old() },
+    ])
+    listing([{ run_id: 'a1', status: 'completed' }, { run_id: 'a2', status: 'running' }])
+    await reconcile(post('http://x/api/internal/job-queue/reconcile', { activeProjects: ['p1'] }))
+    expect(outcomes()).toEqual({ done: 'completed', gone: 'canceled' })
+    expect(h.orchFetch).toHaveBeenCalledTimes(1)
+    expect(String(h.orchFetch.mock.calls[0][0])).toMatch(/\/ai-attack-surface\/p1\/all$/)
   })
 
   // A project's live runs stay out of the idle projects' budget, so they never

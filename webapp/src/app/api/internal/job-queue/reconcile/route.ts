@@ -16,7 +16,7 @@
  * Fail-safe: a row is only closed when its project is NOT in the active set AND it
  * has been running past a short grace window, so a container that has not yet
  * appeared in the live set right after dispatch is never closed prematurely. The
- * run-keyed kinds (partial recon, trufflehog) go by their own run in the
+ * run-keyed kinds (partial recon, trufflehog, AI attack) go by their own run in the
  * orchestrator's listing instead, since one project runs several at once.
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -41,22 +41,22 @@ const MAX_SCANJOBS_PER_TICK = 25
 // Kinds that write ONE ScanJob per project (so a project-granular "is anything live
 // here?" signal is enough to call a row stale) AND can end with no browser open.
 // Deliberately excluded:
-//   - partial_recon / trufflehog: run-keyed (several concurrent runs per project,
-//     one per SOURCE for trufflehog). Here they would force-cancel all but the
-//     newest row per (project, kind) while those containers still ran. They get
-//     the run-granular sweep below.
-//   - ai_attack: run-keyed, closed from its own list poll (/ai-attack/all).
+//   - partial_recon / trufflehog / ai_attack: run-keyed (several concurrent runs
+//     per project, one per SOURCE for trufflehog). Here they would force-cancel
+//     all but the newest row per (project, kind) while those containers still
+//     ran. They get the run-granular sweep below.
 //   - supply_chain_repo: only ever queue-dispatched, and dispatchStart records no
 //     ScanJob for it - its history lives in the JobQueue, closed by the queue
 //     reconcile above.
 const ONE_PER_PROJECT_KINDS = ['full_recon', 'supply_chain', 'gvm', 'github_hunt']
 
 // Kinds whose rows are keyed by run id, and the orchestrator listing of every run
-// of the kind for a project. Partial recon's lives under /recon, not a segment of
-// its own.
+// of the kind for a project. Partial recon's lives under /recon, and AI attack's
+// under /ai-attack-surface, not a segment named after the kind.
 const RUN_LIST_PATH: Record<string, (projectId: string) => string> = {
   trufflehog: p => `/trufflehog/${p}/all`,
   partial_recon: p => `/recon/${p}/partial/all`,
+  ai_attack: p => `/ai-attack-surface/${p}/all`,
 }
 
 // Listed statuses that mean the run is still going: its row is left running.
