@@ -865,6 +865,13 @@ Cypher Query:"""
                         filtered_cypher = manager._scope_query(cypher, user_id, project_id)
                         logger.info(f"[{user_id}/{project_id}] Filtered Cypher: {filtered_cypher}")
 
+                        # Secrets and full links are kept for the operator's UI:
+                        # never read back into the agent (graph_db/display_only.py).
+                        from graph_db.display_only import display_only_named, refusal_for
+                        _named = display_only_named(filtered_cypher)
+                        if _named:
+                            return f"Error: {refusal_for(_named)}"
+
                         # Step 3: Execute the filtered query
                         # Off the event loop (a slow query must not freeze every
                         # other session served by this process) and off the
@@ -887,8 +894,10 @@ Cypher Query:"""
                             return "No results found"
 
                         # The FILTERED cypher: what actually ran, so an aliased
-                        # incident column cannot hide from the wrapper.
-                        return _wrap_graph_result(result, filtered_cypher)
+                        # incident column cannot hide from the wrapper. A whole
+                        # node returned (`RETURN s`) loses its display-only keys.
+                        from graph_db.display_only import strip_display_only
+                        return _wrap_graph_result(strip_display_only(result), filtered_cypher)
 
                     except CypherGenerationTimeout as e:
                         # Terminal: the remaining attempts would each burn the

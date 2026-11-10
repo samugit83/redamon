@@ -12,6 +12,7 @@ keeps the two equal.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: A secret itself.
@@ -32,6 +33,24 @@ UNMASKED_PROPS = frozenset({
 })
 
 DISPLAY_ONLY_PROPS = SECRET_VALUE_PROPS | UNMASKED_PROPS
+
+_NAMED = re.compile(r"\b(" + "|".join(sorted(DISPLAY_ONLY_PROPS, key=len, reverse=True)) + r")\b")
+
+REFUSAL = ("The query names {names}: a property that holds a secret, or a full link with its "
+           "secret in it, which RedAmon keeps for the operator's UI and never returns to an agent. "
+           "Query the masked fields instead (masked_url, sample, value_length, value_hmac, url, "
+           "matched_at), or ask the operator.")
+
+
+def display_only_named(cypher: str) -> list:
+    """The display-only property names a Cypher text mentions, sorted. An alias
+    (`RETURN s.secret_value AS v`) hides the name from the rows, never from
+    the query, so the check is made on the query."""
+    return sorted(set(_NAMED.findall(cypher or "")))
+
+
+def refusal_for(names: list) -> str:
+    return REFUSAL.format(names=", ".join(names))
 
 
 def strip_display_only(value: Any) -> Any:

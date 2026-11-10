@@ -3822,13 +3822,18 @@ def _graph_exec_node_id(node) -> int | None:
 
 
 def _graph_exec_coerce(v):
-    """Neo4j driver value -> JSON-serialisable primitive (mirrors redagraph)."""
+    """Neo4j driver value -> JSON-serialisable primitive (mirrors redagraph).
+
+    Every map loses its display-only keys (graph_db/display_only.py): a secret
+    or a full link with its secret is for the operator's UI, never a caller of
+    this endpoint (MCP clients, the Kali sandbox's redagraph)."""
+    from graph_db.display_only import DISPLAY_ONLY_PROPS as hidden
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
     if isinstance(v, (list, tuple)):
         return [_graph_exec_coerce(x) for x in v]
     if isinstance(v, dict):
-        return {k: _graph_exec_coerce(x) for k, x in v.items()}
+        return {k: _graph_exec_coerce(x) for k, x in v.items() if k not in hidden}
     labels = getattr(v, "labels", None)
     if labels is not None and hasattr(v, "items"):
         # `nodeId` sits beside `properties`, not in it: many labels carry their
@@ -3836,13 +3841,13 @@ def _graph_exec_coerce(v):
         return {"_kind": "node",
                 "nodeId": _graph_exec_node_id(v),
                 "labels": sorted(labels) if hasattr(labels, "__iter__") else [str(labels)],
-                "properties": {k: _graph_exec_coerce(x) for k, x in v.items()}}
+                "properties": {k: _graph_exec_coerce(x) for k, x in v.items() if k not in hidden}}
     rel_type = getattr(v, "type", None)
     if rel_type is not None and hasattr(v, "items") and hasattr(v, "nodes"):
         return {"_kind": "relationship", "type": str(rel_type),
-                "properties": {k: _graph_exec_coerce(x) for k, x in v.items()}}
+                "properties": {k: _graph_exec_coerce(x) for k, x in v.items() if k not in hidden}}
     if hasattr(v, "items"):
-        return {k: _graph_exec_coerce(x) for k, x in v.items()}
+        return {k: _graph_exec_coerce(x) for k, x in v.items() if k not in hidden}
     return str(v)
 
 
@@ -4793,6 +4798,10 @@ def _graph_exec_summary(params: dict) -> JSONResponse:
 
 
 def _graph_exec_respond(final: str, params: dict) -> JSONResponse:
+    from graph_db.display_only import display_only_named, refusal_for
+    named = display_only_named(final)
+    if named:
+        return JSONResponse(status_code=400, content={"error": refusal_for(named)})
     try:
         records, truncated = _graph_exec_run(final, params)
         return JSONResponse(content=_graph_exec_payload(records, truncated))
