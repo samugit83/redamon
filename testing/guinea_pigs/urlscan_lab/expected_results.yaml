@@ -18,7 +18,8 @@
 #                (container "*" = every lab host; uri is the raw request target, path + query)
 #   urlscan_log: {query_regex, key_sent, search_after, count|min|max}  over the fake's search log
 #   no_token:    [T1, ...]  none of the planted values in any graph property of the project,
-#                in its recon JSON files, in the hit logs, or in the scan containers' logs
+#                in its recon JSON files, in the hit logs, or in the scan containers' logs,
+#                outside the display-only fields (graph_db/display_only.py)
 #   scan_log:    {regex, count|min|max}  over the recon container's log of the run
 #   compare:     {cypher, same|subset|disjoint: [run, run]}  the v sets of two runs
 #   container_env: {absent|present: [...]}  lab hook NAMES on the run's scan container
@@ -114,10 +115,22 @@ rows:
 
   - id: S-06
     step: 4
-    proves: no raw value is stored anywhere
+    proves: no raw value is stored outside the display-only fields
     runs: [A, B, P]
     checks:
       - no_token: [T1, T2, T3, T4, J1, J2, K1]
+
+  - id: S-06b
+    step: 4
+    proves: the secret and the full links are kept for the operator, beside the masked forms
+    runs: [A, B, P]
+    checks:
+      - cypher: "MATCH (s:Secret {project_id: $pid, source: 'urlscan'}) WITH collect(s) AS ss RETURN size(ss) > 0 AND all(s IN ss WHERE s.secret_value IS NOT NULL AND s.unmasked_url CONTAINS s.secret_value AND NOT s.masked_url CONTAINS s.secret_value) AS v"
+        "true": true
+      - cypher: "MATCH (v:Vulnerability {project_id: $pid, source: 'urlscan_leak', type: 'leaked_one_time_link'}) WITH collect(v) AS vs RETURN size(vs) > 0 AND all(x IN vs WHERE size(coalesce(x.unmasked_urls, [])) > 0 AND x.unmasked_url = x.unmasked_urls[0] AND NOT x.unmasked_url CONTAINS '***' AND NOT x.unmasked_url CONTAINS '{token}') AS v"
+        "true": true
+      - cypher: "MATCH (e:Endpoint {project_id: $pid}) WHERE e.quarantined = true AND e.path CONTAINS '{token}' WITH collect(e) AS es RETURN size(es) > 0 AND all(e IN es WHERE e.full_url IS NULL AND e.unmasked_url IS NOT NULL AND NOT e.unmasked_url CONTAINS '{token}') AS v"
+        "true": true
 
   - id: S-07
     step: 4

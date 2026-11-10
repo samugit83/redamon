@@ -57,7 +57,7 @@ U-03 to U-05 are automated by `testing/e2e/tests/urlscanLabRedZone.spec.ts` (`UR
 | Takeover tab lists `takeover_page_seen` (run T: brokenapp-cname, gone) and `takeover_error_page` with their source | [ ] | |
 | Web initial access lists the open console (jupyter) and the installer (install) | [ ] | |
 | DNS drift lists `app.uslab.test` -> `192.88.97.98` as history, not as current DNS | [ ] | |
-| Secrets tab shows the urlscan Secrets with masked URLs labelled "urlscan history"; no planted value is visible anywhere on the page (compare against `generated/token_hashes.json` by length only, never paste a value) | [ ] | |
+| Secrets tab shows the urlscan Secrets labelled "urlscan history": the Secret cell shows `••••` and the last four characters, the copy button copies the whole value, and the Source URL opens the full link with the value in it. No planted value is visible whole anywhere on the page (compare against `generated/token_hashes.json` by length only, never paste a value) | [ ] | |
 | The badges light for the new findings and clear on opening | [ ] | |
 | Findings read "seen in a public urlscan scan on DATE", never "vulnerable" | [ ] | |
 

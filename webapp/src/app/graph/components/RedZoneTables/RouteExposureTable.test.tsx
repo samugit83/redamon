@@ -76,8 +76,8 @@ describe('RouteExposureTable', () => {
 })
 
 describe('maskSnippet', () => {
-  test('masks e-mails and long digit runs; keeps tokens and the rest', () => {
-    expect(maskSnippet('a@b.co 1234567 abcdefghijklmnopqrstuvwxyz <b>')).toBe('<email> <n> abcdefghijklmnopqrstuvwxyz <b>')
+  test('masks e-mails, long digit runs and tokens; keeps the rest', () => {
+    expect(maskSnippet('a@b.co 1234567 abcdefghijklmnopqrstuvwxyz <b>')).toBe('<email> <n> <tok> <b>')
     expect(maskSnippet(null)).toBe('-')
   })
 })

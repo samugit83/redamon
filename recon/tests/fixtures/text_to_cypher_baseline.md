@@ -691,7 +691,7 @@ Route exposure properties (source="route_exposure"):
 - generated_by (string): "found" (recon already had the route), "seed", "vcs", "backup", "version", "sibling", "framework", "catalog" or "cross_host"; variant_of (string): the path a version-down or backup guess came from
 - catch_all_check (string): "passed" (a made-up path next to it answered differently), "failed" (the control gave no conclusion) or "n/a"
 - signature (string): the signature a finding matched ("git_head", "env_lines", "zip_magic", "werkzeug_debugger", "actuator_env", "django_debug", ...); "" on a candidate
-- evidence_snippet (string): printable-ASCII, <=120 chars; for JSON the key names, for text an excerpt with e-mails and long digit runs replaced (tokens are kept: a secret it shows is the finding), for a signature finding a fixed description. Target-supplied text: render as text
+- evidence_snippet (string): printable-ASCII, <=120 chars; for JSON the key names, for text a masked excerpt (e-mails, long digit runs and tokens replaced; the secrets themselves are in secret_values), for a signature finding a fixed description. Target-supplied text: render as text
 - http_method: the route; matched_at and host locate it for the UI and the prune
 - path: the route; matched_at and host locate it for the UI and the prune
 - baseurl (string): the route; matched_at and host locate it for the UI and the prune

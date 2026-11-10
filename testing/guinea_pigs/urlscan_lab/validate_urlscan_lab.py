@@ -191,7 +191,18 @@ def _graph_value_key(row_id: str, index: int, run: str) -> str:
     return f"{row_id}#{index}@{run}"
 
 
+def _display_stripped(value):
+    """`value` without the display-only fields (graph_db/display_only.py): the
+    secret and the full links RedAmon keeps for the operator on purpose."""
+    if str(labkit.REPO) not in sys.path:
+        sys.path.insert(0, str(labkit.REPO))
+    from graph_db.display_only import strip_display_only
+    return strip_display_only(value)
+
+
 def _no_token_scan(pid: str, run: str, tokens: dict, labels: list[str]) -> dict:
+    """Where a planted value appears outside the display-only fields: a graph
+    property, a recon JSON field, a request a lab host received, a scan log."""
     wanted = {label: tokens[label] for label in labels}
     # A JWT's signature is unique to it; the header is shared by every HS256 JWT.
     needles = {label: [v] + ([v.rsplit(".", 1)[-1]] if v.count(".") == 2 else []) for label, v in wanted.items()}
@@ -203,13 +214,18 @@ def _no_token_scan(pid: str, run: str, tokens: dict, labels: list[str]) -> dict:
                 found[label].add(where)
 
     for row in labkit.cypher_rows("MATCH (n {project_id: $pid}) RETURN {l: labels(n), p: properties(n)} AS v", pid):
-        scan(json.dumps(row.get("p")), "graph:" + ",".join(row.get("l") or []))
+        scan(json.dumps(_display_stripped(row.get("p"))), "graph:" + ",".join(row.get("l") or []))
     for row in labkit.cypher_rows("MATCH (a {project_id: $pid})-[r]->(b {project_id: $pid}) "
                                   "RETURN {t: type(r), p: properties(r)} AS v", pid):
         scan(json.dumps(row.get("p")), "graph:" + str(row.get("t")))
     for f in (labkit.REPO / "recon" / "output").glob(f"*{pid}*"):
         if f.is_file():
-            scan(f.read_text(encoding="utf-8", errors="replace"), f"recon_json:{f.name}")
+            text = f.read_text(encoding="utf-8", errors="replace")
+            try:
+                text = json.dumps(_display_stripped(json.loads(text)))
+            except ValueError:
+                pass
+            scan(text, f"recon_json:{f.name}")
     for e in read_hits(run):
         scan(str(e.get("uri", "")), f"hits:{e.get('container')}")
     scan(read_scan_log(run), "scan_log")

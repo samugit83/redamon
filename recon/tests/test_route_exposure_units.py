@@ -349,10 +349,9 @@ def test_secrets_keep_detector_names_and_the_values_only_for_display():
     assert "AKIA" not in json.dumps(shown)
 
 
-def test_the_operator_snippet_keeps_tokens_the_model_body_does_not():
+def test_the_snippet_masks_tokens_the_agent_could_read():
     text = "token: Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd mail: a@lab.invalid id: 1234567"
     assert signals.mask_text(text) == "token: <tok> mail: <email> id: <n>"
-    assert signals.mask_text(text, tokens=False) == "token: Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd mail: <email> id: <n>"
 
 
 def test_pii_off_and_binary_carry_nothing():

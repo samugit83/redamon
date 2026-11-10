@@ -1,5 +1,5 @@
 /**
- * The Route Exposure snippet mask: personal data out, secrets kept.
+ * The Route Exposure snippet mask: personal data and token-shaped values out.
  * Run: npx vitest run src/app/graph/components/RedZoneTables/redact.test.ts
  */
 import { describe, test, expect } from 'vitest'
@@ -10,8 +10,8 @@ describe('maskSnippet', () => {
     expect(maskSnippet('mail a@b.co id 1234567')).toBe('mail <email> id <n>')
   })
 
-  test('keeps a token whole: a secret in the snippet is the finding', () => {
-    expect(maskSnippet('key: abcdefghijklmnopqrstuvwxyz')).toBe('key: abcdefghijklmnopqrstuvwxyz')
+  test('masks a token: the secrets are shown in their own column', () => {
+    expect(maskSnippet('key: abcdefghijklmnopqrstuvwxyz')).toBe('key: <tok>')
   })
 
   test('returns a dash for nothing', () => {

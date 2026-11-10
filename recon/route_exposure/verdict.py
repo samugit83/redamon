@@ -117,7 +117,7 @@ def _snippet(answer: prober_mod.Answer, sig: signals.Signals) -> str:
         # A JSON answer is described by its keys: its values are the records.
         return "keys: " + ", ".join(sig.key_paths[:12])
     text = answer.content[:2048].decode("utf-8", "replace")
-    return re.sub(r"\s+", " ", signals.mask_text(text, tokens=False)).strip()
+    return re.sub(r"\s+", " ", signals.mask_text(text)).strip()
 
 
 def _vary_auth(answer: prober_mod.Answer) -> bool:

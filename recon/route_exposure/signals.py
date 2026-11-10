@@ -55,13 +55,12 @@ _MASK_DIGITS = re.compile(r"\d{6,}")
 _PII_LOOKING_KEY = re.compile(r"@|\d{6,}")
 
 
-def mask_text(text: str, tokens: bool = True) -> str:
-    """Replace e-mails, long digit runs and (with `tokens`) token-shaped strings
-    with placeholders. The operator's evidence snippet keeps the tokens: a
-    secret it shows is the finding; what a model reads masks them."""
+def mask_text(text: str) -> str:
+    """Replace e-mails, long digit runs and token-shaped strings with placeholders.
+    The snippet is read by the agent and by models too; the secrets a body held
+    reach the operator through ``secret_values`` instead."""
     text = _MASK_EMAIL.sub("<email>", text or "")
-    if tokens:
-        text = _MASK_TOKEN.sub("<tok>", text)
+    text = _MASK_TOKEN.sub("<tok>", text)
     return _MASK_DIGITS.sub("<n>", text)
 
 
