@@ -10347,7 +10347,7 @@
    "traffic": "none",
    "type": "string-list",
    "unit": "none",
-   "validator": "free_text"
+   "validator": "roe_exclusion"
   },
   "roeForbiddenCategories": {
    "default": [],
@@ -10690,7 +10690,7 @@
    "group": "engagement_limits",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Local end of the permitted scanning window, as HH:MM. An end before the start is read as a window that crosses midnight.",
+   "meaning": "Local end of the permitted scanning window, as HH:MM; the end minute is inside the window. An end before the start is read as a window that crosses midnight.",
    "optional": false,
    "phase": "standalone",
    "prisma_type": "String",

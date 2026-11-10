@@ -262,13 +262,18 @@ def _refuse_failed_spawn(state) -> None:
         )
 
 
-def _check_roe_time_window(project: dict) -> None:
+def _check_roe_time_window(project: dict, _now=None) -> None:
     """Enforce the RoE time-window. Raises 403 outside the window.
 
     A malformed timezone is a bad *setting*, not an unknown scope, so it raises
     400 naming the offending setting instead of silently passing (mcp_plan.md
     P0-1). Only that narrow carve-out is tolerated; every other failure
     propagates.
+
+    A mirror of recon/helpers/roe_scope.py ``_check_roe_time_window``, which
+    this image cannot import: a start admitted here that the scan container
+    refuses exits 1 after the orchestrator reported it started. Both run
+    recon/tests/fixtures/roe_time_window_vectors.json. Pass _now for testing.
     """
     # The THIRD enforcement point, after recon and the agent. It gates on the
     # DERIVED value like the other two: gating on the column would leave this
@@ -295,9 +300,9 @@ def _check_roe_time_window(project: dict) -> None:
             ),
         )
 
-    now_local = datetime.now(tz)
+    now_local = (_now or datetime.now(tz)).astimezone(tz)
     day_name = now_local.strftime('%A').lower()
-    allowed_days = project.get('roeTimeWindowDays', [])
+    allowed_days = [str(d).lower() for d in project.get('roeTimeWindowDays') or []]
     start_time = project.get('roeTimeWindowStartTime', '09:00')
     end_time = project.get('roeTimeWindowEndTime', '18:00')
     current_time = now_local.strftime('%H:%M')

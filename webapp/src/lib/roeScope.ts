@@ -142,7 +142,11 @@ function inNetwork(address: Ip, network: { version: 4 | 6; base: bigint; prefix:
   return (address.value >> shift) === (network.base >> shift)
 }
 
-/** The hostname Python's `urlsplit(url).hostname` gives, without lower-casing. */
+/**
+ * The hostname Python's `urlsplit(url).hostname` gives, without lower-casing,
+ * or '' where urlsplit raises (an unbalanced bracket, or a bracket around
+ * anything but an IPv6 or IPvFuture address), which recon reads as no host.
+ */
 function urlHostname(url: string): string {
   let rest = url
   const colon = rest.indexOf(':')
@@ -151,6 +155,14 @@ function urlHostname(url: string): string {
   rest = rest.slice(2)
   const end = rest.search(/[/?#]/)
   const netloc = end === -1 ? rest : rest.slice(0, end)
+  if (netloc.includes('[') !== netloc.includes(']')) return ''
+  if (netloc.includes('[')) {
+    const bracketed = netloc.slice(netloc.indexOf('[') + 1).split(']')[0]
+    const valid = bracketed.startsWith('v')
+      ? /^v[a-fA-F0-9]+\..+$/.test(bracketed)
+      : parseIpv4(bracketed) === null && parseIpv6(bracketed) !== null
+    if (!valid) return ''
+  }
   const hostinfo = netloc.slice(netloc.lastIndexOf('@') + 1)
   const open = hostinfo.indexOf('[')
   if (open !== -1) return hostinfo.slice(open + 1).split(']')[0]
@@ -167,12 +179,40 @@ export function normalizeRoeHost(value: unknown): string {
   return host.trim().replace(/\.+$/, '').toLowerCase()
 }
 
-/** `_normalize_scope_entry`: `*.domain` and CIDRs keep their shape. */
+/**
+ * `_is_network`: an IP followed by a prefix length or an IPv4 mask. A
+ * malformed one (`10.0.0.0/33`) stays a network that matches nothing rather
+ * than becoming the exact IP before its slash.
+ */
+function isNetworkShaped(entry: string): boolean {
+  const slash = entry.indexOf('/')
+  if (parseIp(entry.slice(0, slash)) === null) return false
+  const tail = entry.slice(slash + 1)
+  return /^[0-9]+$/.test(tail) || parseIpv4(tail) !== null
+}
+
+/** `_entry_host`: the host of an entry written with a path (`admin.example.com/login`). */
+function entryHost(entry: string): string {
+  const head = entry.split('/')[0]
+  // A bare IPv6 has colons a URL parser would read as a port.
+  if (parseIp(head) !== null) return head.toLowerCase()
+  return normalizeRoeHost(urlHostname(`//${entry}`))
+}
+
+/**
+ * `_normalize_scope_entry`: `*.domain` and CIDRs keep their shape; any other
+ * path is dropped, since exclusions are per host.
+ */
 export function normalizeRoeEntry(value: unknown): string {
   if (typeof value !== 'string') return ''
   const entry = value.trim()
-  if (entry.startsWith('*.')) return `*.${normalizeRoeHost(entry.slice(2))}`
-  if (entry.includes('/') && !entry.includes('://')) return entry.toLowerCase()
+  if (entry.startsWith('*.')) {
+    const rest = entry.slice(2)
+    return `*.${rest.includes('/') && !rest.includes('://') ? entryHost(rest) : normalizeRoeHost(rest)}`
+  }
+  if (entry.includes('/') && !entry.includes('://')) {
+    return isNetworkShaped(entry) ? entry.toLowerCase() : entryHost(entry)
+  }
   return normalizeRoeHost(entry)
 }
 
@@ -200,4 +240,36 @@ export function isRoeExcluded(host: unknown, excluded: readonly unknown[]): bool
     }
   }
   return false
+}
+
+/** A DNS name as discovery reports one; an all-digit last label is a mistyped IP (`0.5`, `010.0.0.5`). */
+function isHostName(name: string): boolean {
+  if (name.length > 253) return false
+  const labels = name.split('.')
+  if (!labels.every(l => /^[a-z0-9_-]{1,63}$/.test(l))) return false
+  return !/^[0-9]+$/.test(labels[labels.length - 1])
+}
+
+/**
+ * Why an RoE exclusion entry would exclude nothing, or null when the matcher
+ * can apply it: a host, an IP, a CIDR or `*.domain`, with any scheme, port or
+ * path ignored. A blank entry is accepted because the matcher skips it.
+ *
+ * The write-side check of the `roe_exclusion` validator, so an entry the
+ * matcher cannot read is refused with a reason instead of being stored and
+ * excluding nothing.
+ */
+export function roeExclusionProblem(value: unknown): string | null {
+  if (typeof value !== 'string') return 'must be a string'
+  if (value.length > 2048) return 'is longer than 2048 characters'
+  if (value.trim() === '') return null
+  const entry = normalizeRoeEntry(value)
+  const applies = entry.startsWith('*.')
+    ? isHostName(entry.slice(2))
+    : entry.includes('/')
+      ? parseNetwork(entry) !== null
+      : parseIp(entry) !== null || isHostName(entry)
+  return applies
+    ? null
+    : `names no host, IP, CIDR or *.domain, so it would exclude nothing: ${JSON.stringify(value.trim().slice(0, 80))}`
 }

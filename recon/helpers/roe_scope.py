@@ -55,7 +55,7 @@ def _normalize_host(host) -> str:
         return ''
     host = host.strip()
     if '://' in host:
-        host = urlsplit(host).hostname or ''
+        host = _url_hostname(host)
     elif host.startswith('['):
         host = host[1:].split(']', 1)[0]
     elif host.count(':') == 1:
@@ -63,14 +63,56 @@ def _normalize_host(host) -> str:
     return host.strip().rstrip('.').lower()
 
 
+def _url_hostname(url: str) -> str:
+    # urlsplit raises on an unbalanced or non-IP bracket (`https://[a.example.com]/`);
+    # one such entry, or one such crawled URL, must not abort the whole check.
+    try:
+        return urlsplit(url).hostname or ''
+    except ValueError:
+        return ''
+
+
+def _is_network(entry: str) -> bool:
+    """An IP followed by a prefix length or an IPv4 mask: what ``ip_network``
+    reads. A malformed one (``10.0.0.0/33``) stays a network that matches
+    nothing rather than becoming the exact IP before its slash."""
+    head, _, tail = entry.partition('/')
+    try:
+        ipaddress.ip_address(head)
+    except ValueError:
+        return False
+    if tail.isascii() and tail.isdigit():
+        return True
+    try:
+        ipaddress.IPv4Address(tail)
+        return True
+    except ValueError:
+        return False
+
+
+def _entry_host(entry: str) -> str:
+    """The host of an entry written with a path (``admin.example.com/login``,
+    ``192.0.2.10/``). Exclusions are per host, so the path is dropped, as it is
+    for an entry with a scheme."""
+    head = entry.split('/', 1)[0]
+    try:
+        # A bare IPv6 has colons urlsplit would read as a port.
+        ipaddress.ip_address(head)
+        return head.lower()
+    except ValueError:
+        return _normalize_host(_url_hostname('//' + entry))
+
+
 def _normalize_scope_entry(entry) -> str:
     if not isinstance(entry, str):
         return ''
     entry = entry.strip()
     if entry.startswith('*.'):
-        return '*.' + _normalize_host(entry[2:])
+        rest = entry[2:]
+        return '*.' + (_entry_host(rest) if '/' in rest and '://' not in rest
+                       else _normalize_host(rest))
     if '/' in entry and '://' not in entry:
-        return entry.lower()
+        return entry.lower() if _is_network(entry) else _entry_host(entry)
     return _normalize_host(entry)
 
 
@@ -92,6 +134,14 @@ def _check_roe_time_window(settings: dict, _now=None) -> tuple[bool, str]:
 
     Returns (allowed, reason_message). Always returns (True, "") if
     RoE or its time window is disabled. Pass _now for testing.
+
+    The orchestrator mirrors this in its own image
+    (recon_orchestrator/api.py ``_check_roe_time_window``) and admits a scan
+    start by it, so the two must agree on every case: both run
+    recon/tests/fixtures/roe_time_window_vectors.json. The end minute is
+    inclusive, an end before the start crosses midnight, and an unknown
+    timezone refuses rather than being read as UTC, which could shift the
+    window by hours.
     """
     if not settings.get('ROE_ENABLED') or not settings.get('ROE_TIME_WINDOW_ENABLED'):
         return True, ""
@@ -103,22 +153,26 @@ def _check_roe_time_window(settings: dict, _now=None) -> tuple[bool, str]:
     try:
         tz = _zi.ZoneInfo(tz_name)
     except Exception:
-        print(f"[RoE] Unknown timezone '{tz_name}', falling back to UTC")
-        tz = _zi.ZoneInfo('UTC')
+        return False, f"Unknown RoE time-window timezone '{tz_name}'; fix the project's time-window timezone setting"
 
-    now = _now or _dt.now(tz)
+    now = (_now or _dt.now(tz)).astimezone(tz)
 
-    # Check day of week
-    allowed_days = [d.lower() for d in settings.get('ROE_TIME_WINDOW_DAYS', [])]
+    allowed_days = [str(d).lower() for d in settings.get('ROE_TIME_WINDOW_DAYS') or []]
     current_day = now.strftime('%A').lower()
     if current_day not in allowed_days:
         return False, f"Current day ({current_day}) is not in allowed days: {', '.join(allowed_days)} ({tz_name})"
 
-    # Check time range
     start = settings.get('ROE_TIME_WINDOW_START_TIME', '09:00')
     end = settings.get('ROE_TIME_WINDOW_END_TIME', '18:00')
     current_time = now.strftime('%H:%M')
-    if current_time < start or current_time >= end:
+    if not _time_in_window(current_time, start, end):
         return False, f"Current time ({current_time} {tz_name}) is outside allowed window ({start}\u2013{end})"
 
     return True, ""
+
+
+def _time_in_window(current: str, start: str, end: str) -> bool:
+    """HH:MM strings; both ends inclusive, and a start after the end wraps midnight."""
+    if start <= end:
+        return start <= current <= end
+    return current >= start or current <= end

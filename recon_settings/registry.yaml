@@ -7432,7 +7432,7 @@ fields:
     roe_capped: false
     mcp: settable
     roe_parse: allow
-    validator: free_text
+    validator: roe_exclusion
     group: engagement_limits
     meaning: >-
       Hosts that must never be touched even though they fall inside the target
@@ -7695,8 +7695,9 @@ fields:
     validator: free_text
     group: engagement_limits
     meaning: >-
-      Local end of the permitted scanning window, as HH:MM. An end before the start
-      is read as a window that crosses midnight.
+      Local end of the permitted scanning window, as HH:MM; the end minute is
+      inside the window. An end before the start is read as a window that crosses
+      midnight.
     form_section: "TargetSection"
   roeTimeWindowStartTime:
     tool: roe

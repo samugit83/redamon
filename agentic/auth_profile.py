@@ -88,12 +88,21 @@ def _normalize_host(host) -> str:
         return ''
     host = host.strip()
     if '://' in host:
-        host = urlsplit(host).hostname or ''
+        host = _url_hostname(host)
     elif host.startswith('['):
         host = host[1:].split(']', 1)[0]
     elif host.count(':') == 1:
         host = host.split(':', 1)[0]
     return host.strip().rstrip('.').lower()
+
+
+def _url_hostname(url: str) -> str:
+    # urlsplit raises on an unbalanced or non-IP bracket (`https://[a.example.com]/`);
+    # one such entry, or one such URL, must not abort the whole check.
+    try:
+        return urlsplit(url).hostname or ''
+    except ValueError:
+        return ''
 
 
 def host_in_scope(host, scope_hosts: Iterable[str]) -> bool:
@@ -119,14 +128,47 @@ def host_in_scope(host, scope_hosts: Iterable[str]) -> bool:
     return False
 
 
+def _is_network(entry: str) -> bool:
+    """An IP followed by a prefix length or an IPv4 mask: what ``ip_network``
+    reads. A malformed one (``10.0.0.0/33``) stays a network that matches
+    nothing rather than becoming the exact IP before its slash."""
+    head, _, tail = entry.partition('/')
+    try:
+        ipaddress.ip_address(head)
+    except ValueError:
+        return False
+    if tail.isascii() and tail.isdigit():
+        return True
+    try:
+        ipaddress.IPv4Address(tail)
+        return True
+    except ValueError:
+        return False
+
+
+def _entry_host(entry: str) -> str:
+    """The host of an entry written with a path (``admin.example.com/login``,
+    ``192.0.2.10/``). Exclusions are per host, so the path is dropped, as it is
+    for an entry with a scheme."""
+    head = entry.split('/', 1)[0]
+    try:
+        # A bare IPv6 has colons urlsplit would read as a port.
+        ipaddress.ip_address(head)
+        return head.lower()
+    except ValueError:
+        return _normalize_host(_url_hostname('//' + entry))
+
+
 def _normalize_scope_entry(entry) -> str:
     if not isinstance(entry, str):
         return ''
     entry = entry.strip()
     if entry.startswith('*.'):
-        return '*.' + _normalize_host(entry[2:])
+        rest = entry[2:]
+        return '*.' + (_entry_host(rest) if '/' in rest and '://' not in rest
+                       else _normalize_host(rest))
     if '/' in entry and '://' not in entry:
-        return entry.lower()
+        return entry.lower() if _is_network(entry) else _entry_host(entry)
     return _normalize_host(entry)
 
 

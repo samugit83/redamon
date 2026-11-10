@@ -50,6 +50,24 @@
     {"name": "an empty host is never excluded", "host": "", "excluded": ["example.com"], "result": false},
     {"name": "a missing host is never excluded", "host": null, "excluded": ["example.com"], "result": false},
     {"name": "a recording wildcard under an excluded domain", "host": "*.example.com", "excluded": ["example.com"], "result": true},
-    {"name": "a recording wildcard is not excluded by one of its subdomains", "host": "*.example.com", "excluded": ["api.example.com"], "result": false}
+    {"name": "a recording wildcard is not excluded by one of its subdomains", "host": "*.example.com", "excluded": ["api.example.com"], "result": false},
+    {"name": "a host entry with a trailing slash excludes its host", "host": "admin.example.com", "excluded": ["admin.example.com/"], "result": true},
+    {"name": "a host entry with a path excludes its host", "host": "admin.example.com", "excluded": ["admin.example.com/login"], "result": true},
+    {"name": "a host entry with a path excludes its subdomains like a domain", "host": "x.admin.example.com", "excluded": ["admin.example.com/login"], "result": true},
+    {"name": "a host entry with a path does not exclude a sibling", "host": "www.example.com", "excluded": ["admin.example.com/login"], "result": false},
+    {"name": "a host entry with a port and a path", "host": "admin.example.com", "excluded": ["Admin.Example.com.:8443/login?next=/"], "result": true},
+    {"name": "a host entry with a numeric path is not a CIDR", "host": "example.com", "excluded": ["example.com/24"], "result": true},
+    {"name": "a URL entry with a trailing slash", "host": "admin.example.com", "excluded": ["https://admin.example.com/"], "result": true},
+    {"name": "a wildcard entry with a path", "host": "a.example.com", "excluded": ["*.example.com/admin"], "result": true},
+    {"name": "a wildcard entry with a path still spares its apex", "host": "example.com", "excluded": ["*.example.com/admin"], "result": false},
+    {"name": "an IPv4 with a trailing slash", "host": "192.0.2.10", "excluded": ["192.0.2.10/"], "result": true},
+    {"name": "an IPv4 with a path", "host": "192.0.2.10", "excluded": ["192.0.2.10/admin"], "result": true},
+    {"name": "an IPv4 with a path is not a network", "host": "192.0.2.11", "excluded": ["192.0.2.10/admin"], "result": false},
+    {"name": "a bracketed IPv6 with a path", "host": "2001:db8::1", "excluded": ["[2001:db8::1]:443/admin"], "result": true},
+    {"name": "a bare IPv6 with a path", "host": "2001:db8::1", "excluded": ["2001:db8::1/admin"], "result": true},
+    {"name": "a prefix that is too long is not an exact IP either", "host": "10.0.0.0", "excluded": ["10.0.0.0/33"], "result": false},
+    {"name": "a malformed bracket entry is skipped, not fatal", "host": "a.example.com", "excluded": ["https://[a.example.com/", "https://[a.example.com]/", "//[bad/x", "a.example.com"], "result": true},
+    {"name": "a malformed bracket entry excludes nothing", "host": "a.example.com", "excluded": ["https://[a.example.com]/", "[a.example.com/x"], "result": false},
+    {"name": "a malformed bracket host is never excluded", "host": "https://[a.example.com/", "excluded": ["a.example.com"], "result": false}
   ]
 }

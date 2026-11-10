@@ -26,6 +26,7 @@
  */
 import type { RegistryField } from './registry'
 import { attackSkillConfigShapeError } from '@/lib/userSkills'
+import { roeExclusionProblem } from '@/lib/roeScope'
 
 /** Pipeline phases, mirroring ScanModulesSection's SCAN_MODULE_OPTIONS. */
 export const SCAN_MODULE_VALUES: readonly string[] = Object.freeze([
@@ -240,6 +241,8 @@ function checkScalar(validator: string, value: unknown, ctx: ValidationContext):
         : 'must be a hostname'
     case 'hostname_list':
       return checkHostnameList(value)
+    case 'roe_exclusion':
+      return roeExclusionProblem(value)
     case 'url':
       return typeof value === 'string' && (value === '' || /^https?:\/\/[^\s]+$/.test(value))
         ? null

@@ -155,6 +155,7 @@
         "scan_modules",
         "hostname",
         "hostname_list",
+        "roe_exclusion",
         "url",
         "url_path_list",
         "port_spec",

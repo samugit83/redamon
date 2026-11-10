@@ -117,11 +117,15 @@ class TestTimeWindowEnforcement(unittest.TestCase):
         allowed, _ = _check_roe_time_window(self._make_settings(), _now=fake_now)
         self.assertTrue(allowed)
 
-    def test_at_exact_end_time_blocked(self):
-        """Pipeline blocked at exactly the end time (end is exclusive)."""
+    def test_at_exact_end_time_allowed(self):
+        """The end minute is inside the window, as the orchestrator that admits
+        the start reads it; the minute after is not (R-32)."""
         import zoneinfo
         tz = zoneinfo.ZoneInfo('UTC')
         fake_now = datetime(2026, 3, 25, 18, 0, 0, tzinfo=tz)  # Wednesday 18:00
+        allowed, _ = _check_roe_time_window(self._make_settings(), _now=fake_now)
+        self.assertTrue(allowed)
+        fake_now = datetime(2026, 3, 25, 18, 1, 0, tzinfo=tz)
         allowed, _ = _check_roe_time_window(self._make_settings(), _now=fake_now)
         self.assertFalse(allowed)
 
