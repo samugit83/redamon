@@ -164,6 +164,27 @@ Every MCP test that stubs `MCP_KALI_EXEC_ENABLED` also stubs `AGENT_IN_THE_LOOP_
 switches change `tools/list`, and a host whose `.env` turns one on would otherwise see a different
 tool count from the one the test pins.
 
+### The live RBAC route matrix
+
+`tests/rbac_matrix_live.sh` asks the running webapp who may call which route, as rows of
+`tests/fixtures/rbac_matrix/<file>.tsv` (`id`, `since`, `actor`, `method`, `path`, `body`,
+`expect`, `tags`; the format is in the script's header). `baseline.tsv` is today's behaviour,
+recorded on untouched code: a later change that moves an owner's answer shows up as a `FAIL`.
+
+```bash
+bash tests/rbac_matrix_live.sh baseline        # one or more files, or: all
+RBAC_MATRIX_ROWS='^bl-settings-' bash tests/rbac_matrix_live.sh baseline   # re-run some rows
+```
+
+It needs a stack on `:3000` (`BASE_URL` overrides it) and prints `SKIP` otherwise; as a
+`*_live.sh` it is never in the gate. It seeds synthetic accounts and projects
+(`webapp/scripts/e2e-rbac-seed.mjs`: `rbac-*@e2e.local`, `rbac.test`) and always removes them
+(`e2e-rbac-cleanup.mjs`, Ctrl-C included); both are fed to the webapp container on stdin, so no
+image rebuild is needed. Rows never start a scan or an agent run. Response bodies are never
+printed, and the internal and scanner keys are read from `.env` only for their rows. The
+Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
+real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
+
 ### Two oracles, and only one of them runs in the gate
 
 Some unit-tier files mix hermetic checks with checks that need a live Neo4j and
