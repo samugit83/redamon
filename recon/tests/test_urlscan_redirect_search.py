@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from graph_db.display_only import strip_display_only  # noqa: E402
 from recon.helpers import circuit_breaker as cb  # noqa: E402
 from recon.main_recon_modules import urlscan_enrich as u  # noqa: E402
 
@@ -89,10 +90,11 @@ def test_only_starts_on_the_root_ending_outside_the_org():
 
 def test_values_masked_and_the_other_site_is_its_origin():
     data = _run(FakeUrlscan(redirect=REDIRECTS))
-    blob = json.dumps(data)
+    blob = json.dumps(strip_display_only(data))
     assert T1 not in blob and "outsider.other.test/x" not in blob
     go = next(r for r in data["redirect_entries"] if r["path"] == "/go")
     assert go["start_url"] == "https://app.example.test/go?url=***"
+    assert go["unmasked_start_url"] == "https://app.example.test/go?url=https://outsider.other.test/x"
     assert go["end_origin"] == "https://outsider.other.test" and go["param_names"] == ["url"]
     ext = [e for e in data["external_domains"] if e["source"] == "urlscan_redirect"]
     assert {e["url"] for e in ext} <= {"https://outsider.other.test", "https://idp.other.test",
@@ -111,7 +113,9 @@ def test_n1_open_redirect_proven_by_the_visit():
     assert ("new.example.test", "next", "mirror.other.test") in opens
     assert not [o for o in data["open_redirects"] if o["host"] == "auth.example.test"]
     f = next(f for f in data["findings"] if f["type"] == "open_redirect_seen" and f["kind"] == "url")
-    assert f["props"] == {"param_name": "url", "destination_domain": "outsider.other.test"}
+    assert f["props"] == {"param_name": "url", "destination_domain": "outsider.other.test",
+                          "unmasked_url": "https://app.example.test/go?url=https://outsider.other.test/x"}
+    assert f["url"] == "https://app.example.test/go?url=***"
 
 
 def test_an_end_domain_in_no_parameter_is_no_open_redirect():
@@ -119,10 +123,11 @@ def test_an_end_domain_in_no_parameter_is_no_open_redirect():
     assert data["open_redirects"] == []
 
 
-def test_a_quarantined_start_keeps_no_scan_id_and_is_quarantined():
+def test_a_quarantined_start_keeps_its_scan_and_link_and_is_quarantined():
     data = _run(FakeUrlscan(redirect=REDIRECTS))
     o = next(o for o in data["open_redirects"] if o["host"] == "new.example.test")
-    assert o["scan_id"] == ""
+    assert o["scan_id"] == "e"
+    assert o["unmasked_url"].startswith(f"https://new.example.test/reset?token={T1}")
     assert any(r["path"] == "/reset" for r in data["quarantined_urls"])
     assert any(f["type"] == "leaked_one_time_link" for f in data["findings"])
 

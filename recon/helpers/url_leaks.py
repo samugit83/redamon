@@ -4,8 +4,10 @@ Archived URLs (urlscan, GAU, ParamSpider) are other people's links: a password
 reset e-mailed to a user and submitted to urlscan by their mail gateway, an
 invite, a payment link, an unsubscribe link. Requesting one uses a real
 person's token. This module decides, offline and without raising, which URLs
-are never requested (the quarantine) and how every archived URL is stored
-(masked: parameter values ``***``, path tokens ``{token}``).
+are never requested (the quarantine) and the masked form every archived URL
+takes wherever it is requested or used as an identity (parameter values
+``***``, path tokens ``{token}``). The secret and the full URL are kept only as
+display fields for the operator (``inspect_url(..., with_values=True)``).
 
 Pure: no network, no I/O. A JWT is decoded locally (header and payload only)
 to read ``alg`` and ``exp``; no claim is kept.
@@ -315,7 +317,8 @@ def value_hmac(value: str, key: str) -> Optional[str]:
     return hmac.new(key.encode(), value.encode("utf-8", "replace"), hashlib.sha256).hexdigest()
 
 
-def _secrets(params: list, segments: list, *, hmac_key: str = "", now=None) -> list:
+def _secrets(params: list, segments: list, *, hmac_key: str = "", now=None,
+             with_values: bool = False) -> list:
     found = []
     seen = set()
 
@@ -326,6 +329,8 @@ def _secrets(params: list, segments: list, *, hmac_key: str = "", now=None) -> l
         seen.add(key)
         item = {"secret_type": secret_type, "param_name": name.lower(), "location": where,
                 "value_length": len(value)}
+        if with_values:
+            item["value"] = value
         digest = value_hmac(value, hmac_key)
         if digest:
             item["value_hmac"] = digest
@@ -386,15 +391,21 @@ def _state_changing(segments: list, params: list, path_tokens: set) -> bool:
     return has_value or bool(path_tokens)
 
 
-def inspect_url(url: str, *, hmac_key: str = "", now: Optional[float] = None) -> dict:
+def inspect_url(url: str, *, hmac_key: str = "", now: Optional[float] = None,
+                with_values: bool = False) -> dict:
     """Everything this module knows about one URL. Never raises.
 
     Returns {link_kind, secrets, web_shell, quarantined, reasons, masked_url, masked_path}.
-    ``secrets`` never holds a value: its length, its HMAC (with ``hmac_key``),
-    and for a JWT its ``alg`` and whether it had expired.
+    Each ``secrets`` item holds its length, its HMAC (with ``hmac_key``), and for
+    a JWT its ``alg`` and whether it had expired. Only ``with_values`` adds the
+    secret itself (``value``) and the URL as given (``url``): the display-only
+    copies the operator reads. What is requested or used as an identity stays
+    the masked form.
     """
     verdict = {"link_kind": None, "secrets": [], "web_shell": False, "quarantined": False,
                "reasons": [], "masked_url": "", "masked_path": ""}
+    if with_values:
+        verdict["url"] = url.strip() if isinstance(url, str) else ""
     if not isinstance(url, str) or not url.strip():
         return verdict
     try:
@@ -405,7 +416,8 @@ def inspect_url(url: str, *, hmac_key: str = "", now: Optional[float] = None) ->
     try:
         path_tokens = _path_token_positions(segments)
         verdict["link_kind"] = _link_kind(segments, params)
-        verdict["secrets"] = _secrets(params, segments, hmac_key=hmac_key, now=now)
+        verdict["secrets"] = _secrets(params, segments, hmac_key=hmac_key, now=now,
+                                      with_values=with_values)
         verdict["web_shell"] = _web_shell(params)
         reasons = []
         if verdict["link_kind"]:

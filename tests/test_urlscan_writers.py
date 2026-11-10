@@ -86,9 +86,23 @@ class TestQuarantinedEndpoints(unittest.TestCase):
                 self.assertIn("project_id: $pid", query)
         self.assertEqual((params["uid"], params["pid"]), ("u1", "p1"))
 
-    def test_no_value_reaches_the_graph(self):
+    def test_no_value_reaches_the_graph_without_a_display_link(self):
         w, _ = self._write([dict(self.ROW, masked_url=self.ROW["masked_url"])])
         self.assertNotIn(TOK, json.dumps([p for _q, p in w.session.calls], default=str))
+
+    def test_the_full_links_go_only_to_the_display_fields_newest_first(self):
+        old = dict(self.ROW, unmasked_url=f"https://auth.example.test/password/reset/{TOK}?lang=en",
+                   scan_time="2026-09-01T00:00:00.000Z")
+        new = dict(self.ROW, unmasked_url="https://auth.example.test/password/reset/Zz9?lang=it",
+                   scan_time="2026-10-01T00:00:00.000Z")
+        w, _ = self._write([old, new])
+        calls = self._quarantine_calls(w)
+        self.assertEqual(len(calls), 2)
+        for query, params in calls:
+            self.assertIn("SET e.unmasked_url", query)
+            self.assertEqual(params["unmasked_urls"], [new["unmasked_url"], old["unmasked_url"]])
+            self.assertEqual(params["path"], "/password/reset/{token}")
+            self.assertIn("REMOVE e.full_url", query)
 
 
 
@@ -193,6 +207,20 @@ class TestB19ExternalDomainsAreAdditive(unittest.TestCase):
         self.assertIn("ed.sources = coalesce(ed.sources, []) + [x IN $sources WHERE NOT x IN coalesce(ed.sources, [])]", q)
         self.assertIn("ed.times_seen = coalesce(ed.times_seen, 0) + $times_seen", q)
         self.assertNotIn("SET ed.sources = $sources", q)
+
+    def test_full_start_urls_newest_first_capped(self):
+        w = _Writer()
+        link = "https://app.example.test/go?url=https://outsider.other.test/x"
+        recon = {"domain": "example.test", "domains": ["example.test"],
+                 "external_domains_aggregated": [{
+                     "domain": "outsider.other.test", "sources": ["urlscan_redirect"],
+                     "redirect_from_urls": ["https://app.example.test/go?url=***"],
+                     "unmasked_redirect_from_urls": [link], "times_seen": 1}]}
+        w.update_graph_from_external_domains(recon, "u1", "p1")
+        q, p = next((q, p) for q, p in w.session.calls if "MERGE (ed:ExternalDomain" in q)
+        self.assertIn("ed.unmasked_redirect_from_urls = ([x IN $unmasked_from", q)
+        self.assertIn("[0..25]", q)
+        self.assertEqual(p["unmasked_from"], [link])
 
 
 class TestRedirectWriters(unittest.TestCase):

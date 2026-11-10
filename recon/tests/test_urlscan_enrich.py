@@ -432,7 +432,7 @@ class TestRunUrlscanEnrichment(unittest.TestCase):
             "server", "status", "title", "tls_issuer", "tls_valid_days",
             "tls_valid_from", "tls_age_days", "domain_age_days",
             "screenshot_url", "scan_time", "scan_id", "visibility", "mime_type",
-            "in_scope", "ip_in_scope", "quarantined",
+            "in_scope", "ip_in_scope", "quarantined", "unmasked_url",
         }
         self.assertEqual(set(entry.keys()), expected_keys)
         self.assertEqual(entry["url"], "https://app.example.com/login?next=***")

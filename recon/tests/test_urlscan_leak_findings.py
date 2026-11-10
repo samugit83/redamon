@@ -1,8 +1,8 @@
 """Item 2: leaked one-time links and secrets in the URLs urlscan already returned.
 
 Public visits of target hosts only, grouped (one finding per host, path and
-kind; one Secret per value), nothing raw kept, and the quarantine holds even
-with both switches off. Tokens are invented; hosts are example.test.
+kind; one Secret per value), raw links and values only in the display fields,
+and the quarantine holds even with both switches off. Tokens are invented; hosts are example.test.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from graph_db.display_only import strip_display_only  # noqa: E402
 from recon.main_recon_modules import urlscan_enrich as u  # noqa: E402
 
 T1 = "Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd"
@@ -60,7 +61,7 @@ def test_a_leak_in_a_start_url_counts_too():
     assert [f["kind"] for f in data["findings"]] == ["invite"]
 
 
-def test_secrets_one_per_value_with_hmac_and_never_the_value():
+def test_secrets_one_per_value_with_hmac_and_the_value_only_for_display():
     results = [_visit(f"https://app.example.test/api/data?apikey={K1}", uuid="a"),
                _visit(f"https://app.example.test/api/data?apikey={K1}&x=1", uuid="b")]
     data = _run(results, env={"REDAMON_SECRET_HMAC_KEY": "lab-hmac-key"})
@@ -68,7 +69,22 @@ def test_secrets_one_per_value_with_hmac_and_never_the_value():
     assert (sec["secret_type"], sec["param_name"], sec["value_length"]) == ("api_key", "apikey", len(K1))
     assert len(sec["value_hmac"]) == 64 and sec["count"] == 2
     assert sec["base_url"] == "https://app.example.test"
-    assert K1 not in json.dumps(data)
+    assert sec["secret_value"] == K1
+    assert sec["unmasked_url"].startswith(f"https://app.example.test/api/data?apikey={K1}")
+    assert "***" in sec["masked_url"] and K1 not in sec["masked_url"]
+    assert K1 not in json.dumps(strip_display_only(data))
+
+
+def test_a_leaked_link_keeps_every_full_link_newest_first():
+    data = _run([
+        _visit(f"https://auth.example.test/reset?token={T1}", time="2026-09-01T00:00:00.000Z", uuid="a"),
+        _visit(f"https://auth.example.test/reset?token={T2}", time="2026-10-05T00:00:00.000Z", uuid="b"),
+    ])
+    reset = next(f for f in data["findings"] if f["kind"] == "password_reset")
+    assert reset["props"]["unmasked_urls"] == [f"https://auth.example.test/reset?token={T2}",
+                                               f"https://auth.example.test/reset?token={T1}"]
+    assert reset["props"]["unmasked_url"] == f"https://auth.example.test/reset?token={T2}"
+    assert T1 not in reset["url"] and T2 not in reset["url"]
 
 
 def test_without_an_hmac_key_no_value_hmac():

@@ -178,3 +178,15 @@ def test_never_raises_on_garbage():
     for junk in (None, "", "http://[::1", "%%%", "https://example.test/" + "a/" * 5000):
         ul.inspect_url(junk)
         ul.mask_url(junk or "")
+
+
+def test_values_only_on_request_and_the_masked_form_is_unchanged():
+    url = "https://auth.example.test/reset?token=Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd&pwd=hunter22x"
+    plain = ul.inspect_url(url)
+    full = ul.inspect_url(url, with_values=True)
+    assert "url" not in plain and all("value" not in s for s in plain["secrets"])
+    assert full["url"] == url
+    assert {s["param_name"]: s["value"] for s in full["secrets"]} == {
+        "token": "Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd", "pwd": "hunter22x"}
+    assert full["masked_url"] == plain["masked_url"]
+    assert full["quarantined"] is plain["quarantined"] is True

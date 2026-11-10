@@ -87,10 +87,11 @@ class TestProducers:
         assert (f["kind"], f["kind_field"], f["severity"]) == ("env", "file_kind", "high")
         assert f["props"]["sightings"] == 2 and f["urlscan_scan_id"] == "new"
 
-    def test_a_web_shell_trace_is_a_finding_without_a_scan_id(self):
+    def test_a_web_shell_trace_is_a_finding_with_its_scan_and_full_link(self):
         data = _run([_visit(B + "/shell.php?cmd=cat+/etc/passwd")])
         f, = [f for f in data["findings"] if f["kind"] == "web_shell_trace"]
-        assert f["urlscan_scan_id"] == "" and "etc/passwd" not in f["url"]
+        assert f["urlscan_scan_id"] == "u1" and "etc/passwd" not in f["url"]
+        assert f["props"]["unmasked_url"] == B + "/shell.php?cmd=cat+/etc/passwd"
         assert data["urls_with_paths"] == []
 
     def test_documents_are_attributes_not_findings(self):

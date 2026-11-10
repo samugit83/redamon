@@ -182,7 +182,7 @@ def _finding(page: dict, outcome: str, basis: str, cname: str, live: bool) -> di
         "urlscan_scan_id": page.get("urlscan_scan_id") or "",
         "props": {"outcome": outcome, "cname": cname, "cname_still_points": True,
                   "problem": page.get("problem"), "matched": page.get("matched"),
-                  "verdict_basis": basis},
+                  "verdict_basis": basis, "unmasked_url": page.get("unmasked_url")},
     }
 
 

@@ -893,6 +893,7 @@ class OsintMixin:
                 base_url = url_entry.get("base_url", "")
                 path = normalize_endpoint_path(url_entry.get("path", "")) if url_entry.get("path") else ""
                 full_url = url_entry.get("full_url", "")
+                unmasked_url = url_entry.get("unmasked_url") or None
                 params = url_entry.get("params", {})
 
                 if not base_url or not path:
@@ -909,12 +910,13 @@ class OsintMixin:
                         ON CREATE SET e.source = 'urlscan', e.full_url = $full_url,
                                       e.has_parameters = $has_params, e.updated_at = datetime()
                         SET e.full_url = CASE WHEN e.source = 'urlscan' THEN $full_url ELSE e.full_url END
+                        SET e.unmasked_url = CASE WHEN e.source = 'urlscan' THEN $unmasked_url ELSE e.unmasked_url END
                         SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
                         SET e += $file_props
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         RETURN e.path AS path
                         """,
-                        base_url=base_url, path=path, full_url=full_url,
+                        base_url=base_url, path=path, full_url=full_url, unmasked_url=unmasked_url,
                         has_params=has_params, uid=user_id, pid=project_id,
                         # Item 3: a document's type, its content type, and a
                         # sensitive file's kind (partial Route Exposure reads it).
@@ -1002,12 +1004,26 @@ class OsintMixin:
             # the operator see it, flagged so every reader that turns graph
             # Endpoints into requests skips it. A plain SET flags one another
             # tool wrote too; its full_url and parameter values are removed.
+            # The links themselves go to unmasked_url / unmasked_urls, which no
+            # request builder reads: they are for the operator to open.
             stats["endpoints_quarantined"] = 0
-            for row in urlscan_data.get("quarantined_urls", []) or []:
+            quarantined_rows = [r for r in urlscan_data.get("quarantined_urls", []) or []
+                                if isinstance(r, dict)]
+            unmasked_by_endpoint: dict = {}
+            for row in sorted(quarantined_rows, key=lambda r: str(r.get("scan_time") or ""),
+                              reverse=True):
+                key = (row.get("base_url", ""),
+                       normalize_endpoint_path(row.get("path", "")) if row.get("path") else "")
+                links = unmasked_by_endpoint.setdefault(key, [])
+                link = row.get("unmasked_url")
+                if isinstance(link, str) and link and link not in links and len(links) < 25:
+                    links.append(link)
+            for row in quarantined_rows:
                 base_url = row.get("base_url", "")
                 path = normalize_endpoint_path(row.get("path", "")) if row.get("path") else ""
                 if not base_url or not path:
                     continue
+                unmasked_urls = unmasked_by_endpoint.get((base_url, path)) or []
                 try:
                     rec = session.run(
                         """
@@ -1018,6 +1034,8 @@ class OsintMixin:
                         SET e.openapi_declared_only = CASE WHEN coalesce(e.openapi_declared_only, e.openapi_declared, false) THEN false ELSE e.openapi_declared_only END
                         SET e.quarantined = true, e.quarantine_reasons = $reasons,
                             e.has_parameters = coalesce(e.has_parameters, false) OR size($names) > 0
+                        SET e.unmasked_url = CASE WHEN size($unmasked_urls) > 0 THEN $unmasked_urls[0] ELSE e.unmasked_url END,
+                            e.unmasked_urls = CASE WHEN size($unmasked_urls) > 0 THEN $unmasked_urls ELSE e.unmasked_urls END
                         REMOVE e.full_url
                         MERGE (bu)-[:HAS_ENDPOINT]->(e)
                         WITH e
@@ -1032,6 +1050,7 @@ class OsintMixin:
                         RETURN count(DISTINCT e) AS n
                         """,
                         base_url=base_url, path=path, reasons=list(row.get("reasons") or []),
+                        unmasked_urls=unmasked_urls,
                         names=[n for n in row.get("param_names") or [] if isinstance(n, str) and n],
                         uid=user_id, pid=project_id,
                     ).single()
@@ -1173,6 +1192,8 @@ class OsintMixin:
                     "jwt_alg": sec.get("jwt_alg"),
                     "jwt_expired": sec.get("jwt_expired"),
                     "masked_url": sec.get("masked_url"),
+                    "secret_value": sec.get("secret_value") or None,
+                    "unmasked_url": sec.get("unmasked_url") or None,
                     "base_url": sec.get("base_url"),
                     "severity": _history_severity(sec.get("severity"), False),
                     "first_seen": sec.get("first_seen") or "",
@@ -1254,6 +1275,7 @@ class OsintMixin:
                         ON CREATE SET ed.first_seen_at = datetime()
                         SET ed.sources = coalesce(ed.sources, []) + [x IN $sources WHERE NOT x IN coalesce(ed.sources, [])],
                             ed.redirect_from_urls = coalesce(ed.redirect_from_urls, []) + [x IN $redirect_from WHERE NOT x IN coalesce(ed.redirect_from_urls, [])],
+                            ed.unmasked_redirect_from_urls = ([x IN $unmasked_from WHERE NOT x IN coalesce(ed.unmasked_redirect_from_urls, [])] + coalesce(ed.unmasked_redirect_from_urls, []))[0..25],
                             ed.redirect_to_urls = coalesce(ed.redirect_to_urls, []) + [x IN $redirect_to WHERE NOT x IN coalesce(ed.redirect_to_urls, [])],
                             ed.status_codes_seen = coalesce(ed.status_codes_seen, []) + [x IN $status_codes WHERE NOT x IN coalesce(ed.status_codes_seen, [])],
                             ed.titles_seen = coalesce(ed.titles_seen, []) + [x IN $titles WHERE NOT x IN coalesce(ed.titles_seen, [])],
@@ -1266,6 +1288,7 @@ class OsintMixin:
                     """, ed_domain=ed_domain, uid=user_id, pid=project_id,
                         sources=ed.get("sources", []),
                         redirect_from=ed.get("redirect_from_urls", []),
+                        unmasked_from=ed.get("unmasked_redirect_from_urls", []),
                         redirect_to=ed.get("redirect_to_urls", []),
                         status_codes=ed.get("status_codes_seen", []),
                         titles=ed.get("titles_seen", []),

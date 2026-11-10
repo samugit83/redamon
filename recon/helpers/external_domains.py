@@ -13,7 +13,7 @@ def _merge_external_domain(aggregated: dict, entry: dict):
     if domain not in aggregated:
         aggregated[domain] = {
             "domain": domain, "sources": [], "redirect_from_urls": [],
-            "redirect_to_urls": [], "status_codes_seen": [], "titles_seen": [],
+            "unmasked_redirect_from_urls": [], "redirect_to_urls": [], "status_codes_seen": [], "titles_seen": [],
             "servers_seen": [], "ips_seen": [], "countries_seen": [], "times_seen": 0,
         }
     rec = aggregated[domain]
@@ -22,6 +22,7 @@ def _merge_external_domain(aggregated: dict, entry: dict):
         (entry.get("source"), "sources"),
         (entry.get("url"), "redirect_to_urls"),
         (entry.get("redirect_from_url"), "redirect_from_urls"),
+        (entry.get("unmasked_redirect_from_url"), "unmasked_redirect_from_urls"),
         (entry.get("title"), "titles_seen"),
         (entry.get("server"), "servers_seen"),
         (entry.get("ip"), "ips_seen"),

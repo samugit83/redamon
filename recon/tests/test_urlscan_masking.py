@@ -4,9 +4,9 @@ Addresses are in 192.88.97.0/24, the urlscan lab's test subnet: Python counts
 the documentation ranges (192.0.2.0/24...) as private, which the scope rule
 rightly refuses.
 
-S4: every urlscan URL is stored with its values masked; parameter types are
-computed before the values go; a quarantined visit keeps no screenshot or scan
-ID. S5/B11: a visit's address is kept only for a host the scan may target
+S4: every urlscan URL is masked wherever it is requested or keyed, parameter
+types are computed from the values, and the full URL is kept only in the
+display fields (graph_db/display_only.py). S5/B11: a visit's address is kept only for a host the scan may target
 (group scope, RoE) and when it is routable.
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from graph_db.display_only import strip_display_only  # noqa: E402
 from recon.main_recon_modules import urlscan_enrich as u  # noqa: E402
 
 T1 = "Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd"
@@ -42,19 +43,24 @@ def _run(results, **settings):
 
 
 class TestMasking:
-    def test_b10_no_raw_value_in_any_stored_list(self):
+    def test_b10_raw_values_only_in_display_fields(self):
         data = _run([
             _visit("https://app.example.test/api/items?id=5&session=abc123"),
             _visit(f"https://other.test/share/{T1}?k=v", domain="other.test"),
             _visit(f"https://auth.example.test/reset?token={T1}"),
         ])
-        blob = json.dumps(data)
+        blob = json.dumps(strip_display_only(data))
         assert T1 not in blob and "abc123" not in blob and "id=5" not in blob
         row, = data["urls_with_paths"]
         assert row["full_url"] == "https://app.example.test/api/items?id=***&session=***"
+        assert row["unmasked_url"] == "https://app.example.test/api/items?id=5&session=abc123"
         assert row["params"] == {"id": "***", "session": "***"}
         ext, = data["external_domains"]
         assert ext["url"] == "https://other.test"
+        by_host = {e["domain"]: e for e in data["entries"]}
+        assert by_host["auth.example.test"]["unmasked_url"] == f"https://auth.example.test/reset?token={T1}"
+        # A third party's page keeps its origin only, even for display.
+        assert by_host["other.test"]["unmasked_url"] == ""
 
     def test_parameter_types_are_computed_before_masking(self):
         data = _run([_visit("https://app.example.test/go?id=5&next=https://a.example.test/x")])
@@ -62,12 +68,12 @@ class TestMasking:
         assert types["id"] == "integer"
         assert types["next"] in ("url", "path")
 
-    def test_a_quarantined_visit_keeps_no_screenshot_or_scan_id(self):
+    def test_a_quarantined_visit_keeps_its_screenshot_and_scan_id(self):
         data = _run([_visit(f"https://auth.example.test/reset?token={T1}"),
                      _visit("https://app.example.test/about")])
         by_host = {e["domain"]: e for e in data["entries"]}
-        assert by_host["auth.example.test"]["screenshot_url"] == ""
-        assert by_host["auth.example.test"]["scan_id"] == ""
+        assert by_host["auth.example.test"]["screenshot_url"].endswith("uuid-auth.example.test.png")
+        assert by_host["auth.example.test"]["scan_id"] == "uuid-auth.example.test"
         assert by_host["auth.example.test"]["quarantined"] is True
         assert by_host["app.example.test"]["scan_id"] == "uuid-app.example.test"
 

@@ -255,3 +255,31 @@ def test_graph_dry_run_counts_findings_and_writes_none():
     s = _FindingSession()
     assert bf.backfill_graph(_Driver(s), apply=False)["findings_masked"] == 1
     assert not [q for q, _p in s.writes if "SET v += $changed" in q]
+
+
+def test_json_leaves_the_display_fields_whole():
+    link = f"https://auth.example.test/password/reset/{TOK}"
+    doc = {"urlscan": {"url_secrets": [{"masked_url": link, "unmasked_url": link, "secret_value": TOK}],
+                       "findings": [{"url": link, "props": {"unmasked_urls": [link]}}]}}
+    bf.mask_recon_document(doc)
+    sec = doc["urlscan"]["url_secrets"][0]
+    assert sec["unmasked_url"] == link and sec["secret_value"] == TOK
+    assert TOK not in sec["masked_url"]
+    assert doc["urlscan"]["findings"][0]["props"]["unmasked_urls"] == [link]
+    assert TOK not in doc["urlscan"]["findings"][0]["url"]
+
+
+class _DisplayFindingSession(_Session):
+    def run(self, query, **params):
+        if "RETURN elementId(v) AS vid" in query:
+            link = f"https://auth.example.test/password/reset/{TOK}"
+            return _Result([{"vid": "v1", "props": {"id": "f-1", "url": link, "unmasked_url": link,
+                                                    "unmasked_urls": [link]}}])
+        return super().run(query, **params)
+
+
+def test_graph_leaves_the_display_fields_whole():
+    s = _DisplayFindingSession()
+    bf.backfill_graph(_Driver(s), apply=True, project="p1")
+    changed, = [p["changed"] for q, p in s.writes if q != "marker" and "SET v += $changed" in q]
+    assert set(changed) == {"url"}

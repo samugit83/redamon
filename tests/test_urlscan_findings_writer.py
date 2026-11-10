@@ -83,6 +83,14 @@ class TestIds(unittest.TestCase):
 
 
 class TestShape(unittest.TestCase):
+    def test_full_links_ride_in_props_beside_the_masked_url(self):
+        links = ["https://auth.example.test/reset?token=T2", "https://auth.example.test/reset?token=T1"]
+        w = _write([_finding(props={"link_count": 2, "unmasked_url": links[0], "unmasked_urls": links})])
+        (_q, p), = _vuln_writes(w)
+        self.assertEqual(p["props"]["unmasked_url"], links[0])
+        self.assertEqual(p["props"]["unmasked_urls"], links)
+        self.assertEqual(p["props"]["matched_at"], "https://auth.example.test/reset?token=***")
+
     def test_props_name_matched_at_kind_and_tenant(self):
         w = _write([_finding()])
         (q, p), = _vuln_writes(w)
@@ -177,6 +185,19 @@ class TestSecrets(unittest.TestCase):
         b = self._secret_write(_write(secrets=[dict(s, value_length=40)]))[1]
         self.assertEqual(a["id"], b["id"])
         self.assertNotIn("value_hmac", a["props"])
+
+    def test_the_value_and_full_link_are_written_for_display(self):
+        key = "ak9Q2w8E3r7T4y6U1i0O5pLz"
+        link = f"https://app.example.test/api?apikey={key}"
+        _q, p = self._secret_write(_write(secrets=[dict(self.SECRET, secret_value=key, unmasked_url=link)]))
+        self.assertEqual(p["props"]["secret_value"], key)
+        self.assertEqual(p["props"]["unmasked_url"], link)
+        self.assertEqual(p["props"]["masked_url"], "https://app.example.test/api?apikey=***")
+
+    def test_an_older_row_without_a_value_writes_no_empty_value(self):
+        _q, p = self._secret_write(_write(secrets=[self.SECRET]))
+        self.assertNotIn("secret_value", p["props"])
+        self.assertNotIn("unmasked_url", p["props"])
 
     def test_hangs_off_the_subdomain_with_its_base_url(self):
         w = _write(secrets=[self.SECRET])

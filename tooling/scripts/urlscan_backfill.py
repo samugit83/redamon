@@ -3,9 +3,11 @@
 
 WHY
 
-New scans store every urlscan URL masked (values ``***``, path tokens
-``{token}``), keep quarantined links out of every request list, and record a
-visit's address as history (HISTORICALLY_RESOLVED_TO), not as current DNS. A
+New scans store every urlscan URL masked where it is requested or keyed (values
+``***``, path tokens ``{token}``), keep the full link and the secret only in the
+display fields (graph_db/display_only.py, which this script never touches), keep
+quarantined links out of every request list, and record a visit's address as
+history (HISTORICALLY_RESOLVED_TO), not as current DNS. A
 project that is never re-run keeps what older releases wrote: urlscan
 ``Endpoint.full_url`` and ``Parameter.sample_value`` with real tokens, Endpoints
 for leaked reset links that a partial run would request, and ``RESOLVES_TO``
@@ -75,6 +77,11 @@ _BATCH = 500
 def _url_leaks():
     from recon.helpers import url_leaks
     return url_leaks
+
+
+def _display_only() -> frozenset:
+    from graph_db.display_only import DISPLAY_ONLY_PROPS
+    return DISPLAY_ONLY_PROPS
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +166,8 @@ def mask_leaked_links(node, key: str = "") -> int:
     changed = 0
     if isinstance(node, dict):
         for k, v in node.items():
+            if k in _display_only():
+                continue
             if isinstance(v, (dict, list)) and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
                 changed += mask_leaked_links(v, k)
             else:
@@ -188,7 +197,7 @@ def backfill_findings(session, uid: str, pid: str, *, apply: bool) -> int:
         props = row.get("props") or {}
         changed = {}
         for key, value in props.items():
-            if key in _KEEP_KEYS:
+            if key in _KEEP_KEYS or key in _display_only():
                 continue
             m = mask_leaked_value(key, value)
             if m != value:

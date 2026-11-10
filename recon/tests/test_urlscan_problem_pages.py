@@ -86,10 +86,11 @@ class TestProblemPages:
                      _visit("https://other.test/", "Home Page - Select or create a notebook")])
         assert data["problem_pages"] == []
 
-    def test_a_quarantined_visit_keeps_no_scan_id_and_a_masked_url(self):
+    def test_a_quarantined_visit_keeps_its_scan_a_masked_url_and_the_full_link(self):
         f, = _run([_visit("https://app.example.test/reset?token=abcdefabcdefabcdef1234",
                           "Whoops! There was an error.")])["problem_pages"]
-        assert f["urlscan_scan_id"] == "" and "abcdef" not in f["url"]
+        assert f["urlscan_scan_id"] == "u1" and "abcdef" not in f["url"]
+        assert f["props"]["unmasked_url"] == "https://app.example.test/reset?token=abcdefabcdefabcdef1234"
 
     def test_switches(self):
         visits = [_visit("https://nb.example.test/", "Home Page - Select or create a notebook"),

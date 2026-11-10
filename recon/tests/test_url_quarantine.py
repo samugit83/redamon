@@ -15,6 +15,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from graph_db.display_only import strip_display_only  # noqa: E402
 from recon.main_recon_modules import urlscan_enrich as u  # noqa: E402
 
 T1 = "Xq8Rw2Lp7Nm4Kt9Vb3Cz6Hd"
@@ -62,7 +63,7 @@ def test_quarantined_urls_never_reach_urls_with_paths():
         assert not any(t in row["full_url"] for t in PLANTED)
 
 
-def test_quarantined_rows_are_masked_and_carry_no_value():
+def test_quarantined_rows_are_masked_and_keep_the_link_only_for_display():
     data = _run(LEAKS)
     rows = {(r["base_url"], r["path"]) for r in data["quarantined_urls"]}
     assert ("https://auth.example.test", "/reset") in rows
@@ -70,8 +71,10 @@ def test_quarantined_rows_are_masked_and_carry_no_value():
     assert ("https://app.example.test", "/unsubscribe") in rows
     assert ("https://files.example.test", "/shell.php") in rows
     assert ("https://app.example.test", "/invite/{token}") in rows
-    blob = repr(data["quarantined_urls"])
+    blob = repr(strip_display_only(data["quarantined_urls"]))
     assert not any(t in blob for t in PLANTED)
+    links = {r["unmasked_url"] for r in data["quarantined_urls"]}
+    assert f"https://auth.example.test/reset?token={T1}" in links
 
 
 def test_a_web_shell_trace_quarantines_its_whole_host_and_path():

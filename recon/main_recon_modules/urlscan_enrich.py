@@ -582,13 +582,14 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             seen_urls.add(task_url)
             quarantined_urls.append(quarantine.row(task_url, "task", result))
 
-        # Build entry. Every URL is stored masked; a quarantined visit keeps no
-        # screenshot and no scan ID (either opens the unmasked scan on urlscan).
+        # Build entry. `url` is the masked form; `unmasked_url` is the target's
+        # page as urlscan recorded it, for the operator to open.
         visit_quarantined = bool(page_url) and quarantine.holds(page_url)
         entry = {
             # A third party's page keeps its origin only: its path is often a
             # private link (a shared document, a meeting room).
             "url": (mask_url(page_url) if is_in_scope else _origin(page_url)) if page_url else "",
+            "unmasked_url": page_url if (page_url and is_in_scope) else "",
             "domain": page_domain,
             "ip": page_ip,
             "asn": page_asn,
@@ -602,9 +603,9 @@ def run_urlscan_enrichment(combined_result: dict, settings: dict[str, Any]) -> d
             "tls_valid_from": page_tls_valid_from,
             "tls_age_days": page_tls_age_days,
             "domain_age_days": page_domain_age,
-            "screenshot_url": "" if visit_quarantined else screenshot,
+            "screenshot_url": screenshot,
             "scan_time": scan_time,
-            "scan_id": "" if visit_quarantined else (task.get("uuid") or ""),
+            "scan_id": task.get("uuid") or "",
             "visibility": task.get("visibility") or "",
             "mime_type": page.get("mimeType") or "",
             "in_scope": host_in_scope,
@@ -755,9 +756,10 @@ def _origin(url: str) -> str:
 
 
 def _stored_row(parsed: dict, mask_url) -> dict:
-    """A urls_with_paths row as it may be stored and handed on: the URL with
-    every value masked, parameter names kept, and each parameter's type
-    computed from its value here, before the value is gone (S4)."""
+    """A urls_with_paths row as it is handed on: `full_url` with every value
+    masked (the form every request list reads), parameter names kept, each
+    parameter's type computed from its value, and `unmasked_url`, the URL as
+    seen, for display only."""
     from recon.helpers.resource_enum.classification import infer_parameter_type
     params = parsed.get("params") or {}
     types = {}
@@ -769,6 +771,7 @@ def _stored_row(parsed: dict, mask_url) -> dict:
             types[name] = "string"
     return {
         "full_url": mask_url(parsed["full_url"]) or parsed["full_url"].split("?", 1)[0],
+        "unmasked_url": parsed["full_url"],
         "base_url": parsed["base_url"],
         "path": parsed["path"],
         "params": {name: "***" for name in params},
@@ -859,8 +862,9 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
     """Item 2: the target's leaked one-time links (URLSCAN_LEAKED_LINKS) and the
     secrets written in its URLs (URLSCAN_SECRETS_IN_URLS), from public visits of
     target hosts. Grouped: one finding per host, masked path and kind; one
-    Secret per value (its HMAC), else per host, type and parameter. Nothing
-    raw is kept: masked URLs, lengths and HMACs only, and no scan ID."""
+    Secret per value (its HMAC), else per host, type and parameter. Identities
+    are the masked URL and the HMAC; the links themselves (`unmasked_url`,
+    `unmasked_urls`) and the secret (`secret_value`) ride along for display."""
     want_links = bool(settings.get("URLSCAN_LEAKED_LINKS", True))
     want_secrets = bool(settings.get("URLSCAN_SECRETS_IN_URLS", True))
     if not (want_links or want_secrets):
@@ -883,24 +887,28 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
         v = quarantine.verdict(url)
         if want_links and v["link_kind"]:
             slot = links.setdefault((host, v["masked_path"], v["link_kind"]), {
-                "masked_url": v["masked_url"], "times": [], "count": 0})
+                "masked_url": v["masked_url"], "times": [], "count": 0, "seen": []})
             slot["count"] += 1
             slot["times"].append(scan_time)
             slot["masked_url"] = v["masked_url"]
+            slot["seen"].append((scan_time, url))
         if want_secrets:
             for sec in v["secrets"]:
                 ident = sec.get("value_hmac") or sec["param_name"]
                 slot = secrets.setdefault((host, sec["secret_type"], ident), {
-                    "sec": sec, "times": [], "count": 0, "masked_url": v["masked_url"]})
+                    "sec": sec, "times": [], "count": 0, "masked_url": v["masked_url"],
+                    "url": url})
                 slot["count"] += 1
                 slot["times"].append(scan_time)
                 if scan_time >= max(slot["times"]):
                     slot["masked_url"] = v["masked_url"]
+                    slot["url"] = url
                     slot["sec"] = sec
     findings = []
     for (host, path, kind), slot in sorted(links.items()):
         first, last = _span(slot["times"])
         label = LINK_LABEL.get(kind, kind)
+        unmasked = newest_unique_urls(slot["seen"])
         findings.append({
             "type": "leaked_one_time_link", "kind": kind, "kind_field": "link_kind",
             "host": host, "path": path or "/", "url": slot["masked_url"],
@@ -913,7 +921,9 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
                 f"Make one-time links expire within minutes and work once, and ask urlscan to "
                 f"remove the scans; test the lifetime with a link for your own test account."),
             "first_seen": first, "last_seen": last,
-            "props": {"link_count": slot["count"], "masked_url": slot["masked_url"]},
+            "props": {"link_count": slot["count"], "masked_url": slot["masked_url"],
+                      "unmasked_url": unmasked[0] if unmasked else None,
+                      "unmasked_urls": unmasked or None},
         })
     url_secrets = []
     for (host, stype, _ident), slot in sorted(secrets.items()):
@@ -928,10 +938,26 @@ def _leak_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
             "value_length": sec["value_length"], "value_hmac": sec.get("value_hmac"),
             "jwt_alg": sec.get("jwt_alg"), "jwt_expired": sec.get("jwt_expired"),
             "masked_url": slot["masked_url"],
+            "secret_value": sec.get("value"), "unmasked_url": slot["url"],
             "base_url": f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else f"https://{host}",
             "severity": severity, "first_seen": first, "last_seen": last, "count": slot["count"],
         })
     return findings, url_secrets
+
+
+#: How many distinct links of one grouped finding keep their full form.
+MAX_UNMASKED_URLS = 25
+
+
+def newest_unique_urls(seen: list) -> list:
+    """The distinct URLs of [(time, url)], newest first, at most MAX_UNMASKED_URLS."""
+    out = []
+    for _when, url in sorted(seen, key=lambda pair: pair[0] or "", reverse=True):
+        if url and url not in out:
+            out.append(url)
+        if len(out) >= MAX_UNMASKED_URLS:
+            break
+    return out
 
 
 def _tag_file_row(row: dict, url: str, mime_type: str, settings: dict) -> None:
@@ -962,8 +988,8 @@ def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
                    settings: dict) -> list:
     """Item 3: files and pages that should never be public, opened directly in
     public urlscan visits of target hosts: one finding per host, path and kind,
-    with the newest scan as evidence (never for a web-shell trace, whose scan
-    shows the command). A web-shell trace comes from the quarantine."""
+    with the newest scan and its full URL as evidence. A web-shell trace comes
+    from the quarantine."""
     if not settings.get("URLSCAN_SENSITIVE_FILES", True):
         return []
     from recon.helpers.url_leaks import classify_file
@@ -991,10 +1017,12 @@ def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
                 continue
             kind, severity = found["file_kind"], found["severity"]
         slot = groups.setdefault((host, v["masked_path"] or "/", kind), {
-            "url": v["masked_url"], "severity": severity, "times": [], "newest": ("", "")})
+            "url": v["masked_url"], "severity": severity, "times": [], "newest": ("", ""),
+            "unmasked_url": url})
         slot["times"].append(task.get("time") or "")
         if (task.get("time") or "") >= slot["newest"][0]:
             slot["newest"] = (task.get("time") or "", task.get("uuid") or "")
+            slot["unmasked_url"] = url
     out = []
     for (host, path, kind), slot in sorted(groups.items()):
         first, last = _span(slot["times"])
@@ -1011,8 +1039,8 @@ def _file_findings(inputs: list, quarantine: "UrlQuarantine", scope: "HostScope"
                                  "already be compromised." if kind == "web_shell_trace" else
                                  "; turn on Route Exposure to check whether it is still online.")),
             "first_seen": first, "last_seen": last,
-            "urlscan_scan_id": "" if kind == "web_shell_trace" else slot["newest"][1],
-            "props": {"sightings": len(slot["times"])},
+            "urlscan_scan_id": slot["newest"][1],
+            "props": {"sightings": len(slot["times"]), "unmasked_url": slot["unmasked_url"]},
         })
     return out
 
@@ -1056,8 +1084,7 @@ def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scop
         if not host or not _extract_domain_from_url(url, domain) or not scope.host_ok(host):
             continue
         v = quarantine.verdict(url)
-        held = quarantine.holds(url)
-        when, uuid = task.get("time") or "", "" if held else (task.get("uuid") or "")
+        when, uuid = task.get("time") or "", task.get("uuid") or ""
         matches = ps.match_page(page.get("title"), page.get("server"), page.get("status"),
                                 urlparse(url).path or "/", page.get("mimeType"), host, url,
                                 _visit_cname(dns, host))
@@ -1073,6 +1100,7 @@ def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scop
                 if when >= slot["newest"]:
                     slot.update({**m, "newest": when, "scan_id": uuid,
                                  "url": (v["masked_url"] or url).split("?", 1)[0],
+                                 "unmasked_url": url,
                                  "title": page.get("title") or "", "server": page.get("server") or "",
                                  "status": page.get("status")})
                 continue
@@ -1086,7 +1114,8 @@ def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scop
             if when >= slot["newest"]:
                 origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
                 slot.update({"newest": when, "scan_id": uuid, "matched": m["matched"],
-                             "url": origin if per_host else (v["masked_url"] or url).split("?", 1)[0]})
+                             "url": origin if per_host else (v["masked_url"] or url).split("?", 1)[0],
+                             "unmasked_url": origin if per_host else url})
     problems = []
     for (host, path, family, problem), slot in sorted(groups.items()):
         first, last = _span(slot["times"])
@@ -1101,7 +1130,8 @@ def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scop
                 f"{last[:10] or 'unknown'} (matched: {slot['matched']}). RedAmon did not request "
                 f"it; the Security Checks' Page Content group checks this scan's live pages."),
             "first_seen": first, "last_seen": last, "urlscan_scan_id": slot["scan_id"],
-            "props": {"family": family, "matched": slot["matched"], "sightings": len(slot["times"])},
+            "props": {"family": family, "matched": slot["matched"], "sightings": len(slot["times"]),
+                      "unmasked_url": slot.get("unmasked_url")},
         })
     pages = []
     for host, slot in sorted(takeovers.items()):
@@ -1110,7 +1140,8 @@ def _problem_pages(results: list, domain: str, quarantine: "UrlQuarantine", scop
             "host": host, "provider": slot["provider"], "problem": slot["problem"],
             "label": slot["label"], "outcome": slot["outcome"], "matched": slot["matched"],
             "title": slot["title"], "server": slot["server"], "status": slot["status"],
-            "url": slot["url"], "first_seen": first, "last_seen": last,
+            "url": slot["url"], "unmasked_url": slot.get("unmasked_url"),
+            "first_seen": first, "last_seen": last,
             "urlscan_scan_id": slot["scan_id"], "sightings": len(slot["times"]),
         })
     return problems, pages
@@ -1149,8 +1180,9 @@ def _redirect_rows(results: list, root: str, quarantine: "UrlQuarantine", scope:
                    mask_url) -> dict:
     """Item 1's lists from the outbound visits. The other site is recorded by its
     origin only (its paths are often a third party's private links) and never
-    scanned; the start URL is the target's own, stored masked; the open-redirect
-    rule (N1) runs on the raw values in memory, before they are masked."""
+    scanned; the start URL is the target's own, masked where it is requested or
+    keyed and kept whole (`unmasked_*`) for display; the open-redirect rule (N1)
+    runs on the raw values."""
     from urllib.parse import parse_qsl
     out = {"redirect_entries": [], "external_domains": [], "start_hosts": [], "open_redirects": [],
            "findings": [], "quarantined_urls": [], "leak_inputs": []}
@@ -1176,12 +1208,14 @@ def _redirect_rows(results: list, root: str, quarantine: "UrlQuarantine", scope:
             out["quarantined_urls"].append(quarantine.row(start, "task", r))
         else:
             out["redirect_entries"].append({
-                "start_url": masked, "base_url": f"{start_parts.scheme}://{start_parts.netloc}",
+                "start_url": masked, "unmasked_start_url": start,
+                "base_url": f"{start_parts.scheme}://{start_parts.netloc}",
                 "path": start_parts.path or "/", "param_names": names, "end_origin": end_origin,
                 "end_domain": end_domain, "scan_time": scan_time, "scan_id": scan_id,
             })
         out["external_domains"].append({"domain": end_domain, "source": "urlscan_redirect",
-                                        "url": end_origin, "redirect_from_url": masked})
+                                        "url": end_origin, "redirect_from_url": masked,
+                                        "unmasked_redirect_from_url": start})
         if host != root.lower():
             hosts.add(host)
         if {n.lower() for n in names} & _SIGN_IN_PARAMS:
@@ -1190,17 +1224,20 @@ def _redirect_rows(results: list, root: str, quarantine: "UrlQuarantine", scope:
             if _names_destination(value, end_domain):
                 path = quarantine.verdict(start)["masked_path"] or start_parts.path or "/"
                 slot = redirects.setdefault((host, path, name), {
-                    "destination_domain": end_domain, "times": [], "scan_id": "", "newest": ""})
+                    "destination_domain": end_domain, "times": [], "scan_id": "", "newest": "",
+                    "unmasked_url": start})
                 slot["times"].append(scan_time)
-                if not held and scan_time >= slot["newest"]:
+                if scan_time >= slot["newest"]:
                     slot["newest"], slot["scan_id"] = scan_time, scan_id
+                    slot["unmasked_url"] = start
     out["start_hosts"] = sorted(hosts)
     for (host, path, name), slot in sorted(redirects.items()):
         first, last = _span(slot["times"])
         out["open_redirects"].append({"host": host, "path": path, "param_name": name,
                                       "destination_domain": slot["destination_domain"],
                                       "first_seen": first, "last_seen": last,
-                                      "scan_id": slot["scan_id"]})
+                                      "scan_id": slot["scan_id"],
+                                      "unmasked_url": slot["unmasked_url"]})
         out["findings"].append({
             "type": "open_redirect_seen", "kind": name, "kind_field": "",
             "host": host, "path": path, "url": f"https://{host}{path}?{name}=***",
@@ -1211,7 +1248,8 @@ def _redirect_rows(results: list, root: str, quarantine: "UrlQuarantine", scope:
                 f"site: {host} redirects to a site a parameter names. RedAmon did not request it; "
                 f"test {name} with a site you control."),
             "first_seen": first, "last_seen": last, "urlscan_scan_id": slot["scan_id"],
-            "props": {"param_name": name, "destination_domain": slot["destination_domain"]},
+            "props": {"param_name": name, "destination_domain": slot["destination_domain"],
+                      "unmasked_url": slot["unmasked_url"]},
         })
     return out
 
@@ -1236,20 +1274,24 @@ class UrlQuarantine:
         from recon.helpers import url_leaks
         self._ul = url_leaks
         self._hmac_key = hmac_key
-        self._verdicts = {u: url_leaks.inspect_url(u, hmac_key=hmac_key) for u in dict.fromkeys(urls)}
+        self._verdicts = {u: url_leaks.inspect_url(u, hmac_key=hmac_key, with_values=True)
+                          for u in dict.fromkeys(urls)}
         self._shells = {url_leaks.host_path_key(u) for u, v in self._verdicts.items() if v["web_shell"]}
 
     def verdict(self, url: str) -> dict:
         v = self._verdicts.get(url)
         if v is None:
-            v = self._verdicts[url] = self._ul.inspect_url(url, hmac_key=self._hmac_key)
+            v = self._verdicts[url] = self._ul.inspect_url(url, hmac_key=self._hmac_key,
+                                                           with_values=True)
         return v
 
     def holds(self, url: str) -> bool:
         return self.verdict(url)["quarantined"] or self._ul.host_path_key(url) in self._shells
 
     def row(self, url: str, field: str, result: dict) -> dict:
-        """What the graph may keep of a quarantined URL: no value, no scan ID."""
+        """A quarantined URL as the graph keeps it: the masked path and the
+        parameter names (what readers key on and skip), plus the URL itself
+        (`unmasked_url`) for display."""
         v = self.verdict(url)
         parsed = urlparse(url)
         reasons = list(v["reasons"])
@@ -1259,6 +1301,7 @@ class UrlQuarantine:
             "base_url": f"{parsed.scheme}://{parsed.netloc}",
             "path": v["masked_path"] or "/",
             "masked_url": v["masked_url"],
+            "unmasked_url": url,
             "param_names": sorted({n for n, _ in parse_qs(parsed.query, keep_blank_values=True).items()}),
             "reasons": sorted(reasons),
             "field": field,
