@@ -53,7 +53,49 @@ def _root_recon_data(root: str, roots: list, config: dict, settings: dict,
     # Shodan and Netlas write no CVE on an IP the graph's IP attribution tagged
     # shared_edge.
     attach_graph_ownership(recon_data, user_id, project_id)
+    _attach_graph_cdn(recon_data, user_id, project_id)
     return recon_data
+
+
+def _attach_graph_cdn(recon_data: dict, user_id: str, project_id: str) -> None:
+    """Load the graph's CDN flag (IP.is_cdn) of the run's IPs into port_scan.by_ip.
+
+    The OSINT CDN filter (ip_filter.collect_cdn_ips) reads port_scan.by_ip, which
+    a partial run has no port scan to fill: without the graph's flag every
+    enricher queries the CDN edges the full pipeline skips. Flagged edges only,
+    in the vuln builder's shape, and only keys are added. Never raises: on a
+    failed read the published CDN prefixes still apply.
+    """
+    from recon.partial_recon_modules.graph_builders import _recon_data_ips
+    ips = _recon_data_ips(recon_data)
+    if not ips:
+        return
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if not graph_client.verify_connection():
+                return
+            with graph_client.driver.session() as session:
+                rows = [(r["ip"], r["cdn_name"], r["asn"]) for r in session.run(
+                    """
+                    MATCH (i:IP {user_id: $uid, project_id: $pid})
+                    WHERE i.address IN $ips AND i.is_cdn = true
+                    RETURN i.address AS ip, i.cdn_name AS cdn_name, i.asn AS asn
+                    """,
+                    ips=ips, uid=user_id, pid=project_id,
+                ) if r["ip"]]
+    except Exception as e:  # noqa: BLE001 - the published-prefix check still runs
+        print(f"[!][Partial Recon] Could not read the CDN flags of the IPs: {type(e).__name__}")
+        return
+    if not rows:
+        return
+    by_ip = recon_data.setdefault("port_scan", {}).setdefault("by_ip", {})
+    for addr, cdn_name, asn in rows:
+        entry = by_ip.setdefault(addr, {"ip": addr, "hostnames": [], "ports": [],
+                                        "is_cdn": False, "cdn": None, "asn": None})
+        entry["is_cdn"] = True
+        entry["cdn"] = entry.get("cdn") or cdn_name
+        entry["asn"] = entry.get("asn") or asn
 
 
 def _user_ip_root(ip_attach_to, roots: list) -> str:
