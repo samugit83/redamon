@@ -15,7 +15,9 @@
  *
  * Fail-safe: a row is only closed when its project is NOT in the active set AND it
  * has been running past a short grace window, so a container that has not yet
- * appeared in the live set right after dispatch is never closed prematurely.
+ * appeared in the live set right after dispatch is never closed prematurely. The
+ * run-keyed kinds (partial recon, trufflehog) go by their own run in the
+ * orchestrator's listing instead, since one project runs several at once.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -39,21 +41,26 @@ const MAX_SCANJOBS_PER_TICK = 25
 // Kinds that write ONE ScanJob per project (so a project-granular "is anything live
 // here?" signal is enough to call a row stale) AND can end with no browser open.
 // Deliberately excluded:
-//   - partial_recon / ai_attack: run-keyed (several concurrent runs per project);
-//     kept on their own run-granular reconcile (/partial/all, /ai-attack/all).
-//   - supply_chain_repo: only ever queue-dispatched, and dispatchStart calls the
-//     orchestrator directly without recordScanStart, so it writes NO ScanJob - its
-//     history lives in the JobQueue, closed by the queue reconcile above.
-//   - trufflehog: run-keyed since the multi-source migration (one run per SOURCE,
-//     several in parallel). Leaving it here would force-cancel all but the newest
-//     row per (project, kind) — every parallel source but one recorded as canceled
-//     while its container was still running. It gets the run-granular sweep below.
+//   - partial_recon / trufflehog: run-keyed (several concurrent runs per project,
+//     one per SOURCE for trufflehog). Here they would force-cancel all but the
+//     newest row per (project, kind) while those containers still ran. They get
+//     the run-granular sweep below.
+//   - ai_attack: run-keyed, closed from its own list poll (/ai-attack/all).
+//   - supply_chain_repo: only ever queue-dispatched, and dispatchStart records no
+//     ScanJob for it - its history lives in the JobQueue, closed by the queue
+//     reconcile above.
 const ONE_PER_PROJECT_KINDS = ['full_recon', 'supply_chain', 'gvm', 'github_hunt']
 
-// Kinds whose rows are keyed by run id and swept against a /all listing.
-const RUN_KEYED_KINDS: Record<string, string> = {
-  trufflehog: 'trufflehog',
+// Kinds whose rows are keyed by run id, and the orchestrator listing of every run
+// of the kind for a project. Partial recon's lives under /recon, not a segment of
+// its own.
+const RUN_LIST_PATH: Record<string, (projectId: string) => string> = {
+  trufflehog: p => `/trufflehog/${p}/all`,
+  partial_recon: p => `/recon/${p}/partial/all`,
 }
+
+// Listed statuses that mean the run is still going: its row is left running.
+const LIVE_RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'paused'])
 
 // The orchestrator status path for each swept kind.
 const STATUS_PATH: Record<string, string> = {
@@ -64,29 +71,56 @@ const STATUS_PATH: Record<string, string> = {
 }
 
 /**
- * Every run's status for a run-keyed kind, keyed by run id.
+ * Every run's status for a run-keyed kind, keyed by run id, or null when the
+ * listing cannot be read.
  *
- * Reads the /all listing rather than a project-level status: with N sources
- * running in parallel, one status describes one of them and the other N-1 would
- * be closed from the wrong run's outcome.
+ * Reads the /all listing rather than a project-level status: with N runs in
+ * parallel, one status describes one of them and the other N-1 would be closed
+ * from the wrong run's outcome.
  */
-async function fetchRunStatuses(kind: string, projectId: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
-  const seg = RUN_KEYED_KINDS[kind]
-  if (!seg) return out
+async function fetchRunStatuses(kind: string, projectId: string): Promise<Map<string, string> | null> {
+  const path = RUN_LIST_PATH[kind]
+  if (!path) return null
   try {
-    const res = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/${seg}/${projectId}/all`, { method: 'GET' })
-    if (!res.ok) return out
+    const res = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}${path(projectId)}`, { method: 'GET' })
+    if (!res.ok) return null
     const body = await res.json().catch(() => null)
-    for (const run of (body?.runs ?? []) as { run_id?: unknown; status?: unknown }[]) {
+    if (!Array.isArray(body?.runs)) return null
+    const out = new Map<string, string>()
+    for (const run of body.runs as { run_id?: unknown; status?: unknown }[]) {
       if (typeof run?.run_id === 'string' && typeof run?.status === 'string') {
         out.set(run.run_id, run.status)
       }
     }
+    return out
   } catch {
-    // Unreadable: the caller records `canceled` rather than leaving rows stuck.
+    return null
   }
-  return out
+}
+
+/**
+ * The status to close a run-keyed row with, or null to leave it running.
+ *
+ * A run the listing reports as ended is closed at once, however young the row:
+ * the orchestrator drops an ended run from its listing about a minute later,
+ * after which only "over, outcome unknown" can be said. A run the listing no
+ * longer has is over once its row is past the grace (a stopped run leaves at
+ * once). An unreadable listing says nothing about a project that still has a
+ * live run; for an idle project the run is over and only its outcome is unknown.
+ */
+function runRowOutcome(
+  listing: Map<string, string> | null,
+  runId: string,
+  pastGrace: boolean,
+  projectActive: boolean,
+): string | null {
+  const status = runId && listing ? listing.get(runId) : undefined
+  if (status === 'completed') return 'completed'
+  if (status === 'error') return 'failed'
+  if (status && LIVE_RUN_STATUSES.has(status)) return null
+  if (!pastGrace) return null
+  if (!listing && projectActive) return null
+  return 'canceled'
 }
 
 /**
@@ -191,31 +225,42 @@ export async function POST(request: NextRequest) {
         .catch(() => {})
     }
 
-    // Run-granular sweep for the run-keyed kinds. Each stale row is closed from
-    // ITS OWN run's status in the /all listing, so parallel sources do not
-    // cancel one another. A row whose run is absent from the listing is over
-    // (the project is already known idle), only its outcome is unknown.
-    const staleRuns = (await prisma.scanJob.findMany({
-      where: {
-        status: 'running',
-        kind: { in: Object.keys(RUN_KEYED_KINDS) },
-        OR: [{ startedAt: null }, { startedAt: { lte: cutoff } }],
-        ...(activeProjects.length ? { projectId: { notIn: activeProjects } } : {}),
-      },
-      orderBy: [{ projectId: 'asc' }, { kind: 'asc' }],
-      take: MAX_SCANJOBS_PER_TICK,
-      select: { id: true, projectId: true, kind: true, runId: true },
-    })).filter(s => !activeSet.has(s.projectId))
+    // Run-granular sweep for the run-keyed kinds. Each row is closed from ITS
+    // OWN run's status in the /all listing, so parallel runs do not cancel one
+    // another (runRowOutcome). No grace in the queries: a short run's listed
+    // outcome must be read before the orchestrator drops it. Idle projects are
+    // swept in their own budget, so live runs never starve their stuck rows; an
+    // active project's rows are read too, or one long partial run would keep
+    // its finished siblings `running` until it ended.
+    const runKeyed = { status: 'running', kind: { in: Object.keys(RUN_LIST_PATH) } }
+    const runSelect = { id: true, projectId: true, kind: true, runId: true, startedAt: true }
+    const staleRuns = [
+      ...(await prisma.scanJob.findMany({
+        where: { ...runKeyed, ...(activeProjects.length ? { projectId: { notIn: activeProjects } } : {}) },
+        orderBy: [{ projectId: 'asc' }, { kind: 'asc' }],
+        take: MAX_SCANJOBS_PER_TICK,
+        select: runSelect,
+      })).filter(s => !activeSet.has(s.projectId)),
+      ...(activeProjects.length
+        ? await prisma.scanJob.findMany({
+            where: { ...runKeyed, projectId: { in: activeProjects } },
+            orderBy: [{ startedAt: 'asc' }],
+            take: MAX_SCANJOBS_PER_TICK,
+            select: runSelect,
+          })
+        : []),
+    ]
 
-    const runStatusCache = new Map<string, Map<string, string>>()
+    const runStatusCache = new Map<string, Map<string, string> | null>()
     for (const s of staleRuns) {
       const cacheKey = `${s.projectId}|${s.kind}`
       if (!runStatusCache.has(cacheKey)) {
         runStatusCache.set(cacheKey, await fetchRunStatuses(s.kind, s.projectId))
       }
-      const status = s.runId ? runStatusCache.get(cacheKey)?.get(s.runId) : undefined
-      const outcome = status === 'completed' ? 'completed'
-        : status === 'error' ? 'failed' : 'canceled'
+      const pastGrace = s.startedAt == null || s.startedAt <= cutoff
+      const outcome = runRowOutcome(
+        runStatusCache.get(cacheKey) ?? null, s.runId, pastGrace, activeSet.has(s.projectId))
+      if (!outcome) continue
       await prisma.scanJob
         .updateMany({
           where: { id: s.id, status: 'running' },

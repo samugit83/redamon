@@ -388,7 +388,8 @@ export async function reconcileScanJobStatus(
  * Only an explicitly TERMINAL live status closes a row. A run that has simply
  * disappeared from the orchestrator's list is left alone: it also disappears when
  * the orchestrator restarts, and calling that "completed" would invent an outcome.
- * Such a row stays `running` until something else reconciles it.
+ * Such a row is closed by the stop route (recordRunStopped) or, for partial recon,
+ * by the reaper's run-keyed sweep (api/internal/job-queue/reconcile).
  */
 export async function reconcileRunScanJobs(
   projectId: string,
@@ -425,6 +426,36 @@ export async function reconcileRunScanJobs(
     }))
   } catch (err) {
     console.error(`[scanTimeline] ${kind} run reconcile failed (continuing):`, err)
+  }
+}
+
+/**
+ * Close a run-keyed row from the orchestrator's answer to a Stop.
+ *
+ * The orchestrator drops a stopped run from its listing once the drain ends, so
+ * the list reconcile never sees it end: this answer is the last word on it.
+ * `stopping`, and `idle` (a run it no longer has), are canceled; a run that had
+ * already ended keeps its real outcome. Never throws: the stop itself worked.
+ */
+export async function recordRunStopped(
+  projectId: string,
+  kind: string,
+  runId: string,
+  orchestratorStatus: unknown
+): Promise<void> {
+  const mapped =
+    orchestratorStatus === 'completed' ? 'completed'
+    : orchestratorStatus === 'error' ? 'failed'
+    : orchestratorStatus === 'stopping' || orchestratorStatus === 'idle' ? 'canceled'
+    : null
+  if (!mapped || !runId) return
+  try {
+    await prisma.scanJob.updateMany({
+      where: { projectId, kind, runId, status: 'running' },
+      data: { status: mapped, finishedAt: new Date() },
+    })
+  } catch (err) {
+    console.error(`[scanTimeline] could not close the stopped ${kind} run (continuing):`, err)
   }
 }
 
