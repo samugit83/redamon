@@ -43,13 +43,31 @@ def _auth_headers_for(url: str, settings: dict) -> dict:
     return headers
 
 
-def _deception_urls(url: str, marker: str):
+def deception_vector(delimiter: str, suffix: str) -> str:
+    """The finding's vector (`cache_param`): the URL shape that leaked, never the
+    plant's random marker. It is an input of the finding id, so it must be the
+    same on every run; tooling/scripts/cache_deception_rekey.py builds the same
+    string for findings written before."""
+    return f"static-suffix:{delimiter}{suffix}"
+
+
+def _page_url(url: str) -> str:
+    """The page a finding is about: the URL without the trailing slash the plant
+    URLs drop, so `/account` and `/account/` (the same plant URLs) are one finding,
+    and the page an old plant URL names is the one a scan writes now."""
     p = urlparse(url)
-    base_path = p.path.rstrip("/") or ""
+    return urlunparse(p._replace(path=p.path.rstrip("/") or "/"))
+
+
+def _deception_urls(url: str, marker: str):
+    """(plant URL, delimiter, suffix) for every shape tried, in a fixed order, so a
+    target that leaks through several shapes reports the same one on every run."""
+    p = urlparse(url)
+    base_path = p.path.rstrip("/")
     for suffix in _DECEPTION_SUFFIXES:
         seg = f"{marker}{suffix}"
-        yield urlunparse(p._replace(path=f"{base_path}/{seg}"))   # /account/x.css
-        yield urlunparse(p._replace(path=f"{base_path};{seg}"))   # /account;x.css
+        for delimiter in ("/", ";"):                       # /account/x.css, /account;x.css
+            yield urlunparse(p._replace(path=f"{base_path}{delimiter}{seg}")), delimiter, suffix
 
 
 def deception_probe(url: str, oracle_info: dict, session, settings: dict,
@@ -85,8 +103,10 @@ def deception_probe(url: str, oracle_info: dict, session, settings: dict,
                 or any((n.text or "") == authed_body for n in anon)):
             return None
 
+        # The marker keeps the plant out of any entry a real visitor requests. It is
+        # random per run, so it stays in the evidence: the finding is about `url`.
         marker = "rdmn" + uuid.uuid4().hex[:6]
-        for dec_url in _deception_urls(url, marker):
+        for dec_url, delimiter, suffix in _deception_urls(url, marker):
             cb = uuid.uuid4().hex[:8]
             # Plant: authed request to the static-looking URL. Vulnerable when the
             # origin ignores the suffix and serves the SAME sensitive page.
@@ -98,11 +118,11 @@ def deception_probe(url: str, oracle_info: dict, session, settings: dict,
             victim = _get(add_cache_buster(dec_url, "rdmncb", cb))
             if (victim.text or "") == authed_body and response_cache_state(victim) == "hit":
                 return {
-                    "endpoint_url": dec_url,
+                    "endpoint_url": _page_url(url),
                     "technique": "cache_deception",
                     "vector_type": "path",
                     "cache_header": "",
-                    "cache_param": "static-suffix",
+                    "cache_param": deception_vector(delimiter, suffix),
                     "impact": "deception",
                     "confidence": 0.95,
                     "confidence_tier": "Confirmed",

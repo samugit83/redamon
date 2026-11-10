@@ -6,6 +6,7 @@ The probe is auth-aware: it runs only with an in-scope auth profile, and confirm
 finding only when a static-suffix URL serves the AUTHENTICATED page from cache to an
 UNAUTHENTICATED request.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -76,7 +77,11 @@ def test_deception_confirmed_when_authed_page_leaks_from_cache():
     assert f["impact"] == "deception"
     assert f["detection_mode"] == "deception"
     assert f["confidence_tier"] == "Confirmed"
-    assert ".css" in f["endpoint_url"] or ".js" in f["endpoint_url"] or ".jpg" in f["endpoint_url"]
+    # The finding is about the page; the plant URL that leaked is its reproduction.
+    assert f["endpoint_url"] == _URL
+    assert f["cache_param"] == "static-suffix:/.css"
+    assert re.fullmatch(r"https://shop\.test/account/rdmn[0-9a-f]{6}\.css", f["evidence"]["poc_link"])
+    assert f["evidence"]["poc_link"] in f["evidence"]["curl_verify"]
 
 
 def test_no_finding_without_auth_profile():
@@ -106,6 +111,126 @@ class PrivateAccountSession(DeceptionCacheSession):
         if not any(ext in path for ext in (".css", ".js", ".jpg")):
             resp.headers["cache-control"] = "private, no-store"
         return resp
+
+
+class _GraphSession:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, query, **params):
+        self.calls.append((query, params))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _GraphDriver:
+    def __init__(self):
+        self.s = _GraphSession()
+
+    def session(self):
+        return self.s
+
+
+def _write(finding, uid="u-wcd", pid="p-wcd"):
+    """Run the real cache writer on one finding; returns its (query, params) calls."""
+    from graph_db.mixins.cache_mixin import CacheMixin
+
+    writer = CacheMixin()
+    writer.driver = _GraphDriver()
+    stats = writer.update_graph_from_cache_scan({"cache_scan": {"findings": [finding]}}, uid, pid)
+    assert stats["errors"] == [], stats["errors"]
+    return writer.driver.s.calls
+
+
+def test_two_runs_give_the_same_finding_id():
+    # R-28: each run plants under a fresh random marker. The finding id must not
+    # follow it, or every run orphans the previous node's mute, verdict and fix item.
+    ids = []
+    for _ in range(2):
+        f = deception.deception_probe(_URL, _ORACLE, DeceptionCacheSession(), _SETTINGS, timeout=2)
+        assert f is not None
+        ids.append(_write(f)[0][1]["id"])
+    assert ids[0] == ids[1]
+
+
+class ShapeCacheSession(DeceptionCacheSession):
+    """Only one plant shape (delimiter + suffix) path-confuses; the origin 404s the rest."""
+
+    def __init__(self, delimiter, suffix):
+        super().__init__()
+        self.shape = re.compile(re.escape(delimiter) + r"rdmn[0-9a-f]{6}" + re.escape(suffix) + "$")
+
+    def get(self, url, headers=None, timeout=10, verify=True, allow_redirects=False, **kwargs):
+        path = url.split("?", 1)[0]
+        if "rdmn" in path and not self.shape.search(path):
+            return FakeResponse("not found", {"x-cache": "miss"}, status=404)
+        return super().get(url, headers, timeout, verify, allow_redirects, **kwargs)
+
+
+def test_the_shape_that_leaked_is_part_of_the_id():
+    found = {}
+    for delimiter in ("/", ";"):
+        for suffix in (".css", ".js"):
+            f = deception.deception_probe(_URL, _ORACLE, ShapeCacheSession(delimiter, suffix),
+                                          _SETTINGS, timeout=2)
+            assert f["cache_param"] == f"static-suffix:{delimiter}{suffix}"
+            assert f["endpoint_url"] == _URL
+            found[(delimiter, suffix)] = _write(f)[0][1]["id"]
+    assert len(set(found.values())) == 4, found
+
+
+def test_a_trailing_slash_is_the_same_finding():
+    # /account and /account/ plant the very same URLs: one test, one finding.
+    ids = {_write(deception.deception_probe(u, _ORACLE, DeceptionCacheSession(), _SETTINGS,
+                                            timeout=2))[0][1]["id"]
+           for u in (_URL, _URL + "/")}
+    assert len(ids) == 1
+
+
+def test_the_writer_hangs_the_finding_off_the_page_not_a_plant_endpoint():
+    f = deception.deception_probe(_URL, _ORACLE, DeceptionCacheSession(), _SETTINGS, timeout=2)
+    (_, vuln), (wire_query, wire) = _write(f)
+    assert "MERGE (e:Endpoint" in wire_query
+    assert (wire["baseurl"], wire["path"]) == ("https://shop.test", "/account")
+    props = vuln["props"]
+    assert (props["endpoint"], props["matched_at"]) == (_URL, _URL)
+    assert "rdmn" not in props["id"]
+    assert props["poc_link"] == f["evidence"]["poc_link"]
+    assert "rdmn" in props["poc_link"]
+
+
+def test_other_cache_finding_ids_are_unchanged():
+    from graph_db.mixins.cache_mixin import cache_vuln_id
+
+    assert (cache_vuln_id("u", "p", "unkeyed_header", "https://shop.test/home?a=1", "X-Forwarded-Host")
+            == "cache_u_p_unkeyed_header_https___shop_test__home_X-Forwarded-Host")
+
+
+def _old_writer_shape(finding):
+    """The finding the probe wrote before R-28: the plant URL as its URL and a bare
+    "static-suffix" vector. Built from a real probe run's own plant URL."""
+    return {**finding, "endpoint_url": finding["evidence"]["poc_link"], "cache_param": "static-suffix"}
+
+
+def test_the_rekey_script_moves_an_old_finding_to_the_id_a_scan_writes_now():
+    from tooling.scripts import cache_deception_rekey as rk
+
+    uid, pid = "u-wcd", "p-wcd"
+    for url in (_URL, "https://shop.test/", "https://shop.test/account/"):
+        for delimiter, suffix in (("/", ".css"), (";", ".jpg")):
+            f = deception.deception_probe(url, _ORACLE, ShapeCacheSession(delimiter, suffix),
+                                          _SETTINGS, timeout=2)
+            assert f is not None, (url, delimiter, suffix)
+            old = _old_writer_shape(f)
+            old_id = _write(old, uid, pid)[0][1]["id"]
+            plan = rk.plan_finding(uid, pid, old_id, old["endpoint_url"], old["cache_param"])
+            assert plan is not None, (url, delimiter)
+            assert plan["new_id"] == _write(f, uid, pid)[0][1]["id"], (url, delimiter)
+            assert plan["cache_param"] == deception.deception_vector(delimiter, suffix)
 
 
 def test_scanner_probes_deception_on_a_private_account_page():

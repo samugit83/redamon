@@ -33,6 +33,25 @@ KNOWN_EVIDENCE_KEYS = frozenset({
 _TIER_VERDICT = {"Confirmed": "confirmed", "Strong": "likely", "Tentative": "possible"}
 
 
+def cache_vuln_id(user_id: str, project_id: str, technique: str, endpoint_url: str,
+                  vector: str) -> str:
+    """The Vulnerability id of one cache finding: tenant, technique, URL path and vector.
+
+    Vulnerability.id is globally unique, so the tenant is part of it. Every input
+    must be the same on every run that finds the same problem: the MERGE dedupes
+    re-scans on it, and a person's mute, verdict and fix item hang off it. A
+    per-run token (a cache buster, the deception plant's marker) belongs in the
+    evidence, never in `endpoint_url` or the vector. The query string is ignored.
+    """
+    parsed = urlparse(endpoint_url)
+    path = parsed.path or "/"
+    baseurl = f"{parsed.scheme}://{parsed.netloc}"
+    return (
+        f"cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}"
+        .replace(":", "_").replace("/", "_").replace(".", "_").replace(" ", "_")
+    )
+
+
 def _check_unknown_keys(obj: dict, known: frozenset, surface: str, identifier: str) -> None:
     if not isinstance(obj, dict):
         return
@@ -88,13 +107,7 @@ class CacheMixin:
                     baseurl = f"{parsed.scheme}://{parsed.netloc}"
                     vector = finding.get("cache_header") or finding.get("cache_param") or "vector"
 
-                    # Tenant-scoped deterministic id (Vulnerability.id is globally
-                    # unique, so encode tenant + endpoint + technique + vector to
-                    # avoid cross-project collisions and to MERGE-dedupe re-scans).
-                    vuln_id = (
-                        f"cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}"
-                        .replace(":", "_").replace("/", "_").replace(".", "_").replace(" ", "_")
-                    )
+                    vuln_id = cache_vuln_id(user_id, project_id, technique, endpoint_url, vector)
 
                     evidence = finding.get("evidence", {}) or {}
                     _check_unknown_keys(evidence, KNOWN_EVIDENCE_KEYS, "evidence", endpoint_url)
