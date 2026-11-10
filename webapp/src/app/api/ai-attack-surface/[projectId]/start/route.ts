@@ -6,6 +6,7 @@ import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { assertGraphNotActivating } from '@/lib/activationLock'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
@@ -25,6 +26,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { projectId } = await params
     const __denied = await guardProject(projectId)
     if (__denied) return __denied
+
+    // Its findings are written into the live graph, so it must not start while a
+    // version activation is swapping it (Scan Timeline 4A.3).
+    const activating = await assertGraphNotActivating(projectId)
+    if (activating) return activating
+
     const body = await request.json()
 
     const project = await prisma.project.findUnique({

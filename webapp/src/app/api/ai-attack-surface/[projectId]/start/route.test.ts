@@ -93,3 +93,38 @@ describe('a third-party engagement (R-11)', () => {
     expect(h.orchestratorFetch).toHaveBeenCalledTimes(1)
   })
 })
+
+// The run writes findings into the live graph, so like every other manual start
+// (and the queue's dispatchStart, L-12) it must not begin while a version
+// activation is swapping that graph.
+describe('a version activation in progress', () => {
+  const activationRead = (args: { select?: Record<string, unknown> }) => Boolean(args?.select?.activationState)
+
+  test('refuses with the activation 409 before the project, the engagement or the orchestrator', async () => {
+    h.findProject.mockImplementation(async (args: { select?: Record<string, unknown> }) => (
+      activationRead(args)
+        ? { activationState: 'activating', activationStartedAt: new Date() }
+        : project()
+    ))
+    const res = await call()
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.activationInProgress).toBe(true)
+    expect(body.error).toMatch(/version activation is in progress/)
+    expect(h.findProject).toHaveBeenCalledTimes(1)
+    expect(h.countAuthorizations).not.toHaveBeenCalled()
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+    expect(h.recordScanStart).not.toHaveBeenCalled()
+  })
+
+  test('a lock past its TTL does not hold the start', async () => {
+    h.findProject.mockImplementation(async (args: { select?: Record<string, unknown> }) => (
+      activationRead(args)
+        ? { activationState: 'activating', activationStartedAt: new Date(Date.now() - 24 * 3600 * 1000) }
+        : project()
+    ))
+    const res = await call()
+    expect(res.status).toBe(200)
+    expect(h.orchestratorFetch).toHaveBeenCalledTimes(1)
+  })
+})
