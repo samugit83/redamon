@@ -607,6 +607,8 @@ class TestSettingsFlow(unittest.TestCase):
         self.assertFalse(out['GRAPHQL_COP_TEST_BATCH_QUERY'])
         self.assertFalse(out['GRAPHQL_COP_TEST_DIRECTIVE_OVERLOADING'])
         self.assertFalse(out['GRAPHQL_COP_TEST_CIRCULAR_INTROSPECTION'])
+        # R-42: and graphql-cop itself, whose image would run them anyway
+        self.assertFalse(out['GRAPHQL_COP_ENABLED'])
         # Info-leak + CSRF checks still allowed
         self.assertTrue(out.get('GRAPHQL_COP_TEST_FIELD_SUGGESTIONS', True))
         self.assertTrue(out.get('GRAPHQL_COP_TEST_GRAPHIQL', True))
@@ -675,13 +677,26 @@ class TestSubprocessCmdConstruction(unittest.TestCase):
         """Regression: never pass -e (1.14 rejects it; we post-filter)."""
         for settings in [
             {'GRAPHQL_COP_ENABLED': True},
+            {'GRAPHQL_COP_ENABLED': True, 'GRAPHQL_COP_TEST_GRAPHIQL': False},
+            {'GRAPHQL_COP_ENABLED': True,
+             **{f'GRAPHQL_COP_TEST_{k}': False for k in [
+                 'GRAPHIQL', 'TRACE_MODE', 'FIELD_SUGGESTIONS']}},
+        ]:
+            cmd = self._capture_cmd(settings)
+            self.assertNotIn('-e', cmd, f"regression: -e should never appear. cmd={cmd}")
+
+    def test_an_excluded_dos_test_builds_no_command(self):
+        """R-42: 1.14 cannot leave one test out, so excluding a DoS test skips graphql-cop."""
+        from recon.graphql_scan.misconfig import run_graphql_cop
+        for settings in [
             {'GRAPHQL_COP_ENABLED': True, 'GRAPHQL_COP_TEST_ALIAS_OVERLOADING': False},
             {'GRAPHQL_COP_ENABLED': True,
              **{f'GRAPHQL_COP_TEST_{k}': False for k in [
                  'ALIAS_OVERLOADING', 'BATCH_QUERY', 'DIRECTIVE_OVERLOADING']}},
         ]:
-            cmd = self._capture_cmd(settings)
-            self.assertNotIn('-e', cmd, f"regression: -e should never appear. cmd={cmd}")
+            with patch('subprocess.run') as run:
+                self.assertIsNone(run_graphql_cop('https://x/graphql', {}, settings))
+            run.assert_not_called()
 
 
 # ============================================================================

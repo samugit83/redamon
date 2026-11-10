@@ -3352,10 +3352,13 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    stealth: { set: false }
     meaning: >-
       Whether GraphQL Cop runs. Configuration is two levels: this flag decides
       whether the tool runs INSIDE its phase, and scanModules decides whether the
-      phase runs at all. Setting one without the other is a silent no-op.
+      phase runs at all. Setting one without the other is a silent no-op. Off in
+      stealth mode: its image cannot leave out a single test, so its four
+      denial-of-service probes would run whatever their own switches say.
   graphqlCopForceScan:
     tool: graphql_cop
     runtime_key: "GRAPHQL_COP_FORCE_SCAN"
@@ -3378,7 +3381,8 @@ fields:
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      HIGH DoS, 101-alias rate-limit bypass (default true, disabled in stealth)
+      HIGH DoS, 101-alias rate-limit bypass (default true). Off skips GraphQL Cop
+      entirely: its image cannot leave out a single test.
   graphqlCopTestBatchQuery:
     tool: graphql_cop
     runtime_key: "GRAPHQL_COP_TEST_BATCH_QUERY"
@@ -3390,7 +3394,8 @@ fields:
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      HIGH DoS, array-based batch queries (default true, disabled in stealth)
+      HIGH DoS, array-based batch queries (default true). Off skips GraphQL Cop
+      entirely: its image cannot leave out a single test.
   graphqlCopTestCircularIntrospection:
     tool: graphql_cop
     runtime_key: "GRAPHQL_COP_TEST_CIRCULAR_INTROSPECTION"
@@ -3402,7 +3407,8 @@ fields:
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      HIGH DoS, deep nested introspection (default true, disabled in stealth)
+      HIGH DoS, deep nested introspection (default true). Off skips GraphQL Cop
+      entirely: its image cannot leave out a single test.
   graphqlCopTestDirectiveOverloading:
     tool: graphql_cop
     runtime_key: "GRAPHQL_COP_TEST_DIRECTIVE_OVERLOADING"
@@ -3414,7 +3420,8 @@ fields:
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      HIGH DoS (default true, disabled in stealth)
+      HIGH DoS (default true). Off skips GraphQL Cop entirely: its image cannot
+      leave out a single test.
   graphqlCopTestFieldSuggestions:
     tool: graphql_cop
     runtime_key: "GRAPHQL_COP_TEST_FIELD_SUGGESTIONS"

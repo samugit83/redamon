@@ -63,7 +63,8 @@ TITLE_TO_KEY: Dict[str, str] = {
     'Field Duplication':                                'field_duplication',
 }
 
-# Tests that generate noisy/DoS-class traffic. Auto-excluded in stealth mode.
+# Tests that generate noisy/DoS-class traffic. Excluding any one of them keeps
+# graphql-cop from running at all (see run_graphql_cop); stealth turns it off.
 HEAVY_TRAFFIC_TESTS = frozenset({
     'alias_overloading',
     'batch_query',
@@ -101,9 +102,25 @@ def run_graphql_cop(
 
     Returns:
         - dict with both arrays on success (possibly both empty)
-        - None on execution error (logged, not raised -- does not kill parent scan)
+        - None when graphql-cop did not run: switched off (the master toggle, or
+          an excluded denial-of-service test), or an execution error (logged, not
+          raised -- does not kill parent scan)
     """
     if not settings.get('GRAPHQL_COP_ENABLED', False):
+        return None
+
+    # The pinned image (dolevf/graphql-cop:1.14) has no `-e` flag: it runs all
+    # its tests and the per-test toggles only filter the report afterwards. An
+    # excluded DoS test would still hit the target, so excluding any of them
+    # keeps graphql-cop from running at all. A configuration choice, not a
+    # failure: nothing is noted degraded, and its earlier findings are pruned
+    # like any switched-off source's.
+    excluded_set = set(_build_excluded_tests(settings))
+    dos_excluded = sorted(HEAVY_TRAFFIC_TESTS & excluded_set)
+    if dos_excluded:
+        print(f"[-][GraphQL-Cop] Skipping {endpoint}: denial-of-service test(s) excluded "
+              f"({', '.join(dos_excluded)}) and the graphql-cop image cannot leave a "
+              f"single test out. Re-enable all four to run graphql-cop.")
         return None
 
     # Skip a host already known unreachable this run: graphql-cop is a full
@@ -119,8 +136,6 @@ def run_graphql_cop(
 
     timeout = timeout or settings.get('GRAPHQL_COP_TIMEOUT', 120)
     image = settings.get('GRAPHQL_COP_DOCKER_IMAGE', DEFAULT_IMAGE) or DEFAULT_IMAGE
-    excluded = _build_excluded_tests(settings)
-    excluded_set = set(excluded)
 
     # --net=host is ALWAYS passed so GraphQL-Cop can reach loopback / local-lab
     # GraphQL endpoints. See recon/helpers/resource_enum/katana_helpers.py for
@@ -130,14 +145,10 @@ def run_graphql_cop(
     cmd = ['docker', 'run', '--rm', '--net=host', image,
            '-t', endpoint, '-o', 'json']
 
-    # NOTE: the dolevf/graphql-cop:1.14 Docker image does NOT support the `-e`
-    # exclusion flag (added in git main v1.15 but unreleased on DockerHub as of
-    # 2026-04-20). We post-filter findings Python-side instead. A side-effect:
-    # DoS probes still hit the target even when "excluded" by per-test toggles.
-    # For true stealth, disable the GRAPHQL_COP_ENABLED master toggle.
-    if excluded_set and len(excluded_set) == len(GRAPHQL_COP_TEST_TO_VULN_TYPE):
-        print(f"[-][GraphQL-Cop] All tests excluded by per-test toggles -- skipping {endpoint}")
-        return {'findings': [], 'raw': []}
+    # The `-e` exclusion flag landed in graphql-cop's git main (v1.15), not in
+    # the 1.14 image on DockerHub (checked 2026-04-20), so the remaining
+    # exclusions -- none of them a DoS test, see above -- are post-filtered
+    # Python-side. Those tests still run against the target.
 
     if settings.get('GRAPHQL_COP_FORCE_SCAN', False):
         cmd.append('-f')
