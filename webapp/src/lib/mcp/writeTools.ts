@@ -22,6 +22,7 @@ import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { describeLiveGraphWriters, describeScanWriters } from '@/lib/graphWriters'
 import { startFullScan } from '@/lib/startFullScan'
+import { reconcileScanJobStatus } from '@/lib/scanTimeline'
 import { writeAudit } from '@/lib/audit'
 import { FINGERPRINT_FIELDS } from '@/lib/jobQueue'
 import { currentFingerprintFor } from '@/lib/jobFingerprint'
@@ -178,6 +179,13 @@ export async function stopRecon(ctx: McpContext, projectId: string) {
     console.error(`[mcp] stop_recon returned ${resp.status}`)
     throw new McpToolError('The scan could not be stopped.', 'stop_failed')
   }
+  const answer = await resp.json() as Record<string, unknown>
+
+  // The stop's answer is a status read too. `stopping` leaves the row to the
+  // get_recon_status that sees the drain end (the orchestrator reports `idle`
+  // then); a scan that had already ended is closed here, with its real outcome.
+  await reconcileScanJobStatus(
+    projectId, typeof answer?.status === 'string' ? answer.status : undefined)
 
   void writeAudit({
     actorId: ctx.token.userId,
@@ -196,7 +204,7 @@ export async function stopRecon(ctx: McpContext, projectId: string) {
     source: 'mcp',
   })
   return {
-    ...(await resp.json() as Record<string, unknown>),
+    ...answer,
     stopped: wasRunning,
     note: wasRunning === null
       ? 'The stop was issued, but the scan state could not be read beforehand, so '

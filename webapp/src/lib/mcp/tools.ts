@@ -39,6 +39,7 @@ import { execCypher, graphSchemaDoc, nlQuery, type GraphRecords } from '@/lib/mc
 import { staleFindingsCypher } from '@/lib/mcp/findingLabels'
 import { coverageCountsBlock } from '@/lib/coverageStamps'
 import { kaliToolboxDoc } from '@/lib/mcp/kaliClient'
+import { reconcileScanJobStatus } from '@/lib/scanTimeline'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
@@ -161,7 +162,14 @@ export async function getReconStatus(ctx: McpContext, projectId: string) {
     console.error(`[mcp] orchestrator status returned ${resp.status}`)
     throw new McpToolError('Scan status is unknown.', 'status_unknown')
   }
-  const live = projectReconState(await resp.json())
+  const raw = await resp.json()
+  const live = projectReconState(raw)
+
+  // The same bookkeeping as the UI's status route: a terminal status closes the
+  // open full-recon ScanJob. Without it a run an agent stopped or watched end
+  // stayed `running` until a browser opened the project, and `lastRun` below
+  // contradicted the `idle` above. Never throws.
+  await reconcileScanJobStatus(projectId, (raw as { status?: string } | null)?.status)
 
   // The orchestrator only knows the RUNNING container. Once it exits, its
   // status is a flat `idle` with null timestamps - identical whether the scan
