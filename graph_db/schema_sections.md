@@ -414,6 +414,7 @@ urlscan secret properties (source="urlscan"): a password, API key, token or JWT 
 - first_seen (string), last_seen (string): ISO dates of the earliest and newest public visit
 - sighting_count (integer): public visits that showed it
 - base_url (string): the host's origin; the Secret hangs off `(s:Subdomain)-[:HAS_SECRET]->(secret)` (the org's own name: `(d:Domain)-[:HAS_SECRET]->(secret)`), never off a BaseURL
+Web-archive secret properties (source="url_archive"): a secret in a URL a web archive listed (GAU, ParamSpider), held back by the quarantine. The same properties as the urlscan secrets above, plus archive_sources (list[string]: "gau", "paramspider"); first_seen and last_seen are empty
 JS Recon secret properties (source="js_recon" only):
 - key_type (string): the matching pattern's category
 - confidence (string): high, medium, low
@@ -479,6 +480,11 @@ urlscan history properties (source="urlscan_leak"): what public urlscan.io scans
 - id pattern: `urlscan-{sha1(type:kind | masked path | host | tenant)}`: a new token of the same kind on the same path is the same finding
 - Typical query: "show the leaked one-time links seen on urlscan" → `MATCH (s)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'urlscan_leak', type:'leaked_one_time_link'}) RETURN s.name, v.link_kind, v.url, v.link_count, v.last_seen`
 - Typical query: "which hosts serve problem pages, from history and live?" → `MATCH (s)-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE (v.source = 'urlscan_leak' AND v.type ENDS WITH '_seen') OR (v.source = 'security_check' AND v.type IN ['open_console', 'debug_page', 'unfinished_installer', 'dev_server', 'directory_listing', 'defaced_page', 'takeover_error_page', 'test_certificate']) RETURN s.name, v.source, v.type, v.severity, v.url`
+
+Web-archive leak properties (source="url_archive"): `leaked_one_time_link` records like urlscan_leak's, from the URLs the web archives listed (GAU: Wayback Machine, Common Crawl, OTX, urlscan; ParamSpider) that the quarantine held back. **A public record, never requested by RedAmon and never an agent lead.** Same properties as urlscan_leak's leaked links (link_kind, link_count, masked_url, unmasked_url, unmasked_urls, url, matched_at, hostname), plus:
+- archive_sources (list[string]): the archives that listed it, "gau" and/or "paramspider"
+- first_seen (string), last_seen (string): empty, since an archive's URL list carries no date
+- id pattern: `archive-{sha1(type:kind | masked path | host | tenant)}`
 
 Netlas-specific properties (source="netlas"):
 - id pattern: `netlas-{cve}-{ip}-{port}`, one finding per CVE, IP and port (rows written before were keyed on the bare CVE id, one per project; `tooling/scripts/netlas_finding_rekey.py` moves them)

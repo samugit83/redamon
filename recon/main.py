@@ -2617,7 +2617,7 @@ def _prune_recon_findings():
 _PHASE_FINDING_SOURCES = {
     "http_probe": ("http_probe",),
     "nmap": ("nmap_nse",),
-    "resource_enum": ("resource_enum", "jsluice"),
+    "resource_enum": ("resource_enum", "jsluice", "url_archive"),
     "ai_surface_recon": ("ai_surface_recon",),
     "js_recon": ("js_recon",),
     "vuln_scan": ("nuclei", "security_check", "vuln_scan"),
@@ -2945,7 +2945,7 @@ def _start_urlscan_budget(groups) -> None:
 # http_probe, resource_enum (with jsluice), AI Surface, JS Recon and vuln_scan
 # with its security checks. Every other recon source is never run there.
 _LEGACY_PATH_SOURCES = frozenset({
-    "http_probe", "resource_enum", "jsluice", "ai_surface_recon", "js_recon",
+    "http_probe", "resource_enum", "jsluice", "url_archive", "ai_surface_recon", "js_recon",
     "nuclei", "security_check", "vuln_scan",
 })
 

@@ -237,6 +237,18 @@ _GAU_PROVIDER_BREAKERS = {
 }
 
 
+def _archive_leaks(quarantined: list, settings: dict, recon_data: dict) -> dict:
+    """The leaked links and secrets of the archive URLs the quarantine held."""
+    from recon.helpers.archive_leaks import build_archive_leaks
+    from recon.main_recon_modules.urlscan_enrich import _hmac_key
+    leaks = build_archive_leaks(quarantined, settings, recon_data.get("domain") or "",
+                                hmac_key=_hmac_key())
+    if leaks["findings"] or leaks["url_secrets"]:
+        print(f"[+][ArchiveLeaks] {len(leaks['findings'])} leaked link finding(s), "
+              f"{len(leaks['url_secrets'])} secret(s) in archive URLs")
+    return leaks
+
+
 def _archive_preflight(domain: str, archives) -> None:
     """HEAD each archive GAU or ParamSpider is about to use: two tries, 10s each.
 
@@ -937,6 +949,10 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
         from recon.helpers.ai_planner.crawl_seed_order import hakrawler_seed_order
         hakrawler_seeds = hakrawler_seed_order(target_urls, recon_data)
 
+    # The archive URLs the quarantine holds back, as (archive, url): never
+    # requested, reported as archive leaks below.
+    archive_quarantined: list = []
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {}
 
@@ -992,6 +1008,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 GAU_VERBOSE,
                 URLSCAN_API_KEY,
                 GAU_WORKERS,
+                quarantined_out=archive_quarantined,
             )
 
         # Submit ParamSpider discovery if enabled
@@ -1002,6 +1019,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 PARAMSPIDER_PLACEHOLDER,
                 PARAMSPIDER_TIMEOUT,
                 PARAMSPIDER_WORKERS,
+                quarantined_out=archive_quarantined,
             )
 
         # Collect results from all parallel tools
@@ -1769,6 +1787,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
             'categories': {}
         },
         'jsluice_secrets': jsluice_result.get("secrets", []),
+        'archive_leaks': _archive_leaks(archive_quarantined, settings, recon_data),
         'external_domains': (
             gau_external_domains
             + katana_meta.get("external_domains", [])

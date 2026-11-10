@@ -243,7 +243,8 @@ def run_gau_discovery(
     year_range: Optional[List[str]] = None,
     verbose: bool = False,
     urlscan_api_key: str = "",
-    workers: int = 10
+    workers: int = 10,
+    quarantined_out: Optional[list] = None,
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """
     Run GAU passive URL discovery for multiple domains.
@@ -302,23 +303,27 @@ def run_gau_discovery(
 
     urls_list = sorted(list(all_discovered_urls))
     print(f"[+][GAU] Discovered {len(urls_list)} total URLs")
-    return quarantine_archive_urls(urls_list, urls_by_domain, "GAU")
+    return quarantine_archive_urls(urls_list, urls_by_domain, "GAU", collect=quarantined_out)
 
 
 def quarantine_archive_urls(urls_list: List[str], urls_by_domain: Dict[str, List[str]],
-                            label: str) -> Tuple[List[str], Dict[str, List[str]]]:
+                            label: str, collect: Optional[list] = None
+                            ) -> Tuple[List[str], Dict[str, List[str]]]:
     """Drop the archive URLs that must never be requested (a leaked reset or
     invite link, a secret, a state-changing link with a value, a web-shell
     trace) before verification, method detection or a merge sees them. The
     archives (Wayback, OTX, urlscan through GAU's own provider) hold the same
-    links urlscan does."""
+    links urlscan does. `collect` receives each held URL as (archive, url), for
+    the archive-leak findings (recon/helpers/archive_leaks.py)."""
     from recon.helpers.url_leaks import split_quarantined
     kept, quarantined = split_quarantined(urls_list)
     if not quarantined:
         return urls_list, urls_by_domain
     dropped = set(quarantined)
+    if collect is not None:
+        collect.extend((label.lower(), u) for u in quarantined)
     print(f"[*][{label}] Quarantined {len(dropped)} URL(s) carrying tokens or one-time links: "
-          f"never requested or stored")
+          f"never requested; reported as archive leaks")
     return kept, {d: [u for u in urls if u not in dropped] for d, urls in urls_by_domain.items()}
 
 

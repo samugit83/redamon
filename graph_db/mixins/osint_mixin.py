@@ -19,6 +19,7 @@ import logging
 import re
 import json
 from datetime import datetime, timezone
+from typing import Optional
 
 from graph_db.cert_key import build_cert_key
 from graph_db.cpe_resolver import _is_ip_address
@@ -1079,8 +1080,24 @@ class OsintMixin:
         return self.update_graph_from_urlscan_findings(recon_data, user_id, project_id,
                                                        keys=("takeover_findings",))
 
+    def update_graph_from_archive_leaks(self, recon_data: dict, user_id: str, project_id: str) -> dict:
+        """The leaked one-time links and secrets the web archives' URLs carried
+        (GAU, ParamSpider: `resource_enum.archive_leaks`): the URLs the
+        quarantine keeps out of every request list. Same shape and writer as
+        urlscan's, as Vulnerability / Secret {source: 'url_archive'}."""
+        leaks = (recon_data.get("resource_enum") or {}).get("archive_leaks") or {}
+        return self.update_graph_from_urlscan_findings(
+            recon_data, user_id, project_id, keys=("findings",), data=leaks,
+            source="url_archive", secret_source="url_archive", id_prefix="archive",
+            label="Archive leaks")
+
     def update_graph_from_urlscan_findings(self, recon_data: dict, user_id: str, project_id: str,
-                                           keys: tuple = ("findings", "problem_pages")) -> dict:
+                                           keys: tuple = ("findings", "problem_pages"),
+                                           data: Optional[dict] = None,
+                                           source: str = "urlscan_leak",
+                                           secret_source: str = "urlscan",
+                                           id_prefix: str = "urlscan",
+                                           label: str = "URLScan findings") -> dict:
         """The findings urlscan's history gives about the target: leaked links,
         exposed files, open redirects, problem and takeover pages (Vulnerability
         {source: 'urlscan_leak'}) and secrets written in URLs (Secret {source:
@@ -1096,7 +1113,7 @@ class OsintMixin:
         needs_agent_confirmation. History alone is at most high.
         """
         stats = {"findings_written": 0, "secrets_written": 0, "skipped_out_of_scope": 0, "errors": []}
-        urlscan_data = recon_data.get("urlscan") or {}
+        urlscan_data = data if data is not None else (recon_data.get("urlscan") or {})
         rows = [f for key in keys for f in (urlscan_data.get(key) or []) if isinstance(f, dict)]
         secrets = [s for s in (urlscan_data.get("url_secrets") or []) if isinstance(s, dict)] \
             if "findings" in keys else []
@@ -1120,14 +1137,15 @@ class OsintMixin:
                 f"""
                 MATCH (d:Domain {{name: $org, user_id: $uid, project_id: $pid}})
                 MERGE (s:Subdomain {{name: $host, user_id: $uid, project_id: $pid}})
-                ON CREATE SET s.source = 'urlscan', s.discovered_by = 'urlscan',
+                ON CREATE SET s.source = $src, s.discovered_by = $src,
                               s.status = 'unverified', s.updated_at = datetime()
                 MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                 MERGE (s)-[:BELONGS_TO]->(d)
                 WITH s
                 MATCH (n:{label} {{id: $id, user_id: $uid, project_id: $pid}})
                 MERGE (s)-[:{rel}]->(n)
-                """, org=org, host=host.strip().lower(), id=node_id, uid=user_id, pid=project_id)
+                """, org=org, host=host.strip().lower(), id=node_id, uid=user_id, pid=project_id,
+                src=secret_source)
             return True
 
         with self.driver.session() as session:
@@ -1138,8 +1156,8 @@ class OsintMixin:
                     continue
                 kind = f.get("kind") or ""
                 path = f.get("path") or "/"
-                vid = "urlscan-" + stable_vuln_id(f"{ftype}:{kind}" if kind else ftype, path, host,
-                                                  user_id, project_id)
+                vid = f"{id_prefix}-" + stable_vuln_id(f"{ftype}:{kind}" if kind else ftype, path, host,
+                                                       user_id, project_id)
                 props = {k: v for k, v in (f.get("props") or {}).items()
                          if v is not None and not isinstance(v, (dict, list)) or isinstance(v, list)
                          and all(not isinstance(x, (dict, list)) for x in v)}
@@ -1162,9 +1180,9 @@ class OsintMixin:
                     session.run(
                         """
                         MERGE (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})
-                        ON CREATE SET v.source = 'urlscan_leak', v.created_at = datetime()
+                        ON CREATE SET v.source = $source, v.created_at = datetime()
                         SET v += $props, v.updated_at = datetime()
-                        """, id=vid, props=props, uid=user_id, pid=project_id)
+                        """, id=vid, props=props, uid=user_id, pid=project_id, source=source)
                     if _parent(session, host, "HAS_VULNERABILITY", "Vulnerability", vid):
                         stats["findings_written"] += 1
                     else:
@@ -1183,7 +1201,7 @@ class OsintMixin:
                 # One Secret per distinct value (its HMAC); with no HMAC key, one
                 # per host, type and parameter.
                 ident = sec.get("value_hmac") or sec.get("param_name") or ""
-                sid = "secret-urlscan-" + stable_vuln_id(stype, ident, host, user_id, project_id)
+                sid = f"secret-{id_prefix}-" + stable_vuln_id(stype, ident, host, user_id, project_id)
                 props = {k: v for k, v in {
                     "secret_type": stype,
                     "param_name": sec.get("param_name"),
@@ -1194,6 +1212,7 @@ class OsintMixin:
                     "masked_url": sec.get("masked_url"),
                     "secret_value": sec.get("secret_value") or None,
                     "unmasked_url": sec.get("unmasked_url") or None,
+                    "archive_sources": sec.get("archive_sources") or None,
                     "base_url": sec.get("base_url"),
                     "severity": _history_severity(sec.get("severity"), False),
                     "first_seen": sec.get("first_seen") or "",
@@ -1204,9 +1223,9 @@ class OsintMixin:
                     session.run(
                         """
                         MERGE (s:Secret {id: $id, user_id: $uid, project_id: $pid})
-                        ON CREATE SET s.source = 'urlscan', s.created_at = datetime()
+                        ON CREATE SET s.source = $source, s.created_at = datetime()
                         SET s += $props, s.updated_at = datetime()
-                        """, id=sid, props=props, uid=user_id, pid=project_id)
+                        """, id=sid, props=props, uid=user_id, pid=project_id, source=secret_source)
                     if _parent(session, host, "HAS_SECRET", "Secret", sid):
                         stats["secrets_written"] += 1
                     else:
@@ -1217,7 +1236,7 @@ class OsintMixin:
                 except Exception as e:
                     stats["errors"].append(f"urlscan secret {stype}: {e}")
 
-        print(f"[+][graph-db] URLScan findings: {stats['findings_written']} findings, "
+        print(f"[+][graph-db] {label}: {stats['findings_written']} findings, "
               f"{stats['secrets_written']} secrets")
         if stats["errors"]:
             print(f"[!][graph-db] {len(stats['errors'])} errors occurred")

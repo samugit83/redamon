@@ -95,7 +95,9 @@ class TestShape(unittest.TestCase):
         w = _write([_finding()])
         (q, p), = _vuln_writes(w)
         self.assertIn("MERGE (v:Vulnerability {id: $id, user_id: $uid, project_id: $pid})", q)
-        self.assertIn("ON CREATE SET v.source = 'urlscan_leak'", q)
+        self.assertIn("ON CREATE SET v.source = $source", q)
+        self.assertEqual(p["source"], "urlscan_leak")
+        self.assertTrue(p["id"].startswith("urlscan-"))
         props = p["props"]
         self.assertEqual(props["link_kind"], "password_reset")
         self.assertEqual(props["matched_at"], "https://auth.example.test/reset?token=***")
@@ -111,8 +113,10 @@ class TestShape(unittest.TestCase):
 
     def test_a_host_only_seen_in_a_start_url_gets_its_subdomain(self):
         w = _write([_finding(host="new.example.test")])
-        parent = next(q for q, p in w.session.calls if "HAS_VULNERABILITY" in q and "Subdomain" in q)
-        self.assertIn("ON CREATE SET s.source = 'urlscan'", parent)
+        parent, params = next((q, p) for q, p in w.session.calls
+                              if "HAS_VULNERABILITY" in q and "Subdomain" in q)
+        self.assertIn("ON CREATE SET s.source = $src", parent)
+        self.assertEqual(params["src"], "urlscan")
         self.assertIn("s.status = 'unverified'", parent)
 
     def test_the_org_name_hangs_off_its_domain(self):
@@ -202,7 +206,9 @@ class TestSecrets(unittest.TestCase):
     def test_hangs_off_the_subdomain_with_its_base_url(self):
         w = _write(secrets=[self.SECRET])
         q, p = self._secret_write(w)
-        self.assertIn("ON CREATE SET s.source = 'urlscan'", q)
+        self.assertIn("ON CREATE SET s.source = $source", q)
+        self.assertEqual(p["source"], "urlscan")
+        self.assertTrue(p["id"].startswith("secret-urlscan-"))
         self.assertEqual(p["props"]["base_url"], "https://app.example.test")
         parent = next(q for q, _p in w.session.calls if "HAS_SECRET" in q)
         self.assertIn("Subdomain", parent)
@@ -235,3 +241,36 @@ class TestWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestArchiveLeaks(unittest.TestCase):
+    """The web archives' leaks reuse the urlscan writer under their own source."""
+
+    def _write(self):
+        w = _Writer()
+        recon = {"domain": "example.test", "domains": ["example.test"],
+                 "resource_enum": {"archive_leaks": {
+                     "findings": [_finding(props={"link_count": 1, "archive_sources": ["gau"],
+                                                  "unmasked_url": "https://auth.example.test/reset?token=T1"})],
+                     "url_secrets": [dict(TestSecrets.SECRET, secret_value="K1", archive_sources=["gau"])]}}}
+        stats = w.update_graph_from_archive_leaks(recon, "u1", "p1")
+        return w, stats
+
+    def test_written_as_url_archive_with_their_own_ids(self):
+        w, stats = self._write()
+        (q, p), = _vuln_writes(w)
+        self.assertEqual(p["source"], "url_archive")
+        self.assertTrue(p["id"].startswith("archive-"))
+        self.assertEqual(p["props"]["archive_sources"], ["gau"])
+        sq, sp = next((q, p) for q, p in w.session.calls if "MERGE (s:Secret" in q)
+        self.assertEqual(sp["source"], "url_archive")
+        self.assertTrue(sp["id"].startswith("secret-archive-"))
+        self.assertEqual(sp["props"]["secret_value"], "K1")
+        self.assertEqual(sp["props"]["archive_sources"], ["gau"])
+        self.assertEqual((stats["findings_written"], stats["secrets_written"]), (1, 1))
+
+    def test_a_run_without_archive_leaks_writes_nothing(self):
+        w = _Writer()
+        stats = w.update_graph_from_archive_leaks({"domain": "example.test", "resource_enum": {}}, "u1", "p1")
+        self.assertEqual(w.session.calls, [])
+        self.assertEqual(stats["findings_written"], 0)

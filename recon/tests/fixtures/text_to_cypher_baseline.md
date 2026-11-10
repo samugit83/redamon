@@ -545,6 +545,7 @@ JS Recon secret properties (source="js_recon" only):
 
 - matched_text
 urlscan secret properties (source="urlscan"): a password, API key, token or JWT written in a URL a public urlscan scan recorded. The value is kept for the operator (secret_value) beside its HMAC, which is the identity:
+Web-archive secret properties (source="url_archive"): a secret in a URL a web archive listed (GAU, ParamSpider), held back by the quarantine. The same properties as the urlscan secrets above, plus archive_sources (list[string]: "gau", "paramspider"); first_seen and last_seen are empty
 **Traceroute** - Network route from scanner to target (from GVM)
 - target_ip (string): target IP address
 - scanner_ip (string): scanner IP address
@@ -601,6 +602,11 @@ Common properties (all sources):
 - first_seen (string): ISO dates of the earliest and newest public visit that showed it
 - last_seen (string): ISO dates of the earliest and newest public visit that showed it
 - urlscan_scan_id (string): the newest such urlscan scan, as evidence; not set on a leaked one-time link (unmasked_urls holds its links)
+
+Web-archive leak properties (source="url_archive"): `leaked_one_time_link` records like urlscan_leak's, from the URLs the web archives listed (GAU: Wayback Machine, Common Crawl, OTX, urlscan; ParamSpider) that the quarantine held back. **A public record, never requested by RedAmon and never an agent lead.** Same properties as urlscan_leak's leaked links (link_kind, link_count, masked_url, unmasked_url, unmasked_urls, url, matched_at, hostname), plus:
+- archive_sources (list[string]): the archives that listed it, "gau" and/or "paramspider"
+- first_seen (string): empty, since an archive's URL list carries no date
+- last_seen (string): empty, since an archive's URL list carries no date
 
 Netlas-specific properties (source="netlas"):
 - has_exploit (boolean): whether a known public exploit exists (from NVD data)
@@ -812,6 +818,7 @@ urlscan history properties (source="urlscan_leak"): what public urlscan.io scans
 - id pattern: `urlscan-{sha1(type:kind | masked path | host | tenant)}`: a new token of the same kind on the same path is the same finding
 - Typical query: "show the leaked one-time links seen on urlscan" → `MATCH (s)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'urlscan_leak', type:'leaked_one_time_link'}) RETURN s.name, v.link_kind, v.url, v.link_count, v.last_seen`
 - Typical query: "which hosts serve problem pages, from history and live?" → `MATCH (s)-[:HAS_VULNERABILITY]->(v:Vulnerability) WHERE (v.source = 'urlscan_leak' AND v.type ENDS WITH '_seen') OR (v.source = 'security_check' AND v.type IN ['open_console', 'debug_page', 'unfinished_installer', 'dev_server', 'directory_listing', 'defaced_page', 'takeover_error_page', 'test_certificate']) RETURN s.name, v.source, v.type, v.severity, v.url`
+- id pattern: `archive-{sha1(type:kind | masked path | host | tenant)}`
 - id pattern: `netlas-{cve}-{ip}-{port}`, one finding per CVE, IP and port (rows written before were keyed on the bare CVE id, one per project; `tooling/scripts/netlas_finding_rekey.py` moves them)
 - Relationship: `(i:IP)-[:HAS_VULNERABILITY]->(v)`, the finding's only parent. A domain-mode row for an IP this run's DNS does not give is history and is not written; a CDN or shared-edge IP gets its ports but no CVE
 - id pattern: `shodan-{cve}-{ip}`; a shared CDN/edge IP (Shodan's `cdn` tag or an edge provider's attribution) yields no CVE rows

@@ -9,7 +9,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -103,6 +103,7 @@ def run_paramspider_discovery(
     placeholder: str,
     timeout: int,
     workers: int = 5,
+    quarantined_out: Optional[list] = None,
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """
     Run ParamSpider passive parameter discovery for multiple domains.
@@ -156,7 +157,8 @@ def run_paramspider_discovery(
         print(f"[+][ParamSpider] Discovered {len(urls_list)} total parameterized URLs")
 
         from recon.helpers.resource_enum.gau_helpers import quarantine_archive_urls
-        return quarantine_archive_urls(urls_list, urls_by_domain, "ParamSpider")
+        return quarantine_archive_urls(urls_list, urls_by_domain, "ParamSpider",
+                                       collect=quarantined_out)
 
     finally:
         # Clean up temp directory

@@ -973,12 +973,14 @@
         {
           "prop": "source",
           "in": [
-            "urlscan_leak"
+            "urlscan_leak",
+            "url_archive"
           ]
         }
       ],
       "sources": [
-        "urlscan_leak"
+        "urlscan_leak",
+        "url_archive"
       ],
       "behaviour": "finding",
       "phase": 1,
@@ -1122,7 +1124,7 @@
         }
       ],
       "notes": [
-        "Seen in a public urlscan scan, never requested by RedAmon: a leaked link or file is the public record itself. Whether a file is still online is Route Exposure's job."
+        "Seen in a public urlscan scan (`urlscan_leak`) or in a web archive's URL list (`url_archive`: GAU, ParamSpider), never requested by RedAmon: a leaked link or file is the public record itself. Whether a file is still online is Route Exposure's job."
       ]
     },
     "vuln.vhost_sni": {
@@ -2460,7 +2462,8 @@
       "sources": [
         "js_recon",
         "jsluice",
-        "urlscan"
+        "urlscan",
+        "url_archive"
       ],
       "behaviour": "finding",
       "phase": 1,
@@ -2472,7 +2475,8 @@
           "values": [
             "js_recon",
             "jsluice",
-            "urlscan"
+            "urlscan",
+            "url_archive"
           ]
         },
         "secret_type": {
@@ -2568,7 +2572,7 @@
         }
       ],
       "notes": [
-        "`jsluice` secrets come from resource enumeration's jsluice pass; everything JS Recon finds is `js_recon`; `urlscan` secrets were written in a URL a public urlscan scan recorded, and are stored masked (length and HMAC, never the value). Only JS Recon records a key category, confidence, detection method and validation."
+        "`jsluice` secrets come from resource enumeration's jsluice pass; everything JS Recon finds is `js_recon`; `urlscan` secrets were written in a URL a public urlscan scan recorded, `url_archive` ones in a URL a web archive listed (GAU, ParamSpider). Both are matched by their HMAC and keep the value only for display. Only JS Recon records a key category, confidence, detection method and validation."
       ]
     },
     "malpackage": {

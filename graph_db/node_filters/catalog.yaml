@@ -243,8 +243,8 @@ kinds:
     group: vulnerability
     label: urlscan history
     graph_label: Vulnerability
-    select: [{ prop: source, in: [urlscan_leak] }]
-    sources: [urlscan_leak]
+    select: [{ prop: source, in: [urlscan_leak, url_archive] }]
+    sources: [urlscan_leak, url_archive]
     behaviour: finding
     phase: 1
     common: vulnerability
@@ -285,9 +285,10 @@ kinds:
         all: [{ field: type, op: in, value: [directory_listing_seen] }]
     notes:
       - >-
-        Seen in a public urlscan scan, never requested by RedAmon: a leaked link
-        or file is the public record itself. Whether a file is still online is
-        Route Exposure's job.
+        Seen in a public urlscan scan (`urlscan_leak`) or in a web archive's URL
+        list (`url_archive`: GAU, ParamSpider), never requested by RedAmon: a
+        leaked link or file is the public record itself. Whether a file is still
+        online is Route Exposure's job.
 
   vuln.vhost_sni:
     group: vulnerability
@@ -654,11 +655,11 @@ kinds:
     label: Secrets
     graph_label: Secret
     select: []
-    sources: [js_recon, jsluice, urlscan]
+    sources: [js_recon, jsluice, urlscan, url_archive]
     behaviour: finding
     phase: 1
     fields:
-      source:            { type: enum, prop: source, label: Found by, values: [js_recon, jsluice, urlscan] }
+      source:            { type: enum, prop: source, label: Found by, values: [js_recon, jsluice, urlscan, url_archive] }
       secret_type:       { type: text, prop: secret_type, label: Secret type }
       key_type:          { type: text, prop: key_type, label: Key category }
       severity:          { type: ordinal, scale: severity, normalizer: severity, label: Severity }
@@ -685,8 +686,9 @@ kinds:
       - >-
         `jsluice` secrets come from resource enumeration's jsluice pass; everything
         JS Recon finds is `js_recon`; `urlscan` secrets were written in a URL a
-        public urlscan scan recorded, and are stored masked (length and HMAC,
-        never the value). Only JS Recon records a key category, confidence,
+        public urlscan scan recorded, `url_archive` ones in a URL a web archive
+        listed (GAU, ParamSpider). Both are matched by their HMAC and keep the
+        value only for display. Only JS Recon records a key category, confidence,
         detection method and validation.
 
   malpackage:

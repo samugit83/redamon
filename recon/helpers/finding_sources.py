@@ -14,6 +14,8 @@ RECON_FINDING_SOURCES = (
     "shodan_api", "internetdb", "shodan", "shodan_host_lookup", "netlas", "criminalip",
     # urlscan's history: Vulnerability {source: 'urlscan_leak'} and Secret {source: 'urlscan'}
     "urlscan_leak", "urlscan",
+    # the web archives' URLs (GAU, ParamSpider) the quarantine held: Vulnerability and Secret
+    "url_archive",
 )
 
 #: The `source` each passive CVE writer stamps, per enricher (the key is its

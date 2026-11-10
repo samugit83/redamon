@@ -692,6 +692,14 @@ class ResourceMixin:
             if stats["errors"]:
                 print(f"[!][graph-db] {len(stats['errors'])} errors occurred")
 
+        if (resource_enum_data.get("archive_leaks") or {}) and hasattr(self, "update_graph_from_archive_leaks"):
+            try:
+                leaks = self.update_graph_from_archive_leaks(recon_data, user_id, project_id)
+                stats["archive_findings_written"] = leaks.get("findings_written", 0)
+                stats["secrets_created"] += leaks.get("secrets_written", 0)
+            except Exception as e:
+                stats["errors"].append(f"Archive leaks failed: {e}")
+
         return stats
 
     def prune_withdrawn_openapi_declarations(self, user_id: str, project_id: str, reread_spec_urls,
