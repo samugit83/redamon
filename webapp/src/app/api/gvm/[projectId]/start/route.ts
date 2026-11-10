@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getEffectiveUser } from '@/lib/session'
 import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
+import { assertEngagementStartable } from '@/lib/engagementGate'
 import prisma from '@/lib/prisma'
 import { existsSync } from 'fs'
 import path from 'path'
@@ -47,6 +48,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         { status: 404 }
       )
     }
+
+    const engagementBlocked = await assertEngagementStartable(projectId)
+    if (engagementBlocked) return engagementBlocked
 
     if (project.ipMode) {
       if (!project.targetIps || project.targetIps.length === 0) {

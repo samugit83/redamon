@@ -3,6 +3,7 @@ import { guardProject } from '@/lib/access'
 import { getEffectiveUser } from '@/lib/session'
 import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
+import { assertEngagementStartable } from '@/lib/engagementGate'
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
@@ -37,6 +38,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     }
+
+    const engagementBlocked = await assertEngagementStartable(projectId)
+    if (engagementBlocked) return engagementBlocked
 
     // Gate on the source the operator actually selected. Checking only the
     // uploaded file would refuse to start a perfectly valid GitHub scan, and
