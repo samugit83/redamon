@@ -1209,6 +1209,19 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 | `AGENT_PORT` | `8090` | Host port for the agent API (maps to internal :8080) |
 | `RECON_ORCH_PORT` | `8010` | Host port for the recon orchestrator |
 
+### RBAC feature switches (webapp)
+
+Read only by [`webapp/src/lib/authz/flags.ts`](../../webapp/src/lib/authz/flags.ts). Each defaults to `false` in `docker-compose.yml`; `true`, `1` or `yes` turn it on, and any other value reads off. A switch whose requirement is off reads off too, with one `[rbac]` warning per webapp process. Recreate the webapp after a change (`./redamon.sh up`).
+
+| Variable | Default | Turns on | Requires |
+|----------|---------|----------|----------|
+| `REDAMON_SHARED_TOOLS_COMPAT` | `false` | The pre-upgrade behaviour of the five shared tools for accounts created before the upgrade (escape hatch) | none |
+| `RBAC_IDENTITY_ENABLED` | `false` | Root powers and protections, account status and disable, invites and reset links, must-change password, instance settings, email step-up, session lifetimes | none |
+| `RBAC_PERMISSIONS_ENABLED` | `false` | Stored permission sets, overrides and profiles, the assignment UI, impersonation rules | `RBAC_IDENTITY_ENABLED` |
+| `RBAC_SHARING_ENABLED` | `false` | Project collaborators, the share dialog, Shared with me, the activity feed, oversight | `RBAC_PERMISSIONS_ENABLED` |
+| `RBAC_SHARING_WRITE_ENABLED` | `false` | Read + Write sharing and its toggles, consent, transfer, the deletion wizard, conversation sharing | `RBAC_SHARING_ENABLED` |
+| `RBAC_GOVERNANCE_ENABLED` | `false` | The admin console, quotas, per-plugin allowlists, device sessions, instance providers | `RBAC_PERMISSIONS_ENABLED` |
+
 ### Model provider rate limits (agent)
 
 | Variable | Default | Description |

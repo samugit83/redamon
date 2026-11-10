@@ -1136,6 +1136,15 @@ services:
       # .env once logs confirm only known routes use the key. Wired here so it is
       # reachable via .env (webapp has no env_file).
       INTERNAL_KEY_ALLOWLIST_ENFORCE: ${INTERNAL_KEY_ALLOWLIST_ENFORCE:-false}
+      # RBAC switches, read only by webapp/src/lib/authz/flags.ts. All default
+      # false (off); they are wired HERE because the webapp has NO env_file, so a
+      # value set only in .env would be silently inert.
+      REDAMON_SHARED_TOOLS_COMPAT: ${REDAMON_SHARED_TOOLS_COMPAT:-false}
+      RBAC_IDENTITY_ENABLED: ${RBAC_IDENTITY_ENABLED:-false}
+      RBAC_PERMISSIONS_ENABLED: ${RBAC_PERMISSIONS_ENABLED:-false}
+      RBAC_SHARING_ENABLED: ${RBAC_SHARING_ENABLED:-false}
+      RBAC_SHARING_WRITE_ENABLED: ${RBAC_SHARING_WRITE_ENABLED:-false}
+      RBAC_GOVERNANCE_ENABLED: ${RBAC_GOVERNANCE_ENABLED:-false}
       # Scan Timeline (versioned recon graphs). All pass through EMPTY so unset
       # keeps the safe code defaults in webapp/src/lib/scan*.ts. Wired here for the
       # same reason as the knob above: the webapp has NO env_file, so a value set
