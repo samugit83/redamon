@@ -49,7 +49,7 @@ LAB_ONLY = {"age_days", "touched_domains", "files", "lab_id", "group", "lab_expe
 
 # Every ID of the plan's §11 matrix: expected_results.yaml must hold a block for each.
 MATRIX_IDS = [
-    "L-01", "L-02", "L-03", "S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-07", "S-08", "S-09",
+    "L-01", "L-02", "L-03", "S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-06b", "S-07", "S-08", "S-09",
     "S-10", "S-11", "L-04", "D-01",
     "I1-01", "I1-02", "I1-03", "I1-04", "I1-05", "I1-06", "I2-01", "I2-02", "I2-03",
     "I3-01", "I3-02", "I3-03", "I3-04", "I4-01", "I4-02", "I4-03", "I4-04",
