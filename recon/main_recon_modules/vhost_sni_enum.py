@@ -76,6 +76,8 @@ DEFAULT_WORDLIST_CONTAINER_PATH = "/app/recon/wordlists/vhost-common.txt"
 # the full list would not fit sensibly on one property.
 SUPPRESSED_SAMPLE_MAX = 20
 
+_SOURCE = "vhost_sni_enum"
+
 
 # =============================================================================
 # Entry points
@@ -177,8 +179,11 @@ def run_vhost_sni_enrichment(
     # --------------------------------------------------------------
     # 4. Curl availability check
     # --------------------------------------------------------------
+    from recon.helpers import circuit_breaker as _cb
     if not _is_curl_available():
-        print("[!][VhostSni] curl binary not found in PATH -- aborting")
+        # Meant to run and re-checked nothing: the earlier findings stay.
+        print("[!][VhostSni] curl binary not found in PATH -- aborting, previous findings are kept")
+        _cb.note_degraded(_SOURCE, sources=(_SOURCE,), reason="curl unavailable")
         combined_result["vhost_sni"] = _empty_result(reason="curl_unavailable")
         return combined_result
 
@@ -198,8 +203,10 @@ def run_vhost_sni_enrichment(
         "info_severity": 0,
     }
 
-    from recon.helpers import circuit_breaker as _cb
     vhost_scope = _cb.scope((), label="VhostSni", unit="port(s)")
+    # IP:ports this module gave up on while they may still answer the other
+    # tools (a failed baseline, a probing error): cut for this source only.
+    unchecked_ports: list[str] = []
     candidate_scope = _build_candidate_scope(combined_result, settings)
 
     # A shared CDN edge answers almost any name with some customer's site or
@@ -236,12 +243,14 @@ def run_vhost_sni_enrichment(
                 dns_known=_dns_known_names(combined_result, ip),
             )
         except Exception as e:
-            print(f"[!][VhostSni] IP {ip} probing failed: {e}")
+            print(f"[!][VhostSni] IP {ip} probing failed: {e} -- its previous findings are kept")
+            unchecked_ports.extend(_port_key(ip, p.get("port")) for p in ports)
             continue
 
         by_ip[ip] = ip_result
         for dead in ip_result.get("unreachable_ports", []):
             vhost_scope.note_host_skipped(dead)
+        unchecked_ports.extend(ip_result.get("unchecked_ports", []))
         summary_counts["ips_tested"] += 1
         summary_counts["candidates_total"] += ip_result.get("candidates_tested", 0)
 
@@ -298,7 +307,14 @@ def run_vhost_sni_enrichment(
     }
 
     # IP:ports that died mid-run: the prune keeps their previous findings.
-    vhost_scope.finish("vhost_sni_enum", host_source="vhost_sni_enum", payload=result)
+    vhost_scope.finish(_SOURCE, host_source=_SOURCE, payload=result)
+    if unchecked_ports:
+        unchecked_ports = sorted(set(unchecked_ports))
+        print(f"[!][VhostSni] {len(unchecked_ports)} IP:port(s) not checked this run -- "
+              f"their previous vhost findings are kept")
+        _cb.note_degraded(_SOURCE, hosts=unchecked_ports, host_source=_SOURCE,
+                          source_only_hosts=True, reason="baseline probe failed or probing errored")
+        result["unchecked_ports"] = unchecked_ports
     combined_result["vhost_sni"] = result
 
     print(
@@ -403,6 +419,7 @@ def _probe_single_ip(
     suppressed_dns_known: set[str] = set()
     suppressed_as_noise: list[str] = []
     dead_ports: list[str] = []
+    unchecked_ports: list[str] = []
 
     for port_info in ports:
         port = int(port_info.get("port", 443))
@@ -425,7 +442,10 @@ def _probe_single_ip(
             timeout=timeout,
         )
         if baseline is None:
-            print(f"[!][VhostSni] IP {ip}:{port} ({scheme}) baseline failed -- skipping port")
+            # Nothing on this port was re-checked, so it must not read as
+            # "checked, no hidden vhost": its earlier findings are kept.
+            unchecked_ports.append(port_key)
+            print(f"[!][VhostSni] IP {port_key} ({scheme}) baseline failed -- skipping port")
             continue
         baselines[(port, scheme)] = baseline
 
@@ -606,6 +626,7 @@ def _probe_single_ip(
         "suppressed_as_noise_sample": sorted(suppressed_as_noise)[:SUPPRESSED_SAMPLE_MAX],
         "hosts_hidden_vhosts": len(anomalies) > 0,
         **({"unreachable_ports": dead_ports} if dead_ports else {}),
+        **({"unchecked_ports": unchecked_ports} if unchecked_ports else {}),
     }
 
 
