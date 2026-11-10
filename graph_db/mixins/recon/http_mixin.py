@@ -37,6 +37,20 @@ from graph_db.endpoint_paths import normalize_endpoint_path
 #: is one shared deny or parking page, not each host's own content.
 SHARED_BODY_MIN_BASEURLS = 3
 
+#: Appended to a Technology MERGE: adds `$detector` to the comma-joined
+#: `detected_by` instead of overwriting it. clear_recon_data spares a Technology
+#: only while `gvm` is listed, so an overwrite let the next full recon delete a
+#: GVM-tagged node with its vulnerabilities. `gvm` stays last, as
+#: absorb_technology keeps it, because clear_gvm_data deletes an exact 'gvm' and
+#: strips only a ',gvm'.
+_ADD_DETECTOR = """
+    WITH t, [s IN split(coalesce(t.detected_by, '') + ',' + $detector, ',')
+             WHERE trim(s) <> '' | trim(s)] AS parts
+    WITH t, reduce(acc = [], s IN parts | CASE WHEN s IN acc THEN acc ELSE acc + s END) AS seen
+    SET t.detected_by = reduce(out = '', s IN [d IN seen WHERE d <> 'gvm'] + [d IN seen WHERE d = 'gvm'] |
+                               CASE WHEN out = '' THEN s ELSE out + ',' + s END)
+"""
+
 
 def _split_url(url: str) -> tuple[str, str]:
     """Return ``(base_url, path)`` where ``base_url = scheme://host:port``
@@ -431,7 +445,6 @@ class HttpMixin:
                                 "version": tech_version,
                                 "categories": categories,
                                 "confidence": confidence,
-                                "detected_by": "httpx"
                             }
 
                             # Remove None values
@@ -453,8 +466,9 @@ class HttpMixin:
                                     MERGE (t:Technology {name: $name, version: $version, user_id: $user_id, project_id: $project_id})
                                     SET t += $props,
                                         t.updated_at = datetime()
-                                    """,
+                                    """ + _ADD_DETECTOR,
                                     name=tech_name, version=tech_version, props=tech_props,
+                                    detector="httpx",
                                     user_id=user_id, project_id=project_id
                                 )
                                 processed_techs.add((tech_name_key(tech_name), tech_version))
@@ -464,8 +478,8 @@ class HttpMixin:
                                     MERGE (t:Technology {name: $name, version: '', user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET t += $props, t.updated_at = datetime()
                                     ON MATCH SET t.updated_at = datetime()
-                                    """,
-                                    name=tech_name, props=tech_props,
+                                    """ + _ADD_DETECTOR,
+                                    name=tech_name, props=tech_props, detector="httpx",
                                     user_id=user_id, project_id=project_id
                                 )
                                 processed_techs.add((tech_name_key(tech_name), None))
@@ -585,7 +599,6 @@ class HttpMixin:
                                 "version": tech_version,
                                 "categories": categories,
                                 "confidence": confidence,
-                                "detected_by": "wappalyzer"
                             }
 
                             # Remove None values
@@ -608,8 +621,9 @@ class HttpMixin:
                                     MERGE (t:Technology {name: $name, version: $version, user_id: $user_id, project_id: $project_id})
                                     SET t += $props,
                                         t.updated_at = datetime()
-                                    """,
+                                    """ + _ADD_DETECTOR,
                                     name=tech_name, version=tech_version, props=tech_props,
+                                    detector="wappalyzer",
                                     user_id=user_id, project_id=project_id
                                 )
                             else:
@@ -618,8 +632,8 @@ class HttpMixin:
                                     MERGE (t:Technology {name: $name, version: '', user_id: $user_id, project_id: $project_id})
                                     ON CREATE SET t += $props, t.updated_at = datetime()
                                     ON MATCH SET t.updated_at = datetime()
-                                    """,
-                                    name=tech_name, props=tech_props,
+                                    """ + _ADD_DETECTOR,
+                                    name=tech_name, props=tech_props, detector="wappalyzer",
                                     user_id=user_id, project_id=project_id
                                 )
                             stats["technologies_created"] += 1
