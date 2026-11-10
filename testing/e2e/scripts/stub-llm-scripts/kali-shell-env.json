@@ -1,0 +1,43 @@
+[
+  {
+    "note": "Scope guardrail (asked at session start and again on every resume until a step has run, when the project's guardrail is on): allow the synthetic target.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: synthetic lab target." }
+  },
+  {
+    "note": "Intent router: informational, where kali_shell is allowed.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "First think turn: count the stack secrets visible in the sandbox (kali_shell is a dangerous tool, so a tool confirmation comes first when the project asks for one).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: check which stack secrets the sandbox environment exposes.",
+      "reasoning": "Scripted turn of kali-shell-env.json: one kali_shell call.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": { "command": "env | grep -cE 'SCANNER_API_KEY|MCP_AUTH_TOKEN|TUNNEL_AUTH_TOKEN'" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Think turn after the tool output: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the count is in the tool output.",
+      "reasoning": "Scripted turn of kali-shell-env.json: nothing left to do.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run finished after the kali_shell call.",
+      "output_analysis": { "interpretation": "Scripted stub: the tool output is the number of matching variables." },
+      "updated_todo_list": []
+    }
+  }
+]

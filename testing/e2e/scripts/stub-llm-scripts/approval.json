@@ -1,0 +1,46 @@
+[
+  {
+    "note": "Scope guardrail (asked at session start and again on every resume until a step has run, when the project's guardrail is on): allow the synthetic target.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: synthetic lab target." }
+  },
+  {
+    "note": "Intent router: stay in the informational phase, so the move to exploitation needs the approval.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "First think turn: ask for the exploitation phase, which raises the phase approval prompt.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the objective needs the exploitation phase.",
+      "reasoning": "Scripted turn of approval.json: request the move to exploitation.",
+      "action": "transition_phase",
+      "phase_transition": {
+        "to_phase": "exploitation",
+        "reason": "Scripted stub run: ask for the exploitation phase.",
+        "planned_actions": ["None: the scripted run ends after the decision."],
+        "risks": ["None: synthetic target."]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Think turn after the approval is answered: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the approval was answered.",
+      "reasoning": "Scripted turn of approval.json: nothing left to do.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run finished after the phase approval.",
+      "updated_todo_list": []
+    }
+  }
+]

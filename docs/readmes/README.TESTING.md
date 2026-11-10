@@ -212,6 +212,38 @@ prints `SKIP` without one (it never pulls or builds); as a `*_live.sh` it is nev
 The fixtures' README explains the password, the regeneration (`regen` mode) and how to rebuild
 the pinned image with `git archive 442debbf:webapp | docker build -t redamon-webapp:rbac-7.7.2 -`.
 
+### The scripted stub model (agent runs without a real LLM)
+
+`testing/e2e/scripts/stub-llm-server.mjs` answers an agent prompt with `OK.`, which the agent
+cannot parse, so a run stops at once. Its scripted mode drives a real run: `STUB_LLM_SCRIPT=<file>`
+names a JSON list of turns `{match, content, delayMs?, repeat?, note?}`. A request takes the first
+unused turn whose `match` is a substring of the latest user or tool message; the turn is then
+spent unless `repeat` is true; with no hit the stub answers as before. `content` is sent as is, or
+as JSON when it is an object. A delayed streamed turn sends SSE comments while it waits, so the
+provider's 120 s read timeout does not cut it. `GET /__calls` lists which turn answered each call.
+
+| The agent asks | Latest user message contains | It expects |
+|---|---|---|
+| scope guardrail (at the start, and again on every resume until a step has run) | `for a penetration testing scan:` | `{"allowed": true, "reason": "..."}` |
+| intent router | `You are classifying a penetration testing request` | `{"required_phase", "attack_path_type", "confidence", "reasoning"}` |
+| think node (every iteration) | `what is your next action` | one `LLMDecision` JSON: `thought`, `reasoning`, `action`, plus `tool_name`/`tool_args`, `phase_transition`, `completion_reason` as the action needs |
+
+The scripts in `testing/e2e/scripts/stub-llm-scripts/` (guardrail and router turns are `repeat`):
+`approval.json` asks for the exploitation phase (the phase approval prompt), then completes;
+`kali-shell-env.json` calls `kali_shell` with `env | grep -cE '...'` (a tool confirmation first),
+then completes; `long-run.json` answers its first think turn after 120 s. To use one, start the
+stub on the address the agent reaches the host by (`docker exec redamon-agent getent hosts
+host.docker.internal`), register it as an `openai_compatible` provider of the project's owner
+(`http://host.docker.internal:<port>/v1`) and set the project's `agentOpenaiModel` to
+`custom/<providerId>`. One stub per run: turns are spent per process. The fixture cleanup
+(`e2e-rbac-cleanup.mjs`) does not clear a project's graph or the agent's checkpoints, so a run on
+a fixture project leaves `AttackChain` nodes, a `Domain` seeded by the project update and
+`checkpoints` rows to remove by hand. The matcher has its own test, outside the gate:
+
+```bash
+node --test testing/e2e/scripts/stub-llm-server.test.mjs
+```
+
 ### Two oracles, and only one of them runs in the gate
 
 Some unit-tier files mix hermetic checks with checks that need a live Neo4j and

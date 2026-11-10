@@ -1,0 +1,31 @@
+[
+  {
+    "note": "Scope guardrail (asked at session start and again on every resume until a step has run, when the project's guardrail is on): allow the synthetic target.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: synthetic lab target." }
+  },
+  {
+    "note": "Intent router: informational.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "First think turn, answered after two minutes: the run stays live long enough to be stopped, then ends by itself.",
+    "match": "what is your next action",
+    "delayMs": 120000,
+    "content": {
+      "thought": "Scripted stub: a long think turn.",
+      "reasoning": "Scripted turn of long-run.json: keep the run alive, then end it.",
+      "action": "complete",
+      "completion_reason": "Scripted stub long run finished.",
+      "updated_todo_list": []
+    }
+  }
+]
