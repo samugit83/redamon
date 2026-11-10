@@ -148,9 +148,14 @@ class TestScope:
         found = discover_graphql_endpoints(combined, {})
         assert "https://admin.example.com/graphql" not in found
 
-    def test_the_operators_own_endpoints_are_kept_as_given(self):
-        found = discover_graphql_endpoints(_full_recon(), {"GRAPHQL_ENDPOINTS": "https://gql.example.net/graphql"})
-        assert "https://gql.example.net/graphql" in found
+    def test_the_operators_own_endpoints_pass_the_project_scope(self):
+        # R-43: they carry the GraphQL credential, so an off-project entry is refused.
+        settings = {"GRAPHQL_ENDPOINTS": "https://gql.example.com/graphql,https://gql.example.net/graphql",
+                    "SCOPE_GROUPS": [{"scanRoot": "example.com", "mode": "enumerate",
+                                      "includeRoot": True, "exactHosts": []}]}
+        found = discover_graphql_endpoints(_full_recon(), settings)
+        assert "https://gql.example.com/graphql" in found
+        assert "https://gql.example.net/graphql" not in found
 
 
 class TestTheRoeListInFullRecon:

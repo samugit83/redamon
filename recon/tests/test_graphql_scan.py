@@ -39,10 +39,13 @@ class TestGraphQLDiscovery:
         assert 'https://example.com/api/graphql' in endpoints
 
     def test_discover_user_specified_endpoints(self):
-        """Test user-specified endpoint discovery."""
-        combined_result = {'http_probe': {'by_url': {}}}
+        """User-specified endpoints in the project's scope are tested (R-43:
+        one outside it is refused, see test_graphql_typed_endpoint_scope.py)."""
+        combined_result = {'domain': 'example.com', 'http_probe': {'by_url': {}}}
         settings = {
-            'GRAPHQL_ENDPOINTS': 'https://api.example.com/graphql,https://example.com/query'
+            'GRAPHQL_ENDPOINTS': 'https://api.example.com/graphql,https://example.com/query',
+            'SCOPE_GROUPS': [{'scanRoot': 'example.com', 'mode': 'enumerate',
+                              'includeRoot': True, 'exactHosts': []}],
         }
 
         endpoints = discover_graphql_endpoints(combined_result, settings)

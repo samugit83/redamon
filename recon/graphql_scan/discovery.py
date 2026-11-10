@@ -57,8 +57,9 @@ def discover_graphql_endpoints(combined_result: dict, settings: dict) -> List[st
     resource_enum.by_base_url, js_recon.endpoints, urlscan.urls_with_paths);
     partial recon's graph builder produces the same shapes. Only candidates on
     a host in this run's scope are kept: a live http_probe host, or a host the
-    run's scope admits. The operator's own GRAPHQL_ENDPOINTS are kept as given.
-    The RoE exclusion list is applied by the caller (scanner.run_graphql_scan).
+    run's scope admits. The operator's own GRAPHQL_ENDPOINTS pass the project's
+    scope too (_typed_endpoints). The RoE exclusion list is applied by the
+    caller (scanner.run_graphql_scan).
 
     Args:
         combined_result: The combined recon data
@@ -67,12 +68,8 @@ def discover_graphql_endpoints(combined_result: dict, settings: dict) -> List[st
     Returns:
         List of unique GraphQL endpoint URLs to test
     """
-    user_endpoints = set()
-    for endpoint in (settings.get('GRAPHQL_ENDPOINTS', '') or '').split(','):
-        endpoint = endpoint.strip()
-        if endpoint:
-            user_endpoints.add(endpoint)
-            print(f"[+][GraphQL] User-specified endpoint: {endpoint}")
+    admits = _scope_admits(combined_result)
+    user_endpoints = _typed_endpoints(combined_result, settings, admits)
 
     # Only live, in-scope web roots get pattern guesses: never a URLScan page.
     base_urls = _extract_base_urls(combined_result)
@@ -92,7 +89,6 @@ def discover_graphql_endpoints(combined_result: dict, settings: dict) -> List[st
         for pattern in patterns:
             discovered.add(urljoin(base_url, pattern))
 
-    admits = _scope_admits(combined_result)
     out_of_scope = sorted(e for e in discovered if not admits(urlparse(e).hostname or ''))
     if out_of_scope:
         print(f"[-][GraphQL] Scope: skipped {len(out_of_scope)} candidate(s) on hosts outside this run")
@@ -137,6 +133,87 @@ def _scope_admits(combined_result: dict):
         return any(host == root or host.endswith('.' + root) for root in roots)
 
     return admits
+
+
+def _endpoint_host(endpoint: str) -> str:
+    try:
+        return (urlparse(endpoint).hostname or '').lower()
+    except ValueError:  # an unbalanced IPv6 bracket
+        return ''
+
+
+def _project_admits(settings: dict):
+    """host -> bool: where the project's authenticated session may go (its
+    scope groups, or its target IPs and CIDRs), the rule the project
+    AuthProfile uses. Unreadable means no host (fail closed)."""
+    from recon.helpers.auth_profile import default_scope_hosts, host_in_scope
+    try:
+        scope = default_scope_hosts(settings)
+    except Exception as exc:  # noqa: BLE001 - a scope fault refuses, never admits
+        print(f"[!][GraphQL] Project scope unreadable ({type(exc).__name__}): "
+              f"GRAPHQL_ENDPOINTS entries refused")
+        scope = []
+    return lambda host: bool(host) and host_in_scope(host, scope)
+
+
+def _typed_endpoints(combined_result: dict, settings: dict, admits) -> Set[str]:
+    """The operator's GRAPHQL_ENDPOINTS this run may test (R-43).
+
+    They get the GraphQL credential like every candidate, so they need the
+    same scope: an entry on a host outside the project (a typo, or a value an
+    MCP client with recon:settings wrote) is refused, with no request at all,
+    and said once per run. An entry on another batch group's host is left to
+    that group's run. IP mode has one group, so every project address is this
+    run's, even one with no BaseURL. Checked here rather than when the setting
+    is saved, because the scope is only whole at scan time.
+    """
+    typed = list(dict.fromkeys(
+        e.strip() for e in (settings.get('GRAPHQL_ENDPOINTS', '') or '').split(',') if e.strip()))
+    if not typed:
+        return set()
+
+    from recon.helpers.recon_scope import recon_scope
+    in_project = _project_admits(settings)
+    ip_mode = bool(settings.get('IP_MODE')) or recon_scope(combined_result).ip_mode
+    kept, elsewhere, refused = set(), [], []
+    for endpoint in typed:
+        host = _endpoint_host(endpoint)
+        if not in_project(host):
+            refused.append(endpoint)
+        elif ip_mode or admits(host):
+            kept.add(endpoint)
+            print(f"[+][GraphQL] User-specified endpoint: {endpoint}")
+        else:
+            elsewhere.append(endpoint)
+
+    if elsewhere:
+        print(f"[*][GraphQL] {len(elsewhere)} user-specified endpoint(s) on another scope "
+              f"group's hosts: left to that group's run")
+    if refused:
+        _refuse_once(refused)
+    return kept
+
+
+def _refuse_once(refused: List[str]) -> None:
+    """Log and note each refused entry once per run: a domain batch runs this
+    discovery once per group, in one process."""
+    from recon.helpers import circuit_breaker as cb
+    try:
+        seen = cb.run_cache('graphql_refused_endpoints')
+        fresh = [e for e in refused if not seen.get(e)[0]]
+        for endpoint in fresh:
+            seen.put(endpoint, True)
+    except Exception:  # noqa: BLE001 - the dedupe is cosmetic; the refusal stands
+        fresh = refused
+    if not fresh:
+        return
+    hosts = sorted({_endpoint_host(e) or '<not a URL>' for e in fresh})
+    print(f"[!][GraphQL] Refused {len(fresh)} user-specified endpoint(s) outside the project "
+          f"scope; no request and no credential sent to: {', '.join(hosts)}")
+    # No finding source is cut, so this is a report gap only: no prune effect.
+    cb.note_degraded('graphql_scan', entries=[{
+        "source": "roe_excluded", "reason": "GRAPHQL_ENDPOINTS outside the project scope",
+        "skipped": len(fresh)}])
 
 
 def _extract_base_urls(combined_result: dict) -> Set[str]:
