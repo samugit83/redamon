@@ -431,6 +431,14 @@ def run_hakrawler(config: dict) -> None:
     HAKRAWLER_TIMEOUT = settings.get('HAKRAWLER_TIMEOUT', 30)
     HAKRAWLER_MAX_URLS = settings.get('HAKRAWLER_MAX_URLS', 500)
     HAKRAWLER_INCLUDE_SUBS = settings.get('HAKRAWLER_INCLUDE_SUBS', False)
+    # The full pipeline's rule: an EXACT group scans its listed hosts, and -subs
+    # follows links into any subdomain of a seed (every sibling when the root is
+    # a seed). One flag serves every seed, so one EXACT group in the run is enough.
+    from recon.partial_recon_modules.helpers import allowed_hosts_for
+    if HAKRAWLER_INCLUDE_SUBS and any(
+            allowed_hosts_for(r, config.get("domain_groups")) is not None for r in roots):
+        HAKRAWLER_INCLUDE_SUBS = False
+        print("[*][Hakrawler] Listed hosts only (exact scope): subdomain crawling off")
     HAKRAWLER_INSECURE = settings.get('HAKRAWLER_INSECURE', True)
     HAKRAWLER_CUSTOM_HEADERS = merge_auth_headers(settings.get('HAKRAWLER_CUSTOM_HEADERS', []), settings, sorted(target_domains))
 
