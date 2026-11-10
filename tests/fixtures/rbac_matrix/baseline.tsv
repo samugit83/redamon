@@ -1,0 +1,202 @@
+# Live RBAC route matrix: baseline (step 0.5), today's behaviour on the untouched code.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+# Five callers per family: owner (member_a, owns rbac-PA), other member (member_b),
+# admin not acting (admin_a), admin acting as the owner (admin_a_as_member_a), anonymous.
+# A project another member cannot see answers 404 (anti-enumeration); a user-scoped
+# secret route answers 403. hole:<id> marks a row on a route that finding names (feature
+# document section 3, NF-xx in the current-state notes): Phase 1 writes each one's new
+# expectation into p1.tsv and tags it here superseded-by:p1. The answer can stay the same
+# where the probe cannot see the fix (a 405 method probe, a list whose content changes).
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- controls: public health, sign-in, current account ----
+bl-health-anon	0.5	anon	GET	/api/health	-	200	-
+bl-login-admin-a	0.5	anon	POST	/api/auth/login	{"email":"${ADMIN_A_EMAIL}","password":"${RBAC_PASSWORD}"}	200	-
+bl-login-admin-b	0.5	anon	POST	/api/auth/login	{"email":"${ADMIN_B_EMAIL}","password":"${RBAC_PASSWORD}"}	200	-
+bl-login-member-a	0.5	anon	POST	/api/auth/login	{"email":"${MEMBER_A_EMAIL}","password":"${RBAC_PASSWORD}"}	200	-
+bl-login-member-b	0.5	anon	POST	/api/auth/login	{"email":"${MEMBER_B_EMAIL}","password":"${RBAC_PASSWORD}"}	200	-
+bl-login-member-c	0.5	anon	POST	/api/auth/login	{"email":"${MEMBER_C_EMAIL}","password":"${RBAC_PASSWORD}"}	200	-
+# A passwordless account never signs in. Each run adds one failure to its per-account
+# throttle and no sign-in ever clears it, so after LOGIN_MAX_ATTEMPTS (default 5) runs in
+# 15 minutes the answer is 429 (locked out) instead of 401: both refuse and issue no session.
+bl-login-managed-passwordless	0.5	anon	POST	/api/auth/login	{"email":"${MANAGED_EMAIL}","password":"${RBAC_PASSWORD}"}	401|429	-
+# the wrong password counts against member_c, whose own sign-in later in the run clears it
+bl-login-wrong-password	0.5	anon	POST	/api/auth/login	{"email":"${MEMBER_C_EMAIL}","password":"rbac-wrong-pass-0001"}	401	-
+bl-me-owner	0.5	member_a	GET	/api/auth/me	-	200;has=${MEMBER_A_ID}	-
+bl-me-admin	0.5	admin_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID}	-
+# /api/auth/me names the signed-in account, never the act-as target
+bl-me-actas	0.5	admin_a_as_member_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID};lacks=${MEMBER_A_ID}	-
+bl-me-anon	0.5	anon	GET	/api/auth/me	-	401	-
+#
+# ---- projects ----
+bl-proj-read-owner	0.5	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
+bl-proj-read-other	0.5	member_b	GET	/api/projects/${PA_ID}	-	404	-
+bl-proj-read-admin	0.5	admin_a	GET	/api/projects/${PA_ID}	-	404	-
+bl-proj-read-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
+bl-proj-read-anon	0.5	anon	GET	/api/projects/${PA_ID}	-	401	-
+bl-proj-list-owner	0.5	member_a	GET	/api/projects	-	200;has=${PA_ID};lacks=${PB_ID};lacks=${PADM_ID}	-
+bl-proj-list-other	0.5	member_b	GET	/api/projects	-	200;has=${PB_ID};lacks=${PA_ID}	-
+bl-proj-list-admin	0.5	admin_a	GET	/api/projects	-	200;has=${PADM_ID};lacks=${PA_ID};lacks=${PB_ID}	-
+bl-proj-list-actas	0.5	admin_a_as_member_a	GET	/api/projects	-	200;has=${PA_ID};lacks=${PADM_ID};lacks=${PB_ID}	-
+bl-proj-list-anon	0.5	anon	GET	/api/projects	-	401	-
+# update: a timestamp the route refuses after its owner check, so nothing is written
+bl-proj-update-owner	0.5	member_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	400	-
+bl-proj-update-other	0.5	member_b	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	404	-
+bl-proj-update-admin	0.5	admin_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	404	-
+bl-proj-update-actas	0.5	admin_a_as_member_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	400	-
+bl-proj-update-anon	0.5	anon	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	401	-
+bl-proj-export-owner	0.5	member_a	GET	/api/projects/${PA_ID}/export	-	200	-
+bl-proj-export-other	0.5	member_b	GET	/api/projects/${PA_ID}/export	-	404	-
+bl-proj-export-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/export	-	404	-
+bl-proj-export-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/export	-	200	-
+bl-proj-export-anon	0.5	anon	GET	/api/projects/${PA_ID}/export	-	401	-
+#
+# ---- project data ----
+bl-graph-read-owner	0.5	member_a	GET	/api/graph?projectId=${PA_ID}	-	200	-
+bl-graph-read-other	0.5	member_b	GET	/api/graph?projectId=${PA_ID}	-	404	-
+bl-graph-read-admin	0.5	admin_a	GET	/api/graph?projectId=${PA_ID}	-	404	-
+bl-graph-read-actas	0.5	admin_a_as_member_a	GET	/api/graph?projectId=${PA_ID}	-	200	-
+bl-graph-read-anon	0.5	anon	GET	/api/graph?projectId=${PA_ID}	-	401	-
+bl-conv-list-owner	0.5	member_a	GET	/api/conversations?projectId=${PA_ID}	-	200;has=rbac-sess-PA	-
+bl-conv-list-other	0.5	member_b	GET	/api/conversations?projectId=${PA_ID}	-	404	-
+bl-conv-list-admin	0.5	admin_a	GET	/api/conversations?projectId=${PA_ID}	-	404	-
+bl-conv-list-actas	0.5	admin_a_as_member_a	GET	/api/conversations?projectId=${PA_ID}	-	200;has=rbac-sess-PA	-
+bl-conv-list-anon	0.5	anon	GET	/api/conversations?projectId=${PA_ID}	-	401	-
+bl-rem-list-owner	0.5	member_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	-
+bl-rem-list-other	0.5	member_b	GET	/api/remediations?projectId=${PA_ID}	-	404	-
+bl-rem-list-admin	0.5	admin_a	GET	/api/remediations?projectId=${PA_ID}	-	404	-
+bl-rem-list-actas	0.5	admin_a_as_member_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	-
+bl-rem-list-anon	0.5	anon	GET	/api/remediations?projectId=${PA_ID}	-	401	-
+bl-reports-list-owner	0.5	member_a	GET	/api/projects/${PA_ID}/reports	-	200;has=rbac-report	-
+bl-reports-list-other	0.5	member_b	GET	/api/projects/${PA_ID}/reports	-	404	-
+bl-reports-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/reports	-	404	-
+bl-reports-list-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/reports	-	200;has=rbac-report	-
+bl-reports-list-anon	0.5	anon	GET	/api/projects/${PA_ID}/reports	-	401	-
+bl-sched-list-owner	0.5	member_a	GET	/api/projects/${PA_ID}/schedules	-	200;has=rbac-schedule	-
+bl-sched-list-other	0.5	member_b	GET	/api/projects/${PA_ID}/schedules	-	404	-
+bl-sched-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/schedules	-	404	-
+bl-sched-list-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/schedules	-	200;has=rbac-schedule	-
+bl-sched-list-anon	0.5	anon	GET	/api/projects/${PA_ID}/schedules	-	401	-
+bl-triage-list-owner	0.5	member_a	GET	/api/triage/findings?projectId=${PA_ID}	-	200	-
+bl-triage-list-other	0.5	member_b	GET	/api/triage/findings?projectId=${PA_ID}	-	404	-
+bl-triage-list-admin	0.5	admin_a	GET	/api/triage/findings?projectId=${PA_ID}	-	404	-
+bl-triage-list-actas	0.5	admin_a_as_member_a	GET	/api/triage/findings?projectId=${PA_ID}	-	200	-
+bl-triage-list-anon	0.5	anon	GET	/api/triage/findings?projectId=${PA_ID}	-	401	-
+bl-traffic-list-owner	0.5	member_a	GET	/api/traffic/${PA_ID}	-	200	-
+bl-traffic-list-other	0.5	member_b	GET	/api/traffic/${PA_ID}	-	404	-
+bl-traffic-list-admin	0.5	admin_a	GET	/api/traffic/${PA_ID}	-	404	-
+bl-traffic-list-actas	0.5	admin_a_as_member_a	GET	/api/traffic/${PA_ID}	-	200	-
+bl-traffic-list-anon	0.5	anon	GET	/api/traffic/${PA_ID}	-	401	-
+bl-workspace-list-owner	0.5	member_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	200	-
+bl-workspace-list-other	0.5	member_b	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	404	-
+bl-workspace-list-admin	0.5	admin_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	404	-
+bl-workspace-list-actas	0.5	admin_a_as_member_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	200	-
+bl-workspace-list-anon	0.5	anon	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	401	-
+bl-recon-status-owner	0.5	member_a	GET	/api/recon/${PA_ID}/status	-	200	-
+bl-recon-status-other	0.5	member_b	GET	/api/recon/${PA_ID}/status	-	404	-
+bl-recon-status-admin	0.5	admin_a	GET	/api/recon/${PA_ID}/status	-	404	-
+bl-recon-status-actas	0.5	admin_a_as_member_a	GET	/api/recon/${PA_ID}/status	-	200	-
+bl-recon-status-anon	0.5	anon	GET	/api/recon/${PA_ID}/status	-	401	-
+#
+# ---- accounts ----
+# MCP token list: the admin bypass of requireUserAccess lets an admin list any account's tokens
+bl-mcptokens-owner	0.5	member_a	GET	/api/users/${MEMBER_A_ID}/mcp-tokens	-	200;has=rbac-token-a	-
+bl-mcptokens-other	0.5	member_b	GET	/api/users/${MEMBER_A_ID}/mcp-tokens	-	403	-
+bl-mcptokens-admin	0.5	admin_a	GET	/api/users/${MEMBER_A_ID}/mcp-tokens	-	200;has=rbac-token-a	-
+bl-mcptokens-actas	0.5	admin_a_as_member_a	GET	/api/users/${MEMBER_A_ID}/mcp-tokens	-	200;has=rbac-token-a	-
+bl-mcptokens-anon	0.5	anon	GET	/api/users/${MEMBER_A_ID}/mcp-tokens	-	401	-
+# users list: an admin sees every account, a member only their own row
+bl-users-list-owner	0.5	member_a	GET	/api/users	-	200;has=rbac-member-a@e2e.local;lacks=rbac-member-b@e2e.local;lacks=rbac-admin-a@e2e.local	-
+bl-users-list-other	0.5	member_b	GET	/api/users	-	200;has=rbac-member-b@e2e.local;lacks=rbac-member-a@e2e.local	-
+bl-users-list-admin	0.5	admin_a	GET	/api/users	-	200;has=rbac-member-a@e2e.local	-
+bl-users-list-actas	0.5	admin_a_as_member_a	GET	/api/users	-	200;has=rbac-member-a@e2e.local	-
+bl-users-list-anon	0.5	anon	GET	/api/users	-	401	-
+bl-users-list-internal	0.5	internal	GET	/api/users	-	200;has=rbac-member-a@e2e.local	-
+# settings: a browser always gets masked secrets, the admin bypass included; only a service key with ?internal=true unmasks
+bl-settings-owner	0.5	member_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=••••••••0001;lacks=${A_TAVILY_SECRET}	-
+bl-settings-owner-internal-param	0.5	member_a	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=••••••••0001;lacks=${A_TAVILY_SECRET}	-
+bl-settings-other	0.5	member_b	GET	/api/users/${MEMBER_A_ID}/settings	-	403	-
+bl-settings-admin	0.5	admin_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=••••••••0001;lacks=${A_TAVILY_SECRET}	-
+bl-settings-actas	0.5	admin_a_as_member_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=••••••••0001;lacks=${A_TAVILY_SECRET}	-
+bl-settings-anon	0.5	anon	GET	/api/users/${MEMBER_A_ID}/settings	-	401	-
+bl-settings-internal-unmasked	0.5	internal	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	-
+bl-actas-by-member	0.5	member_a	POST	/api/auth/act-as	{"targetUserId":"${MEMBER_B_ID}"}	403	-
+bl-actas-by-anon	0.5	anon	POST	/api/auth/act-as	{"targetUserId":"${MEMBER_B_ID}"}	401	-
+#
+# ---- the 20 login-only routes, called by a member who owns nothing (member_c) ----
+# Action routes get a request they refuse after the login check (a non-numeric session or
+# job id the agent rejects with 422, a non-multipart upload, a missing path), so no session,
+# job, template or MCP server list is touched. emergency-stop-all is probed with GET (405):
+# its POST takes no input and cancels every user's agent run on the shared instance.
+bl-loginonly-estop-member	0.5	member_c	GET	/api/agent/emergency-stop-all	-	405	login-only hole:F-06 probe:method
+bl-loginonly-agent-health-member	0.5	member_c	GET	/api/agent/health	-	200	login-only
+bl-loginonly-host-ip-member	0.5	member_c	GET	/api/agent/host-ip	-	200	login-only
+bl-loginonly-job-kill-member	0.5	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	422	login-only hole:F-01 probe:invalid-id
+bl-loginonly-sessions-member	0.5	member_c	GET	/api/agent/sessions	-	200	login-only hole:F-01
+bl-loginonly-session-interact-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	422	login-only hole:F-01 probe:invalid-id
+bl-loginonly-session-kill-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	422	login-only hole:F-01 probe:invalid-id
+bl-loginonly-tunnel-status-member	0.5	member_c	GET	/api/agent/tunnel-status	-	200	login-only
+bl-loginonly-community-skills-member	0.5	member_c	GET	/api/community-skills	-	200	login-only
+bl-loginonly-cypherfix-health-member	0.5	member_c	GET	/api/cypherfix/health	-	200	login-only
+bl-loginonly-tunnel-config-member	0.5	member_c	GET	/api/global/tunnel-config	-	200	login-only hole:F-04
+bl-loginonly-gvm-available-member	0.5	member_c	GET	/api/gvm/available	-	200	login-only
+bl-loginonly-trufflehog-available-member	0.5	member_c	GET	/api/js-recon/trufflehog/available	-	200	login-only
+bl-loginonly-mcp-manifest-member	0.5	member_c	GET	/api/mcp/manifest	-	200	login-only hole:F-14
+bl-loginonly-mcp-reload-member	0.5	member_c	POST	/api/mcp/reload	[]	422	login-only hole:F-02 probe:invalid-body
+bl-loginonly-nuclei-list-member	0.5	member_c	GET	/api/nuclei-templates	-	200	login-only hole:F-07
+bl-loginonly-nuclei-upload-member	0.5	member_c	POST	/api/nuclei-templates	{}	400	login-only hole:F-07 probe:invalid-body
+bl-loginonly-nuclei-delete-member	0.5	member_c	DELETE	/api/nuclei-templates	-	400	login-only hole:F-07 probe:invalid-body
+bl-loginonly-project-defaults-member	0.5	member_c	GET	/api/projects/defaults	-	200	login-only
+bl-loginonly-skills-member	0.5	member_c	GET	/api/skills	-	200	login-only
+bl-loginonly-system-stats-member	0.5	member_c	GET	/api/system/stats	-	200	login-only
+bl-loginonly-ws-member	0.5	member_c	GET	/api/ws	-	501	login-only
+bl-loginonly-estop-anon	0.5	anon	GET	/api/agent/emergency-stop-all	-	401	login-only
+bl-loginonly-agent-health-anon	0.5	anon	GET	/api/agent/health	-	401	login-only
+bl-loginonly-host-ip-anon	0.5	anon	GET	/api/agent/host-ip	-	401	login-only
+bl-loginonly-job-kill-anon	0.5	anon	POST	/api/agent/jobs/rbac-not-a-job/kill	-	401	login-only
+bl-loginonly-sessions-anon	0.5	anon	GET	/api/agent/sessions	-	401	login-only
+bl-loginonly-session-interact-anon	0.5	anon	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	401	login-only
+bl-loginonly-session-kill-anon	0.5	anon	POST	/api/agent/sessions/rbac-not-a-session/kill	-	401	login-only
+bl-loginonly-tunnel-status-anon	0.5	anon	GET	/api/agent/tunnel-status	-	401	login-only
+bl-loginonly-community-skills-anon	0.5	anon	GET	/api/community-skills	-	401	login-only
+bl-loginonly-cypherfix-health-anon	0.5	anon	GET	/api/cypherfix/health	-	401	login-only
+bl-loginonly-tunnel-config-anon	0.5	anon	GET	/api/global/tunnel-config	-	401	login-only
+bl-loginonly-gvm-available-anon	0.5	anon	GET	/api/gvm/available	-	401	login-only
+bl-loginonly-trufflehog-available-anon	0.5	anon	GET	/api/js-recon/trufflehog/available	-	401	login-only
+bl-loginonly-mcp-manifest-anon	0.5	anon	GET	/api/mcp/manifest	-	401	login-only
+bl-loginonly-mcp-reload-anon	0.5	anon	POST	/api/mcp/reload	[]	401	login-only
+bl-loginonly-nuclei-list-anon	0.5	anon	GET	/api/nuclei-templates	-	401	login-only
+bl-loginonly-nuclei-upload-anon	0.5	anon	POST	/api/nuclei-templates	{}	401	login-only
+bl-loginonly-nuclei-delete-anon	0.5	anon	DELETE	/api/nuclei-templates	-	401	login-only
+bl-loginonly-project-defaults-anon	0.5	anon	GET	/api/projects/defaults	-	401	login-only
+bl-loginonly-skills-anon	0.5	anon	GET	/api/skills	-	401	login-only
+bl-loginonly-system-stats-anon	0.5	anon	GET	/api/system/stats	-	401	login-only
+bl-loginonly-ws-anon	0.5	anon	GET	/api/ws	-	401	login-only
+#
+# ---- service keys ----
+# The scanner key reads any user's settings unmasked and any project, and ingests into any
+# project (F-18). PA keeps capture off, so the ingest answers 202 and stores nothing.
+bl-scanner-settings-unmasked	0.5	scanner	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	hole:F-18
+bl-scanner-project-read	0.5	scanner	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	hole:F-18
+bl-scanner-traffic-ingest	0.5	scanner	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	202;has=capture disabled	hole:F-18
+bl-scanner-off-allowlist	0.5	scanner	GET	/api/projects	-	401	-
+bl-internal-project-read	0.5	internal	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
+bl-member-traffic-ingest	0.5	member_a	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	401	-
+#
+# ---- NF-14, NF-15 ----
+# mcp/test: a member tests an HTTP draft with no userId; the agent tries 127.0.0.1:9 in its own
+# container and reports the refused connection. Never a stdio draft.
+bl-mcptest-member	0.5	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	200;has="ok":false	hole:NF-14
+bl-mcptest-anon	0.5	anon	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	401	-
+bl-skillcontent-owner	0.5	member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15
+bl-skillcontent-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15
+bl-skillcontent-other	0.5	member_b	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	404	-
+#
+# ---- project delete (last: it removes the two throwaway projects) ----
+bl-proj-delete-other	0.5	member_b	DELETE	/api/projects/${PA_TMP1_ID}	-	404	-
+bl-proj-delete-admin	0.5	admin_a	DELETE	/api/projects/${PA_TMP1_ID}	-	404	-
+bl-proj-delete-anon	0.5	anon	DELETE	/api/projects/${PA_TMP1_ID}	-	401	-
+bl-proj-delete-owner	0.5	member_a	DELETE	/api/projects/${PA_TMP1_ID}	-	200	-
+bl-proj-delete-actas	0.5	admin_a_as_member_a	DELETE	/api/projects/${PA_TMP2_ID}	-	200	-
+bl-proj-delete-gone	0.5	member_a	GET	/api/projects/${PA_TMP1_ID}	-	404	-
