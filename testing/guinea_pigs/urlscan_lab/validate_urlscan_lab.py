@@ -193,11 +193,18 @@ def _graph_value_key(row_id: str, index: int, run: str) -> str:
 
 def _display_stripped(value):
     """`value` without the display-only fields (graph_db/display_only.py): the
-    secret and the full links RedAmon keeps for the operator on purpose."""
-    if str(labkit.REPO) not in sys.path:
-        sys.path.insert(0, str(labkit.REPO))
-    from graph_db.display_only import strip_display_only
-    return strip_display_only(value)
+    secret and the full links RedAmon keeps for the operator on purpose. The
+    module is loaded from its file: the graph_db package needs the neo4j
+    driver, which the host may not have."""
+    module = getattr(_display_stripped, "module", None)
+    if module is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "display_only", labkit.REPO / "graph_db" / "display_only.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _display_stripped.module = module
+    return module.strip_display_only(value)
 
 
 def _no_token_scan(pid: str, run: str, tokens: dict, labels: list[str]) -> dict:
