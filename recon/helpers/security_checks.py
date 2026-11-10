@@ -14,6 +14,7 @@ import json
 import re
 import socket
 import ssl
+import time
 import requests
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -2712,6 +2713,59 @@ def check_kubernetes_api_exposed(ip: str, timeout: int = 10,
     return None
 
 
+#: A greeting or an EHLO answer is a few hundred bytes; past this the peer is
+#: not answering one command, and the read stops with no verdict.
+_SMTP_REPLY_CAP = 64 * 1024
+_SMTP_REPLY_LINE = re.compile(r"^(\d{3})([ -]|$)")
+
+
+class _SmtpReplies:
+    """Reads one complete SMTP reply at a time (RFC 5321 4.2).
+
+    A reply is ``NNN-`` continuation lines ending in one ``NNN `` line, and
+    TCP may split it anywhere or join it to the next, so bytes past a reply's
+    end stay buffered for the next one. ``timeout`` bounds a whole reply, not
+    each recv(), so a server dripping continuation lines still ends it.
+    """
+
+    def __init__(self, sock, timeout: float):
+        self.sock = sock
+        self.timeout = timeout
+        self.buffer = b""
+
+    def next(self) -> Tuple[str, str]:
+        """(final code, text); ("", line) when a line is not an SMTP reply line.
+
+        Raises CheckUnknown when the reply never completes (closed, too long,
+        out of time); a socket error propagates as it is.
+        """
+        deadline = time.monotonic() + self.timeout
+        lines: List[str] = []
+        size = 0
+        while True:
+            while b"\n" not in self.buffer:
+                if size + len(self.buffer) > _SMTP_REPLY_CAP:
+                    raise CheckUnknown("SMTP reply too long")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CheckUnknown("SMTP reply incomplete")
+                self.sock.settimeout(remaining)
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise CheckUnknown("connection closed mid-reply"
+                                       if lines or self.buffer else "no reply")
+                self.buffer += chunk
+            raw, _, self.buffer = self.buffer.partition(b"\n")
+            size += len(raw) + 1
+            line = raw.rstrip(b"\r").decode("utf-8", errors="ignore")
+            match = _SMTP_REPLY_LINE.match(line)
+            if not match:
+                return "", line
+            lines.append(line)
+            if match.group(2) != "-":
+                return match.group(1), "\n".join(lines)
+
+
 def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optional[Dict]:
     """
     Check if SMTP server is an open relay.
@@ -2722,12 +2776,13 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
         timeout: Connection timeout
 
     Returns:
-        Vulnerability dict if open relay, None when the port is closed or the
-        server refuses the relay
+        Vulnerability dict if open relay, None when the port is closed, the
+        server refuses the relay (a 5xx), or its greeting is not SMTP at all
 
     Raises:
-        CheckUnknown: no answer (a timeout, a reset, a closed connection), or
-            a 4xx reply: busy, greylisting, try again later
+        CheckUnknown: no answer (a timeout, a reset, a closed connection, a
+            reply cut short), a 4xx reply (busy, greylisting, try again
+            later), or a reply mid-dialogue that is not an SMTP reply
     """
     try:
         sock = socket.create_connection((ip, port), timeout=timeout)
@@ -2736,47 +2791,53 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
     except Exception as exc:  # noqa: BLE001 - unreachable now is not "closed"
         raise _no_answer(exc) from exc
 
-    def reply(command: bytes = b"") -> str:
-        if command:
-            sock.send(command)
-        return sock.recv(1024).decode('utf-8', errors='ignore')
+    replies = _SmtpReplies(sock, timeout)
 
-    def refused(answer: str) -> None:
-        """Return when ``answer`` is a final no; raise when it is no answer."""
-        code = answer.strip()[:3]
-        if not code or code.startswith("4"):
-            raise CheckUnknown(f"SMTP reply {code}" if code else "no reply")
+    def ask(command: bytes) -> str:
+        sock.sendall(command)
+        return replies.next()[0]
 
-    try:
-        banner = reply()
-        if '220' not in banner:
-            refused(banner)
-            return None
-        reply(b"HELO test.example.com\r\n")
-        response = reply(b"MAIL FROM:<test@external-domain.com>\r\n")
-        if '250' in response:
-            response = reply(b"RCPT TO:<test@another-external-domain.com>\r\n")
-            if '250' in response or '251' in response:
-                try:
-                    sock.send(b"QUIT\r\n")
-                except OSError:
-                    pass
-                return {
-                    "type": "smtp_open_relay",
-                    "severity": "high",
-                    "name": "SMTP Open Relay",
-                    "description": f"SMTP server at {ip}:{port} accepts mail relay from external sources. "
-                                  "This can be abused for spam campaigns and email spoofing.",
-                    "ip": ip,
-                    "port": port,
-                    "evidence": "Server accepted RCPT TO for external domain",
-                    "recommendation": "Configure SMTP to only relay mail for authenticated users or authorized domains.",
-                }
-        refused(response)
+    def refused(code: str) -> None:
+        """Return when ``code`` is a final no; raise when it is no answer."""
+        if not code:
+            raise CheckUnknown("not an SMTP reply")
+        if code.startswith("4"):
+            raise CheckUnknown(f"SMTP reply {code}")
+
+    def quit_politely() -> None:
         try:
-            sock.send(b"QUIT\r\n")
+            sock.sendall(b"QUIT\r\n")
         except OSError:
             pass
+
+    try:
+        code, _ = replies.next()
+        if code != "220":
+            # A banner that is no SMTP line is another service on the port:
+            # it relays nothing, as before. Only a 4xx greeting is "later".
+            if code:
+                refused(code)
+            return None
+        code = ask(b"HELO test.example.com\r\n")
+        if code.startswith("2"):
+            code = ask(b"MAIL FROM:<test@external-domain.com>\r\n")
+            if code == "250":
+                code = ask(b"RCPT TO:<test@another-external-domain.com>\r\n")
+                if code in ("250", "251"):
+                    quit_politely()
+                    return {
+                        "type": "smtp_open_relay",
+                        "severity": "high",
+                        "name": "SMTP Open Relay",
+                        "description": f"SMTP server at {ip}:{port} accepts mail relay from external sources. "
+                                      "This can be abused for spam campaigns and email spoofing.",
+                        "ip": ip,
+                        "port": port,
+                        "evidence": "Server accepted RCPT TO for external domain",
+                        "recommendation": "Configure SMTP to only relay mail for authenticated users or authorized domains.",
+                    }
+        refused(code)
+        quit_politely()
         return None
     except CheckUnknown:
         raise
