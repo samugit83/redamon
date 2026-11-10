@@ -248,6 +248,75 @@ def _graph_reset():
     _graph_futures = []
 
 
+#: The background writers that write recon findings, each with the
+#: `_PHASE_FINDING_SOURCES` phase whose sources it writes. The findings a failed
+#: write did not MERGE keep last run's `updated_at`, so the prune would read
+#: them as gone: a writer that raises, reports an item error, finds Neo4j
+#: unreachable or is never queued notes those sources degraded instead, which
+#: wins over whatever the modules recorded as checked (R-20, D1).
+#: Left out on purpose: writers of assets only (domain discovery, IP recon,
+#: ports, httpx, tlsx, IP attribution, Uncover, external domains, urlscan
+#: discovery and enrichment, Censys, FOFA, OTX, VirusTotal, ZoomEye, wildcard
+#: zones) and supply chain, whose findings the recon prune never touches.
+_WRITER_SOURCES = {
+    "update_graph_from_vuln_scan": "vuln_scan",
+    "update_graph_from_nmap": "nmap",
+    "update_graph_from_resource_enum": "resource_enum",
+    "update_graph_from_ai_surface_recon": "ai_surface_recon",
+    "update_graph_from_js_recon": "js_recon",
+    "update_graph_from_serialized_scan": "serialized_scan",
+    "update_graph_from_graphql_scan": "graphql_scan",
+    "update_graph_from_subdomain_takeover": "subdomain_takeover",
+    "update_graph_from_vhost_sni": "vhost_sni",
+    "update_graph_from_cache_scan": "cache_scan",
+    "update_graph_from_origin_discovery": "origin_discovery",
+    "update_graph_from_route_exposure": "route_exposure",
+    "update_graph_from_urlscan_findings": "urlscan",
+    "update_graph_from_urlscan_takeover": "urlscan",
+    "update_graph_from_shodan": "shodan",
+    "update_graph_from_netlas": "netlas",
+    "update_graph_from_criminalip": "criminalip",
+}
+
+#: Writer errors that cost no finding: nothing to write ("No vuln_scan data
+#: found"), and the housekeeping passes that run after the findings are
+#: written (BaseURL re-links, Domain counters, the OpenAPI status, coverage
+#: stamps). Any other item error degrades the writer's sources.
+_HOUSEKEEPING_WRITE_ERROR = re.compile(
+    r"No \w+ (?:data|results)\b|(?:Orphan|Apex) BaseURL cleanup failed"
+    r"|Domain update failed|OpenAPI source status update failed|[\w ]+ coverage stamp failed")
+
+
+class _WriteResult(tuple):
+    """``(writer, stats, failure)`` of one background write; ``failure`` is
+    empty for a clean one."""
+
+    def __new__(cls, writer: str, stats, failure: str):
+        return super().__new__(cls, (writer, stats, failure))
+
+
+def _writer_sources(update_method_name: str) -> set:
+    """The finding sources a background writer writes; empty for an asset writer."""
+    return set(_PHASE_FINDING_SOURCES.get(_WRITER_SOURCES.get(update_method_name), ()))
+
+
+def _finding_write_errors(stats) -> str:
+    errors = stats.get("errors") if isinstance(stats, dict) else None
+    lost = [e for e in errors or [] if not _HOUSEKEEPING_WRITE_ERROR.match(str(e))]
+    return f"{len(lost)} item error(s)" if lost else ""
+
+
+def _note_writer_failed(update_method_name: str, why: str) -> None:
+    """Keep this run's findings of a writer whose write failed. Never raises."""
+    phase = _WRITER_SOURCES.get(update_method_name)
+    if not phase:
+        return
+    sources = ", ".join(sorted(_writer_sources(update_method_name)))
+    print(f"[!][graph-db] {update_method_name}: {why} - the findings of {sources} "
+          f"are kept this run")
+    _note_phase_error(phase, reason=f"graph write failed ({update_method_name})")
+
+
 def _graph_update_bg(update_method_name: str, combined_result: dict,
                      user_id: str, project_id: str):
     """Submit a graph DB update to the background thread.
@@ -255,8 +324,14 @@ def _graph_update_bg(update_method_name: str, combined_result: dict,
     Takes a deep-copy snapshot of combined_result so the main thread can
     keep mutating it safely. Once a stop is requested nothing new is queued:
     the stopper is landing what is already queued within its deadline.
+    A graph error never fails the scan; a write of findings that fails, or
+    never lands, keeps their sources out of this run's prune (R-20).
     """
-    if not UPDATE_GRAPH_DB or _graph_executor is None:
+    if not UPDATE_GRAPH_DB:
+        return
+    if _graph_executor is None:
+        # The group's writer is already drained: this write would be dropped.
+        _note_writer_failed(update_method_name, "not queued, the graph writer was closed")
         return
     if _shutdown.stop_requested():
         print(f"[!][graph-db] Stop requested: {update_method_name} not queued")
@@ -264,17 +339,24 @@ def _graph_update_bg(update_method_name: str, combined_result: dict,
     snapshot = copy.deepcopy(combined_result)
 
     def _do_update():
+        stats, failure = None, ""
         try:
             from graph_db import Neo4jClient
             with Neo4jClient() as client:
                 if client.verify_connection():
                     method = getattr(client, update_method_name)
-                    method(snapshot, user_id, project_id)
+                    stats = method(snapshot, user_id, project_id)
+                    failure = _finding_write_errors(stats)
                     print(f"[graph-db] {update_method_name} complete")
                 else:
+                    failure = "Neo4j not reachable"
                     print(f"[!][graph-db] Neo4j not reachable — skipped {update_method_name}")
         except Exception as e:
+            failure = type(e).__name__
             print(f"[!][graph-db] Background graph update ({update_method_name}) failed: {e}")
+        if failure:
+            _note_writer_failed(update_method_name, failure)
+        return _WriteResult(update_method_name, stats, failure)
 
     future = _graph_executor.submit(_do_update)
     _graph_futures.append(future)
@@ -289,16 +371,27 @@ def _stamp_wildcard_zones(combined_result: dict) -> None:
 
 
 def _graph_wait_all():
-    """Wait for every queued graph DB update to finish, then tear down the executor."""
+    """Wait for every queued graph DB update to finish, then tear down the executor.
+
+    Returns ``[(writer, stats, failure), ...]``, ``failure`` empty for a clean
+    write. A failed one has already noted its finding sources degraded.
+    """
     global _graph_executor
     if _graph_executor is None:
-        return
+        return []
     _graph_executor.shutdown(wait=True)
+    results = []
     for f in _graph_futures:
         exc = f.exception()
         if exc:
             print(f"[!][graph-db] Graph update error: {exc}")
+        elif isinstance(f.result(), _WriteResult):
+            results.append(f.result())
+    failed = [writer for writer, _stats, failure in results if failure]
+    if failed:
+        print(f"[!][graph-db] {len(failed)} graph write(s) failed: {', '.join(failed)}")
     _graph_executor = None
+    return results
 
 
 def _drain_graph_writes(deadline: float) -> None:
