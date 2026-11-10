@@ -412,11 +412,18 @@ services:
     environment:
       DOCKER_BROKER_UPSTREAM: /var/run/docker.sock
       DOCKER_BROKER_LISTEN: /var/run/broker/docker.sock
-      # Host bind sources the tools legitimately mount: the shared scratch dir and
-      # anything under the repo root (recon output, wordlists, custom templates).
-      # Everything else (/, /etc, /root, the docker socket) is denied.
-      DOCKER_BROKER_ALLOWED_BIND_PREFIXES: /tmp/redamon,${PWD:-/home/samuele/Progetti didattici/redamon}
+      # The repository root as the daemon sees it (redamon.sh runs compose from
+      # it). The broker allows binds of the few subdirectories tools mount under
+      # it (broker.py REPO_TOOL_SUBDIRS), never the root itself, which holds .env;
+      # plus the shared scratch dir /tmp/redamon. Unset: no repository path at all.
+      DOCKER_BROKER_REPO_ROOT: ${PWD:-}
       DOCKER_BROKER_ALLOWED_VOLUMES: nuclei-templates
+      # Extra named volumes a tool may mount read-write. The broker always lists
+      # nuclei-templates; every other volume is read-only (the OSV DB, the intel).
+      DOCKER_BROKER_ALLOWED_RW_VOLUMES: ${DOCKER_BROKER_ALLOWED_RW_VOLUMES:-}
+      # Extra networks tools may inspect, create and attach to, beyond the
+      # supply-chain analyzer's and the TruffleHog verifier's bridges.
+      DOCKER_BROKER_ALLOWED_NETWORKS: ${DOCKER_BROKER_ALLOWED_NETWORKS:-}
       # Memory governor (Part 4d): hard memory cap injected into every sibling
       # tool container (katana/nuclei/httpx/...). A CEILING, not a reservation:
       # the broker only lowers a request, so it must be >= the largest

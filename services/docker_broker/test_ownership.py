@@ -5,7 +5,8 @@ Runs the broker against a MOCK upstream that answers GET /containers/<id>/json
 with a marker label iff the id contains "owned", and asserts:
   * create injects the broker-owned marker label,
   * exec/attach/kill/archive on an UNLABELLED container -> 403, not forwarded,
-  * the same verbs on a LABELLED container -> forwarded,
+  * kill/start on a LABELLED container -> forwarded (exec stays refused: no
+    tool uses it, so it is off the D4 allowlist),
   * GET /containers/json is rewritten to force the ownership label filter.
 
 Run: cd docker_broker && python3 test_ownership.py
@@ -118,11 +119,15 @@ async def main():
         check("exec on unlabelled infra -> 403", b"403" in resp)
         check("exec on unlabelled infra -> NOT forwarded", not _forwarded_op("/exec"))
 
-        # test_exec_allowed_on_labelled
+        # D4: no tool runs `docker exec`, so it is off the allowlist even on a
+        # broker-owned container; start, the verb `docker run` uses, is forwarded.
         received.clear()
         resp = await send(make_request("POST", "/v1.43/containers/owned-scan-123/exec",
                                        {"Cmd": ["sh"]}))
-        check("exec on labelled -> forwarded", _forwarded_op("/exec"))
+        check("exec on labelled -> 403 (not on the allowlist)", b"403" in resp and not _forwarded_op("/exec"))
+        received.clear()
+        resp = await send(make_request("POST", "/v1.43/containers/owned-scan-123/start"))
+        check("start on labelled -> forwarded", _forwarded_op("/start"))
 
         # attach (hijack) on unlabelled -> denied
         received.clear()

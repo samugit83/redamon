@@ -12,10 +12,14 @@ machine.
 
 This broker sits BETWEEN the recon container and the real Docker socket. The
 recon container mounts the broker's socket instead of the real one. The broker
-forwards everything transparently EXCEPT `POST /containers/create`, whose body it
-parses and validates against an allowlist — rejecting any request that would let
-a container escape to the host (bind-mounting host paths, --privileged, dangerous
-caps/namespaces, mounting the docker socket, or a non-allowlisted image).
+blocks by default (decision D4): only the Docker API calls the scan tools' real
+`docker` invocations make are forwarded (`_ROUTES`), each with its method, and
+everything else is refused with a 403 and one log line before the daemon is
+contacted. `POST /containers/create` bodies are validated against an allowlist —
+rejecting any request that would let a container escape to the host
+(bind-mounting host paths, --privileged, dangerous caps/namespaces, mounting the
+docker socket, or a non-allowlisted image). Verbs on existing containers are
+allowed only on containers the broker itself created.
 
 The orchestrator keeps the REAL socket (it is the trusted component). Only the
 recon/partial-recon containers are put behind the broker.
@@ -27,11 +31,12 @@ the forwarded request so the upstream closes after each response and the docker
 client just reconnects for the next call — eliminating keep-alive request
 smuggling). For each connection:
   * parse the request line + headers (+ body via Content-Length),
-  * if it is a hijack endpoint (`/attach`, `/exec/<id>/start`) -> forward the
-    headers then blind-pipe BYTES bidirectionally until close (handles streamed
+  * match it against `_ROUTES`; no match -> 403,
+  * if it is an attach (`/containers/<id>/attach`) -> forward the headers then
+    blind-pipe BYTES bidirectionally until close (handles streamed
     stdin/stdout, e.g. hakrawler's piped stdin and live tool output),
-  * if it is `POST .../containers/create` -> validate the JSON body; reject with
-    403 or forward + relay the response,
+  * if it carries a body the broker checks (container, volume or network
+    create) -> validate it; reject with 403 or forward + relay the response,
   * otherwise -> forward and relay the (possibly streamed/chunked) response.
 
 Stdlib only (asyncio + json) so it runs in a tiny image with no dependencies.
@@ -121,34 +126,76 @@ def _canonical_image(image: str) -> str:
 # the same canonicalizer so an operator-supplied `docker.io/...` extra also matches).
 _CANONICAL_ALLOWED = {_canonical_image(i) for i in ALLOWED_IMAGES}
 
-# Host bind-mount sources the tools legitimately need. Anything else (especially
-# "/" or the docker socket) is denied. Sources without a leading "/" are treated
-# as named volumes and checked against ALLOWED_VOLUMES.
+# Host bind-mount sources. /tmp/redamon is the scratch dir shared with the host
+# at the same path: every tool's per-run folder lives there, many of them
+# dot-prefixed on purpose (.naabu_temp_*, .tlsx_scan_*, .httpx_temp_*,
+# .amass_temp_*, .gau_*, .jsluice_*, .paramspider_*), so dot components are
+# allowed below these prefixes only.
 _DEFAULT_BIND_PREFIXES = ["/tmp/redamon"]
-ALLOWED_BIND_PREFIXES = _DEFAULT_BIND_PREFIXES + _csv_env("DOCKER_BROKER_ALLOWED_BIND_PREFIXES")
-# NOTE: redamon-sca-intel is allowlisted for READ only, deliberately absent from
-# ALLOWED_RW_VOLUMES below. That denial is what stops a spawned scanner poisoning
-# the incident intel that other scans then trust.
+SCRATCH_PREFIXES = list(_DEFAULT_BIND_PREFIXES)
+
+# The repository subdirectories a tool mounts, never the repository itself: its
+# root holds .env, the master keys that the scoped scan-container key exists to
+# keep out of scan containers. Each entry names who mounts it;
+# test_tool_invocations.py fails when one is unused or a tool needs another.
+REPO_TOOL_SUBDIRS = (
+    "recon/wordlists",               # Amass brute force (jhaddix-all.txt)
+    "mcp/nuclei-templates",          # HOST_CUSTOM_TEMPLATES_PATH: the user's nuclei templates
+    "scanners/supply_chain_common",  # the dirty analyzer's code (SUPPLY_CHAIN_COMMON_HOST_PATH)
+)
+
+
+def _sane_prefixes(prefixes) -> list:
+    """Absolute prefixes only, and never one that is the host root: "/" (or a
+    spelling of it) would make every host path pass the prefix match."""
+    out = []
+    for p in prefixes:
+        if not p or not p.startswith("/"):
+            continue
+        norm = os.path.normpath(p)
+        if norm != "/" and not norm.startswith("//"):
+            out.append(norm)
+    return out
+
+
+def repo_bind_prefixes(repo_root: str) -> list:
+    """The host paths of REPO_TOOL_SUBDIRS for a repository at `repo_root` (its
+    path as the Docker daemon sees it; compose passes ${PWD}). None when unset:
+    a missing root fails closed instead of guessing a checkout location."""
+    if not repo_root or not repo_root.startswith("/") or os.path.normpath(repo_root) == "/":
+        return []
+    return [os.path.join(os.path.normpath(repo_root), sub) for sub in REPO_TOOL_SUBDIRS]
+
+
+REPO_ROOT = os.environ.get("DOCKER_BROKER_REPO_ROOT", "").strip()
+ALLOWED_BIND_PREFIXES = _sane_prefixes(
+    _DEFAULT_BIND_PREFIXES + repo_bind_prefixes(REPO_ROOT)
+    + _csv_env("DOCKER_BROKER_ALLOWED_BIND_PREFIXES"))
+
+# Named volumes a tool may mount, read-only unless also in ALLOWED_RW_VOLUMES,
+# in both the Binds and the Mounts form. nuclei-templates is the one writable
+# volume: the template update (`nuclei -ut`) writes it. The shared offline OSV
+# database and the incident intel stay read-only, so a spawned scanner cannot
+# poison what every tenant's supply-chain verdicts are computed from.
 ALLOWED_VOLUMES = set(_csv_env("DOCKER_BROKER_ALLOWED_VOLUMES")) | {
     "nuclei-templates", "redamon-osv-db", "redamon-sca-intel"}
+ALLOWED_RW_VOLUMES = set(_csv_env("DOCKER_BROKER_ALLOWED_RW_VOLUMES")) | {"nuclei-templates"}
 
-# T1/T2: host paths a tool container may bind READ-WRITE. Any other allowed
-# host path (e.g. the source tree under ${PWD}, which is an allowed *read*
-# prefix so tools can mount wordlists/output ro) may be bound only :ro.
-# Legit sub-tool spawns write exclusively under /tmp/redamon; everything else
-# they mount is already :ro (targets, wordlists, work dirs, nuclei-templates).
-# This closes the "bind ${PWD} rw and overwrite recon/main.py or a Skill" path.
+# The user-defined bridges tools inspect, create and attach to: the dirty
+# supply-chain analyzer's (analyzer_dispatch.ANALYZER_NETWORK) and JS Recon's
+# TruffleHog verifier's (trufflehog_bridge.VERIFY_NETWORK).
+ALLOWED_NETWORKS = set(_csv_env("DOCKER_BROKER_ALLOWED_NETWORKS")) | {
+    "redamon-supply-chain-net", "redamon-trufflehog-net"}
+
+# T1/T2: host paths a tool container may bind READ-WRITE. Every other allowed
+# host path (the repository subdirectories) may be bound only :ro. Legit
+# sub-tool spawns write exclusively under /tmp/redamon.
 _DEFAULT_RW_PREFIXES = ["/tmp/redamon"]
-ALLOWED_RW_PREFIXES = _DEFAULT_RW_PREFIXES + _csv_env("DOCKER_BROKER_ALLOWED_RW_PREFIXES")
-ALLOWED_RW_VOLUMES = set(_csv_env("DOCKER_BROKER_ALLOWED_RW_VOLUMES"))
+ALLOWED_RW_PREFIXES = _sane_prefixes(_DEFAULT_RW_PREFIXES + _csv_env("DOCKER_BROKER_ALLOWED_RW_PREFIXES"))
 
 # Capabilities a tool container may request (naabu SYN etc.). Everything else
 # (SYS_ADMIN, SYS_PTRACE, ALL, ...) is denied.
 ALLOWED_CAPS = {"NET_RAW", "NET_ADMIN", "CAP_NET_RAW", "CAP_NET_ADMIN"}
-
-_CREATE_RE = re.compile(r"^/(v[\d.]+/)?containers/create$")
-_HIJACK_RE = re.compile(r"^/(v[\d.]+/)?(containers/[^/]+/attach|exec/[^/]+/start)$")
-_IMAGES_CREATE_RE = re.compile(r"^/(v[\d.]+/)?images/create$")  # docker pull
 
 # E1: marker label injected into every broker-created container so operate-on-
 # existing verbs can be gated to broker-owned targets only. Without this, the
@@ -156,16 +203,56 @@ _IMAGES_CREATE_RE = re.compile(r"^/(v[\d.]+/)?images/create$")  # docker pull
 # (exec/attach into the orchestrator/broker -> host root).
 _OWNER_LABEL = "redamon.broker-owned"
 
-# Operate-on-EXISTING-container verbs (capture group 2 = the container id/name).
-# Gated to broker-owned targets. attach + exec-start are hijack endpoints handled
-# separately; exec-CREATE (POST /containers/{id}/exec) is gated here so a denied
-# exec never yields an exec id to start.
-_CONTAINER_OP_RE = re.compile(
-    r"^/(v[\d.]+/)?containers/([^/]+)/"
-    r"(exec|start|stop|kill|restart|wait|logs|archive|pause|unpause|update|rename|resize)$"
-)
-_CONTAINER_ATTACH_RE = re.compile(r"^/(v[\d.]+/)?containers/([^/]+)/attach$")
-_CONTAINERS_LIST_RE = re.compile(r"^/(v[\d.]+/)?containers/json$")
+# D4: every Docker API call a caller may make, as (methods, path, kind). The set
+# is what the tools' real `docker` invocations send (recorded from the Docker
+# CLI; test_tool_invocations.py replays each tool's command through it), so a
+# call missing here fails a test rather than a scan. Not listed, so refused:
+# exec, archive (docker cp), update (it would lift the memory cap), rename,
+# restart, export, commit, build, image tag/push/delete/load, network and volume
+# endpoints beyond the names tools use, events, system, swarm, plugins.
+_V = r"^/(?:v[\d.]+/)?"
+# Docker's own name grammar, narrower than "[^/]+" on purpose: no "%" and no
+# leading "." means an encoded "/" or a ".." segment cannot make the daemon's
+# router see a different path than the one checked here.
+_NAME = r"([A-Za-z0-9][A-Za-z0-9_.-]*)"
+_ROUTES = tuple((label, frozenset(methods), re.compile(_V + path + "$"), kind)
+                for label, methods, path, kind in (
+    ("ping", ("HEAD", "GET"), r"_ping", "plain"),
+    ("version", ("GET",), r"version", "plain"),
+    ("info", ("GET",), r"info", "plain"),
+    ("container-create", ("POST",), r"containers/create", "create"),
+    ("container-list", ("GET",), r"containers/json", "list"),
+    ("container-attach", ("POST",), rf"containers/{_NAME}/attach", "attach"),
+    ("container-verb", ("POST",), rf"containers/{_NAME}/(?:start|wait|kill|stop|pause|unpause)", "owned"),
+    ("container-read", ("GET",), rf"containers/{_NAME}/(?:logs|json)", "owned"),
+    ("container-remove", ("DELETE",), rf"containers/{_NAME}", "owned"),
+    ("image-pull", ("POST",), r"images/create", "pull"),
+    ("image-list", ("GET",), r"images/json", "plain"),
+    ("image-inspect", ("GET",), r"images/(.+)/json", "image"),
+    ("volume-inspect", ("GET",), rf"volumes/{_NAME}", "volume"),
+    ("volume-create", ("POST",), r"volumes/create", "volume-create"),
+    ("network-inspect", ("GET",), rf"networks/{_NAME}", "network"),
+    ("network-create", ("POST",), r"networks/create", "network-create"),
+))
+
+
+def match_route(method: str, path_only: str):
+    """(kind, match) of the allowlist entry for this call, or (None, None)."""
+    for _label, methods, rx, kind in _ROUTES:
+        if method in methods:
+            m = rx.match(path_only)
+            if m:
+                return kind, m
+    return None, None
+
+
+def route_label(method: str, path_only: str):
+    """The name of the allowlist entry this call matches, or None.
+    test_tool_invocations.py uses it to show every entry has a user."""
+    for label, methods, rx, _kind in _ROUTES:
+        if method in methods and rx.match(path_only):
+            return label
+    return None
 
 
 def _normalize_path(path: str) -> str:
@@ -201,6 +288,16 @@ def _image_allowed(image: str) -> bool:
     return False
 
 
+def _below(norm: str, prefix: str):
+    """The part of `norm` below `prefix` ("" when equal), or None outside it."""
+    base = os.path.normpath(prefix)
+    if norm == base:
+        return ""
+    if norm.startswith(base + "/"):
+        return norm[len(base) + 1:]
+    return None
+
+
 def _bind_source_allowed(source: str) -> bool:
     if not source:
         return False
@@ -211,8 +308,16 @@ def _bind_source_allowed(source: str) -> bool:
         norm = os.path.normpath(source)
         if norm == "/" or "docker.sock" in norm:
             return False
-        return any(norm == p.rstrip("/") or norm.startswith(p.rstrip("/") + "/")
-                   for p in ALLOWED_BIND_PREFIXES)
+        scratch = any(_below(norm, p) is not None for p in SCRATCH_PREFIXES)
+        for p in ALLOWED_BIND_PREFIXES:
+            rest = _below(norm, p)
+            if rest is None:
+                continue
+            # Below a repository prefix, never a dotfile or dot directory
+            # (.env, .git, .env.local): the tools mount none.
+            if scratch or not any(c.startswith(".") for c in rest.split("/")):
+                return True
+        return False
     # no leading slash -> named volume
     return source in ALLOWED_VOLUMES
 
@@ -220,8 +325,7 @@ def _bind_source_allowed(source: str) -> bool:
 def _rw_host_path_allowed(source: str) -> bool:
     """T1/T2: is this host path allowed to be bound READ-WRITE?"""
     norm = os.path.normpath(source)
-    return any(norm == p.rstrip("/") or norm.startswith(p.rstrip("/") + "/")
-               for p in ALLOWED_RW_PREFIXES)
+    return any(_below(norm, p) is not None for p in ALLOWED_RW_PREFIXES)
 
 
 def _bind_is_readonly(opts: str) -> bool:
@@ -270,6 +374,11 @@ def validate_create(body: dict) -> tuple[bool, str]:
         if "unconfined" in str(so):
             return False, f"SecurityOpt {so} denied"
 
+    # A volume plugin, or the local driver's options, can make a named volume
+    # a bind of any host path; the tools use plain local volumes only.
+    if str(hc.get("VolumeDriver") or "local") != "local":
+        return False, f"VolumeDriver {hc.get('VolumeDriver')!r} denied"
+
     # Binds: ["src:dst", "src:dst:ro", "src:dst:rw,z", ...]
     for b in hc.get("Binds") or []:
         parts = str(b).split(":")
@@ -278,14 +387,17 @@ def validate_create(body: dict) -> tuple[bool, str]:
             return False, f"bind mount not allowed: {b!r}"
         # T1/T2: enforce mount MODE, not just the source path. A host path may
         # be bound rw only if it is under an ALLOWED_RW_PREFIXES prefix; every
-        # other allowed host path (the source tree) must be :ro.
+        # other allowed host path (the repository subdirectories) must be :ro.
         opts = parts[2] if len(parts) >= 3 else ""
-        if src.startswith("/") and not _bind_is_readonly(opts) \
-                and not _rw_host_path_allowed(src):
+        if _bind_is_readonly(opts):
+            continue
+        if src.startswith("/") and not _rw_host_path_allowed(src):
             return False, (
                 f"read-write bind of {src!r} denied — source-tree binds must be "
                 f":ro; only {ALLOWED_RW_PREFIXES} may be mounted rw"
             )
+        if not src.startswith("/") and src not in ALLOWED_RW_VOLUMES:
+            return False, f"read-write volume {src!r} denied — mount it :ro"
 
     # Mounts: [{Type, Source, Target, ReadOnly, ...}]
     for m in hc.get("Mounts") or []:
@@ -302,12 +414,15 @@ def validate_create(body: dict) -> tuple[bool, str]:
                     f"be ReadOnly; only {ALLOWED_RW_PREFIXES} may be mounted rw"
                 )
         elif mtype == "volume":
-            if m.get("Source") and m.get("Source") not in ALLOWED_VOLUMES:
-                return False, f"volume not allowed: {m.get('Source')!r}"
-            # A named volume may be mounted rw only if allowlisted for writes.
-            if m.get("Source") and not m.get("ReadOnly") \
-                    and ALLOWED_RW_VOLUMES and m.get("Source") not in ALLOWED_RW_VOLUMES:
-                return False, f"read-write volume {m.get('Source')!r} denied"
+            src = m.get("Source")
+            if src and src not in ALLOWED_VOLUMES:
+                return False, f"volume not allowed: {src!r}"
+            if (m.get("VolumeOptions") or {}).get("DriverConfig"):
+                return False, f"volume driver options denied for {src!r}"
+            # A named volume may be mounted rw only if allowlisted for writes;
+            # an empty list means none is.
+            if src and not m.get("ReadOnly") and src not in ALLOWED_RW_VOLUMES:
+                return False, f"read-write volume {src!r} denied"
         elif mtype:
             return False, f"mount type not allowed: {mtype}"
 
@@ -596,6 +711,52 @@ def validate_pull(path: str) -> tuple[bool, str]:
     return False, f"pull of non-allowlisted image denied: {image!r}"
 
 
+def validate_volume_create(body) -> tuple[bool, str]:
+    """POST /volumes/create: only a writable tool volume, as a plain local volume.
+    Driver options would let the volume be a bind of any host path under a
+    name the tools may then mount read-write."""
+    if not isinstance(body, dict):
+        return False, "unparseable volume create body"
+    name = body.get("Name")
+    if name not in ALLOWED_RW_VOLUMES:
+        return False, f"creating volume {name!r} denied"
+    if str(body.get("Driver") or "local") != "local":
+        return False, f"volume driver {body.get('Driver')!r} denied"
+    if body.get("DriverOpts") or body.get("ClusterVolumeSpec"):
+        return False, f"volume options denied for {name!r}"
+    return True, "ok"
+
+
+def validate_network_create(body) -> tuple[bool, str]:
+    """POST /networks/create: only a tool network, as a plain local bridge."""
+    if not isinstance(body, dict):
+        return False, "unparseable network create body"
+    name = body.get("Name")
+    if name not in ALLOWED_NETWORKS:
+        return False, f"creating network {name!r} denied"
+    if str(body.get("Driver") or "bridge") != "bridge":
+        return False, f"network driver {body.get('Driver')!r} denied"
+    # Options can rebind an existing host bridge (com.docker.network.bridge.name);
+    # ConfigFrom/ConfigOnly/Ingress/swarm scope are swarm features no tool uses.
+    if body.get("Options") or body.get("ConfigFrom") or body.get("ConfigOnly") \
+            or body.get("Ingress") or str(body.get("Scope") or "local") != "local":
+        return False, f"network options denied for {name!r}"
+    ipam = body.get("IPAM") or {}
+    if str(ipam.get("Driver") or "default") != "default" or ipam.get("Options"):
+        return False, f"network IPAM options denied for {name!r}"
+    return True, "ok"
+
+
+def _name_allowed(kind: str, m) -> tuple[bool, str]:
+    """Inspect calls name what they read; only the tools' own names pass."""
+    name = m.group(1)
+    if kind == "image":
+        return _image_allowed(name), f"image {urllib.parse.unquote(name)!r} is not a tool image"
+    if kind == "volume":
+        return name in ALLOWED_VOLUMES, f"volume {name!r} is not a tool volume"
+    return name in ALLOWED_NETWORKS, f"network {name!r} is not a tool network"
+
+
 # --------------------------------------------------------------------------
 # HTTP plumbing
 # --------------------------------------------------------------------------
@@ -661,9 +822,9 @@ _IN_FLIGHT: set = set()
 
 
 async def handle_client(client_reader, client_writer):
-    """Handle one Docker-API request. Connects to upstream LAZILY — only after a
-    request is allowed — so a denied request never touches the real daemon at all
-    (not even a connection)."""
+    """Handle one Docker-API request. Forwards only after the request is
+    allowed, so a denied request never reaches the real daemon (the ownership
+    check's own label inspect aside)."""
     up_writer = None
     me = asyncio.current_task()
     _IN_FLIGHT.add(me)
@@ -674,34 +835,37 @@ async def handle_client(client_reader, client_writer):
         parts = request_line.split(" ")
         method = parts[0] if parts else ""
         path = parts[1] if len(parts) > 1 else ""
-        path_only = _normalize_path(path)  # canonical form for create/hijack/pull matching
+        path_only = _normalize_path(path)  # canonical form for route matching
 
-        def _reject(reason: str):
+        async def _refuse(reason: str, log_extra: str = ""):
+            # One log line per refusal, naming the call: what a refused tool
+            # (or an attacker) asked for is what the operator needs to see.
+            _log(f"DENY {method} {path_only}: {reason}{log_extra}")
             client_writer.write(_deny(reason))
+            await client_writer.drain()
 
-        # ---- E1: gate operate-on-EXISTING-container verbs to broker-owned targets.
-        # A compromised recon container must not be able to exec/attach/kill/etc.
-        # into a container the broker did not create (e.g. the orchestrator or the
-        # broker itself -> host root). exec-start uses an exec id (gated at
-        # exec-create); attach uses a container id (gated in the hijack branch).
-        attach_m = _CONTAINER_ATTACH_RE.match(path_only)
-        op_m = _CONTAINER_OP_RE.match(path_only)
-        if op_m:
-            cid = op_m.group(2)
+        kind, route = match_route(method, path_only)
+        if kind is None:
+            await _refuse("not on the broker allowlist")
+            return
+
+        # ---- E1: verbs on an EXISTING container only on broker-owned targets.
+        # A compromised recon container must not be able to attach/kill/inspect
+        # a container the broker did not create (the orchestrator's environment
+        # holds the master keys; the broker's own Docker socket is host root).
+        if kind in ("owned", "attach"):
+            cid = route.group(1)
             if not await _is_broker_owned(cid):
-                _log(f"DENY {op_m.group(3)} on non-broker-owned container {cid!r}")
-                _reject_early = _deny(f"operation on non-broker-owned container {cid!r} denied")
-                client_writer.write(_reject_early)
-                await client_writer.drain()
+                await _refuse(f"container {cid!r} was not created by the broker")
+                return
+        elif kind in ("image", "volume", "network"):
+            ok, reason = _name_allowed(kind, route)
+            if not ok:
+                await _refuse(reason)
                 return
 
-        # ---- hijack endpoints: forward headers, then raw bidirectional pipe ----
-        if _HIJACK_RE.match(path_only):
-            if attach_m and not await _is_broker_owned(attach_m.group(2)):
-                _log(f"DENY attach on non-broker-owned container {attach_m.group(2)!r}")
-                client_writer.write(_deny(f"attach to non-broker-owned container {attach_m.group(2)!r} denied"))
-                await client_writer.drain()
-                return
+        # ---- attach: forward headers, then raw bidirectional pipe ----
+        if kind == "attach":
             up_reader, up_writer = await asyncio.open_unix_connection(UPSTREAM_SOCK)
             up_writer.write(head)
             await up_writer.drain()
@@ -710,7 +874,7 @@ async def handle_client(client_reader, client_writer):
 
         # ---- E1: scope container listing to broker-owned so the pivot cannot
         # even enumerate infra containers. Force a label filter onto the query. ----
-        if method == "GET" and _CONTAINERS_LIST_RE.match(path_only):
+        if kind == "list":
             head = _rewrite_list_filters(head, path)
 
         # ---- read body (Content-Length) for validation/forwarding ----
@@ -718,8 +882,7 @@ async def handle_client(client_reader, client_writer):
         body_modified = False   # set when we rewrite the create body (Part 4d)
         clen = int(headers.get("content-length", "0") or "0")
         if clen > 8 * 1024 * 1024:  # create configs are tiny; cap to avoid a memory DoS
-            _reject("request body too large")
-            await client_writer.drain()
+            await _refuse("request body too large")
             return
         while len(body) < clen:
             chunk = await client_reader.read(clen - len(body))
@@ -728,27 +891,22 @@ async def handle_client(client_reader, client_writer):
             body += chunk
 
         # ---- validate POST /containers/create (deny = no upstream contact) ----
-        if method == "POST" and _CREATE_RE.match(path_only):
+        if kind == "create":
             try:
                 cfg = json.loads(body or b"{}")
             except Exception as e:
-                _reject(f"unparseable create body: {e}")
-                await client_writer.drain()
+                await _refuse(f"unparseable create body: {e}")
                 return
             ok, reason = validate_create(cfg)
             if not ok:
-                _log(f"DENY create: {reason} (image={cfg.get('Image')!r})")
-                _reject(reason)
-                await client_writer.drain()
+                await _refuse(reason, f" (image={cfg.get('Image')!r})")
                 return
             # Phase 7: sibling-container count cap. Fail OPEN on an unknown count so
             # a transient upstream hiccup never blocks a legitimate spawn.
             if BROKER_MAX_CONTAINERS > 0:
                 running = await _count_broker_owned_running()
                 if running >= BROKER_MAX_CONTAINERS:
-                    _log(f"DENY create: container count cap reached ({running}/{BROKER_MAX_CONTAINERS})")
-                    _reject(f"broker container count cap reached ({running}/{BROKER_MAX_CONTAINERS})")
-                    await client_writer.drain()
+                    await _refuse(f"broker container count cap reached ({running}/{BROKER_MAX_CONTAINERS})")
                     return
             # Memory governor (Part 4d): inject the hard mem cap; E1: stamp the
             # broker-owned marker label; then re-serialize the body (Content-Length
@@ -762,12 +920,21 @@ async def handle_client(client_reader, client_writer):
                  f"run={cfg['Labels'].get('redamon.run_id', '-')}")
 
         # ---- validate docker pull (deny = no upstream contact) ----
-        if method == "POST" and _IMAGES_CREATE_RE.match(path_only):
+        if kind == "pull":
             ok, reason = validate_pull(path)
             if not ok:
-                _log(f"DENY pull: {reason}")
-                _reject(reason)
-                await client_writer.drain()
+                await _refuse(reason)
+                return
+
+        if kind in ("volume-create", "network-create"):
+            try:
+                spec = json.loads(body or b"null")
+            except Exception:
+                spec = None
+            validate = validate_volume_create if kind == "volume-create" else validate_network_create
+            ok, reason = validate(spec)
+            if not ok:
+                await _refuse(reason)
                 return
 
         # ---- allowed: NOW connect upstream and forward ----
@@ -821,7 +988,11 @@ async def main():
         pass
     _log(f"listening on {LISTEN_SOCK} -> upstream {UPSTREAM_SOCK}")
     _log(f"allowed images: {sorted(ALLOWED_IMAGES)}")
-    _log(f"allowed bind prefixes: {ALLOWED_BIND_PREFIXES}; volumes: {sorted(ALLOWED_VOLUMES)}")
+    _log(f"allowed bind prefixes: {ALLOWED_BIND_PREFIXES}; volumes: {sorted(ALLOWED_VOLUMES)} "
+         f"(writable: {sorted(ALLOWED_RW_VOLUMES)}); networks: {sorted(ALLOWED_NETWORKS)}")
+    if not REPO_ROOT:
+        _log("DOCKER_BROKER_REPO_ROOT is unset: no repository directory can be mounted "
+             "(custom nuclei templates, the Amass wordlist and the supply-chain analyzer will be refused)")
     async with server:
         await server.serve_forever()
 
