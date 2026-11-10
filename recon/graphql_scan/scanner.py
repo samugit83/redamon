@@ -20,7 +20,7 @@ from urllib3.util.retry import Retry
 from .discovery import discover_graphql_endpoints, filter_by_roe, roe_settings_for
 from .introspection import (
     test_introspection, extract_operations, calculate_schema_hash,
-    detect_sensitive_fields
+    detect_sensitive_fields, CERT_REFUSED
 )
 from .normalizers import normalize_introspection_finding, aggregate_findings
 from .auth import build_auth_headers
@@ -246,6 +246,7 @@ def _run_graphql_scan(combined_result: dict, settings: dict) -> dict:
             except Exception as e:
                 print(f"[!][GraphQL] Error testing {endpoint}: {str(e)}")
 
+    _note_certificate_refused_hosts(graphql_results)
     # Hosts skipped as unreachable: the prune keeps their previous findings.
     if _GQL_SCOPE is not None:
         _GQL_SCOPE.finish("graphql_scan", host_source="graphql_scan",
@@ -275,6 +276,41 @@ def _run_graphql_scan(combined_result: dict, settings: dict) -> dict:
               f"Info: {vuln_summary['by_severity']['info']}")
 
     return combined_result
+
+
+_GRAPHQL_SOURCES = ("graphql_scan", "graphql_cop")
+
+
+def _note_certificate_refused_hosts(graphql_results: dict) -> None:
+    """Keep GraphQL's earlier findings on the hosts whose certificate it refused.
+
+    With GRAPHQL_VERIFY_SSL on, such a host answered but GraphQL checked
+    nothing on it. The host is cut for GraphQL's own sources only (README
+    "Degrade by host before degrading by source"): the other modules reached
+    it, so their stale findings there are pruned as usual, and it is never
+    reported as down.
+    """
+    from recon.helpers import circuit_breaker as _cb
+    try:
+        hosts = sorted({
+            _cb.host_key(endpoint)
+            for endpoint, data in (graphql_results.get('endpoints') or {}).items()
+            if str((data or {}).get('error') or '').startswith(CERT_REFUSED)
+        } - {''})
+    except Exception:  # noqa: BLE001 - unknown hosts: keep every GraphQL finding
+        _cb.note_degraded("graphql_scan", sources=_GRAPHQL_SOURCES,
+                          reason="certificate-refused hosts unknown")
+        return
+    if not hosts:
+        return
+    _cb.note_degraded("graphql_scan", hosts=hosts, host_source=_GRAPHQL_SOURCES[0],
+                      aliases=_GRAPHQL_SOURCES[1:], source_only_hosts=True,
+                      reason="TLS certificate refused (GRAPHQL_VERIFY_SSL on)")
+    shown = ", ".join(_cb.safe_text(h) for h in hosts[:_cb.LOG_HOSTS_MAX])
+    if len(hosts) > _cb.LOG_HOSTS_MAX:
+        shown += f" (+{len(hosts) - _cb.LOG_HOSTS_MAX} more)"
+    print(f"[!][GraphQL] {len(hosts)} host(s) not checked, their TLS certificate was "
+          f"refused (Verify SSL is on); their earlier GraphQL findings are kept: {shown}")
 
 
 def run_graphql_scan_isolated(combined_result: dict, settings: dict) -> dict:

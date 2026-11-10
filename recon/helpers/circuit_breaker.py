@@ -986,6 +986,18 @@ def _is_cert_verification_failure(exc: BaseException) -> bool:
     return False
 
 
+def is_certificate_refused(exc: BaseException) -> bool:
+    """True when this client refused the host's certificate. Never raises.
+
+    The host is up, but a module that verifies certificates checked nothing
+    on it: it must keep its earlier findings there (see ``note_degraded``).
+    """
+    try:
+        return _is_cert_verification_failure(exc)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _failure_kind(exc: BaseException) -> Optional[str]:
     rex = _requests_exceptions()
     if rex is not None and isinstance(exc, rex.RequestException):

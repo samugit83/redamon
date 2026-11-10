@@ -4,7 +4,8 @@ circuit_breaker._failure_kind decides what counts against HostHealth, which
 every module of the run shares. A self-signed, expired or mismatched
 certificate means the host answered the TLS handshake, so it must never mark
 the host down for the other modules; a handshake the host reset or cut short
-still counts.
+still counts. GraphQL, which verifies certificates by default, keeps its own
+earlier findings on such a host, since it checked nothing there.
 
 The certificate and handshake cases run against a real local TLS server and
 the real requests / urllib stacks, so the exception chains are the ones a scan
@@ -12,15 +13,18 @@ sees. The conftest autouse fixture resets HostHealth around every test.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import socket
 import ssl
 import struct
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from unittest import mock
 
 import pytest
 import requests
@@ -260,3 +264,134 @@ def test_a_real_handshake_cut_short_still_marks_the_host_down(self_signed, mode)
         assert cb.host_health.is_down(srv.url("/x")) is True
     finally:
         srv.close()
+
+
+# ---------------------------------------------------------------------------
+# GraphQL keeps its findings on a host whose certificate it refused
+# ---------------------------------------------------------------------------
+# GraphQL verifies certificates by default, so on such a host it checked
+# nothing: its earlier graphql_scan / graphql_cop findings there must survive
+# the run's prune, while every other source, which did reach the host, prunes
+# as usual.
+
+GUESSED = ("/graphql", "/api/graphql", "/v1/graphql", "/v2/graphql")
+
+
+def _gql_settings(**over):
+    settings = {
+        "GRAPHQL_SECURITY_ENABLED": True, "GRAPHQL_VERIFY_SSL": True,
+        "GRAPHQL_INTROSPECTION_TEST": True, "GRAPHQL_TIMEOUT": 5, "GRAPHQL_RATE_LIMIT": 0,
+        "GRAPHQL_CONCURRENCY": 1, "GRAPHQL_RETRY_COUNT": 0, "GRAPHQL_RETRY_BACKOFF": 0,
+        "GRAPHQL_COP_ENABLED": False,
+    }
+    settings.update(over)
+    return settings
+
+
+def _run_graphql(srv, **over):
+    from recon.graphql_scan import scanner
+    with mock.patch.object(scanner, "discover_graphql_endpoints",
+                           return_value=[srv.url(p) for p in GUESSED]):
+        combined = {}
+        scanner.run_graphql_scan(combined, _gql_settings(**over))
+    return combined["graphql_scan"]
+
+
+class _PruneGraph:
+    """Records what the end-of-run prune asks Neo4j to delete."""
+
+    def __init__(self):
+        self.prunes = []
+
+    def __call__(self, *a, **kw):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def verify_connection(self):
+        return True
+
+    def backfill_passive_cve_hosts(self, *a, **kw):
+        return 0
+
+    def prune_unseen_findings(self, user_id, project_id, sources, since, keep_hosts=(), **kw):
+        self.prunes.append((tuple(sources), tuple(keep_hosts)))
+        return {"pruned": 0, "stale": 0, "revived": 0}
+
+    def keep_hosts_for(self, source):
+        (keep,) = [keep for sources, keep in self.prunes if source in sources]
+        return keep
+
+
+@pytest.fixture
+def recon_main(monkeypatch):
+    stub = {
+        'TARGET_DOMAIN': 'example.com', 'SUBDOMAIN_LIST': [], 'IP_MODE': False, 'TARGET_IPS': [],
+        'DOMAIN_BATCH_MODE': False, 'DOMAIN_BATCH_GROUPS': [],
+        'USE_BRUTEFORCE_FOR_SUBDOMAINS': False, 'SCAN_MODULES': ['domain_discovery'],
+        'UPDATE_GRAPH_DB': True, 'USER_ID': 'u1', 'PROJECT_ID': 'p1',
+        'VERIFY_DOMAIN_OWNERSHIP': False, 'STEALTH_MODE': False,
+        'OWNERSHIP_TOKEN': '', 'OWNERSHIP_TXT_PREFIX': '',
+    }
+    with mock.patch('recon.project_settings.get_settings', return_value=dict(stub)):
+        for mod in [m for m in list(sys.modules) if m in ('recon.main', 'main')]:
+            del sys.modules[mod]
+        import recon.main as rm
+        rm._RUN_STARTED_AT = "2026-01-01T00:00:00+00:00"
+        rm._COVERAGE_WRITE_FAILED = False
+        graph = _PruneGraph()
+        monkeypatch.setattr("graph_db.Neo4jClient", graph)
+        yield rm, graph
+
+
+def test_graphql_keeps_its_findings_on_a_host_whose_certificate_it_refused(
+        tls_server, recon_main, capsys):
+    rm, graph = recon_main
+    payload = _run_graphql(tls_server)
+    errors = [data.get("error") or "" for data in payload["endpoints"].values()]
+    assert len(errors) == len(GUESSED)
+    assert all(e.startswith(introspection.CERT_REFUSED) for e in errors)
+    out = capsys.readouterr().out
+    assert f"localhost:{tls_server.port}" in out and "certificate" in out.lower()
+
+    rm._prune_recon_findings()
+    assert "localhost" in graph.keep_hosts_for("graphql_scan")
+    assert "localhost" in graph.keep_hosts_for("graphql_cop")
+    # The other modules reached the host: their stale findings there still go.
+    assert "localhost" not in graph.keep_hosts_for("security_check")
+    assert "localhost" not in graph.keep_hosts_for("nuclei")
+    # Recorded as a GraphQL coverage gap that names the certificate, never as
+    # a host that is down.
+    report = cb.coverage_report()
+    (gap,) = [g for g in report.gaps if g["source"] == "graphql_scan"]
+    assert "certificate" in gap["reason"].lower()
+    # The Recon Delta drops a run's whole gap list over one malformed source.
+    assert all(re.fullmatch(r"[a-z0-9_]{1,64}", g["source"]) for g in report.gaps)
+    assert cb.host_health.unreachable() == []
+
+
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_graphql_that_did_not_verify_the_certificate_keeps_nothing(tls_server, recon_main):
+    rm, graph = recon_main
+    _run_graphql(tls_server, GRAPHQL_VERIFY_SSL=False)
+    rm._prune_recon_findings()
+    assert "localhost" not in graph.keep_hosts_for("graphql_scan")
+    assert "localhost" not in graph.keep_hosts_for("graphql_cop")
+    assert [g for g in cb.coverage_report().gaps if g["source"] == "graphql_scan"] == []
+
+
+@pytest.mark.parametrize("mode", ["eof", "reset"])
+def test_a_handshake_failure_is_a_request_error_not_a_refused_certificate(self_signed, mode):
+    srv = _Server(mode, self_signed)
+    try:
+        # The URL is target data: spelling the OpenSSL reason in it changes nothing.
+        _ok, _schema, error = introspection.test_introspection(
+            srv.url("/CERTIFICATE_VERIFY_FAILED/graphql"), {}, 5, verify_ssl=True)
+    finally:
+        srv.close()
+    assert error.startswith("Request error")
+    assert not error.startswith(introspection.CERT_REFUSED)

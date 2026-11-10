@@ -121,6 +121,20 @@ def _host_failed(url, exc) -> None:
         pass
 
 
+# The error prefix of a request refused on the host's certificate. The scanner
+# reads it to keep that host's earlier findings: nothing on it was checked.
+# Ours, never the target's: the URL that follows it is target data.
+CERT_REFUSED = "Certificate refused"
+
+
+def _certificate_refused(exc) -> bool:
+    try:
+        from recon.helpers import circuit_breaker as cb
+        return cb.is_certificate_refused(exc)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def test_introspection(endpoint: str, headers: Dict[str, str] = None,
                       timeout: int = 30, verify_ssl: bool = True,
                       session: Optional[requests.Session] = None,
@@ -250,6 +264,8 @@ def test_introspection(endpoint: str, headers: Dict[str, str] = None,
         return False, None, f"Request timeout after {timeout}s"
     except RequestException as e:
         _host_failed(endpoint, e)
+        if _certificate_refused(e):
+            return False, None, f"{CERT_REFUSED}: {str(e)}"
         return False, None, f"Request error: {str(e)}"
     except Exception as e:
         return False, None, f"Unexpected error: {str(e)}"
