@@ -105,6 +105,8 @@ def test_a_failed_baseline_keeps_the_ips_vhost_findings_only():
 
     payload = out["vhost_sni"]
     assert payload["unchecked_ports"] == [f"{IP}:8443"]
+    # One port was checked, so the IP was tested.
+    assert payload["by_ip"][IP]["ports_tested"] == 1
     report = cb.coverage_report()
     assert IP in report.keep_hostnames("vhost_sni_enum")
     assert OTHER_IP not in report.keep_hostnames("vhost_sni_enum")
@@ -113,6 +115,72 @@ def test_a_failed_baseline_keeps_the_ips_vhost_findings_only():
     assert "vhost_sni_enum" not in report.degraded_sources
     assert "vhost_sni_enum" in _gap_sources(report)
     assert all(_TOKEN.fullmatch(s) for s in _gap_sources(report))
+
+
+# ---------------------------------------------------------------------------
+# An IP none of whose ports was checked
+# ---------------------------------------------------------------------------
+class _Result:
+    def single(self):
+        return {"matched": 1, "removed": 0, "created": 1, "linked": 0}
+
+
+class _Session:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def run(self, query, **params):
+        self.calls.append((query, params))
+        return _Result()
+
+
+def _ip_enrichment_writes(payload):
+    """The IP addresses the graph writer would stamp vhost_sni_tested on."""
+    from graph_db.mixins.recon.vhost_sni_mixin import VhostSniMixin
+    calls = []
+    writer = VhostSniMixin()
+    writer.driver = mock.Mock(session=lambda: _Session(calls))
+    writer.update_graph_from_vhost_sni({"vhost_sni": payload, "metadata": {"target": "example.com"}},
+                                       "u-1", "p-1")
+    return sorted(p["addr"] for q, p in calls
+                  if "vhost_sni_tested" in str(p.get("props")) and "SET i += $props" in q)
+
+
+def test_an_ip_whose_baselines_all_failed_is_not_marked_tested():
+    dead = {f"{IP}:443", f"{IP}:8443"}
+    with mock.patch.object(v, "_is_curl_available", return_value=True), \
+            mock.patch.object(v, "_curl_probe", _curl(dead)):
+        out = v.run_vhost_sni_enrichment(_combined(IP, OTHER_IP), dict(SETTINGS))
+
+    payload = out["vhost_sni"]
+    assert IP not in payload["by_ip"]
+    assert payload["summary"]["ips_tested"] == 1
+    assert payload["summary"]["candidates_total"] == payload["by_ip"][OTHER_IP]["candidates_tested"]
+    # Not "checked and clean" on the IP node; its findings are kept instead.
+    assert _ip_enrichment_writes(payload) == [OTHER_IP]
+    assert payload["unchecked_ports"] == sorted(dead)
+    assert IP in cb.coverage_report().keep_hostnames("vhost_sni_enum")
+
+
+def test_an_ip_every_port_of_which_another_module_found_down_is_not_marked_tested():
+    import requests
+    for port in (443, 8443):
+        for _ in range(3):
+            cb.host_health.record_failure(f"https://{IP}:{port}", requests.ConnectionError("x"))
+    with mock.patch.object(v, "_is_curl_available", return_value=True), \
+            mock.patch.object(v, "_curl_probe", _curl()):
+        out = v.run_vhost_sni_enrichment(_combined(IP, OTHER_IP), dict(SETTINGS))
+
+    payload = out["vhost_sni"]
+    assert IP not in payload["by_ip"]
+    assert _ip_enrichment_writes(payload) == [OTHER_IP]
+    assert f"{IP}:443" in payload["unreachable_hosts"]
 
 
 # ---------------------------------------------------------------------------

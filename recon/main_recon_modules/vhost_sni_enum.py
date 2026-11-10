@@ -248,10 +248,16 @@ def run_vhost_sni_enrichment(
             unchecked_ports.extend(_port_key(ip, p.get("port")) for p in ports)
             continue
 
-        by_ip[ip] = ip_result
         for dead in ip_result.get("unreachable_ports", []):
             vhost_scope.note_host_skipped(dead)
         unchecked_ports.extend(ip_result.get("unchecked_ports", []))
+        if ip_result.get("ports_tested") == 0:
+            # by_ip is what the graph writer stamps vhost_sni_tested and
+            # hidden_vhost_count=0 on; with no usable baseline that would claim
+            # "checked, nothing hidden". The IP node keeps what it had.
+            print(f"[!][VhostSni] IP {ip}: no port gave a usable baseline -- not marked as tested")
+            continue
+        by_ip[ip] = ip_result
         summary_counts["ips_tested"] += 1
         summary_counts["candidates_total"] += ip_result.get("candidates_tested", 0)
 
