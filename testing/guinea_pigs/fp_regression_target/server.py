@@ -30,10 +30,17 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=down       503 "under maintenance" on every path, no links: http_probe records
                     it, and neither JS Recon nor Nuclei takes a 5xx host as a target
     ROLE=plainjs    a page and one script with nothing in it JS Recon reports
+    ROLE=pleasewait a site whose pages read "Loading, please wait..." and quote a rate
+                    limit, serving an exposed /.git/config (200) with the same footer
+    ROLE=throttled  429 Too Many Requests + Retry-After on every path, "please wait" copy
+    ROLE=redis      a Redis stand-in on 6379 (PING -> +PONG, no auth) and on 80 its toggle,
+                    /_lab/redis?mode=open|delay|auth: a PONG held past the check timeout,
+                    or -NOAUTH as a password-protected Redis answers
 """
 
 import base64
 import hashlib
+import socketserver
 import itertools
 import json
 import os
@@ -60,8 +67,11 @@ class Base(BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt, *args):
-        # Never log a query string: the Shodan stub may receive an API key.
-        print(f"[{ROLE}] {self.command} {self.path.split('?', 1)[0]} host={self.headers.get('Host', '')}", flush=True)
+        # Never log a query string (the Shodan stub may receive an API key) nor an
+        # Authorization value: auth= says only whether the request carried one.
+        auth = "yes" if self.headers.get("Authorization") else "no"
+        print(f"[{ROLE}] {self.command} {self.path.split('?', 1)[0]} host={self.headers.get('Host', '')} "
+              f"auth={auth}", flush=True)
 
     def send(self, status, body=b"", ctype="text/html; charset=utf-8", headers=None):
         if isinstance(body, str):
@@ -238,6 +248,13 @@ _EXTRA_JS = {
 # Synthetic, unsigned, built by concatenation; the lab keeps key validation off.
 _LAB_STRIPE_KEY = "sk_live_" + "4mQ9tR2vX7cL1nB8kP3wZ6sD"
 _SPA_HIDDEN = set()   # /_lab/js?hide=<path>: answer that path with the shell, for a rerun
+# /_lab/js?show=r29: the shell also links the R-29 scripts, a relative call on
+# .20 and the same relative path on .22, for the --r29 project only.
+_SPA_SHOWN = set()
+_SPA_EXTRA_TAGS = {
+    "r29": ('<script src="/static/js/r29.relative.js"></script>'
+            '<script src="http://192.88.94.22/js/client.js"></script>'),
+}
 
 
 class Spa(Base):
@@ -273,8 +290,10 @@ class Spa(Base):
             with _lock:
                 _SPA_HIDDEN.clear()
                 _SPA_HIDDEN.update(h for h in query.get("hide", "").split(",") if h)
-                hidden = sorted(_SPA_HIDDEN)
-            return self.send(200, json.dumps({"hidden": hidden}), "application/json")
+                _SPA_SHOWN.clear()
+                _SPA_SHOWN.update(h for h in query.get("show", "").split(",") if h in _SPA_EXTRA_TAGS)
+                hidden, shown = sorted(_SPA_HIDDEN), sorted(_SPA_SHOWN)
+            return self.send(200, json.dumps({"hidden": hidden, "shown": shown}), "application/json")
         if path not in _SPA_HIDDEN:
             if path in _EXTRA_JS:
                 return self.send(200, _EXTRA_JS[path], "application/javascript")
@@ -296,11 +315,18 @@ class Spa(Base):
         if path == "/static/js/private.9c3d.js.map":
             return self.send(403, "<h1>Forbidden</h1>")
         local = os.path.join(STATIC, path[len("/static/"):])
-        if path.startswith("/static/") and os.path.isfile(local) and ".." not in path and path not in _SPA_HIDDEN:
+        # Outside the --r29 run the R-29 script does not exist: the shell answers it.
+        r29_off = path == "/static/js/r29.relative.js" and "r29" not in _SPA_SHOWN
+        if path.startswith("/static/") and os.path.isfile(local) and ".." not in path and path not in _SPA_HIDDEN \
+                and not r29_off:
             with open(local, "rb") as f:
                 return self.send(200, f.read(), "application/javascript" if path.endswith(".js") else "application/octet-stream")
         with open(os.path.join(STATIC, "index.html"), "rb") as f:   # the SPA catch-all
-            return self.send(200, f.read(), "text/html; charset=utf-8")
+            page = f.read()
+        extra = "".join(_SPA_EXTRA_TAGS[k] for k in sorted(_SPA_SHOWN))
+        if extra:
+            page = page.replace(b"</body>", extra.encode() + b"\n</body>")
+        return self.send(200, page, "text/html; charset=utf-8")
 
 
 # --------------------------------------------------------------------------- bulk JS (plan 06.2)
@@ -393,8 +419,12 @@ NOT_FOUND_JSON = '{"code":"NOT_FOUND","message":"No route matches the request"}'
 
 
 class Api(Base):
-    """A real API next to its catch-all twin (JsonAll): only /api/v1 exists."""
+    """A real API next to its catch-all twin (JsonAll): only /api/v1 exists, and
+    one script calling it by a relative path (R-29, linked from .20's shell)."""
     def do_GET(self):
+        if self.path.split("?", 1)[0] == "/js/client.js":
+            return self.send(200, 'fetch("/api/v1").then(function(r){return r.json()});\n',
+                             "application/javascript")
         if self.path.split("?", 1)[0] == "/api/v1":
             return self.send(200, '{"service":"orders","version":"2.1","endpoints":["/api/v1/orders"]}',
                              "application/json")
@@ -589,11 +619,94 @@ class CdnCert(Base):
         return self.send(403, "<html><head><title>Forbidden</title></head><body><h1>Forbidden</h1></body></html>")
 
 
+# --------------------------------------------------------------------------- Nuclei throttle filter (R-19)
+# Copy a page may carry without the server throttling anything. Before R-19 the
+# Nuclei false-positive filter dropped every finding whose response held it.
+PLEASE_WAIT_FOOTER = "Loading, please wait... API clients are subject to a rate limit of 60 requests per minute."
+GIT_CONFIG = ("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
+              "\tlogallrefupdates = true\n[remote \"origin\"]\n\turl = https://git.fplab.test/shop/storefront.git\n"
+              "\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\tremote = origin\n"
+              "\tmerge = refs/heads/main\n")
+
+
+class PleaseWait(Base):
+    """A served site (200) whose every page ends in the throttle-sounding footer,
+    with its /.git/config exposed: a real finding the old filter dropped."""
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/.git/config":
+            return self.send(200, GIT_CONFIG + f"; {PLEASE_WAIT_FOOTER}\n", "text/plain; charset=utf-8")
+        if path == "/":
+            return self.send(200, "<html><head><title>Storefront</title></head><body><div id=app>"
+                                  f"<p>Loading, please wait&hellip;</p></div><footer>{PLEASE_WAIT_FOOTER}</footer>"
+                                  "</body></html>")
+        return self.send(404, f"<html><body><h1>Not found</h1><footer>{PLEASE_WAIT_FOOTER}</footer></body></html>")
+
+
+class Throttled(Base):
+    """A server that throttles every request: 429 + Retry-After, "please wait" copy.
+    A timing template's match here is the throttle's; any other template keeps its."""
+    def do_GET(self):
+        return self.send(429, "<html><head><title>Too Many Requests</title></head><body><h1>Too Many Requests</h1>"
+                              "<p>Please wait 60 seconds and try again later.</p></body></html>",
+                         headers={"Retry-After": "60"})
+
+
+# --------------------------------------------------------------------------- Redis (R-24)
+# What the stand-in answers to PING, set over /_lab/redis on port 80:
+#   open  -> +PONG at once (no auth: must fire)
+#   delay -> +PONG after REDIS_DELAY seconds, past the check's timeout (no verdict)
+#   auth  -> -NOAUTH, as a password-protected Redis answers (a verdict: clean)
+_redis_state = {"mode": "open"}
+REDIS_DELAY = int(os.environ.get("REDIS_DELAY", "25"))
+
+
+class RedisStandIn(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            data = self.request.recv(1024)
+        except OSError:
+            return
+        if not data:
+            return
+        mode = _redis_state["mode"]
+        command = data.split(b"\r", 1)[0].decode(errors="replace")[:40]
+        print(f"[redis] {command} mode={mode}", flush=True)
+        if mode == "delay":
+            time.sleep(REDIS_DELAY)
+        reply = b"-NOAUTH Authentication required.\r\n" if mode == "auth" else b"+PONG\r\n"
+        try:
+            self.request.sendall(reply)
+        except OSError:
+            pass
+
+
+class RedisToggle(Base):
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        if path == "/_lab/redis":
+            from urllib.parse import parse_qs
+            mode = (parse_qs(query).get("mode") or [""])[0]
+            if mode in ("open", "delay", "auth"):
+                _redis_state["mode"] = mode
+            return self.send(200, json.dumps(_redis_state), "application/json")
+        return self.send(200, "<html><head><title>Cache node</title></head><body><h1>cache-01</h1></body></html>")
+
+
+def _serve_redis():
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    srv = socketserver.ThreadingTCPServer(("0.0.0.0", 6379), RedisStandIn)
+    srv.daemon_threads = True
+    print("[redis] listening on 6379", flush=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
 # --------------------------------------------------------------------------- main
 ROLES = {"fastly": Fastly, "cloudflare": Cloudflare, "redirect": Redirect, "akamai": Akamai,
          "ratelimit": RateLimit, "cache": Cache, "spa": Spa, "vendor": Vendor, "shodan": Shodan,
          "api": Api, "jsonall": JsonAll, "sso": Sso, "loginwall": LoginWall, "deny": Deny, "bulk": Bulk,
-         "tlsvhost": TlsVhost, "cdncert": CdnCert, "down": Down, "plainjs": PlainJs}
+         "tlsvhost": TlsVhost, "cdncert": CdnCert, "down": Down, "plainjs": PlainJs,
+         "pleasewait": PleaseWait, "throttled": Throttled, "redis": RedisToggle}
 
 # A self-signed certificate's issuer is its subject, so TLS_SUBJECT also sets
 # the issuer tlsx reads.
@@ -616,6 +729,8 @@ def _tls_context():
 
 def main():
     handler = ROLES[ROLE]
+    if ROLE == "redis":
+        _serve_redis()
     servers = []
     for port in PORTS:
         srv = ThreadingHTTPServer(("0.0.0.0", port), handler)

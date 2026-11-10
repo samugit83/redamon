@@ -157,6 +157,50 @@ services:
     environment: { ROLE: plainjs, PORTS: "80" }
     networks: { fp_lab: { ipv4_address: 192.88.94.34 } }
 
+  # An origin behind Cloudflare presents a certificate from Cloudflare's Origin
+  # CA: the issuer names Cloudflare, yet the host is the origin, not an edge (R-40).
+  fp-origincert:
+    <<: *lab
+    container_name: redamon-fp-origincert
+    environment:
+      ROLE: cdncert
+      PORTS: "443"
+      TLS_PORTS: "443"
+      TLS_SUBJECT: "/C=US/O=CloudFlare, Inc./OU=CloudFlare Origin SSL Certificate Authority/L=San Francisco/ST=California"
+    networks: { fp_lab: { ipv4_address: 192.88.94.35 } }
+
+  fp-origincert-ecc:
+    <<: *lab
+    container_name: redamon-fp-origincert-ecc
+    environment:
+      ROLE: cdncert
+      PORTS: "443"
+      TLS_PORTS: "443"
+      TLS_SUBJECT: "/C=US/O=CloudFlare, Inc./OU=CloudFlare Origin SSL ECC Certificate Authority/L=San Francisco/ST=California"
+    networks: { fp_lab: { ipv4_address: 192.88.94.36 } }
+
+  # Nuclei's throttle filter (R-19): "please wait" copy on a served page beside
+  # a server that really throttles.
+  fp-pleasewait:
+    <<: *lab
+    container_name: redamon-fp-pleasewait
+    environment: { ROLE: pleasewait, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.37 } }
+
+  fp-throttled:
+    <<: *lab
+    container_name: redamon-fp-throttled
+    environment: { ROLE: throttled, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.38 } }
+
+  # An unauthenticated Redis whose PING answer can be held past the check
+  # timeout, or refused for want of a password (R-24).
+  fp-redis:
+    <<: *lab
+    container_name: redamon-fp-redis
+    environment: { ROLE: redis, PORTS: "80", REDIS_DELAY: "25" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.39 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab

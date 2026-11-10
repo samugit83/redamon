@@ -22,11 +22,18 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --ip-ownership-stealth --no-triage --log stealth.log   # the same, stealth mode
     python3 e2e_fp.py --ip-ownership-nwlab --no-triage   # plan 11, domain mode, nested-wildcard lab up
     python3 e2e_fp.py --trufflehog on       # the same run with JS Recon's TruffleHog engine on
+    python3 e2e_fp.py --roe --no-triage     # RoE: path-form exclusions + an overnight window (R-3, R-32)
+    python3 e2e_fp.py --r29 --no-triage     # one relative API path on two origins (R-29)
+    python3 e2e_fp.py --r43 --no-triage --log r43.log   # typed GraphQL endpoints vs project scope (R-43)
+    python3 e2e_fp.py --nuclei-throttle --no-triage --log nuclei.log   # R-19 (the log echoes Nuclei's JSONL)
+    python3 e2e_fp.py --redis --no-triage   # then --rerun <id> --redis-mode delay|auth (R-24)
+    python3 e2e_fp.py --prefix e2e-audit- ...   # name prefix for the created project
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
 never prints it.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -137,7 +144,9 @@ SPA_STATE = f"http://{NET}.20/_lab/js"
 # Vhost naming and the tlsx CDN tag (plan 07) run as their own project. tlsx
 # may read 443 here (it skips HTTP ports by default), so .32's Cloudflare-issued
 # certificate reaches it; .31 presents the lab's ordinary certificate.
-VHOST_ORIGIN_TARGETS = [f"{NET}.{n}" for n in (31, 32)]
+# .35 and .36 present Cloudflare Origin CA certificates (RSA and ECC issuer): the
+# issuer names Cloudflare, but such a host is an origin, never an edge (R-40).
+VHOST_ORIGIN_TARGETS = [f"{NET}.{n}" for n in (31, 32, 35, 36)]
 VHOST_ORIGIN_NAMES = ["portal", "split", "admin", "dev", "qa", "status"]
 VHOST_ORIGIN_SETTINGS = {
     **SETTINGS,
@@ -147,6 +156,7 @@ VHOST_ORIGIN_SETTINGS = {
     "katanaEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
     "webCachePoisonEnabled": False,
     "vhostSniCustomWordlist": "\n".join(f"{w}.{APEX}" for w in VHOST_ORIGIN_NAMES),
+    "ipAttributionEnabled": True,
 }
 
 
@@ -209,6 +219,98 @@ NWLAB_SETTINGS = {
     "triageReviewBudget": 0,
     **{k: False for k in AI_OFF},
 }
+
+
+# RoE (R-3, R-32) runs as its own project: .11 is excluded by a path-form entry
+# and .12 by one with a bare trailing slash, so neither may be touched, and the
+# run starts inside an overnight window (start > end) that contains now.
+ROE_TARGETS = [f"{NET}.{n}" for n in (10, 11, 12, 13, 14, 15)]
+ROE_EXCLUDED = [f"{NET}.11/admin", f"{NET}.12/"]
+ALL_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+ROE_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe"],
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "roeExcludedHosts": ROE_EXCLUDED,
+}
+
+
+def roe_window(contains_now=True):
+    """An overnight window (start after end, UTC) that contains now, or one that
+    excludes now: start = now-1h, end = now-2h, and the reverse shifted by 2h."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    hhmm = lambda d: (now + datetime.timedelta(hours=d)).strftime("%H:%M")
+    start, end = (hhmm(-1), hhmm(-2)) if contains_now else (hhmm(1), hhmm(-1))
+    return {"roeTimeWindowEnabled": True, "roeTimeWindowDays": ALL_DAYS, "roeTimeWindowTimezone": "UTC",
+            "roeTimeWindowStartTime": start, "roeTimeWindowEndTime": end}
+
+
+# R-29 runs as its own project: with /_lab/js?show=r29, .20's shell links its own
+# r29.relative.js (a third-party absolute call first, then fetch("/api/v1")) and
+# .22's /js/client.js (the same relative path). Each origin must get its own
+# Endpoint; .21, outside the project, none.
+R29_TARGETS = [f"{NET}.{n}" for n in (20, 22)]
+R29_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum", "js_recon"],
+    "naabuCustomPorts": "80",
+    "jsReconValidateEndpoints": False,
+    "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+}
+
+
+# R-43 runs as its own project on .20 alone: two typed GraphQL endpoints, one on
+# .20 (in scope) and one on .21 (outside it), with a bearer token. .21 must get
+# no request and no credential; the lab logs auth=yes|no, never the value.
+R43_TARGETS = [f"{NET}.20"]
+R43_TOKEN = "fp-lab-r43-synthetic-token"
+R43_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "80",
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "graphqlSecurityEnabled": True, "graphqlCopEnabled": False, "graphqlIntrospectionTest": True,
+    "graphqlAuthType": "bearer", "graphqlAuthValue": R43_TOKEN,
+    "graphqlEndpoints": f"http://{NET}.20/graphql,http://{NET}.21/graphql",
+}
+
+
+# R-19 runs as its own project, Nuclei only: .37 serves "please wait" copy and an
+# exposed /.git/config (must fire), .38 throttles everything with 429 +
+# Retry-After (a non-timing template's match there is kept, not dropped).
+NUCLEI_THROTTLE_TARGETS = [f"{NET}.{n}" for n in (37, 38)]
+NUCLEI_THROTTLE_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "80",
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "nucleiEnabled": True, "nucleiTags": ["git", "headers"],
+    "nucleiSeverity": ["critical", "high", "medium", "low", "info"],
+    "nucleiAutoUpdateTemplates": False, "nucleiDastMode": False, "nucleiInteractsh": False,
+    "nucleiAiTags": False, "nucleiAiResponseFilter": False,
+}
+
+
+# R-24 (Redis) runs as its own project: .39's PING answer is set per run over
+# /_lab/redis (open, delay past the check timeout, or NOAUTH).
+REDIS_TARGETS = [f"{NET}.39"]
+REDIS_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "80,6379",
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "securityCheckEnabled": True,
+}
+REDIS_STATE = f"http://{NET}.39/_lab/redis"
+
+
+def redis_state(mode="open"):
+    with urllib.request.urlopen(f"{REDIS_STATE}?mode={mode}", timeout=10) as resp:
+        return json.loads(resp.read())
 
 
 def require_shodan_stub():
@@ -382,6 +484,18 @@ def main():
     ap.add_argument("--log", metavar="PATH", help="follow the recon container's log into PATH")
     ap.add_argument("--trufflehog", choices=("on", "off"),
                     help="set jsReconTrufflehogEnabled for this run (JS Recon's TruffleHog engine)")
+    ap.add_argument("--roe", action="store_true",
+                    help="create the RoE project (R-3, R-32): path-form exclusions, an overnight window")
+    ap.add_argument("--r29", action="store_true",
+                    help="create the R-29 project (.20 + .22, /_lab/js?show=r29 for the run)")
+    ap.add_argument("--r43", action="store_true",
+                    help="create the R-43 project (typed GraphQL endpoints in and out of scope)")
+    ap.add_argument("--nuclei-throttle", action="store_true",
+                    help="create the R-19 project (Nuclei on .37 please-wait and .38 throttled)")
+    ap.add_argument("--redis", action="store_true", help="create the R-24 Redis project (.39)")
+    ap.add_argument("--redis-mode", choices=("open", "delay", "auth"), default="open",
+                    help="what .39 answers to PING for this run (reset to open after)")
+    ap.add_argument("--prefix", default="", help="prefix for the created project's name")
     args = ap.parse_args()
 
     mcp.init()
@@ -396,12 +510,20 @@ def main():
     if args.rerun:
         project_id = args.rerun
     else:
-        kind = (" (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
+        kind = (" (RoE, R-3/R-32)" if args.roe else " (R-29 per-origin endpoints)" if args.r29 else
+                " (R-43 GraphQL scope)" if args.r43 else " (R-19 Nuclei throttle)" if args.nuclei_throttle else
+                " (R-24 Redis)" if args.redis else
+                " (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
                 " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else
                 " (host coverage)" if args.coverage else " (host coverage, clean)" if args.coverage_clean
                 else " (IP ownership, stealth)" if args.ip_ownership_stealth
                 else " (IP ownership)" if args.ip_ownership else "")
-        targets, settings = ((HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
+        targets, settings = ((ROE_TARGETS, {**ROE_SETTINGS, **roe_window(True)}) if args.roe else
+                             (R29_TARGETS, R29_SETTINGS) if args.r29 else
+                             (R43_TARGETS, R43_SETTINGS) if args.r43 else
+                             (NUCLEI_THROTTLE_TARGETS, NUCLEI_THROTTLE_SETTINGS) if args.nuclei_throttle else
+                             (REDIS_TARGETS, REDIS_SETTINGS) if args.redis else
+                             (HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
                                                     "katanaExcludePatterns": _default_katana_excludes()})
@@ -413,9 +535,9 @@ def main():
                              if args.ip_ownership_stealth else
                              (IP_OWNERSHIP_TARGETS, IP_OWNERSHIP_SETTINGS) if args.ip_ownership else
                              (TARGETS, SETTINGS))
-        name = f"FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        name = f"{args.prefix}FP regression lab{kind} {time.strftime('%Y-%m-%d %H:%M:%S')}"
         if args.ip_ownership_nwlab:
-            name = f"FP regression lab (IP ownership, nwlab domain mode) {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            name = f"{args.prefix}FP regression lab (IP ownership, nwlab domain mode) {time.strftime('%Y-%m-%d %H:%M:%S')}"
             target = {"targetDomain": "nwlab.test", "subdomainList": NWLAB_SUBDOMAINS, "settings": NWLAB_SETTINGS}
         else:
             target = {"targetIps": targets, "settings": settings}
@@ -431,7 +553,11 @@ def main():
         changed = call("update_recon_settings", {"projectId": project_id, "settings": extra})
         print("[*] settings:", json.dumps(changed)[:300], flush=True)
     print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
-    print("[*] SPA state:", json.dumps(spa_state(args.spa_state)), flush=True)
+    spa_query = "&".join(q for q in (args.spa_state, "show=r29" if args.r29 else "") if q)
+    print("[*] SPA state:", json.dumps(spa_state(spa_query)), flush=True)
+    if args.redis or args.redis_mode != "open":
+        print("[*] Redis stand-in:", json.dumps(redis_state(args.redis_mode)), flush=True)
+    print(f"RUN_START={datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}", flush=True)
     try:
         print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600],
               flush=True)
@@ -447,8 +573,10 @@ def main():
     finally:
         if args.shodan_state:
             shodan_state("")
-        if args.spa_state:
+        if spa_query:
             spa_state("")
+        if args.redis_mode != "open":
+            redis_state("open")
     if not args.no_triage:
         out, err = mcp.call("start_triage_run", {"projectId": project_id})
         if err and "triage:run" in json.dumps(out):

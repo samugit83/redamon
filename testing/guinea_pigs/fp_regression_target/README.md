@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # twenty-one hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # twenty-six hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -108,9 +108,10 @@ the host.
    that run only (`/_lab/js?hide=<paths>`; e2e_fp.py resets it after).
 
 8. **Vhost naming and the tlsx CDN tag (plan 07).** `python3 e2e_fp.py
-   --vhost-origin --no-triage` creates an `internal` IP-mode project over `.31`
-   and `.32` with naabu on 443, tlsx on (allowed to read 443), vhost/SNI with a
-   fixed `*.fplab.test` list and nothing else, then `python3 validate_e2e.py
+   --vhost-origin --no-triage` creates an `internal` IP-mode project over `.31`,
+   `.32` and the Origin-CA hosts `.35` and `.36` with naabu on 443, tlsx on
+   (allowed to read 443), IP attribution, vhost/SNI with a fixed `*.fplab.test`
+   list and nothing else, then `python3 validate_e2e.py
    <id> --vhost-origin`. The CDN-edge wordlist skip needs a domain-mode run
    (an IP-mode run has no apex, so it never uses the default wordlist), so it
    is checked by running the real module against the two hosts:
@@ -205,6 +206,33 @@ the host.
     (also at 390 px), and the IP-mode project's report has an Ownership column in
     its IP Target Map.
 
+13. **Recon-audit cases.** Each runs as its own `internal` IP-mode project, every AI
+    hook and Shodan off. `e2e_fp.py` prints `RUN_START=<UTC time>`; the access-log
+    checks read the lab hosts' logs from then on (each request line names method,
+    path, Host and `auth=yes|no`, whether an `Authorization` header came, never
+    its value).
+
+    ```bash
+    python3 e2e_fp.py --roe --no-triage --log roe.log             # .10-.15, .11 and .12 excluded
+    python3 validate_e2e.py <id> --roe <RUN_START>                # R-3 (also writes the RoE list over MCP)
+    python3 validate_e2e.py <id> --roe-window                     # R-32: a window excluding now refuses
+    python3 e2e_fp.py --r29 --no-triage                           # .20 + .22, /_lab/js?show=r29 for the run
+    python3 validate_e2e.py <id> --r29 <RUN_START>
+    python3 e2e_fp.py --r43 --no-triage --log r43.log             # typed GraphQL endpoints on .20 and .21
+    python3 validate_e2e.py <id> --r43 <RUN_START> r43.log
+    python3 e2e_fp.py --nuclei-throttle --no-triage --log nuclei.log   # Nuclei on .37 and .38
+    python3 validate_e2e.py <id> --nuclei-throttle nuclei.log
+    python3 e2e_fp.py --redis --no-triage                         # .39 answers PING at once
+    python3 validate_e2e.py <id> --redis open
+    python3 e2e_fp.py --rerun <id> --redis-mode delay --no-triage # PONG held past the check timeout
+    python3 validate_e2e.py <id> --redis delay
+    python3 e2e_fp.py --rerun <id> --redis-mode auth --no-triage  # -NOAUTH, as with requirepass
+    python3 validate_e2e.py <id> --redis auth
+    ```
+
+    A recon run allows one start per project every few minutes, so `--rerun`
+    may wait out the token's rate limit first.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -256,6 +284,7 @@ the host.
 | all | a rerun with Shodan switched off, after muting one CVE | P-12 | every Shodan CVE is pruned but the muted one, which is kept with `stale_since` |
 | `.31` | an HTTPS proxy routing on the Host header: `portal` gets the same app with or without the SNI, `split` gets one app by Host and another when the SNI names it too (vhost project) | V-11/V-12/V-13 | `portal` is "Hidden Virtual Host" (`hidden_vhost`, layer `both`, medium), not a routing inconsistency; `split` is "Routing Inconsistency (L7 vs L4)" (`host_header_bypass`, high); no other name |
 | `.32`, `.31` | `.32` presents a self-signed certificate whose issuer is "Cloudflare Inc ECC CA-3"; `.31` the lab's own | T-01/T-02 | after the run `.32` has `is_cdn` true, `cdn_name` cloudflare, `cdn_source` tlsx; `.31` no CDN tag |
+| `.35`, `.36` | origins presenting a certificate from Cloudflare's Origin CA (RSA and ECC issuer: "CloudFlare Origin SSL [ECC] Certificate Authority"), in the vhost project with IP attribution on | T-03/T-04 | the issuer names Cloudflare, yet neither IP is tagged: `is_cdn` not true, no `cdn_name` or `cdn_source`, ownership never `shared_edge` |
 | `.32`, `.31` | the real vhost module in a domain-mode shape, default wordlist on, `.32` carrying tlsx's tag (`vhost_wordlist_edge.py`) | V-14 | no wordlist name is tried on `.32`, all of them on `.31` (`portal` and `split` found); one `vhost_sni_wordlist` coverage note, "shared CDN edge", 1 IP |
 | `.20`, `.22`, `.33` | a host serving JavaScript, a JSON API serving none, and one that answers 503 on every path (coverage project) | CV-01..CV-05 | `.20`'s BaseURL `js_recon_status` complete or partial with files read and findings, `.22`'s `no_input`; `.20` and `.22` carry a Nuclei stamp with URLs sent; `.33`'s BaseURL carries neither; `graph_summary`'s `coverage` has both modules recorded, `.33` among `not_scanned` |
 | `.10`, `.13` | the Shodan stub's CVEs, exported and imported (coverage project) | CV-06, EX-01/02 | the imported copy has the same `INCLUDES_CVE` links as the original, and the CVE nodes' properties are those before the export |
@@ -276,6 +305,11 @@ the host.
 | `.20` | before and after the decide step (step 10) | B-07 | nothing stored reportable before; after, the Real is stored reportable, the False positive excluded with no blocker, the agent's false-positive review a candidate blocked by "AI review: likely false positive" |
 | all | MCP `graph_schema` | B-08 | it lists `triage_disposition`, `triage_blocker` and the gates |
 | `.22` | the real JSON API (HTTP-layer project) | B-04 (`http-layer`) | its "API Endpoint Exposed on IP", whose control passed, is `controlled` true |
+| `.10`-`.15` | RoE project (`--roe`): `.11` excluded as `192.88.94.11/admin` (a path form), `.12` as `192.88.94.12/`; an overnight window (start after end) that contains now | RoE-01..RoE-06 | no asset node names `.11` or `.12` and neither host logs a request; `.10` has its Port and BaseURL; MCP refuses `0.5` and `192.88.94.11/33` ("would exclude nothing") and accepts the path form; the run starts and completes inside the window, and a window that excludes now refuses the start |
+| `.20`, `.22`, `.21` | R-29 project (`--r29`): with `/_lab/js?show=r29` the shell also links `r29.relative.js` (`fetch("http://192.88.94.21/api/v1");fetch("/api/v1")`) and `.22`'s `/js/client.js` (`fetch("/api/v1")`); without the switch neither exists | R29-01..R29-03 | `/api/v1` is an Endpoint on `.20` (the relative call, after the third-party one with the same path) and on `.22`, never on `.21`; `.21` gets no `/api/v1` request. The crawl scopes each seed to its own host, so `.20`'s tag for `.22`'s script is not collected: `.22`'s Endpoint comes from `orders.4a5b.js` |
+| `.20`, `.21` | R-43 project (`--r43`): typed GraphQL endpoints `http://192.88.94.20/graphql` (in scope) and `http://192.88.94.21/graphql` (outside it), bearer auth | R43-01..R43-04 | the recon log says once that `.21` was refused with no request and no credential; `.21` logs no `/graphql` and no `auth=yes`; `.20` logs `POST /graphql ... auth=yes`; the run's `roe_excluded` / `graphql_scan` coverage gap counts 1 skipped |
+| `.37`, `.38` | R-19 project (`--nuclei-throttle`), Nuclei only (`git`, `headers` tags): `.37` serves pages and an exposed `/.git/config` (200), each ending "Loading, please wait... rate limit of 60 requests per minute"; `.38` answers every path `429` + `Retry-After: 60` + "Please wait ... try again later" | N19-01..N19-05 | `git-config` on `.37` (the old filter dropped it for the copy); `.38`'s `http-missing-security-headers` (not a timing template) is kept despite the 429; no `git-config` on `.38`; nothing in `vuln_scan.false_positives`; every Nuclei JSONL line carries the raw response, status line first, which the throttle rule parses |
+| `.39` | R-24 project (`--redis`): a Redis stand-in on 6379, its PING answer set per run over `/_lab/redis?mode=open|delay|auth` on port 80 | RD-01..RD-06 | `open`: `redis_no_auth` on `.39`, no gap; `delay` (PONG after 25 s, past the 10 s check timeout): the finding is kept and the `security_check` coverage gap names `redis_no_auth`; `auth` (`-NOAUTH`, a verdict): the finding is pruned, no gap |
 
 ## Not covered here
 

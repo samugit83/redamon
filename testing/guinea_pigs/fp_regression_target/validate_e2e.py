@@ -37,6 +37,15 @@ project, `--ip-ownership-stealth <recon.log>` on its stealth twin (the log
 e2e_fp.py --log wrote), `--ip-ownership-nwlab` on the domain-mode project over
 the nested-wildcard lab (e2e_fp.py --ip-ownership-nwlab).
 
+Audit cases (e2e_fp.py prints RUN_START=<UTC time> for the access-log checks):
+`--roe <runStart>` (R-3) on the --roe project, then `--roe-window` (R-32: a
+window that excludes now refuses the start; it restores the one containing
+now); `--r29 <runStart>`; `--r43 <runStart> <recon.log>`; `--nuclei-throttle
+<recon.log | nuclei.jsonl>` (R-19: the recon log e2e_fp.py --log wrote echoes
+every line of the run's nuclei_detection.jsonl); `--redis
+open|delay|auth` after each run of the --redis project (R-24). `--roe` and
+`--roe-window` also write project settings over MCP; every other check reads.
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -54,7 +63,8 @@ USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n>
          " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>"
          " | --disposition before|decided | --disposition-stored before|decided|http-layer"
          " | --ip-ownership | --ip-ownership-stealth <recon.log>"
-         " | --ip-ownership-nwlab]")
+         " | --ip-ownership-nwlab | --roe <runStart> | --roe-window | --r29 <runStart>"
+         " | --r43 <runStart> <recon.log> | --nuclei-throttle <recon.log> | --redis open|delay|auth]")
 if len(sys.argv) not in (2, 3, 4, 5):
     sys.exit(USAGE)
 P = sys.argv[1]
@@ -299,6 +309,14 @@ def vhost_origin_checks():
     plain = ips.get(f"{NET}.31") or {}
     check("T-02", plain and not plain.get("cdn") and plain.get("src") is None,
           f".31 with the lab's own certificate: {plain} (expect no CDN tag)")
+    origin = _ownership([f"{NET}.35", f"{NET}.36"])
+    for case, n in (("T-03", 35), ("T-04", 36)):
+        r = origin.get(f"{NET}.{n}") or {}
+        check(case, r and r.get("is_cdn") is not True and r.get("cdn") is None and r.get("src") is None
+              and r.get("own") != "shared_edge",
+              f".{n} behind a Cloudflare Origin CA certificate ({'ECC' if n == 36 else 'RSA'} issuer): "
+              f"is_cdn {r.get('is_cdn')}, cdn_name {r.get('cdn')}, cdn_source {r.get('src')}, ownership "
+              f"{r.get('own')} (expect an origin: no CDN tag, never shared_edge)")
 
 
 CVE_SNAPSHOT = os.environ.get("COVERAGE_CVE_SNAPSHOT", "coverage_cve_snapshot.json")
@@ -669,9 +687,193 @@ def ip_ownership_nwlab_checks():
           f"most; never the PTR name)")
 
 
+# --------------------------------------------------------------------------- audit cases
+def _lab_log(container, since):
+    """A lab host's request lines since `since` (its log names method, path, host
+    and whether an Authorization header came, never a value)."""
+    import subprocess
+    out = subprocess.run(["docker", "logs", "--since", since, container], capture_output=True, text=True)
+    return [ln for ln in (out.stdout + out.stderr).splitlines() if ln.startswith("[") and "listening on" not in ln]
+
+
+ASSET_LABELS = ("IP", "Port", "Service", "BaseURL", "Endpoint", "Technology", "Vulnerability", "Certificate",
+                "Subdomain", "Header")
+
+
+def _nodes_naming(needles):
+    """Asset nodes with any property naming one of `needles` (read whole, matched here)."""
+    hits = []
+    for label in ASSET_LABELS:
+        for r in q(f"MATCH (n:{label}) RETURN properties(n) AS p"):
+            text = json.dumps(r["p"], default=str)
+            if any(x in text for x in needles):
+                p = r["p"]
+                hits.append((label, p.get("address") or p.get("url") or p.get("name") or p.get("id")))
+    return hits
+
+
+def roe_checks(since):
+    """R-3: .11 excluded by `192.88.94.11/admin`, .12 by `192.88.94.12/`."""
+    hits = _nodes_naming([f"{NET}.11", f"{NET}.12", "192-88-94-11", "192-88-94-12"])
+    check("RoE-01", not hits, f"asset nodes naming an excluded host: {hits} (expect none)")
+    ports = q(f"""MATCH (i:IP {{address: '{NET}.10'}})-[]->(p:Port) RETURN p.number AS n""")
+    bases = q(f"""MATCH (b:BaseURL) WHERE b.url STARTS WITH 'http://{NET}.10' RETURN b.url AS u""")
+    check("RoE-02", ports and bases, f".10 still scanned: ports {[r['n'] for r in ports]}, "
+                                     f"BaseURLs {[r['u'] for r in bases]}")
+    touched = {c: _lab_log(c, since) for c in ("redamon-fp-cloudflare", "redamon-fp-redirect")}
+    check("RoE-03", not any(touched.values()),
+          f"requests on the excluded hosts since {since}: { {c: v[:3] for c, v in touched.items()} } (expect none)")
+    fastly = [ln for ln in _lab_log("redamon-fp-fastly", since) if "] GET " in ln]
+    check("RoE-04", fastly, f"requests on .10 since {since}: {len(fastly)} GET lines (expect some)")
+    refused = {}
+    for entry in ("0.5", f"{NET}.11/33"):
+        out, err = mcp.call("update_recon_settings", {"projectId": P, "settings": {"roeExcludedHosts": [entry]}})
+        refused[entry] = bool(err) and "would exclude nothing" in json.dumps(out)
+    out, err = mcp.call("update_recon_settings",
+                        {"projectId": P, "settings": {"roeExcludedHosts": [f"{NET}.11/admin", f"{NET}.12/"]}})
+    check("RoE-05", all(refused.values()) and not err,
+          f"MCP validator: refused {refused} (expect both 'would exclude nothing'); the path-form list "
+          f"accepted: {not err} {json.dumps(out)[:160] if err else ''}")
+
+
+def roe_window_checks():
+    """R-32: a window that excludes now refuses the start; the overnight one that
+    contains now (e2e_fp.py set it, the run completed) is restored after."""
+    import e2e_fp
+    out, err = mcp.call("update_recon_settings", {"projectId": P, "settings": e2e_fp.roe_window(False)})
+    if err:
+        check("RoE-06", False, f"could not set the excluding window: {json.dumps(out)[:300]}")
+        return
+    out, err = mcp.call("start_recon", {"projectId": P, "mode": "new"})
+    text = json.dumps(out)
+    check("RoE-06", err and ("window" in text.lower() or "403" in text),
+          f"start outside the window: refused={bool(err)} {text[:300]}")
+    mcp.call("update_recon_settings", {"projectId": P, "settings": e2e_fp.roe_window(True)})
+
+
+def r29_checks(since):
+    """R-29: one relative path on two origins is two Endpoints; .21 gets none."""
+    rows = q("""MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint {path: '/api/v1', method: 'GET'})
+                RETURN b.url AS base, e.source AS source ORDER BY base""")
+    bases = [r["base"] for r in rows]
+    check("R29-01", bases == [f"http://{NET}.20", f"http://{NET}.22"],
+          f"/api/v1 Endpoints by BaseURL: {rows} (expect one on .20 and one on .22, none on .21)")
+    rows = q("""MATCH (f:JsReconFinding {finding_type: 'js_file'})-[:HAS_ENDPOINT]->(e:Endpoint {path: '/api/v1'})
+                RETURN f.source_url AS js, e.baseurl AS base""")
+    got = sorted((r["js"], r["base"]) for r in rows)
+    own = (f"http://{NET}.20/static/js/r29.relative.js", f"http://{NET}.20")
+    check("R29-02", own in got and not [g for g in got if g[0] == own[0] and g[1] != own[1]],
+          f"js_file -> /api/v1: {got} (expect r29.relative.js's relative call on .20, after .21's absolute one)")
+    client = [g for g in got if g[0] == f"http://{NET}.22/js/client.js"]
+    if client:
+        check("R29-02b", client == [(f"http://{NET}.22/js/client.js", f"http://{NET}.22")],
+              f".22's client.js resolves its relative call against .22: {client}")
+    else:
+        # The crawl scopes each seed to its own host, so .20's cross-host script
+        # tag for .22's client.js is not collected (like J-09's loader on .21).
+        check("R29-02b (not crawled)", True, ".22/js/client.js was not collected by the crawl; nothing to judge")
+    spa = [ln for ln in _lab_log("redamon-fp-spa", since) if "GET /static/js/r29.relative.js" in ln]
+    vendor = [ln for ln in _lab_log("redamon-fp-vendor", since) if "/api/v1" in ln]
+    check("R29-03", spa and not vendor,
+          f"r29.relative.js served {len(spa)}x; .21 asked for /api/v1 {len(vendor)}x (expect 0)")
+
+
+R43_REFUSED = ("[!][GraphQL] Refused 1 user-specified endpoint(s) outside the project scope; "
+               f"no request and no credential sent to: {NET}.21")
+
+
+def r43_checks(since, log_path):
+    """R-43: the typed endpoint on .21 (outside the project) gets no request and no token."""
+    text = open(log_path, errors="replace").read()
+    check("R43-01", text.count(R43_REFUSED) == 1, f"refusal line in the recon log: {text.count(R43_REFUSED)}x (expect 1)")
+    vendor = [ln for ln in _lab_log("redamon-fp-vendor", since) if "/graphql" in ln or "auth=yes" in ln]
+    check("R43-02", not vendor, f".21 requests for /graphql or with a credential: {vendor[:3]} (expect none)")
+    spa = [ln for ln in _lab_log("redamon-fp-spa", since) if f"POST /graphql host={NET}.20" in ln]
+    check("R43-03", spa and all(ln.endswith("auth=yes") for ln in spa),
+          f".20 got POST /graphql {len(spa)}x, with a credential each: {spa[:2]}")
+    gaps = q("""MATCH (d:Domain) WHERE d.name STARTS WITH 'ip-targets.' RETURN d.recon_coverage_gaps AS g""")
+    listed = [g for r in gaps for g in json.loads(r["g"] or "[]")
+              if g.get("source") == "roe_excluded" and g.get("module") == "graphql_scan"]
+    check("R43-04", listed and any(g.get("skipped") == 1 or g.get("hosts") == 1 for g in listed),
+          f"roe_excluded gap for graphql_scan: {listed}")
+
+
+def nuclei_throttle_checks(jsonl_path):
+    """R-19: "please wait" copy on a served page no longer hides a finding; a
+    non-timing template's match on a throttled (429) host is kept."""
+    rows = q("""MATCH (v:Vulnerability) WHERE v.source = 'nuclei'
+                RETURN v.template_id AS t, coalesce(v.matched_at, v.url, v.host) AS at""")
+    on = lambda ip, tid: [r for r in rows if r["t"] == tid and f"{NET}.{ip}" in (r["at"] or "")]
+    check("N19-01", on(37, "git-config"), f"git-config on the please-wait host .37: {on(37, 'git-config')}")
+    check("N19-02", on(38, "http-missing-security-headers"),
+          f"a non-timing template on the throttled host .38 is kept: {on(38, 'http-missing-security-headers')[:2]}")
+    check("N19-03", not on(38, "git-config"), f"no git-config on the 429 host: {on(38, 'git-config')}")
+    recon = os.path.join(HERE, "..", "..", "..", "recon", "output", f"recon_{P}.json")
+    fps = ((json.load(open(recon)).get("vuln_scan") or {}).get("false_positives") or []) if os.path.exists(recon) else None
+    named = [f for f in (fps or []) if "git-config" in json.dumps(f)]
+    check("N19-04", fps is not None and not named,
+          f"vuln_scan.false_positives: {len(fps) if fps is not None else 'no recon file'} entries, "
+          f"git-config among them: {len(named)} (expect 0)")
+    heads = []
+    if jsonl_path and os.path.exists(jsonl_path):
+        # A nuclei_detection.jsonl, or the recon log, which echoes each of its
+        # lines as "[*][Nuclei][DETECTION] {...}".
+        for ln in open(jsonl_path, errors="replace"):
+            if "{" not in ln or ("[Nuclei][" in ln and "{" not in ln.split("]", 3)[-1]):
+                continue
+            try:
+                line = json.loads(ln[ln.index("{"):])
+            except ValueError:
+                continue
+            if isinstance(line, dict) and line.get("template-id"):   # not a progress/stats line
+                heads.append((line.get("response") or "")[:12])
+    raw = [h for h in heads if h.startswith("HTTP/1.1 ")]
+    check("N19-05", heads and len(raw) == len(heads),
+          f"Nuclei JSONL lines: {len(heads)}, with a raw 'HTTP/1.1 ...' response head: {len(raw)} "
+          f"(the throttle rule parses it; none means the rule is dead code)")
+
+
+def redis_checks(stage):
+    """R-24: open -> redis_no_auth; delay -> kept + a coverage gap; auth -> pruned."""
+    rows = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'redis_no_auth'
+                 RETURN v.id AS id, v.matched_ip AS ip, v.stale_since AS stale, toString(v.updated_at) AS seen""")
+    gaps = q("""MATCH (d:Domain) WHERE d.recon_coverage_gaps IS NOT NULL RETURN d.recon_coverage_gaps AS g""")
+    listed = [g for r in gaps for g in json.loads(r["g"] or "[]")
+              if g.get("source") == "security_check" and "redis_no_auth" in json.dumps(g)]
+    if stage == "open":
+        check("RD-01", len(rows) == 1 and rows[0]["ip"] == f"{NET}.39", f"redis_no_auth on .39: {rows}")
+        check("RD-02", not listed, f"no security_check gap for redis_no_auth: {listed}")
+    elif stage == "delay":
+        check("RD-03", len(rows) == 1, f"PING answered past the timeout: the finding is kept: {rows}")
+        check("RD-04", listed, f"security_check coverage gap naming redis_no_auth: {listed}")
+    elif stage == "auth":
+        check("RD-05", not rows, f"NOAUTH is a verdict: the finding is pruned: {rows}")
+        check("RD-06", not listed, f"no gap once Redis answered: {listed}")
+    else:
+        sys.exit(USAGE)
+
+
 if len(sys.argv) > 2:
     if sys.argv[2] == "--ip-ownership" and len(sys.argv) == 3:
         ip_ownership_checks()
+        sys.exit(report())
+    if sys.argv[2] == "--roe" and len(sys.argv) == 4:
+        roe_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--roe-window" and len(sys.argv) == 3:
+        roe_window_checks()
+        sys.exit(report())
+    if sys.argv[2] == "--r29" and len(sys.argv) == 4:
+        r29_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--r43" and len(sys.argv) == 5:
+        r43_checks(sys.argv[3], sys.argv[4])
+        sys.exit(report())
+    if sys.argv[2] == "--nuclei-throttle" and len(sys.argv) in (3, 4):
+        nuclei_throttle_checks(sys.argv[3] if len(sys.argv) == 4 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--redis" and len(sys.argv) == 4:
+        redis_checks(sys.argv[3])
         sys.exit(report())
     if sys.argv[2] == "--ip-ownership-stealth" and len(sys.argv) == 4:
         ip_ownership_stealth_checks(sys.argv[3])
