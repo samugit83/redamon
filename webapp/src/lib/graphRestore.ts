@@ -17,7 +17,7 @@
  * from the payload), so a restore can only ever write into the target project.
  */
 import { createHash } from 'crypto'
-import type { Session } from 'neo4j-driver'
+import { DateTime, type Session } from 'neo4j-driver'
 import { functionalLabel } from '@/lib/scanSnapshot'
 import { carriedReferenceEdgesToLinks, isReferenceNode, restoreReferenceLinks } from '@/lib/graphReferenceLinks'
 
@@ -174,6 +174,39 @@ export function retiredPropertiesFor(labels: readonly string[], properties: Reco
 }
 
 /**
+ * Node properties every RedAmon writer stores as a Neo4j DateTime, which the
+ * export flattens to `YYYY-MM-DDTHH:MM:SSZ` (graphSerialize.ts). Written back
+ * as strings, the recon prune never matched them (R-38): a restored finding was
+ * never pruned nor stamped stale. An allowlist, not every `*_at`: `matched_at`
+ * is a URL, and js_recon stores `discovered_at` as a string in exactly the
+ * exported shape, which a reader may compare as text.
+ */
+const RESTORED_DATETIME_PROPERTIES: ReadonlySet<string> = new Set([
+  'updated_at', 'created_at', 'stale_since', 'muted_at',
+  'triaged_at', 'triage_rescored_at', 'triage_ai_at', 'triage_verdict_at',
+  'recon_coverage_at', 'js_recon_at', 'nuclei_at', 'http_probed_at', 'anon_status_at',
+  'first_seen_at', 'last_seen_at',
+])
+
+const EXPORTED_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/
+
+/** A temporal property as the DateTime it was exported from; anything else unchanged. */
+export function restoredTemporal(key: string, value: unknown): unknown {
+  if (typeof value !== 'string' || !RESTORED_DATETIME_PROPERTIES.has(key)) return value
+  const match = EXPORTED_DATETIME.exec(value)
+  if (!match) return value
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number)
+  // The driver checks each field's range but not the day against its month.
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second))
+  if (parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day
+      || parsed.getUTCHours() !== hour || parsed.getUTCMinutes() !== minute
+      || parsed.getUTCSeconds() !== second) {
+    return value
+  }
+  return new DateTime(year, month, day, hour, minute, second, 0, 0)
+}
+
+/**
  * Recreate `nodes` + `relationships` for `projectId`. The caller owns clearing
  * (so it can choose what to preserve) and owns the session lifecycle.
  */
@@ -203,6 +236,7 @@ export async function restoreGraph(
       _exportId: node._exportId,
     }
     for (const retired of retiredPropertiesFor(node.labels, properties)) delete properties[retired]
+    for (const [key, value] of Object.entries(properties)) properties[key] = restoredTemporal(key, value)
     // Pre-re-key snapshots have no cert_key; the uniqueness constraint now
     // requires it. Derive it before MERGE so old certificates do not collapse.
     if (node.labels.includes('Certificate') && !properties.cert_key) {

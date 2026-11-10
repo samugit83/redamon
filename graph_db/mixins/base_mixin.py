@@ -75,6 +75,19 @@ _KEEP_HOST_CHARS = re.compile(r"^[a-z0-9._\-]+$|^[0-9a-f:]+$")
 #: patterns rather than one enormous alternation.
 _KEEP_HOSTS_PER_PATTERN = 100
 
+#: `n.updated_at` as a DateTime when it is stored as an ISO string, else null.
+#: A project export and a scan-version snapshot flatten DateTimes to strings,
+#: and a restore before R-38 wrote them back as such; against a DateTime a
+#: string compares as null, so those findings were never pruned nor revived.
+#: Shape-checked first because one value datetime() cannot parse would fail
+#: the whole prune; an unreadable one keeps its finding instead.
+_ISO_DATETIME = (
+    "[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]"
+    "(:[0-5][0-9]([.][0-9]{1,9})?)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)?")
+_RESTORED_UPDATED_AT = (
+    f"CASE WHEN n.updated_at IS :: STRING AND n.updated_at =~ '{_ISO_DATETIME}' "
+    "THEN datetime(n.updated_at) END")
+
 
 def _keep_host_name(host) -> str:
     """A keep_hosts entry as findings store it: lowercased, and without the
@@ -277,7 +290,8 @@ class BaseMixin:
         WHERE n.user_id = $uid AND n.project_id = $pid
           AND ({_FINDING_LABEL_PREDICATE})
           AND coalesce(n.source, '') IN $sources
-          AND (n.updated_at IS NULL OR n.updated_at < datetime($since)){keep_clause}
+          AND (n.updated_at IS NULL OR n.updated_at < datetime($since)
+               OR {_RESTORED_UPDATED_AT} < datetime($since)){keep_clause}
         // The write lock BEFORE `keep` reads n:Muted: a mute that committed
         // first is then kept, and one that starts later waits for the delete
         // and matches nothing. Without it a mute can land between the read
@@ -313,7 +327,8 @@ class BaseMixin:
           AND ({_FINDING_LABEL_PREDICATE})
           AND coalesce(n.source, '') IN $sources
           AND n.stale_since IS NOT NULL
-          AND n.updated_at >= datetime($since)
+          AND (n.updated_at >= datetime($since)
+               OR {_RESTORED_UPDATED_AT} >= datetime($since))
         REMOVE n.stale_since
         RETURN count(n) AS revived
         """
