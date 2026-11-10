@@ -46,6 +46,7 @@ def run_paramspider(config: dict) -> None:
     from recon.helpers.resource_enum.paramspider_helpers import (
         run_paramspider_discovery,
         merge_paramspider_into_by_base_url,
+        paramspider_urls_in_scope,
     )
 
     roots = scope_roots(config)
@@ -122,12 +123,15 @@ def run_paramspider(config: dict) -> None:
 
     # Merge ParamSpider URLs into by_base_url structure
     print(f"[*][Partial Recon] Merging ParamSpider endpoints...")
+    in_scope_paramspider = paramspider_urls_in_scope(paramspider_urls, target_domains, settings)
     by_base_url = {}
     by_base_url, paramspider_stats = merge_paramspider_into_by_base_url(
-        paramspider_urls,
+        in_scope_paramspider,
         by_base_url,
         target_domains,
     )
+    paramspider_stats["paramspider_total"] = len(paramspider_urls)
+    paramspider_stats["paramspider_out_of_scope"] += len(paramspider_urls) - len(in_scope_paramspider)
 
     print(f"[+][Partial Recon] ParamSpider stats:")
     print(f"[+][Partial Recon]   Total: {paramspider_stats.get('paramspider_total', 0)}")

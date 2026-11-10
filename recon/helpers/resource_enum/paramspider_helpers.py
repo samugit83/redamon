@@ -169,6 +169,32 @@ def run_paramspider_discovery(
                 pass
 
 
+def paramspider_urls_in_scope(
+    paramspider_urls: List[str],
+    target_hosts: Set[str],
+    settings: Dict,
+) -> List[str]:
+    """The ParamSpider URLs whose host is one of the run's target hosts and is
+    not RoE-excluded.
+
+    `paramspider -d` returns every archived host under the domain: a sibling
+    the RoE excludes, a child of a listed host. Its URLs feed the graph and, in
+    the full pipeline, nuclei's targets and DAST list, so only a host the run
+    scans passes, as for GAU. The merge's own filter admits any subdomain of a
+    target host, so the full pipeline and partial recon both call this first.
+    """
+    from recon.helpers.roe_scope import _is_roe_excluded, _url_hostname
+
+    hosts = {str(h).lower() for h in target_hosts or () if h}
+    excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
+    kept = []
+    for url in paramspider_urls:
+        host = _url_hostname(url)
+        if host in hosts and not (excluded and _is_roe_excluded(host, excluded)):
+            kept.append(url)
+    return kept
+
+
 def merge_paramspider_into_by_base_url(
     paramspider_urls: List[str],
     by_base_url: Dict,

@@ -1487,16 +1487,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     in_scope_paramspider = []
 
     if PARAMSPIDER_ENABLED and paramspider_urls:
-        # `paramspider -d` returns every archived host under the domain: a
-        # sibling the RoE excludes, a child of a listed host. Its URLs feed the
-        # graph, nuclei's targets and its DAST list, so only a host this run
-        # scans passes, as for GAU (the merge's own filter admits any subdomain).
-        from recon.helpers.roe_scope import _is_roe_excluded, _url_hostname
-        _roe_excluded = settings.get('ROE_EXCLUDED_HOSTS') if settings.get('ROE_ENABLED') else None
-        for url in paramspider_urls:
-            host = _url_hostname(url)
-            if host in target_domains and not (_roe_excluded and _is_roe_excluded(host, _roe_excluded)):
-                in_scope_paramspider.append(url)
+        from recon.helpers.resource_enum.paramspider_helpers import paramspider_urls_in_scope
+        in_scope_paramspider = paramspider_urls_in_scope(paramspider_urls, target_domains, settings)
 
         print("\n[*][ParamSpider] Merging parameterized endpoints into results...")
         organized_data['by_base_url'], paramspider_stats = merge_paramspider_into_by_base_url(
