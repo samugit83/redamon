@@ -928,6 +928,63 @@ _CONNECT = "connect"
 _READ_TIMEOUT = "read_timeout"
 _ALIVE = "alive"
 
+# OpenSSL's reason for every refused certificate: self-signed, expired,
+# unknown CA, hostname or IP mismatch.
+_CERT_VERIFY_REASON = "CERTIFICATE_VERIFY_FAILED"
+# requests nests the ssl error three deep, urllib one: a chain that needs more
+# exceptions than this to reach it is not theirs.
+_MAX_CHAIN_NODES = 16
+
+
+def _cert_error_types() -> tuple:
+    types: list = []
+    try:
+        import ssl  # noqa: PLC0415
+        types.append(ssl.SSLCertVerificationError)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # urllib3's own hostname matcher (assert_hostname, or an IP address
+        # the ssl module did not check) raises this instead.
+        from urllib3.util.ssl_match_hostname import CertificateError  # noqa: PLC0415
+        types.append(CertificateError)
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(types)
+
+
+def _is_cert_verification_failure(exc: BaseException) -> bool:
+    """True when ``exc`` is, or wraps, a certificate this client refused.
+
+    The host completed enough of the handshake to present a certificate, so
+    it is up: a self-signed one on a live internal host must not take it away
+    from every other module. A handshake reset or EOF is not this and still
+    counts. Only the ssl error's own OpenSSL text is read, never a wrapper's
+    message, which carries the target-controlled URL.
+    """
+    try:
+        import ssl  # noqa: PLC0415
+        ssl_error: Any = ssl.SSLError
+    except Exception:  # noqa: BLE001
+        ssl_error = ()
+    cert_types = _cert_error_types()
+    seen: set[int] = set()
+    stack: list = [exc]
+    while stack and len(seen) < _MAX_CHAIN_NODES:
+        node = stack.pop()
+        if not isinstance(node, BaseException) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if cert_types and isinstance(node, cert_types):
+            return True
+        if ssl_error and isinstance(node, ssl_error) and (
+                getattr(node, "reason", None) == _CERT_VERIFY_REASON
+                or f"[SSL: {_CERT_VERIFY_REASON}]" in str(node)):
+            return True
+        stack.extend(a for a in getattr(node, "args", ()) if isinstance(a, BaseException))
+        stack.extend((getattr(node, "reason", None), node.__cause__, node.__context__))
+    return False
+
 
 def _failure_kind(exc: BaseException) -> Optional[str]:
     rex = _requests_exceptions()
@@ -935,6 +992,8 @@ def _failure_kind(exc: BaseException) -> Optional[str]:
         # ProxyError subclasses ConnectionError: a dead capture proxy must not
         # make every host look down.
         if isinstance(exc, rex.ProxyError):
+            return None
+        if isinstance(exc, rex.SSLError) and _is_cert_verification_failure(exc):
             return None
         if isinstance(exc, (rex.ConnectTimeout, rex.SSLError, rex.ConnectionError)):
             return _CONNECT
@@ -961,7 +1020,7 @@ def _failure_kind(exc: BaseException) -> Optional[str]:
     try:
         import ssl  # noqa: PLC0415
         if isinstance(exc, ssl.SSLError):
-            return _CONNECT
+            return None if _is_cert_verification_failure(exc) else _CONNECT
     except Exception:  # noqa: BLE001
         pass
     if isinstance(exc, OSError) and getattr(exc, "errno", None) in _NETWORK_ERRNOS:
