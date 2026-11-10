@@ -805,7 +805,9 @@ def run_port_scan_isolated(recon_data: dict, settings: dict = None) -> dict:
         or empty dict if scan produced no results.
     """
     import copy
-    snapshot = copy.copy(recon_data)  # shallow copy — safe for read-only access
+    # Deep, not shallow: the fan-out hands every worker one shared copy, which
+    # a nested write would change under the others' copies.
+    snapshot = copy.deepcopy(recon_data)
     run_port_scan(snapshot, output_file=None, settings=settings)
     return snapshot.get("port_scan", {})
 

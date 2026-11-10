@@ -522,6 +522,8 @@ def run_masscan_scan_isolated(recon_data: dict, settings: dict = None) -> dict:
         The 'masscan_scan' data dict, or empty dict if scan produced no results.
     """
     import copy
-    snapshot = copy.copy(recon_data)
+    # Deep, not shallow: the fan-out hands every worker one shared copy, which
+    # a nested write would change under the others' copies.
+    snapshot = copy.deepcopy(recon_data)
     run_masscan_scan(snapshot, output_file=None, settings=settings)
     return snapshot.get("masscan_scan", {})

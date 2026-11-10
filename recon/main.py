@@ -1128,19 +1128,32 @@ def _merge_isolated_result(combined: dict, key: str, result) -> None:
         combined[key] = result
 
 
+def _fan_out_snapshot(combined_result: dict) -> dict:
+    """The one copy of combined_result that every worker of a fan-out is handed.
+
+    Take it before the first submit. A wrapper deep-copies its input in its
+    own thread while the main thread merges finished answers into
+    combined_result, and a copy of the live dict then raises "dictionary
+    changed size during iteration" and loses that tool (R-31). Nothing writes
+    this copy: each wrapper deep-copies it again before its module runs.
+    """
+    return copy.deepcopy(combined_result)
+
+
 def _run_phase_a_fan_out(tools: dict, combined_result: dict, settings: dict,
                          output_file) -> None:
-    """GROUP 6 Phase A: run the active scanners concurrently on deep copies.
+    """GROUP 6 Phase A: run the active scanners concurrently, each on its own copy.
 
-    Each answer is merged before its graph update is queued, because the
-    update snapshots combined_result at queue time.
+    Each answer is merged as soon as it lands, before its graph update is
+    queued, because the update snapshots combined_result at queue time.
     """
     if not tools:
         return
     print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(tools.keys())})")
     print("-" * 40)
     with ThreadPoolExecutor(max_workers=len(tools)) as pool:
-        futures = {pool.submit(fn, combined_result, settings): key
+        snapshot = _fan_out_snapshot(combined_result)
+        futures = {pool.submit(fn, snapshot, settings): key
                    for key, fn in tools.items()}
         for fut in as_completed(futures):
             key = futures[fut]
@@ -1432,18 +1445,19 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         max_workers = max(max_workers, 1)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ip-g3") as g3_exec:
             g3_futures = {}
+            g3_input = _fan_out_snapshot(combined_result)
             if shodan_enabled:
                 from recon.main_recon_modules.shodan_enrich import run_shodan_enrichment_isolated
                 g3_futures["shodan"] = g3_exec.submit(
-                    run_shodan_enrichment_isolated, combined_result, settings
+                    run_shodan_enrichment_isolated, g3_input, settings
                 )
             if naabu_enabled and "port_scan" in SCAN_MODULES:
                 g3_futures["port_scan"] = g3_exec.submit(
-                    run_port_scan_isolated, combined_result, settings
+                    run_port_scan_isolated, g3_input, settings
                 )
             if masscan_enabled and "port_scan" in SCAN_MODULES:
                 g3_futures["masscan_scan"] = g3_exec.submit(
-                    run_masscan_scan_isolated, combined_result, settings
+                    run_masscan_scan_isolated, g3_input, settings
                 )
 
             for name, future in g3_futures.items():
@@ -1460,6 +1474,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                         combined_result["metadata"]["modules_executed"].append("masscan_scan")
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
+                    combined_result["metadata"].setdefault("phase_errors", {})[name] = str(e)
                     _note_phase_error(name)
 
         # Merge masscan results into port_scan for downstream consumers
@@ -1561,10 +1576,11 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         osint_workers = min(len(enabled_ip_osint), 5)
         with ThreadPoolExecutor(max_workers=osint_workers, thread_name_prefix="ip-osint") as osint_exec:
             osint_futures = {}
+            osint_input = _fan_out_snapshot(combined_result)
             for name, (_, module_path, func_name, _) in enabled_ip_osint.items():
                 mod = importlib.import_module(module_path)
                 fn = getattr(mod, func_name)
-                osint_futures[name] = osint_exec.submit(fn, combined_result, settings)
+                osint_futures[name] = osint_exec.submit(fn, osint_input, settings)
             for name, future in osint_futures.items():
                 try:
                     data = future.result()
@@ -1574,6 +1590,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                         print(f"[+][{name.upper()}] Enrichment merged")
                 except Exception as e:
                     print(f"[!][{name.upper()}] Enrichment failed: {e}")
+                    combined_result["metadata"].setdefault("phase_errors", {})[name] = str(e)
                     _note_phase_error(name)
         save_recon_file(combined_result, output_file)
         for name, (_, _, _, graph_method) in enabled_ip_osint.items():
@@ -2101,21 +2118,22 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         max_workers = max(max_workers, 1)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="group3") as g3_exec:
             g3_futures = {}
+            g3_input = _fan_out_snapshot(combined_result)
 
             if shodan_enabled:
                 from recon.main_recon_modules.shodan_enrich import run_shodan_enrichment_isolated
                 g3_futures["shodan"] = g3_exec.submit(
-                    run_shodan_enrichment_isolated, combined_result, _settings
+                    run_shodan_enrichment_isolated, g3_input, _settings
                 )
 
             if naabu_enabled and "port_scan" in SCAN_MODULES:
                 g3_futures["port_scan"] = g3_exec.submit(
-                    run_port_scan_isolated, combined_result, _settings
+                    run_port_scan_isolated, g3_input, _settings
                 )
 
             if masscan_enabled and "port_scan" in SCAN_MODULES:
                 g3_futures["masscan_scan"] = g3_exec.submit(
-                    run_masscan_scan_isolated, combined_result, _settings
+                    run_masscan_scan_isolated, g3_input, _settings
                 )
 
             # Fan-in: merge results sequentially (safe — each writes different key)
@@ -2136,6 +2154,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                         print(f"[+][Masscan] Port scan merged")
                 except Exception as e:
                     print(f"[!][{name}] Failed: {e}")
+                    combined_result["metadata"].setdefault("phase_errors", {})[name] = str(e)
                     _note_phase_error(name)
 
         # Merge masscan results into port_scan for downstream consumers
@@ -2258,10 +2277,11 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         osint_workers = min(len(enabled_osint), 5)
         with ThreadPoolExecutor(max_workers=osint_workers, thread_name_prefix="osint") as osint_exec:
             osint_futures = {}
+            osint_input = _fan_out_snapshot(combined_result)
             for name, (_, module_path, func_name, _) in enabled_osint.items():
                 mod = importlib.import_module(module_path)
                 fn = getattr(mod, func_name)
-                osint_futures[name] = osint_exec.submit(fn, combined_result, _settings)
+                osint_futures[name] = osint_exec.submit(fn, osint_input, _settings)
 
             for name, future in osint_futures.items():
                 try:
@@ -2272,6 +2292,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
                         print(f"[+][{name.upper()}] Enrichment merged")
                 except Exception as e:
                     print(f"[!][{name.upper()}] Enrichment failed: {e}")
+                    combined_result["metadata"].setdefault("phase_errors", {})[name] = str(e)
                     _note_phase_error(name)
 
         save_recon_file(combined_result, output_file)
@@ -2426,12 +2447,11 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
     if not skip_active_scans:
         # ================================================================
-        # GROUP 6 Phase A — Parallel active vuln scanners (Nuclei || GraphQL)
+        # GROUP 6 Phase A — Parallel active vuln scanners
         # ================================================================
-        # Both scanners read BaseURL/Endpoint/Technology, both write Vulnerability,
-        # and they have zero data dependency on each other. Run concurrently via
-        # ThreadPoolExecutor using _isolated wrappers (each deep-copies the
-        # combined_result so there's no shared-dict race).
+        # The scanners read BaseURL/Endpoint/Technology, write their own
+        # findings, and have zero data dependency on each other, so their
+        # _isolated wrappers run concurrently (_run_phase_a_fan_out).
         # ----------------------------------------------------------------
         phase_a_tools: dict = {}
         if "vuln_scan" in SCAN_MODULES:
