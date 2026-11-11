@@ -898,7 +898,8 @@ The kali box holds no key for these calls. Each `proxy_brain` call carries, besi
 signed tag, a **run credential** the agent minted for it (`REDAMON_RUN_CREDENTIAL` in the
 child's environment, sent as `X-Redamon-Run`: audience `traffic`, the run's user and
 project, 15 minutes; `agentic/machine_credential.py`). The routes refuse it unless its
-user and project equal the tag's. The box is deliberately **not** given
+user and project equal the tag's, and its run equals the tag's session when the tag names
+one (the tag carries the run's phase, which another run's credential must not borrow). The box is deliberately **not** given
 `INTERNAL_API_KEY`, the scanner key or any database URL, so a foothold there cannot
 forge a tenant or read the store directly.
 
