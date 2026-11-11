@@ -177,7 +177,7 @@ def test_only_hakrawler_gets_the_reordered_copy():
     gate = "settings.get('AI_IN_PIPELINE') and settings.get('HAKRAWLER_JEV_SEED_ORDER')"
     assert gate in source
     assert source.index("hakrawler_seed_order(target_urls, recon_data)") < \
-        source.index("with ThreadPoolExecutor(max_workers=4) as executor:")
+        source.index("with ThreadPoolExecutor(max_workers=crawler_workers) as executor:")
     hak = source[source.index("futures['hakrawler'] = executor.submit("):][:200]
     assert "hakrawler_seeds," in hak
     kat = source[source.index("futures['katana'] = executor.submit("):][:200]
