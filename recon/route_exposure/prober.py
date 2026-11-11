@@ -1,9 +1,11 @@
 """S4: the request engine of the route exposure scan.
 
 Every request goes through one ``Prober``: the SSRF/scope guard, the RoE
-exclusion, the host breaker, the stop flag, one process-wide pacer, a capped
-streamed body read and the capture routing. Sessions never keep a cookie, so an
-anonymous request can never carry a session a logged-in answer set.
+exclusion, the host breaker, the stop flag, the scan's own process-wide pacer
+and then the RoE ceiling's (recon/helpers/request_pacer.py, shared by every
+in-process requester), a capped streamed body read and the capture routing.
+Sessions never keep a cookie, so an anonymous request can never carry a
+session a logged-in answer set.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from recon.helpers import catchall
+from recon.helpers import request_pacer
 
 try:
     from recon.helpers.user_agent import DEFAULT_BROWSER_UA
@@ -125,15 +128,33 @@ class Answer:
         return self.headers.get(name.lower(), "")
 
 
-def _session() -> requests.Session:
+class _PacedRetry(Retry):
+    """A retry is one more request: it waits for the same slots as the first try."""
+
+    def __init__(self, *args, pace: Optional[Callable[[], None]] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pace = pace or request_pacer.acquire
+
+    def new(self, **kw) -> "_PacedRetry":
+        kw.setdefault("pace", self.pace)
+        return super().new(**kw)
+
+    def sleep(self, response=None) -> None:
+        super().sleep(response)
+        self.pace()
+
+
+def _session(pace: Optional[Callable[[], None]] = None) -> requests.Session:
     """One per worker thread (Sessions are not thread-safe).
 
     No status retries: a real debug page answers 500 and must be read once,
     and a 429 is paced by ``_Pacer.back_off`` rather than retried behind its
-    back. One connect retry only, before any byte reached the server.
+    back. One connect retry only, before any byte reached the server; it
+    takes its slots through ``pace`` like the first try.
     """
-    retry = Retry(total=1, connect=1, read=0, status=0, redirect=0, other=0,
-                  allowed_methods=frozenset(["GET", "HEAD"]), raise_on_status=False)
+    retry = _PacedRetry(total=1, connect=1, read=0, status=0, redirect=0, other=0,
+                        allowed_methods=frozenset(["GET", "HEAD"]), raise_on_status=False,
+                        pace=pace)
     adapter = HTTPAdapter(max_retries=retry, pool_maxsize=4)
     session = requests.Session()
     session.trust_env = False
@@ -221,8 +242,14 @@ class Prober:
     def _session(self) -> requests.Session:
         session = getattr(self._local, "session", None)
         if session is None:
-            session = self._local.session = _session()
+            session = self._local.session = _session(self._pace)
         return session
+
+    def _pace(self) -> None:
+        """Both clocks before every request: the scan's own rate, then the RoE
+        ceiling every in-process requester shares (inert with no ceiling)."""
+        self.pacer.wait()
+        request_pacer.acquire()
 
     def _routing(self, with_auth: bool) -> tuple[dict, str]:
         if not self.capture_allowed(with_auth):
@@ -264,15 +291,18 @@ class Prober:
             request_headers["X-Redamon-Ctx"] = token
         answer = self._send_once(method, url, request_headers, proxies, max_bytes, with_auth)
         if answer.status_code == 429:
-            # Slow every worker down, then try this route once more.
-            self.pacer.back_off(_retry_after(answer.headers))
+            # Slow every worker down, and every other in-process requester
+            # under the RoE ceiling, then try this route once more.
+            wait = _retry_after(answer.headers)
+            self.pacer.back_off(wait)
+            request_pacer.pacer().back_off(wait)
             if not _stop_requested():
                 answer = self._send_once(method, url, request_headers, proxies, max_bytes, with_auth)
         answer.range_read = bool(range_bytes)
         return answer
 
     def _send_once(self, method, url, headers, proxies, max_bytes, with_auth) -> Answer:
-        self.pacer.wait()
+        self._pace()
         with self._lock:
             self.sent += 1
             if with_auth:
