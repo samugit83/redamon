@@ -44,6 +44,8 @@ vi.mock('@/lib/prisma', () => {
     jobQueue: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     conversation: { findMany: vi.fn().mockResolvedValue([]) },
     engagementAuthorization: { count: vi.fn().mockResolvedValue(0) },
+    // The account's Nuclei templates go to the deleting admin (route.delete.templates.test.ts).
+    nucleiTemplate: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
   }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronDown, Shield, Upload, Trash2, Loader2, FileText, Play, Info } from 'lucide-react'
-import { Toggle, WikiInfoButton } from '@/components/ui'
+import { Toggle, WikiInfoButton, useOptionalAlertModal } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
@@ -29,6 +29,32 @@ interface CustomTemplate {
   file: string
   path: string
   size: number
+  /** Relative to the signed-in (or acted-as) account; absent from an older server. */
+  ownership?: 'own' | 'instance' | 'other'
+  /** Another account's template, listed to an admin: its email, or null once the account is gone. */
+  owner?: string | null
+}
+
+interface TemplatesResponse {
+  templates?: CustomTemplate[]
+  canManageAll?: boolean
+}
+
+const NOT_SELECTABLE = "Another account's template: a project can use only its owner's templates and instance templates"
+
+function ownershipLabel(t: CustomTemplate): string | null {
+  if (t.ownership === 'own') return 'yours'
+  if (t.ownership === 'instance') return 'instance'
+  if (t.ownership === 'other') return t.owner ? `owner: ${t.owner}` : 'owner: deleted account'
+  return null
+}
+
+/** Why the signed-in account may not delete `t`, or null when it may. */
+function deleteBlockedReason(t: CustomTemplate, canManageAll: boolean): string | null {
+  if (canManageAll || t.ownership === undefined || t.ownership === 'own') return null
+  return t.ownership === 'instance'
+    ? 'Instance template: only an administrator can delete it'
+    : 'Only its owner or an administrator can delete it'
 }
 
 const SEVERITY_OPTIONS = ['critical', 'high', 'medium', 'low', 'info']
@@ -37,22 +63,28 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
   const jevStatus = useHasJevProvider()
   const [isOpen, setIsOpen] = useState(true)
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([])
+  const [canManageAll, setCanManageAll] = useState(false)
+  const alerts = useOptionalAlertModal()
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const templateFileRef = useRef<HTMLInputElement>(null)
 
+  const adoptTemplates = useCallback((json: TemplatesResponse) => {
+    setCustomTemplates(json.templates || [])
+    setCanManageAll(json.canManageAll === true)
+  }, [])
+
   const fetchTemplates = useCallback(async () => {
     try {
       const res = await fetch('/api/nuclei-templates')
       if (res.ok) {
-        const json = await res.json()
-        setCustomTemplates(json.templates || [])
+        adoptTemplates(await res.json())
       }
     } catch {
       // Silently fail
     }
-  }, [])
+  }, [adoptTemplates])
 
   useEffect(() => {
     fetchTemplates()
@@ -76,8 +108,7 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
         return
       }
 
-      const result = await res.json()
-      setCustomTemplates(result.templates || [])
+      adoptTemplates(await res.json())
     } catch (err) {
       setUploadError(toApiError(err, 'Upload failed. Please try again.').message)
     } finally {
@@ -98,10 +129,35 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
         setDeleteError((await readApiError(res, `Could not delete ${templatePath}`)).message)
         return
       }
-      const result = await res.json()
-      setCustomTemplates(result.templates || [])
+      adoptTemplates(await res.json())
     } catch (err) {
       setDeleteError(toApiError(err, `Could not delete ${templatePath}`).message)
+    }
+  }
+
+  const handleTemplatePromote = async (t: CustomTemplate) => {
+    setDeleteError(null)
+    const ok = alerts
+      ? await alerts.confirm(
+          `Make ${t.file} an instance template? Every member will see it and can use it in their projects; only an administrator can change or delete it afterwards.`,
+          'Make instance template',
+          { confirmLabel: 'Make instance template' },
+        )
+      : true
+    if (!ok) return
+    try {
+      const res = await fetch('/api/nuclei-templates', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: t.path, promote: true }),
+      })
+      if (!res.ok) {
+        setDeleteError((await readApiError(res, `Could not make ${t.path} an instance template`)).message)
+        return
+      }
+      adoptTemplates(await res.json())
+    } catch (err) {
+      setDeleteError(toApiError(err, `Could not make ${t.path} an instance template`).message)
     }
   }
 
@@ -455,7 +511,9 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
                 <div>
                   <span className={styles.fieldLabel}>Custom Templates</span>
                   <p className={styles.fieldHint}>
-                    Upload is global. Check templates to include in this project's scans.
+                    Templates you upload are yours: other members cannot see, replace or delete them.
+                    Instance templates are shared with every member and only an administrator changes them.
+                    Check templates to include in this project's scans.
                   </p>
                 </div>
                 <input
@@ -489,11 +547,20 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
                   {customTemplates.map((t) => {
                     const selected = data.nucleiSelectedCustomTemplates ?? []
                     const isChecked = selected.includes(t.path)
+                    // A stored selection can still be cleared; it cannot be made.
+                    const selectBlocked = t.ownership === 'other' && !isChecked
+                    const deleteBlocked = deleteBlockedReason(t, canManageAll)
+                    const label = ownershipLabel(t)
                     return (
                       <div key={t.path} className={`${styles.itemRow} ${isChecked ? styles.itemRowOn : ''}`}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1, cursor: 'pointer' }}>
+                        <label
+                          style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1, cursor: selectBlocked ? 'not-allowed' : 'pointer' }}
+                          title={selectBlocked ? NOT_SELECTABLE : undefined}
+                        >
                           <input
                             type="checkbox"
+                            aria-label={`Use ${t.file} in this project`}
+                            disabled={selectBlocked}
                             checked={isChecked}
                             onChange={() => {
                               const current = data.nucleiSelectedCustomTemplates ?? []
@@ -515,12 +582,30 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
                               - {t.name}
                             </span>
                           )}
+                          {label && (
+                            <span className={styles.itemMeta} data-ownership={t.ownership} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              · {label}
+                            </span>
+                          )}
                         </label>
+                        {canManageAll && (t.ownership === 'own' || t.ownership === 'other') && (
+                          <button
+                            type="button"
+                            className="secondaryButton"
+                            onClick={() => handleTemplatePromote(t)}
+                            title={`Make ${t.file} an instance template every member can use`}
+                          >
+                            Make instance
+                          </button>
+                        )}
                         <button
                           type="button"
                           className={styles.removeButton}
                           onClick={() => handleTemplateDelete(t.path)}
-                          title={`Delete ${t.file}`}
+                          disabled={deleteBlocked !== null}
+                          aria-label={deleteBlocked ? `Cannot delete ${t.file}: ${deleteBlocked}` : `Delete ${t.file}`}
+                          title={deleteBlocked ?? `Delete ${t.file}`}
+                          style={deleteBlocked ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
                         >
                           <Trash2 size={13} />
                         </button>

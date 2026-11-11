@@ -16,9 +16,23 @@ import { createFakePrisma, type FakePrisma } from '@/lib/plugins/__testing__/fak
 const h = vi.hoisted(() => ({ db: null as unknown as FakePrisma }))
 const caller = new AsyncLocalStorage<string>()
 
+// The account's Nuclei templates go to the deleting admin inside the delete's transaction
+// (route.delete.templates.test.ts); fakePrisma has no such table, so both the client and
+// each transaction client get a stand-in.
+const withTemplates = <T extends object>(client: T): T => new Proxy(client, {
+  get: (t, k) => (k === 'nucleiTemplate' ? { updateMany: async () => ({ count: 0 }) } : t[k as keyof T]),
+})
 vi.mock('@/lib/prisma', () => ({
   default: new Proxy({}, {
-    get: (_t, k) => (k === 'capturedHttpTransaction' ? { findMany: async () => [] } : h.db[k as keyof FakePrisma]),
+    get: (_t, k) => {
+      if (k === 'capturedHttpTransaction') return { findMany: async () => [] }
+      if (k === '$transaction') {
+        return (arg: unknown) => (typeof arg === 'function'
+          ? h.db.$transaction(tx => (arg as (t: FakePrisma) => Promise<unknown>)(withTemplates(tx)))
+          : h.db.$transaction(arg as never))
+      }
+      return withTemplates(h.db)[k as keyof FakePrisma]
+    },
   }),
 }))
 vi.mock('@/lib/session', () => ({

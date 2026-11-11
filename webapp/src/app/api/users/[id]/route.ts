@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
@@ -289,22 +290,32 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       throw result.error
     }
 
+    // The account's own Nuclei templates go to the admin deleting it (DV-33, OQ-50): no
+    // member gains them and no file is lost. In the delete's transaction, so a deletion
+    // that fails leaves them with their owner.
+    const deleteAccount = async (tx: Prisma.TransactionClient) => {
+      const { count } = await tx.nucleiTemplate.updateMany({
+        where: { ownerUserId: id }, data: { ownerUserId: session.userId },
+      })
+      await tx.user.delete({ where: { id } })
+      return count
+    }
+    let templatesReassigned: number
     if (targetIsAdmin) {
       // The deleter is an admin, but a concurrent demotion of the deleter could
       // leave nobody: the same locked check as a demotion.
-      const result = await withLastAdminGuard(id, tx => tx.user.delete({ where: { id } }))
+      const result = await withLastAdminGuard(id, deleteAccount)
       if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      templatesReassigned = result.value
     } else {
-      await prisma.user.delete({
-        where: { id }
-      })
+      templatesReassigned = await prisma.$transaction(deleteAccount)
     }
 
     await writeUserAudit(request, session, {
       action: 'user.delete',
       targetId: id,
       before: auditBefore,
-      after: { projectsDeleted },
+      after: { projectsDeleted, templatesReassigned },
     })
 
     return NextResponse.json({ success: true })

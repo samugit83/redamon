@@ -11,13 +11,33 @@ import { NextRequest } from 'next/server'
 import { mkdir, rm, writeFile } from 'fs/promises'
 import path from 'path'
 // The route reads the session first (HD-10); these tests are about a signed-in account.
-vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
+vi.mock('@/lib/session', () => ({
+  requireSession: async () => ({ userId: 'u1', role: 'standard' }),
+  getEffectiveUser: async () => ({ userId: 'u1' }),
+}))
+vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: async () => null }))
+vi.mock('@/lib/audit', () => ({ writeAudit: async () => undefined }))
 
 const h = vi.hoisted(() => {
   const root = `${process.env.TMPDIR || '/tmp'}/redamon-nuclei-test-${process.pid}-${Date.now()}`
   process.env.NUCLEI_TEMPLATES_PATH = root
-  return { root }
+  return { root, rows: [] as { path: string; ownerUserId: string | null }[] }
 })
+// The owner record (HD-08; its own tests: route.ownership.test.ts), kept in memory.
+vi.mock('@/lib/prisma', () => ({
+  default: {
+    nucleiTemplate: {
+      findUnique: async ({ where }: { where: { path: string } }) => h.rows.find(r => r.path === where.path) ?? null,
+      findMany: async () => h.rows,
+      create: async ({ data }: { data: { path: string; ownerUserId: string | null } }) => { h.rows.push(data); return data },
+      upsert: async () => ({}),
+      deleteMany: async ({ where }: { where: { path: string } }) => {
+        h.rows = h.rows.filter(r => r.path !== where.path)
+        return { count: 1 }
+      },
+    },
+  },
+}))
 
 import { POST, DELETE } from './route'
 
@@ -31,6 +51,7 @@ function upload(file: File, fields: Record<string, string> = {}, headers: Record
 }
 
 beforeEach(async () => {
+  h.rows = []
   await rm(h.root, { recursive: true, force: true })
   await mkdir(h.root, { recursive: true })
 })
@@ -70,8 +91,10 @@ describe('POST', () => {
 describe('DELETE', () => {
   test('a filesystem failure answers its errno', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    // A directory named like a template: unlink refuses it.
+    // A directory named like a template: unlink refuses it. Recorded as the caller's own,
+    // so the delete is allowed and reaches the filesystem.
     await mkdir(path.join(h.root, 'dir.yaml'))
+    h.rows.push({ path: 'dir.yaml', ownerUserId: 'u1' })
     const res = await DELETE(new NextRequest('http://localhost/api/nuclei-templates?path=dir.yaml', { method: 'DELETE' }))
     expect(res.status).toBe(500)
     const body = await res.json()

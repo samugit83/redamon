@@ -199,7 +199,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/models', guard: 'effective-user', methods: ['POST'] },
   { path: '/api/mute-rule-presets', guard: 'effective-user', methods: ['GET', 'POST'] },
   { path: '/api/mute-rule-presets/[id]', guard: 'effective-user', methods: ['GET', 'PATCH', 'DELETE'] },
-  { path: '/api/nuclei-templates', guard: 'session', methods: ['GET', 'POST', 'DELETE'] },
+  { path: '/api/nuclei-templates', guard: 'session', methods: ['GET', 'POST', 'PATCH', 'DELETE'], note: 'every signed-in account calls it; rows are scoped by owner inside: the effective user sees own and instance templates, nuclei_templates_all (admins, compat) sees every one and alone overwrites, deletes any and promotes (HD-08, step 1.12)' },
   { path: '/api/plugin-gateway/v1/data/count', guard: 'plugin-token', methods: ['POST'] },
   { path: '/api/plugin-gateway/v1/data/delete', guard: 'plugin-token', methods: ['POST'] },
   { path: '/api/plugin-gateway/v1/data/get', guard: 'plugin-token', methods: ['POST'] },

@@ -22,6 +22,7 @@ import type { ResolvedPart } from '@/lib/plugins/overrides'
 import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { internalError } from '@/lib/routeErrors'
 import { projectModelProblem } from '@/lib/agentInTheLoop'
+import { templateSelectionRefusal, withoutUnselectableTemplates } from '@/lib/nucleiTemplateOwnership'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -132,6 +133,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
           }
         : {}),
     }
+    // A scan never runs another member's Nuclei template (HD-08). The filter sits on the
+    // read every scan and run makes, so it also covers rows written by import, presets and
+    // MCP tools, which never pass the PUT's check; a browser reads the stored row.
+    let projectForCaller = projectWithoutBinary
+    if (isServiceCaller) {
+      const { project: kept, dropped } = await withoutUnselectableTemplates(prisma, projectWithoutBinary)
+      for (const [field, count] of Object.entries(dropped)) {
+        console.warn(`[rbac] nuclei template dropped project=${id} field=${field} count=${count}`)
+      }
+      projectForCaller = kept
+    }
 
     // Approved plugin overrides of built-in skill text go to the agent's own settings
     // fetch only: its separate flag on the MASTER key. includeSkillContent alone is also
@@ -164,14 +176,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       const userMcpServers = (userSettings?.mcpServers as Prisma.JsonValue) ?? []
 
       return NextResponse.json({
-        ...projectWithoutBinary,
+        ...projectForCaller,
         userAttackSkills: skills,
         userMcpServers,
         ...skillOverridesField,
       })
     }
 
-    return NextResponse.json({ ...projectWithoutBinary, ...skillOverridesField })
+    return NextResponse.json({ ...projectForCaller, ...skillOverridesField })
   } catch (error) {
     return internalError(error, 'Failed to fetch project')
   }
@@ -509,6 +521,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       where: { id },
       select: Object.fromEntries(Object.keys(updateData).map(k => [k, true])) as any,
     }) ?? {}) as Record<string, unknown>
+
+    // The project may use only its owner's Nuclei templates and the instance ones
+    // (HD-08). Only the entries this save adds are judged, for the reason given below.
+    const templateRefusal = await templateSelectionRefusal(prisma, {
+      ownerUserId: existing?.userId ?? eff.userId, data: updateData, stored: before,
+    })
+    if (templateRefusal) return NextResponse.json(templateRefusal, { status: 400 })
 
     // Only a value this save CHANGES is judged, as for the skill toggles above:
     // the form PUTs the whole row back, and a number stored before its bound

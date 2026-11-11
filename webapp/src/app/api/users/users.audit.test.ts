@@ -73,6 +73,8 @@ vi.mock('@/lib/prisma', () => {
         h.projects.filter(p => p.userId === where.userId).map(p => ({ id: p.id, userId: p.userId })),
     },
     capturedHttpTransaction: { findMany: async () => [] },
+    // The account's Nuclei templates go to the deleting admin (route.delete.templates.test.ts).
+    nucleiTemplate: { updateMany: async () => ({ count: 0 }) },
     mcpAccessToken: {
       updateMany: async ({ where, data }: { where: { userId: string }; data: { revokedAt: Date } }) => {
         const live = h.tokens.filter(t => t.userId === where.userId && t.revokedAt === null)

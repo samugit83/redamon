@@ -97,6 +97,8 @@ vi.mock('@/lib/prisma', () => {
         h.authorizations.filter(a => a.projectId === where.projectId).length,
     },
     auditLog: { create: async ({ data }: { data: Audit }) => { h.audit.push(data); return data } },
+    // The account's Nuclei templates go to the deleting admin (route.delete.templates.test.ts).
+    nucleiTemplate: { updateMany: async () => ({ count: 0 }) },
     $executeRaw: async () => 1,
     // engagementArchive.ts: set_config, then the copy, then the delete of the originals.
     $executeRawUnsafe: async (sql: string, ...params: unknown[]) => {
