@@ -55,9 +55,10 @@ def _is_mock_hostname(hostname: str, ip: str) -> bool:
 # Target Preparation
 # =============================================================================
 
-def resolve_targets_to_ips(recon_data: dict) -> Tuple[List[str], Dict[str, List[str]]]:
+def resolve_targets_to_ips(recon_data: dict, settings: dict = None) -> Tuple[List[str], Dict[str, List[str]]]:
     """
     Extract IPs from recon data. Masscan requires IP addresses (not hostnames).
+    With RoE exclusions in force they pass the admission gate.
 
     Returns:
         Tuple of (ip_list, ip_to_hostnames mapping)
@@ -88,7 +89,10 @@ def resolve_targets_to_ips(recon_data: dict) -> Tuple[List[str], Dict[str, List[
             if subdomain not in ip_to_hostnames[ip]:
                 ip_to_hostnames[ip].append(subdomain)
 
-    return list(unique_ips), ip_to_hostnames
+    from recon.helpers.target_admission import admit_ip_map
+    ips, ip_to_hostnames, _ = admit_ip_map(settings, recon_data, list(unique_ips), ip_to_hostnames,
+                                           module="masscan")
+    return ips, ip_to_hostnames
 
 
 # =============================================================================
@@ -394,7 +398,7 @@ def run_masscan_scan(recon_data: dict, output_file: Path = None, settings: dict 
             else:
                 ip_to_hostnames[ip] = [ip]
     else:
-        all_targets, ip_to_hostnames = resolve_targets_to_ips(recon_data)
+        all_targets, ip_to_hostnames = resolve_targets_to_ips(recon_data, settings)
 
     if not all_targets:
         print("[!][Masscan] No IP targets found in recon data")

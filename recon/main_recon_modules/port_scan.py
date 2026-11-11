@@ -137,9 +137,14 @@ def pull_naabu_docker_image(docker_image: str) -> bool:
 # Target Extraction
 # =============================================================================
 
-def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Dict[str, List[str]]]:
+def extract_targets_from_recon(recon_data: dict, settings: dict = None) -> Tuple[Set[str], Set[str], Dict[str, List[str]]]:
     """
-    Extract IPs and hostnames from recon data.
+    Extract IPs and hostnames from recon data, through the RoE admission gate.
+
+    Under an RoE IP or CIDR exclusion naabu is handed addresses only: it
+    resolves a name itself, and its answer could be an address the gate never
+    saw. Each name still gets its ports, through ip_to_hostnames
+    (parse_naabu_output).
 
     Returns:
         Tuple of (unique_ips, unique_hostnames, ip_to_hostnames_mapping)
@@ -189,6 +194,12 @@ def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Di
                 if subdomain not in ip_to_hostnames[ip]:
                     ip_to_hostnames[ip].append(subdomain)
 
+    from recon.helpers.target_admission import admission_context, admit_host_targets
+    unique_ips, unique_hostnames, ip_to_hostnames = admit_host_targets(
+        settings, recon_data, unique_ips, unique_hostnames, ip_to_hostnames,
+        module="naabu", resolves_names=False)
+    if admission_context(settings, recon_data).ip_rules:
+        unique_hostnames = set()
     return unique_ips, unique_hostnames, ip_to_hostnames
 
 
@@ -579,7 +590,7 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
 
     # Extract targets
     print("[*][Naabu] Extracting targets from recon data...")
-    unique_ips, unique_hostnames, ip_to_hostnames = extract_targets_from_recon(recon_data)
+    unique_ips, unique_hostnames, ip_to_hostnames = extract_targets_from_recon(recon_data, settings)
 
     # Combine targets - prefer hostnames for better accuracy
     all_targets = list(unique_hostnames) + [ip for ip in unique_ips if ip not in [

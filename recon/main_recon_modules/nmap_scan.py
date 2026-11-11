@@ -194,6 +194,11 @@ def build_nmap_targets(recon_data: dict, settings: dict) -> Tuple[List[str], str
     ip_list = sorted(unique_ips)
     port_string = ",".join(str(p) for p in sorted(all_ports))
 
+    # The port scan's map can carry addresses a passive source added, so the
+    # RoE IP and CIDR exclusions are applied here too.
+    from recon.helpers.target_admission import admit_ip_map
+    ip_list, ip_to_hostnames, _ = admit_ip_map(settings, recon_data, ip_list, ip_to_hostnames,
+                                               module="nmap")
     return ip_list, port_string, ip_to_hostnames
 
 

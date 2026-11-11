@@ -9,14 +9,22 @@ import re
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from recon.helpers.target_admission import admit_host_targets
+
 
 # =============================================================================
 # Target Extraction from Recon Data
 # =============================================================================
 
-def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Dict[str, List[str]]]:
+def extract_targets_from_recon(recon_data: dict, settings: Optional[dict] = None, *,
+                               module: str = "dns_targets") -> Tuple[Set[str], Set[str], Dict[str, List[str]]]:
     """
     Extract all unique IPs, hostnames, and build IP-to-hostname mapping.
+
+    The result passes the RoE admission gate (``settings``, else the
+    ``metadata.roe`` a partial builder stamps). The tools fed from it resolve
+    names themselves, so a name with an excluded address, or with no known
+    address while an IP or CIDR exclusion is set, is not in ``hostnames``.
 
     Honors recon_data["metadata"]["include_root_domain"]: when explicitly
     False, the apex/root domain is NOT added to the hostname set, even when
@@ -87,8 +95,8 @@ def extract_targets_from_recon(recon_data: dict) -> Tuple[Set[str], Set[str], Di
     # Filter out empty strings
     ips = {ip for ip in ips if ip}
     hostnames = {h for h in hostnames if h}
-    
-    return ips, hostnames, ip_to_hostnames
+
+    return admit_host_targets(settings, recon_data, ips, hostnames, ip_to_hostnames, module=module)
 
 
 # =============================================================================
