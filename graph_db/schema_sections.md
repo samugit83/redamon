@@ -1032,6 +1032,9 @@ Object-reference and cloud-asset properties (finding_type object_reference or cl
 Package properties on dependency and framework findings:
 - package_name (string), package_version (string): the package the finding names
 - source_urls (list[string]): on a dependency_confusion finding, every JS file that imports the package (at most 5, sorted), or "custom_packages_file" when only the project's internal-package list names it. Its first file is the finding's source_url and parent js_file, and that file's origin its base_url. Absent on a finding written before this field existed: it carries base_url 'upload' and no parent file until JS Recon runs again
+- package_scope (string): on a dependency_confusion finding, the npm scope of the package (`@acme` for `@acme/ui`); absent for an unscoped package
+- npm_exists (boolean): on a dependency_confusion finding, the public npm registry's answer: false (the name is free, so anyone can publish it; severity critical) or true (published although the project's internal-package list names it, so check who owns it; high). Absent means not known, never false: a finding written before this field existed has none until JS Recon runs again, and a package the registry did not answer for gets no finding at all
+- recommendation (string): on a dependency_confusion finding, the suggested fix (register a placeholder or use a private registry; verify who owns the public package)
 Source-map properties (finding_type source_map_exposure or source_map_reference):
 - map_url (string): the source map URL the script references or the probe found
 - accessible (boolean): the map was served and parsed as a v3 source map

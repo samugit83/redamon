@@ -17,6 +17,11 @@ function toNum(value: unknown): number | null {
   return typeof value === 'number' ? value : null
 }
 
+/** `@acme` for `@acme/ui`; null for an unscoped name. */
+function npmScopeOf(packageName: unknown): string | null {
+  return typeof packageName === 'string' && /^@[^/]+\//.test(packageName) ? packageName.split('/')[0] : null
+}
+
 // Simple in-memory cache (same pattern as graph route)
 interface CacheEntry {
   data: JsReconResponse
@@ -54,7 +59,7 @@ interface JsReconResponse {
  * cached body by tag alone, so without it a body cached before the change gets
  * a 304 and stays in use until the graph itself next changes.
  */
-const RESPONSE_SHAPE = 2
+const RESPONSE_SHAPE = 3
 
 function generateEtag(data: JsReconResponse): string {
   const raw = `shape${RESPONSE_SHAPE}:${data.secrets.length}:${data.endpoints.length}:${data.dependencies.length}:${data.dom_sinks.length}:${data.frameworks.length}:${data.source_maps.length}:${data.dev_comments.length}:${data.emails.length}:${data.ip_addresses.length}:${data.dev_references.length}:${data.object_references.length}:${data.cloud_assets.length}:${data.external_domains.length}`
@@ -137,6 +142,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
              jf.user_source AS userSource,
              jf.vendor AS vendor,
              jf.package_name AS packageName,
+             jf.package_scope AS packageScope,
+             jf.npm_exists AS npmExists,
+             jf.recommendation AS recommendation,
              coalesce(jf.source_urls, [jf.source_url]) AS sourceUrls,
              jf.updated_at AS updatedAt
       `,
@@ -230,10 +238,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         case 'dependency_confusion': {
           // A node written before source_urls carries only source_url, often
           // empty; one written before package_name is named by its title.
+          // One written before package_scope / npm_exists gets its scope from
+          // the package name and npm_exists null: unknown, never "not on npm".
           const urls = record.get('sourceUrls')
+          const packageName = record.get('packageName')
+          const npmExists = record.get('npmExists')
           dependencies.push({
             ...base,
-            package_name: record.get('packageName') ?? base.title,
+            package_name: packageName ?? base.title,
+            scope: record.get('packageScope') ?? npmScopeOf(packageName),
+            npm_exists: typeof npmExists === 'boolean' ? npmExists : null,
+            recommendation: record.get('recommendation') ?? null,
             source_urls: Array.isArray(urls) ? urls.filter((u: unknown) => typeof u === 'string' && u !== '') : [],
           })
           break

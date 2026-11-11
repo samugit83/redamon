@@ -538,7 +538,9 @@ function DepsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: reado
             <td>{sevBadge(d.severity)}</td>
             <td><code className={styles.mono}>{d.package_name}</code></td>
             <td>{d.scope}</td>
-            <td>{d.npm_exists ? 'Yes' : 'No'}</td>
+            {/* Absent npm_exists is a lookup that never answered (or a node
+                written before the field): unknown, not "No". */}
+            <td>{d.npm_exists === true ? 'Yes' : d.npm_exists === false ? 'No' : '-'}</td>
             <td className={styles.truncate} title={d.detail}>{d.title}</td>
             <td><UpdatedAtCell value={d.updatedAt} /></td>
             <td><MuteNodeButton name={d.package_name} graphId={d.nodeId} nodeId={d.id} label="JsReconFinding" /></td>

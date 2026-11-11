@@ -67,6 +67,30 @@ def _dependency_sources(finding: dict) -> tuple:
     return first, urls
 
 
+def _dependency_answer(finding: dict) -> dict:
+    """``package_scope``, ``npm_exists`` and ``recommendation`` of a
+    dependency-confusion finding.
+
+    ``npm_exists`` stays tri-state: anything but the registry's own yes or no
+    is None, which ``SET jf += $props`` leaves absent, and readers show absent
+    as unknown. Coerced to False, a lookup that never answered would read as
+    "not published". The scope is named ``package_scope`` beside
+    ``package_name``, since a bare ``scope`` reads as the engagement scope; a
+    finding without one gets it by the producer's rule, the part before the
+    slash."""
+    scope = finding.get("scope")
+    if scope is None:
+        name = finding.get("package_name")
+        scope = name.split("/")[0] if isinstance(name, str) and "/" in name else ""
+    npm_exists = finding.get("npm_exists")
+    recommendation = finding.get("recommendation")
+    return {
+        "package_scope": scope if isinstance(scope, str) and scope else None,
+        "npm_exists": npm_exists if isinstance(npm_exists, bool) else None,
+        "recommendation": recommendation if isinstance(recommendation, str) and recommendation else None,
+    }
+
+
 def _finding_type_props(data_key: str, finding: dict) -> dict:
     """The fields one finding kind carries beyond the shared title/detail/
     evidence, flattened to scalars and string lists (a property cannot hold a
@@ -74,7 +98,7 @@ def _finding_type_props(data_key: str, finding: dict) -> dict:
     own (source_url ``<map_url>#<source>``), so a key in them is a Secret node
     under that file; ``secrets_in_source`` counts those Secrets."""
     if data_key == "dependencies":
-        return {"source_urls": _dependency_sources(finding)[1]}
+        return {"source_urls": _dependency_sources(finding)[1], **_dependency_answer(finding)}
     if data_key == "source_maps":
         map_url = _displayable_map_url(finding.get("map_url") or "")
         first_party = int(finding.get("first_party_files") or 0)
