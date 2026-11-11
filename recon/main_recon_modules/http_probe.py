@@ -839,6 +839,28 @@ def _stop_httpx_at_budget(process, container: str, budget: int, url_count: int) 
         pass
 
 
+def _probe_failed(recon_data: dict, reason: str, detail: str = "") -> dict:
+    """httpx could not run, so it checked nothing. Never raises.
+
+    Returning without an ``http_probe`` payload looked like "no live URL" to
+    the pipeline, which then ran its scanners on no URL and pruned their
+    findings as gone. The phase error tells the live-URL gate why nothing was
+    probed (`should_skip_active_scans`), and the http_probe source is kept.
+    ``detail`` (stderr, an exception message) may name a target, so it stays
+    out of the coverage record.
+    """
+    error = f"{reason}: {detail}" if detail else reason
+    print(f"[!][httpx] {error} - nothing was probed; earlier findings are kept")
+    recon_data.setdefault("metadata", {}).setdefault("phase_errors", {})["http_probe"] = error
+    try:
+        from recon.helpers import circuit_breaker
+        circuit_breaker.note_degraded("http_probe", sources=["http_probe"],
+                                      reason=f"httpx failed: {reason}")
+    except Exception:  # noqa: BLE001
+        pass
+    return recon_data
+
+
 def build_httpx_command(targets_file: str, output_file: str, settings: dict,
                         probe_hosts: List[str] = None, container_name: str = None) -> List[str]:
     """
@@ -1924,19 +1946,23 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
     HTTPX_INCLUDE_RESPONSE = settings.get('HTTPX_INCLUDE_RESPONSE', True)
     BANNER_GRAB_ENABLED = settings.get('BANNER_GRAB_ENABLED', True)
 
+    # This probe's outcome replaces an earlier one's: the legacy path reloads
+    # the previous run's file, phase errors and all.
+    ((recon_data.get("metadata") or {}).get("phase_errors") or {}).pop("http_probe", None)
+
     # Check Docker
     if not is_docker_installed():
         print("[!][httpx] Docker is not installed. Please install Docker first.")
-        return recon_data
+        return _probe_failed(recon_data, "Docker is not installed")
 
     if not is_docker_running():
         print("[!][httpx] Docker daemon is not running. Please start Docker.")
-        return recon_data
+        return _probe_failed(recon_data, "Docker daemon is not running")
 
     # Pull image if needed
     if not pull_httpx_docker_image(HTTPX_DOCKER_IMAGE):
         print("[!][httpx] Failed to get httpx Docker image")
-        return recon_data
+        return _probe_failed(recon_data, "httpx Docker image unavailable")
 
     # Build target URLs
     print("\n[*][httpx] Building target URLs...")
@@ -2033,11 +2059,12 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
 
         if timed_out and not httpx_output.exists():
             print("[!][httpx] Nothing was written before the budget ran out")
-            return recon_data
+            return _probe_failed(recon_data, "httpx stopped at its runtime budget")
 
         if process.returncode != 0 and not httpx_output.exists():
             print(f"[!][httpx] Probe failed: {stderr[:200] if stderr else 'Unknown error'}")
-            return recon_data
+            return _probe_failed(recon_data, f"httpx exited {process.returncode}",
+                                 (stderr or "")[:200])
 
         # Parse results (filter URLs outside target scope)
         print(f"\n[*][httpx] Parsing results...")
@@ -2178,7 +2205,7 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
 
     except Exception as e:
         print(f"[!][httpx] Error during probe: {e}")
-        return recon_data
+        return _probe_failed(recon_data, f"httpx error ({type(e).__name__})", str(e))
     finally:
         # Cleanup temp files
         try:

@@ -501,6 +501,13 @@ def should_skip_active_scans(recon_data: dict) -> tuple:
     Returns:
         Tuple of (should_skip: bool, reason: str)
     """
+    failed = _http_probe_failure(recon_data)
+    if failed:
+        # Nothing was probed, which is not "nothing is live": run on no URL,
+        # the scanners report nothing and the prune reads that as "gone".
+        # Skipped, they keep their findings by host (_note_gate_skipped, R-21).
+        return True, f"http_probe failed ({failed}) - no host was probed"
+
     http_probe_data = recon_data.get('http_probe', {})
     http_summary = http_probe_data.get('summary', {})
     
@@ -516,6 +523,22 @@ def should_skip_active_scans(recon_data: dict) -> tuple:
                 return True, "No live URLs found by http_probe - nothing to scan"
     
     return False, ""
+
+
+def _http_probe_failure(result: dict) -> str:
+    """Why httpx probed nothing this run (run_http_probe's phase error), or ""."""
+    return str(((result.get("metadata") or {}).get("phase_errors") or {}).get("http_probe") or "")
+
+
+def _note_module_ran(result: dict, module: str) -> None:
+    """List ``module`` in modules_executed unless it recorded a failure: a probe
+    that could not run checked nothing (R-21)."""
+    metadata = result.setdefault("metadata", {})
+    if module in (metadata.get("phase_errors") or {}):
+        return
+    executed = metadata.setdefault("modules_executed", [])
+    if module not in executed:
+        executed.append(module)
 
 
 # The per-group scope rules live in a module with no import side effects, so
@@ -995,15 +1018,24 @@ def _note_gate_skipped(result: dict, settings: dict, *, phase_a: bool = True) ->
     phases = [p for p in ("resource_enum", "vuln_scan") if p in SCAN_MODULES]
     if phase_a:
         phases += [p for p, key in _LIVE_URL_PHASE_A.items() if settings.get(key, False)]
+    # A failed httpx probed nothing, so the web checks on what the port and
+    # DNS checks read were not re-checked either: keep security_check there too.
+    probe_failed = bool(_http_probe_failure(result))
+    why = "http_probe failed, no host probed" if probe_failed else "not run: no live HTTP URL"
+    if probe_failed:
+        # These still run, without the pages httpx would have handed them.
+        phases += [p for p, key, default in (("js_recon", "JS_RECON_ENABLED", False),
+                                             ("ai_surface_recon", "AI_SURFACE_RECON_ENABLED", True))
+                   if settings.get(key, default)]
     try:
         hosts = _gate_skip_hosts(result)
         if not phases or not hosts:
             return
         read = set()
-        if _port_checks_enabled(settings):
+        if not probe_failed and _port_checks_enabled(settings):
             by_ip = (result.get("port_scan") or {}).get("by_ip") or {}
             read = {ip for ip, entry in by_ip.items() if isinstance(entry, dict) and entry.get("ports")}
-        if _dns_checks_enabled(settings):
+        if not probe_failed and _dns_checks_enabled(settings):
             from recon.helpers.org_work import claimed_orgs
             read |= set(claimed_orgs("dns_checks"))
         kept = []
@@ -1016,17 +1048,16 @@ def _note_gate_skipped(result: dict, settings: dict, *, phase_a: bool = True) ->
                 on = [h for h in hosts if h not in read] if source == "security_check" else hosts
                 if on:
                     circuit_breaker.note_degraded(phase, hosts=on, host_source=source,
-                                                  source_only_hosts=True,
-                                                  reason="not run: no live HTTP URL")
+                                                  source_only_hosts=True, reason=why)
                     kept.append(source)
         if kept:
-            print(f"[*][Pipeline] Not run with no live URL, earlier findings kept on "
-                  f"{len(hosts)} host(s): {', '.join(kept)}")
+            print(f"[*][Pipeline] Earlier findings kept on {len(hosts)} host(s) ({why}): "
+                  f"{', '.join(kept)}")
     except Exception as e:  # noqa: BLE001 - unknown hosts: keep the sources whole
         print(f"[!][Pipeline] Could not list the hosts the skipped scanners keep: {type(e).__name__}")
         circuit_breaker.note_degraded(
             "active_scans", sources=[s for p in phases for s in _PHASE_FINDING_SOURCES[p]],
-            reason="not run: no live HTTP URL")
+            reason=why)
 
 
 def _maybe_run_ai_surface(result: dict, settings: dict, output_file: Path) -> dict:
@@ -1712,12 +1743,14 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         try:
             from recon.main_recon_modules.tls_scan import run_tlsx_enrichment
             combined_result = run_tlsx_enrichment(combined_result, settings=settings)
-            combined_result["metadata"]["modules_executed"].append("tlsx")
+            _note_module_ran(combined_result, "tlsx")
             save_recon_file(combined_result, output_file)
             _graph_update_bg("update_graph_from_tlsx", combined_result, USER_ID, PROJECT_ID)
         except Exception as e:
             print(f"[!][Pipeline] tlsx failed: {e}")
             combined_result["metadata"].setdefault("phase_errors", {})["tlsx"] = str(e)
+            if "tlsx" not in combined_result:
+                _note_phase_error("tlsx")
 
     # OSINT Enrichment (parallel, same logic as domain recon Group 3b)
     _ip_osint_tools = {
@@ -1779,7 +1812,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
             try:
                 combined_result = run_http_probe(combined_result, output_file=output_file, settings=settings)
-                combined_result["metadata"]["modules_executed"].append("http_probe")
+                _note_module_ran(combined_result, "http_probe")
                 save_recon_file(combined_result, output_file)
 
                 _graph_update_bg("update_graph_from_http_probe", combined_result, USER_ID, PROJECT_ID)
@@ -2398,7 +2431,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         try:
             from recon.main_recon_modules.tls_scan import run_tlsx_enrichment
             combined_result = run_tlsx_enrichment(combined_result, settings=_settings)
-            combined_result["metadata"]["modules_executed"].append("tlsx")
+            _note_module_ran(combined_result, "tlsx")
             if _settings.get('TLSX_INJECT_HOSTNAMES', True):
                 from recon.helpers.target_helpers import merge_discovered_hostnames
                 _before = _dns_names(combined_result)
@@ -2421,6 +2454,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         except Exception as e:
             print(f"[!][Pipeline] tlsx failed: {e}")
             combined_result["metadata"].setdefault("phase_errors", {})["tlsx"] = str(e)
+            if "tlsx" not in combined_result:
+                _note_phase_error("tlsx")
 
     # =====================================================================
     # GROUP 3b — OSINT Enrichment (parallel, passive — no packets to target)
@@ -2495,7 +2530,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
             try:
                 combined_result = run_http_probe(combined_result, output_file=output_file, settings=_settings)
-                combined_result["metadata"]["modules_executed"].append("http_probe")
+                _note_module_ran(combined_result, "http_probe")
                 save_recon_file(combined_result, output_file)
 
                 # Background graph updates
@@ -3080,6 +3115,8 @@ _PHASE_FINDING_SOURCES = {
     "ai_surface_recon": ("ai_surface_recon",),
     "js_recon": ("js_recon",),
     "vuln_scan": ("nuclei", "security_check", "vuln_scan"),
+    # The TLS-hygiene findings are built from tlsx's certificates.
+    "tlsx": ("security_check",),
     "cert_hygiene": ("security_check",),
     "port_checks": ("security_check",),
     "dns_checks": ("security_check",),
@@ -3668,8 +3705,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
                 print(f"\n[*][Pipeline] GROUP 4: HTTP Probing")
                 domain_result = run_http_probe(domain_result, output_file=output_file, settings=_settings)
                 if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
-                    if "http_probe" not in domain_result["metadata"]["modules_executed"]:
-                        domain_result["metadata"]["modules_executed"].append("http_probe")
+                    _note_module_ran(domain_result, "http_probe")
                 with open(output_file, 'w') as f:
                     json.dump(domain_result, f, indent=2)
 

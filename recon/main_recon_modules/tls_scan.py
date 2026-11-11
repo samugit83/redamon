@@ -12,6 +12,8 @@ Contract (recon-tool-integration):
   - top-level result key is exactly ``combined_result["tlsx"]``,
   - ``run_tlsx_enrichment_isolated`` is the deep-copy test / fan-out call path,
   - never raises: records ``metadata.phase_errors["tlsx"]`` instead,
+  - a target a failed run (timeout, missing runner, exit, crash) never
+    answered keeps its security_check findings (``_note_unchecked``),
   - every ``print`` is ``[symbol][Tlsx] message``.
 """
 
@@ -473,12 +475,46 @@ def _wildcard_dropped(combined_result: dict, names: list, settings: dict) -> set
     return set(control.dropped)
 
 
+def _unanswered_targets(meta: dict, by_target: dict) -> list:
+    """The target lines tlsx returned no row for. A row with a failed handshake
+    is an answer: the target was checked and found closed or not TLS."""
+    answered = {(str(e.get("host") or ""), e.get("port")) for e in by_target.values()
+                if isinstance(e, dict)}
+    out = []
+    for key in meta:
+        submitted, _, port = key.rpartition(":")
+        if (submitted, _coerce_port(port)) not in answered:
+            out.append(_target_line(submitted, _coerce_port(port)))
+    return out
+
+
+def _note_unchecked(lines: list, reason: str) -> None:
+    """Keep the security_check findings on the targets tlsx never answered.
+
+    The TLS-hygiene findings are built from tlsx's answer, and for a non-HTTP
+    TLS port it is the only one, so no answer is "not checked", not "no
+    certificate problem". Cut for security_check alone: the other tools
+    re-checked these hosts. With no target list (a crash before it was built),
+    the whole source is kept. Never raises.
+    """
+    try:
+        from recon.helpers import circuit_breaker
+        if lines:
+            circuit_breaker.note_degraded("tlsx", hosts=lines, host_source="security_check",
+                                          source_only_hosts=True, reason=reason)
+        else:
+            circuit_breaker.note_degraded("tlsx", sources=["security_check"], reason=reason)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
     """Grab TLS certificates for open non-HTTP ports. Never raises."""
     settings = settings or {}
     combined_result.setdefault("metadata", {})
     scan_id = uuid.uuid4().hex[:12]
     scan_temp_dir = Path(f"/tmp/redamon/.tlsx_scan_{scan_id}")
+    lines = None
 
     try:
         lines, meta = _build_tlsx_targets(combined_result, settings)
@@ -501,25 +537,41 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
 
         started = datetime.now(timezone.utc)
         stdout = ""
+        failure = ""
+        timed_out = False
         try:
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=run_timeout)
-            if process.returncode not in (0, None) and not stdout:
-                _print("!", f"tlsx exited {process.returncode}: {(stderr or '')[:200]}")
+            if process.returncode not in (0, None):
+                failure = f"tlsx exited {process.returncode}"
+                _print("!", f"{failure}: {(stderr or '')[:200]}")
         except subprocess.TimeoutExpired:
             _print("!", f"tlsx timed out after {run_timeout}s -- killing")
+            timed_out = True
+            failure = f"tlsx timed out after {run_timeout}s"
+            # The rows tlsx printed before the kill are real answers;
+            # communicate() after kill() hands them back.
             try:
                 process.kill()
-                process.wait(timeout=10)
+                stdout, _ = process.communicate(timeout=10)
             except Exception:
                 pass
+            stdout = stdout or ""
         except FileNotFoundError as e:
-            _print("!", f"tlsx runner missing: {e}")
+            failure = "tlsx runner missing"
+            _print("!", f"{failure}: {e}")
         duration = (datetime.now(timezone.utc) - started).total_seconds()
 
         by_target = _parse_tlsx_output(stdout, meta,
                                        ip_hostnames=_hostnames_by_ip(combined_result))
+        unchecked = _unanswered_targets(meta, by_target) if failure else []
+        if unchecked:
+            _print("!", f"{len(unchecked)} of {len(lines)} target(s) not checked; "
+                        f"their earlier security-check findings are kept")
+            _note_unchecked(unchecked, failure)
+        if failure and not by_target:
+            combined_result["metadata"].setdefault("phase_errors", {})["tlsx"] = failure
         _enrich_port_details(combined_result, by_target)
         _attribute_cdn(combined_result, by_target)
 
@@ -545,13 +597,19 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
                 "command": " ".join(cmd),
             },
         }
+        if failure:
+            combined_result["tlsx"]["scan_metadata"].update(
+                error=failure, unchecked_targets=len(unchecked),
+                **({"timed_out": True} if timed_out else {}))
         _print("+", f"grabbed {with_cert} cert(s) from {len(by_target)} target(s)")
     except Exception as e:  # never raise out of the phase
         _print("!", f"tlsx failed: {e}")
+        _note_unchecked(lines or [], f"tlsx failed: {type(e).__name__}")
         combined_result["metadata"].setdefault("phase_errors", {})["tlsx"] = str(e)
         combined_result.setdefault("tlsx", {"by_target": {}, "discovered_hostnames": [],
                                             "cdn_by_ip": {}, "summary": {},
-                                            "scan_metadata": {"error": str(e)}})
+                                            "scan_metadata": {"error": str(e),
+                                                              "unchecked_targets": len(lines or [])}})
     finally:
         try:
             import shutil
