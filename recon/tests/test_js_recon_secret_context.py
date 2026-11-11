@@ -132,7 +132,8 @@ class TestKeysCutByTheWindowEdgeAreMasked(unittest.TestCase):
     that no pattern matches on its own."""
 
     def test_no_fragment_of_a_key_at_the_edge_leaks(self):
-        line = (_filler(3000) + "a=\"" + AWS_KEY + "\";" + _filler(140)
+        # `=` before the neighbour: a key glued to a letter is no key at all.
+        line = (_filler(3000) + "a=\"" + AWS_KEY + "\";" + _filler(139) + "="
                 + GH_TOKEN + ";" + _filler(3000))
         finding = _by_name(patterns.scan_js_content(line, URL)[0])["AWS Access Key ID"]
         context = finding["context"]

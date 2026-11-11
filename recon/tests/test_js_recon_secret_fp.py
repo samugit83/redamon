@@ -226,7 +226,9 @@ class TestLongSecretsAreNotABase64Blob(unittest.TestCase):
 
     def test_a_key_inside_an_embedded_image_is_still_dropped(self):
         body = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ" * 60
-        js = f'var img = "data:image/png;base64,{body[:2500]}{SYNTHETIC_AWS}{body[:2500]}";'
+        # `/` is base64 and a token boundary: the key matches, then the blob
+        # filter has to drop it (glued to a letter, the pattern never matches).
+        js = f'var img = "data:image/png;base64,{body[:2499]}/{SYNTHETIC_AWS}{body[:2500]}";'
         findings, filtered = scan(js)
         self.assertNotIn(SYNTHETIC_AWS, [f["matched_text"] for f in findings])
         self.assertGreater(filtered["base64_blob"], 0)
