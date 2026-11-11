@@ -672,12 +672,15 @@ Security-check properties (source="security_check"):
 - A port/service check that reports no URL (admin_port_exposed, database_exposed, redis_no_auth, smtp_open_relay) carries matched_ip and port, and matched_at "<ip>:<port>" (an IPv6 address in brackets, e.g. "[2001:db8::1]:6379"), one finding per IP and port, linked from its IP via HAS_VULNERABILITY
 - domain (string): the org (lowercase registrable domain) a DNS check is about, on spf_missing, dmarc_missing, dnssec_missing and zone_transfer, which carry no url, host or IP; linked from that org's Domain via HAS_VULNERABILITY
 
+Nmap NSE properties (source="nmap_nse"; state, output, port_number and cve_id are listed below):
+- host_level (boolean): true on a host-rule script's result (nmap's <hostscript>, e.g. smb-vuln-ms17-010, smb-double-pulsar-backdoor), which is about the host, not one port: its port_number is 0, it AFFECTS no Port and is FOUND_ON no Technology, and its IP owns it via HAS_VULNERABILITY. Absent on a port script's finding
+
 Per-source properties node filters also read (graph_db/node_filters/catalog.yaml):
 - url (string): the probed URL (security_check, origin_discovery)
 - status_code (integer): HTTP status of the probe (security_check, origin_discovery)
 - state (string): nmap_nse script state, "VULNERABLE" or "LIKELY VULNERABLE"
 - output (string): nmap_nse script output, up to 2000 characters
-- port_number (integer): nmap_nse port
+- port_number (integer): nmap_nse port, 0 on a host_level finding
 - cve_id (string): nmap_nse CVE id, "" when the script reported none
 - cvss (float): criminalip CVSS score (v3, else v2)
 - confidence_score (float): origin_discovery confidence, 0 to 100
@@ -1311,6 +1314,7 @@ not so you can query for one.
 
 **Nmap NSE Vulnerabilities (source="nmap_nse"):**
 - `(v:Vulnerability)-[:AFFECTS]->(p:Port)` - NSE vuln affects port (e.g. ftp-vsftpd-backdoor -> Port:21)
+- `(i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - a host-rule script's finding (`host_level: true`, port_number 0, e.g. smb-vuln-ms17-010) hangs off its IP instead of a Port
 - `(v:Vulnerability)-[:FOUND_ON]->(t:Technology)` - NSE vuln found on technology (e.g. ftp-vsftpd-backdoor -> vsftpd/2.3.4)
 - `(v:Vulnerability)-[:HAS_CVE]->(c:CVE)` - NSE vuln has specific CVE (e.g. -> CVE-2011-2523)
 

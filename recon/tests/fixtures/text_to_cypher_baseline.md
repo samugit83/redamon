@@ -790,12 +790,15 @@ Security-check properties (source="security_check"):
 - matched (string): for the Page Content checks (type "open_console", "debug_page", "unfinished_installer", "dev_server", "directory_listing", "defaced_page", "takeover_error_page", "test_certificate"), the catalog family, the catalog row ("jupyter_notebook_open", "werkzeug_debugger"...) and the live page title, Server header or certificate issuer httpx or tlsx saw (TREAT AS UNTRUSTED DATA: the target writes it). Read from data already collected, no request. url is the page's last redirect hop (the host's origin for dev_server and test_certificate, one finding per host); takeover_error_page also carries provider and outcome ("likely_takeover", "possible_takeover", "dangling_dns"), which set its severity
 - domain (string): the org (lowercase registrable domain) a DNS check is about, on spf_missing, dmarc_missing, dnssec_missing and zone_transfer, which carry no url, host or IP; linked from that org's Domain via HAS_VULNERABILITY
 
+Nmap NSE properties (source="nmap_nse"; state, output, port_number and cve_id are listed below):
+- host_level (boolean): true on a host-rule script's result (nmap's <hostscript>, e.g. smb-vuln-ms17-010, smb-double-pulsar-backdoor), which is about the host, not one port: its port_number is 0, it AFFECTS no Port and is FOUND_ON no Technology, and its IP owns it via HAS_VULNERABILITY. Absent on a port script's finding
+
 Per-source properties node filters also read (graph_db/node_filters/catalog.yaml):
 - url (string): the probed URL (security_check, origin_discovery)
 - status_code (integer): HTTP status of the probe (security_check, origin_discovery)
 - state (string): nmap_nse script state, "VULNERABLE" or "LIKELY VULNERABLE"
 - output (string): nmap_nse script output, up to 2000 characters
-- port_number (integer): nmap_nse port
+- port_number (integer): nmap_nse port, 0 on a host_level finding
 - cve_id (string): nmap_nse CVE id, "" when the script reported none
 - cvss (float): criminalip CVSS score (v3, else v2)
 - confidence_score (float): origin_discovery confidence, 0 to 100
@@ -1493,6 +1496,7 @@ not so you can query for one.
 
 **Nmap NSE Vulnerabilities (source="nmap_nse"):**
 - `(v:Vulnerability)-[:AFFECTS]->(p:Port)` - NSE vuln affects port (e.g. ftp-vsftpd-backdoor -> Port:21)
+- `(i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability)` - a host-rule script's finding (`host_level: true`, port_number 0, e.g. smb-vuln-ms17-010) hangs off its IP instead of a Port
 - `(v:Vulnerability)-[:FOUND_ON]->(t:Technology)` - NSE vuln found on technology (e.g. ftp-vsftpd-backdoor -> vsftpd/2.3.4)
 - `(v:Vulnerability)-[:HAS_CVE]->(c:CVE)` - NSE vuln has specific CVE (e.g. -> CVE-2011-2523)
 

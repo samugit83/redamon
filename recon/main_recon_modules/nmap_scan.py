@@ -275,7 +275,8 @@ def parse_nmap_xml(xml_path: str, ip_to_hostnames: Dict[str, List[str]], setting
     Parse Nmap XML output using xml.etree.ElementTree.
 
     Extracts host IP, port number, protocol, state, service product/version/cpe,
-    and NSE script results including CVE extraction.
+    and NSE script results including CVE extraction. A <hostscript> result is a
+    finding with ``host_level: True`` on port 0.
 
     Args:
         xml_path: Path to Nmap XML output file
@@ -313,6 +314,28 @@ def parse_nmap_xml(xml_path: str, ip_to_hostnames: Dict[str, List[str]], setting
     nmap_version = root.attrib.get("scanner", "nmap")
     nmap_version = root.attrib.get("version", nmap_version)
 
+    def _nse_vuln(script_id: str, script_output: str, ip: str, port_num: int):
+        """The finding one NSE script reported, or None when it reported none."""
+        output_upper = script_output.upper()
+        if "NOT VULNERABLE" in output_upper:
+            return None
+        if "LIKELY VULNERABLE" in output_upper:
+            vuln_state = "LIKELY VULNERABLE"
+        elif "VULNERABLE" in output_upper:
+            vuln_state = "VULNERABLE"
+        else:
+            return None
+        cves = re.findall(r'CVE-\d{4}-\d+', script_output)
+        return {
+            "host": ip,
+            "ip": ip,
+            "port": port_num,
+            "script_id": script_id,
+            "state": vuln_state,
+            "output": script_output.strip(),
+            "cve": cves[0] if cves else "",
+        }
+
     # Process each host
     for host_elem in root.findall("host"):
         # Get IP address
@@ -336,6 +359,19 @@ def parse_nmap_xml(xml_path: str, ip_to_hostnames: Dict[str, List[str]], setting
 
         ports_list: List[int] = []
         port_details: List[Dict] = []
+
+        # Host-rule scripts (smb-vuln-ms17-010 and the other SMB checks of the
+        # vuln category) report under <hostscript>, about the host and not one
+        # port, so they are read before a host without <ports> is skipped.
+        # Port 0 is their port key: the writer MERGEs on a non-null port_number.
+        hostscript_elem = host_elem.find("hostscript")
+        for script_elem in (hostscript_elem.findall("script")
+                            if hostscript_elem is not None else []):
+            script_id = script_elem.get("id", "")
+            vuln = _nse_vuln(script_id, script_elem.get("output", ""), ip, 0) if script_id else None
+            if vuln:
+                vuln["host_level"] = True
+                nse_vulns.append(vuln)
 
         # Process ports
         ports_elem = host_elem.find("ports")
@@ -415,31 +451,9 @@ def parse_nmap_xml(xml_path: str, ip_to_hostnames: Dict[str, List[str]], setting
 
                 if script_id:
                     port_detail["scripts"][script_id] = script_output
-
-                    # Extract vulnerability info from NSE output
-                    vuln_state = ""
-                    output_upper = script_output.upper()
-                    if "NOT VULNERABLE" in output_upper:
-                        continue  # skip non-vulnerable findings
-                    elif "LIKELY VULNERABLE" in output_upper:
-                        vuln_state = "LIKELY VULNERABLE"
-                    elif "VULNERABLE" in output_upper:
-                        vuln_state = "VULNERABLE"
-
-                    if vuln_state:
-                        # Extract CVE IDs
-                        cves = re.findall(r'CVE-\d{4}-\d+', script_output)
-                        cve_str = cves[0] if cves else ""
-
-                        nse_vulns.append({
-                            "host": ip,
-                            "ip": ip,
-                            "port": port_num,
-                            "script_id": script_id,
-                            "state": vuln_state,
-                            "output": script_output.strip(),
-                            "cve": cve_str,
-                        })
+                    vuln = _nse_vuln(script_id, script_output, ip, port_num)
+                    if vuln:
+                        nse_vulns.append(vuln)
 
             port_details.append(port_detail)
 
