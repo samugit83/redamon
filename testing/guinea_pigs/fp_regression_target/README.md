@@ -299,6 +299,41 @@ the host.
     image back. The tag is host-wide: it is swapped only while no other recon, partial-recon
     or httpx container is running, and the run stays healthy (and says so) otherwise.
 
+15. **Recon-audit cases, round 3.** The passive-CVE ones need the Shodan stub (step 1);
+    the R-8 ones need the lab hosts' access logs, which now end each request line with
+    `ua=<User-Agent>` (spaces folded, 60 characters).
+
+    ```bash
+    # F-D1 / D1-ORPHAN: a second --passive-cves project, then .10 leaves the target IPs
+    python3 e2e_fp.py --passive-cves --no-triage --log fd1_r1.log
+    python3 e2e_fp.py --rerun <id> --no-triage \
+      --target-ips 192.88.94.11,192.88.94.12,192.88.94.13,192.88.94.14 --log fd1_r2.log
+    python3 validate_e2e.py <id> --passive-fd1 kept <RUN_START> fd1_r2.log
+    node triage_fp.mjs <id>                     # the Priority Board, as its Run button starts it
+    python3 validate_e2e.py <id> --passive-fd1 orphan
+    python3 e2e_fp.py --rerun <id> --no-triage --shodan-state 'cdn=192.88.94.13'
+    python3 validate_e2e.py <id> --passive-fd1 cdn <RUN_START>
+    # F-D5 / R-26: after a full run, each partial port writer leaves the graph's ports alone
+    python3 validate_e2e.py <id> --fd5 snapshot fd5.json
+    python3 partial_fp.py <id> Nmap --body '{"user_targets": {"ports": [80, 443]}}' --log nmap.log
+    python3 validate_e2e.py <id> --fd5 after fd5.json Nmap nmap.log
+    python3 partial_fp.py <id> Httpx --body '{"include_graph_targets": false,
+      "user_targets": {"ips": ["192.88.94.14"], "ports": [22]}}'
+    python3 validate_e2e.py <id> --fd5 after fd5.json Httpx      # likewise Tlsx with a custom port
+    # R-8: the same project with no ceiling, then under roeGlobalMaxRps 2
+    python3 e2e_fp.py --ceiling --no-triage --log-timestamps --log free.log --watch-nmap free.nmap
+    CEILING_NMAP=free.nmap python3 validate_e2e.py <id> --ceiling free <RUN_START> free.log
+    python3 e2e_fp.py --rerun <id> --no-triage --set '{"roeGlobalMaxRps": 2}' --log-timestamps \
+      --log capped.log --watch-nmap capped.nmap
+    CEILING_NMAP=capped.nmap python3 validate_e2e.py <id> --ceiling capped <RUN_START> capped.log
+    ```
+
+    `--target-ips` changes the address list through the project form's PUT (MCP keeps it
+    fixed). `/_lab/shodan?cdn=<ips>` makes the stub tag those IPs `cdn` for the run. The
+    ceiling checks count every request, TLS handshake, Redis and SMTP command the lab hosts
+    logged, except nmap's own -sV/NSE traffic (its `--max-rate` holds only its port and
+    discovery probes): no 0.9-s window may hold more than 2.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -387,6 +422,10 @@ the host.
 | `.22`, `.31`, `.37` | every Phase A tool at once, three runs (`--fanout`) | FO-01..FO-03 | each run lists every tool in `modules_executed`; no "changed size" race, no failed tool |
 | `.20`, `.21` | `/_lab/js?show=r14`: a map named on `.21`, a map URL 302-ing to `.21`, one 301-ing to another `.20` path; `show=r14js` with `.21` RoE-excluded: a bundle 302-ing to `.21`, one 301-ing on `.20` | R14-01..06, R14J-01..04 | `.21` gets no request; the `.21` map is a `source_map_reference` `out_of_scope`, the bounce gives no row, the moved map is an exposure, M-01 unchanged; the RoE refusal is logged and the moved bundle analysed |
 | `.47` | a GraphQL server (introspection, batches) | GQ-01..03, GC-* | a 0 rate under a 2 rps ceiling resolves to 2 and no second carries more than 2 requests; graphql-cop never starts in stealth or with a DoS test off, and runs otherwise |
+| `.10`, `.13`, `.14` | a second passive-CVE project: `.10` leaves the target IPs (`--target-ips`), then the stub tags `.13` `cdn` | FD1-01..FD1-07 | `.10`'s two Shodan CVEs are kept with no `stale_since` and no IP node; `.13`/`.14` are re-checked; the log says the source prunes only the hosts it re-checked; once tagged, `.13`'s CVE is pruned while `.14`'s is refreshed |
+| `.10` | the Priority Board on that project after `.10` left (`triage_fp.mjs`) | D1O-01/02 | each kept `.10` CVE has reach 0.5 with "no longer among this run's targets", a tier below T2 and model v3.11.0; the CVEs on IPs still in the run are not read as left |
+| `.14`, `.32` | partial Nmap (custom 80,443), httpx (typed `.14`:22) and tlsx (custom port) after a full run; partial Masscan too, though in the lab it finds no default interface and measures nothing | FD5-01..FD5-04 | Shodan-only Port 22 on `.14` stays `passive_only`; every Port sits under its own IP; `.32` keeps `is_cdn` cloudflare; no port the lab does not serve appears (a typed port on an IP nmap gave up on is written as given, and listed) |
+| `.10`, `.15`, `.20`, `.39`, `.40`, `.42`, `.45`, `.47` | every in-process requester, nmap at parallelism 5 and Kiterunner (`--ceiling`), with no ceiling, then under `roeGlobalMaxRps` 2 | CF-01..04, CE-01..10 | no ceiling: Phase A fans out, nmap runs 5 IPs at once with no `--max-rate`, the login burst seeds `no_rate_limiting`; under 2 rps: no 0.9-s window holds more than 2 lab requests/handshakes/commands (nmap's own -sV/NSE traffic aside), the pacing, Phase A, nmap and skip log lines, one nmap at a time each with `--max-rate 2`, Kiterunner not run, gaps for `no_rate_limiting` and Kiterunner, the earlier `no_rate_limiting` finding kept |
 
 ## Not covered here
 

@@ -46,6 +46,11 @@ every line of the run's nuclei_detection.jsonl); `--redis
 open|delay|auth` after each run of the --redis project (R-24). `--roe` and
 `--roe-window` also write project settings over MCP; every other check reads.
 
+Round 3 (README.md step 15): `--passive-fd1 kept|orphan|cdn` on a second
+--passive-cves project (F-D1, D1-ORPHAN), `--fd5 snapshot|after` around each
+partial port writer (F-D5 / R-26), `--ceiling free|capped` on the --ceiling
+project (R-8; CEILING_NMAP names the --watch-nmap file).
+
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
 when every assertion holds. Case ids match README.md.
@@ -71,8 +76,10 @@ USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n>
          " | --graphql-rate <runStart> | --graphql-cop stealth|ran|dos-off <runStart> [recon.log]"
          " | --vhost-drop <runStart> <recon.log> | --cache stall|open <runStart> [recon.log]"
          " | --epai snapshot <file> | --epai compare <file> <excludedHost> | --userinput <toolId>"
-         " | --upload-sink <fileName>]")
-if len(sys.argv) not in (2, 3, 4, 5, 6):
+         " | --upload-sink <fileName> | --passive-fd1 kept <runStart> <recon.log> | --passive-fd1 orphan"
+         " | --passive-fd1 cdn <runStart> | --ceiling free|capped <runStart> <recon.log> (CEILING_NMAP=<nmap.jsonl>)"
+         " | --fd5 snapshot <file> | --fd5 after <file> <tool> [partial.log]]")
+if len(sys.argv) not in (2, 3, 4, 5, 6, 7):
     sys.exit(USAGE)
 P = sys.argv[1]
 NET = "192.88.94"
@@ -216,6 +223,105 @@ def passive_cves(stage):
               f"and stale: {json.dumps(muted)[:400]}")
     else:
         sys.exit(USAGE)
+
+
+def passive_fd1(stage, since=None, log_path=None):
+    """F-D1 for passive CVEs (W6-FD1-PASSIVE) and the orphan reach (W6-D1-ORPHAN), on a
+    second --passive-cves project: `kept` after a rerun without .10 in the target
+    IPs, `orphan` after the Priority Board on it, `cdn` after a rerun where the stub
+    tags .13 a CDN edge."""
+    rows = q(f"""MATCH (v:Vulnerability) WHERE v.source IN {PASSIVE}
+                 RETURN v.id AS id, v.target_ip AS ip, v.name AS cve, v.stale_since AS stale,
+                        toString(v.updated_at) AS seen, v.triage_factors AS f, v.triage_tier AS tier,
+                        v.triage_model_version AS ver, v.triage_tier_rule AS rule""")
+    gone = [r for r in rows if r["ip"] == f"{NET}.10"]
+    ten_ip = q(f"MATCH (i:IP) WHERE i.address = '{NET}.10' RETURN count(i) AS n")[0]["n"]
+    others = {r["ip"]: r for r in rows if r["ip"] in (f"{NET}.13", f"{NET}.14")}
+    if stage == "kept":
+        check("FD1-01", len(gone) == 2 and all(r["stale"] is None for r in gone),
+              f".10 left the target IPs: its Shodan CVEs are kept, not stale: "
+              f"{[(r['cve'], r['stale'], r['seen'][:19]) for r in gone]}")
+        check("FD1-02", ten_ip == 0, f"no IP node for .10 after the asset clear: {ten_ip}")
+        check("FD1-03", set(others) == {f"{NET}.13", f"{NET}.14"} and all(r["seen"] >= since for r in others.values()),
+              f".13/.14 CVEs re-checked this run: {[(r['ip'], r['seen'][:19]) for r in others.values()]}")
+        check("FD1-04", "source(s) prune only the hosts they re-checked" in _log_text(log_path),
+              "log: ... source(s) prune only the hosts they re-checked")
+    elif stage == "orphan":
+        def reach(r):
+            try:
+                f = json.loads(r["f"]) if isinstance(r["f"], str) else (r["f"] or {})
+            except ValueError:
+                return None, ""
+            fr = f.get("R") or f.get("reach") or {}
+            return fr.get("value"), str(fr.get("evidence") or "")
+        got = [(r["cve"], *reach(r), r["tier"], r["ver"]) for r in gone]
+        check("D1O-01", gone and all(v == 0.5 and "no longer among this run's targets" in ev
+                                     and t not in ("T1", "T2") and ver == "v3.11.0"
+                                     for _, v, ev, t, ver in got),
+              f".10's kept CVEs on the board (cve, R, evidence, tier, model): {got}")
+        live = [(r["cve"], *reach(r)) for r in others.values()]
+        check("D1O-02", live and all(v != 0.5 or "no longer among" not in ev for _, v, ev in live),
+              f"CVEs on IPs still in the run are not read as left: {live}")
+    elif stage == "cdn":
+        check("FD1-05", f"{NET}.13" not in others, f".13 tagged cdn by the stub: its CVE is pruned: {others.get(f'{NET}.13')}")
+        check("FD1-06", f"{NET}.14" in others and others[f"{NET}.14"]["seen"] >= since,
+              f".14 (no tag) keeps a refreshed CVE: {others.get(f'{NET}.14')}")
+        check("FD1-07", len(gone) == 2, f".10 still out of the run: its CVEs still kept: {[r['cve'] for r in gone]}")
+    else:
+        sys.exit(USAGE)
+
+
+FD5_PORTS = """MATCH (i:IP) OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
+               RETURN i.address AS ip, i.is_cdn AS cdn, i.cdn_name AS cdn_name,
+                      collect(CASE WHEN p IS NULL THEN NULL
+                              ELSE [p.number, p.passive_only, p.ip_address] END) AS ports"""
+
+
+def _fd5_state():
+    return {r["ip"]: {"cdn": r["cdn"], "cdn_name": r["cdn_name"],
+                      "ports": {str(n): {"passive": pa, "ip": pip} for n, pa, pip in r["ports"]}}
+            for r in q(FD5_PORTS)}
+
+
+def fd5_checks(stage, path, tool=None, log_path=None):
+    """F-D5 / R-26 (W4-FD5): a partial port-touching run (Nmap or Masscan on custom
+    ports with the graph targets, httpx on a typed IP:port that never answers, tlsx
+    on a custom port) writes back only the ports it measured. `snapshot` after the
+    full run, `after` after each partial: Shodan-only ports keep passive_only, every
+    port stays under its own IP, every CDN IP keeps is_cdn and its name, and no
+    port appears that the lab does not serve. A custom port on an IP nmap gave up
+    on (the partial's log names it unreachable) is the documented exception: the
+    typed port is written as given, so it is listed, not failed."""
+    if stage == "snapshot":
+        state = _fd5_state()
+        json.dump(state, open(path, "w"), indent=1, sort_keys=True)
+        print(f"FD5_SNAPSHOT={path}: " + json.dumps(state, sort_keys=True)[:900])
+        return
+    if stage != "after":
+        sys.exit(USAGE)
+    before, now = json.load(open(path)), _fd5_state()
+    tag = f"[{tool}]" if tool else ""
+    passive = {(ip, n): v["passive"] for ip, s in before.items() for n, v in s["ports"].items()}
+    changed = {k: (v, ((now.get(k[0]) or {}).get("ports") or {}).get(k[1], {}).get("passive", "gone"))
+               for k, v in passive.items()
+               if ((now.get(k[0]) or {}).get("ports") or {}).get(k[1], {}).get("passive", "gone") != v}
+    check(f"FD5-01{tag}", not changed,
+          f"Shodan-only ports keep passive_only, measured ports stay measured "
+          f"(passive before: {sorted(k for k, v in passive.items() if v)}); changed: {changed}")
+    moved = q("MATCH (i:IP)-[:HAS_PORT]->(p:Port) WHERE p.ip_address <> i.address "
+              "RETURN i.address AS ip, p.number AS port, p.ip_address AS pip")
+    check(f"FD5-02{tag}", not moved, f"Ports filed under another IP's address: {moved}")
+    cdn = {ip: s["cdn_name"] for ip, s in before.items() if s["cdn"]}
+    lost = {ip: (now.get(ip) or {}).get("cdn_name") for ip in cdn
+            if not (now.get(ip) or {}).get("cdn") or (now.get(ip) or {}).get("cdn_name") != cdn[ip]}
+    check(f"FD5-03{tag}", not lost, f"CDN IPs before {cdn}: is_cdn or its name lowered on {lost}")
+    import re
+    gave_up = {ip for m in re.finditer(r"\[DEGRADED\]\[Nmap\] \d+ unreachable host\(s\) skipped: ([^\n]+)",
+                                       _log_text(log_path)) for ip in re.findall(r"[\d.]+\d", m.group(1))}
+    new = sorted((ip, n) for ip, s in now.items() for n in s["ports"] if n not in (before.get(ip) or {}).get("ports", {}))
+    check(f"FD5-04{tag}", not [x for x in new if x[0] not in gave_up],
+          f"ports that appeared (the lab serves none beyond the full run's): {new}; on IPs nmap gave up on "
+          f"(typed ports written as given): {[x for x in new if x[0] in gave_up]}")
 
 
 SPA = f"http://{NET}.20"
@@ -810,7 +916,7 @@ def r43_checks(since, log_path):
     vendor = [ln for ln in _lab_log("redamon-fp-vendor", since) if "/graphql" in ln or "auth=yes" in ln]
     check("R43-02", not vendor, f".21 requests for /graphql or with a credential: {vendor[:3]} (expect none)")
     spa = [ln for ln in _lab_log("redamon-fp-spa", since) if f"POST /graphql host={NET}.20" in ln]
-    check("R43-03", spa and all(ln.endswith("auth=yes") for ln in spa),
+    check("R43-03", spa and all(" auth=yes" in ln for ln in spa),
           f".20 got POST /graphql {len(spa)}x, with a credential each: {spa[:2]}")
     gaps = q("""MATCH (d:Domain) WHERE d.name STARTS WITH 'ip-targets.' RETURN d.recon_coverage_gaps AS g""")
     listed = [g for r in gaps for g in json.loads(r["g"] or "[]")
@@ -1239,6 +1345,167 @@ EPAI_Q2 = """MATCH (e:Endpoint)-[:HAS_PARAMETER]->(p:Parameter) RETURN DISTINCT 
              p.sample_values AS sv, p.is_ai_prompt_injectable AS inj ORDER BY b, path, name"""
 
 
+# --------------------------------------------------------------------------- R-8 RoE ceiling
+CEILING_HOSTS = [f"{NET}.{n}" for n in (10, 15, 20, 39, 40, 42, 45, 47)]
+# Lines a lab host prints that are not one request, connection or command.
+NOT_A_REQUEST = ("listening on", "] stalled ", "/_lab/")
+# Docker stamps a line when the server prints it, not when the packet came:
+# two requests paced 0.5 s apart may print a few tens of ms closer than that.
+CEILING_SKEW_S = 0.1
+
+
+def _lab_containers(addresses):
+    """{container name: address} of the running FP lab hosts serving `addresses`."""
+    import subprocess
+    names = subprocess.run(["docker", "ps", "--filter", "name=redamon-fp-", "--format", "{{.Names}}"],
+                           capture_output=True, text=True).stdout.split()
+    out = {}
+    for name in names:
+        ip = subprocess.run(["docker", "inspect", "-f",
+                             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
+                            capture_output=True, text=True).stdout.strip()
+        if ip in addresses:
+            out[name] = ip
+    return out
+
+
+def _lab_events(since, addresses):
+    """(epoch, address, line) of every request, TLS handshake, Redis or SMTP command
+    the lab hosts serving `addresses` logged since `since`, in time order."""
+    import subprocess
+    import datetime as dt
+    events = []
+    for name, ip in _lab_containers(addresses).items():
+        out = subprocess.run(["docker", "logs", "--timestamps", "--since", since, name],
+                             capture_output=True, text=True)
+        for ln in (out.stdout + out.stderr).splitlines():
+            stamp, _, rest = ln.partition(" ")
+            if not rest.startswith("[") or any(x in rest for x in NOT_A_REQUEST):
+                continue
+            t = dt.datetime.fromisoformat(stamp[:26].rstrip("Z") + "+00:00").timestamp()
+            # A lab image older than server.py's log_error override logs an error
+            # response twice, microseconds apart (log_error, then log_request).
+            if events and events[-1][1] == ip and events[-1][2] == rest and t - events[-1][0] < 0.005:
+                continue
+            events.append((t, ip, rest))
+    return sorted(events)
+
+
+def _busiest(events, width):
+    """The most events inside any window [t, t + width), and that window's events."""
+    best, at, j = 0, (0, 0), 0
+    for i in range(len(events)):
+        while events[i][0] - events[j][0] >= width:
+            j += 1
+        if i - j + 1 > best:
+            best, at = i - j + 1, (j, i + 1)
+    return best, events[at[0]:at[1]]
+
+
+def _nmap_runs(path):
+    rows = [json.loads(ln) for ln in open(path)] if path and os.path.exists(path) else []
+    overlap = 0
+    for r in rows:
+        overlap = max(overlap, sum(1 for o in rows if o["first"] <= r["first"] <= o["last"]))
+    return rows, overlap
+
+
+def _run_duration():
+    out, err = mcp.call("get_recon_status", {"projectId": P})
+    last = (out or {}).get("lastRun") or {} if isinstance(out, dict) else {}
+    import datetime as dt
+    try:
+        a = dt.datetime.fromisoformat(last["startedAt"].replace("Z", "+00:00"))
+        b = dt.datetime.fromisoformat(last["finishedAt"].replace("Z", "+00:00"))
+        return round((b - a).total_seconds()), last.get("status")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None, last.get("status")
+
+
+def ceiling_checks(stage, since, log_path, nmap_path=None, rps=2.0):
+    """R-8 (B-R8a, B-R8b1, B-R8b2a, B-R8b2b, B-FD2-3): the --ceiling project with no
+    ceiling (`free`), then under roeGlobalMaxRps 2 (`capped`)."""
+    log = _log_text(log_path)
+    events = _lab_events(since, set(CEILING_HOSTS))
+    duration, status = _run_duration()
+    print(f"DURATION_S={duration} (lastRun {status}); lab events since {since}: {len(events)}")
+    nmaps, overlap = _nmap_runs(nmap_path)
+    rl = q("""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'no_rate_limiting'
+              RETURN v.id AS id, toString(v.updated_at) AS seen, coalesce(v.url, v.matched_at) AS url""")
+    # The burst goes only to a login URL the run discovered; with none, there is
+    # nothing to seed and nothing to keep, which is the lab's gap, not the check's.
+    logins = q("""MATCH (e:Endpoint) WHERE toLower(coalesce(e.path, '')) =~ '.*(login|signin|sign-in|auth).*'
+                  RETURN count(e) AS n""")[0]["n"]
+    if stage == "free":
+        check("CF-01", "GROUP 6 Phase A: Active Vulnerability Scanning (fan-out:" in log
+              and "In-process requests paced" not in log,
+              "no ceiling: Phase A fans out, no pacing line")
+        check("CF-02", "[*][Nmap] Parallelism: 5 concurrent IPs" in log and nmaps
+              and not any("--max-rate" in r["cmd"] for r in nmaps),
+              f"nmap at parallelism 5 with no --max-rate: {len(nmaps)} nmap process(es), at most {overlap} at once")
+        if logins:
+            check("CF-03", rl, f"no_rate_limiting finding(s) seeded by the login burst: {rl}")
+        else:
+            print(f"INFO  CF-03 not checked: the run discovered no login URL to burst (no_rate_limiting: {rl})")
+        check("CF-04", "[-][Kiterunner] Not run" not in log, "Kiterunner not refused with no ceiling")
+        if rl:
+            print("RATE_FINDING_IDS=" + ",".join(sorted(r["id"] for r in rl)))
+        return
+    if stage != "capped":
+        sys.exit(USAGE)
+    width = 1.0 - CEILING_SKEW_S
+    # nmap holds --max-rate on its port and discovery probes only; its -sV and
+    # NSE traffic is outside the ceiling by design (nmap_scan.py), so CE-01
+    # counts every other request: not nmap's user agent, and not on the IP an
+    # nmap process was scanning at that moment (an -sV probe sends no agent).
+    import re
+    scanning = {}
+    for r in nmaps:
+        for ip in set(re.findall(r"\b\d+\.\d+\.\d+\.\d+\b", r["cmd"])):
+            scanning.setdefault(ip, []).append((r["first"] - 0.5, r["last"] + 0.5))
+
+    def by_nmap(event):
+        t, ip, ln = event
+        return "nmap" in ln.lower() or any(a <= t <= b for a, b in scanning.get(ip, []))
+    paced = [e for e in events if not by_nmap(e)]
+    worst, window = _busiest(paced, width)
+    strict, _ = _busiest(paced, 1.0)
+    per_s = {}
+    for t, _, _ in paced:
+        per_s[int(t)] = per_s.get(int(t), 0) + 1
+    detail = "; ".join(f"{ip} {ln[:90]}" for _, ip, ln in window)
+    check("CE-01", len(paced) >= 50 and worst <= rps,
+          f"{len(paced)} requests/handshakes/commands on {len(CEILING_HOSTS)} hosts (nmap's own "
+          f"{len(events) - len(paced)} left out): busiest {width:.1f}-s window {worst} (expect <= {rps:g}); "
+          f"strict 1-s window {strict}; busiest calendar second {max(per_s.values()) if per_s else 0}; "
+          f"worst window: {detail[:600]}")
+    raw, raw_window = _busiest(events, width)
+    print(f"INFO  nmap -sV/NSE included: busiest {width:.1f}-s window {raw}: "
+          f"{'; '.join(f'{ip} {ln[:80]}' for _, ip, ln in raw_window)[:400]}")
+    check("CE-02", f"[*][RoE] In-process requests paced to the {rps:g} rps ceiling" in log,
+          "log: In-process requests paced to the ceiling")
+    check("CE-03", "GROUP 6 Phase A: Active Vulnerability Scanning (one at a time under the RoE ceiling:" in log,
+          "log: GROUP 6 Phase A ... one at a time")
+    check("CE-04", "[*][Nmap] Parallelism: 1 IP at a time under the RoE ceiling" in log,
+          "log: [*][Nmap] Parallelism: 1 IP at a time under the RoE ceiling")
+    check("CE-05", nmaps and all(f"--max-rate {rps:g}" in r["cmd"] for r in nmaps) and overlap <= 1,
+          f"{len(nmaps)} nmap process(es), each with --max-rate {rps:g}: "
+          f"{all(f'--max-rate {rps:g}' in r['cmd'] for r in nmaps) if nmaps else None}; at most {overlap} at once")
+    check("CE-06", "[-][SecurityCheck] Rate Limiting check skipped" in log, "log: Rate Limiting check skipped")
+    check("CE-07", "[-][Kiterunner] Not run" in log, "log: [-][Kiterunner] Not run")
+    rate_gap = _gaps("security_check", reason="no_rate_limiting not checked")
+    kr_gap = _gaps("kiterunner")
+    check("CE-08", rate_gap and kr_gap, f"coverage gaps: security_check {rate_gap}; kiterunner {kr_gap}")
+    kr = q("MATCH (e:Endpoint) WHERE 'kiterunner' IN coalesce(e.sources, []) OR e.source = 'kiterunner' "
+           "RETURN count(e) AS n")
+    check("CE-09", kr and kr[0]["n"] == 0, f"Endpoints from Kiterunner: {kr}")
+    if rl or logins:
+        check("CE-10", rl and all(r["seen"] < since for r in rl),
+              f"the no_rate_limiting finding(s) of the free run kept, not re-checked: {rl}")
+    else:
+        print("INFO  CE-10 not checked: no no_rate_limiting finding to keep (no login URL discovered)")
+
+
 def epai_checks(stage, path, host=None):
     """R-27: a partial EndpointAiClassifier writes only AI fields, only on its run's hosts."""
     snap = {"q1": q(EPAI_Q1), "q2": q(EPAI_Q2),
@@ -1325,6 +1592,16 @@ if len(sys.argv) > 2:
         sys.exit(report())
     if sys.argv[2] == "--cache" and len(sys.argv) in (5, 6):
         cache_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--passive-fd1" and len(sys.argv) in (4, 5, 6):
+        passive_fd1(sys.argv[3], sys.argv[4] if len(sys.argv) >= 5 else None, sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--fd5" and len(sys.argv) in (5, 6, 7):
+        fd5_checks(sys.argv[3], sys.argv[4], *sys.argv[5:7])
+        sys.exit(0 if sys.argv[3] == "snapshot" else report())
+    if sys.argv[2] == "--ceiling" and len(sys.argv) in (5, 6):
+        ceiling_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) >= 6 else None,
+                       os.environ.get("CEILING_NMAP"))
         sys.exit(report())
     if sys.argv[2] == "--epai" and len(sys.argv) in (5, 6):
         epai_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)

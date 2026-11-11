@@ -13,6 +13,8 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --passive-cves        # the plan-04 passive-CVE project (port scan + Shodan)
     python3 e2e_fp.py --rerun <id> --set '{"naabuCustomPorts": "80,443"}' --no-triage
     python3 e2e_fp.py --rerun <id> --shodan-state 'unavailable=192.88.94.13&hide=CVE-2019-11043'
+    python3 e2e_fp.py --rerun <id> --target-ips 192.88.94.11,192.88.94.12,192.88.94.13,192.88.94.14   # F-D1
+    python3 e2e_fp.py --rerun <id> --shodan-state 'cdn=192.88.94.13'   # the stub now tags .13 a CDN edge
     python3 e2e_fp.py --js-coverage         # the plan-06 JS-coverage project (.20 + the bulk host .29)
     python3 e2e_fp.py --rerun <id> --no-triage --set '{"jsReconMaxFiles": 60}' --spa-state 'hide=/js/app.min.js'
     python3 e2e_fp.py --vhost-origin        # the plan-07 vhost-naming / tlsx CDN-tag project (.31, .32)
@@ -34,6 +36,9 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --r14 --no-triage --no-reset         # R-14: source maps off the scanned host
     python3 e2e_fp.py --graphql --no-triage --no-reset     # R-7 / R-42: GraphQL rate and graphql-cop gates
     python3 e2e_fp.py --stealth --no-triage --no-reset     # R-10: stealth project for partial runs
+    python3 e2e_fp.py --ceiling --no-triage --log-timestamps --log free.log --watch-nmap free.nmap   # R-8
+    python3 e2e_fp.py --rerun <id> --no-triage --set '{"roeGlobalMaxRps": 2}' --log-timestamps \
+        --log capped.log --watch-nmap capped.nmap                      # R-8 under a 2 rps ceiling
     python3 e2e_fp.py --rerun <id> --vhost-drop-bare --cache-state stall ...   # R-46 / R-23 on the main project
     python3 e2e_fp.py --prefix e2e-audit- ...   # name prefix for the created project
 
@@ -426,6 +431,48 @@ STEALTH_SETTINGS = {
 }
 
 
+# R-8 runs as its own project: every module that sends requests itself (security
+# checks with the no-rate-limiting burst, Redis, SMTP and TLS sockets; JS Recon
+# downloads, maps and endpoint probes; vhost/SNI; cache poisoning; GraphQL; Route
+# Exposure; OpenAPI) plus nmap at parallelism 5 and Kiterunner, first with no
+# ceiling, then under roeGlobalMaxRps 2 (--set). Key validation stays off: it
+# would send the lab's keys to the real providers. No AI-flagged lab host, so
+# AI Surface is off.
+CEILING_TARGETS = [f"{NET}.{n}" for n in (10, 15, 20, 39, 40, 42, 45, 47)]
+CEILING_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum", "vuln_scan", "js_recon"],
+    "naabuCustomPorts": "25,80,993,6379",
+    "nmapEnabled": True, "nmapParallelism": 5,
+    "kiterunnerEnabled": True,
+    "securityCheckEnabled": True,
+    "jsReconValidateEndpoints": True,
+    "vhostSniCustomWordlist": "\n".join(f"{w}.{APEX}" for w in ("admin", "wiki", "dev-api")),
+    "shodanEnabled": False,
+    "graphqlSecurityEnabled": True, "graphqlCopEnabled": False, "graphqlIntrospectionTest": True,
+    "graphqlEndpoints": f"http://{NET}.47/graphql",
+    "routeExposureEnabled": True, "routeExposureMaxRoutesPerHost": 12, "routeExposureMaxRoutesTotal": 60,
+}
+
+
+def watch_procs(pattern, path, stop):
+    """Record every host process whose command starts with `pattern` (the
+    recon container's nmap runs are host processes) while the run lasts:
+    first and last time seen and the full command, as JSON lines in `path`."""
+    seen = {}
+    while not stop.is_set():
+        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True).stdout
+        now = time.time()
+        for ln in out.splitlines():
+            pid, _, cmd = ln.strip().partition(" ")
+            if cmd.startswith(pattern):
+                seen.setdefault(pid, {"pid": pid, "cmd": cmd, "first": now})["last"] = now
+        time.sleep(0.3)
+    with open(path, "w") as fh:
+        for row in seen.values():
+            fh.write(json.dumps(row) + "\n")
+
+
 def lab_state(url, query=""):
     """GET a lab toggle (``/_lab/...``), with a name in Host where a bare-IP
     request is the thing the toggle changes."""
@@ -512,12 +559,14 @@ def nwlab_routing_gate():
     print("[*] nested-wildcard lab routing gate ok", flush=True)
 
 
-def follow_logs(project_id, path):
-    """Follow the recon container's log into `path` (the stealth case reads it)."""
+def follow_logs(project_id, path, stamps=False):
+    """Follow the recon container's log into `path` (the stealth case reads it);
+    `stamps` prefixes each line with Docker's timestamp."""
     name = "redamon-recon-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", project_id)
     for _ in range(90):
         if subprocess.run(["docker", "inspect", name], capture_output=True).returncode == 0:
-            return subprocess.Popen(["docker", "logs", "-f", name], stdout=open(path, "w"),
+            return subprocess.Popen(["docker", "logs", "-f", *(["--timestamps"] if stamps else []), name],
+                                    stdout=open(path, "w"),
                                     stderr=subprocess.STDOUT)
         time.sleep(2)
     print(f"[!] container {name} never appeared: no log", flush=True)
@@ -686,6 +735,16 @@ def main():
     ap.add_argument("--r14", action="store_true",
                     help="create the R-14 project (.20 with /_lab/js?show=r14 for the run)")
     ap.add_argument("--graphql", action="store_true", help="create the R-7 / R-42 GraphQL project (.47)")
+    ap.add_argument("--ceiling", action="store_true",
+                    help="create the R-8 project (every in-process requester, nmap, Kiterunner; "
+                         "rerun it with --set '{\"roeGlobalMaxRps\": 2}')")
+    ap.add_argument("--target-ips", metavar="IP,IP",
+                    help="replace the project's target IPs before the run (the project form's PUT; "
+                         "MCP keeps the address list fixed). Signs in with the .env UI login")
+    ap.add_argument("--log-timestamps", action="store_true",
+                    help="prefix each line of --log with Docker's timestamp")
+    ap.add_argument("--watch-nmap", metavar="PATH",
+                    help="record every nmap process of the run (command, first/last seen) as JSON lines")
     ap.add_argument("--stealth", action="store_true",
                     help="create the R-10 stealth project (.22, .37; partial runs with partial_fp.py)")
     ap.add_argument("--cache-state", choices=("open", "stall"), default="open",
@@ -716,6 +775,7 @@ def main():
                 " (R-21 probe failures)" if args.probefail else " (security checks)" if args.secchk else
                 " (R-31 fan-out)" if args.fanout else " (R-14 source maps)" if args.r14 else
                 " (R-7/R-42 GraphQL)" if args.graphql else " (R-10 stealth)" if args.stealth else
+                " (R-8 RoE ceiling)" if args.ceiling else
                 " (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
                 " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else
                 " (host coverage)" if args.coverage else " (host coverage, clean)" if args.coverage_clean
@@ -733,6 +793,7 @@ def main():
                              (R14_TARGETS, R14_SETTINGS) if args.r14 else
                              (GRAPHQL_TARGETS, GRAPHQL_SETTINGS) if args.graphql else
                              (STEALTH_TARGETS, STEALTH_SETTINGS) if args.stealth else
+                             (CEILING_TARGETS, CEILING_SETTINGS) if args.ceiling else
                              (HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
@@ -756,6 +817,15 @@ def main():
                                       **target})
         project_id = (out.get("project") or {}).get("id") or out.get("id") or out.get("projectId")
         print(f"[+] project {project_id} ({name})", flush=True)
+    if args.target_ips:
+        from partial_fp import Web
+        web = Web()
+        web.login()
+        ips = [x.strip() for x in args.target_ips.split(",") if x.strip()]
+        status, out = web.json("PUT", f"/api/projects/{project_id}", {"targetIps": ips})
+        if status != 200:
+            raise SystemExit(f"[!] target IPs not saved ({status}): {json.dumps(out)[:400]}")
+        print(f"[*] target IPs now {ips}", flush=True)
     extra = json.loads(args.set) if args.set else {}
     if args.trufflehog:
         extra["jsReconTrufflehogEnabled"] = args.trufflehog == "on"
@@ -784,8 +854,12 @@ def main():
               flush=True)
         started = start_recon(project_id)
         print("[+] start_recon:", json.dumps(started)[:400], flush=True)
-        tail = follow_logs(project_id, args.log) if args.log else None
+        tail = follow_logs(project_id, args.log, args.log_timestamps) if args.log else None
         stop, watcher = threading.Event(), None
+        procs = None
+        if args.watch_nmap:
+            procs = threading.Thread(target=watch_procs, args=("nmap ", args.watch_nmap, stop), daemon=True)
+            procs.start()
         if args.httpx_fail:
             watcher = threading.Thread(target=httpx_fail_watch, args=(project_id, stop), daemon=True)
             watcher.start()
@@ -796,6 +870,8 @@ def main():
             stop.set()
             if watcher:
                 watcher.join(timeout=30)
+            if procs:
+                procs.join(timeout=10)
         print("[+] recon finished:", json.dumps(final)[:600], flush=True)
         if tail:
             time.sleep(3)

@@ -14,8 +14,9 @@ real finding that must survive. Stdlib only. See README.md for the case table.
     ROLE=spa        single-page app + JS bundles + source maps (catch-all HTML shell)
     ROLE=vendor     a third-party script host, and a third-party SAML login page
     ROLE=shodan     canned Shodan host API + InternetDB answers for the lab IPs;
-                    /_lab/shodan?unavailable=<ips>&hide=<cves> makes some IPs fail
-                    (503) and drops some CVEs until the next call or a restart
+                    /_lab/shodan?unavailable=<ips>&hide=<cves>&cdn=<ips> makes some IPs
+                    fail (503), drops some CVEs and tags some IPs `cdn` until the next
+                    call or a restart
     ROLE=api        a JSON API: 200 on /api/v1, 404 {"code":"NOT_FOUND"} elsewhere
     ROLE=jsonall    a JSON catch-all: 200 {"code":"NOT_FOUND"} on every path
     ROLE=sso        / answers 302 to the vendor host's SAML login (outside the project)
@@ -82,9 +83,21 @@ class Base(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Never log a query string (the Shodan stub may receive an API key) nor an
         # Authorization value: auth= says only whether the request carried one.
-        auth = "yes" if self.headers.get("Authorization") else "no"
-        print(f"[{ROLE}] {self.command} {self.path.split('?', 1)[0]} host={self.headers.get('Host', '')} "
-              f"auth={auth}", flush=True)
+        # ua= (spaces folded, 60 characters) names the tool behind a burst; it
+        # comes last so the fields before it keep their place.
+        # A request line the parser refused (nmap's probes send some) reaches
+        # here through send_error before any header or path was read.
+        headers = getattr(self, "headers", None) or {}
+        auth = "yes" if headers.get("Authorization") else "no"
+        ua = "_".join(str(headers.get("User-Agent", "-")).split())[:60] or "-"
+        path = (getattr(self, "path", None) or "-").split("?", 1)[0]
+        print(f"[{ROLE}] {getattr(self, 'command', None) or '-'} {path} host={headers.get('Host', '')} "
+              f"auth={auth} ua={ua}", flush=True)
+
+    def log_error(self, fmt, *args):
+        # send_error logs here and then again through send_response's
+        # log_request: one request, two lines. The R-8 ceiling check counts lines.
+        pass
 
     def send(self, status, body=b"", ctype="text/html; charset=utf-8", headers=None):
         if isinstance(body, str):
@@ -632,13 +645,16 @@ SHODAN_DOMAIN_DNS = {
 }
 
 # What the next lookups see, set over /_lab/shodan by e2e_fp.py: IPs whose lookup
-# fails (a provider that could not be asked) and CVEs the provider dropped.
-_shodan_state = {"unavailable": set(), "hide": set()}
+# fails (a provider that could not be asked), CVEs the provider dropped, and IPs
+# it now tags `cdn` (an address that became a CDN edge since the last run).
+_shodan_state = {"unavailable": set(), "hide": set(), "cdn": set()}
 
 
 def _shodan_view(ip):
-    """The record for `ip` as this run's provider has it, CVEs hidden."""
+    """The record for `ip` as this run's provider has it: CVEs hidden, `cdn` tag added."""
     host = SHODAN_HOSTS.get(ip)
+    if host and ip in _shodan_state["cdn"]:
+        host = {**host, "tags": sorted(set(host.get("tags") or []) | {"cdn"})}
     if not host or not _shodan_state["hide"]:
         return host
     hide = _shodan_state["hide"]
@@ -654,7 +670,7 @@ class Shodan(Base):
             from urllib.parse import parse_qs
             params = parse_qs(query)
             with _lock:
-                for key in ("unavailable", "hide"):
+                for key in ("unavailable", "hide", "cdn"):
                     _shodan_state[key] = {v for raw in params.get(key, []) for v in raw.split(",") if v}
             return self.send(200, json.dumps({k: sorted(v) for k, v in _shodan_state.items()}),
                              "application/json")
