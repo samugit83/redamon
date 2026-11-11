@@ -1,6 +1,6 @@
 """Partial recon for the Endpoint AI Classifier.
 
-Re-classifies every Endpoint and Parameter already in the graph without
+Re-classifies the Endpoints and Parameters already in the graph without
 re-running the URL-discovery tools (Katana / Hakrawler / GAU / FFuf /
 ParamSpider / Arjun / Kiterunner / jsluice). Use cases:
 
@@ -12,9 +12,10 @@ ParamSpider / Arjun / Kiterunner / jsluice). Use cases:
   * Toggle was off during the original scan and operator wants to turn
     classification on now.
 
-Reads:  every Endpoint + Parameter + BaseURL for the project.
+Reads:  the Endpoints + Parameters + BaseURLs on the hosts this run covers
+        (its scan roots and groups, minus the RoE exclusions).
 Writes: Endpoint.ai_interface_type, Endpoint.is_ai_rag_ingest,
-        Parameter.is_ai_prompt_injectable.
+        Parameter.is_ai_prompt_injectable, and nothing else.
 
 No new traffic to the target. Pure pattern matching over data the graph
 already holds.
@@ -26,18 +27,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.helpers import partial_settings
+from recon.partial_recon_modules.graph_builders import graph_url_scope, url_host
+from recon.partial_recon_modules.helpers import partial_settings, scope_roots
 
 
-def run_endpoint_ai_classifier(config: dict) -> None:
+def run_endpoint_ai_classifier(config: dict):
     """Re-run the AI endpoint/parameter classifier over the existing graph.
 
     config keys used:
       - user_id / project_id (also pulled from env as fallback)
+      - domains / domain_groups (the run's scope, from _prepare_scope)
       - include_graph_targets (ignored — this tool only reads from graph)
       - settings_overrides (rarely used)
 
-    Returns nothing. Prints a one-line summary to stdout.
+    Returns None, or {root: status} when the graph write failed. Prints a
+    one-line summary to stdout.
     """
     from recon.main_recon_modules.resource_enum import _annotate_ai_endpoint_classifier
     from graph_db.neo4j_client import Neo4jClient
@@ -66,19 +70,28 @@ def run_endpoint_ai_classifier(config: dict) -> None:
     #     "by_base_url": {
     #       <base_url>: {
     #         "endpoints": {
-    #           <path>: {"parameters": {"query": [...], "body": [...], "path": [...]}, ...}
+    #           <path>: {"parameters": {"query": [...], "body": [...], "path": [...]},
+    #                    "methods": [...]}
     #         }
     #       }
     #     }
     #   }
+    roots = scope_roots(config)
     client = Neo4jClient()
     organized_data: dict = {"by_base_url": {}}
 
     with client.driver.session() as session:
-        # Capture the method per (baseurl, path) so the mixin's MERGE re-matches
-        # the existing Endpoint row instead of creating a duplicate with method=GET.
-        # An Endpoint row can have one method per (path, method, baseurl) key,
-        # but multiple methods can share a path — aggregate into a list.
+        # Endpoints are read project-wide; a host this run does not cover (another
+        # group's root, an unticked root) or the RoE excludes is left as it is.
+        keep = graph_url_scope(session, user_id, project_id, roots,
+                               config.get("domain_groups"), apex_filter=False)
+
+        def in_run(base_url) -> bool:
+            host = url_host(base_url) if base_url else ""
+            return bool(host) and keep(host)
+
+        # The methods are kept so the write matches each Endpoint on its full
+        # (path, method, baseurl) key.
         ep_rows = session.run(
             """
             MATCH (e:Endpoint {user_id:$u, project_id:$p})
@@ -86,11 +99,13 @@ def run_endpoint_ai_classifier(config: dict) -> None:
             """,
             u=user_id, p=project_id,
         )
-        ep_total = 0
+        ep_total = skipped = 0
         for row in ep_rows:
+            base, path = row["baseurl"], row["path"]
+            if not path or not in_run(base):
+                skipped += 1
+                continue
             ep_total += 1
-            base = row["baseurl"] or "unknown"
-            path = row["path"] or "/"
             method = row["method"] or "GET"
             by_base = organized_data["by_base_url"].setdefault(base, {"endpoints": {}})
             ep = by_base["endpoints"].setdefault(
@@ -100,30 +115,30 @@ def run_endpoint_ai_classifier(config: dict) -> None:
             if method not in ep["methods"]:
                 ep["methods"].append(method)
 
-        # Attach parameters
+        # Attach parameters (one row per parameter, whatever the number of
+        # methods sharing its path).
         param_rows = session.run(
             """
             MATCH (e:Endpoint {user_id:$u, project_id:$p})-[:HAS_PARAMETER]->(p:Parameter)
-            RETURN e.baseurl AS baseurl, e.path AS path,
+            RETURN DISTINCT e.baseurl AS baseurl, e.path AS path,
                    p.name AS name, p.position AS position
             """,
             u=user_id, p=project_id,
         )
         param_total = 0
         for row in param_rows:
-            param_total += 1
-            base = row["baseurl"] or "unknown"
-            path = row["path"] or "/"
+            base = row["baseurl"]
             name = row["name"]
             position = row["position"] or "query"
-            if base not in organized_data["by_base_url"]:
+            ep = (organized_data["by_base_url"].get(base) or {}).get("endpoints", {}).get(row["path"])
+            if not ep or not name:
                 continue
-            ep = organized_data["by_base_url"][base]["endpoints"].get(path)
-            if not ep:
-                continue
+            param_total += 1
             ep["parameters"].setdefault(position, []).append({"name": name})
 
     print(f"[*][ResourceEnum-AI] Loaded {ep_total} endpoint(s) + {param_total} parameter(s) from graph")
+    if skipped:
+        print(f"[*][ResourceEnum-AI] Left {skipped} endpoint(s) on hosts outside this run untouched")
 
     if ep_total == 0:
         print("[-][ResourceEnum-AI] No endpoints in graph — nothing to classify")
@@ -144,7 +159,7 @@ def run_endpoint_ai_classifier(config: dict) -> None:
         )
         for row in ai_rows:
             base = row["base_url"]
-            if base:
+            if base and base in organized_data["by_base_url"]:
                 recon_data["http_probe"]["by_url"][base + "/"] = {"is_ai_framework_detected": True}
 
     summary = _annotate_ai_endpoint_classifier(organized_data, settings, recon_data)
@@ -155,35 +170,17 @@ def run_endpoint_ai_classifier(config: dict) -> None:
         f"prompt-params={summary.get('prompt_params', 0)}"
     )
 
-    # Write back via the mixin. The mixin re-matches existing Endpoints by
-    # (path, method, baseurl) and SETs the new AI properties via COALESCE,
-    # so existing non-AI fields stay untouched.
-    #
-    # Per-endpoint methods were captured above; compute parameter_count from
-    # the actual loaded params so the mixin's `has_parameters` derivation
-    # stays accurate (zeros here would reset that field to False).
-    for base_data in organized_data["by_base_url"].values():
-        for endpoint in base_data["endpoints"].values():
-            # Methods already populated from Neo4j. Default to ['GET'] only if
-            # somehow we got a row with null method — shouldn't happen.
-            endpoint.setdefault("methods", ["GET"])
-            params = endpoint.get("parameters") or {}
-            q = len(params.get("query") or [])
-            b = len(params.get("body") or [])
-            pp = len(params.get("path") or [])
-            endpoint["parameter_count"] = {
-                "total": q + b + pp,
-                "query": q,
-                "body": b,
-                "path": pp,
-            }
-
-    recon_data_for_mixin = {
-        "resource_enum": {
-            "by_base_url": organized_data["by_base_url"],
-        }
-    }
-    client.update_graph_from_resource_enum(recon_data_for_mixin, user_id, project_id)
+    # Only the AI fields go back (D5): the full resource_enum writer would also
+    # set what a crawl measures (urls_found, source, counts, sample values) from
+    # this dict, which holds none of it.
+    stats = client.update_graph_from_endpoint_ai_classifier(
+        organized_data["by_base_url"], user_id, project_id)
     client.close()
 
-    print(f"[+][ResourceEnum-AI] Partial classification complete")
+    if stats.get("errors"):
+        for error in stats["errors"]:
+            print(f"[!][ResourceEnum-AI] {error}")
+        return {root: "failed: graph write" for root in roots}
+    print(f"[+][ResourceEnum-AI] Partial classification complete — "
+          f"{stats.get('endpoints_annotated', 0)} endpoint(s), "
+          f"{stats.get('parameters_annotated', 0)} parameter(s) annotated")

@@ -207,11 +207,18 @@ class ResourceMixin:
                             # without the flag) counts as declared-only, so a
                             # declared node this run creates on an observed path
                             # stores false rather than leaving the flag unset.
+                            # source is first-writer provenance, and urls_found /
+                            # a Parameter's category and sample_values keep what is
+                            # stored when this caller did not measure them (D5): a
+                            # partial run hands this writer only what its tool saw.
+                            # A full run clears assets first, so a node this writer
+                            # creates gets the same values as before.
                             session.run(
                                 """
                                 MERGE (e:Endpoint {path: $path, method: $method, baseurl: $baseurl, user_id: $user_id, project_id: $project_id})
                                 ON CREATE SET e.openapi_declared_only = CASE WHEN $oa_declared_only THEN true
-                                                                              WHEN $oa_declared THEN false ELSE null END
+                                                                              WHEN $oa_declared THEN false ELSE null END,
+                                              e.source = 'resource_enum'
                                 ON MATCH SET e.openapi_declared_only = CASE
                                     WHEN $oa_declared_only IS NULL THEN e.openapi_declared_only
                                     WHEN NOT $oa_declared_only THEN
@@ -234,8 +241,7 @@ class ResourceMixin:
                                     e.query_param_count = $query_count,
                                     e.body_param_count = $body_count,
                                     e.path_param_count = $path_count,
-                                    e.urls_found = $urls_found,
-                                    e.source = 'resource_enum',
+                                    e.urls_found = coalesce($urls_found, e.urls_found, 1),
                                     e.sources = CASE
                                         WHEN e.sources IS NULL THEN $sources
                                         ELSE e.sources + [s IN $sources WHERE NOT s IN e.sources]
@@ -264,7 +270,7 @@ class ResourceMixin:
                                 query_count=param_count.get('query', 0),
                                 body_count=param_count.get('body', 0),
                                 path_count=param_count.get('path', 0),
-                                urls_found=endpoint_info.get('urls_found', 1),
+                                urls_found=endpoint_info.get('urls_found'),
                                 sources=ep_sources,
                                 ai_interface_type=ai_interface_type,
                                 is_ai_rag_ingest=is_ai_rag_ingest,
@@ -318,8 +324,11 @@ class ResourceMixin:
                                     p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
                                                        AND p.type <> 'string'
                                                   THEN p.type ELSE $param_type END,
-                                    p.category = $category,
-                                    p.sample_values = $sample_values,
+                                    p.category = CASE WHEN coalesce($category, 'other') = 'other' AND p.category IS NOT NULL
+                                                           AND p.category <> 'other'
+                                                      THEN p.category ELSE $category END,
+                                    p.sample_values = CASE WHEN size($sample_values) > 0 THEN $sample_values
+                                                           ELSE coalesce(p.sample_values, $sample_values) END,
                                     p.is_injectable = coalesce(p.is_injectable, false),
                                     p.source = 'resource_enum',
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
@@ -371,8 +380,11 @@ class ResourceMixin:
                                     p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
                                                        AND p.type <> 'string'
                                                   THEN p.type ELSE $param_type END,
-                                    p.category = $category,
-                                    p.sample_values = $sample_values,
+                                    p.category = CASE WHEN coalesce($category, 'other') = 'other' AND p.category IS NOT NULL
+                                                           AND p.category <> 'other'
+                                                      THEN p.category ELSE $category END,
+                                    p.sample_values = CASE WHEN size($sample_values) > 0 THEN $sample_values
+                                                           ELSE coalesce(p.sample_values, $sample_values) END,
                                     p.required = $required,
                                     p.is_injectable = coalesce(p.is_injectable, false),
                                     p.source = 'resource_enum',
@@ -427,7 +439,9 @@ class ResourceMixin:
                                     p.type = CASE WHEN $param_type = 'string' AND p.type IS NOT NULL
                                                        AND p.type <> 'string'
                                                   THEN p.type ELSE $param_type END,
-                                    p.category = $category,
+                                    p.category = CASE WHEN coalesce($category, 'other') = 'other' AND p.category IS NOT NULL
+                                                           AND p.category <> 'other'
+                                                      THEN p.category ELSE $category END,
                                     p.input_type = $input_type,
                                     p.required = $required,
                                     p.is_injectable = coalesce(p.is_injectable, false),
@@ -733,6 +747,79 @@ class ResourceMixin:
             except Exception as e:
                 stats["errors"].append(f"Archive leaks failed: {e}")
 
+        return stats
+
+    def update_graph_from_endpoint_ai_classifier(self, by_base_url: dict, user_id: str,
+                                                 project_id: str) -> dict:
+        """Write the partial Endpoint AI Classifier's annotations and nothing else (D5).
+
+        ``by_base_url`` is the resource_enum shape the classifier stamped. Only
+        what it stamps is read: ai_interface_type and is_ai_rag_ingest per
+        endpoint, is_ai_prompt_injectable per parameter. The classifier matches
+        stored paths and parameter names, so the crawl's fields (category,
+        urls_found, source, sample_values, counts) and updated_at stay as the
+        last crawl left them. Nodes are matched on their full key and never
+        created. A value the classifier did not produce keeps the stored one,
+        and its "non-llm" (no path pattern matched) never replaces a type
+        another source found, such as AI Surface Recon's live probe.
+        """
+        stats = {"endpoints_annotated": 0, "parameters_annotated": 0, "errors": []}
+        endpoints, parameters = [], []
+        for base_url, base_data in (by_base_url or {}).items():
+            if not base_url or not isinstance(base_data, dict):
+                continue
+            for path, info in (base_data.get("endpoints") or {}).items():
+                if not path or not isinstance(info, dict):
+                    continue
+                iface, rag = info.get("ai_interface_type"), info.get("is_ai_rag_ingest")
+                if iface is not None or rag is not None:
+                    endpoints.extend({"baseurl": base_url, "path": path, "method": method,
+                                      "ai_interface_type": iface, "is_ai_rag_ingest": rag}
+                                     for method in info.get("methods") or ["GET"])
+                params = info.get("parameters")
+                for position, plist in (params.items() if isinstance(params, dict) else ()):
+                    for param in plist or []:
+                        if (isinstance(param, dict) and param.get("name")
+                                and param.get("is_ai_prompt_injectable") is not None):
+                            parameters.append({"baseurl": base_url, "path": path, "name": param["name"],
+                                               "position": position,
+                                               "is_ai_prompt_injectable": param["is_ai_prompt_injectable"]})
+        if not endpoints and not parameters:
+            return stats
+
+        def work(tx):
+            annotated = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (e:Endpoint {path: row.path, method: row.method, baseurl: row.baseurl,
+                                   user_id: $user_id, project_id: $project_id})
+                SET e.ai_interface_type = CASE
+                        WHEN row.ai_interface_type IS NULL THEN e.ai_interface_type
+                        WHEN row.ai_interface_type = 'non-llm'
+                             AND coalesce(e.ai_interface_type, 'non-llm') <> 'non-llm' THEN e.ai_interface_type
+                        ELSE row.ai_interface_type END,
+                    e.is_ai_rag_ingest = coalesce(row.is_ai_rag_ingest, e.is_ai_rag_ingest)
+                RETURN count(e) AS n
+                """,
+                rows=endpoints, user_id=user_id, project_id=project_id,
+            ).single()
+            flagged = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (p:Parameter {name: row.name, position: row.position, endpoint_path: row.path,
+                                    baseurl: row.baseurl, user_id: $user_id, project_id: $project_id})
+                SET p.is_ai_prompt_injectable = coalesce(row.is_ai_prompt_injectable, p.is_ai_prompt_injectable)
+                RETURN count(p) AS n
+                """,
+                rows=parameters, user_id=user_id, project_id=project_id,
+            ).single()
+            return (annotated["n"] if annotated else 0), (flagged["n"] if flagged else 0)
+
+        try:
+            with self.driver.session() as session:
+                stats["endpoints_annotated"], stats["parameters_annotated"] = session.execute_write(work)
+        except Exception as e:
+            stats["errors"].append(f"Endpoint AI annotations failed: {e}")
         return stats
 
     def prune_withdrawn_openapi_declarations(self, user_id: str, project_id: str, reread_spec_urls,
