@@ -592,7 +592,9 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     print("[*][Naabu] Extracting targets from recon data...")
     unique_ips, unique_hostnames, ip_to_hostnames = extract_targets_from_recon(recon_data, settings)
 
-    # Combine targets - prefer hostnames for better accuracy
+    # Every name and every address. The filter removes nothing, because
+    # ip_to_hostnames is keyed by address, so an address is scanned even when
+    # a name of its is too; IP mode relies on that.
     all_targets = list(unique_hostnames) + [ip for ip in unique_ips if ip not in [
         h_ip for h in unique_hostnames for h_ip in ip_to_hostnames.get(h, [])
     ]]
