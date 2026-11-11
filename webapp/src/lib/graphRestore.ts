@@ -186,6 +186,9 @@ const RESTORED_DATETIME_PROPERTIES: ReadonlySet<string> = new Set([
   'triaged_at', 'triage_rescored_at', 'triage_ai_at', 'triage_verdict_at',
   'recon_coverage_at', 'js_recon_at', 'nuclei_at', 'http_probed_at', 'anon_status_at',
   'first_seen_at', 'last_seen_at',
+  // The hostname selection's (graph_db ip_hostnames_mixin, the webapp's
+  // narrowing marker): readers order by it.
+  'ip_hostname_evaluated_at',
 ])
 
 const EXPORTED_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/

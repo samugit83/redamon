@@ -68,6 +68,24 @@ class TestAiAttackRoutes(unittest.TestCase):
         self.assertEqual(len(rc["targets"]), 1)
         self.assertEqual(kwargs["ai_attack_path"], "/host/ai_attack_surface_scan")
 
+    def test_start_passes_the_ip_mode_scope_through(self):
+        """The scanner admits each target by these (design §11, P4); the
+        webapp's start route reads them from the project row."""
+        policy = {"mode": "record_filter", "include": ["*.example.com"], "exclude": []}
+        run(api.start_ai_attack_surface("p", self._req(
+            ip_mode=True, target_ips=["203.0.113.0/24"], roe_excluded_hosts=["203.0.113.11"],
+            ip_hostname_policy=policy)))
+        rc = self.mgr.start_ai_attack_surface.call_args.kwargs["run_config"]
+        self.assertEqual((rc["ip_mode"], rc["target_ips"], rc["roe_excluded_hosts"], rc["ip_hostname_policy"]),
+                         (True, ["203.0.113.0/24"], ["203.0.113.11"], policy))
+
+    def test_a_request_that_does_not_say_leaves_ip_mode_unknown(self):
+        # The scanner then asks the graph, and refuses an IP-mode project.
+        run(api.start_ai_attack_surface("p", self._req()))
+        rc = self.mgr.start_ai_attack_surface.call_args.kwargs["run_config"]
+        self.assertIsNone(rc["ip_mode"])
+        self.assertEqual((rc["target_ips"], rc["roe_excluded_hosts"], rc["ip_hostname_policy"]), ([], [], None))
+
     def test_start_503_when_uninitialized(self):
         api.container_manager = None
         with self.assertRaises(HTTPException) as ctx:

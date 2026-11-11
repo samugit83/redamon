@@ -26,6 +26,16 @@
       "legacy": []
     },
     {
+      "name": "an IP-mode project's org Domain of a scanned hostname, with data, is not legacy",
+      "domains": [
+        {"name": "ip-targets.cmexample", "ip_mode": true, "has_subdomain": true},
+        {"name": "example.test", "ip_hostname_org": true, "has_subdomain": true, "coverage": true}
+      ],
+      "expected": [],
+      "related": [],
+      "legacy": []
+    },
+    {
       "name": "a removed root unrelated to the scope keeps its stale semantics",
       "domains": [
         {"name": "old-target.test", "has_subdomain": true, "coverage": true},

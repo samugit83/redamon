@@ -12,6 +12,7 @@
  * to stamp `ScanJob.degradedSources`, and for the delta/report views.
  */
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import { type CurrentPolicyRow, admittedByCurrentPolicy } from '@/lib/ipHostnamePolicy'
 import { IP_HOSTNAME_SELECT, type ScopeFields, resolveScopeGroups } from '@/lib/scopeGroups'
 
 /** A single parsed coverage gap. Only `source` is relied on here. */
@@ -57,7 +58,29 @@ export const SCOPE_SELECT = {
   ...IP_HOSTNAME_SELECT,
 } as const
 
+/**
+ * An IP-mode project's coverage scope. It has no scan roots (every gap is
+ * tagged with the synthetic root, and all count); a skipped host counts while it
+ * is a target address, its label, or a hostname the CURRENT policy admits:
+ * after a narrowing a scanned name is no longer the project's (design §6.3).
+ * A Set, empty, so it travels where a set of scan roots does.
+ */
+export class IpModeCoverageScope extends Set<string> {
+  constructor(private readonly policy: CurrentPolicyRow) {
+    super()
+  }
+
+  admitsHost(host: string): boolean {
+    // Addresses and labels: the run's own targets, kept by its clamps.
+    if (host.includes(':') || /^[0-9.]+$/.test(host) || !host.includes('.') || host.startsWith('ip-targets.')) {
+      return true
+    }
+    return admittedByCurrentPolicy([host], this.policy).length > 0
+  }
+}
+
 export function currentScanRoots(project: ScopeFields): Set<string> | null {
+  if (project.ipMode) return new IpModeCoverageScope(project)
   const roots = resolveScopeGroups(project).groups.map(g => g.scanRoot.toLowerCase())
   return roots.length ? new Set(roots) : null
 }
@@ -66,10 +89,10 @@ export function currentScanRoots(project: ScopeFields): Set<string> | null {
  * Is this coverage entry about a current scan root (§4.11.7)? The org Domain
  * keeps a removed root's entries until the next full recon clears the graph.
  * A gap carries its `root`; a gap with none (written before roots were tagged)
- * is kept. `null` roots keep everything.
+ * is kept. `null` roots keep everything, and so does an IP-mode scope.
  */
 export function gapInScope(gap: CoverageGap, roots: ReadonlySet<string> | null): boolean {
-  if (!roots || typeof gap.root !== 'string' || !gap.root) return true
+  if (!roots || roots instanceof IpModeCoverageScope || typeof gap.root !== 'string' || !gap.root) return true
   return roots.has(gap.root.toLowerCase())
 }
 
@@ -77,6 +100,9 @@ export function gapInScope(gap: CoverageGap, roots: ReadonlySet<string> | null):
  *  scan root it equals or sits under; none means a removed root's host. */
 export function skippedHostInScope(hostPort: string, roots: ReadonlySet<string> | null): boolean {
   if (!roots) return true
+  if (roots instanceof IpModeCoverageScope) {
+    return roots.admitsHost(hostPort.replace(/^\[([^\]]*)\](:\d+)?$/, '$1').replace(/^([^:]*):\d+$/, '$1').toLowerCase())
+  }
   const host = hostPort.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase()
   for (const r of roots) if (host === r || host.endsWith(`.${r}`)) return true
   return false

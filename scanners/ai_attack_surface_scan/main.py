@@ -21,7 +21,7 @@ from config import load_config
 from graph import make_driver, verify_connection
 from normalizer import make_dummy_finding, write_finding
 from safety import SafetyError, enforce
-from target_loader import load_targets
+from target_loader import ScopeRefused, ip_mode_scope, load_targets
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,11 +162,17 @@ def run() -> int:
         with driver.session() as session:
             # [Phase 2] Target loading
             print("[Phase 2] Target loading")
+            try:
+                scope = ip_mode_scope(session, cfg)
+            except ScopeRefused as e:
+                print(f"[!] Scope refused: {e} -- nothing is attacked")
+                return 1
             targets = load_targets(
                 session,
                 user_id=cfg.user_id,
                 project_id=cfg.project_id,
                 selected=cfg.targets or None,
+                scope=scope,
             )
             print(f"    [+] {len(targets)} target(s) selected")
             if not targets:

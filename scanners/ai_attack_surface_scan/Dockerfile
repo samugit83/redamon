@@ -99,6 +99,9 @@ RUN pip install --no-cache-dir "PyYAML>=6.0"
 # Copy the scanner (spine + adapters). The runner scripts are invoked by their
 # tool's venv; the spine runs in the base interpreter.
 COPY scanners/ai_attack_surface_scan/ ./ai_attack_surface_scan/
+# The shared hostname rule and guardrail copy (IP-mode target admission,
+# target_loader.py): the spawn mounts no recon_settings into this container.
+COPY recon_settings/ ./recon_settings/
 
 RUN mkdir -p ai_attack_surface_scan/output
 
@@ -106,7 +109,7 @@ RUN mkdir -p ai_attack_surface_scan/output
 ENV GARAK_PYTHON=/opt/venv-garak/bin/python
 ENV PYRIT_PYTHON=/opt/venv-pyrit/bin/python
 ENV GISKARD_PYTHON=/opt/venv-giskard/bin/python
-ENV PYTHONPATH=/app/ai_attack_surface_scan
+ENV PYTHONPATH=/app/ai_attack_surface_scan:/app
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "ai_attack_surface_scan/main.py"]

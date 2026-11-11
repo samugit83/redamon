@@ -486,7 +486,12 @@ def admit_urls(settings: Optional[Mapping], recon_data: Optional[Mapping], urls:
 
 def known_addresses(recon_data: Mapping) -> Dict[str, List[str]]:
     """Every address the run saw each name resolve to: DNS, and the port
-    scan's own name map (which also carries partial recon's graph rows)."""
+    scan's own name map (which also carries partial recon's graph rows).
+
+    IP mode reads DNS only: a selected hostname's entry there is the selection
+    rule's pinned answer, and the port scan's maps only echo it. A name they
+    carry with no DNS entry was never checked against the targets, so it gets
+    no address and the gate refuses it."""
     out: Dict[str, List[str]] = {}
 
     def add(name, address) -> None:
@@ -511,6 +516,8 @@ def known_addresses(recon_data: Mapping) -> Dict[str, List[str]]:
         if isinstance(entry, dict):
             add_ips(name, entry.get("ips"))
             add(name, entry.get("actual_ip"))
+    if (recon_data.get("metadata") or {}).get("ip_mode"):
+        return out
     port_scan = recon_data.get("port_scan") or {}
     for name, entry in (port_scan.get("by_host") or {}).items():
         if isinstance(entry, dict):

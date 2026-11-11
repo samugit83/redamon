@@ -12,7 +12,8 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 }))
 
 import {
-  SCOPE_SELECT, currentScanRoots, gapInScope, parseCoverageGaps, readDegradedSourceCount, skippedHostInScope,
+  IpModeCoverageScope, SCOPE_SELECT, currentScanRoots, gapInScope, parseCoverageGaps, readDegradedSourceCount,
+  skippedHostInScope,
 } from './scanCoverage'
 
 const records = (gapsPerDomain: unknown[]) => ({
@@ -85,7 +86,26 @@ describe('readDegradedSourceCount', () => {
 describe('coverage of a removed scan root (§4.11.7)', () => {
   test('the current scan roots of a project', () => {
     expect([...currentScanRoots({ targetDomain: 'Api.Example.com' })!]).toEqual(['api.example.com'])
-    expect(currentScanRoots({ ipMode: true, targetIps: ['10.0.0.1'] } as never)).toBeNull()
+    expect(currentScanRoots({})).toBeNull()
+  })
+
+  test('IP mode: covered hosts are the targets and the hostnames the CURRENT policy admits (P4, §6.3)', () => {
+    const scope = currentScanRoots({ ipMode: true, ipHostnameMode: 'record_filter',
+      ipHostnameInclude: ['*.example.com'], ipHostnameExclude: ['old.example.com'] } as never)!
+    expect(scope).toBeInstanceOf(IpModeCoverageScope)
+    // Every gap of an IP run is tagged with its synthetic root: all count.
+    expect(gapInScope({ source: 's', root: 'ip-targets.p1' }, scope)).toBe(true)
+    expect(gapInScope({ source: 's' }, scope)).toBe(true)
+    for (const host of ['203.0.113.10:443', '[2001:db8::10]:8443', '2001:db8::10', '203-0-113-10',
+      'ip-targets.p1', 'app.example.com:443', 'app.example.com']) {
+      expect(skippedHostInScope(host, scope), host).toBe(true)
+    }
+    // A name the policy no longer admits (a narrowing since the run) is not.
+    expect(skippedHostInScope('old.example.com:443', scope)).toBe(false)
+    expect(skippedHostInScope('blog.example.net', scope)).toBe(false)
+    const ipOnly = currentScanRoots({ ipMode: true, ipHostnameMode: 'ip_only' } as never)!
+    expect(skippedHostInScope('app.example.com:443', ipOnly)).toBe(false)
+    expect(skippedHostInScope('203.0.113.10:80', ipOnly)).toBe(true)
   })
 
   test("a gap is kept only for a current root; an untagged gap is kept", () => {

@@ -162,6 +162,25 @@ describe('the advisory scope hint', () => {
     expect(documentInProjectScope('http://docs.example.com/spec', project)).toBe(false)
   })
 
+  test('IP mode with a hostname policy: a name the policy can scan is decided at run time (P4)', () => {
+    const m4 = { ipMode: true, targetIps: ['10.203.0.0/24'], ipHostnameMode: 'record_filter',
+      ipHostnameInclude: ['*.example.com'], ipHostnameExclude: ['old.example.com'] }
+    // recon fetches it only if the run selects it (every address a target).
+    expect(documentInProjectScope('https://docs.example.com/spec', m4)).toBeNull()
+    expect(documentInProjectScope('https://old.example.com/spec', m4)).toBe(false)
+    expect(documentInProjectScope('https://docs.example.org/spec', m4)).toBe(false)
+    expect(documentInProjectScope('https://docs.example.com/spec', { ...m4, ipHostnameExclude: ['**.x'] })).toBe(false)
+    expect(documentInProjectScope('https://docs.example.com/spec', { ...m4, roeExcludedHosts: ['example.com'] }))
+      .toBe(false)
+    const m1 = { ipMode: true, targetIps: ['10.203.0.0/24'], ipHostnameMode: 'scan_all' }
+    expect(documentInProjectScope('https://anything.example.org/spec', m1)).toBeNull()
+    for (const mode of ['record_only', 'ip_only', undefined]) {
+      expect(documentInProjectScope('https://docs.example.com/spec', { ...m4, ipHostnameMode: mode })).toBe(false)
+    }
+    // Addresses keep their own verdict.
+    expect(documentInProjectScope('http://10.203.0.10/spec', m4)).toBe(true)
+  })
+
   test('cannot tell: no verdict', () => {
     expect(documentInProjectScope('not a url', { targetDomain: 'example.com' })).toBeNull()
     expect(documentInProjectScope('https://x.example.com/', {})).toBeNull()

@@ -86,6 +86,20 @@ class TestWriteFindingDispatch(unittest.TestCase):
         self.assertEqual(anchor.kwargs["domain"], "example.com")
         self.assertIn("MATCH (d:Domain {name: $domain", anchor.args[0])
 
+    def test_ip_mode_a_scanned_hostname_attaches_to_its_subdomain_under_its_org(self):
+        # P4 (design §6.1): a hostname an IP-mode run scanned is a Subdomain
+        # under an org Domain marked ip_hostname_org, which has no ip_mode, so
+        # the lookup finds it (the synthetic ip-targets root, ip_mode true, is
+        # skipped) and the finding's BaseURL hangs off the existing Subdomain
+        # (MERGE on the tenant key matches it). No normalizer change.
+        s = _session(linked=False, domain="example.com")
+        write_finding(s, _finding(base="https://app.example.com"), "u", "p")
+        lookup = next(c for c in s.run.call_args_list if "RETURN d.name AS domain" in c.args[0])
+        self.assertIn("coalesce(d.ip_mode, false) = false", lookup.args[0])
+        anchor = next(c for c in s.run.call_args_list if "HAS_SUBDOMAIN" in c.args[0])
+        self.assertIn("MERGE (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})", anchor.args[0])
+        self.assertEqual((anchor.kwargs["host"], anchor.kwargs["domain"]), ("app.example.com", "example.com"))
+
     def test_a_domain_is_never_merged(self):
         # A guessed "registrable" Domain (co.uk for x.acme.co.uk) is one the
         # scope never named, and blocks partial recon (GDB-12).

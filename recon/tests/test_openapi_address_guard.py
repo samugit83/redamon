@@ -159,3 +159,39 @@ def test_an_ip_mode_target_on_loopback_is_the_operators_choice(monkeypatch, dns)
                            {'http_probe': {'by_url': {'http://127.0.0.1:8080': {}}}})
     assert sent == ['http://127.0.0.1:8080/openapi.json']
     assert not any(d['code'] == 'blocked_address' for d in result['diagnostics'])
+
+
+# P4: an IP-mode run's scope is its target addresses plus the hostnames its
+# selection rule scanned (metadata.ip_mode_hosts); a recorded name is no target.
+
+def test_ip_mode_scope_payload_names_the_selected_hostnames():
+    from recon.helpers.openapi.discovery import scope_payload
+    from recon.helpers.openapi.scope import Scope
+    settings = {'IP_MODE': True, 'TARGET_IPS': ['203.0.113.0/24']}
+    payload = scope_payload(settings, ip_mode_hosts={'app.example.com': 'example.com', 'API.example.net.': 'x'})
+    assert payload['hosts'] == ['api.example.net', 'app.example.com']
+    scope = Scope.from_payload(payload)
+    assert scope.is_valid
+    assert scope.allows('https://app.example.com/openapi.json')
+    assert scope.allows('http://203.0.113.10:8080/openapi.json')
+    assert not scope.allows('https://old.example.com/openapi.json')
+    assert not scope.allows('https://www.app.example.com/openapi.json')
+    assert scope_payload(settings)['hosts'] == []
+    # Domain mode never reads the IP-mode list.
+    assert scope_payload({'TARGET_DOMAIN': 'example.org'}, ip_mode_hosts={'app.example.com': 'x'})['hosts'] == []
+
+
+def test_ip_mode_a_payload_naming_an_address_outside_its_networks_stays_invalid():
+    from recon.helpers.openapi.scope import Scope
+    payload = {'root': '', 'hosts': ['198.51.100.7'], 'include_subdomains': False, 'include_root': False,
+               'ip_networks': ['203.0.113.0/24'], 'excluded_hosts': []}
+    assert not Scope.from_payload(payload).is_valid
+
+
+def test_ip_mode_discovery_fetches_a_selected_name_and_not_a_recorded_one(monkeypatch, dns):
+    dns['app.example.com'] = ['203.0.113.10']
+    dns['old.example.com'] = ['203.0.113.10']
+    data = {'metadata': {'ip_mode': True, 'ip_mode_hosts': {'app.example.com': 'example.com'}},
+            'http_probe': {'by_url': {'https://app.example.com': {}, 'https://old.example.com': {}}}}
+    result, sent = _engine(monkeypatch, {'IP_MODE': True, 'TARGET_IPS': ['203.0.113.0/24']}, data)
+    assert sent == ['https://app.example.com/openapi.json']

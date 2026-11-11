@@ -1370,7 +1370,12 @@ def _ip_mode_names(combined_result: dict, settings: dict, ips: Iterable[str]) ->
     out: dict[str, list[str]] = {}
     for name, candidate in (((combined_result.get("ip_hostnames") or {}).get("candidates")) or {}).items():
         if may_send(candidate):
-            for ip in candidate.get("ips_seen") or ():
+            ips = list(candidate.get("ips_seen") or ())
+            # A selected name is a target on its pinned answer too (all target
+            # IPs, checked by the rule); the edge rule still applies there.
+            if candidate.get("reason") == "scanned":
+                ips += [ip for ip in candidate.get("resolves_to_now") or () if ip not in ips]
+            for ip in ips:
                 if ip in usable:
                     out.setdefault(ip, []).append(name)
     return out
@@ -1478,7 +1483,49 @@ def _collect_ip_targets(combined_result: dict, settings: Optional[dict] = None) 
             unique.append(p)
         ip_to_ports[ip] = unique
 
+    from recon.helpers.target_admission import ip_mode_targets
+    if ip_mode_targets(combined_result) is not None:
+        ip_to_ports = _ip_mode_live_only(combined_result, ip_to_ports)
     return ip_to_ports
+
+
+def _ip_mode_live_only(combined_result: dict, ip_to_ports: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """IP mode: an address is probed only on ports this run found live.
+
+    Every target sits in the DNS block (its placeholder), so the default 80/443
+    above reached every one of them: on an HTTP-only target the :443 baseline
+    failed and the port was recorded as a skipped host, which the triage reads
+    as the whole address left unchecked. The evidence is security_checks' (open
+    ports, live httpx URLs). A port with none is neither probed nor recorded.
+    When an evidence source was cut, an unproven port may still be live: the
+    source is noted degraded so its earlier findings stay, naming no host.
+    """
+    from recon.helpers.security_checks import _canonical_ip, _evidence_cuts, _ip_mode_live_ports
+    live = {ip: set(ports) for ip, ports in (_ip_mode_live_ports(combined_result) or {}).items()}
+    # The port scan's by_host rows (source 1 above) list open ports too.
+    for key, row in (((combined_result.get("port_scan") or {}).get("by_host")) or {}).items():
+        if not isinstance(row, dict):
+            continue
+        address = _canonical_ip(row.get("ip") or key)
+        for p in row.get("ports") or []:
+            number = p.get("port") or p.get("number") if isinstance(p, dict) else p
+            if address and isinstance(number, int):
+                live.setdefault(address, set()).add(number)
+    kept: dict[str, list[dict]] = {}
+    unproven = 0
+    for ip, plist in ip_to_ports.items():
+        ports = live.get(_canonical_ip(ip) or ip, frozenset())
+        proven = [p for p in plist if p["port"] in ports]
+        unproven += len(plist) - len(proven)
+        if proven:
+            kept[ip] = proven
+    if unproven:
+        print(f"[-][VhostSni] IP mode: {unproven} port(s) with no live evidence are not probed")
+        if _evidence_cuts(combined_result):
+            from recon.helpers import circuit_breaker as _cb
+            _cb.note_degraded(_SOURCE, sources=(_SOURCE,),
+                              reason="live-port evidence cut: unproven ports not probed")
+    return kept
 
 
 def _shared_edge_ips(combined_result: dict, ips: Iterable[str]) -> set[str]:

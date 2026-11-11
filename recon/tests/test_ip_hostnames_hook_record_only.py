@@ -7,7 +7,7 @@ that has a name and a total, bounds the volume per target IP and per run
 (decision D-23: live sources first, then dated sources newest first, then by
 name; what is cut is counted, never written), counts each IP's candidates
 into IP attribution's current_dns_names (D-10) and queues the graph writer.
-Until name selection exists, the scanning modes record the same way.
+The scanning modes (M4, M1) are test_ip_hostnames_selection_hook.py's.
 
 The hook itself is pure data; the main.py step is driven with mocks for the
 graph queue and the recon file. Documentation ranges and reserved names only.
@@ -147,19 +147,6 @@ def test_the_roe_list_is_ignored_when_the_roe_is_off():
     block = ih.hostname_step(_recon(**SOURCES), _settings(
         ROE_ENABLED=False, ROE_EXCLUDED_HOSTS=["*.example.org"]))
     assert block["candidates"]["old.example.org"]["reason"] == "record_only"
-
-
-@pytest.mark.parametrize("mode", ["record_filter", "scan_all"])
-def test_a_scanning_mode_records_until_selection_exists(mode, capsys):
-    recon = _recon(**SOURCES)
-    block = ih.hostname_step(recon, _settings(mode))
-    assert block["mode"] == mode
-    assert {c["reason"] for c in block["candidates"].values()} == {"record_only"}
-    assert recon["subdomains"] == [T1.replace(".", "-"), T2.replace(".", "-"), T3.replace(".", "-")]
-    out = capsys.readouterr().out
-    assert f"[*][IpNames] Mode: {mode}" in out
-    assert ("[!][IpNames] Selecting hostnames to scan is not available in this build: "
-            "every name is recorded, none is scanned") in out
 
 
 def test_on_shared_edge_follows_ip_attribution():

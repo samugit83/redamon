@@ -226,6 +226,9 @@ export interface PreviewCandidate {
   orgDomain?: string | null
   /** The reason the last run recorded for this name, if any. */
   lastReason?: string | null
+  /** The answer the last run resolved the name to (its pinned A/AAAA), when it
+   *  resolved it. scan_all refuses the name when any of it is a shared edge. */
+  resolvedLast?: readonly string[] | null
 }
 
 /**
@@ -297,12 +300,21 @@ function beforeDns(
     const edge = addressSet(opts.sharedEdge)
     if (!edge || !failed || !seen.length || seen.some(a => failed.has(a))) return 'attribution_unavailable'
     if (seen.some(a => edge.has(a))) return 'shared_edge_ip'
+    // Check 9 on the answer too: the rule refuses a name resolving to an edge.
+    // An answer with an unreadable entry is not known to be off the edge.
+    if (c.resolvedLast != null) {
+      const answer = addressSet(c.resolvedLast)
+      if (!answer || [...answer].some(a => edge.has(a))) return 'shared_edge_ip'
+    }
   }
   return null
 }
 
 function lastRunReason(c: PreviewCandidate, mode: string): ReasonCode | null {
   const last = c.lastReason
+  // The resolved half of check 9 comes from where the name pointed, like the
+  // DNS reasons; it is M1's rule only.
+  if (last === 'shared_edge_ip' && mode === 'scan_all') return last
   if (!last || !LAST_RUN_REASONS.has(last)) return null
   // Wildcard DNS control runs only in record_filter (check 15).
   if (last === 'wildcard_zone' && mode !== 'record_filter') return null

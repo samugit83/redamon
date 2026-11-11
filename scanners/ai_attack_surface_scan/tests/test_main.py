@@ -18,8 +18,10 @@ from config import Bounds, RunConfig
 
 def _cfg(**kw):
     bounds = kw.pop("bounds", Bounds(judge_model="m"))
+    # A domain-mode project, as the start route states it (ip_mode=None would
+    # make the scanner ask the graph, and refuse an IP-mode one: design §11).
     base = dict(project_id="p", user_id="u", tool="skeleton",
-                roe_confirmed=True, bounds=bounds)
+                roe_confirmed=True, bounds=bounds, ip_mode=False)
     base.update(kw)
     return RunConfig(**base)
 

@@ -1026,6 +1026,7 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
         if scope.exact:
             names |= set(scope.targets())
         names = {n for n in names if scope.admits(n)}
+    names &= _ip_mode_selected(recon_data, names)
     excluded = _roe_excluded_list(settings)
     if excluded:
         from recon.helpers.roe_scope import _is_roe_excluded
@@ -1048,6 +1049,16 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
                                       names={n: known.get(n, []) for n in sorted(names)},
                                       module="takeover", resolves_names=True).names)
     return list(names)
+
+
+def _ip_mode_selected(recon_data: dict, names) -> set:
+    """IP mode: the names the hostname rule selected (metadata.ip_mode_hosts).
+    A takeover is a dangling name; an IP-mode run's labels and addresses are
+    none, and a recorded name is no target (I-4). Outside IP mode: `names`."""
+    metadata = recon_data.get("metadata") or {}
+    if not metadata.get("ip_mode"):
+        return set(names)
+    return set(metadata.get("ip_mode_hosts") or {})
 
 
 def _collect_alive_urls(recon_data: dict, settings: Optional[dict] = None) -> list[str]:
@@ -1078,6 +1089,18 @@ def _collect_alive_urls(recon_data: dict, settings: Optional[dict] = None) -> li
         for url in host_info.get("live_urls") or []:
             if isinstance(url, str) and url.startswith(("http://", "https://")):
                 urls.add(url)
+
+    if (recon_data.get("metadata") or {}).get("ip_mode"):
+        from urllib.parse import urlsplit
+        selected = _ip_mode_selected(recon_data, ())
+
+        def host_of(url):
+            try:
+                return (urlsplit(url).hostname or "").rstrip(".").lower()
+            except ValueError:
+                return ""
+
+        urls = {u for u in urls if host_of(u) in selected}
 
     excluded = _roe_excluded_list(settings)
     if excluded:

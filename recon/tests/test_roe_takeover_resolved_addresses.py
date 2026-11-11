@@ -292,12 +292,14 @@ def test_the_ai_probe_never_fetches_a_host_the_run_did_not_admit(settings, match
 
 
 def test_ip_mode_keeps_its_own_rules_under_an_exclusion():
-    """IP mode's names are kept by GROUP 1 only when every forward address is
-    a target, and the targets are RoE-filtered: the collectors keep P0b's
-    behaviour, with or without an RoE IP entry."""
+    """IP mode checks only the names its hostname rule selected (P4,
+    metadata.ip_mode_hosts), each already resolved to target addresses only,
+    and the targets are RoE-filtered: the collectors' answer is the same with
+    or without an RoE IP entry. The address literals and their URLs are no
+    names to take over."""
     run = _domain_run()
     run["domain"] = "ip-targets.example"
-    run["metadata"].update(ip_mode=True, expanded_ips=[WWW_IP, MIXED_OK])
+    run["metadata"].update(ip_mode=True, expanded_ips=[WWW_IP, MIXED_OK], ip_mode_hosts={WWW: "example.com"})
     run["dns"] = {"domain": {}, "subdomains": {WWW: _sub(WWW_IP), "192-0-2-7": _sub(MIXED_OK)}}
     run["http_probe"] = {"by_url": {f"https://{WWW}/": {"status_code": 200},
                                     f"http://{MIXED_OK}/": {"status_code": 200}}}
@@ -308,7 +310,7 @@ def test_ip_mode_keeps_its_own_rules_under_an_exclusion():
         both = {**ip_settings, **settings}
         assert runner._collect_subdomains(copy.deepcopy(run), both) == baseline[0]
         assert runner._collect_alive_urls(copy.deepcopy(run), both) == baseline[1]
-    assert baseline == ([WWW], [f"http://{MIXED_OK}/", f"https://{WWW}/"])
+    assert baseline == ([WWW], [f"https://{WWW}/"])
 
 
 # --------------------------------------------------------------------------

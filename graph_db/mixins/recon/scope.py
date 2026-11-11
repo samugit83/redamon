@@ -192,7 +192,17 @@ def classify_host(value: str, recon_data: dict):
     root), never re-admitted through a shorter root. A host under no scan
     root is OUT_OF_SCOPE, i.e. an ExternalDomain, even when it shares an org
     with a group (D-6).
+
+    IP mode: its synthetic root is no parent of a real name, so a hostname the
+    selection rule chose to scan (metadata.ip_mode_hosts, name -> org) is
+    IN_SCOPE with its org Domain as the root; any other name stays out (a
+    recorded name is no target, I-4).
     """
+    metadata = (recon_data or {}).get("metadata") or {}
+    if metadata.get("ip_mode") and isinstance(metadata.get("ip_mode_hosts"), dict):
+        org = metadata["ip_mode_hosts"].get(_normalize_host(value).strip("."))
+        if isinstance(org, str) and _clean(org):
+            return IN_SCOPE, _clean(org)
     roots = attach_roots(recon_data)
     root = root_for_host(value, roots)
     if root is None:

@@ -1777,6 +1777,10 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
         "api_key": request.api_key,
         "auth_header": request.auth_header,
         "auth_scheme": request.auth_scheme,
+        "ip_mode": request.ip_mode,
+        "target_ips": request.target_ips,
+        "roe_excluded_hosts": request.roe_excluded_hosts,
+        "ip_hostname_policy": request.ip_hostname_policy,
         "user_id": tenant,
         "webapp_api_url": _spawned_webapp_url(),
     }

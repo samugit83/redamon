@@ -85,6 +85,24 @@ export const POST = withRouteErrors('Activation failed', async (_request: NextRe
   )
 })
 
+/** The narrowing marker for the project's current policy, on its owner's
+ *  graph. Best-effort: the restore already committed, so a failure is only
+ *  reported (every reader re-applies the current policy). */
+async function markRestoredHostnames(projectId: string): Promise<boolean> {
+  try {
+    const row = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true, ipMode: true, ipHostnameMode: true, ipHostnameInclude: true, ipHostnameExclude: true },
+    })
+    if (!row) return false
+    const { markOutOfPolicy } = await import('@/lib/ipHostnamePolicy')
+    return await markOutOfPolicy(projectId, row.userId, row)
+  } catch (e) {
+    console.warn('[scanTimeline] hostname policy marker failed after activation:', e)
+    return false
+  }
+}
+
 async function activateUnderLock(
   id: string,
   versionId: string,
@@ -202,6 +220,12 @@ async function activateUnderLock(
       await tx.scanVersion.update({ where: { id: versionId }, data: { isCurrent: true, snapshot: null } })
     })
 
+    // A version captured before a narrowing holds hostnames still marked
+    // scanned that the current policy no longer admits (design §6.3). Readers
+    // drop them anyway; the marker makes the graph agree before the cache
+    // is refreshed.
+    const hostnamePolicyMarked = await markRestoredHostnames(id)
+
     // --- 4. the next read must see X ----------------------------------------
     invalidateCache(id)
 
@@ -223,6 +247,7 @@ async function activateUnderLock(
       restoredRelationships: snapshot.relationships.length,
       frozenVersionId: frozenNodeCount > 0 ? current.id : null,
       frozenNodeCount,
+      hostnamePolicyMarked,
       durationMs: Date.now() - startedAt,
       // F2: activation swaps ONLY the recon graph.
       notice: 'Derived artifacts (GVM/secret scan output, remediations, reports, captured traffic) ' +

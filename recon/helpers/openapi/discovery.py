@@ -63,13 +63,16 @@ def _norm_host(value):
     return str(value or '').strip().strip('[]').rstrip('.').lower()
 
 
-def scope_payload(settings, group=None):
+def scope_payload(settings, group=None, ip_mode_hosts=None):
     """The OpenAPI fetch scope of one target, as a Scope payload.
 
     With a scope group (SCOPE_GROUPS) it is the group's auth scope, the same
     hosts the webapp's authScopePatterns names: an ENUMERATE group's strict
     subdomains, an EXACT group's listed hosts, the scan root only with Include
     Root. Without one, the legacy TARGET_DOMAIN + SUBDOMAIN_LIST reading.
+
+    IP mode: the target networks, plus ``ip_mode_hosts``, the hostnames the
+    run's selection rule scanned on them (a recorded name is no target).
     """
     excluded = list(settings.get('ROE_EXCLUDED_HOSTS') or []) if settings.get('ROE_ENABLED') else []
     if group is not None and not settings.get('IP_MODE'):
@@ -82,7 +85,8 @@ def scope_payload(settings, group=None):
     root = _norm_host(settings.get('TARGET_DOMAIN'))
     prefixes = [p.strip() for p in settings.get('SUBDOMAIN_LIST') or [] if isinstance(p, str)]
     if settings.get('IP_MODE'):
-        return {'root': '', 'hosts': [], 'include_subdomains': False, 'include_root': False,
+        names = sorted({_norm_host(h) for h in (ip_mode_hosts or {}) if _norm_host(h)})
+        return {'root': '', 'hosts': names, 'include_subdomains': False, 'include_root': False,
                 'ip_networks': list(settings.get('TARGET_IPS') or []), 'excluded_hosts': excluded}
     wildcard = '*' in prefixes
     actual = [p.rstrip('.') for p in prefixes if p.rstrip('.') and p != '*']
@@ -286,7 +290,8 @@ def _discover(recon_data, settings, seed_urls, explicit_urls, result, title_seed
             return
         group_scopes = [Scope.from_payload(scope_payload(settings, g)) for g in groups]
 
-    scope = Scope.from_payload(scope_payload(settings, own_group))
+    scope = Scope.from_payload(scope_payload(
+        settings, own_group, ip_mode_hosts=((recon_data or {}).get('metadata') or {}).get('ip_mode_hosts')))
     if not scope.is_valid:
         diagnostics.append({'url': '', 'code': 'invalid_scope', 'message': 'OpenAPI requires a configured target'})
         return

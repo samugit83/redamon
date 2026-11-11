@@ -11,6 +11,7 @@
 import type { ProjectTargetFields } from './partialReconScope'
 import { authScopePatterns, resolveScopeGroups } from './scopeGroups'
 import { isRoeExcluded } from './roeScope'
+import { matches, parseEntries } from './ipHostnameFilter'
 
 export interface OpenApiSourceStatus {
   hash: string
@@ -188,11 +189,27 @@ export type DocumentScopeFields = ProjectTargetFields & {
   subdomainList?: unknown
   domainBatchHosts?: unknown
   roeExcludedHosts?: unknown
+  ipHostnameMode?: unknown
+  ipHostnameInclude?: unknown
+  ipHostnameExclude?: unknown
+}
+
+/** IP mode: whether the hostname policy could make `host` a scan target. Only
+ *  the pattern part: the run also needs every address it resolves to to be a
+ *  target, which the form cannot know. An unreadable filter admits nothing. */
+function hostnamePolicyMayScan(host: string, project: DocumentScopeFields): boolean {
+  if (project.ipHostnameMode === 'scan_all') return true
+  if (project.ipHostnameMode !== 'record_filter') return false
+  const include = parseEntries(Array.isArray(project.ipHostnameInclude) ? project.ipHostnameInclude : [])
+  const exclude = parseEntries(Array.isArray(project.ipHostnameExclude) ? project.ipHostnameExclude : [])
+  if (include.invalid.length || exclude.invalid.length) return false
+  return matches(host, include.patterns, exclude.patterns).included
 }
 
 /**
  * Whether recon will fetch a document URL, as far as the form can tell. It
- * mirrors recon's OpenAPI scope: the target IPs and CIDRs in IP mode; the
+ * mirrors recon's OpenAPI scope: the target IPs and CIDRs in IP mode (a
+ * hostname its policy may scan is null: the run decides, by its DNS); the
  * target's subdomains, or only the listed ones, in domain mode; the hosts a
  * group lists, or its whole domain with "*", in a Domain batch; minus the Rules
  * of Engagement exclusions. null when it cannot tell: an unparseable URL, no
@@ -208,7 +225,11 @@ export function documentInProjectScope(url: string, project: DocumentScopeFields
   }
   if (!host || host.includes(':')) return null
   if (project.ipMode) {
-    if (ipv4ToInt(host) === null) return false
+    if (ipv4ToInt(host) === null) {
+      // A hostname is a target only if this run's selection picks it.
+      if (isRoeExcluded(host, strings(project.roeExcludedHosts))) return false
+      return hostnamePolicyMayScan(host, project) ? null : false
+    }
     const verdicts = strings(project.targetIps).map(target => inIpv4Target(host, target))
     if (!verdicts.includes(true)) return verdicts.includes(null) ? null : false
   } else {

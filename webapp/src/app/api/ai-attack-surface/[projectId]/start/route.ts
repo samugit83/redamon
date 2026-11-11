@@ -12,7 +12,7 @@ import { startUnderGraphLock } from '@/lib/startScan'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
-import { resolveScopeGroups } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SELECT, resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -50,6 +50,7 @@ async function startAiAttackScan(request: NextRequest, projectId: string): Promi
     select: {
       id: true, userId: true, targetDomain: true, subdomainList: true,
       ipMode: true, domainBatchMode: true, domainBatchHosts: true,
+      targetIps: true, roeExcludedHosts: true, ...IP_HOSTNAME_SELECT,
     },
   })
   if (!project) {
@@ -89,6 +90,17 @@ async function startAiAttackScan(request: NextRequest, projectId: string): Promi
         api_key: body.api_key || '',
         auth_header: body.auth_header || '',
         auth_scheme: body.auth_scheme || '',
+        // The scanner never reads the project row: these let it admit each
+        // target (design §11). It refuses an IP-mode project whose config
+        // does not say, so a domain project says ip_mode false.
+        ip_mode: project.ipMode === true,
+        target_ips: project.ipMode ? project.targetIps ?? [] : [],
+        roe_excluded_hosts: project.roeExcludedHosts ?? [],
+        ip_hostname_policy: {
+          mode: project.ipHostnameMode ?? 'ip_only',
+          include: project.ipHostnameInclude ?? [],
+          exclude: project.ipHostnameExclude ?? [],
+        },
       }),
     })
   } catch (err) {

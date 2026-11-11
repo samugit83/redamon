@@ -566,7 +566,10 @@ def evaluate(
     - `shared_edge`: the target IPs tagged shared_edge, None when IP attribution
       did not run. `attribution_failed`: the target IPs whose attribution
       failed, None when unknown. In scan_all either None, or a candidate with no
-      `ips_seen`, is `attribution_unavailable`. Ignored in the other modes.
+      `ips_seen`, is `attribution_unavailable`, and check 9 refuses a name seen
+      on an edge IP or resolving to one (an edge serves any tenant's site under
+      the name, so the answer alone must not reach it). Ignored in the other
+      modes.
     - `hard_blocked`, `roe_excluded`: strict predicates (see _passes).
     - `dns_enabled`, `resolver_up`: only True passes.
     - `cap`: anything but a finite number is 0.
@@ -649,7 +652,11 @@ def evaluate(
             reasons[name] = "resolver_unavailable"
             continue
         resolved[name] = answer
-        reason = address_verdict(answer, targets)
+        # Check 9 on the answer, before 12-14 as its number says.
+        if mode == "scan_all" and edge is not None and edge.intersection(answer):
+            reason = "shared_edge_ip"
+        else:
+            reason = address_verdict(answer, targets)
         if reason is None and mode == "record_filter" and (wildcard_names is None or name in wildcard_names):
             reason = "wildcard_zone"
         if reason is None and len(selected) >= cap:

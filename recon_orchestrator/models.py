@@ -460,6 +460,13 @@ class AiAttackSurfaceStartRequest(BaseModel):
     auth_header: str = ""
     auth_scheme: str = ""
     job_credential: Optional[str] = None
+    # The project's IP-mode scope, from its row (design §11): the scanner admits
+    # each target by it. None = not stated, which the scanner refuses for a
+    # project whose graph is IP mode.
+    ip_mode: Optional[bool] = None
+    target_ips: list[str] = []
+    roe_excluded_hosts: list[str] = []
+    ip_hostname_policy: Optional[dict] = None   # {mode, include, exclude}
 
 
 class AiAttackSurfaceState(BaseModel):

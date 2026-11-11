@@ -153,6 +153,10 @@ class Scope:
             try:
                 address = ip_address(host)
             except ValueError:
+                # IP mode: a hostname its selection rule scanned on these
+                # networks (recon checked its every address is a target).
+                if networks:
+                    continue
                 return cls(_valid=False)
             if not any(address in network for network in networks):
                 return cls(_valid=False)

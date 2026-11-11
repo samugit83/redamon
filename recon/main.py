@@ -806,27 +806,59 @@ def _dns_names(result: dict) -> set:
 
 
 def _late_names(result: dict, before: set, settings: dict, output_file: Path, *,
-                after_port_scan: bool, probe_http: bool, label: str) -> None:
+                after_port_scan: bool, probe_http: bool, label: str) -> "dict | None":
     """F2: names a step merged into dns.subdomains after GROUP 1 get their DNS;
     after the port scan, their ports; after httpx, a probe of their own. The
-    graph gets their Subdomain -> IP edges and what was scanned."""
+    graph gets their Subdomain -> IP edges and what was scanned.
+
+    IP mode scans only the names the hostname rule selected
+    (metadata.ip_mode_hosts), on their pinned answer and on target IPs only,
+    and writes nothing: the hostnames hook writes them through the IP-mode
+    writer once its post-probe guard has run, never through the domain
+    writer, which would hang them off the synthetic root. Returns the subset
+    recon dict the late scan produced, or None."""
     new = sorted(_dns_names(result) - set(before))
     if not new:
-        return
+        return None
     from recon.helpers import late_names
+    if (result.get("metadata") or {}).get("ip_mode"):
+        return _ip_mode_late_names(result, new, settings, label)
     if not after_port_scan:
         if late_names.give_dns(result, new, settings):
             save_recon_file(result, output_file)
-        return
+        return None
     sub = late_names.scan_late_names(result, new, settings, probe_http=probe_http, label=label)
     if not sub:
-        return
+        return None
     save_recon_file(result, output_file)
     _graph_update_bg("update_graph_from_domain_discovery", {**sub, "whois": {}}, USER_ID, PROJECT_ID)
     if sub.get("port_scan"):
         _graph_update_bg("update_graph_from_port_scan", sub, USER_ID, PROJECT_ID)
     if sub.get("http_probe"):
         _graph_update_bg("update_graph_from_http_probe", sub, USER_ID, PROJECT_ID)
+    return sub
+
+
+def _ip_mode_late_names(result: dict, names: list, settings: dict, label: str) -> "dict | None":
+    """The IP-mode branch of _late_names: selected names only, pinned answer,
+    target IPs only. A failure reports the http_probe phase, so the prune
+    keeps its findings (the late scan also notes every name)."""
+    from recon.helpers import late_names
+    from recon.helpers.target_admission import target_set
+    metadata = result.get("metadata") or {}
+    selected = metadata.get("ip_mode_hosts") or {}
+    picked = [n for n in names if n in selected]
+    if len(picked) < len(names):
+        print(f"[-][{label}] {len(names) - len(picked)} name(s) the hostname rule did not select: not scanned")
+    if not picked:
+        return None
+    subs = (result.get("dns") or {}).get("subdomains") or {}
+    pinned = {n: [a for a in ((subs.get(n) or {}).get("ips") or {}).get("ipv4") or []]
+              + [a for a in ((subs.get(n) or {}).get("ips") or {}).get("ipv6") or []] for n in picked}
+    return late_names.scan_late_names(
+        result, picked, settings, probe_http=True, label=label, pinned=pinned,
+        targets=target_set(metadata.get("expanded_ips") or ()),
+        on_error=lambda e: _note_phase_error("http_probe", f"late-name scan failed: {type(e).__name__}"))
 
 
 _TLS_HYGIENE_CHECK_SETTINGS = {
@@ -1307,18 +1339,29 @@ def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> N
 
 
 def _ip_hostnames_step(combined_result: dict, settings: dict, output_file) -> None:
-    """IP mode: collect the hostnames seen on the target IPs and record them
+    """IP mode: collect the hostnames seen on the target IPs, scan the ones the
+    hostname rule selects (M4/M1) and record the rest
     (recon/helpers/ip_hostnames.py). Never raises: a failure records no name
     and the run goes on with its addresses.
 
     The writer is queued in every mode, ip_only included, because it also
-    stamps the run's hostname mode on the mock root. In the record modes the
-    hook rewrites the attributed IPs' current_dns_names (D-10), so their
+    stamps the run's hostname mode on the mock root. The selected names' pages
+    are written after it (their Subdomains must exist first) and after the
+    post-probe guard has dropped any that moved. In the record modes the hook
+    rewrites the attributed IPs' current_dns_names (D-10), so their
     attribution write goes again, after the first on the serial queue.
     """
     from recon.helpers import ip_hostnames
+    late = {}
+
+    def late_scan(result, names, pinned, targets):
+        before = _dns_names(result) - set(names)
+        late["sub"] = _late_names(result, before, settings, output_file, after_port_scan=True,
+                                  probe_http=True, label="IpNames")
+        return late["sub"]
+
     try:
-        block = ip_hostnames.hostname_step(combined_result, settings)
+        block = ip_hostnames.hostname_step(combined_result, settings, late_scan=late_scan)
     except Exception as e:  # noqa: BLE001 - the addresses are the run; names are extra
         print(f"[!][IpNames] Hostname recording failed ({type(e).__name__}): no name is recorded this run")
         combined_result["metadata"].setdefault("phase_errors", {})["ip_hostnames"] = str(e)
@@ -1329,6 +1372,8 @@ def _ip_hostnames_step(combined_result: dict, settings: dict, output_file) -> No
         combined_result["metadata"].setdefault("modules_executed", []).append("ip_hostnames")
     save_recon_file(combined_result, output_file)
     _graph_update_bg("update_graph_from_ip_hostnames", combined_result, USER_ID, PROJECT_ID)
+    if (late.get("sub") or {}).get("http_probe"):
+        _graph_update_bg("update_graph_from_http_probe", late["sub"], USER_ID, PROJECT_ID)
     if block["mode"] != "ip_only" and "ip_attribution" in combined_result:
         _graph_update_bg("update_graph_from_ip_attribution", combined_result, USER_ID, PROJECT_ID)
 

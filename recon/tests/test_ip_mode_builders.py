@@ -252,6 +252,9 @@ def test_vhost_probes_target_addresses_only_in_ip_mode():
     recon = _ip_recon(names={NAME: [FOREIGN]})
     recon["port_scan"] = {"by_host": {FOREIGN: {"ip": FOREIGN, "ports": [443]},
                                       T1: {"ip": T1, "ports": [8443]}}}
+    # IP mode probes a port only with live evidence (test_vhost_sni_ip_mode_targets):
+    # T2's comes from httpx.
+    recon["http_probe"] = {"by_url": {f"http://{T2}/": {"url": f"http://{T2}/", "ip": T2}}}
     assert set(_collect_ip_targets(recon)) == {T1, T2}
     domain = dict(recon, metadata={"ip_mode": False})
     assert FOREIGN in _collect_ip_targets(domain)

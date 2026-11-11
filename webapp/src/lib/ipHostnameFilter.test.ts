@@ -35,7 +35,7 @@ interface EvalInput {
 }
 interface EvalVector extends Partial<EvalInput> {
   name: string
-  expect: { error?: true; selected?: string[]; reasons?: Record<string, string> }
+  expect: { error?: true; selected?: string[]; reasons?: Record<string, string>; resolved?: Record<string, string[]> }
   /** What the last run recorded, when it differs from what evaluate() returns. */
   last_run?: Record<string, string>
   preview?: Record<string, string>
@@ -50,15 +50,18 @@ interface Doc {
 const doc: Doc | null = existsSync(VECTORS) ? JSON.parse(readFileSync(VECTORS, 'utf8')) : null
 
 /** A vector as the preview sees it: each name carries the reason its last run
- *  recorded (`last_run`, else the reason the rule gives it). */
+ *  recorded (`last_run`, else the reason the rule gives it) and the answer that
+ *  run resolved it to, when it resolved it. */
 function previewOf(v: EvalVector): { candidates: PreviewCandidate[]; opts: PreviewOptions } {
   const e = { ...doc!.evaluate_defaults, ...v } as EvalInput
   const reasons = { ...v.expect.reasons, ...v.last_run }
+  const resolved = v.expect.resolved ?? {}
   const hard = new Set(e.hard_blocked)
   const roe = new Set(e.roe_excluded)
   return {
     candidates: Object.entries(e.candidates).map(([name, c]) => ({
       name, ipsSeen: c.ips_seen, orgDomain: c.org_domain as string | null | undefined, lastReason: reasons[name] ?? null,
+      resolvedLast: resolved[name] ?? null,
     })),
     opts: {
       mode: e.mode, include: e.include, exclude: e.exclude, cap: e.cap,
@@ -175,6 +178,30 @@ describe('evaluatePreview', () => {
     expect(reason([])).toBe('attribution_unavailable')
     expect(reason(['2001:db8::11'], { ...opts, attributionFailed: new Set(['2001:0db8::11']) }))
       .toBe('attribution_unavailable')
+  })
+
+  test('scan_all also refuses a name its last answer put on a shared-edge target (check 9)', () => {
+    const opts = { ...base, mode: 'scan_all', sharedEdge: new Set(['2001:db8:0::20', '203.0.113.20']) }
+    const reason = (resolvedLast: unknown, o: PreviewOptions = opts) => evaluatePreview(
+      [{ ...cand('a.example.com', null, ['203.0.113.10']), resolvedLast: resolvedLast as string[] }], o,
+    ).reasons['a.example.com']
+    expect(reason(['203.0.113.10', '203.0.113.20'])).toBe('shared_edge_ip')
+    expect(reason([' 2001:DB8::20 '])).toBe('shared_edge_ip')
+    expect(reason('203.0.113.20')).toBe('shared_edge_ip')
+    expect(reason(['203.0.113.11'])).toBe('scanned')
+    expect(reason(null)).toBe('scanned')
+    // An answer nobody can read is not known to be off the edge: refused.
+    expect(reason(['203.0.113.11', 42])).toBe('shared_edge_ip')
+    // The edge rule is M1's, on the answer as on the IPs seen.
+    expect(reason(['203.0.113.20'], { ...opts, mode: 'record_filter' })).toBe('scanned')
+    // Attribution that never ran comes first.
+    expect(reason(['203.0.113.20'], { ...opts, sharedEdge: null })).toBe('attribution_unavailable')
+  })
+
+  test('a last-run shared_edge_ip is kept in scan_all only: it came from where the name pointed', () => {
+    const c = [cand('a.example.com', 'shared_edge_ip', ['203.0.113.10'])]
+    expect(evaluatePreview(c, { ...base, mode: 'scan_all' }).reasons['a.example.com']).toBe('shared_edge_ip')
+    expect(evaluatePreview(c, base).reasons['a.example.com']).toBe('scanned')
   })
 
   test('scan_all fails closed when failed attribution is unknown; other modes ignore it', () => {

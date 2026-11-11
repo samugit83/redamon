@@ -14,8 +14,9 @@
 import type { Session } from 'neo4j-driver'
 import { isHardBlockedDomain } from '@/lib/hard-guardrail'
 import {
-  type IpHostnameMode, type PreviewCandidate, type ReasonCode, canonicalIp, evaluatePreview, matches, parseEntries,
+  type IpHostnameMode, type PreviewCandidate, type ReasonCode, canonicalIp, evaluatePreview,
 } from '@/lib/ipHostnameFilter'
+import { admittedByCurrentPolicy } from '@/lib/ipHostnamePolicy'
 import { isRoeExcluded } from '@/lib/roeScope'
 import { IP_HOSTNAME_DEFAULTS, type ScopeFields, ipHostnameModeOf } from '@/lib/scopeGroups'
 
@@ -128,25 +129,9 @@ export interface PreviewGraph {
   seenEdges: number
 }
 
-/**
- * The scanned names a reader may still call scanned (design §6.3): a name keeps
- * its scanned reason in the graph until the next full run, so after a
- * narrowing, a failed out_of_policy marker or a restored version only the
- * project's CURRENT policy says whether it is still a target. A filter that
- * cannot be read admits nothing, as in the rule.
- */
-export function admittedByCurrentPolicy(
-  names: readonly string[], row: (ScopeFields & { ipMode?: boolean | null }) | null | undefined,
-): string[] {
-  if (!row || row.ipMode !== true) return []
-  const mode = ipHostnameModeOf(row.ipHostnameMode)
-  if (mode === 'scan_all') return [...names]
-  if (mode !== 'record_filter') return []
-  const include = parseEntries(row.ipHostnameInclude ?? [])
-  const exclude = parseEntries(row.ipHostnameExclude ?? [])
-  if (include.invalid.length || exclude.invalid.length) return []
-  return names.filter(name => matches(name, include.patterns, exclude.patterns).included)
-}
+// The §6.3 current-policy filter lives with the narrowing marker; re-exported
+// for the readers that import it from here.
+export { admittedByCurrentPolicy }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : v == null ? null : String(v))
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])

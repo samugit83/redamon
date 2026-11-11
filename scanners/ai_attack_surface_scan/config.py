@@ -83,6 +83,24 @@ class RunConfig:
     # pyrit: optional custom attack objective (the harmful goal). Empty => the
     # selected attack's built-in objectives.
     objective: str = ""
+    # The project's IP-mode scope (design §11), written by the webapp's start
+    # route: an IP-mode project's targets are its addresses plus the hostnames
+    # its selection rule scanned, filtered by its CURRENT policy. None = the
+    # config does not say, which target_loader refuses for an IP-mode project.
+    ip_mode: bool | None = None
+    target_ips: list[str] = field(default_factory=list)
+    roe_excluded_hosts: list[str] = field(default_factory=list)
+    ip_hostname_mode: str = "ip_only"
+    # None = unreadable, which admits no name (as in the selection rule).
+    ip_hostname_include: list[str] | None = field(default_factory=list)
+    ip_hostname_exclude: list[str] | None = field(default_factory=list)
+
+
+def _str_list(value) -> list[str] | None:
+    """A list of strings, or None when the value is not one."""
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return None
+    return list(value)
 
 
 def load_config() -> RunConfig:
@@ -124,7 +142,17 @@ def load_config() -> RunConfig:
         timeout=max(60, min(86400, int(bounds_data.get("timeout", 36000) or 36000))),
     )
 
+    policy = data.get("ip_hostname_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    mode = policy.get("mode")
+
     return RunConfig(
+        ip_mode=data["ip_mode"] if isinstance(data.get("ip_mode"), bool) else None,
+        target_ips=_str_list(data.get("target_ips")) or [],
+        roe_excluded_hosts=_str_list(data.get("roe_excluded_hosts")) or [],
+        ip_hostname_mode=mode if isinstance(mode, str) and mode else "ip_only",
+        ip_hostname_include=_str_list(policy.get("include")),
+        ip_hostname_exclude=_str_list(policy.get("exclude")),
         project_id=data.get("project_id", project_id),
         user_id=data.get("user_id", user_id),
         tool=data.get("tool", tool),

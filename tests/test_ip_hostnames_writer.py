@@ -179,7 +179,7 @@ class TestRecordedNames(unittest.TestCase):
                 self.assertIn("project_id: $pid", clause, clause)
 
     def test_stats(self):
-        self.assertEqual(self.stats, {"mode_stamped": True, "names_recorded": 1, "seen_on": 2,
+        self.assertEqual(self.stats, {"mode_stamped": True, "names_recorded": 1, "names_scanned": 0, "seen_on": 2,
                                       "errors": []})
 
 
@@ -205,7 +205,8 @@ class TestRunModeOnTheMockRoot(unittest.TestCase):
         self.assertEqual([p["mode"] for _, p in self._mode_statements(w)], ["ip_only"])
         self.assertEqual(len(w.session.calls), 1)
         self.assertEqual(w.session.transactions, 0)
-        self.assertEqual(stats, {"mode_stamped": True, "names_recorded": 0, "seen_on": 0, "errors": []})
+        self.assertEqual(stats, {"mode_stamped": True, "names_recorded": 0, "names_scanned": 0, "seen_on": 0,
+                                 "errors": []})
 
     def test_a_block_without_a_mode_stamps_nothing(self):
         w = _Writer()
@@ -260,7 +261,8 @@ class TestWhatIsWritten(unittest.TestCase):
                       {"metadata": {"ip_mode": True}}):
             w = _Writer()
             self.assertEqual(w.update_graph_from_ip_hostnames(recon, UID, PID),
-                             {"mode_stamped": False, "names_recorded": 0, "seen_on": 0, "errors": []})
+                             {"mode_stamped": False, "names_recorded": 0, "names_scanned": 0, "seen_on": 0,
+                              "errors": []})
             self.assertEqual(w.session.calls, [])
 
     def test_a_record_run_without_names_stamps_the_mode_only(self):
@@ -376,6 +378,196 @@ class TestAggregatorAndHookOnOneNode(unittest.TestCase):
         hook_query, _ = self._hook_statement()
         for prop in ("redirect_from_urls", "redirect_to_urls", "times_seen", "status_codes_seen"):
             self.assertNotIn(prop, hook_query)
+
+
+# ---------------------------------------------------------------------------
+# P4: the scanned part (design §6 "Scanned name", §6.2)
+# ---------------------------------------------------------------------------
+
+from graph_db.mixins.recon.domain_mixin import DomainMixin  # noqa: E402
+
+APP, SHOP = "app.example.com", "shop.example.net"
+FP = "ab" * 32
+
+
+class _ScannedWriter(IpHostnamesMixin, DomainMixin, OsintMixin):
+    """The real allowed Domain site (ensure_root_domains) behind the writer."""
+
+    def __init__(self, fail_on=None):
+        self.session = _Session(fail_on)
+        self.driver = MagicMock()
+        self.driver.session.return_value = self.session
+
+    def statements(self, marker):
+        return [(q, p) for q, p in self.session.calls if marker in q]
+
+
+def _scanned_recon(**extra):
+    app = _candidate([T1], reason="scanned", sources=["ptr", "tlsx_san"], resolves_to_now=[T1, "2001:db8::10"])
+    app["seen_on"][T1] = {"sources": ["otx_passive_dns", "ptr", "tlsx_san"], "first_seen": "2024-01-01",
+                          "last_seen": "2026-01-01", "cert_covers": True}
+    shop = _candidate([T2], reason="scanned", org_domain="example.net", resolves_to_now=[T2])
+    recorded = _candidate([T1], reason="filter_no_match")
+    recon = _recon({APP: app, SHOP: shop, "old.example.com": recorded})
+    recon["ip_hostnames"]["mode"] = "record_filter"
+    recon["metadata"]["ip_mode_hosts"] = {APP: "example.com", SHOP: "example.net"}
+    recon["tlsx"] = {"by_target": {
+        f"{T1}:443": {"scanned_ip": T1, "fingerprint_sha256": FP, "subject_cn": "www.example.com",
+                      "san_raw": ["www.example.com", "*.example.com"], "san": ["www.example.com", "example.com"]},
+        f"{T2}:443": {"scanned_ip": T2, "fingerprint_sha256": "cd" * 32, "subject_cn": "other.test",
+                      "san": ["other.test"]},
+        f"{T2}:8443": {"scanned_ip": T2},
+        "junk": "junk"}}
+    recon.update(extra)
+    return recon
+
+
+class TestScannedNames(unittest.TestCase):
+    def setUp(self):
+        self.writer = _ScannedWriter()
+        self.stats = self.writer.update_graph_from_ip_hostnames(_scanned_recon(), UID, PID)
+
+    def test_the_org_domains_come_from_the_allowed_site_then_get_marked(self):
+        (seed_q, seed_p), = self.writer.statements("MERGE (d:Domain")
+        self.assertIn("MERGE (d:Domain {name: name, user_id: $user_id, project_id: $project_id})", seed_q)
+        self.assertEqual(sorted(seed_p["names"]), ["example.com", "example.net"])
+        (mark_q, mark_p), = self.writer.statements("ip_hostname_org = true")
+        self.assertIn("MATCH (d:Domain {name: org, user_id: $uid, project_id: $pid})", mark_q)
+        self.assertNotIn("MERGE (d:Domain", mark_q)
+        self.assertEqual(sorted(mark_p["orgs"]), ["example.com", "example.net"])
+        # An org Domain is no IP-mode root: every Domain.ip_mode reader keeps
+        # treating it as any org (design §6.1).
+        for query in (seed_q, mark_q):
+            self.assertNotIn("ip_mode", query)
+            self.assertNotIn("is_mock", query)
+
+    def test_the_subdomain_carries_the_selection(self):
+        (query, params), = self.writer.statements("MERGE (s:Subdomain")
+        self.assertIn("MERGE (s:Subdomain {name: row.name, user_id: $uid, project_id: $pid})", query)
+        self.assertIn("ON CREATE SET s.source = 'ip_hostname_selection'", query)
+        for prop in ("s.ip_mode = true", "s.has_records = true", "s.ip_hostname_reason = 'scanned'",
+                     "s.ip_hostname_sources = row.sources", "s.ip_hostname_evaluated_at = datetime()"):
+            self.assertIn(prop, query)
+        self.assertEqual(params["rows"], [
+            {"name": APP, "org": "example.com", "sources": ["ptr", "tlsx_san"]},
+            {"name": SHOP, "org": "example.net", "sources": ["ptr"]}])
+
+    def test_it_hangs_off_its_org_domain(self):
+        (query, params), = self.writer.statements("HAS_SUBDOMAIN")
+        self.assertIn("MATCH (d:Domain {name: row.org, user_id: $uid, project_id: $pid})", query)
+        self.assertIn("MERGE (d)-[:HAS_SUBDOMAIN]->(s)", query)
+        self.assertIn("MERGE (s)-[:BELONGS_TO]->(d)", query)
+
+    def test_resolves_to_is_the_pinned_answer_and_current_dns(self):
+        (query, params), = self.writer.statements("[r:RESOLVES_TO]")
+        self.assertIn("MATCH (i:IP {address: e.ip, user_id: $uid, project_id: $pid})", query)
+        # Forward DNS just resolved it: no `source`, which marks a passive,
+        # not-current edge for every RESOLVES_TO reader (schema_sections.md).
+        self.assertIn("REMOVE r.source", query)
+        self.assertNotIn("MERGE (i:IP", query)
+        self.assertEqual(params["edges"], [
+            {"name": APP, "ip": T1, "record_type": "A"},
+            {"name": APP, "ip": "2001:db8::10", "record_type": "AAAA"},
+            {"name": SHOP, "ip": T2, "record_type": "A"}])
+
+    def test_a_dated_source_writes_the_history_edge(self):
+        (query, params), = self.writer.statements("HISTORICALLY_RESOLVED_TO")
+        self.assertIn("MERGE (s)-[r:HISTORICALLY_RESOLVED_TO {source: h.source}]->(i)", query)
+        self.assertEqual(params["history"], [
+            {"name": APP, "ip": T1, "source": "otx_passive_dns", "first": "2024-01-01", "last": "2026-01-01"}])
+
+    def test_covers_host_by_cert_key(self):
+        (query, params), = self.writer.statements("COVERS_HOST")
+        self.assertIn("MATCH (c:Certificate {cert_key: v.cert_key, user_id: $uid, project_id: $pid})", query)
+        self.assertNotIn("MERGE (c:Certificate", query)
+        # *.example.com covers app.example.com; nothing covers shop.example.net.
+        self.assertEqual(params["covers"], [{"cert_key": f"sha256:{FP}", "name": APP}])
+
+    def test_every_statement_is_tenant_scoped(self):
+        for query, params in self.writer.session.calls:
+            for node in re.findall(r"\((\w+):(\w+) \{([^}]*)\}", query):
+                self.assertIn("user_id", node[2], query)
+                self.assertIn("project_id", node[2], query)
+
+    def test_stats(self):
+        self.assertEqual(self.stats["names_scanned"], 2)
+        self.assertEqual(self.stats["names_recorded"], 1)
+        self.assertEqual(self.stats["errors"], [])
+
+    def test_a_scanned_name_is_never_also_recorded(self):
+        (_, params), = self.writer.statements("MERGE (ed:ExternalDomain")
+        self.assertEqual([r["name"] for r in params["rows"]], ["old.example.com"])
+
+
+class TestScannedNamesEdges(unittest.TestCase):
+    def test_the_pin_falls_back_to_the_dns_entry(self):
+        recon = _scanned_recon()
+        del recon["ip_hostnames"]["candidates"][APP]["resolves_to_now"]
+        recon["dns"] = {"subdomains": {APP: {"ips": {"ipv4": [T2], "ipv6": []}}}}
+        w = _ScannedWriter()
+        w.update_graph_from_ip_hostnames(recon, UID, PID)
+        (_, params), = w.statements("[r:RESOLVES_TO]")
+        self.assertIn({"name": APP, "ip": T2, "record_type": "A"}, params["edges"])
+
+    def test_a_scanned_name_with_no_org_is_skipped(self):
+        recon = _scanned_recon()
+        recon["metadata"]["ip_mode_hosts"] = {}
+        recon["ip_hostnames"]["candidates"][APP]["org_domain"] = None
+        w = _ScannedWriter()
+        stats = w.update_graph_from_ip_hostnames(recon, UID, PID)
+        (_, params), = w.statements("MERGE (s:Subdomain")
+        self.assertEqual([r["name"] for r in params["rows"]], [SHOP])
+        self.assertEqual(stats["names_scanned"], 1)
+
+    def test_no_scanned_name_writes_no_scanned_statement(self):
+        w = _ScannedWriter()
+        w.update_graph_from_ip_hostnames(_recon({"x.example.com": _candidate([T1])}), UID, PID)
+        self.assertEqual(w.statements("MERGE (s:Subdomain"), [])
+        self.assertEqual(w.statements("MERGE (d:Domain"), [])
+
+    def test_a_failed_scanned_batch_is_reported(self):
+        w = _ScannedWriter(fail_on="MERGE (s:Subdomain")
+        stats = w.update_graph_from_ip_hostnames(_scanned_recon(), UID, PID)
+        self.assertEqual(stats["names_scanned"], 0)
+        self.assertTrue(any(APP in e for e in stats["errors"]))
+
+    def test_a_failed_org_seed_is_reported_and_the_names_still_written(self):
+        w = _ScannedWriter()
+        with unittest.mock.patch.object(DomainMixin, "ensure_root_domains", side_effect=RuntimeError("down")):
+            stats = w.update_graph_from_ip_hostnames(_scanned_recon(), UID, PID)
+        self.assertTrue(any("org Domain" in e for e in stats["errors"]))
+        self.assertEqual(stats["names_scanned"], 2)
+
+    def test_cert_coverage_is_tls_name_matching(self):
+        self.assertTrue(ihm._covers(APP, [APP]))
+        self.assertTrue(ihm._covers(APP, ["*.EXAMPLE.com."]))
+        self.assertFalse(ihm._covers("b.app.example.com", ["*.example.com"]))
+        self.assertFalse(ihm._covers("example.com", ["*.example.com"]))
+        self.assertFalse(ihm._covers(APP, [None, ""]))
+
+    def test_only_certificates_seen_on_target_ips_cover_a_name(self):
+        recon = _scanned_recon()
+        recon["tlsx"]["by_target"] = {
+            "198.51.100.7:443": {"scanned_ip": "198.51.100.7", "fingerprint_sha256": "ef" * 32,
+                                 "subject_cn": APP},
+            f"{T2}:443": {"ip": T2, "subject_cn": SHOP}}
+        w = _ScannedWriter()
+        w.update_graph_from_ip_hostnames(recon, UID, PID)
+        (_, params), = w.statements("COVERS_HOST")
+        self.assertEqual([c["name"] for c in params["covers"]], [SHOP])
+
+    def test_the_composed_client_has_the_allowed_domain_site(self):
+        from graph_db.mixins.recon_mixin import ReconMixin
+        self.assertTrue(hasattr(ReconMixin, "ensure_root_domains"))
+        self.assertTrue(hasattr(ReconMixin, "update_graph_from_ip_hostnames"))
+
+    def test_the_dated_sources_are_the_collectors(self):
+        """Only these sources give the collector a date (otx first/last; Censys,
+        FOFA, ZoomEye last): the history edge never claims a date a live
+        source did not give."""
+        self.assertEqual(ihm._DATED_SOURCES, frozenset({
+            "otx_passive_dns", "censys_rdns", "censys_cert", "fofa_host", "fofa_domain", "fofa_cname",
+            "fofa_cert", "zoomeye_hostname", "zoomeye_rdns"}))
 
 
 if __name__ == "__main__":

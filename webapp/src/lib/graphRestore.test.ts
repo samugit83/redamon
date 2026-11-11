@@ -409,3 +409,82 @@ describe('restoreGraph — a suppressed finding is dual-labelled', () => {
     expect(calls.find(c => c.cypher.includes('apoc.merge.node'))).toBeDefined()
   })
 })
+
+// P4 (design §6.1, §6.3): an IP-mode graph with hostnames recorded and scanned
+// on its target IPs survives a Scan Timeline activation and an import, and a
+// project delete takes all of it.
+describe('restoreGraph — hostnames on target IPs', () => {
+  const ipGraph = () => [
+    node('Domain', { name: 'ip-targets.p1', ip_mode: true, is_mock: true, ip_hostname_mode: 'record_filter',
+      scan_type: 'ip' }, 'root'),
+    node('Domain', { name: 'example.com', ip_hostname_org: true, scan_type: 'full' }, 'org'),
+    node('Subdomain', { name: 'app.example.com', source: 'ip_hostname_selection', ip_mode: true,
+      ip_hostname_reason: 'scanned', ip_hostname_sources: ['ptr', 'tlsx_san'],
+      ip_hostname_evaluated_at: '2026-11-11T10:00:00Z' }, 'sub'),
+    node('ExternalDomain', { domain: 'old.example.com', ip_hostname_reason: 'filter_no_match',
+      ip_hostname_org: 'example.com', ips_seen: ['203.0.113.10'], sources: ['ptr'],
+      ip_hostname_evaluated_at: '2026-11-11T10:00:00Z', first_seen_at: '2026-11-11T10:00:00Z' }, 'ed'),
+    node('IP', { address: '203.0.113.10' }, 'ip'),
+  ]
+  const rels = [
+    { startExportId: 'ed', endExportId: 'ip', type: 'SEEN_ON',
+      properties: { sources: ['ptr'], first_seen: '2025-02-01', last_seen: '2026-10-30', resolves_here: true,
+        cert_covers: false, reason: 'filter_no_match' } },
+    { startExportId: 'sub', endExportId: 'ip', type: 'RESOLVES_TO', properties: { record_type: 'A' } },
+    { startExportId: 'org', endExportId: 'sub', type: 'HAS_SUBDOMAIN', properties: {} },
+  ]
+
+  async function restoredIp() {
+    const { session, calls } = fakeSession()
+    await restoreGraph(session, ipGraph(), rels, { projectId: 'p1' })
+    const nodes = calls
+      .filter(c => c.cypher.includes('apoc.merge.node') || c.cypher.includes('apoc.create.node'))
+      .flatMap(c => c.params.nodes as Array<{ labels: string[]; properties: Record<string, unknown> }>)
+    const relationships = calls
+      .filter(c => c.cypher.includes('apoc.create.relationship'))
+      .flatMap(c => c.params.rels as Array<{ type: string; properties: Record<string, unknown> }>)
+    return { nodes, relationships }
+  }
+
+  test('the selection properties round-trip; the evaluation time is a DateTime again', async () => {
+    const { nodes } = await restoredIp()
+    const byName = (n: string) => nodes.find(x => x.properties.name === n || x.properties.domain === n)!.properties
+    expect(byName('example.com')).toMatchObject({ ip_hostname_org: true })
+    expect(byName('ip-targets.p1')).toMatchObject({ ip_mode: true, ip_hostname_mode: 'record_filter', scan_type: 'ip' })
+    expect(byName('app.example.com')).toMatchObject({ source: 'ip_hostname_selection', ip_mode: true,
+      ip_hostname_reason: 'scanned', ip_hostname_sources: ['ptr', 'tlsx_san'] })
+    expect(byName('old.example.com')).toMatchObject({ ip_hostname_reason: 'filter_no_match',
+      ip_hostname_org: 'example.com', ips_seen: ['203.0.113.10'], sources: ['ptr'] })
+    for (const n of ['app.example.com', 'old.example.com']) {
+      expect(typeof byName(n).ip_hostname_evaluated_at).not.toBe('string')
+    }
+  })
+
+  test('an org Domain is an org Domain: its retired per-run props go, the root keeps its own', async () => {
+    const { nodes } = await restoredIp()
+    const org = nodes.find(x => x.properties.name === 'example.com')!.properties
+    expect(org).not.toHaveProperty('scan_type')
+    expect(org).not.toHaveProperty('ip_mode')
+  })
+
+  test('SEEN_ON keeps its evidence', async () => {
+    const { relationships } = await restoredIp()
+    const seen = relationships.find(r => r.type === 'SEEN_ON')!
+    expect(seen.properties).toEqual({ sources: ['ptr'], first_seen: '2025-02-01', last_seen: '2026-10-30',
+      resolves_here: true, cert_covers: false, reason: 'filter_no_match' })
+  })
+
+  test('a project delete takes the recorded names, their SEEN_ON edges and the org Domains', async () => {
+    const { session, calls } = fakeSession()
+    await clearProjectGraph(session, 'p1')
+    const wipe = calls[0]
+    // One statement, scoped to the project, sparing only the global catalogue;
+    // DETACH takes every SEEN_ON edge with its ExternalDomain.
+    expect(wipe.cypher).toContain('MATCH (n {project_id: $pid})')
+    expect(wipe.cypher).toContain('DETACH DELETE n')
+    expect(wipe.params.pid).toBe('p1')
+    for (const label of ['ExternalDomain', 'Domain', 'Subdomain', 'IP']) {
+      expect(wipe.params.excluded as string[]).not.toContain(label)
+    }
+  })
+})
