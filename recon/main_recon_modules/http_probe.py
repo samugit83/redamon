@@ -1988,6 +1988,11 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         print(f"[*][httpx] Custom-port scope active {sorted(custom_ports)} — "
               f"dropped {dropped} out-of-scope URL(s)")
 
+    # httpx resolves each name itself: a host the RoE excludes, by name or by
+    # any address it resolved to, never reaches targets.txt.
+    from recon.helpers.target_admission import admit_urls
+    urls, _ = admit_urls(settings, recon_data, urls, module="httpx")
+
     if not urls:
         print("[!][httpx] No URLs to probe")
         return recon_data

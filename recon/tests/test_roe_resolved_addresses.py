@@ -2,16 +2,17 @@
 
 An exclusion such as `198.51.100.0/24` matched only a host that was itself an
 IP, so a name resolving into the range was port-scanned, probed and
-Nuclei-scanned. The naabu, masscan and nmap target builders and the shared DNS
-extractor now pass their lists through the admission gate
+Nuclei-scanned. The naabu, masscan, nmap and httpx target builders and the
+shared DNS extractor now pass their lists through the admission gate
 (recon/helpers/target_admission.py): the excluded address is
 never a target, a name left with no address is dropped, a name with one
 excluded address is reached only on its others, and a name with no known
 address is refused while IP entries exist.
 
-Each test reads what the tool would really be handed: the target file naabu
-and masscan are given (subprocess mocked), the IPs nmap builds a command for,
-and the hosts and URLs the shared DNS extractor hands Nuclei and the crawlers
+Each test reads what the tool would really be handed: the target file naabu,
+masscan and httpx are given (subprocess or command seam mocked), the IPs nmap
+builds a command for, and the hosts and URLs the shared DNS extractor hands
+Nuclei and the crawlers
 (given the settings, or the RoE a partial builder stamps). With no RoE
 exclusion every list is byte-identical to the one built without RoE keys at
 all.
@@ -34,6 +35,7 @@ for _p in (str(_REPO), str(_RECON)):
 
 from recon.helpers import circuit_breaker  # noqa: E402
 from recon.helpers.target_helpers import build_target_urls, extract_targets_from_recon  # noqa: E402
+from recon.main_recon_modules import http_probe as hp  # noqa: E402
 from recon.main_recon_modules import masscan_scan as ms  # noqa: E402
 from recon.main_recon_modules import nmap_scan as nm  # noqa: E402
 from recon.main_recon_modules import port_scan as ps  # noqa: E402
@@ -264,3 +266,66 @@ def test_dns_targets_read_the_roe_a_partial_builder_stamps():
 def test_dns_targets_are_unchanged_without_an_exclusion(settings):
     assert extract_targets_from_recon(_recon(), settings=settings) == extract_targets_from_recon(_recon())
     assert TXT in extract_targets_from_recon(_recon())[1]
+
+
+# --------------------------------------------------------------------------
+# httpx
+# --------------------------------------------------------------------------
+
+class _StopProbe(BaseException):
+    """Stops run_http_probe at the command-build seam (BaseException so the
+    function's own `except Exception` cannot swallow it)."""
+
+
+def _httpx_targets(settings, recon):
+    seen = {}
+
+    def _fake_build(targets_file, output_file, settings, probe_hosts=None, container_name=None):
+        seen["targets"] = Path(targets_file).read_text()
+        seen["hosts"] = probe_hosts
+        raise _StopProbe()
+
+    with mock.patch.object(hp, "is_docker_installed", return_value=True), \
+            mock.patch.object(hp, "is_docker_running", return_value=True), \
+            mock.patch.object(hp, "pull_httpx_docker_image", return_value=True), \
+            mock.patch.object(hp, "build_httpx_command", side_effect=_fake_build):
+        try:
+            hp.run_http_probe(recon, None, settings)
+        except _StopProbe:
+            pass
+    return seen.get("targets"), seen.get("hosts")
+
+
+def _naabu_found():
+    recon = _recon()
+    by_host = {}
+    for name, ip in ((APEX, APEX_IP), (LEGACY, LEGACY_IP), (MIXED, MIXED_OK), (WWW, WWW_IP),
+                     ("198.51.100.30", "198.51.100.30")):
+        by_host[name] = {"host": name, "ip": ip, "ports": [443],
+                         "port_details": [{"port": 443, "protocol": "tcp", "service": "https"}]}
+    recon["port_scan"] = {"by_host": by_host, "by_ip": {}, "ip_to_hostnames": {}}
+    return recon
+
+
+def test_httpx_probes_no_host_behind_an_excluded_address():
+    targets, hosts = _httpx_targets(_roe(EXCLUDED_RANGE), _naabu_found())
+    assert targets is not None, "httpx was never reached"
+    assert sorted(targets.split()) == [f"https://{APEX}", f"https://{WWW}"]
+    assert hosts == [APEX, WWW]
+
+
+def test_httpx_dns_fallback_refuses_an_unresolved_name_while_ip_entries_exist():
+    targets, _ = _httpx_targets(_roe(EXCLUDED_RANGE), _recon())
+    assert targets is not None
+    hosts = {u.split("://", 1)[1].split(":")[0].split("/")[0] for u in targets.split()}
+    assert hosts == {APEX, WWW}
+    report = circuit_breaker.coverage_report()
+    assert TXT in report.skipped_hostnames()
+
+
+@pytest.mark.parametrize("settings", NO_ROE, ids=["no_keys", "empty", "off"])
+@pytest.mark.parametrize("recon", [_naabu_found, _recon], ids=["naabu", "dns_fallback"])
+def test_httpx_targets_are_unchanged_without_an_exclusion(settings, recon):
+    baseline = _httpx_targets({}, recon())
+    assert baseline[0] is not None
+    assert _httpx_targets(settings, recon()) == baseline
