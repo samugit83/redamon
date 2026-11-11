@@ -163,7 +163,7 @@ class ResourceMixin:
                     try:
                         methods = endpoint_info.get("methods", ["GET"])
                         category = endpoint_info.get("category", "other")
-                        param_count = endpoint_info.get("parameter_count", {})
+                        param_count = endpoint_info.get("parameter_count") or {}
 
                         for method in methods:
                             endpoint_key = (base_url, path, method)
@@ -207,10 +207,12 @@ class ResourceMixin:
                             # without the flag) counts as declared-only, so a
                             # declared node this run creates on an observed path
                             # stores false rather than leaving the flag unset.
-                            # source is first-writer provenance, and urls_found /
-                            # a Parameter's category and sample_values keep what is
-                            # stored when this caller did not measure them (D5): a
-                            # partial run hands this writer only what its tool saw.
+                            # source is first-writer provenance (an Endpoint's and a
+                            # Parameter's), and urls_found, the parameter counts, a
+                            # Parameter's category, sample_values, input_type and
+                            # required keep what is stored when this caller did not
+                            # measure them (D5): a partial run hands this writer
+                            # only what its tool saw.
                             # A full run clears assets first, so a node this writer
                             # creates gets the same values as before.
                             session.run(
@@ -237,10 +239,17 @@ class ResourceMixin:
                                                            AND e.category <> 'other'
                                                       THEN e.category ELSE $category END,
                                     e.ffuf_category = coalesce($ffuf_category, e.ffuf_category),
-                                    e.has_parameters = $has_params,
-                                    e.query_param_count = $query_count,
-                                    e.body_param_count = $body_count,
-                                    e.path_param_count = $path_count,
+                                    // A tool that counted no parameter (FFuf, Kiterunner, a
+                                    // partial that only names a path) did not look; this
+                                    // writer never removes a Parameter node, so neither
+                                    // does a zero count.
+                                    e.has_parameters = $has_params OR coalesce(e.has_parameters, false),
+                                    e.query_param_count = CASE WHEN $query_count > 0 THEN $query_count
+                                                               ELSE coalesce(e.query_param_count, 0) END,
+                                    e.body_param_count = CASE WHEN $body_count > 0 THEN $body_count
+                                                              ELSE coalesce(e.body_param_count, 0) END,
+                                    e.path_param_count = CASE WHEN $path_count > 0 THEN $path_count
+                                                              ELSE coalesce(e.path_param_count, 0) END,
                                     e.urls_found = coalesce($urls_found, e.urls_found, 1),
                                     e.sources = CASE
                                         WHEN e.sources IS NULL THEN $sources
@@ -330,7 +339,7 @@ class ResourceMixin:
                                     p.sample_values = CASE WHEN size($sample_values) > 0 THEN $sample_values
                                                            ELSE coalesce(p.sample_values, $sample_values) END,
                                     p.is_injectable = coalesce(p.is_injectable, false),
-                                    p.source = 'resource_enum',
+                                    p.source = coalesce(p.source, 'resource_enum'),
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
                                     p.updated_at = datetime()
@@ -385,9 +394,9 @@ class ResourceMixin:
                                                       THEN p.category ELSE $category END,
                                     p.sample_values = CASE WHEN size($sample_values) > 0 THEN $sample_values
                                                            ELSE coalesce(p.sample_values, $sample_values) END,
-                                    p.required = $required,
+                                    p.required = coalesce($required, p.required, true),
                                     p.is_injectable = coalesce(p.is_injectable, false),
-                                    p.source = 'resource_enum',
+                                    p.source = coalesce(p.source, 'resource_enum'),
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
                                     p.updated_at = datetime()
@@ -397,7 +406,7 @@ class ResourceMixin:
                                 param_type=param.get("type", "string"),
                                 category=param.get("category", "other"),
                                 sample_values=(param.get("sample_values") or [])[:5],
-                                required=param.get("required", True),
+                                required=param.get("required"),
                                 is_ai_prompt_injectable=param.get("is_ai_prompt_injectable"),
                                 ai_tool_arg_path=param.get("ai_tool_arg_path"),
                             )
@@ -442,10 +451,13 @@ class ResourceMixin:
                                     p.category = CASE WHEN coalesce($category, 'other') = 'other' AND p.category IS NOT NULL
                                                            AND p.category <> 'other'
                                                       THEN p.category ELSE $category END,
-                                    p.input_type = $input_type,
-                                    p.required = $required,
+                                    // input_type comes from a form, required from a form or
+                                    // an API specification; a tool that only names the
+                                    // field (Arjun) says neither.
+                                    p.input_type = coalesce($input_type, p.input_type, 'text'),
+                                    p.required = coalesce($required, p.required, false),
                                     p.is_injectable = coalesce(p.is_injectable, false),
-                                    p.source = 'resource_enum',
+                                    p.source = coalesce(p.source, 'resource_enum'),
                                     p.is_ai_prompt_injectable = COALESCE($is_ai_prompt_injectable, p.is_ai_prompt_injectable),
                                     p.ai_tool_arg_path = COALESCE($ai_tool_arg_path, p.ai_tool_arg_path),
                                     p.updated_at = datetime()
@@ -454,8 +466,8 @@ class ResourceMixin:
                                 user_id=user_id, project_id=project_id,
                                 param_type=param.get("type", "string"),
                                 category=param.get("category", "other"),
-                                input_type=param.get("input_type", "text"),
-                                required=param.get("required", False),
+                                input_type=param.get("input_type"),
+                                required=param.get("required"),
                                 is_ai_prompt_injectable=is_ai_prompt_injectable,
                                 ai_tool_arg_path=ai_tool_arg_path,
                             )
