@@ -256,7 +256,7 @@ def _follow_admitted_redirects(url: str, response, timeout: int) -> Tuple[str, i
         except ValueError as exc:  # a Location the target wrote, e.g. "http://[bad"
             raise requests.exceptions.InvalidURL(str(exc)) from exc
         refusal = hop_refusal(target, settings=roe, admit=_IP_MODE_ADMIT,
-                              url_guard=lambda _url: True)
+                              url_guard=lambda _url: True, module="security_checks")
         if refusal == UNSAFE:
             # Not an http(s) URL with a host: requests would raise here too.
             raise requests.exceptions.InvalidURL(f"redirect to {target!r}")
@@ -3874,6 +3874,10 @@ def _evidence_cuts(recon_data: Dict[str, Any]) -> Set[str]:
     "coverage" when the record itself is unknown, which counts as all of them."""
     errors = (recon_data.get("metadata") or {}).get("phase_errors") or {}
     cuts = {name for name in errors if name in _EVIDENCE_COVERAGE}
+    # A naabu that fails outright leaves no section and no note, and httpx may
+    # be off: with neither section the evidence is unknown, not "nothing live".
+    if not recon_data.get("port_scan") and not recon_data.get("http_probe"):
+        cuts |= {"port_scan", "http_probe"}
     try:
         from recon.helpers import circuit_breaker as cb
         report = cb.coverage_report()
@@ -3915,9 +3919,9 @@ def _keep_unproven_targets(recon_data: Dict[str, Any], ips: List[str]) -> None:
         why = ", ".join(sorted(cuts))
         cb.note_degraded("security_checks", hosts=kept, host_source="security_check",
                          source_only_hosts=True,
-                         reason=f"no live-port evidence ({why} cut short)")
+                         reason=f"no live-port evidence ({why} cut short or missing)")
         print(f"[!][SecurityCheck] {len(kept)} IP-mode target(s) without live-port evidence "
-              f"({why} cut short): not probed there, earlier findings kept")
+              f"({why} cut short or missing): not probed there, earlier findings kept")
     except Exception:  # noqa: BLE001 - not knowing which: keep them all
         cb.note_degraded("security_checks", sources=["security_check"],
                          reason="live-port evidence unknown")

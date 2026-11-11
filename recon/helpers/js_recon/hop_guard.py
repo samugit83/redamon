@@ -62,18 +62,19 @@ def url_host(url) -> str:
         return host
 
 
-def roe_refuses(url: str, settings: Optional[Mapping]) -> bool:
+def roe_refuses(url: str, settings: Optional[Mapping], module: str = _ADMISSION_MODULE) -> bool:
     """True when the Rules of Engagement exclude ``url``'s host: the name, or,
     with IP or CIDR entries, any address it resolves to (a name that does not
-    resolve is refused then, as D2's gate does). Inert without an exclusion."""
+    resolve is refused then, as D2's gate does). Inert without an exclusion.
+    ``module`` names the caller in the refusal's log line and coverage note."""
     context = admission_context(settings)
     if not context.active:
         return False
     host = url_host(url)
     if _is_ip(host):
-        return host not in admit_targets(settings, ips=[host], module=_ADMISSION_MODULE).ips
+        return host not in admit_targets(settings, ips=[host], module=module).ips
     addresses = _resolve(host) if context.ip_rules else []
-    admission = admit_targets(settings, names={host: addresses}, module=_ADMISSION_MODULE,
+    admission = admit_targets(settings, names={host: addresses}, module=module,
                               resolves_names=True)
     return host not in admission.names
 
@@ -81,9 +82,11 @@ def roe_refuses(url: str, settings: Optional[Mapping]) -> bool:
 def hop_refusal(url: str, *, settings: Optional[Mapping] = None,
                 in_scope: Optional[Callable[[str], bool]] = None,
                 admit: Callable[[str], bool] = admit_any,
-                url_guard: Optional[Callable[[str], bool]] = None) -> Optional[str]:
+                url_guard: Optional[Callable[[str], bool]] = None,
+                module: str = _ADMISSION_MODULE) -> Optional[str]:
     """Why ``url`` may not be requested, or None. The checks of
-    ``fetch_hop_by_hop``, in its order; a check that raises refuses."""
+    ``fetch_hop_by_hop``, in its order; a check that raises refuses. ``module``
+    is the caller an RoE refusal is logged and noted under."""
     try:
         scheme = urlparse(url).scheme.lower()
     except (TypeError, ValueError):
@@ -92,7 +95,7 @@ def hop_refusal(url: str, *, settings: Optional[Mapping] = None,
         return UNSAFE
     guard = url_guard or is_url_safe_to_probe
     checks = (
-        (ROE_EXCLUDED, lambda: not roe_refuses(url, settings)),
+        (ROE_EXCLUDED, lambda: not roe_refuses(url, settings, module)),
         (OUT_OF_SCOPE, lambda: in_scope is None or in_scope(url)),
         (NOT_ADMITTED, lambda: admit(url)),
         (UNSAFE, lambda: guard(url)),

@@ -231,13 +231,19 @@ def test_target_with_no_live_port_or_url_is_not_probed_and_not_noted(monkeypatch
     assert T_NONE not in report.keep_hostnames("security_check")
 
 
-def test_run_with_no_port_or_url_data_probes_no_target(monkeypatch):
+def test_run_with_no_port_or_url_data_probes_no_target_and_keeps_them(monkeypatch):
+    """A naabu that fails outright returns no section and notes nothing, and
+    httpx may be off: with neither section the evidence is unknown, not empty,
+    so the targets are kept, as a cut source keeps them."""
     recon = _ip_recon([T_HTTP, T_TLS])
-    result, sent, opened = _run(monkeypatch, recon, live=set())
+    result, sent, opened = _run(monkeypatch, recon, live={(T_HTTP, 80), (T_TLS, 443)})
 
     assert [u for _m, u in sent if urlsplit(u).hostname in (T_HTTP, T_TLS)] == []
     assert [a for a in opened if a[0] in (T_HTTP, T_TLS)] == []
-    assert circuit_breaker.coverage_report().skipped_hosts == ()
+    report = circuit_breaker.coverage_report()
+    assert set(report.keep_hostnames("security_check")) == {T_HTTP, T_TLS}
+    assert T_TLS not in report.keep_hostnames("nuclei")
+    assert "unreachable_hosts" not in result["security_checks"]
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +376,7 @@ def test_a_chain_follows_admitted_hops_and_stops_at_the_first_refused_one(monkey
     assert "(2 redirect(s))" in finding["evidence"]
 
 
-def test_redirect_hop_to_a_name_the_roe_excludes_is_not_sent(monkeypatch):
+def test_redirect_hop_to_a_name_the_roe_excludes_is_not_sent(monkeypatch, capsys):
     """ptr.example.com passes the target rule (its address is a target), but
     the Rules of Engagement exclude it by name (I-3)."""
     recon = _ip_recon([T_HTTP], ports={T_HTTP: [80]}, urls=[f"http://{T_HTTP}"])
@@ -382,6 +388,23 @@ def test_redirect_hop_to_a_name_the_roe_excludes_is_not_sent(monkeypatch):
     assert [u for _m, u in sent if urlsplit(u).hostname == PTR] == []
     assert _direct_http_finding(result, T_HTTP)["final_url"] == f"http://{PTR}/"
     assert circuit_breaker.host_health.unreachable() == []
+    # The refusal is the security checks', in the log and in the coverage record.
+    assert "[-][RoE] security_checks: not sent to 1 target(s)" in capsys.readouterr().out
+    modules = {g["module"] for g in circuit_breaker.coverage_report().gaps
+               if g["source"] == "roe_excluded"}
+    assert modules == {"security_checks"}
+
+
+@pytest.mark.parametrize("module, expected", [
+    pytest.param({}, "js_recon", id="default"),
+    pytest.param({"module": "security_checks"}, "security_checks", id="caller-named"),
+])
+def test_hop_refusal_records_an_roe_refusal_under_its_caller(module, expected):
+    from recon.helpers.js_recon import hop_guard
+    roe = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": [PTR]}
+    assert hop_guard.hop_refusal(f"http://{PTR}/", settings=roe, url_guard=lambda _u: True,
+                                 **module) == hop_guard.ROE_EXCLUDED
+    assert {g["module"] for g in circuit_breaker.coverage_report().gaps} == {expected}
 
 
 def test_a_chain_that_stays_on_admitted_hosts_ends_where_requests_ended_it(monkeypatch):
