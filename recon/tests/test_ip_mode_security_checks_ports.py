@@ -455,7 +455,8 @@ def test_gate_refuses_only_an_unproven_port_of_an_ip_literal(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Domain mode: byte-identical
+# Domain mode: never the IP-mode gate. Its own evidence rule (S-28) is pinned
+# in test_security_checks_domain_live_ports.py.
 # ---------------------------------------------------------------------------
 
 def _domain_recon():
@@ -465,7 +466,7 @@ def _domain_recon():
         "subdomains": [NAME],
         "dns": {"domain": {}, "subdomains": {NAME: {
             "has_records": True, "ips": {"ipv4": [NAME_IP], "ipv6": []}}}},
-        # The scan and httpx found HTTP only: domain mode must probe as it always did.
+        # The scan and httpx found HTTP only.
         "port_scan": {"by_ip": {NAME_IP: {"ip": NAME_IP, "ports": [80], "hostnames": [NAME]}}},
         "http_probe": {"by_url": {f"http://{NAME}": {"url": f"http://{NAME}", "host": NAME,
                                                    "ip": NAME_IP, "status_code": 200}}},
@@ -479,20 +480,34 @@ _EVERYTHING = {(NAME, 80), (NAME, 443), (NAME_IP, 80), (NAME_IP, 443), (OUTSIDE,
     pytest.param({}, id="no-redirect"),
     pytest.param({f"http://{NAME_IP}": f"http://{OUTSIDE}/"}, id="ip-redirects-to-another-name"),
 ])
-def test_domain_mode_sends_exactly_what_it_sent_without_the_gate(monkeypatch, redirects):
+def test_domain_mode_never_runs_the_ip_mode_gate(monkeypatch, redirects):
+    seen = []
+    real = sc._run_security_checks
+
+    def spy(*a, **k):
+        seen.append((sc._IP_LIVE_PORTS, sc._IP_MODE_ADMIT))
+        return real(*a, **k)
+
+    monkeypatch.setattr(sc, "_run_security_checks", spy)
     _r, sent, opened = _run(monkeypatch, _domain_recon(), live=_EVERYTHING, redirects=redirects)
     circuit_breaker.reset_registry()
-    # The run with every IP-mode gate forced open is the code before it.
-    monkeypatch.setattr(sc, "_ip_port_live", lambda *_a, **_k: True, raising=False)
-    _r, sent_ungated, opened_ungated = _run(monkeypatch, _domain_recon(), live=_EVERYTHING,
-                                            redirects=redirects)
+    # The same run with the IP-mode rule builders switched off outright.
+    monkeypatch.setattr(sc, "_ip_mode_live_ports", lambda *_a, **_k: None)
+    monkeypatch.setattr("recon.helpers.target_admission.ip_mode_url_admission",
+                        lambda *_a, **_k: None)
+    _r, sent_off, opened_off = _run(monkeypatch, _domain_recon(), live=_EVERYTHING,
+                                    redirects=redirects)
 
-    assert Counter(sent) == Counter(sent_ungated)
-    assert Counter(opened) == Counter(opened_ungated)
-    # Including the probes IP mode would not send on this evidence.
-    assert ("GET", f"https://{NAME}/") in sent
-    assert (NAME, 443) in opened
-    assert any(_endpoint(u) == (NAME_IP, 443) for _m, u in sent)
+    assert seen == [(None, None), (None, None)]
+    assert Counter(sent) == Counter(sent_off)
+    assert Counter(opened) == Counter(opened_off)
+    # S-28: on HTTP-only evidence the name is checked over HTTP and never
+    # probed blind on :443, so no refusal marks it unreachable.
+    assert ("GET", f"http://{NAME}/login") in sent
+    assert ("GET", f"https://{NAME}/") not in sent
+    assert (NAME, 443) not in opened
+    assert not any(_endpoint(u) == (NAME_IP, 443) for _m, u in sent)
+    assert circuit_breaker.host_health.unreachable() == []
 
 
 def test_domain_mode_still_lets_requests_follow_a_redirect_anywhere(monkeypatch):

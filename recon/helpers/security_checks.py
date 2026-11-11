@@ -63,6 +63,11 @@ _IP_LIVE_PORTS: Optional[Dict[str, frozenset]] = None
 # redirect hop the checks follow (_follow_admitted_redirects); None otherwise,
 # with the same lifetime as _IP_LIVE_PORTS.
 _IP_MODE_ADMIT = None
+# Domain mode: each host (a lower-case name or a canonical address) -> the
+# ports this run found live on it (_domain_live_ports), the only ones a check
+# may probe there. None in IP mode, outside a run_security_checks call, and in
+# a run that measured nothing live at all, where every host is probed as before.
+_DOMAIN_LIVE_PORTS: Optional[Dict[str, frozenset]] = None
 
 
 def _hh_alive(url) -> None:
@@ -188,8 +193,14 @@ def _canonical_ip(value) -> Optional[str]:
         return None
 
 
+def _live_key(host) -> str:
+    """The key a host has in the live-port maps: its canonical address, else
+    its name in lower case without a trailing dot."""
+    return _canonical_ip(host) or str(host or "").strip().strip("[]").rstrip(".").lower()
+
+
 def _ip_port_live(host: str, port: int) -> bool:
-    """False when an IP-mode run has no evidence of ``port`` live on the address ``host``.
+    """False when the run has no evidence of ``port`` live on ``host``.
 
     A blind https://<ip> on an address that serves HTTP only is refused, three
     refusals mark "<ip>:443" unreachable, and the prune then keeps every
@@ -198,10 +209,13 @@ def _ip_port_live(host: str, port: int) -> bool:
     httpx found live, counting no failure: those scanners cover every target,
     so nothing found is their verdict. When one of them was cut short it is
     not, and _keep_unproven_targets keeps those targets' findings instead. A
-    name, and every host outside IP mode, is probed as before.
+    name is probed as before in IP mode.
+
+    Domain mode gates names and addresses alike on _DOMAIN_LIVE_PORTS (S-28);
+    the hosts it leaves unchecked are kept by _keep_unproven_domain_hosts.
     """
     if _IP_LIVE_PORTS is None:
-        return True
+        return _DOMAIN_LIVE_PORTS is None or port in _DOMAIN_LIVE_PORTS.get(_live_key(host), ())
     ip = _canonical_ip(host)
     return ip is None or port in _IP_LIVE_PORTS.get(ip, ())
 
@@ -476,6 +490,8 @@ def _is_bare_origin_match(ip: str, hostnames: List[str], scheme: str, timeout: i
     ip_has_cdn = _has_cdn_markers(ip_resp)
 
     for hostname in hostnames:
+        if not _ip_port_live(hostname, _SCHEME_PORT[scheme]):
+            continue
         try:
             host_resp = _hh_get(
                 f"{scheme}://{_url_host(hostname)}",
@@ -1166,7 +1182,7 @@ def run_direct_ip_checks(
     if enabled_checks.get("waf_bypass", True):
         for subdomain, subdomain_ips in subdomains_to_ips.items():
             for ip in subdomain_ips:
-                if ip in cdn_ips or not _ip_port_live(ip, 443):
+                if ip in cdn_ips or not (_ip_port_live(ip, 443) and _ip_port_live(subdomain, 443)):
                     continue
                 result = check_waf_bypass(subdomain, ip, timeout)
                 if result:
@@ -4003,6 +4019,101 @@ def _keep_unproven_targets(recon_data: Dict[str, Any], ips: List[str]) -> None:
                          reason="live-port evidence unknown")
 
 
+def _domain_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozenset]]:
+    """Domain mode: {host: the ports this run found live on it} (S-28).
+
+    A port is live on an address when the port scan lists it open there, or
+    httpx reached a URL on it (by the URL's host or the address httpx used); a
+    port naabu found by name is live on that name and its address. A name has
+    every port live on an address it resolves to (the run's DNS and the port
+    scan's name maps): it is the same TCP endpoint. None in IP mode, and when
+    the run measured nothing live at all, so a run with no port scan and no
+    httpx data is probed as before.
+    """
+    from recon.helpers.target_admission import ip_mode_targets, known_addresses
+    if ip_mode_targets(recon_data) is not None:
+        return None
+    live: Dict[str, Set[int]] = {}
+
+    def add(host, port) -> None:
+        key = _live_key(host) if host else ""
+        if key and port:
+            live.setdefault(key, set()).add(port)
+
+    port_scan = recon_data.get("port_scan")
+    if isinstance(port_scan, dict):
+        for address, (ports, _entry) in _open_ports_by_ip(port_scan).items():
+            for port in ports:
+                add(address, port)
+        by_host = port_scan.get("by_host")
+        for name, entry in (by_host.items() if isinstance(by_host, dict) else ()):
+            if not isinstance(entry, dict):
+                continue
+            for value in list(entry.get("ports") or []) + list(entry.get("port_details") or []):
+                port = _port_number(value)
+                add(name, port)
+                add(entry.get("ip"), port)
+                if isinstance(value, dict):
+                    add(value.get("ip"), port)
+    by_url = (recon_data.get("http_probe") or {}).get("by_url") or {}
+    for key, entry in (by_url.items() if isinstance(by_url, dict) else ()):
+        entry = entry if isinstance(entry, dict) else {}
+        for url in {key, entry.get("url")}:
+            try:
+                parts = urlparse(str(url or ""))
+                scheme = parts.scheme.lower()
+                port = parts.port or _SCHEME_PORT.get(scheme)
+            except ValueError:
+                continue
+            if scheme in _SCHEME_PORT:
+                add(parts.hostname, port)
+                add(entry.get("ip"), port)
+    if not live:
+        return None
+    for name, addresses in known_addresses(recon_data).items():
+        for address in addresses:
+            ports = live.get(_live_key(address))
+            if ports:
+                live.setdefault(_live_key(name), set()).update(ports)
+    return {host: frozenset(ports) for host, ports in live.items()}
+
+
+def _keep_unproven_domain_hosts(recon_data: Dict[str, Any], hosts: List[str]) -> None:
+    """Domain mode: keep the security_check findings of the hosts the checks
+    leave unchecked for want of evidence. Never raises.
+
+    A host with no live port at all is not probed and kept: the port scan and
+    httpx do not reach every name the checks read (a name found after them, a
+    name naabu never got), so their silence is no verdict, and a blind probe
+    would mark it unreachable for every source. With a cut evidence source
+    and no finished port scan, a host whose web port is unproven is kept too,
+    as in IP mode (_keep_unproven_targets). None is called unreachable.
+    """
+    from recon.helpers import circuit_breaker as cb
+    try:
+        if _DOMAIN_LIVE_PORTS is None:
+            return
+        cuts = _evidence_cuts(recon_data)
+        port_verdict = ("port_scan" in recon_data and "coverage" not in cuts
+                        and not cuts & _PORT_SCAN_COVERAGE)
+        kept = []
+        for host in hosts:
+            if not _DOMAIN_LIVE_PORTS.get(_live_key(host)):
+                kept.append(host)
+            elif cuts and not port_verdict and not (_ip_port_live(host, 80) and _ip_port_live(host, 443)):
+                kept.append(host)
+        if not kept:
+            return
+        cb.note_degraded("security_checks", hosts=kept, host_source="security_check",
+                         source_only_hosts=True,
+                         reason="no live web port in this run's port or URL data")
+        print(f"[!][SecurityCheck] {len(kept)} host(s) without live-port evidence for a web check: "
+              f"not probed there, earlier findings kept")
+    except Exception:  # noqa: BLE001 - not knowing which: keep them all
+        cb.note_degraded("security_checks", sources=["security_check"],
+                         reason="live-port evidence unknown")
+
+
 def run_security_checks(
     recon_data: Dict[str, Any],
     enabled_checks: Dict[str, bool],
@@ -4036,7 +4147,7 @@ def run_security_checks(
     Returns:
         Dictionary with security check findings
     """
-    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED, _IP_LIVE_PORTS, _IP_MODE_ADMIT
+    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED, _IP_LIVE_PORTS, _IP_MODE_ADMIT, _DOMAIN_LIVE_PORTS
     from recon.helpers import circuit_breaker as _cb
     from recon.helpers.target_admission import ip_mode_url_admission
     _HH_SCOPE = _cb.scope((), label="SecurityCheck", unit="host(s)")
@@ -4045,6 +4156,7 @@ def run_security_checks(
     try:
         _IP_LIVE_PORTS = _ip_mode_live_ports(recon_data)
         _IP_MODE_ADMIT = ip_mode_url_admission(recon_data)
+        _DOMAIN_LIVE_PORTS = _domain_live_ports(recon_data)
         return _run_security_checks(
             recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
             ai_classifier_enabled, ai_model, ai_user_id, ai_project_id, ai_engine,
@@ -4057,6 +4169,7 @@ def run_security_checks(
         _ROE_EXCLUDED = ()
         _IP_LIVE_PORTS = None
         _IP_MODE_ADMIT = None
+        _DOMAIN_LIVE_PORTS = None
 
 
 def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
@@ -4127,6 +4240,12 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
               f"(:80 on {sum(_ip_port_live(ip, 80) for ip in ips)}, "
               f":443 on {sum(_ip_port_live(ip, 443) for ip in ips)} of {len(ips)} target(s))")
         _keep_unproven_targets(recon_data, ips)
+    elif _DOMAIN_LIVE_PORTS is not None:
+        hosts = [*hostnames, *ips]
+        print(f"[*][SecurityCheck] A host is probed only on a web port this run found live "
+              f"(:80 on {sum(_ip_port_live(h, 80) for h in hosts)}, "
+              f":443 on {sum(_ip_port_live(h, 443) for h in hosts)} of {len(hosts)} host(s))")
+        _keep_unproven_domain_hosts(recon_data, hosts)
 
     # Count enabled checks by category
     ip_checks = ["direct_ip_http", "direct_ip_https", "ip_api_exposed", "waf_bypass"]
