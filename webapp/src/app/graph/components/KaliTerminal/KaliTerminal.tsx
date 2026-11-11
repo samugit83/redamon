@@ -21,14 +21,20 @@ function getWsUrl(ticket?: string): string {
   return buildAgentWsUrl('/ws/kali-terminal', ticket)
 }
 
+/** Always on screen: the sandbox, its /workspace and its shell history are one for every project. */
+export const SHARED_ENVIRONMENT_NOTICE = "Shared environment: other projects' files are visible here."
+
 /**
  * The line for a ticket the terminal could not use: the mint's own refusal
- * (expired session, no project access, a version activation in progress), or
- * no ticket at all, which here means the webapp has no ticket secret: the
- * terminal proxy fails closed without one.
+ * (no terminal grant, expired session, no project access, a version activation
+ * in progress), or no ticket at all, which here means the webapp has no ticket
+ * secret: the terminal proxy fails closed without one.
  */
 export function ticketFailureLine(minted: WsTicketResult): string | null {
-  if (!minted.ok) return `Terminal authentication failed: ${minted.error.message}`
+  if (!minted.ok) {
+    if (minted.error.status === 403) return `Terminal not available: ${minted.error.message}`
+    return `Terminal authentication failed: ${minted.error.message}`
+  }
   if (!minted.ticket) {
     return 'Terminal authentication failed: the webapp issued no ticket (AGENT_WS_TICKET_SECRET is not set). Run ./redamon.sh update, then restart the webapp and agent.'
   }
@@ -176,7 +182,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       terminal.writeln('\x1b[1;31m✗ No project selected - open a project to use the terminal\x1b[0m')
       return
     }
-    const minted = await mintWsTicket(String(pid), sessionIdRef.current)
+    const minted = await mintWsTicket(String(pid), sessionIdRef.current, 'kali-terminal')
     if (!minted.ok || !minted.ticket) {
       connectingRef.current = false
       setStatus('error')
@@ -201,13 +207,11 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       reconnectAttemptRef.current = 0
       terminal.writeln('\x1b[1;32m\u2713 Connected\x1b[0m\n')
 
-      // Send tenant context FIRST so the sandbox can inject env vars before
-      // forking the shell. The terminal server consumes only the first frame
-      // as a potential init message.
-      const { userId: uid, projectId: pid } = tenantRef.current
-      if (uid && pid) {
-        ws.send(JSON.stringify({ type: 'init', user_id: uid, project_id: pid }))
-      }
+      // The terminal server reads the first frame before it forks the shell and
+      // replays anything but an init into it, so the init goes first. It carries
+      // no ids: the shell's user and project are the ones the agent proxy took
+      // from the verified ticket.
+      ws.send(JSON.stringify({ type: 'init' }))
 
       // Send terminal size
       if (fitAddon) {
@@ -457,6 +461,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
           </button>
         </div>
       </div>
+      <div className={styles.sharedNotice} role="note">{SHARED_ENVIRONMENT_NOTICE}</div>
       <div ref={termRef} className={styles.terminal} role="application" aria-label="Kali Linux terminal" />
     </div>
   )

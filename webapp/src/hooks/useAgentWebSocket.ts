@@ -197,7 +197,7 @@ export function useAgentWebSocket({
     const ws = wsRef.current
     if (!ws || isAuthenticatedRef.current) return
 
-    const minted = await mintWsTicket(projectId, sessionId)
+    const minted = await mintWsTicket(projectId, sessionId, 'agent')
     if (!minted.ok) {
       // A ticketless init would only earn the agent's 1008 and the wrong
       // hint; the mint already says why. A newer socket mints its own.

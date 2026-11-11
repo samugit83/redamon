@@ -4,16 +4,28 @@ import { requireProjectAccess } from '@/lib/access'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
 import { withRouteErrors } from '@/lib/routeErrors'
+import { writeAudit } from '@/lib/audit'
+import { loadPrincipal } from '@/lib/authz/principal'
+import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
+import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 
-// POST /api/agent/ws-ticket
+const TERMINAL_REFUSED =
+  'The Kali terminal is open to administrators and to accounts that kept it at the upgrade.'
+
+// POST /api/agent/ws-ticket  { projectId, sessionId, socket }
 //
-// STRIDE S6: mints a short-lived ticket the browser includes in the /ws/agent
-// init frame so the agent can authenticate the WebSocket. The ticket binds the
-// EFFECTIVE user (getEffectiveUser) - a standard user's own id, or, when an admin
-// is simulating user X, X - never a body-supplied or x-user-id value. So the agent
-// acts as the impersonated user (fetches X's keys, tags the graph as X), and an
-// admin can only mint a ticket for a project the simulated user owns. An
-// internal-key caller has no cookie and cannot mint a ticket for anyone.
+// STRIDE S6: mints a short-lived ticket the browser presents to one agent socket.
+// The ticket binds the EFFECTIVE user (getEffectiveUser) - a standard user's own id,
+// or, when an admin is simulating user X, X - never a body-supplied or x-user-id
+// value. So the agent acts as the impersonated user (fetches X's keys, tags the
+// graph as X), and an admin can only mint a ticket for a project the simulated
+// user owns. An internal-key caller has no cookie and cannot mint a ticket for anyone.
+//
+// The ticket names its socket (`aud`, HD-25); no `socket` is the chat socket, as a
+// browser bundle from before the update sends. A `kali-terminal` ticket also needs
+// the terminal (HD-04): a root shell in the one sandbox every project shares. The
+// REAL signed-in account must hold it, so an admin's act-as never borrows a
+// member's grant and a member never gets it by being the effective user.
 export const POST = withRouteErrors('Could not issue a ticket for the agent connection', async (request: NextRequest) => {
   const eff = await getEffectiveUser()
   if (!eff) {
@@ -29,10 +41,38 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
       { status: 400 }
     )
   }
+  const socket = body.socket === undefined ? 'agent' : body.socket
+  if (!isWsSocket(socket)) {
+    return NextResponse.json(
+      { error: `Unknown socket. Use one of: ${WS_SOCKETS.join(', ')}.`, code: 'unknown_socket' },
+      { status: 400 }
+    )
+  }
 
   // The effective user must own the project the ticket is scoped to.
   const access = await requireProjectAccess(eff, projectId)
   if (access instanceof NextResponse) return access
+
+  let actor: string | undefined
+  let terminalVia: SharedToolAccess['via'] = null
+  if (socket === 'kali-terminal') {
+    // Read, not swallowed: a failed read is a coded 500, never a refusal or a grant.
+    actor = (await getSession())?.userId
+    const real = actor ? await loadPrincipal(actor) : null
+    if (!real) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    const grant = await sharedToolAccess(real, 'kali_terminal')
+    if (!grant.allowed) {
+      return NextResponse.json(
+        { error: TERMINAL_REFUSED, code: 'forbidden', permission: 'platform:kali_terminal' },
+        { status: 403 }
+      )
+    }
+    terminalVia = grant.via
+  } else {
+    actor = await realActorOf()
+  }
 
   // Scan Timeline 4A.3: the ticket is the chokepoint for starting an agent
   // session. Refuse to mint one while the project's live graph is being swapped -
@@ -40,11 +80,21 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   const activating = await assertGraphNotActivating(projectId)
   if (activating) return activating
 
-  // Null when AGENT_WS_TICKET_SECRET is unset (dev) - the agent fails open.
-  const actor = await realActorOf()
+  // Null when AGENT_WS_TICKET_SECRET is unset: the agent then refuses the socket.
   const ticket = actor && actor !== eff.userId
-    ? await createWsTicket(eff.userId, projectId, sessionId, actor)
-    : await createWsTicket(eff.userId, projectId, sessionId)
+    ? await createWsTicket(eff.userId, projectId, sessionId, socket, actor)
+    : await createWsTicket(eff.userId, projectId, sessionId, socket)
+
+  if (ticket && socket === 'kali-terminal' && actor) {
+    await writeAudit({
+      actorId: actor,
+      action: 'agent.terminal_opened',
+      targetType: 'project',
+      targetId: projectId,
+      after: { via: terminalVia, ...(actor !== eff.userId ? { actingAsUserId: eff.userId } : {}) },
+      source: 'ui',
+    })
+  }
   return NextResponse.json({ ticket })
 })
 

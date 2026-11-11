@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose'
 import bcrypt from 'bcryptjs'
+import type { WsSocket } from './wsTicket'
 
 export const AUTH_COOKIE_NAME = 'redamon-auth'
 const BCRYPT_ROUNDS = 12
@@ -49,7 +50,8 @@ export async function verifyToken(token: string): Promise<{ sub: string; role: s
 
 // --- Agent WebSocket ticket (STRIDE S6) ---------------------------------------
 // Short-lived HS256 ticket that binds an authenticated operator identity to a
-// (projectId, sessionId) so the agent can verify the /ws/agent init frame. Signed
+// (projectId, sessionId) and to the one socket it opens (`aud`, HD-25): the agent
+// refuses it on any other socket, so a chat ticket never opens the terminal. Signed
 // with a DEDICATED secret (never AUTH_SECRET) so an agent-side compromise cannot
 // forge login cookies. Returns null when the secret is unset, and the agent then
 // REFUSES the socket (it fails closed, see agentic/ws_ticket.py) - a stack whose
@@ -66,6 +68,7 @@ export async function createWsTicket(
   userId: string,
   projectId: string,
   sessionId: string,
+  socket: WsSocket,
   // The person actually signed in, when an admin is simulating `userId`. The
   // agent records it on the runs it starts, so an audit row names who really
   // pressed the button. Omitted when it is `userId` itself.
@@ -73,8 +76,10 @@ export async function createWsTicket(
 ): Promise<string | null> {
   const key = getWsTicketSecret()
   if (!key) return null
+  // A plain string claim, not setAudience(), which may write a list: the agent
+  // compares `aud` with its socket name and accepts exactly one string.
   return new SignJWT({
-    sub: userId, pid: projectId, sid: sessionId,
+    sub: userId, pid: projectId, sid: sessionId, aud: socket,
     ...(realActorUserId && realActorUserId !== userId ? { act: realActorUserId } : {}),
   })
     .setProtectedHeader({ alg: 'HS256' })

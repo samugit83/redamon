@@ -120,7 +120,7 @@ export function useCypherFixCodeFixWS({
 
     // STRIDE S4: mint a ws-ticket before dialing; the agent fails closed now.
     const sessionId = `codefix-${Date.now()}`
-    const minted = await mintWsTicket(projectId, sessionId)
+    const minted = await mintWsTicket(projectId, sessionId, 'cypherfix-codefix')
     if (!minted.ok) {
       connectingRef.current = false
       wsRef.current = null

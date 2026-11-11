@@ -124,7 +124,7 @@ export function useCypherFixTriageWS({
     // STRIDE S4: mint a ws-ticket (effective user + project) before dialing;
     // the agent handler now fails closed without one.
     const sessionId = `triage-${Date.now()}`
-    const minted = await mintWsTicket(projectId, sessionId)
+    const minted = await mintWsTicket(projectId, sessionId, 'cypherfix-triage')
     if (!minted.ok) {
       connectingRef.current = false
       wsRef.current = null

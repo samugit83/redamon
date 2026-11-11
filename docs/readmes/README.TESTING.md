@@ -203,6 +203,15 @@ graph node or file, with the record archived as `user_deleted` and a `user.delet
 the project. Its trap removes every fixture, the archive row included. It also needs the
 `neo4j` and `recon-orchestrator` containers, and prints `SKIP` without them.
 
+`tests/rbac_kali_terminal_live.sh` checks the Kali terminal gate: a member created after the
+upgrade is refused a `kali-terminal` ticket and still gets a chat ticket, a member given the
+`kali_terminal` legacy grant by SQL gets one (audited `agent.terminal_opened`), and, inside the
+agent container (`tests/rbac_kali_terminal_live_ws.py`, fed on stdin with the tickets), a chat
+ticket does not open the terminal, the sandbox's `:8016` refuses an upgrade without the agent's
+bearer, the shell runs as the ticket's user and project whatever the init frame says, and
+`POST /ws/close` ends the open terminal with close 4403. It also needs the `agent` and
+`kali-sandbox` containers.
+
 ### The RBAC upgrade harness
 
 `tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`

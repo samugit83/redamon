@@ -80,3 +80,18 @@ p1-owner-writes-own-control	1.6	member_a	POST	/api/users/${MEMBER_A_ID}/chat-ski
 # the owner re-pointing a saved MCP server (save or test) with the masked token is refused
 p1-secret-reentry-mcp-server	1.6	member_a	PUT	/api/users/${MEMBER_A_ID}/mcp/rbac-fake-server	{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"••••••••0001"}}	400;has=secret_reentry_required;has=auth.token;lacks=${A_MCP_BEARER}	req:HD-24
 p1-secret-reentry-mcp-test	1.6	member_a	POST	/api/mcp/test	{"userId":"${MEMBER_A_ID}","server":{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"••••••••0001"}}}	400;has=secret_reentry_required;lacks=${A_MCP_BEARER}	req:HD-24
+#
+# ---- step 1.14: a ticket names its socket; the Kali terminal needs the terminal grant ----
+# A member seeded after the upgrade holds no legacy grant (the backfill's cutoff came first), so
+# its terminal ticket is refused and its chat and CypherFix tickets are not. An admin opens the
+# terminal through its own role, also while acting as the member. An allowed mint writes nothing
+# but, for the terminal, an agent.terminal_opened row the cleanup removes. The legacy holder and
+# the sockets themselves: tests/rbac_kali_terminal_live.sh.
+p1-ws-ticket-terminal-new-member	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	403;has="code":"forbidden";has=platform:kali_terminal;lacks="ticket"	req:HD-04
+p1-ws-ticket-agent-member	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"agent"}	200;has="ticket":"	req:HD-25
+p1-ws-ticket-cypherfix-member	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"cypherfix-triage"}	200;has="ticket":"	req:HD-25
+p1-ws-ticket-no-socket-member	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws"}	200;has="ticket":"	req:HD-25
+p1-ws-ticket-unknown-socket	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"shell"}	400;has=unknown_socket;lacks="ticket"	req:HD-25
+p1-ws-ticket-terminal-other-project	1.14	member_a	POST	/api/agent/ws-ticket	{"projectId":"${PB_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	404;lacks="ticket"	req:HD-04
+p1-ws-ticket-terminal-admin	1.14	admin_a	POST	/api/agent/ws-ticket	{"projectId":"${PADM_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	200;has="ticket":"	req:HD-04
+p1-ws-ticket-terminal-admin-acting	1.14	admin_a_as_member_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	200;has="ticket":"	req:HD-04
