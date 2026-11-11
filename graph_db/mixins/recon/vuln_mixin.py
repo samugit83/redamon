@@ -354,6 +354,10 @@ class VulnMixin:
                                   project_id: str) -> list:
         """Link a nuclei finding to the CVEs it cites; returns the linked ids.
 
+        The finding's INCLUDES_CVE edges become exactly these CVEs, so this
+        runs for a finding that cites none too: a template that dropped its
+        CVEs loses their edges. Only edges go; the CVE nodes are shared.
+
         Only fields the CVE lacks are filled: the NVD lookup (technology_cves)
         owns cvss and the rest, and may have written them first.
         """
@@ -366,8 +370,6 @@ class VulnMixin:
                     "cvss": _cvss_or_none(cve.get("cvss")) if isinstance(cve, dict) else None,
                     "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
                 }
-        if not rows:
-            return []
         session.run(
             """
             MATCH (v:Vulnerability {id: $vuln_id, user_id: $user_id, project_id: $project_id})
