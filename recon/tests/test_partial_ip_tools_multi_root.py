@@ -165,7 +165,8 @@ class TestHttpxScopeFilter:
         assert not is_host_in_scope("www.other.test", ROOTS)
         assert is_host_in_scope("www.alpha.test", "alpha.test")      # the single-root form
         assert not is_host_in_scope("www.beta.test", "alpha.test")
-        assert is_host_in_scope("10.0.0.1", ROOTS)                   # IPs bypass, as before
+        assert not is_host_in_scope("10.0.0.1", ROOTS)               # an IP only as a run address (L-6)
+        assert is_host_in_scope("10.0.0.1", ROOTS, run_addresses=frozenset({"10.0.0.1"}))
         assert not is_host_in_scope("www.beta.test", [])
 
     def test_parsing_keeps_a_second_roots_result_and_drops_an_outsiders(self):

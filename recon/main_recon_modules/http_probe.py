@@ -17,6 +17,7 @@ Features:
 - Banner grabbing for non-HTTP ports (SSH, FTP, SMTP, MySQL, etc.)
 """
 
+import ipaddress
 import json
 import math
 import subprocess
@@ -1114,7 +1115,7 @@ def _redirect_chain(chain_codes, status_code) -> Optional[List[int]]:
 
 
 def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list = None, settings: dict = None,
-                       *, exact: bool = False, include_root: bool = True) -> Dict:
+                       *, exact: bool = False, include_root: bool = True, run_addresses=()) -> Dict:
     """
     Parse httpx JSON Lines output into structured format.
 
@@ -1131,6 +1132,8 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
                   TITLE_DETECTION_ENABLED / WAPPALYZER_ENABLED).
         exact, include_root: passed to is_host_in_scope (an EXACT group's list
                   is authoritative even when empty; the root needs Include Root).
+        run_addresses: the run's own addresses (``_run_addresses``); an IP
+                  literal outside them is out of scope like a foreign name.
 
     Returns:
         Structured dictionary with by_url, by_host, technologies_found, and summary
@@ -1140,6 +1143,7 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
     technologies_found = {}
     servers_found = {}
     filtered_count = 0  # Track URLs filtered out due to domain/host mismatch
+    run_addresses = frozenset(_canonical_ip(a) for a in run_addresses or () if isinstance(a, str))
     external_domain_entries = []  # Collect out-of-scope domains for situational awareness
     ai_summary: dict = {}  # AI surface recon counters: {header_matches, favicon_matches, title_matches, wappalyzer_matches}
 
@@ -1177,7 +1181,8 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
             # In full discovery mode: allow any host within root_domain scope
             # Also check the original input URL host (httpx may follow redirects to a different host)
             in_scope = lambda h: is_host_in_scope(  # noqa: E731
-                h, root_domain, allowed_hosts, exact=exact, include_root=include_root)
+                h, root_domain, allowed_hosts, exact=exact, include_root=include_root,
+                run_addresses=run_addresses)
             if root_domain and not in_scope(host):
                 input_url = entry.get("input", "")
                 input_host = extract_host_from_url(input_url) if input_url else ""
@@ -1454,7 +1459,8 @@ def httpx_scope_roots(recon_data: dict):
 
 
 def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None, *,
-                     exact: bool = False, include_root: bool = True) -> bool:
+                     exact: bool = False, include_root: bool = True,
+                     run_addresses=()) -> bool:
     """
     Check if a hostname is within the target scope.
     
@@ -1471,6 +1477,10 @@ def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None, *,
                nothing (rather than falling back to the root's subdomains).
         include_root: whether a root itself is a target; False keeps only its
                strict subdomains (§4.6).
+        run_addresses: the run's own addresses (``_run_addresses``), in
+               canonical form. Outside filtered mode an IP literal is in scope
+               only as one of them: a redirect to someone else's address is not
+               the target's page.
 
     Returns:
         True if host is in scope, False otherwise
@@ -1489,12 +1499,34 @@ def is_host_in_scope(host: str, root_domain, allowed_hosts: list = None, *,
         allowed_set = {h.lower().strip() for h in allowed_hosts or []}
         return host in allowed_set
 
-    # IP addresses bypass domain scope check
     if is_ip(host):
-        return True
+        return _canonical_ip(host) in run_addresses
 
     # Check if host is within the root domain scope
     return any((host == root and include_root) or host.endswith(f".{root}") for root in roots)
+
+
+def _canonical_ip(value: str) -> str:
+    """One spelling per address (``2001:DB8:0::10`` is ``2001:db8::10``)."""
+    try:
+        return str(ipaddress.ip_address(value.strip().strip("[]")))
+    except ValueError:
+        return value
+
+
+def _run_addresses(recon_data: dict, urls: List[str], settings: dict = None) -> frozenset:
+    """The addresses an IP-literal httpx result may carry and still be the
+    target's: every address the run resolved or port-scanned and every IP it
+    asked httpx to probe, less those the RoE excludes. Canonical form."""
+    from recon.helpers.target_admission import admit_targets, known_addresses
+    found = {a for addrs in known_addresses(recon_data).values() for a in addrs}
+    port_scan = recon_data.get("port_scan") or {}
+    found.update(port_scan.get("by_ip") or {})
+    found.update(h for h in (port_scan.get("by_host") or {}) if is_ip(h))
+    found.update(str(a) for a in (recon_data.get("metadata") or {}).get("expanded_ips") or [] if a)
+    found.update(h for h in (extract_host_from_url(u) for u in urls) if is_ip(h))
+    found = sorted({_canonical_ip(a) for a in found if isinstance(a, str) and a})
+    return frozenset(admit_targets(settings, recon_data, ips=found, module="httpx", record=False).ips)
 
 
 def is_ip(value: str) -> bool:
@@ -2132,7 +2164,8 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
 
         results = parse_httpx_output(str(httpx_output), root_domain=scope_roots, allowed_hosts=allowed_hosts,
                                      settings=settings, exact=exact,
-                                     include_root=scope.include_root or scope.mode is None)
+                                     include_root=scope.include_root or scope.mode is None,
+                                     run_addresses=_run_addresses(recon_data, urls, settings))
 
         # Log if any URLs were filtered out
         filtered_count = results.get("summary", {}).get("filtered_out_of_scope", 0)
