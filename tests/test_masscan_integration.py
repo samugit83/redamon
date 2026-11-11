@@ -755,8 +755,11 @@ class TestRunMasscanScan(unittest.TestCase):
         self.assertIn("10.0.0.1", result["masscan_scan"]["by_host"])
         self.assertNotIn("10-0-0-1", result["masscan_scan"]["by_host"])
 
-    def test_ip_mode_real_ptr_preserved(self):
-        """In IP mode, real PTR hostnames are preserved."""
+    def test_ip_mode_real_ptr_never_replaces_the_address(self):
+        """In IP mode every address is its own host key, whatever
+        metadata.ip_to_hostname names it (B-09): keyed by its PTR name, the
+        address itself was never probed, and the name's DNS need not point at
+        a target. A PTR name is scanned only through GROUP 1's own check."""
         mock_proc = MagicMock()
         mock_proc.communicate.return_value = ("", "")
         mock_proc.returncode = 0
@@ -780,7 +783,9 @@ class TestRunMasscanScan(unittest.TestCase):
         with patch.object(masscan_mod, "is_masscan_installed", return_value=True), \
              patch.object(masscan_mod.subprocess, "Popen", side_effect=write_output):
             result = run_masscan_scan(data, settings=self._base_settings())
-        self.assertIn("server1.example.com", result["masscan_scan"]["by_host"])
+        by_host = result["masscan_scan"]["by_host"]
+        self.assertEqual(by_host["10.0.0.1"]["ports"], [80])
+        self.assertNotIn("server1.example.com", by_host)
 
 
 # ========================================================================

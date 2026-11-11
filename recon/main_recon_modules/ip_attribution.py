@@ -42,6 +42,7 @@ from recon.helpers.peer_cert import cert_covers, cert_names, tls_failure_reason,
 from recon.helpers.public_suffix import org_domain
 from recon.helpers.recon_scope import recon_scope
 from recon.helpers.roe_scope import _is_roe_excluded
+from recon.helpers.target_admission import clamp_to_targets
 from recon.main_recon_modules.ip_filter import is_never_scannable_ip
 
 SHARED_EDGE = "shared_edge"
@@ -182,7 +183,9 @@ def _run_ips(combined_result: dict, signals: dict) -> list:
         if isinstance(entry, dict):
             ips.update(_entry_ips(entry))
     ips.update((combined_result.get("metadata") or {}).get("expanded_ips") or [])
-    return sorted(ip for ip in ips if ip and _is_address(ip))
+    # IP mode: a DNS answer or a signal on an address outside the target list
+    # is never attributed; the attribution's no-SNI handshake would reach it.
+    return sorted(clamp_to_targets(combined_result, (ip for ip in ips if ip and _is_address(ip))))
 
 
 def _tls_open(combined_result: dict) -> set:

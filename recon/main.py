@@ -1437,8 +1437,15 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     expanded_ips = _filter_roe_excluded(expanded_ips, settings, label="IP")
 
     # Step 2: Reverse DNS for each IP
-    ip_to_hostname = {}
-    all_hostnames = []
+    from recon.helpers.ip_placeholders import placeholder_for
+    from recon.helpers.target_admission import forward_verdict, target_set
+    targets = target_set(expanded_ips)
+    # Every target keeps its label: it carries the address to naabu, httpx's
+    # DNS fallback, GVM and the graph, whatever its PTR says (R-4).
+    ip_to_hostname = {ip: placeholder_for(ip) for ip in expanded_ips}
+    ptr_names = {}  # PTR name -> the listed IPs it answered for, once per name (B-27)
+    ptr_kept = []
+    ptr_refused = []
     subdomains_dns = {}
 
     dns_enabled = settings.get('DNS_ENABLED', True)
@@ -1473,66 +1480,54 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         # Apply results in the original order for deterministic output.
         for ip in expanded_ips:
             hostname = _rdns_results.get(ip)
-            if hostname:
-                ip_to_hostname[ip] = hostname
-                all_hostnames.append(hostname)
+            if hostname and not hostname.replace('-', '').replace('.', '').isdigit():
+                ptr_names.setdefault(hostname, []).append(ip)
                 print(f"[+][DNS] {ip} -> {hostname}")
             else:
-                # Use IP with dashes as mock subdomain name
-                mock_name = ip.replace('.', '-').replace(':', '-')
-                ip_to_hostname[ip] = mock_name
-                print(f"[-][DNS] {ip} -> no PTR (using {mock_name})")
+                print(f"[-][DNS] {ip} -> no PTR (using {ip_to_hostname[ip]})")
     else:
         print(f"\n[-][DNS] IP STEP 1: Reverse DNS Lookup — SKIPPED (disabled)")
-        for ip in expanded_ips:
-            mock_name = ip.replace('.', '-').replace(':', '-')
-            ip_to_hostname[ip] = mock_name
 
     # Step 3: Build DNS data structure for each "subdomain"
     subdomain_names = []
+    for ip in expanded_ips:
+        is_v6 = ':' in ip
+        subdomains_dns[ip_to_hostname[ip]] = {
+            "has_records": True,
+            "ips": {
+                "ipv4": [] if is_v6 else [ip],
+                "ipv6": [ip] if is_v6 else [],
+            },
+            "records": {},
+            "is_mock": True,
+            "actual_ip": ip,
+        }
+        subdomain_names.append(ip_to_hostname[ip])
+
     if dns_enabled:
         print(f"\n[*][DNS] IP STEP 2: DNS Resolution for Discovered Hosts")
         print("-" * 40)
 
-        for ip, hostname in ip_to_hostname.items():
-            # Determine if this is a real hostname or mock
-            is_real_hostname = hostname in all_hostnames and not hostname.replace('-', '').replace('.', '').isdigit()
-
-            if is_real_hostname:
-                # Resolve DNS for real hostnames
-                print(f"[*][DNS] Resolving: {hostname}")
-                host_dns = dns_lookup(hostname)
+        # A PTR name is scanned only when its forward answer is non-empty and
+        # every address in it is a target (I-1): a PTR record is the address
+        # owner's claim, the name's own A/AAAA can point anywhere (B-01).
+        for hostname, ptr_ips in ptr_names.items():
+            print(f"[*][DNS] Resolving: {hostname}")
+            host_dns = dns_lookup(hostname)
+            host_ips = host_dns.get("ips") or {}
+            answer = (host_ips.get("ipv4") or []) + (host_ips.get("ipv6") or [])
+            reason = forward_verdict(answer, targets)
+            if reason is None:
                 subdomains_dns[hostname] = host_dns
                 subdomain_names.append(hostname)
+                ptr_kept.append(hostname)
+                print(f"[+][DNS] {hostname}: every address is a target ({', '.join(answer)})")
             else:
-                # Mock entry - create minimal DNS data with the IP
-                is_v6 = ':' in ip
-                subdomains_dns[hostname] = {
-                    "has_records": True,
-                    "ips": {
-                        "ipv4": [] if is_v6 else [ip],
-                        "ipv6": [ip] if is_v6 else [],
-                    },
-                    "records": {},
-                    "is_mock": True,
-                    "actual_ip": ip,
-                }
-                subdomain_names.append(hostname)
+                ptr_refused.append(hostname)
+                print(f"[-][DNS] {hostname} (PTR of {', '.join(ptr_ips)}) not scanned: {reason}"
+                      + (f" ({', '.join(answer)})" if answer else ""))
     else:
         print(f"\n[-][DNS] IP STEP 2: DNS Resolution — SKIPPED (disabled)")
-        for ip, hostname in ip_to_hostname.items():
-            is_v6 = ':' in ip
-            subdomains_dns[hostname] = {
-                "has_records": True,
-                "ips": {
-                    "ipv4": [] if is_v6 else [ip],
-                    "ipv6": [ip] if is_v6 else [],
-                },
-                "records": {},
-                "is_mock": True,
-                "actual_ip": ip,
-            }
-            subdomain_names.append(hostname)
 
     # Step 4: IP WHOIS (best-effort)
     ip_whois = {}
@@ -1569,9 +1564,9 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     else:
         print(f"\n[-][WHOIS] IP STEP 3: IP WHOIS Lookup — SKIPPED (disabled)")
 
-    # Build the subdomain_filter (all IPs + any PTR-resolved hostnames)
+    # Build the subdomain_filter (all IPs, their labels, the PTR names kept above)
     # This becomes allowed_hosts for http_probe scope checking
-    subdomain_filter = list(set(expanded_ips + all_hostnames + subdomain_names))
+    subdomain_filter = list(dict.fromkeys(expanded_ips + subdomain_names))
 
     # Build result structure compatible with domain-based pipeline
     combined_result = {
@@ -1965,7 +1960,10 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     print(f"\n{'=' * 70}")
     print(f"[✓][Pipeline] IP RECON COMPLETE")
     print(f"[+][Pipeline] IPs scanned: {len(expanded_ips)}")
-    print(f"[+][Pipeline] Hostnames resolved: {len(all_hostnames)}")
+    print(f"[+][Pipeline] PTR names scanned (every address a target): {len(ptr_kept)}")
+    if ptr_refused:
+        print(f"[-][Pipeline] PTR names not scanned (an address outside the targets, or none): "
+              f"{len(ptr_refused)}")
     print(f"[+][Pipeline] Output saved: {output_file}")
     print(f"{'=' * 70}")
 

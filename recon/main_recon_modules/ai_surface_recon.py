@@ -640,6 +640,17 @@ def _probe_julius(base_url: str, timeout: float, ua: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Workload 5 — vector-DB confirmation reads
 # --------------------------------------------------------------------------- #
+def _url_authority(host: str) -> str:
+    """``host`` as a URL's authority needs it: an IPv6 literal in brackets (B-12)."""
+    import ipaddress
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]"
+    except ValueError:
+        pass
+    return host
+
+
 def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
                         timeout: float) -> list:
     """Confirm vector DBs via a benign unauthenticated read.
@@ -670,11 +681,24 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
                 continue
         return None
 
+    # IP mode: the read goes to the target address itself (B-11). A by_host key
+    # can be an IP-mode label or a name, and only the address is a target.
+    from recon.helpers.target_admission import ip_mode_targets, is_target
+    targets = ip_mode_targets(combined_result)
+
+    def _ip_mode_host(host, ip):
+        """The host to read in IP mode (the address), or None to skip it."""
+        return ip if ip is not None and is_target(ip, targets) else None
+
     ps = combined_result.get("port_scan", {}).get("by_host", {}) or {}
     for host, rec in ps.items():
         if not isinstance(rec, dict):
             continue
         ip = _address(rec.get("ip"), host)
+        if targets is not None:
+            host = _ip_mode_host(host, ip)
+            if host is None:
+                continue
         for p in rec.get("ports", []) or []:
             try:
                 port = int(p)
@@ -706,6 +730,10 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
             continue
         other = "https" if parsed.scheme == "http" else "http"
         ip = _address(info.get("ip"), host)
+        if targets is not None:
+            host = _ip_mode_host(host, ip)
+            if host is None:
+                continue
         cand = candidates.setdefault((tech, host, int(port)),
                                      {"ip": ip, "schemes": (parsed.scheme or "http", other)})
         if not cand["ip"]:
@@ -718,7 +746,7 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
             if confirmed:
                 break
             for path, expect in reads:
-                url = f"{scheme}://{host}:{port}{path}"
+                url = f"{scheme}://{_url_authority(host)}:{port}{path}"
                 try:
                     r = session.get(url, timeout=timeout, verify=False,
                                     allow_redirects=False)

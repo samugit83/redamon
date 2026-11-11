@@ -577,6 +577,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     if run_nuclei:
         # Build target URLs using httpx/naabu data if available
         target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=NUCLEI_SCAN_ALL_IPS)
+        # IP mode keeps Nuclei's redirects on the host it was given (B-07).
+        nuclei_ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"))
 
         # Initialize the per-scan AI context for the false-positive response
         # filter. Consumed by is_false_positive() in _execute_nuclei_pass().
@@ -814,6 +816,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     auth_headers=_nuclei_auth,
                     container_name=detection_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
+                    ip_mode=nuclei_ip_mode,
                 )
                 d_findings, d_fps, d_duration, d_rc = _execute_nuclei_pass(
                     detection_cmd, detection_output_file, label="DETECTION",
@@ -847,6 +850,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     auth_headers=_nuclei_auth,
                     container_name=dast_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
+                    ip_mode=nuclei_ip_mode,
                 )
                 b_findings, b_fps, b_duration, b_rc = _execute_nuclei_pass(
                     dast_cmd, dast_output_file, label="DAST",

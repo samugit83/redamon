@@ -58,19 +58,15 @@ def _as_list(value) -> list:
 
 
 def _is_mock_hostname(hostname: str, ip: str) -> bool:
-    """A placeholder run_ip_recon mints for an IP with no PTR record.
+    """``ip``'s IP-mode label (ip_placeholders.is_placeholder), under its old name.
 
-    H8: IP mode creates a Subdomain named after the dashed IP ("192-88-98-10"),
-    and a partial run reads its targets back out of the graph, so tlsx was handed
-    that name as an SNI target. It does not resolve, every handshake failed with
-    `no address found for host`, and the run then stamped tls_probe_failed over
-    the enrichment a full scan had just written correctly.
-
-    The full pipeline never hit it because `by_ip[...]["hostnames"]` is empty
-    there. Mirrors `_is_mock_hostname` in masscan_scan.py, which has guarded the
-    same placeholder all along.
+    H8: a partial run reads the label ("192-88-98-10") back out of the graph as
+    a hostname; handed to tlsx as SNI it never resolves, and the run stamped
+    tls_probe_failed over the enrichment a full scan had written.
     """
-    return bool(hostname) and hostname == ip.replace('.', '-').replace(':', '-')
+    # Lazy, as every recon.helpers import here: the package init is heavy.
+    from recon.helpers.ip_placeholders import is_placeholder
+    return is_placeholder(hostname, ip)
 
 
 def _strip_wildcard(name: str) -> str:
@@ -205,6 +201,19 @@ def _build_tlsx_targets(combined_result: dict, settings: dict):
         return [], {}
 
     by_ip = ((combined_result.get("port_scan") or {}).get("by_ip")) or {}
+    # IP mode: an address is handshaken only when it is a target, and then even
+    # when it is private (D-13: an internal engagement lists private targets).
+    from recon.helpers.target_admission import admit_targets, ip_mode_targets, is_target, known_addresses
+    targets = ip_mode_targets(combined_result)
+    sni_admitted = None
+    if targets is not None:
+        # tlsx resolves an SNI name itself: only a name whose every address is
+        # a target may be sent. Asked once for every name, not once per address.
+        known = known_addresses(combined_result)
+        names = {h.strip().lower() for info in by_ip.values() if isinstance(info, dict)
+                 for h in (info.get("hostnames") or []) if isinstance(h, str) and h.strip()}
+        sni_admitted = set(admit_targets(None, combined_result, names={h: known.get(h, []) for h in names},
+                                         module="tlsx", resolves_names=True, record=False).names)
 
     lines = []
     meta = {}
@@ -212,7 +221,10 @@ def _build_tlsx_targets(combined_result: dict, settings: dict):
     for ip, info in sorted(by_ip.items()):
         if not ip or not isinstance(info, dict):
             continue
-        if is_non_routable_ip(ip):
+        if targets is not None:
+            if not is_target(ip, targets):
+                continue
+        elif is_non_routable_ip(ip):
             continue
         if roe_list and _is_roe_excluded(ip, roe_list):
             continue
@@ -224,6 +236,8 @@ def _build_tlsx_targets(combined_result: dict, settings: dict):
         hostnames = sorted({h.strip().lower() for h in (info.get("hostnames") or []) if h})
         hostnames = [h for h in hostnames if not _is_mock_hostname(h, ip)]
         hostnames = [h for h in hostnames if not (roe_list and _is_roe_excluded(h, roe_list))]
+        if sni_admitted is not None:
+            hostnames = [h for h in hostnames if h in sni_admitted]
         submit_names = hostnames[:max_hostnames] if hostnames else [ip]
         for port in sorted(set(ports)):
             for submitted in submit_names:

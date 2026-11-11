@@ -1,23 +1,21 @@
-"""Characterisation tests: the scope leaks of an IP-mode full pipeline run.
+"""The scope of an IP-mode full pipeline run: what every builder may send where.
 
 An IP-mode project's targets are addresses. Every test below states what the
-pipeline MUST do (no packet to an address outside the target list, no dashed
-placeholder used as a hostname, no cross-host redirect followed) and is marked
-``xfail(strict=True)`` with the id of the bug that breaks it today, so the gate
-stays green and the fix that lands must remove the marker (an XPASS fails the
-run). The ids are those of the IP-mode plan's bug catalogue (B-01 ... B-31).
+pipeline must do: no packet to an address outside the target list, no dashed
+placeholder used as a hostname, no cross-host redirect followed. The section
+headers name the IP-mode plan's bug ids (B-01 ... B-31) each test guards.
 
 The fixture: two listed targets. 203.0.113.1 has a PTR name, www.example.com,
-whose A record points at 198.51.100.7, an address in no target list (B-01 as
-reproduced on master: naabu's target list was ['198.51.100.7', '203-0-113-2',
-'203.0.113.2', 'www.example.com'] and never the listed 203.0.113.1).
-203.0.113.2 has no PTR and gets the dashed placeholder 203-0-113-2.
+whose A record points at 198.51.100.7, an address in no target list, so a
+builder that trusts the name's DNS reaches 198.51.100.7 and never the listed
+203.0.113.1 (B-01). 203.0.113.2 has no PTR and gets the dashed placeholder
+203-0-113-2.
 
 Everything runs the real code (GROUP 1 of run_ip_recon, run_port_scan,
 run_http_probe, run_vuln_scan, the real target builders); only DNS, the tool
-subprocesses, HTTP and Neo4j are fakes. Two tests at the bottom are plain
-asserts, not xfails: the domain-mode httpx and Nuclei commands, which the IP-mode
-fix must leave byte-identical.
+subprocesses, HTTP and Neo4j are fakes. The two tests at the bottom pin the
+domain-mode httpx and Nuclei commands byte for byte: the IP-mode rules must not
+change them.
 
 Only documentation addresses (RFC 5737, RFC 3849) and reserved names are used.
 """
@@ -318,7 +316,7 @@ def _ip_recon_writer_addresses(recon_data: dict) -> set:
 
 
 def _ptr_leak(rm, monkeypatch, ports=(443,)):
-    """GROUP 1 + today's naabu for the B-01 fixture: (dns, recon with port_scan, writes)."""
+    """GROUP 1 + naabu for the B-01 fixture: (dns, recon with port_scan, writes)."""
     dns = FakeDns(ptr={LISTED: PTR_NAME}, forward={PTR_NAME: [FOREIGN]})
     result, writes = _group1(rm, monkeypatch, dns)
     _, port_scan = _naabu(monkeypatch, result, dns, ports=ports)
@@ -329,7 +327,6 @@ def _ptr_leak(rm, monkeypatch, ports=(443,)):
 # B-01 / B-02 / B-03: GROUP 1 and naabu
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-01: a PTR name's forward A record replaces the listed IP as the naabu target")
 def test_ptr_forward_ip_outside_targets_is_never_a_naabu_target(recon_main, monkeypatch):
     from recon.main_recon_modules import port_scan
     dns = FakeDns(ptr={LISTED: PTR_NAME}, forward={PTR_NAME: [FOREIGN]})
@@ -344,7 +341,6 @@ def test_ptr_forward_ip_outside_targets_is_never_a_naabu_target(recon_main, monk
     assert _outside(targets) == [] and LISTED in targets
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-01: a PTR name with no A record drops its listed IP from naabu, httpx and the graph")
 def test_listed_ip_survives_a_ptr_name_without_forward_record(recon_main, monkeypatch):
     dns = FakeDns(ptr={LISTED: "ghost.example.com"}, forward={})
     result, writes = _group1(recon_main, monkeypatch, dns)
@@ -360,7 +356,6 @@ def test_listed_ip_survives_a_ptr_name_without_forward_record(recon_main, monkey
     assert LISTED in _ip_recon_writer_addresses(written)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-02: the dashed placeholder reaches naabu, by_host and httpx as a hostname")
 def test_placeholder_is_never_a_hostname_target(recon_main, monkeypatch):
     dns = FakeDns()
     result, _ = _group1(recon_main, monkeypatch, dns)
@@ -373,7 +368,6 @@ def test_placeholder_is_never_a_hostname_target(recon_main, monkeypatch):
     assert {f"http://{ip}" for ip in TARGETS} <= set(probe["urls"])
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-03: naabu's dedupe is a no-op, so an IP is scanned by name and by address")
 def test_naabu_target_list_has_no_duplicates(recon_main, monkeypatch):
     # A PTR name that resolves back to its own listed address.
     dns = FakeDns(ptr={LISTED: PTR_NAME}, forward={PTR_NAME: [LISTED]})
@@ -401,7 +395,6 @@ def test_naabu_target_list_has_no_duplicates(recon_main, monkeypatch):
 #     -fhr, -follow-host-redirects  follow redirects on the same host
 #     -mr, -max-redirects int       max number of redirects to follow for http templates
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-05/B-06: IP-mode httpx follows cross-host redirects (-fr) and probes cert SAN names (-tls-probe)")
 def test_ip_mode_httpx_command_has_no_cross_host_redirect_or_tls_probe(recon_main, monkeypatch):
     dns = FakeDns()
     result, _ = _group1(recon_main, monkeypatch, dns)
@@ -416,7 +409,6 @@ def test_ip_mode_httpx_command_has_no_cross_host_redirect_or_tls_probe(recon_mai
     assert "-tls-grab" in cmd
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-07: IP-mode Nuclei follows cross-host redirects (-follow-redirects)")
 def test_ip_mode_nuclei_follows_host_redirects_only(recon_main, monkeypatch):
     result, _ = _group1(recon_main, monkeypatch, FakeDns())
     result["http_probe"] = {"by_url": {f"http://{ip}": {"url": f"http://{ip}", "status_code": 200}
@@ -431,7 +423,6 @@ def test_ip_mode_nuclei_follows_host_redirects_only(recon_main, monkeypatch):
 # B-08 .. B-13: the modules that pick their own targets
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-08: origin discovery probes candidate origins that are by design not targets")
 def test_origin_discovery_skips_ip_mode(recon_main, monkeypatch):
     from recon.main_recon_modules import origin_discovery as od
     result, _ = _group1(recon_main, monkeypatch, FakeDns(ptr={LISTED: PTR_NAME}, forward={PTR_NAME: [LISTED]}))
@@ -451,7 +442,6 @@ def test_origin_discovery_skips_ip_mode(recon_main, monkeypatch):
     assert probes == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-09: masscan keys a PTR'd IP by its name only, so by_host[ip] is missing")
 def test_masscan_keeps_ip_key_with_real_name(monkeypatch):
     from recon.main_recon_modules import masscan_scan
     # GROUP 1's IP-mode metadata as run_ip_recon writes it for a PTR'd target.
@@ -482,7 +472,6 @@ class _Resp:
         self.content = text.encode()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-10: JS recon follows a target's redirect to a non-target host")
 def test_js_recon_does_not_follow_redirect_to_non_target(recon_main, monkeypatch, doc_ranges_public):
     from recon.main_recon_modules import js_recon
     result, _ = _group1(recon_main, monkeypatch, FakeDns())
@@ -518,7 +507,6 @@ class _Session:
         return _Resp(404)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-11: the AI-surface vector-DB read is sent to the by_host key (the placeholder)")
 def test_ai_surface_vector_db_uses_ip(recon_main, monkeypatch):
     from recon.main_recon_modules import ai_surface_recon
     dns = FakeDns()
@@ -532,7 +520,6 @@ def test_ai_surface_vector_db_uses_ip(recon_main, monkeypatch):
     assert _outside(map(_host, session.urls)) == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-12: IPv6 target URLs are built without brackets")
 def test_ipv6_target_urls_are_bracketed(recon_main, monkeypatch):
     from recon.main_recon_modules import ai_surface_recon
     dns = FakeDns()
@@ -563,7 +550,6 @@ def test_ipv6_target_urls_are_bracketed(recon_main, monkeypatch):
                                 u.startswith(f"https://[{TARGET_V6}]:6333") for u in session.urls)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-13: a pure-IP run gives the header/auth/app/TLS checks no host at all")
 def test_pure_ip_run_gets_hostname_security_checks_on_ip_literals(recon_main, monkeypatch):
     from recon.helpers import security_checks as sc
     result, _ = _group1(recon_main, monkeypatch, FakeDns())
@@ -595,7 +581,6 @@ def test_pure_ip_run_gets_hostname_security_checks_on_ip_literals(recon_main, mo
 # B-01 / B-26: every builder of a scan target list, on the PTR-leak input
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-01/B-26: the PTR name's foreign address reaches every downstream target builder")
 def test_nmap_tlsx_banner_vhost_attribution_gvm_use_targets_only(recon_main, monkeypatch, doc_ranges_public):
     """The GVM half (gvm_scanner.extract_targets_from_recon) runs in the agent
     image: tests/test_regression_gvm_ip_mode.py."""
@@ -657,7 +642,7 @@ def test_nmap_tlsx_banner_vhost_attribution_gvm_use_targets_only(recon_main, mon
 
 
 # ---------------------------------------------------------------------------
-# Domain mode must not change: plain asserts, green today and after the fix.
+# Domain mode: the IP-mode rules leave these commands byte-identical.
 # ---------------------------------------------------------------------------
 
 DOMAIN_RECON = {

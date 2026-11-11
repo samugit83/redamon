@@ -731,6 +731,7 @@ def _run_nuclei_takeover(urls: list[str], work_dir: Path, settings: dict) -> lis
         interactsh=False,  # Takeover templates don't need OOB interactions
         container_name=container_name,
         max_host_error=int(settings.get("NUCLEI_MAX_HOST_ERROR", 30)),
+        ip_mode=bool(settings.get("IP_MODE")),
     )
     print(f"[*][Takeover][Nuclei] {' '.join(cmd)}")
 

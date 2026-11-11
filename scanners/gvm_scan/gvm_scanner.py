@@ -1049,14 +1049,20 @@ def extract_targets_from_recon(recon_data: Dict) -> Tuple[Set[str], Set[str]]:
     """
     ips = set()
     hostnames = set()
-    
+
+    # IP mode scans the listed addresses only (D-15). Its dns.subdomains holds
+    # the dashed labels and PTR names, and a PTR name's forward answer need not
+    # be a target at all (B-26). run_ip_recon always writes expanded_ips.
+    metadata = recon_data.get("metadata", {}) or {}
+    if metadata.get("ip_mode") and "expanded_ips" in metadata:
+        return {str(ip) for ip in metadata["expanded_ips"] or [] if ip}, hostnames
+
     dns_data = recon_data.get("dns", {})
     if not dns_data:
         return ips, hostnames
-    
+
     # Root domain - only when it is a target and has DNS records. A recon file
     # written before scope_mode keeps the old default (the root is in).
-    metadata = recon_data.get("metadata", {}) or {}
     domain = metadata.get("root_domain", "") or recon_data.get("domain", "")
     domain_dns = dns_data.get("domain", {})
     include_root = metadata.get("include_root_domain", "scope_mode" not in metadata)

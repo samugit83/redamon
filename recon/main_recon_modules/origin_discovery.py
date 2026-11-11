@@ -1650,6 +1650,12 @@ def run_origin_discovery_enrichment(combined_result: dict, settings: dict) -> di
     if not settings.get("ORIGIN_DISCOVERY_ENABLED", False):
         return combined_result
 
+    # Its whole job is to find and probe origin addresses behind an edge, which
+    # by design are not in an IP-mode target list (B-08).
+    if (combined_result.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"):
+        _log("-", "skipped in IP mode: the origins it would probe are not targets")
+        return combined_result
+
     ctx = _run_ctx(settings)
     key_for = _candidate_key_rule(combined_result)
     fronted = _select_fronted_hosts(combined_result, ctx)

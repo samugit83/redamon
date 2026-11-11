@@ -67,6 +67,7 @@ def build_nuclei_command(
     auth_headers: List[str] = None,
     container_name: str = None,
     max_host_error: int = 0,
+    ip_mode: bool = False,
 ) -> List[str]:
     """
     Build nuclei Docker command with all configured parameters.
@@ -79,6 +80,9 @@ def build_nuclei_command(
             filters that would otherwise empty-intersect with the DAST set
             (built-in DAST templates carry tags like xss/sqli/ssti, not the
             detection-class tags users typically configure).
+        ip_mode: the run's targets are addresses, so a redirect is followed
+            only on the same host (B-07): a cross-host Location can name any
+            address on the internet.
         ... (configuration parameters)
 
     Returns:
@@ -251,7 +255,7 @@ def build_nuclei_command(
         # A cross-host redirect (an SSO hop, an attacker-controlled Location)
         # re-sends the -H session to whatever host it names. -follow-host-redirects
         # keeps redirect coverage but confines it to the host we scope-checked.
-        cmd.extend(["-follow-host-redirects" if _has_auth else "-follow-redirects"])
+        cmd.extend(["-follow-host-redirects" if _has_auth or ip_mode else "-follow-redirects"])
         if max_redirects > 0:
             cmd.extend(["-max-redirects", str(max_redirects)])
 

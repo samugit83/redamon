@@ -4,11 +4,11 @@ RedAmon - Target Extraction Helpers
 Functions for extracting and building target URLs from reconnaissance data.
 """
 
-import ipaddress
 import re
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from recon.helpers.ip_placeholders import is_placeholder
 from recon.helpers.target_admission import admit_host_targets
 
 
@@ -222,37 +222,10 @@ def _hosts_in_urls(urls: Set[str]) -> Set[str]:
     return hosts
 
 
-# Mock hostnames minted for IPs with no PTR record: recon/main.py replaces the
-# separators with dashes ("192.88.99.10" -> "192-88-99-10", "fe80::1" ->
-# "fe80--1"). They exist so the graph can label the host; they are NOT
-# resolvable and must never reach a crawler. See build_target_urls source 3.
-_MOCK_IPV4_RE = re.compile(r"^\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}$")
-
-
-def _is_mock_ip_hostname(hostname: str) -> bool:
-    """True when `hostname` is a dashed-IP placeholder rather than a real host.
-
-    Deliberately narrow: only a label that is ENTIRELY digits and dashes (or
-    hex and dashes, for IPv6) and that maps back to a valid IP literal. A real
-    domain like "mail-01.example.com" contains dots and is never matched.
-    """
-    if not hostname or "." in hostname:
-        return False
-    candidate = hostname.strip().lower()
-    if _MOCK_IPV4_RE.match(candidate):
-        try:
-            ipaddress.ip_address(candidate.replace("-", "."))
-            return True
-        except ValueError:
-            return False
-    # IPv6 placeholders: only hex digits and dashes, and round-trips to an IP.
-    if candidate and all(c in "0123456789abcdef-" for c in candidate) and "-" in candidate:
-        try:
-            ipaddress.ip_address(candidate.replace("-", ":"))
-            return True
-        except ValueError:
-            return False
-    return False
+# The dashed IP-mode labels ("192-88-99-10") are not resolvable and must never
+# reach a crawler (build_target_urls source 3). Kept under its old name for the
+# callers that import it.
+_is_mock_ip_hostname = is_placeholder
 
 
 def build_target_urls(
@@ -324,7 +297,10 @@ def build_target_urls(
 
     # Source 3: hostnames not covered by httpx/resource_enum → both schemes.
     # This catches newly discovered subdomains that haven't been probed yet.
-    for hostname in sorted(hostnames):
+    # Never in IP mode: the targets are addresses, and a name httpx did not
+    # reach was never checked to resolve to one of them (B-21).
+    ip_mode = bool(((recon_data or {}).get("metadata") or {}).get("ip_mode"))
+    for hostname in sorted(hostnames) if not ip_mode else ():
         if not hostname or hostname.lower() in covered_hosts:
             continue
         # Skip MOCK hostnames. When an IP has no PTR record, recon/main.py

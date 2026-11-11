@@ -65,10 +65,11 @@ def _extract_ips_from_recon(combined_result: dict) -> list[str]:
             if ip:
                 ips.add(ip)
 
-    if combined_result.get("metadata", {}).get("ip_mode"):
-        for ip in combined_result["metadata"].get("expanded_ips", []):
-            if ip:
-                ips.add(ip)
+    # IP mode: the target list only. A DNS answer (a PTR name's forward
+    # address) need not be a target, and the lookup would be about it.
+    metadata = combined_result.get("metadata") or {}
+    if metadata.get("ip_mode") and "expanded_ips" in metadata:
+        return sorted({ip for ip in metadata["expanded_ips"] or [] if ip})
 
     return sorted(ips)
 

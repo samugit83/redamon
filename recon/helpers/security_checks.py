@@ -25,6 +25,7 @@ import concurrent.futures
 from recon.helpers import catchall
 from recon.helpers import page_signals
 from recon.helpers import request_pacer
+from recon.helpers.ip_placeholders import is_placeholder
 from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 from recon.helpers.cdn_ranges import (
     collect_asn_cdn_ips,
@@ -161,26 +162,10 @@ def _is_ip_address(host: str) -> bool:
     return bool(re.match(ipv4_pattern, host) or re.match(ipv6_pattern, host))
 
 
-def _is_synthetic_ip_host(name: str) -> bool:
-    """True for the dashed-IP placeholder recon assigns to an IP with no PTR.
-
-    IP-mode recon has no real hostname, so it names each host `ip.replace('.',
-    '-').replace(':', '-')` (e.g. ``192-88-96-10``, or ``2001-db8--1`` for v6).
-    That label never resolves, so probing it by name only raises ConnectionError
-    - wasted work that would also open a HostHealth breaker for a host whose IP
-    is alive and already checked directly. A real hostname has a dot or is not
-    an IP once the dashes are undone, so it is never matched here.
-    """
-    import ipaddress
-    if not name or "." in name:
-        return False
-    for sep in (".", ":"):
-        try:
-            ipaddress.ip_address(name.replace("-", sep))
-            return True
-        except ValueError:
-            continue
-    return False
+# The dashed IP-mode label (``192-88-96-10``) never resolves, so probing it by
+# name only raises ConnectionError and would open a HostHealth breaker for a
+# host whose IP is alive and checked directly. Kept under its old name.
+_is_synthetic_ip_host = is_placeholder
 
 
 def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
@@ -384,7 +369,7 @@ def _is_bare_origin_match(ip: str, hostnames: List[str], scheme: str, timeout: i
     for hostname in hostnames:
         try:
             host_resp = _hh_get(
-                f"{scheme}://{hostname}",
+                f"{scheme}://{_url_host(hostname)}",
                 timeout=timeout,
                 allow_redirects=False,
                 verify=False,
@@ -764,7 +749,7 @@ def _waf_payload_differential(subdomain: str, ip: str, timeout: int = 10) -> Opt
     for kind, payload in _WAF_PROBES:
         q = f"?{_WAF_PROBE_PARAM}={quote(payload)}"
         try:
-            edge = _hh_get(f"https://{subdomain}/{q}", timeout=timeout, verify=False,
+            edge = _hh_get(f"https://{_url_host(subdomain)}/{q}", timeout=timeout, verify=False,
                                 allow_redirects=False, headers=ua)
             origin = _hh_get(f"{origin_base}{q}", timeout=timeout, verify=False,
                                   allow_redirects=False, headers={**ua, "Host": subdomain})
@@ -774,7 +759,7 @@ def _waf_payload_differential(subdomain: str, ip: str, timeout: int = 10) -> Opt
             continue
         if baseline is None:
             try:
-                baseline = _hh_get(f"https://{subdomain}/", timeout=timeout, verify=False,
+                baseline = _hh_get(f"https://{_url_host(subdomain)}/", timeout=timeout, verify=False,
                                    allow_redirects=False, headers=ua)
             except requests.exceptions.RequestException:
                 return None
@@ -884,7 +869,7 @@ def check_waf_bypass(
 
     try:
         # Try accessing via subdomain (through WAF/CDN)
-        subdomain_url = f"https://{subdomain}"
+        subdomain_url = f"https://{_url_host(subdomain)}"
         subdomain_response = _hh_get(
             subdomain_url,
             timeout=timeout,
@@ -1170,7 +1155,7 @@ def check_tls_expiring_soon(
                 "name": "TLS Certificate Expired",
                 "description": f"The TLS certificate for {hostname} expired {days_expired} days ago ({not_after}). "
                               "Clients will reject the connection or present a security warning.",
-                "url": f"https://{hostname}:{port}",
+                "url": f"https://{_url_host(hostname)}:{port}",
                 "hostname": hostname,
                 "port": port,
                 "expiry_date": not_after,
@@ -1187,7 +1172,7 @@ def check_tls_expiring_soon(
                     "name": "TLS Certificate Expiring Soon",
                     "description": f"The TLS certificate for {hostname} will expire in {days_until_expiry} days ({not_after}). "
                                   "Consider renewing the certificate to avoid service disruption.",
-                    "url": f"https://{hostname}:{port}",
+                    "url": f"https://{_url_host(hostname)}:{port}",
                     "hostname": hostname,
                     "port": port,
                     "expiry_date": not_after,
@@ -1839,7 +1824,8 @@ def check_security_headers(
 
     # Determine protocol based on port
     protocol = "https" if port == 443 else "http"
-    url = f"{protocol}://{hostname}" if port in [80, 443] else f"{protocol}://{hostname}:{port}"
+    url = (f"{protocol}://{_url_host(hostname)}" if port in [80, 443]
+           else f"{protocol}://{_url_host(hostname)}:{port}")
 
     try:
         response = _get_on_host(url, timeout)
@@ -1892,7 +1878,8 @@ def check_cache_control_missing(hostname: str, port: int = 443, timeout: int = 1
         Vulnerability dict if cache control is missing/weak, None otherwise
     """
     protocol = "https" if port == 443 else "http"
-    url = f"{protocol}://{hostname}" if port in [80, 443] else f"{protocol}://{hostname}:{port}"
+    url = (f"{protocol}://{_url_host(hostname)}" if port in [80, 443]
+           else f"{protocol}://{_url_host(hostname)}:{port}")
 
     try:
         response = _get_on_host(url, timeout)
@@ -1973,7 +1960,7 @@ def check_login_no_https(hostname: str, timeout: int = 10) -> List[Dict]:
 
     # Check HTTP (insecure)
     for path in login_paths:
-        url = f"http://{hostname}{path}"
+        url = f"http://{_url_host(hostname)}{path}"
         try:
             response = fetch(url)
 
@@ -2026,7 +2013,7 @@ def check_session_cookies(hostname: str, timeout: int = 10) -> List[Dict]:
         List of vulnerability findings
     """
     findings = []
-    url = f"https://{hostname}/"
+    url = f"https://{_url_host(hostname)}/"
 
     try:
         response = _get_on_host(url, timeout)
@@ -2153,7 +2140,7 @@ def check_basic_auth_no_tls(hostname: str, timeout: int = 10) -> Optional[Dict]:
     Returns:
         Vulnerability dict if found, None otherwise
     """
-    url = f"http://{hostname}/"
+    url = f"http://{_url_host(hostname)}/"
 
     try:
         response = _hh_get(
@@ -3121,7 +3108,7 @@ def check_csp_unsafe_inline(hostname: str, timeout: int = 10) -> Optional[Dict]:
     Returns:
         Vulnerability dict if unsafe-inline found, None otherwise
     """
-    url = f"https://{hostname}/"
+    url = f"https://{_url_host(hostname)}/"
 
     try:
         response = _get_on_host(url, timeout)
@@ -3169,7 +3156,7 @@ def check_insecure_form_action(hostname: str, timeout: int = 10) -> List[Dict]:
     """
     import re
     findings = []
-    url = f"https://{hostname}/"
+    url = f"https://{_url_host(hostname)}/"
 
     try:
         response = _get_on_host(url, timeout)
@@ -3315,7 +3302,7 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
             "/api/auth", "/api/v1/login", "/oauth/token"
         ]
         for endpoint in fallback_endpoints:
-            auth_urls.add(f"https://{hostname}{endpoint}")
+            auth_urls.add(f"https://{_url_host(hostname)}{endpoint}")
 
     # Test each auth URL for rate limiting
     tested_urls = set()  # Avoid testing same URL twice
@@ -3693,6 +3680,26 @@ def run_dns_checks_only(recon_data: Dict[str, Any], enabled_checks: Dict[str, bo
     return findings
 
 
+def _ip_mode_hosts(recon_data: Dict[str, Any], hostnames: List[str], ips: List[str],
+                   subdomains_to_ips: Dict[str, List[str]]) -> Tuple[List[str], List[str]]:
+    """IP mode: the checks' hosts are the target addresses (B-01, B-13).
+
+    The direct-IP checks get only the targets, never a DNS answer that is not
+    one; a name stays only when every address it has is a target; and the
+    hostname and TLS checks get each target as an IP literal too, without which
+    a run with no PTR name gave them nothing to check. Outside IP mode the
+    lists come back unchanged.
+    """
+    from recon.helpers.target_admission import admit_targets, clamp_to_targets, ip_mode_targets
+    if ip_mode_targets(recon_data) is None:
+        return hostnames, ips
+    ips = clamp_to_targets(recon_data, ips)
+    admitted = admit_targets(None, recon_data, names={h: subdomains_to_ips.get(h, []) for h in hostnames},
+                             module="security_checks", resolves_names=True, record=False)
+    names = [h for h in hostnames if h in admitted.names]
+    return names + [ip for ip in sorted(ips) if ip not in names], ips
+
+
 def run_security_checks(
     recon_data: Dict[str, Any],
     enabled_checks: Dict[str, bool],
@@ -3800,6 +3807,7 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
     hostnames = [h for h in hostnames if h and not _is_synthetic_ip_host(h)]
     subdomains_to_ips = {k: v for k, v in subdomains_to_ips.items()
                          if not _is_synthetic_ip_host(k)}
+    hostnames, ips = _ip_mode_hosts(recon_data, hostnames, ips, subdomains_to_ips)
 
     print(f"[*][SecurityCheck] Targets: {len(hostnames)} hostnames, {len(ips)} IPs")
     print(f"[*][SecurityCheck] Timeout: {timeout}s")

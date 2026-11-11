@@ -1387,6 +1387,13 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
             {"port": 80, "protocol": "tcp", "scheme": "http"},
         ])
 
+    # ---- IP mode: the target addresses only -----------------------------
+    # Every probe is pinned to the IP it is built for, so an address a DNS
+    # answer brought in that is not a target is never one to probe (B-01).
+    from recon.helpers.target_admission import clamp_to_targets
+    kept = set(clamp_to_targets(combined_result, list(ip_to_ports)))
+    ip_to_ports = {ip: plist for ip, plist in ip_to_ports.items() if ip in kept}
+
     # ---- Dedupe ports per IP (port + scheme key, preserves first occurrence) ---
     for ip, plist in ip_to_ports.items():
         seen = set()

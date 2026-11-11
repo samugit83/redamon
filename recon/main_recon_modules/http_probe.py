@@ -453,6 +453,20 @@ def _admit_banner_targets(targets: List[tuple], recon_data: dict, settings: dict
     return [t for t in targets if admitted(t[0], t[2])]
 
 
+def _one_grab_per_address(targets: List[tuple]) -> List[tuple]:
+    """IP mode: one connection per address and port (design §5.3). A PTR name
+    kept beside its address reaches the same socket, so the address's own
+    entry is grabbed and the name takes its banner. Order kept."""
+    chosen: Dict[tuple, tuple] = {}
+    for target in targets:
+        address, port, host = target
+        key = (_canonical_ip(address), port)
+        held = chosen.get(key)
+        if held is None or (host == address and held[2] != held[0]):
+            chosen[key] = target
+    return [t for t in targets if chosen.get((_canonical_ip(t[0]), t[1])) is t]
+
+
 def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
     """
     Run banner grabbing on non-HTTP ports from naabu results.
@@ -497,6 +511,9 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
             targets.append((ip, port, hostname))
 
     targets = _admit_banner_targets(targets, recon_data, settings)
+    ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode"))
+    if ip_mode:
+        targets = _one_grab_per_address(targets)
     if not targets:
         return {}
 
@@ -562,13 +579,17 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
                 "version": result.get("version")
             })
     
-    # Also enrich naabu port_details with banner info
+    # Also enrich naabu port_details with banner info. In IP mode a name grabbed
+    # through its address's entry takes that banner.
     for host, host_data in naabu_data.get("by_host", {}).items():
         if "port_details" in host_data:
+            address = _canonical_ip(str(host_data.get("ip", host)))
             for port_detail in host_data["port_details"]:
                 port = port_detail.get("port")
                 for result in results:
-                    if result["host"] == host and result["port"] == port:
+                    if result["port"] == port and (
+                            result["host"] == host
+                            or (ip_mode and _canonical_ip(str(result.get("ip") or result["host"])) == address)):
                         if result.get("banner"):
                             port_detail["banner"] = result["banner"]
                         if result.get("version"):
@@ -645,10 +666,22 @@ def url_port(url: str) -> int:
     return 443 if scheme == "https" else 80
 
 
+def _url_authority(host: str) -> str:
+    """``host`` as a URL's authority needs it: an IPv6 literal in brackets
+    (B-12; unbracketed, ``https://2001:db8::1:8443`` names no port at all)."""
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]"
+    except ValueError:
+        pass
+    return host
+
+
 def _urls_for_host_ports(host: str, ports) -> List[str]:
     """Build candidate http/https URLs for ``host`` across ``ports`` using the
     same protocol heuristic as :func:`build_targets_from_naabu`."""
     urls: List[str] = []
+    host = _url_authority(host)
     for port in sorted(set(ports)):
         if port == 443:
             urls.append(f"https://{host}")
@@ -711,7 +744,8 @@ def build_targets_from_naabu(recon_data: dict, settings: dict = None) -> List[st
     http_ports = HTTP_PORTS
 
     if naabu_data:
-        for host, data in naabu_data.get("by_host", {}).items():
+        for key, data in naabu_data.get("by_host", {}).items():
+            host = _url_authority(key)
             for port_info in data.get("port_details", []):
                 port = port_info.get("port")
                 service = port_info.get("service", "").lower()
@@ -772,6 +806,7 @@ def build_targets_from_dns(recon_data: dict, settings: dict = None) -> List[str]
         extra_https_ports = [8443, 4443, 9443]
 
         def _add_host(host: str) -> None:
+            host = _url_authority(host)
             urls.append(f"http://{host}")
             urls.append(f"https://{host}")
             for port in extra_http_ports:
@@ -898,7 +933,8 @@ def _probe_failed(recon_data: dict, reason: str, detail: str = "") -> dict:
 
 
 def build_httpx_command(targets_file: str, output_file: str, settings: dict,
-                        probe_hosts: List[str] = None, container_name: str = None) -> List[str]:
+                        probe_hosts: List[str] = None, container_name: str = None,
+                        ip_mode: Optional[bool] = None) -> List[str]:
     """
     Build the Docker command for running httpx.
 
@@ -906,10 +942,16 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
         targets_file: Path to file containing URLs (one per line)
         output_file: Path for JSON output
         settings: Settings dictionary from main.py
+        ip_mode: the run is an IP-mode one (default: ``settings["IP_MODE"]``).
+            Its targets are addresses, so httpx stays on them: redirects only
+            on the same host (-fhr), and no -tls-probe, which sends requests
+            to the names a certificate lists (B-05, B-06).
 
     Returns:
         List of command arguments
     """
+    if ip_mode is None:
+        ip_mode = bool(settings.get('IP_MODE'))
     # Extract settings from passed dict
     HTTPX_DOCKER_IMAGE = settings.get('HTTPX_DOCKER_IMAGE', 'projectdiscovery/httpx:latest')
     HTTPX_THREADS = settings.get('HTTPX_THREADS', 50)
@@ -1002,7 +1044,7 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
     # names, so with a session attached -fhr (same-host only) keeps redirect
     # coverage without handing the credentials to an off-scope host.
     if HTTPX_FOLLOW_REDIRECTS:
-        cmd.append("-fhr" if _has_auth else "-fr")
+        cmd.append("-fhr" if _has_auth or ip_mode else "-fr")
         cmd.extend(["-maxr", str(HTTPX_MAX_REDIRECTS)])
 
     # Probing options
@@ -1034,7 +1076,7 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
         cmd.append("-cname")
 
     # TLS info
-    if HTTPX_PROBE_TLS_INFO:
+    if HTTPX_PROBE_TLS_INFO and not ip_mode:
         cmd.append("-tls-probe")
     if HTTPX_PROBE_TLS_GRAB:
         cmd.append("-tls-grab")
@@ -2083,7 +2125,11 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         from urllib.parse import urlparse as _urlparse
         _probe_hosts = sorted({h for h in (_urlparse(u).hostname for u in urls) if h})
         httpx_container = f"redamon-httpx-{uuid.uuid4().hex[:12]}"
-        cmd = build_httpx_command(str(targets_file), str(httpx_output), settings,
+        # The builder reads IP mode from IP_MODE; a recon dict that says IP mode
+        # (a partial run's builder) decides it too.
+        ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"))
+        cmd_settings = {**settings, "IP_MODE": True} if ip_mode and not settings.get("IP_MODE") else settings
+        cmd = build_httpx_command(str(targets_file), str(httpx_output), cmd_settings,
                                   probe_hosts=_probe_hosts, container_name=httpx_container)
 
         print(f"\n[*][httpx] Starting httpx probe...")
@@ -2095,7 +2141,9 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
 
         if HTTPX_PROBE_TECH_DETECT:
             print(f"[*][httpx] Technology detection: enabled")
-        if HTTPX_PROBE_TLS_INFO:
+        if HTTPX_PROBE_TLS_INFO and ip_mode:
+            print(f"[-][httpx] TLS probing: off in IP mode (it would request the certificate's names)")
+        elif HTTPX_PROBE_TLS_INFO:
             print(f"[*][httpx] TLS probing: enabled")
         if HTTPX_INCLUDE_RESPONSE:
             print(f"[*][httpx] Response body: included")

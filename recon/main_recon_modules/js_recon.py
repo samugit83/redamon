@@ -37,8 +37,9 @@ from recon.helpers.js_recon.patterns import (
 from recon.helpers.js_recon.validators import validate_secret
 from recon.helpers.js_recon import trufflehog_bridge
 from recon.helpers.js_recon.hop_guard import (
-    REDIRECT_STATUSES, ROE_EXCLUDED, TOO_MANY_REDIRECTS, UNSAFE, fetch_hop_by_hop,
+    REDIRECT_STATUSES, ROE_EXCLUDED, TOO_MANY_REDIRECTS, UNSAFE, admit_any, fetch_hop_by_hop,
 )
+from recon.helpers.target_admission import ip_mode_url_admission
 from recon.helpers.js_recon.sourcemap import discover_and_analyze_sourcemaps, pseudo_file_base
 from recon.helpers.js_recon.dependency import detect_dependency_confusion
 from recon.helpers.js_recon.endpoints import extract_endpoints
@@ -104,6 +105,17 @@ _HOP_REFUSAL_LOG = {
     ROE_EXCLUDED: 'blocked (RoE exclusion)',
 }
 
+# The run's own rule for every URL it fetches or probes: a download and each of
+# its redirect hops, a source map, an endpoint probe. IP mode admits only a
+# target address or a run name whose every current address is a target (B-10);
+# domain mode admits everything here. Set for the duration of run_js_recon
+# like _JS_SCOPE.
+_ADMIT = admit_any
+
+
+def _admit_none(url: str) -> bool:
+    return False
+
 
 def _safe_redirect_get(url, *, timeout, headers, max_redirects=5, settings=None):
     """GET a target-derived JS URL, following its redirects hop by hop
@@ -122,7 +134,7 @@ def _safe_redirect_get(url, *, timeout, headers, max_redirects=5, settings=None)
     # internal CA, as httpx and katana already accepted. Never the key
     # validators, which send a secret to a third party.
     resp = fetch_hop_by_hop('GET', url, timeout=timeout, headers=headers, settings=settings,
-                            url_guard=_download_allowed, max_redirects=max_redirects,
+                            admit=_ADMIT, url_guard=_download_allowed, max_redirects=max_redirects,
                             refusal=refusal, verify=False)
     if resp is None:
         reason = refusal.get('reason')
@@ -827,6 +839,7 @@ def _run_analysis(js_files: list, settings: dict, map_scope: Optional[_ProbeScop
                 pseudo_files=recovered, skipped=not_checked,
                 deadline=started + analysis_budget * _SOURCE_MAP_BUDGET_SHARE,
                 in_scope=(lambda url: _in_probe_scope(url, map_scope)) if map_scope is not None else None,
+                admit=_ADMIT,
             )
             try:
                 results['source_maps'] = future.result(timeout=max(1.0, deadline - time.monotonic()))
@@ -1430,6 +1443,10 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
             endpoint['validation_status'] = 'unvalidated'
             endpoint['validation_error'] = 'out_of_scope'
             return
+        if not _ADMIT(resolved_url):
+            endpoint['validation_status'] = 'unvalidated'
+            endpoint['validation_error'] = 'not_admitted'
+            return
         if _js_skip(resolved_url):
             endpoint['validation_status'] = 'unvalidated'
             endpoint['validation_error'] = 'host_unreachable'
@@ -1817,7 +1834,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
     # supply-chain stage reads it (via 'work_dir' below) as this run's JS only.
     work_dir = Path(f'/tmp/redamon/js_recon_{uuid.uuid4().hex[:12]}')
 
-    global _JS_SCOPE, _OWN_HOSTS
+    global _JS_SCOPE, _OWN_HOSTS, _ADMIT
     from recon.helpers import circuit_breaker as _cb
     _JS_SCOPE = _cb.scope(("npm",), label="JsRecon", unit="package(s)")
     try:
@@ -1825,6 +1842,11 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
     except Exception as e:  # noqa: BLE001 - every download then takes the strict rule
         print(f"[!][JsRecon] Run hosts unavailable ({type(e).__name__}); private hosts are not fetched")
         _OWN_HOSTS = None
+    try:
+        _ADMIT = ip_mode_url_admission(combined_result) or admit_any
+    except Exception as e:  # noqa: BLE001 - a target check that cannot run admits nothing
+        print(f"[!][JsRecon] Target check unavailable ({type(e).__name__}); nothing is fetched")
+        _ADMIT = _admit_none
 
     print("\n" + "=" * 60)
     print("[*][JsRecon] JS Recon Scanner -- Starting")
@@ -2113,6 +2135,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
             pass
         _JS_SCOPE = None
         _OWN_HOSTS = None
+        _ADMIT = admit_any
         # Cleanup temp files. NOT when supply-chain recon is enabled: GROUP 5.5
         # runs after us and needs these exact bytes for the retire.js pass (it
         # must never re-fetch - that would add target traffic and an SSRF

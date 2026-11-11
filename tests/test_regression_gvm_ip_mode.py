@@ -1,12 +1,13 @@
-"""Characterisation test: GVM's targets in an IP-mode project (B-01 / B-26 of
-the IP-mode plan, decision D-15: IP mode scans the expanded target IPs only).
+"""GVM's targets in an IP-mode project (B-01 / B-26 of the IP-mode plan,
+decision D-15: IP mode scans the expanded target IPs only).
 
-GVM reads the recon file (recon_<pid>.json), not the graph, and takes every
-dns.subdomains entry with records plus its addresses. In IP mode that is the
-dashed placeholders, the PTR names, and the PTR names' forward addresses, which
-need not be targets at all. The recon dict below is what run_ip_recon's GROUP 1
-writes today for two listed targets, 203.0.113.1 (PTR www.example.com, whose A
-record is 198.51.100.7) and 203.0.113.2 (no PTR).
+GVM reads the recon file (recon_<pid>.json), not the graph, and in domain mode
+takes every dns.subdomains entry with records plus its addresses. In IP mode
+that was the dashed placeholders, the PTR names, and the PTR names' forward
+addresses, which need not be targets at all. The recon dict below is what
+run_ip_recon's GROUP 1 wrote before step P0b for two listed targets,
+203.0.113.1 (PTR www.example.com, whose A record is 198.51.100.7) and
+203.0.113.2 (no PTR).
 
 The recon-side half of the same sweep (naabu, nmap, tlsx, banner grab, vhost,
 IP attribution, OSINT, security checks) is
@@ -50,10 +51,27 @@ IP_MODE_RECON = {
 }
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="B-26: IP-mode GVM scans placeholders, PTR names and their forward (foreign) addresses")
 def test_gvm_ip_mode_targets_are_expanded_ips_only():
     ips, hostnames = gvm_mod.extract_targets_from_recon(IP_MODE_RECON)
 
     assert sorted(ips) == TARGETS
     assert hostnames == set()
+
+
+def test_gvm_ip_mode_targets_an_ipv6_address_and_skips_a_blank():
+    recon = dict(IP_MODE_RECON, metadata=dict(IP_MODE_RECON["metadata"],
+                                              expanded_ips=["203.0.113.1", "2001:db8::1", ""]))
+    ips, hostnames = gvm_mod.extract_targets_from_recon(recon)
+    assert ips == {"203.0.113.1", "2001:db8::1"} and hostnames == set()
+
+
+def test_gvm_domain_mode_targets_are_unchanged():
+    recon = {"domain": "example.com",
+             "metadata": {"ip_mode": False, "root_domain": "example.com",
+                          "scope_mode": "enumerate", "include_root_domain": True},
+             "dns": {"domain": {"has_records": True, "ips": {"ipv4": ["203.0.113.10"], "ipv6": []}},
+                     "subdomains": {"www.example.com": {"has_records": True,
+                                                        "ips": {"ipv4": ["198.51.100.20"], "ipv6": []}}}}}
+    ips, hostnames = gvm_mod.extract_targets_from_recon(recon)
+    assert ips == {"203.0.113.10", "198.51.100.20"}
+    assert hostnames == {"example.com", "www.example.com"}

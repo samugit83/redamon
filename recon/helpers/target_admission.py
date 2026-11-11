@@ -14,26 +14,53 @@ builder that calls it builds byte-identical target files.
 
 Scope is not re-checked here: every builder's input is already scoped
 (``merge_group_hosts``, ``merge_discovered_hostnames``, partial recon's
-``_GraphScope``). The context carries IP mode and its authorized addresses so a
-mode rule can live inside ``admit_targets`` beside the RoE one.
+``_GraphScope``).
+
+IP mode (the recon dict's ``metadata.ip_mode`` with its ``expanded_ips``) adds
+the target-list rule, and the gate is never inert then: an address is admitted
+only when it is one of the targets (CIDR-aware, any IPv6 spelling), a name only
+when it has a known address and every one is a target, and an IP-mode label
+(``ip_placeholders``) is never a name, only the address it stands for. Private
+targets pass: the rule is membership, never routability. Membership is
+``recon_settings.ip_hostnames.TargetSet``, the one implementation every service
+shares, imported only on the IP-mode path.
 """
 
 import ipaddress
+import socket
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit
 
+from recon.helpers.ip_placeholders import is_placeholder
 from recon.helpers.roe_scope import _is_network, _is_roe_excluded, _normalize_scope_entry
 
 # Refusal reasons, also coverage tokens: [a-z0-9_], at most 64 characters.
 REASON_ROE_EXCLUDED = "roe_excluded"
 REASON_ROE_UNRESOLVED = "roe_unresolved"
+# IP mode: not one of the run's target addresses. A decision, not a coverage
+# gap: logged, never noted, so it changes no prune.
+REASON_OUTSIDE_TARGETS = "outside_targets"
 
-# Every refusal is recorded under this coverage source, so the report's
+# Every RoE refusal is recorded under this coverage source, so the report's
 # Coverage Limitations block can say what the RoE kept out of the run.
 COVERAGE_SOURCE = "roe_excluded"
 
+_ADDRESS_DETAIL = {REASON_ROE_EXCLUDED: "address excluded",
+                   REASON_OUTSIDE_TARGETS: "address outside the targets"}
+# (every address refused, some addresses refused)
+_NAME_DETAIL = {REASON_ROE_EXCLUDED: ("every address excluded", "resolves to an excluded address"),
+                REASON_OUTSIDE_TARGETS: ("no address is a target", "resolves outside the targets")}
+
 _LOG_SHOWN = 10
+
+# target_set's memo: a few lists at most (one run per process; a test may build
+# several).
+_TARGET_SETS: "OrderedDict[Tuple[str, ...], object]" = OrderedDict()
+_TARGET_SETS_LOCK = threading.Lock()
+_TARGET_SETS_MAX = 4
 
 
 @dataclass(frozen=True)
@@ -43,28 +70,19 @@ class AdmissionContext:
     ip_mode: bool
     expanded_ips: Tuple[str, ...]
     metadata: Mapping = field(default_factory=dict, compare=False, hash=False)
+    # IP mode's target list as a recon_settings TargetSet; None outside IP
+    # mode, and for a dict that declares no ``expanded_ips`` at all (a
+    # declared empty list admits nothing).
+    targets: Optional[object] = field(default=None, compare=False, hash=False)
 
     @property
     def active(self) -> bool:
-        return bool(self.excluded)
+        return bool(self.excluded) or self.targets is not None
 
     def authorized(self, address: str) -> bool:
         """IP mode: ``address`` is one of the IPs the operator listed (already
         RoE-filtered when the run expanded them), so it passes as is."""
-        if not self.ip_mode or not self.expanded_ips:
-            return False
-        if address in self.expanded_ips:
-            return True
-        ip = _as_ip(address)
-        if ip is None:
-            return False
-        for entry in self.expanded_ips:
-            try:
-                if ip in ipaddress.ip_network(entry, strict=False):
-                    return True
-            except ValueError:
-                continue
-        return False
+        return self.targets is not None and is_target(address, self.targets)
 
 
 def admission_context(settings: Optional[Mapping], recon_data: Optional[Mapping] = None) -> AdmissionContext:
@@ -78,13 +96,129 @@ def admission_context(settings: Optional[Mapping], recon_data: Optional[Mapping]
     roe = settings if "ROE_ENABLED" in settings else (metadata.get("roe") or {})
     entries = roe.get("ROE_EXCLUDED_HOSTS") if roe.get("ROE_ENABLED") else None
     excluded = tuple(e for e in (entries or ()) if isinstance(e, str) and e.strip())
+    ip_mode = bool(metadata.get("ip_mode"))
+    expanded = tuple(str(ip) for ip in (metadata.get("expanded_ips") or ()) if ip)
     return AdmissionContext(
         excluded=excluded,
         ip_rules=any(_is_ip_entry(e) for e in excluded),
-        ip_mode=bool(metadata.get("ip_mode")),
-        expanded_ips=tuple(str(ip) for ip in (metadata.get("expanded_ips") or ()) if ip),
+        ip_mode=ip_mode,
+        expanded_ips=expanded,
         metadata=metadata,
+        targets=target_set(expanded) if ip_mode and "expanded_ips" in metadata else None,
     )
+
+
+def target_set(entries: Iterable[str]):
+    """The expanded target list (after the RoE filter) as a TargetSet.
+
+    Built once per distinct list: every builder of a run asks for the same one,
+    and a /16 takes about a third of a second to build. The set is never
+    changed after it is built, so the threads of a fan-out share it.
+    """
+    key = tuple(str(e) for e in entries)
+    with _TARGET_SETS_LOCK:
+        cached = _TARGET_SETS.get(key)
+        if cached is not None:
+            _TARGET_SETS.move_to_end(key)
+            return cached
+    from recon_settings.ip_hostnames import TargetSet
+    built = TargetSet.from_entries(list(key))
+    with _TARGET_SETS_LOCK:
+        _TARGET_SETS[key] = built
+        while len(_TARGET_SETS) > _TARGET_SETS_MAX:
+            _TARGET_SETS.popitem(last=False)
+    return built
+
+
+def is_target(address, targets) -> bool:
+    """``address`` (any spelling, brackets allowed) is in ``targets``."""
+    ip = _as_ip(address)
+    return ip is not None and str(ip) in targets
+
+
+def ip_mode_targets(recon_data: Optional[Mapping]):
+    """The run's IP-mode TargetSet, or None when the gate has no target list."""
+    return admission_context(None, recon_data).targets
+
+
+def clamp_to_targets(recon_data: Optional[Mapping], addresses: Iterable[str]) -> List[str]:
+    """IP mode: the addresses that are targets, in input order. Otherwise every
+    address, unchanged: domain mode keeps its own rules."""
+    targets = ip_mode_targets(recon_data)
+    if targets is None:
+        return list(addresses)
+    return [a for a in addresses if is_target(a, targets)]
+
+
+def forward_verdict(addresses: Iterable[str], targets) -> Optional[str]:
+    """None when a name may be scanned on this answer: at least one address and
+    every one a target. Else the selection rule's reason code
+    (``no_current_resolution``, ``never_scannable_address``,
+    ``resolves_outside_targets``)."""
+    from recon_settings.ip_hostnames import address_verdict
+    canonical = []
+    for address in addresses:
+        ip = _as_ip(address)
+        canonical.append(str(ip) if ip is not None else address)
+    return address_verdict(canonical, targets)
+
+
+def ip_mode_url_admission(recon_data: Optional[Mapping], *,
+                          resolve: Optional[Callable[[str], List[str]]] = None
+                          ) -> Optional[Callable[[str], bool]]:
+    """IP mode: ``admit(url)`` for a fetch a target steers (a JS download,
+    every redirect hop, a source map, an endpoint probe). None outside IP mode,
+    so the caller keeps its own default (hop_guard.admit_any).
+
+    A URL passes when its host is a target address, or one of the run's scope
+    names whose every current address is a target (resolved once per name per
+    admission). A label, an unknown name or a name that does not resolve is
+    refused.
+    """
+    targets = ip_mode_targets(recon_data)
+    if targets is None:
+        return None
+    names = _scope_names(recon_data or {})
+    resolve = resolve or _resolve
+    verdicts: Dict[str, bool] = {}
+
+    def admit(url: str) -> bool:
+        host = _url_host(url)
+        if not host:
+            return False
+        if _as_ip(host) is not None:
+            return is_target(host, targets)
+        if host not in names:
+            return False
+        if host not in verdicts:
+            verdicts[host] = forward_verdict(resolve(host), targets) is None
+        return verdicts[host]
+
+    return admit
+
+
+def _scope_names(recon_data: Mapping) -> Set[str]:
+    """The run's names: its scope list, its subdomains and its DNS entries,
+    without labels and address literals."""
+    metadata = recon_data.get("metadata") or {}
+    raw = [*(metadata.get("subdomain_filter") or ()), *(recon_data.get("subdomains") or ()),
+           *((recon_data.get("dns") or {}).get("subdomains") or {})]
+    out: Set[str] = set()
+    for name in raw:
+        if not isinstance(name, str):
+            continue
+        key = name.strip().rstrip(".").lower()
+        if key and _as_ip(key) is None and not is_placeholder(key):
+            out.add(key)
+    return out
+
+
+def _resolve(host: str) -> List[str]:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return []
+    return sorted({info[4][0].split("%")[0] for info in infos})
 
 
 @dataclass(frozen=True)
@@ -154,20 +288,44 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
         return Admission(names={n: list(a or ()) for n, a in names.items()}, ips=list(ips))
 
     adm = Admission()
-    verdicts: Dict[str, bool] = {}
+    verdicts: Dict[str, Optional[str]] = {}
 
-    def excluded(address: str) -> bool:
+    def refused(address: str) -> Optional[str]:
+        """Why ``address`` may not be sent, or None. A listed IP-mode target
+        passes as is; RoE is asked before the target list, so an address both
+        rules refuse is reported as the RoE's."""
         if address not in verdicts:
-            verdicts[address] = not ctx.authorized(address) and _is_roe_excluded(address, ctx.excluded)
+            if ctx.authorized(address):
+                verdicts[address] = None
+            elif ctx.excluded and _is_roe_excluded(address, ctx.excluded):
+                verdicts[address] = REASON_ROE_EXCLUDED
+            elif ctx.targets is not None:
+                verdicts[address] = REASON_OUTSIDE_TARGETS
+            else:
+                verdicts[address] = None
         return verdicts[address]
+
+    def admit_ip(address: str, name: str = "") -> None:
+        reason = refused(address)
+        if reason:
+            adm.refusals.append(Refusal(address, reason, _ADDRESS_DETAIL[reason], name=name))
+        elif address not in adm.ips:
+            adm.ips.append(address)
 
     for name, given in names.items():
         addrs = list(dict.fromkeys(a for a in (given or ()) if isinstance(a, str) and a))
+        if ctx.targets is not None and is_placeholder(name):
+            # A label is no name a tool could resolve: only its address goes.
+            for address in addrs:
+                admit_ip(address)
+            continue
         if _as_ip(name) is not None and name not in addrs:
             addrs.insert(0, name)
         if not addrs and _as_ip(name) is None:
             if _is_roe_excluded(name, ctx.excluded):
                 adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "host excluded"))
+            elif ctx.targets is not None:
+                adm.refusals.append(Refusal(name, REASON_OUTSIDE_TARGETS, "no known address"))
             elif ctx.ip_rules:
                 adm.refusals.append(Refusal(name, REASON_ROE_UNRESOLVED, "no known address"))
             else:
@@ -181,27 +339,30 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
             if kept:
                 adm.ips.extend(a for a in kept if a not in adm.ips)
             continue
-        kept = [a for a in addrs if not excluded(a)]
+        kept = [a for a in addrs if not refused(a)]
         for address in addrs:
             if address not in kept:
-                adm.refusals.append(Refusal(address, REASON_ROE_EXCLUDED, "address excluded", name=name))
+                reason = refused(address)
+                adm.refusals.append(Refusal(address, reason, _ADDRESS_DETAIL[reason], name=name))
+        # A name is refused for the target list when any of its addresses is
+        # outside it, else for the RoE.
+        name_reason = (REASON_OUTSIDE_TARGETS
+                       if any(refused(a) == REASON_OUTSIDE_TARGETS for a in addrs)
+                       else REASON_ROE_EXCLUDED)
         if not kept:
             if _as_ip(name) is None:
-                adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "every address excluded"))
+                adm.refusals.append(Refusal(name, name_reason, _NAME_DETAIL[name_reason][0]))
         elif len(kept) == len(addrs):
             adm.names[name] = kept
         else:
             adm.split[name] = kept
             if resolves_names:
-                adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "resolves to an excluded address"))
+                adm.refusals.append(Refusal(name, name_reason, _NAME_DETAIL[name_reason][1]))
 
     for ip in ips:
         if not isinstance(ip, str) or not ip or ip in adm.ips:
             continue
-        if excluded(ip):
-            adm.refusals.append(Refusal(ip, REASON_ROE_EXCLUDED, "address excluded"))
-        else:
-            adm.ips.append(ip)
+        admit_ip(ip)
 
     if record:
         _record(module, adm.refusals)
@@ -252,6 +413,11 @@ def admit_host_targets(settings: Optional[Mapping], recon_data: Optional[Mapping
     ``hostnames`` keeps the names a tool may resolve itself; ``ips`` every
     admitted address, a mixed name's allowed ones included; the map loses the
     refused names and addresses. Inert: the inputs come back as they are.
+
+    IP mode: a label whose address is admitted stays in ``hostnames``, as it
+    always was there (every URL builder skips a label, and a reader that lists
+    the run's hosts, such as the prune's keep list, knows the host by it), but
+    never in the map, so no tool is handed it as a name.
     """
     ctx = admission_context(settings, recon_data)
     if not ctx.active:
@@ -272,8 +438,10 @@ def admit_host_targets(settings: Optional[Mapping], recon_data: Optional[Mapping
             kept = [h for h in (names if isinstance(names, list) else [names]) if h in holders.get(ip, ())]
             if kept:
                 kept_map[ip] = kept
+    labels = ({h for h in hostnames if is_placeholder(h) and any(a in admitted for a in by_name.get(h, ()))}
+              if ctx.targets is not None else set())
     return ({ip for ip in ips if ip in admitted},
-            {h for h in hostnames if h in adm.names},
+            {h for h in hostnames if h in adm.names or h in labels},
             kept_map)
 
 
@@ -346,7 +514,9 @@ def _record(module: str, refusals: List[Refusal]) -> None:
 
     Excluded targets are a report gap only (no prune effect). A name refused
     for want of an address is cut for every source, so the prune keeps what it
-    found there before. A failure here loses the record, never the refusal.
+    found there before. An IP-mode refusal is logged only: what is not a
+    target was never the run's to check. A failure here loses the record,
+    never the refusal.
     """
     if not refusals:
         return
@@ -362,15 +532,19 @@ def _record(module: str, refusals: List[Refusal]) -> None:
             if not logged.get(key)[0]:
                 logged.put(key, True)
                 fresh_log.append(refusal)
+            if refusal.reason == REASON_OUTSIDE_TARGETS:
+                continue
             if not noted.get((module, *key))[0]:
                 noted.put((module, *key), True)
                 (new_unresolved if refusal.reason == REASON_ROE_UNRESOLVED else new_excluded).append(refusal)
         label = module or "recon"
-        _log(label, [r for r in fresh_log if r.reason != REASON_ROE_UNRESOLVED],
+        _log(label, [r for r in fresh_log if r.reason == REASON_ROE_EXCLUDED],
              "not sent to {n} target(s) the Rules of Engagement exclude")
         _log(label, [r for r in fresh_log if r.reason == REASON_ROE_UNRESOLVED],
              "not sent to {n} name(s) with no known address while RoE IP/CIDR exclusions are set "
              "(kept as not checked)")
+        _log(label, [r for r in fresh_log if r.reason == REASON_OUTSIDE_TARGETS],
+             "not sent to {n} host(s) outside the IP target list", tool="IpMode")
         if new_excluded:
             cb.note_degraded(module, entries=[{
                 "source": COVERAGE_SOURCE,
@@ -385,9 +559,9 @@ def _record(module: str, refusals: List[Refusal]) -> None:
         pass
 
 
-def _log(label: str, refusals: List[Refusal], text: str) -> None:
+def _log(label: str, refusals: List[Refusal], text: str, tool: str = "RoE") -> None:
     if refusals:
-        print(f"[-][RoE] {label}: {text.format(n=len(refusals))}: {_shown(refusals, _LOG_SHOWN)}")
+        print(f"[-][{tool}] {label}: {text.format(n=len(refusals))}: {_shown(refusals, _LOG_SHOWN)}")
 
 
 def _shown(refusals: List[Refusal], limit: int) -> str:

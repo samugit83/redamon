@@ -144,7 +144,9 @@ def extract_targets_from_recon(recon_data: dict, settings: dict = None) -> Tuple
     Under an RoE IP or CIDR exclusion naabu is handed addresses only: it
     resolves a name itself, and its answer could be an address the gate never
     saw. Each name still gets its ports, through ip_to_hostnames
-    (parse_naabu_output).
+    (parse_naabu_output). IP mode does the same: the targets are the listed
+    addresses, each once (the gate keeps them to the target list and turns an
+    IP-mode label into its address, so no label reaches naabu or by_host).
 
     Returns:
         Tuple of (unique_ips, unique_hostnames, ip_to_hostnames_mapping)
@@ -198,7 +200,8 @@ def extract_targets_from_recon(recon_data: dict, settings: dict = None) -> Tuple
     unique_ips, unique_hostnames, ip_to_hostnames = admit_host_targets(
         settings, recon_data, unique_ips, unique_hostnames, ip_to_hostnames,
         module="naabu", resolves_names=False)
-    if admission_context(settings, recon_data).ip_rules:
+    context = admission_context(settings, recon_data)
+    if context.ip_rules or context.targets is not None:
         unique_hostnames = set()
     return unique_ips, unique_hostnames, ip_to_hostnames
 
@@ -594,7 +597,8 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
 
     # Every name and every address. The filter removes nothing, because
     # ip_to_hostnames is keyed by address, so an address is scanned even when
-    # a name of its is too; IP mode relies on that.
+    # a name of its is too. In IP mode (and under an RoE IP rule) there are no
+    # names here at all: the addresses only, each once.
     all_targets = list(unique_hostnames) + [ip for ip in unique_ips if ip not in [
         h_ip for h in unique_hostnames for h_ip in ip_to_hostnames.get(h, [])
     ]]

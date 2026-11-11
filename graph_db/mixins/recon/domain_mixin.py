@@ -2,6 +2,7 @@
 
 Part of the recon_mixin.py split. Methods pasted unchanged.
 """
+import ipaddress
 import json
 import hashlib
 from datetime import datetime
@@ -9,6 +10,16 @@ from urllib.parse import urlparse, parse_qs
 
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import home_domain, org_for_scan_root, project_orgs
+
+
+def _canonical_address(value) -> str:
+    """One spelling per address (``2001:DB8::1`` is ``2001:db8::1``); any other
+    text comes back trimmed."""
+    text = str(value).strip().strip("[]")
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return text
 
 # The first clause of every read-modify-write on an org Domain (GDB-11). Several
 # scan roots share one org Domain and up to twelve partial recons run at once,
@@ -534,6 +545,11 @@ class DomainMixin:
         - IP nodes and RESOLVES_TO relationships
         - BELONGS_TO relationships from subdomains to mock domain
         - Per-IP WHOIS data on IP nodes
+
+        Every target IP gets its node from its placeholder's ``actual_ip`` (R-4),
+        and when the dict declares ``metadata.expanded_ips`` no IP outside that
+        list is ever written: a PTR name's forward answer need not be a target
+        (B-01).
         """
         stats = {
             "domain_created": False,
@@ -586,6 +602,9 @@ class DomainMixin:
 
             # 2. Create Subdomain nodes, IP nodes, and relationships
             subdomains_dns = dns_data.get("subdomains", {})
+            # A dict that declares no target list (an older file) is written as is.
+            targets = ({_canonical_address(ip) for ip in metadata.get("expanded_ips") or [] if ip}
+                       if "expanded_ips" in metadata else None)
 
             for subdomain_name in subdomains:
                 try:
@@ -637,6 +656,10 @@ class DomainMixin:
                     # Create IP nodes and RESOLVES_TO relationships
                     ips = sub_dns.get("ips", {})
                     all_ips = (ips.get("ipv4", []) or []) + (ips.get("ipv6", []) or [])
+                    if is_mock and actual_ip:
+                        all_ips = [actual_ip]
+                    if targets is not None:
+                        all_ips = [ip for ip in all_ips if _canonical_address(ip) in targets]
 
                     for ip in all_ips:
                         # Get WHOIS info for this IP if available
