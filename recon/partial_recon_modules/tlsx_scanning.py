@@ -16,9 +16,11 @@ import uuid
 from recon.partial_recon_modules.helpers import (
     root_orgs,
     _is_ip_or_cidr,
+    _resolve_hostname,
     _should_include_root_domain,
     ip_mode_recon,
     partial_settings,
+    run_is_ip_mode,
     scope_roots,
     typed_ip_attach_to,
 )
@@ -85,6 +87,31 @@ def run_tlsx(config: dict) -> None:
                     "subdomains": {}},
         }, settings)
 
+    # A row's name is what _build_tlsx_targets sends, for SNI, and tlsx
+    # resolves it itself and handshakes whatever it gets; SNI for one target
+    # only is no tlsx option (-sni is one value for the whole run). So the
+    # attach name rides on a typed IP only where tlsx resolving it lands there:
+    # the name's one address. Every other typed IP is handshaken bare. In IP
+    # mode the attach is a target's own label, which is never sent.
+    attach_lands_on = None
+    if ip_attach_to and user_ips and not run_is_ip_mode():
+        import ipaddress as _ip
+        try:
+            found = _resolve_hostname(ip_attach_to)
+            answers = {str(_ip.ip_address(a)) for a in found["ipv4"] + found["ipv6"]}
+        except (OSError, UnicodeError, ValueError):
+            answers = set()
+        if len(answers) == 1:
+            attach_lands_on = answers.pop()
+
+    def attach_names(addr: str) -> list:
+        if not ip_attach_to:
+            return []
+        if run_is_ip_mode():
+            return [ip_attach_to]
+        import ipaddress as _ip
+        return [ip_attach_to] if str(_ip.ip_address(addr)) == attach_lands_on else []
+
     # Inject user IPs.
     user_ip_addrs = []
     for ip_str in user_ips:
@@ -104,9 +131,12 @@ def run_tlsx(config: dict) -> None:
         for addr in addrs:
             user_ip_addrs.append(addr)
             recon_data["port_scan"]["by_ip"].setdefault(addr, {
-                "ip": addr, "hostnames": [ip_attach_to] if ip_attach_to else [],
+                "ip": addr, "hostnames": attach_names(addr),
                 "ports": [], "port_details": [],
             })
+    if ip_attach_to and user_ip_addrs and not any(attach_names(a) for a in user_ip_addrs):
+        print(f"[*][Partial Recon] Typed IPs are handshaken by address, without SNI: "
+              f"{ip_attach_to} does not resolve to exactly one of them")
 
     # Inject user ports across every IP (tlsx builds targets from by_ip.ports).
     if user_ports:
