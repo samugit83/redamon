@@ -2182,6 +2182,27 @@ model ActAsAudit {
   @@map("act_as_audit")
 }
 
+/// Who owns each custom Nuclei template file (HD-08). The files live in the shared
+/// templates folder (NUCLEI_TEMPLATES_PATH); this table is the owner record. A null
+/// owner is an instance template: every member may select it, only admins change it.
+/// A file with no row (added on the host) is an instance template too. The owner and
+/// promoter ids carry no foreign key on purpose: a row whose owner was deleted by a path
+/// other than DELETE /api/users/[id] (which hands the rows to the deleting admin) keeps
+/// that id, so no member can select the file until an admin promotes it.
+model NucleiTemplate {
+  id           String   @id @default(cuid())
+  path         String   @unique                       // relative to the templates folder, posix
+  ownerUserId  String?  @map("owner_user_id")
+  sha256       String?
+  sizeBytes    Int?     @map("size_bytes")
+  promotedById String?  @map("promoted_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([ownerUserId])
+  @@map("nuclei_templates")
+}
+
 model FireteamMember {
   id               String    @id @default(cuid())
   fireteamId       String    @map("fireteam_id")
