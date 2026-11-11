@@ -857,6 +857,141 @@ def _maybe_run_cert_hygiene(result: dict, settings: dict, output_file: Path) -> 
     return result
 
 
+_PORT_CHECK_SETTINGS = {
+    "admin_port_exposed": "SECURITY_CHECK_ADMIN_PORT_EXPOSED",
+    "database_exposed": "SECURITY_CHECK_DATABASE_EXPOSED",
+    "redis_no_auth": "SECURITY_CHECK_REDIS_NO_AUTH",
+    "kubernetes_api_exposed": "SECURITY_CHECK_KUBERNETES_API_EXPOSED",
+    "smtp_open_relay": "SECURITY_CHECK_SMTP_OPEN_RELAY",
+}
+
+
+def _port_checks_enabled(settings: dict) -> dict:
+    """The port and service checks this run's settings turn on, as vuln_scan
+    reads them; empty when none is. Every key is given:
+    run_port_service_checks reads a missing one as on."""
+    if "vuln_scan" not in SCAN_MODULES or not settings.get('SECURITY_CHECK_ENABLED', True):
+        return {}
+    enabled = {name: bool(settings.get(key, True)) for name, key in _PORT_CHECK_SETTINGS.items()}
+    return enabled if any(enabled.values()) else {}
+
+
+def _maybe_run_port_checks(result: dict, settings: dict, output_file: Path) -> dict:
+    """The port and service checks when the active scans were skipped (R-22).
+
+    Admin and database ports, Redis without auth, an SMTP open relay and a
+    Kubernetes API read the port scan, not http_probe, but they live in
+    run_security_checks inside the skipped vuln_scan. A database server with no
+    web server trips the skip by construction, so the host these checks exist
+    for was the one never checked. They send only the probes they send in the
+    full path, under the same settings (stealth turns those off) and RoE
+    exclusions, and the Redis and SMTP probes record per IP what they checked
+    (D1). Their findings join the certificate hygiene ones in
+    vuln_scan.security_checks.
+    """
+    enabled = _port_checks_enabled(settings)
+    if not enabled:
+        return result
+    try:
+        from recon.helpers import security_checks
+        print("\n[*][Pipeline] Port and service checks on the port scan (active scans skipped)")
+        findings = security_checks.run_port_service_checks(
+            recon_data=result,
+            enabled_checks=enabled,
+            timeout=settings.get('SECURITY_CHECK_TIMEOUT', 10),
+            max_workers=settings.get('SECURITY_CHECK_MAX_WORKERS', 10),
+            roe_excluded_hosts=(settings.get('ROE_EXCLUDED_HOSTS') or None)
+            if settings.get('ROE_ENABLED') else None,
+        )
+        print(f"[+][Pipeline] Port and service checks: {len(findings)} finding(s)")
+        if not findings:
+            return result
+        # One envelope, built as run_security_checks builds it, so the graph
+        # writer and the report read the same shape.
+        earlier = (result.get("vuln_scan") or {}).get("security_checks") or {}
+        checks = security_checks._assemble_security_result(
+            list(earlier.get("findings") or []) + findings,
+            {**(earlier.get("checks_enabled") or {}), **enabled}, 0, 0)["security_checks"]
+        result.setdefault("vuln_scan", {})["security_checks"] = checks
+        save_recon_file(result, output_file)
+        _graph_update_bg("update_graph_from_vuln_scan", result, USER_ID, PROJECT_ID)
+    except Exception as e:
+        print(f"[!][Pipeline] port and service checks failed: {e}")
+        result.setdefault("metadata", {}).setdefault("phase_errors", {})["port_checks"] = str(e)
+        _note_phase_error("port_checks")
+    return result
+
+
+#: The GROUP 6 Phase A tools that need a live URL, with the setting that turns
+#: each on (vuln_scan is a SCAN_MODULES phase). Subdomain Takeover is not one:
+#: it runs with no live URL (R-22).
+_LIVE_URL_PHASE_A = {
+    "graphql_scan": "GRAPHQL_SECURITY_ENABLED",
+    "vhost_sni": "VHOST_SNI_ENABLED",
+    "cache_scan": "WEB_CACHE_POISON_ENABLED",
+    "origin_discovery": "ORIGIN_DISCOVERY_ENABLED",
+    "route_exposure": "ROUTE_EXPOSURE_ENABLED",
+}
+
+
+def _gate_skip_hosts(result: dict) -> list:
+    """Every name and address of this group the skipped scanners would have read."""
+    from recon.helpers import extract_targets_from_recon
+    ips, names, _ = extract_targets_from_recon(result)
+    port_scan = result.get("port_scan") or {}
+    return sorted({*ips, *names,
+                   *(port_scan.get("by_ip") or {}), *(port_scan.get("by_host") or {})})
+
+
+def _note_gate_skipped(result: dict, settings: dict, *, phase_a: bool = True) -> None:
+    """Keep, on this group's hosts, the findings of every source the live-URL
+    skip stopped from running (R-22). Never raises.
+
+    These sources record nothing they re-checked, so the prune would read "not
+    reported" as "gone". They were meant to run and could not: degraded, not
+    switched off, and by host, so the groups of a Domain batch that had live
+    URLs still prune them. security_check is kept on the group's names and on
+    the addresses the port checks did not read: those checks re-checked their
+    addresses and prune there on their own. A tool switched off by
+    configuration notes nothing and prunes as before. `phase_a` False: the
+    caller never runs Phase A (the legacy path, which keeps those sources
+    already).
+    """
+    from recon.helpers import circuit_breaker
+    phases = [p for p in ("resource_enum", "vuln_scan") if p in SCAN_MODULES]
+    if phase_a:
+        phases += [p for p, key in _LIVE_URL_PHASE_A.items() if settings.get(key, False)]
+    try:
+        hosts = _gate_skip_hosts(result)
+        if not phases or not hosts:
+            return
+        read = set()
+        if _port_checks_enabled(settings):
+            by_ip = (result.get("port_scan") or {}).get("by_ip") or {}
+            read = {ip for ip, entry in by_ip.items() if isinstance(entry, dict) and entry.get("ports")}
+        kept = []
+        for phase in phases:
+            for source in _PHASE_FINDING_SOURCES[phase]:
+                if source == "nuclei" and not settings.get('NUCLEI_ENABLED', True):
+                    continue
+                if source == "security_check" and not settings.get('SECURITY_CHECK_ENABLED', True):
+                    continue
+                on = [h for h in hosts if h not in read] if source == "security_check" else hosts
+                if on:
+                    circuit_breaker.note_degraded(phase, hosts=on, host_source=source,
+                                                  source_only_hosts=True,
+                                                  reason="not run: no live HTTP URL")
+                    kept.append(source)
+        if kept:
+            print(f"[*][Pipeline] Not run with no live URL, earlier findings kept on "
+                  f"{len(hosts)} host(s): {', '.join(kept)}")
+    except Exception as e:  # noqa: BLE001 - unknown hosts: keep the sources whole
+        print(f"[!][Pipeline] Could not list the hosts the skipped scanners keep: {type(e).__name__}")
+        circuit_breaker.note_degraded(
+            "active_scans", sources=[s for p in phases for s in _PHASE_FINDING_SOURCES[p]],
+            reason="not run: no live HTTP URL")
+
+
 def _maybe_run_ai_surface(result: dict, settings: dict, output_file: Path) -> dict:
     """GROUP 4.5 — AI Surface Recon. Runs after resource_enum at every call site.
 
@@ -1631,6 +1766,8 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         combined_result["metadata"]["active_scans_skip_reason"] = skip_reason
         save_recon_file(combined_result, output_file)
         combined_result = _maybe_run_cert_hygiene(combined_result, settings, output_file)
+        combined_result = _maybe_run_port_checks(combined_result, settings, output_file)
+        _note_gate_skipped(combined_result, settings)
     else:
         if "resource_enum" in SCAN_MODULES:
             print(f"\n[*][Pipeline] GROUP 5: Resource Enumeration")
@@ -1678,6 +1815,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     # source_maps + technologies). Black-box package harvest + offline OSV verdict.
     combined_result = _maybe_run_supply_chain(combined_result, settings, output_file)
 
+    ip_phase_a: dict = {}
     if not skip_active_scans:
         if "vuln_scan" in SCAN_MODULES:
             print(f"\n[*][Pipeline] GROUP 6: Vulnerability Scanning (Nuclei, then MITRE)")
@@ -1705,7 +1843,6 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         # so an IP target also gets GraphQL / Subdomain-Takeover / VHost-SNI / Web Cache
         # Poisoning coverage (previously these only ran for domain targets, so an IP
         # scan silently skipped them).
-        ip_phase_a: dict = {}
         if settings.get('GRAPHQL_SECURITY_ENABLED', False):
             from recon.graphql_scan import run_graphql_scan_isolated
             ip_phase_a['graphql_scan'] = run_graphql_scan_isolated
@@ -1724,8 +1861,13 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         if settings.get('ROUTE_EXPOSURE_ENABLED', False):
             from recon.route_exposure import run_route_exposure_isolated
             ip_phase_a['route_exposure'] = run_route_exposure_isolated
+    elif settings.get('SUBDOMAIN_TAKEOVER_ENABLED', False):
+        # Takeover reads the names and their CNAMEs, not live URLs: a host set
+        # with no web server is still checked (R-22).
+        from recon.main_recon_modules.subdomain_takeover import run_subdomain_takeover_isolated
+        ip_phase_a['subdomain_takeover'] = run_subdomain_takeover_isolated
 
-        _run_phase_a_fan_out(ip_phase_a, combined_result, settings, output_file)
+    _run_phase_a_fan_out(ip_phase_a, combined_result, settings, output_file)
 
     # External Domains -- aggregate from all sources and persist
     try:
@@ -2386,6 +2528,8 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         combined_result["metadata"]["active_scans_skip_reason"] = skip_reason
         save_recon_file(combined_result, output_file)
         combined_result = _maybe_run_cert_hygiene(combined_result, _settings, output_file)
+        combined_result = _maybe_run_port_checks(combined_result, _settings, output_file)
+        _note_gate_skipped(combined_result, _settings)
     else:
         # GROUP 5 — Resource Enum (already parallel internally: Katana || GAU || Kiterunner)
         if "resource_enum" in SCAN_MODULES:
@@ -2446,6 +2590,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
     # GROUP 5.5 -- Supply-Chain Recon, after JS Recon as in IP mode.
     combined_result = _maybe_run_supply_chain(combined_result, _settings, output_file)
 
+    phase_a_tools: dict = {}
     if not skip_active_scans:
         # ================================================================
         # GROUP 6 Phase A — Parallel active vuln scanners
@@ -2454,7 +2599,6 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         # findings, and have zero data dependency on each other, so their
         # _isolated wrappers run concurrently (_run_phase_a_fan_out).
         # ----------------------------------------------------------------
-        phase_a_tools: dict = {}
         if "vuln_scan" in SCAN_MODULES:
             from recon.main_recon_modules.vuln_scan import run_vuln_scan_isolated
             phase_a_tools['vuln_scan'] = run_vuln_scan_isolated
@@ -2476,9 +2620,15 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         if _settings.get('ROUTE_EXPOSURE_ENABLED', False):
             from recon.route_exposure import run_route_exposure_isolated
             phase_a_tools['route_exposure'] = run_route_exposure_isolated
+    elif _settings.get('SUBDOMAIN_TAKEOVER_ENABLED', False):
+        # Takeover reads the names and their CNAMEs, not live URLs: a group of
+        # dangling names, the case it exists for, is still checked (R-22).
+        from recon.main_recon_modules.subdomain_takeover import run_subdomain_takeover_isolated
+        phase_a_tools['subdomain_takeover'] = run_subdomain_takeover_isolated
 
-        _run_phase_a_fan_out(phase_a_tools, combined_result, _settings, output_file)
+    _run_phase_a_fan_out(phase_a_tools, combined_result, _settings, output_file)
 
+    if not skip_active_scans:
         # ================================================================
         # GROUP 6 Phase B — MITRE enrichment (depends on Nuclei CVEs)
         # ================================================================
@@ -2892,6 +3042,7 @@ _PHASE_FINDING_SOURCES = {
     "js_recon": ("js_recon",),
     "vuln_scan": ("nuclei", "security_check", "vuln_scan"),
     "cert_hygiene": ("security_check",),
+    "port_checks": ("security_check",),
     "graphql_scan": ("graphql_scan", "graphql_cop"),
     "subdomain_takeover": ("takeover_scan",),
     "vhost_sni": ("vhost_sni_enum",),
@@ -3523,6 +3674,8 @@ def run_domain_group(group: dict, start_time=None) -> int:
             with open(output_file, 'w') as f:
                 json.dump(domain_result, f, indent=2)
             domain_result = _maybe_run_cert_hygiene(domain_result, _settings, output_file)
+            domain_result = _maybe_run_port_checks(domain_result, _settings, output_file)
+            _note_gate_skipped(domain_result, _settings, phase_a=False)
         else:
             # Run resource_enum if in SCAN_MODULES (when domain_discovery is skipped)
             if "resource_enum" in SCAN_MODULES:
