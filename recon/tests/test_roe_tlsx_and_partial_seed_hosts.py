@@ -1,17 +1,22 @@
-"""tlsx and the partial archive sources get only RoE-admitted hosts (R-2,
-design decision D2).
+"""tlsx, the partial archive sources and the partial ZAP endpoint seeds get only
+RoE-admitted hosts (R-2, design decision D2).
 
 tlsx is handed ``name:port`` lines and resolves each name itself, so a name the
 RoE refuses on one of its addresses can land on that address even when the
 line was built from an allowed one. Gau's URL verification and method probe
 (httpx) request every archived URL whose host is in the list
 ``graph_target_hosts`` returns, which a partial run checked against the RoE by
-name only.
+name only. The ZAP Ajax Spider's endpoint seeds pass a scope check by name, and
+then its own allowed-host filter, built from the admitted target URLs.
 
 Each test reads what the tool is really handed: the tlsx target file (only
-``subprocess.Popen`` is replaced) and the URLs Gau's verifier receives.
-Neo4j is a fake answering from a fixed set of rows. With no RoE exclusion the
-lists are the ones built without RoE keys at all.
+``subprocess.Popen`` is replaced), the URLs Gau's verifier receives and the
+seeds ZAP would crawl after its own filters. Neo4j is a fake answering from a
+fixed set of rows. With no RoE exclusion the lists are the ones built without
+RoE keys at all.
+
+Two strict xfails at the end pin what is still open: partial Nuclei through the
+vuln-scan graph builder, and the security checks' missing address gate.
 Reserved names and documentation ranges only; no Docker, no network.
 """
 from __future__ import annotations
@@ -410,3 +415,124 @@ def test_partial_gau_verification_is_unchanged_without_an_exclusion(settings, mo
     baseline = _gau_verified_urls({}, monkeypatch)
     assert _gau_verified_urls(settings, monkeypatch) == baseline
     assert {LEGACY, MIXED} <= _hosts(baseline)
+
+
+# --------------------------------------------------------------------------
+# Partial ZAP Ajax Spider: the endpoint seeds of base_urls_and_endpoints
+# --------------------------------------------------------------------------
+
+def _zap_seeds(settings, monkeypatch) -> list:
+    """The seeds ZAP would crawl, after run_zap_ajax_spider's own filters."""
+    import recon.helpers.resource_enum as resource_enum
+    from recon.helpers.resource_enum import zap_ajax_spider_helpers as zap
+    from recon.partial_recon_modules import web_crawling
+    seen = {}
+
+    def capped(seeds, _cap):
+        seen["seeds"] = list(seeds)
+        raise _Stop
+
+    monkeypatch.setattr("graph_db.Neo4jClient", _Client)
+    monkeypatch.setattr(resource_enum, "pull_zap_ajax_docker_image", lambda *_a, **_k: True)
+    monkeypatch.setattr(zap, "_cap_zap_seeds", capped)
+    run_settings = _run_settings({"ZAP_AJAX_SPIDER_SEED_MODE": "base_urls_and_endpoints", **settings})
+    with pytest.raises(_Stop):
+        web_crawling.run_zap_ajax_spider_partial(
+            {"_settings": run_settings, "domains": [APEX], "domain": APEX})
+    return seen["seeds"]
+
+
+def test_partial_zap_never_seeds_an_endpoint_on_a_name_resolving_into_an_excluded_range(monkeypatch):
+    seeds = _zap_seeds(_roe(EXCLUDED_RANGE), monkeypatch)
+    assert {LEGACY, MIXED, LEGACY_IP}.isdisjoint(_hosts(seeds))
+    assert f"https://{WWW}/app" in seeds
+
+
+@pytest.mark.parametrize("settings", NO_ROE)
+def test_partial_zap_seeds_are_unchanged_without_an_exclusion(settings, monkeypatch):
+    baseline = _zap_seeds({}, monkeypatch)
+    assert _zap_seeds(settings, monkeypatch) == baseline
+    assert {f"https://{LEGACY}/admin", f"https://{MIXED}/login"} <= set(baseline)
+
+
+# --------------------------------------------------------------------------
+# Still open (strict xfail pins): the vuln-scan graph builder and its readers
+# --------------------------------------------------------------------------
+#
+# _build_vuln_scan_data_from_graph drops a name's RoE-excluded address from
+# its DNS block, so the admission gate at partial Nuclei sees only the allowed
+# address of a mixed name and sends the name, which Nuclei resolves itself.
+# Keeping the address there for the gate (as the port-scan builder does) is
+# blocked by a reader of the same block: run_security_checks, which partial
+# Nuclei and partial SecurityChecks both reach, sends its direct-IP checks to
+# every DNS address and its hostname checks to every name with records, and
+# checks neither against the RoE IP and CIDR entries in domain mode. The full
+# domain run hands it the run's whole DNS block, so the second pin is a live
+# leak there today.
+
+NUCLEI = {"NUCLEI_ENABLED": True, "NUCLEI_TAGS": ["cve"], "NUCLEI_AUTO_UPDATE_TEMPLATES": False,
+          "CVE_LOOKUP_ENABLED": False, "SECURITY_CHECK_ENABLED": False, "NUCLEI_MAX_RUNTIME": 0,
+          "MITRE_ENABLED": False}
+
+
+def _partial_nuclei_targets(settings, monkeypatch) -> list:
+    from recon.main_recon_modules import vuln_scan as vs
+    from recon.partial_recon_modules import vulnerability_scanning
+    seen = {}
+
+    def fake_pass(cmd, output_file, label, runtime_cap=0, container_name=None):
+        seen[label] = (Path(output_file).parent / f"targets_{label.lower()}.txt").read_text().split()
+        raise _Stop
+
+    monkeypatch.setattr("graph_db.Neo4jClient", _Client)
+    run_settings = _run_settings({**NUCLEI, **settings})
+    with mock.patch.object(vs, "is_docker_installed", return_value=True), \
+         mock.patch.object(vs, "is_docker_running", return_value=True), \
+         mock.patch.object(vs, "pull_nuclei_docker_image", return_value=True), \
+         mock.patch.object(vs, "ensure_templates_volume", return_value=True), \
+         mock.patch.object(vs, "_execute_nuclei_pass", side_effect=fake_pass):
+        with pytest.raises(_Stop):
+            vulnerability_scanning.run_nuclei({"_settings": run_settings, "domains": [APEX], "domain": APEX})
+    return seen["DETECTION"]
+
+
+@pytest.mark.xfail(strict=True, reason="R-2: the vuln-scan graph builder drops the excluded address "
+                   "the gate needs; keeping it waits on the security checks' RoE address gate")
+def test_partial_nuclei_never_gets_a_name_with_one_excluded_address(monkeypatch):
+    hosts = _hosts(_partial_nuclei_targets(_roe(EXCLUDED_RANGE), monkeypatch))
+    assert MIXED not in hosts
+    assert WWW in hosts
+
+
+def _security_check_targets(settings) -> tuple:
+    """The addresses the direct-IP checks and the names the header checks get."""
+    from recon.helpers import security_checks as sc
+    probed_ips, checked_names = set(), set()
+
+    def direct(ips, **_k):
+        probed_ips.update(ips)
+        return []
+
+    def headers(hostnames, **_k):
+        checked_names.update(hostnames)
+        return []
+
+    with mock.patch.object(sc, "run_direct_ip_checks", side_effect=direct), \
+         mock.patch.object(sc, "run_security_headers_checks", side_effect=headers):
+        sc.run_security_checks(_domain_run(), {"direct_ip_http": True, "missing_referrer_policy": True},
+                               roe_excluded_hosts=settings.get("ROE_EXCLUDED_HOSTS"))
+    return probed_ips, checked_names
+
+
+def test_security_checks_reach_every_dns_address_without_an_exclusion():
+    ips, names = _security_check_targets({})
+    assert {LEGACY_IP, MIXED_BAD} <= ips
+    assert {LEGACY, MIXED} <= names
+
+
+@pytest.mark.xfail(strict=True, reason="R-2: run_security_checks applies no RoE address gate in "
+                   "domain mode (direct-IP checks and hostname checks)")
+def test_security_checks_never_reach_an_excluded_address():
+    ips, names = _security_check_targets(_roe(EXCLUDED_RANGE))
+    assert {LEGACY_IP, MIXED_BAD}.isdisjoint(ips)
+    assert {LEGACY, MIXED}.isdisjoint(names)
