@@ -44,3 +44,38 @@ describe('import scope refusal', () => {
     expect(mockProjectCreate).not.toHaveBeenCalled()
   })
 })
+
+describe('import and the hostname policy (cross-field rules, B-25)', () => {
+  const IP = { ipMode: true, targetIps: ['203.0.113.10'], targetDomain: '' }
+
+  test.each([
+    ['scan_all without its confirmation', { ipHostnameMode: 'scan_all' }, 'ipHostnameScanAllConfirmed'],
+    ['record_filter without an include entry', { ipHostnameMode: 'record_filter' }, 'ipHostnameInclude'],
+    ['an include entry that does not parse', {
+      ipHostnameMode: 'record_filter', ipHostnameInclude: ['203.0.113.9'],
+    }, 'ipHostnameInclude'],
+  ])('%s refuses the bundle', async (_name, policy, needle) => {
+    const res = await POST(await bundle({ ...IP, ...policy }))
+    expect(res.status).toBe(400)
+    const { error } = await res.json()
+    expect(error).toContain(needle)
+    expect(error).toContain('The bundle was not imported.')
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a hard-blocked include entry refuses the bundle', async () => {
+    const res = await POST(await bundle({ ...IP, ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.agency.gov.uk'] }))
+    expect(res.status).toBe(403)
+    expect(mockProjectCreate).not.toHaveBeenCalled()
+  })
+
+  test('a valid policy is created, stored with canonical entries and no stray confirmation', async () => {
+    const res = await POST(await bundle({
+      ...IP, ipHostnameMode: 'record_filter', ipHostnameInclude: ['*Example.com'], ipHostnameScanAllConfirmed: true,
+    }))
+    expect(res.status).toBeLessThan(300)
+    const data = mockProjectCreate.mock.calls[0][0].data
+    expect(data.ipHostnameInclude).toEqual(['*.example.com'])
+    expect(data.ipHostnameScanAllConfirmed).toBe(false)
+  })
+})

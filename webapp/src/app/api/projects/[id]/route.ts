@@ -278,6 +278,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         domainBatchMode: true, domainBatchGroups: true, domainBatchHosts: true,
         targetDomain: true, subdomainList: true, ipMode: true, targetIps: true,
         userId: true, targetGuardrailEnabled: true, attackSkillConfig: true,
+        // The hostname policy is judged on the effective row (guardProjectWrite)
+        // and compared for scopeChanged; engagementKind refuses scan_all (D-03).
+        engagementKind: true, ipHostnameMode: true, ipHostnameInclude: true, ipHostnameExclude: true,
+        ipHostnamePassiveExpand: true, ipHostnameScanAllConfirmed: true, ipHostnameMaxScanned: true,
+        ipHostnamePassiveMaxNames: true,
         ...JEV_ENGINE_SELECT,
       },
     })
@@ -337,11 +342,26 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       updateData.domainBatchHosts = []
     }
 
+    // A project that is not in IP mode keeps no hostname policy, as a non-batch
+    // keeps no batch scope above: it scans nothing there, and a leftover policy
+    // would start applying unseen after a flip back into IP mode.
+    const {
+      IP_HOSTNAME_DEFAULTS, IP_HOSTNAME_FIELDS, ipHostnamePolicyChanged, ipHostnamePolicyNarrowed,
+    } = await import('@/lib/scopeGroups')
+    const nextIpMode = 'ipMode' in updateData ? updateData.ipMode === true : existing?.ipMode === true
+    if (!nextIpMode && existing && (IP_HOSTNAME_FIELDS.some(k => k in updateData)
+        || ipHostnamePolicyChanged(existing, IP_HOSTNAME_DEFAULTS))) {
+      for (const key of IP_HOSTNAME_FIELDS) {
+        const value = IP_HOSTNAME_DEFAULTS[key]
+        updateData[key] = Array.isArray(value) ? [] : value
+      }
+    }
+
     // The scope gates apply to EVERY mode and to a mode flip, not only to a batch
     // host-list edit: a single-domain target change, a batch -> single flip and
     // entering or leaving IP mode re-point the engagement just as much.
     const nextScope = {
-      ipMode: 'ipMode' in updateData ? updateData.ipMode === true : existing?.ipMode === true,
+      ipMode: nextIpMode,
       domainBatchMode: willBeBatch,
       domainBatchHosts: Array.isArray(updateData.domainBatchHosts)
         ? updateData.domainBatchHosts as string[] : existing?.domainBatchHosts ?? [],
@@ -351,6 +371,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         ? updateData.subdomainList as string[] : existing?.subdomainList ?? [],
       targetIps: Array.isArray(updateData.targetIps)
         ? updateData.targetIps as string[] : existing?.targetIps ?? [],
+      // The hostname policy is part of the scope: its include entries get the hard
+      // guardrail below, and any change of it is a scope change.
+      ...Object.fromEntries(IP_HOSTNAME_FIELDS.map(k => [k, k in updateData ? updateData[k] : existing?.[k]])),
     }
     // Mutually exclusive modes, enforced on update as well as create, and on the
     // EFFECTIVE next state: recon checks IP_MODE first, so a project flagged both
@@ -387,7 +410,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       nextScope.ipMode !== (existing.ipMode === true)
       || nextScope.domainBatchMode !== (existing.domainBatchMode === true)
       || (nextScope.ipMode
-        ? !sameSet(nextScope.targetIps, existing.targetIps ?? [])
+        ? !sameSet(nextScope.targetIps, existing.targetIps ?? []) || ipHostnamePolicyChanged(existing, nextScope)
         : nextScope.domainBatchMode
           ? batchScopeChanged
           : singleScopeChanged())
@@ -560,9 +583,28 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // as an RoE change moves it; a regroup of the same hosts does not (WEB-15b).
     if (scopeChanged) await refreshActiveRecordingScope(prisma, id, project)
 
+    // A narrowed hostname policy marks the names earlier runs scanned that it no
+    // longer admits (design §6.3). After the commit and best-effort: the save
+    // stands either way, and every reader re-applies the current policy, so the
+    // answer only tells the caller whether the graph agrees yet.
+    let hostnamePolicyMarked: boolean | undefined
+    if (existing && ipHostnamePolicyNarrowed(existing, project)) {
+      try {
+        const { markOutOfPolicy } = await import('@/lib/ipHostnamePolicy')
+        hostnamePolicyMarked = await markOutOfPolicy(id, project.userId, project)
+      } catch (e) {
+        console.warn('[projects PUT] hostname policy marker failed:', e)
+        hostnamePolicyMarked = false
+      }
+    }
+
     // Exclude binary document data from response (same as GET)
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
-    return NextResponse.json({ ...projectWithoutBinary, scopeGroups: resolveScopeGroups(project).groups })
+    return NextResponse.json({
+      ...projectWithoutBinary,
+      scopeGroups: resolveScopeGroups(project).groups,
+      ...(hostnamePolicyMarked === undefined ? {} : { hostnamePolicyMarked }),
+    })
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
       console.error('Failed to update project:', error)

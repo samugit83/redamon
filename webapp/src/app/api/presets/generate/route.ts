@@ -36,6 +36,7 @@ RULES:
 - Numbers must be plain integers or floats (not strings).
 - Arrays must use JSON array syntax.
 - Do NOT include target-specific fields (targetDomain, subdomainList, ipMode, etc.).
+- Do NOT include the IP-mode hostname policy (ipHostnameMode, ipHostnameInclude, ipHostnameExclude, ipHostnamePassiveExpand, ipHostnameScanAllConfirmed, ipHostnameMaxScanned, ipHostnamePassiveMaxNames); it is part of the target scope and only the project owner sets it.
 - Do NOT include OpenAPI source URLs or the project Authenticated Session profile; they are target-specific and may contain credentials.
 - Do NOT include agent behaviour, attack skills, RoE, or CypherFix fields.
 - Focus on enabling/disabling tools and tuning their numeric settings to match the user's intent.

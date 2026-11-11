@@ -3,10 +3,11 @@
  * targets.
  *
  * Every test here is a way the platform could be re-pointed without the
- * controls that make re-pointing acceptable: a field outside the eight target
- * lists, a root on the permanent blocklist, a third-party widening with no
- * record of who authorized it, or a grouping the caller supplied instead of
- * the one derived from the host list.
+ * controls that make re-pointing acceptable: a field outside the rescopable
+ * target lists, a root on the permanent blocklist, a third-party widening with no
+ * record of who authorized it, a grouping the caller supplied instead of the one
+ * derived from the host list, or an IP project's hostname policy widened while
+ * its schedules keep running.
  *
  * @vitest-environment node
  */
@@ -27,6 +28,8 @@ const h = vi.hoisted(() => ({
   fetch: vi.fn(),
   recordingFind: vi.fn(),
   recordingUpdate: vi.fn(),
+  mark: vi.fn(),
+  activating: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => {
@@ -60,6 +63,11 @@ vi.mock('@/lib/legacyGraph', async orig => ({
   legacyGraphDomains: (...a: unknown[]) => h.legacy(...a),
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+vi.mock('@/lib/ipHostnamePolicy', () => ({ markOutOfPolicy: (...a: unknown[]) => h.mark(...a) }))
+vi.mock('@/lib/activationLock', async orig => ({
+  ...(await orig<typeof import('@/lib/activationLock')>()),
+  activationBusy: (...a: unknown[]) => h.activating(...a),
+}))
 
 import { McpScopeError, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
 import { validateDomainBatch } from '@/lib/domainBatch'
@@ -117,12 +125,14 @@ beforeEach(() => {
   vi.stubGlobal('fetch', h.fetch)
   h.recordingFind.mockResolvedValue(null)
   h.recordingUpdate.mockResolvedValue({})
+  h.mark.mockResolvedValue(true)
+  h.activating.mockResolvedValue(false)
 })
 
 const call = (changes: Record<string, unknown>, extra: Record<string, unknown> = {}, scopes?: McpScope[]) =>
   updateProjectScope(ctx(scopes), { projectId: 'p1', changes, ...extra } as never)
 
-describe('only the eight target lists move', () => {
+describe('only the rescopable target lists move', () => {
   test('every other create-only field is refused, whatever the token holds', async () => {
     const fixed = createOnlyFields().filter(f => !f.rescope).map(f => f.key)
     expect(fixed).toHaveLength(11)
@@ -399,5 +409,140 @@ describe('an active login recording follows the rescope (WEB-15b)', () => {
     const r = await call({ gvmScanTargets: 'ips_only' })
     expect(h.recordingFind).not.toHaveBeenCalled()
     expect(r.recordingScopeUpdated).toBe(false)
+  })
+})
+
+describe('an IP project\'s hostname policy (Hostnames on target IPs, design §6.3 and §9)', () => {
+  const SCHEDULES = [{ id: 's1', label: 'nightly' }]
+  const ipRow = (over: Record<string, unknown> = {}) => batchRow([], {
+    domainBatchMode: false, domainBatchGroups: null, ipMode: true,
+    ipHostnameMode: 'record_only', ipHostnameInclude: [], ipHostnameExclude: [], ipHostnamePassiveExpand: true,
+    ipHostnameScanAllConfirmed: false, ipHostnameMaxScanned: 100, ipHostnamePassiveMaxNames: 500,
+    ...over,
+  })
+  beforeEach(() => { row = ipRow() })
+
+  test('every policy field is rescopable, and the row is read with ipMode', async () => {
+    await call({ ipHostnameMode: 'ip_only' })
+    const select = h.projectFind.mock.calls.map(([a]) => a?.select).find(s => s && 'ipHostnameMode' in s)
+    for (const key of ['ipMode', 'ipHostnameMode', 'ipHostnameInclude', 'ipHostnameExclude',
+      'ipHostnamePassiveExpand', 'ipHostnameScanAllConfirmed', 'ipHostnameMaxScanned', 'ipHostnamePassiveMaxNames']) {
+      expect(select[key], key).toBe(true)
+    }
+  })
+
+  test('record_only -> record_filter is a widening: enabled schedules pause, the result says which', async () => {
+    h.schedules.mockResolvedValueOnce(SCHEDULES).mockResolvedValue([])
+    const r = await call({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] })
+    expect(r.widenings).toEqual(['hostname mode record_only -> record_filter'])
+    expect(h.schedulesUpdate).toHaveBeenCalledWith({ where: { id: { in: ['s1'] }, enabled: true }, data: { enabled: false } })
+    expect(r.pausedSchedules).toEqual({ count: 1, names: ['nightly'] })
+    expect(r.note).toMatch(/The hostname policy widened, so 1 scheduled scan\(s\) were paused/)
+    expect(h.projectUpdateMany.mock.calls[0][0].data.ipHostnameInclude).toEqual(['*.example.com'])
+  })
+
+  test('ip_only -> record_only pauses nothing: lookups, not target traffic', async () => {
+    row = ipRow({ ipHostnameMode: 'ip_only' })
+    h.schedules.mockResolvedValue(SCHEDULES)
+    const r = await call({ ipHostnameMode: 'record_only' })
+    expect(r.widenings).toEqual([])
+    expect(h.schedulesUpdate).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['an include entry added', { ipHostnameInclude: ['*.example.com', '*.example.org'] }],
+    ['an exclude entry removed', { ipHostnameExclude: [] }],
+    ['passive expansion turned on', { ipHostnamePassiveExpand: true }],
+    ['the scan cap raised', { ipHostnameMaxScanned: 500 }],
+  ])('%s is a widening that pauses the schedules', async (_name, changes) => {
+    row = ipRow({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'],
+      ipHostnameExclude: ['old.example.com'], ipHostnamePassiveExpand: false })
+    h.schedules.mockResolvedValueOnce(SCHEDULES).mockResolvedValue([])
+    const r = await call(changes)
+    expect(r.widenings.length).toBeGreaterThan(0)
+    expect(h.schedulesUpdate).toHaveBeenCalled()
+  })
+
+  test('a third-party widening without an authorization is refused, nothing written', async () => {
+    row = ipRow({ engagementKind: 'third_party' })
+    await expect(call({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] }))
+      .rejects.toMatchObject({ code: 'authorization_required', message: expect.stringMatching(/hostname mode record_only -> record_filter/) })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
+
+  test('a third-party widening with its authorization is written with it', async () => {
+    row = ipRow({ engagementKind: 'third_party' })
+    const r = await call({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] },
+      { authorization: AUTH }, ['project:rescope', 'engagement:authorize'])
+    expect(r.authorizationId).toBe('auth1')
+  })
+
+  test('scan_all is refused on a third-party engagement, even with an authorization (D-03)', async () => {
+    row = ipRow({ engagementKind: 'third_party' })
+    await expect(call({ ipHostnameMode: 'scan_all', ipHostnameScanAllConfirmed: true },
+      { authorization: AUTH }, ['project:rescope', 'engagement:authorize']))
+      .rejects.toMatchObject({ code: 'setting_rejected', message: expect.stringMatching(/third_party/) })
+  })
+
+  test('scan_all without its confirmation is refused', async () => {
+    await expect(call({ ipHostnameMode: 'scan_all' })).rejects.toThrow(/ipHostnameScanAllConfirmed/)
+  })
+
+  test('a hard-blocked include entry is refused as target_blocked', async () => {
+    await expect(call({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.agency.gov.uk'] }))
+      .rejects.toMatchObject({ code: 'target_blocked' })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
+
+  test('a policy change waits for a version activation', async () => {
+    h.activating.mockResolvedValue(true)
+    await expect(call({ ipHostnameMode: 'ip_only' })).rejects.toMatchObject({ code: 'busy' })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
+
+  test('refused while anything reads or writes the graph', async () => {
+    h.live.mockResolvedValue('a full recon is running')
+    await expect(call({ ipHostnameMode: 'ip_only' })).rejects.toMatchObject({ code: 'busy' })
+  })
+
+  test('a domain project has no hostname policy to change', async () => {
+    row = batchRow(['a.example.com'])
+    await expect(call({ ipHostnameMode: 'record_only' })).rejects.toThrow(/only to IP-mode projects/)
+  })
+
+  test('leaving scan_all writes the reset confirmation too', async () => {
+    row = ipRow({ ipHostnameMode: 'scan_all', ipHostnameScanAllConfirmed: true })
+    await call({ ipHostnameMode: 'record_only' })
+    expect(h.projectUpdateMany.mock.calls[0][0].data).toMatchObject({
+      ipHostnameMode: 'record_only', ipHostnameScanAllConfirmed: false,
+    })
+  })
+
+  test('a narrowing runs the marker after the commit and returns hostnamePolicyMarked', async () => {
+    row = ipRow({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] })
+    const r = await call({ ipHostnameMode: 'record_only' })
+    expect(r.hostnamePolicyMarked).toBe(true)
+    expect(h.mark).toHaveBeenCalledTimes(1)
+    expect(h.mark.mock.calls[0].slice(0, 2)).toEqual(['p1', 'owner'])
+    expect(h.mark.mock.calls[0][2].ipHostnameMode).toBe('record_only')
+    expect(h.projectUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(h.mark.mock.invocationCallOrder[0])
+    expect(h.schedulesUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a marker that throws answers false, says so, and the change stands', async () => {
+    row = ipRow({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] })
+    h.mark.mockRejectedValue(new Error('neo4j down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const r = await call({ ipHostnameExclude: ['old.example.com'] })
+    expect(r.hostnamePolicyMarked).toBe(false)
+    expect(r.note).toMatch(/could not be marked out_of_policy/)
+    expect(h.projectUpdateMany).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  test('a widening runs no marker and carries no hostnamePolicyMarked', async () => {
+    const r = await call({ ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] })
+    expect(h.mark).not.toHaveBeenCalled()
+    expect(r).not.toHaveProperty('hostnamePolicyMarked')
   })
 })

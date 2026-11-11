@@ -86,10 +86,11 @@ export const MCP_SCOPES = [
   // preset does not name, and bypasses the per-call key cap update_recon_settings
   // has. Held with preset:write it is recon:settings over the preset field set.
   'preset:apply',
-  // Re-points the standalone scanners and edits a batch project's host list on a
-  // project that already exists. Scope was create-only for every token; this
-  // reopens exactly eight target-list fields, so it is never auto-ticked, and
-  // widening a third-party engagement also needs engagement:authorize.
+  // Re-points the standalone scanners, edits a batch project's host list and an
+  // IP project's hostname policy on a project that already exists. Scope was
+  // create-only for every token; this reopens exactly the registry's rescopable
+  // target lists, so it is never auto-ticked, a widening pauses the enabled
+  // schedules, and widening a third-party engagement also needs engagement:authorize.
   'project:rescope',
   // Agent in the Loop: the token's client answers the model calls of the
   // owner's chat runs, so it decides what RedAmon's agent does next. Split

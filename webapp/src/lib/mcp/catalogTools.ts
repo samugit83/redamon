@@ -23,6 +23,7 @@
 import { settableFieldCount } from '@/lib/reconSettings/filter'
 import {
   loadRegistry,
+  rescopableFields,
   settableFields,
   type RegistryField,
 } from '@/lib/reconSettings/registry'
@@ -103,6 +104,24 @@ export function settingGroups(): SettingGroup[] {
     .map(([tool, settings]) => ({ group: groupName(tool), settings }))
     .sort((a, b) => a.group.localeCompare(b.group))
   return cachedGroups
+}
+
+/** A rescopable target list, as describe_recon_settings documents it. */
+export interface ScopeFieldDoc extends SettingDoc {
+  group: string
+  /** The Prisma default a new project gets; the shape, not a project's value. */
+  default: unknown
+  changedBy: 'update_project_scope'
+}
+
+/** The create_only fields update_project_scope may change, with their bounds. */
+export function scopeFieldDocs(): ScopeFieldDoc[] {
+  return rescopableFields().map(f => ({
+    ...toDoc(f.key, f),
+    group: groupName(f.tool),
+    default: f.default,
+    changedBy: 'update_project_scope' as const,
+  }))
 }
 
 /** Test seam: the grouping is cached because the registry is constant per build. */
@@ -209,8 +228,10 @@ export async function describeReconSettings(ctx: McpContext, args: { group?: str
   const groups = wanted
     ? all.filter(g => g.group.toLowerCase().includes(wanted))
     : all
+  const scopeFields = scopeFieldDocs()
+    .filter(s => !wanted || s.group.toLowerCase().includes(wanted) || s.key.toLowerCase().includes(wanted))
 
-  if (wanted && groups.length === 0) {
+  if (wanted && groups.length === 0 && scopeFields.length === 0) {
     throw new McpToolError(
       `No settings group matches '${args.group}'. Call this tool with no arguments to see the ` +
       `group names.`,
@@ -222,10 +243,15 @@ export async function describeReconSettings(ctx: McpContext, args: { group?: str
     phases: SCAN_MODULE_VALUES.map(module => ({ module, what: PHASE_NOTES[module] ?? '' })),
     enums: { scanModules: SCAN_MODULE_VALUES, severity: SEVERITY_VALUES },
     groups,
+    // Not settable here: the target lists update_project_scope changes, an IP
+    // project's hostname policy and its caps among them. Listed with their
+    // bounds so a rescope can be composed without a refusal.
+    scopeFields,
     settableFieldCount: settableFieldCount(),
     dispositions: {
       settable: 'write any time through update_recon_settings',
-      create_only: 'the engagement scope: set once by create_project, immutable after',
+      create_only: 'the engagement scope: set once by create_project, immutable after, except ' +
+        'the target lists in scopeFields, which update_project_scope changes',
       never: 'not a pipeline parameter; refused with its class',
     },
     notes: NOTES,

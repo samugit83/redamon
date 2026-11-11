@@ -89,6 +89,19 @@ def _format_value(key: str, value, masked: bool) -> str:
     return repr(value)
 
 
+def _ip_hostname_forced(settings: dict) -> dict:
+    """The keys the IP-mode hostname mode forces this run, so the dump says why
+    a toggle the operator switched on reads False. Never raises: a log line must
+    not stop the tool it describes."""
+    if not settings.get("IP_MODE"):
+        return {}
+    try:
+        from recon.project_settings import ip_hostname_overrides
+        return ip_hostname_overrides(settings)
+    except Exception:  # noqa: BLE001 - the marker is cosmetic, the override is not
+        return {}
+
+
 def print_effective_settings(
     tool_label: str,
     settings: dict,
@@ -117,6 +130,7 @@ def print_effective_settings(
                      values like "Total candidates per IP: 31")
     """
     explicit_redact = set(k.upper() for k in (redact or []))
+    forced = _ip_hostname_forced(settings)
     print(f"[*][{tool_label}] Effective settings for this run:")
     last_group: Optional[str] = None
     longest_key = max(
@@ -140,6 +154,8 @@ def print_effective_settings(
         value = settings.get(key, None)
         present = key in settings
         display = _format_value(key, value, masked) if present else "<unset>"
+        if key in forced:
+            display += f" (forced by Hostnames on target IPs: {settings.get('IP_HOSTNAME_MODE')})"
         print(f"[*][{tool_label}]   {key.ljust(pad)} = {display}")
 
     for line in (extra_lines or []):

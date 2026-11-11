@@ -35,8 +35,11 @@ import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { describeInvalid, validateDomainBatch, MAX_BATCH_HOSTS } from '@/lib/domainBatch'
 import {
-  guardrailNames, resolveScopeGroups, scopeGuardrailNames, softGuardrailNames,
+  type ScopeFields, guardrailNames, ipHostnameIncludeBases, ipHostnamePolicySummary, ipHostnameStartProblem,
+  resolveScopeGroups, scopeGuardrailNames, softGuardrailNames,
 } from '@/lib/scopeGroups'
+import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
+import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import {
   currentAuthorization,
@@ -388,6 +391,18 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
   // settings is a switch-on and needs a Jev provider of the creating account selected.
   const jevError = await validateJevEngineChange(null, data, ctx.token.userId)
   if (jevError) throw new McpToolError(jevError, 'setting_rejected')
+
+  // An IP project's hostname include entries are scanned names, so they get the
+  // hard guardrail a batch host gets, with the same refusal.
+  if (data.ipMode === true) refuseHardBlocked(ipHostnameIncludeBases(data.ipHostnameInclude as string[] | undefined))
+  // The rules over several fields every create path runs (B-25), on the whole
+  // new row: scan_all needs its confirmation and is refused on a third_party
+  // engagement, record_filter needs an include entry, the policy applies only in
+  // IP mode. The toggles were normalized above, so they are not judged twice.
+  const crossFieldError = await validateCrossFieldRules(
+    data, Object.keys(data).filter(k => k !== 'attackSkillConfig'), ctx.token.userId,
+    { ownerUserId: ctx.token.userId })
+  if (crossFieldError) throw new McpToolError(crossFieldError, 'setting_rejected')
 
   // The rule third_party projects live under, checked BEFORE the row exists so
   // a refused creation leaves nothing behind.
@@ -782,6 +797,10 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       })
     }
   }
+  // The toggles an IP project's hostname mode forces off (decision D-20).
+  for (const o of ipHostnameOverrides(row)) {
+    if (row[o.key] !== o.value) rewritten.push({ field: o.key, written: row[o.key], willRun: o.value, why: o.reason })
+  }
 
   // The provenance of the LAST run, so the chain from a graph node back to the
   // document that permitted looking at it can be walked from one call. Without
@@ -822,8 +841,13 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
     targetDomain: typeof row.targetDomain === 'string' ? row.targetDomain : '',
     subdomainList: Array.isArray(row.subdomainList) ? row.subdomainList as string[] : [],
   })
+  // An IP project's hostname policy: refused at scan start by the same rule the
+  // start paths and recon apply (an unconfirmed scan_all, a record_filter with no
+  // include entry, scan_all on a third-party engagement).
+  const hostnameProblem = row.ipMode === true ? ipHostnameStartProblem(row as ScopeFields) : null
   const scopeUnusable = resolvedScope.invalid.length > 0
     || (row.ipMode !== true && resolvedScope.groups.length === 0)
+    || hostnameProblem !== null
 
   return {
     projectId,
@@ -860,6 +884,17 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       // scan root and org.
       guardrailNames: guardrailNames(resolvedScope.groups),
       ipMode: row.ipMode ?? false,
+      // Hostnames on target IPs: what the next run does with the names it sees on
+      // the target IPs. The two LastRun counts come from the last run's recorded
+      // hostnames and are null until a run has recorded any.
+      hostnamePolicy: row.ipMode === true
+        ? {
+            ...ipHostnamePolicySummary(row as ScopeFields),
+            recordedLastRun: null,
+            wouldScanLastRun: null,
+            problem: hostnameProblem,
+          }
+        : null,
       targetGuardrailEnabled: row.targetGuardrailEnabled ?? false,
       excludedHosts: row.roeExcludedHosts ?? [],
       maxBatchHosts: MAX_BATCH_HOSTS,
@@ -941,6 +976,11 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
         'DIFFERENT configuration than the one above. That is the chain an incident review ' +
         'walks: a graph node, the scan job that wrote it, the settings hash it ran with, and ' +
         'the authorization that permitted looking.',
+      'scope.hostnamePolicy (IP projects only): ip_only looks no hostname up; record_only ' +
+        'records the names seen on the target IPs and scans only the IPs; record_filter also ' +
+        'scans the names matching include minus exclude; scan_all scans every name except on ' +
+        'shared CDN edges. A name is scanned only when every address it resolves to is a target. ' +
+        'It is changed with update_project_scope; a problem there makes the project unstartable.',
     ],
   }
 }

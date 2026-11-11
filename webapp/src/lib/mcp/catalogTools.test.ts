@@ -222,6 +222,25 @@ describe('describe_recon_settings teaches the two-level model', () => {
     await expect(describeReconSettings(ctx([]))).rejects.toBeInstanceOf(McpScopeError)
   })
 
+  test('it lists the hostname-policy caps among the scope fields update_project_scope changes', async () => {
+    const r = await describeReconSettings(ctx())
+    const byKey = Object.fromEntries(r.scopeFields.map(s => [s.key, s]))
+    expect(byKey.ipHostnameMaxScanned).toMatchObject({ min: 1, max: 2000, unit: 'count', default: 100,
+      changedBy: 'update_project_scope' })
+    expect(byKey.ipHostnamePassiveMaxNames).toMatchObject({ min: 1, max: 10000, default: 500 })
+    expect(byKey.ipHostnameMode.values).toEqual(['ip_only', 'record_only', 'record_filter', 'scan_all'])
+    // Not advertised as settable through update_recon_settings.
+    expect(allSettings().map(s => s.key)).not.toContain('ipHostnameMaxScanned')
+  })
+
+  test('a group filter reaches the scope fields too', async () => {
+    const r = await describeReconSettings(ctx(), { group: 'ipHostname' })
+    expect(r.scopeFields.map(s => s.key).sort()).toEqual([
+      'ipHostnameExclude', 'ipHostnameInclude', 'ipHostnameMaxScanned', 'ipHostnameMode',
+      'ipHostnamePassiveExpand', 'ipHostnamePassiveMaxNames', 'ipHostnameScanAllConfirmed',
+    ])
+  })
+
   test('it reads no tenant data at all', async () => {
     // Same shape as graph_schema: derived from code, so it still answers when
     // the databases are down. prisma is mocked to {} here, so touching it throws.

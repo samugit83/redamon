@@ -15,7 +15,8 @@ import {
   validateDomainBatch, INVALID_REASON_TEXT, MAX_BATCH_HOSTS, MAX_BATCH_GROUPS, NESTED_WILDCARDS_ENABLED, normalizeHost,
 } from '@/lib/domainBatch'
 import {
-  GRAPH_DOMAIN_IS_ORG, type ScopeFields, isScopeWidening, resolveScopeGroups, scopeGuardrailNames,
+  GRAPH_DOMAIN_IS_ORG, IP_HOSTNAME_DEFAULTS, IP_HOSTNAME_FIELDS, type ScopeFields, ipHostnameModeOf,
+  ipHostnameWidenings, isScopeWidening, resolveScopeGroups, scopeGuardrailNames,
 } from '@/lib/scopeGroups'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { isValidDomain } from '@/lib/validation'
@@ -205,11 +206,19 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
       .catch(() => {})
     return () => { alive = false }
   }, [mode, projectId])
+  // In IP mode the targets are locked; what can widen is the hostname policy
+  // (D-24: the form warns, update_project_scope pauses).
+  const hostnameMode = ipHostnameModeOf(data.ipHostnameMode)
+  const hostnameWidenings = useMemo(
+    () => (ipMode && savedScope ? ipHostnameWidenings(savedScope, data) : []),
+    [ipMode, savedScope, data]
+  )
   const widensScheduledScope = useMemo(() => {
-    if (!savedScope || enabledSchedules === 0 || ipMode) return false
+    if (!savedScope || enabledSchedules === 0) return false
+    if (ipMode) return hostnameWidenings.length > 0
     const next = batchMode ? batchResult?.groups ?? [] : singleScope?.groups ?? []
     return next.length > 0 && isScopeWidening(resolveScopeGroups(savedScope).groups, next)
-  }, [savedScope, enabledSchedules, ipMode, batchMode, batchResult, singleScope])
+  }, [savedScope, enabledSchedules, ipMode, hostnameWidenings, batchMode, batchResult, singleScope])
   const ownershipPrefix = (data.ownershipTxtPrefix || '').trim() || '_redamon-verify'
   // A half-typed name ("exam") is not yet a hostname, and calling it a public
   // suffix would be wrong: only a well-formed name gets the refusal reason.
@@ -296,7 +305,15 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
       updateField('targetDomain', '')
       updateField('subdomainList', [])
     }
-    if (next !== 'ip') updateField('targetIps', [])
+    if (next !== 'ip') {
+      updateField('targetIps', [])
+      // The hostname policy applies only in IP mode, and a save refuses one left
+      // set on another mode while its controls are hidden.
+      for (const key of IP_HOSTNAME_FIELDS) {
+        const value = IP_HOSTNAME_DEFAULTS[key]
+        updateField(key, (Array.isArray(value) ? [] : value) as never)
+      }
+    }
     if (next !== 'batch') {
       setBatchHostDraft(null)
       updateField('domainBatchHosts', [])
@@ -719,6 +736,103 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
             </div>
           )}
 
+          {/* Hostnames on target IPs. Unlike the IP list it stays editable after
+              creation: a change is a rescope, which the save judges like a target
+              change (refused while a scan runs, include entries hard-guardrailed). */}
+          {ipMode && (
+            <div className={styles.fieldGroup}>
+              <label className={styles.fieldLabel} htmlFor="ipHostnameMode">Hostnames on target IPs</label>
+              <select
+                id="ipHostnameMode"
+                className="select"
+                value={hostnameMode}
+                onChange={(e) => {
+                  updateField('ipHostnameMode', e.target.value || 'ip_only')
+                  if (e.target.value !== 'scan_all') updateField('ipHostnameScanAllConfirmed', false)
+                }}
+              >
+                <option value="ip_only">IP only: look up no hostname</option>
+                <option value="record_only">Record hostnames: scan the IPs only</option>
+                <option value="record_filter">Record + scan matching names</option>
+                <option value="scan_all" disabled={data.engagementKind === 'third_party'}>
+                  Record + scan all names{data.engagementKind === 'third_party' ? ' (not on a third-party engagement)' : ''}
+                </option>
+              </select>
+              <span className={styles.fieldHint}>
+                A hostname is scanned only when every address it resolves to is one of the target IPs.
+              </span>
+
+              {hostnameMode === 'record_filter' && (
+                <>
+                  <label className={styles.fieldLabel} htmlFor="ipHostnameInclude">Scan names matching (one per line)</label>
+                  <textarea
+                    id="ipHostnameInclude"
+                    className="textarea"
+                    rows={3}
+                    placeholder={'*.example.com\napp.example.org'}
+                    value={(data.ipHostnameInclude ?? []).join('\n')}
+                    onChange={(e) => updateField('ipHostnameInclude', e.target.value === '' ? [] : e.target.value.split('\n'))}
+                  />
+                  <label className={styles.fieldLabel} htmlFor="ipHostnameExclude">Never scan (one per line)</label>
+                  <textarea
+                    id="ipHostnameExclude"
+                    className="textarea"
+                    rows={2}
+                    placeholder="old.example.com"
+                    value={(data.ipHostnameExclude ?? []).join('\n')}
+                    onChange={(e) => updateField('ipHostnameExclude', e.target.value === '' ? [] : e.target.value.split('\n'))}
+                  />
+                  <label className="checkboxLabel">
+                    <input
+                      type="checkbox"
+                      className="checkbox"
+                      checked={data.ipHostnamePassiveExpand ?? true}
+                      onChange={(e) => updateField('ipHostnamePassiveExpand', e.target.checked)}
+                    />
+                    Also search subdomains of the *.domains above (passive)
+                  </label>
+                  <label className={styles.fieldLabel} htmlFor="ipHostnamePassiveMaxNames">Passive search: most names kept per run</label>
+                  <input
+                    id="ipHostnamePassiveMaxNames"
+                    type="number"
+                    className="textInput"
+                    min={1}
+                    max={10000}
+                    value={data.ipHostnamePassiveMaxNames ?? 500}
+                    onChange={(e) => updateField('ipHostnamePassiveMaxNames', parseInt(e.target.value) || 500)}
+                  />
+                </>
+              )}
+
+              {hostnameMode === 'scan_all' && (
+                <label className="checkboxLabel">
+                  <input
+                    type="checkbox"
+                    className="checkbox"
+                    checked={data.ipHostnameScanAllConfirmed ?? false}
+                    onChange={(e) => updateField('ipHostnameScanAllConfirmed', e.target.checked)}
+                  />
+                  I confirm every hostname found on these IPs may be scanned (never on shared CDN edges)
+                </label>
+              )}
+
+              {(hostnameMode === 'record_filter' || hostnameMode === 'scan_all') && (
+                <>
+                  <label className={styles.fieldLabel} htmlFor="ipHostnameMaxScanned">Most hostnames scanned per run</label>
+                  <input
+                    id="ipHostnameMaxScanned"
+                    type="number"
+                    className="textInput"
+                    min={1}
+                    max={2000}
+                    value={data.ipHostnameMaxScanned ?? 100}
+                    onChange={(e) => updateField('ipHostnameMaxScanned', parseInt(e.target.value) || 100)}
+                  />
+                </>
+              )}
+            </div>
+          )}
+
           <div className={styles.fieldGroup}>
             <label className={styles.fieldLabel}>Description</label>
             <textarea
@@ -738,9 +852,12 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
                   {enabledSchedules} scheduled scan{enabledSchedules === 1 ? '' : 's'} will run the
                   wider scope.
                 </strong>{' '}
-                This change adds hosts the saved scope did not cover, and every enabled schedule
-                scans them from its next run. Pause a schedule in the Scans tab if that is not
-                intended.
+                {ipMode
+                  ? `This change lets the scan reach hostnames the saved policy did not (${hostnameWidenings.join('; ')}), `
+                    + 'and every enabled schedule scans them from its next run.'
+                  : 'This change adds hosts the saved scope did not cover, and every enabled schedule '
+                    + 'scans them from its next run.'}{' '}
+                Pause a schedule in the Scans tab if that is not intended.
               </span>
             </div>
           )}

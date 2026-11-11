@@ -412,6 +412,10 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'is but is fixed at creation. Read it before writing so you can diff.\n\n' +
         'It also returns the project\'s `updatedAt`. Pass it back to update_recon_settings as ' +
         'expectedUpdatedAt to refuse writing over a change you have not seen.\n\n' +
+        'On an IP project, `effective_overrides` lists [{key, value, reason}] the settings its ' +
+        'hostname mode forces at scan start whatever is stored (tlsxRevPtrSni in every mode; ' +
+        'shodanReverseDns and vhostSniUseGraphCandidates too in ip_only). `settings` still ' +
+        'echoes the stored value.\n\n' +
         'Never returned by any read: stored credentials (a credential you may set, such as ' +
         'graphqlAuthValue, is write-only), the engagement record\'s third-party personal data, ' +
         'and the uploaded scope document.',
@@ -752,6 +756,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'It also explains the two-level model that produces the most common silent failure: ' +
         'scanModules decides which PHASES run, per-tool flags decide which tools run inside a ' +
         'phase, and setting one without the other means the scan runs and does nothing.\n\n' +
+        'It also lists, under `scopeFields`, the target lists update_project_scope changes ' +
+        'instead (an IP project\'s hostname policy and its caps among them), with the same ' +
+        'bounds and values.\n\n' +
         'Takes no arguments and reads no project data, so it works even when a scan does not. ' +
         'For the CURRENT values use get_recon_settings; this describes the shape, that reports ' +
         'the state.',
@@ -1922,9 +1929,16 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'domainBatchHosts - and the mode, the domain and the address list are immutable ' +
         'afterwards through every route on this surface. A different target means a different ' +
         'project, which is why this tool exists rather than a way to re-point an existing one. ' +
-        'Only the target LISTS the project form also edits - a batch host list and the other ' +
-        'scanners\' targets - can change later, through update_project_scope under its own ' +
-        'permission.\n\n' +
+        'Only the target LISTS the project form also edits - a batch host list, the other ' +
+        'scanners\' targets and an IP project\'s hostname policy - can change later, through ' +
+        'update_project_scope under its own permission.\n\n' +
+        'An IP project (targetIps) also has a hostname policy, set in `settings`: ' +
+        'ipHostnameMode ip_only (the default: no hostname is looked up), record_only (names seen ' +
+        'on the IPs are recorded, only the IPs are scanned), record_filter (names matching ' +
+        'ipHostnameInclude minus ipHostnameExclude are scanned too) or scan_all (every name, ' +
+        'except on shared CDN edges; needs ipHostnameScanAllConfirmed true and is refused on a ' +
+        'third_party engagement). A name is scanned only when every address it resolves to is a ' +
+        'target.\n\n' +
         'engagementKind is the decision that matters. "internal" is your own estate. ' +
         '"third_party" is somebody else\'s, and then a non-zero settings.roeGlobalMaxRps and an ' +
         '`authorization` record are both REQUIRED - start_recon refuses the project otherwise. ' +
@@ -1984,7 +1998,11 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
           .describe(
             'Recon tuning AND the engagement limits (roeGlobalMaxRps, roeExcludedHosts, the ' +
             'time window, the agent denylists), so the first scan runs configured. The limits ' +
-            'stay writable afterwards through update_recon_settings. See describe_recon_settings.'
+            'stay writable afterwards through update_recon_settings. See describe_recon_settings. ' +
+            'An IP project\'s hostname policy (ipHostnameMode, ipHostnameInclude, ' +
+            'ipHostnameExclude, ipHostnamePassiveExpand, ipHostnameScanAllConfirmed, ' +
+            'ipHostnameMaxScanned, ipHostnamePassiveMaxNames) goes here too; it changes later ' +
+            'only through update_project_scope.'
           ),
         authorization: z.object({
           documentSha256: z.string().max(64).optional().describe('64 lower-case hex.'),
@@ -2068,6 +2086,16 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'target guardrail unless the project switched it off. An active login recording is re-pointed at the new list. ' +
         'gvmScanTargets is both, ips_only or hostnames_only. GitHub names and ' +
         'the supply-chain repository are validated as the form validates them.\n\n' +
+        'The ipHostname* fields are an IP project\'s hostname policy (only on a project created ' +
+        'with targetIps): ipHostnameMode ip_only, record_only, record_filter or scan_all, the ' +
+        'include/exclude filters ("*.example.com" = its subdomains, "example.com" = that host), ' +
+        'passive expansion and the two caps. Each include entry goes through the permanent ' +
+        'guardrail; scan_all needs ipHostnameScanAllConfirmed and is refused on a third-party ' +
+        'engagement. A policy widening is a mode that scans more (ip_only -> record_only is not ' +
+        'one), an include entry added, an exclude entry removed, passive expansion turned on or a ' +
+        'cap raised. A narrowing marks the names earlier runs scanned that the policy no longer ' +
+        'admits and returns `hostnamePolicyMarked` (false: the marker could not be written; every ' +
+        'reader still applies the current policy).\n\n' +
         'A widening is a list that admits a host the old one did not; a regroup, or a narrower ' +
         'wildcard under an enumerated one ("*.api.example.com" inside "*.example.com"), is not. ' +
         'On a THIRD-PARTY engagement a widening - a new batch host or scan root, a new GitHub ' +
@@ -2075,8 +2103,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'refused unless `authorization` records what authorized the wider scope, in the same ' +
         'transaction. Passing `authorization` needs the engagement:authorize permission too. ' +
         'Removals and narrowing need neither.\n\n' +
-        'A batch that admits a host it did not before also PAUSES the project\'s scan ' +
-        'schedules in the same ' +
+        'A batch that admits a host it did not before, or a hostname policy that widens, also ' +
+        'PAUSES the project\'s scan schedules in the same ' +
         'transaction, so no unattended run reaches the new hosts first; the result lists them in ' +
         '`pausedSchedules`, and only a person re-enables them, in the Scans tab.\n\n' +
         'Refused while anything reads or writes this project\'s graph. A compare-and-swap on the ' +
@@ -2157,9 +2185,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'group per scan root, `enumerate` (subdomain discovery) or `exact` (only the listed ' +
         'hosts), and whether the root itself is a target. `scope.invalidEntries` lists saved ' +
         'entries the current rules refuse.\n\n' +
+        '`scope.hostnamePolicy` (IP projects only) is the hostname policy the next run applies: ' +
+        'ipHostnameMode, include, exclude, passiveExpand, scanAllConfirmed, the two caps, ' +
+        'recordedLastRun and wouldScanLastRun (null until a run has recorded hostnames), and ' +
+        '`problem` when the policy cannot run. The toggles the mode forces off appear in ' +
+        '`rewrittenAtScanStart`.\n\n' +
         '`startable` is false when a third-party engagement is missing its ceiling or its ' +
-        'authorization record, or the saved scope holds a refused entry, which is exactly what ' +
-        'start_recon will refuse on.',
+        'authorization record, the saved scope holds a refused entry, or the hostname policy ' +
+        'has a problem, which is exactly what start_recon will refuse on.',
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read'] }),
       inputSchema: { projectId: projectIdSchema },

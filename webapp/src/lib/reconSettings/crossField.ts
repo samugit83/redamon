@@ -9,20 +9,30 @@
  * MCP write skipped them: `fireteamPropensity` 9 passed the registry's 0-10
  * bound while the form's own schema allows 1-5.
  *
- * `nextRow` is whatever the caller is about to hold: the PUT passes its body,
- * exactly as it always validated; the MCP tools pass the stored row with their
- * change applied, so a rule over two fields sees both.
+ * `nextRow` is the EFFECTIVE row: the stored row with the change applied (the PUT
+ * through guardProjectWrite and the MCP tools), or the whole new row at creation
+ * (POST, create_project, the import). A rule over two fields - "only in IP mode",
+ * "scan_all needs its confirmation" - cannot be judged on a partial body.
  *
- * `attackSkillConfig` is the one rule that also NORMALIZES: it is replaced in `nextRow`
- * by the form it may be stored in (lib/userSkills.ts normalizeUserSkillToggles: user ids
- * the owner does not have dropped, at most 20 of the owner's skills on, none quarantined).
- * A caller that writes an object other than `nextRow` copies it back.
+ * Two rules also NORMALIZE `nextRow` in place: `attackSkillConfig` is replaced by
+ * the form it may be stored in (lib/userSkills.ts normalizeUserSkillToggles: user ids
+ * the owner does not have dropped, at most 20 of the owner's skills on, none quarantined),
+ * and the hostname policy gets canonical filter entries and loses a scan_all
+ * confirmation the mode no longer uses (scopeGroups.normalizeIpHostnamePolicy).
+ * A caller that writes an object other than `nextRow` copies them back.
  */
 import prisma from '@/lib/prisma'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { allowedGithubHosts } from '@/lib/github/ownerTarget'
 import { validateFireteamSettings } from '@/lib/validation/fireteamSettings'
 import { validateSupplyChainInput } from '@/lib/validation/supplyChainInput'
+import {
+  IP_HOSTNAME_FIELDS, type ScopeFields, ipHostnamePolicyProblem, normalizeIpHostnamePolicy,
+} from '@/lib/scopeGroups'
+
+/** What re-judges the hostname policy: its seven fields, the mode flip that makes
+ *  it apply, and the engagement kind that refuses scan_all (decision D-03). */
+export const IP_HOSTNAME_RULE_TRIGGERS: readonly string[] = [...IP_HOSTNAME_FIELDS, 'ipMode', 'engagementKind']
 
 export const FIRETEAM_FIELDS = [
   'fireteamEnabled', 'fireteamMaxConcurrent', 'fireteamMaxMembers',
@@ -85,6 +95,12 @@ export async function validateCrossFieldRules(
   if (FIRETEAM_FIELDS.some(k => touched.has(k))) {
     const problem = validateFireteamSettings(pick(nextRow, FIRETEAM_FIELDS))
     if (problem) return problem
+  }
+
+  if (IP_HOSTNAME_RULE_TRIGGERS.some(k => touched.has(k))) {
+    const problem = ipHostnamePolicyProblem(nextRow as ScopeFields)
+    if (problem) return problem
+    normalizeIpHostnamePolicy(nextRow)
   }
 
   return null

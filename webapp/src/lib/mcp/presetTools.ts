@@ -32,6 +32,7 @@ import { auditableKey } from '@/lib/reconSettings/filter'
 import { field } from '@/lib/reconSettings/registry'
 import { validateValue } from '@/lib/reconSettings/validators'
 import { writeFireteamAudit } from '@/lib/reconSettings/crossField'
+import { ipHostnameModeOf } from '@/lib/scopeGroups'
 import {
   DefaultsUnavailable,
   MAX_USER_PRESETS,
@@ -489,7 +490,24 @@ export async function deleteReconPreset(
 // --- apply_recon_preset ----------------------------------------------------------------
 
 /** Read for the apply, beside every preset field: the badge, and what the target is. */
-const APPLY_CONTEXT_FIELDS = ['loadedPreset', 'ipMode', 'domainBatchMode'] as const
+const APPLY_CONTEXT_FIELDS = ['loadedPreset', 'ipMode', 'domainBatchMode', 'ipHostnameMode'] as const
+
+/**
+ * The built-in IP presets whose design counts on hostnames found on the target
+ * IPs (reverse DNS, internal names). Presets never set the hostname mode (it is
+ * scope, decision D-17), so on an ip_only project such a preset finds none and
+ * the caller is told why.
+ */
+export const IP_PRESETS_RELYING_ON_HOSTNAMES: ReadonlySet<string> = new Set(['internal-network', 'large-network'])
+
+function hostnameModeNote(preset: ResolvedPreset, row: Record<string, unknown>): string | undefined {
+  if (preset.source !== 'builtin' || !IP_PRESETS_RELYING_ON_HOSTNAMES.has(preset.builtin.id)) return undefined
+  if (row.ipMode !== true || ipHostnameModeOf(row.ipHostnameMode) !== 'ip_only') return undefined
+  return `'${preset.name}' expects hostnames found on the target IPs (reverse DNS), but this project's ` +
+    'Hostnames on target IPs is ip_only, so no hostname is looked up and none is recorded. A preset ' +
+    'never changes that mode: to record names, set ipHostnameMode to record_only (or a scanning mode) ' +
+    'with update_project_scope.'
+}
 
 function targetMismatch(preset: ResolvedPreset, row: Record<string, unknown>): string | undefined {
   if (preset.source !== 'builtin') return undefined
@@ -570,6 +588,7 @@ export async function applyReconPreset(
   }
 
   const mismatch = targetMismatch(preset, row)
+  const hostnameNote = hostnameModeNote(preset, row)
   const report = {
     preset: { id: preset.id, source: preset.source, name: preset.name },
     changedCount: application.changed.length,
@@ -579,6 +598,7 @@ export async function applyReconPreset(
     keptAsIs: application.keptAsIs,
     unchangedCount: application.unchangedCount,
     ...(mismatch ? { targetMismatch: mismatch } : {}),
+    ...(hostnameNote ? { hostnameModeNote: hostnameNote } : {}),
   }
 
   if (args.dryRun) {

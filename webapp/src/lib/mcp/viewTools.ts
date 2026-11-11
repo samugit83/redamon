@@ -28,7 +28,9 @@ import { assertViewInProject } from '@/lib/mcp/childAccess'
 import { execCypher } from '@/lib/mcp/graphClient'
 import { enforceRate, guardGraphResult, type McpContext } from '@/lib/mcp/tools'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
-import { type ScopeGroup, resolveScopeGroups } from '@/lib/scopeGroups'
+import {
+  IP_HOSTNAME_SELECT, type ScopeGroup, ipHostnamePolicySummary, resolveScopeGroups,
+} from '@/lib/scopeGroups'
 import { viewMayNeedUpdate } from '@/lib/graphViewScope'
 
 export const VIEWS_MAX = 100
@@ -63,13 +65,19 @@ export async function listGraphViews(ctx: McpContext, projectId: string) {
   })
   // A view written for a Domain the graph no longer has (WEB-30). The helper
   // reads the queries itself and hands back only view ids.
-  const scopeSelect = { ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true }
+  const scopeSelect = {
+    ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true,
+    ...IP_HOSTNAME_SELECT,
+  }
   assertReadableSelect(scopeSelect, 'list_graph_views')
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: scopeSelect })
   const stale = await viewsNeedingUpdate(projectId, project ? resolveScopeGroups(project).groups : [])
 
   return {
     projectId,
+    // An IP project's names are recorded or scanned by its hostname policy, so a
+    // view over hostnames reads differently per mode.
+    ...(project?.ipMode ? { hostnamePolicy: ipHostnamePolicySummary(project) } : {}),
     views: views.map(v => ({
       viewId: v.id,
       name: v.name,

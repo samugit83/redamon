@@ -22,7 +22,7 @@ import { classifyOrchestratorThrow, graphLockedStartRefusal, startFullScan } fro
 import { withGraphStartLock } from '@/lib/projectGraphLock'
 import { parseScanMode, recordScanStart, type ScanTrigger } from '@/lib/scanTimeline'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
-import { resolveScopeGroups } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SELECT, ipHostnameStartProblem, resolveScopeGroups } from '@/lib/scopeGroups'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -242,9 +242,18 @@ async function dispatchOtherStart(
     select: {
       id: true, userId: true, supplyChainInputMode: true,
       targetDomain: true, subdomainList: true, ipMode: true, domainBatchMode: true, domainBatchHosts: true,
+      engagementKind: true, ...IP_HOSTNAME_SELECT,
     },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
+
+  // A partial run loads the project settings as a full one does, and recon
+  // refuses an IP-mode hostname policy it may not run (an unconfirmed scan_all,
+  // a record_filter with no include entry). The queue gets the reason now.
+  if (kind === 'partial_recon' && project.ipMode) {
+    const problem = ipHostnameStartProblem(project)
+    if (problem) return { ok: false, status: 422, error: problem }
+  }
 
   // The writers that attach to Domain nodes refuse an old-model graph
   // (§4.11.6). 422, not the routes' 409: the queue reads a 409 as "busy" and

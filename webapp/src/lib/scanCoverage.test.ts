@@ -12,7 +12,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 }))
 
 import {
-  currentScanRoots, gapInScope, parseCoverageGaps, readDegradedSourceCount, skippedHostInScope,
+  SCOPE_SELECT, currentScanRoots, gapInScope, parseCoverageGaps, readDegradedSourceCount, skippedHostInScope,
 } from './scanCoverage'
 
 const records = (gapsPerDomain: unknown[]) => ({
@@ -102,6 +102,13 @@ describe('coverage of a removed scan root (§4.11.7)', () => {
     expect(skippedHostInScope('api.example.com:80', roots)).toBe(true)
     expect(skippedHostInScope('www.example.com:443', roots)).toBe(false)
     expect(skippedHostInScope('www.example.com:443', null)).toBe(true)
+  })
+
+  test('the scope select carries an IP project\'s hostname policy', () => {
+    for (const key of ['ipMode', 'ipHostnameMode', 'ipHostnameInclude', 'ipHostnameExclude',
+      'ipHostnamePassiveExpand', 'ipHostnameScanAllConfirmed', 'ipHostnameMaxScanned', 'ipHostnamePassiveMaxNames']) {
+      expect(SCOPE_SELECT[key as keyof typeof SCOPE_SELECT], key).toBe(true)
+    }
   })
 
   test('the run-close count can drop a removed root', async () => {

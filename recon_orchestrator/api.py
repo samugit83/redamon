@@ -1221,6 +1221,14 @@ async def start_recon(project_id: str, request: ReconStartRequest):
         hit = first_hard_blocked(targets)
         if hit:
             raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
+    else:
+        # IP mode: the addresses are not hard-blocked, but a record_filter run
+        # scans names under the hostname include entries, so their base names are.
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        hit = first_hard_blocked(guardrail_targets(project))
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
     _check_roe_time_window(project)
 
@@ -1408,6 +1416,14 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
         from batch_scope import guardrail_targets
         names = guardrail_targets(project)
         hit = first_hard_blocked(names + [r for r in roots if r not in names])
+        if hit:
+            raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
+    else:
+        # IP mode: only the hostname include entries' base names, never the
+        # synthetic root, as for a full recon.
+        from hard_guardrail import first_hard_blocked
+        from batch_scope import guardrail_targets
+        hit = first_hard_blocked(guardrail_targets(project))
         if hit:
             raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 

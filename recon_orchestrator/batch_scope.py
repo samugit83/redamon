@@ -258,10 +258,31 @@ def _batch_hosts(project: dict) -> list[str]:
     return hosts
 
 
+def ip_hostname_include_bases(project: dict) -> list[str]:
+    """The base name of every hostname include entry (`*.x` and `x` both give x).
+
+    An IP-mode record_filter run scans names under these, so they get the hard
+    guardrail the webapp gives them at write: a row edited in the database or
+    imported from an older release did not come through that write. Checked in
+    every hostname mode, because the mode can be rescoped to record_filter later
+    without the list being written again.
+    """
+    raw = project.get('ipHostnameInclude')
+    names: list[str] = []
+    for entry in raw if isinstance(raw, list) else []:
+        name = str(entry or '').strip().lower().rstrip('.')
+        name = name[2:] if name.startswith('*.') else name[1:] if name.startswith('*') else name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def guardrail_targets(project: dict) -> list[str]:
     """Every name to hard-guardrail before starting a recon, whatever the mode.
 
-    IP mode returns [] (IPs are not hard-blocked; see hard_guardrail.is_hard_blocked).
+    IP mode returns the base names of the hostname include entries
+    (ip_hostname_include_bases): the addresses themselves are not hard-blocked
+    (hard_guardrail.is_hard_blocked), the names a record_filter run scans are.
     Otherwise the union of two sources, so neither can hide a name:
 
       - the webapp's `scopeGroups`: every entry, exact host, scan root and org;
@@ -271,7 +292,7 @@ def guardrail_targets(project: dict) -> list[str]:
         target the webapp refused (its scopeGroups is then empty) is still named.
     """
     if project.get('ipMode', False):
-        return []
+        return ip_hostname_include_bases(project)
     names: list[str] = []
 
     def add(name: str) -> None:

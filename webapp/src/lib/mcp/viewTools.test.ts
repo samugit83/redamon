@@ -113,6 +113,30 @@ describe('list_graph_views', () => {
     const notes = (await listGraphViews(ctx(), 'p1')).notes.join(' ')
     expect(notes).toMatch(/stricter rules than the app applies/)
   })
+
+  test('the scope select carries the hostname policy columns', async () => {
+    await listGraphViews(ctx(), 'p1')
+    const scopeCall = h.findProject.mock.calls.find(([a]) => a?.select?.ipMode)!
+    for (const key of ['ipHostnameMode', 'ipHostnameInclude', 'ipHostnameExclude', 'ipHostnamePassiveExpand',
+      'ipHostnameScanAllConfirmed', 'ipHostnameMaxScanned', 'ipHostnamePassiveMaxNames']) {
+      expect(scopeCall[0].select[key], key).toBe(true)
+    }
+  })
+
+  test('an IP project shows its hostname policy; a domain project shows none', async () => {
+    h.findProject.mockResolvedValue({
+      id: 'p1', userId: 'owner', ipMode: true, ipHostnameMode: 'record_filter',
+      ipHostnameInclude: ['*.example.com'], ipHostnameExclude: [], ipHostnamePassiveExpand: true,
+      ipHostnameScanAllConfirmed: false, ipHostnameMaxScanned: 100, ipHostnamePassiveMaxNames: 500,
+    })
+    const r = await listGraphViews(ctx(), 'p1') as Record<string, unknown>
+    expect(r.hostnamePolicy).toEqual({
+      ipHostnameMode: 'record_filter', include: ['*.example.com'], exclude: [], passiveExpand: true,
+      scanAllConfirmed: false, maxScanned: 100, passiveMaxNames: 500,
+    })
+    h.findProject.mockResolvedValue({ id: 'p1', userId: 'owner', targetDomain: 'example.com', subdomainList: [] })
+    expect(await listGraphViews(ctx(), 'p1')).not.toHaveProperty('hostnamePolicy')
+  })
 })
 
 describe('run_graph_view permissions', () => {

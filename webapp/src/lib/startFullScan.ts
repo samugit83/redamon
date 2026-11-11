@@ -25,7 +25,7 @@ import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { applyRetentionSafe } from '@/lib/scanRetention'
 import { upstreamFailure } from '@/lib/routeErrors'
 import type { InvalidEntry } from '@/lib/domainBatch'
-import { scopeStartProblem } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SELECT, scopeStartProblem } from '@/lib/scopeGroups'
 import {
   prepareVersionsForFullScan,
   rollbackPreparedVersions,
@@ -266,6 +266,7 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
     select: {
       id: true, userId: true, targetDomain: true, ipMode: true, targetIps: true,
       domainBatchMode: true, domainBatchHosts: true, subdomainList: true,
+      engagementKind: true, ...IP_HOSTNAME_SELECT,
     },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
@@ -273,6 +274,13 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
   if (project.ipMode) {
     if (!project.targetIps || project.targetIps.length === 0) {
       return { ok: false, status: 400, error: 'Project has no target IPs configured' }
+    }
+    // The hostname policy recon would refuse at load (an unconfirmed scan_all, a
+    // record_filter with no include entry) is refused here, before a version is
+    // frozen, so a schedule or the queue gets the reason instead of a failed run.
+    const problem = scopeStartProblem(project)
+    if (problem) {
+      return { ok: false, status: 422, code: 'scope_invalid', invalidEntries: problem.invalid, error: problem.message }
     }
   } else if (!project.domainBatchMode && !project.targetDomain) {
     return { ok: false, status: 400, error: 'Project has no target domain configured' }

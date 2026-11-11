@@ -12,7 +12,7 @@
  * to stamp `ScanJob.degradedSources`, and for the delta/report views.
  */
 import { getGraphSession } from '@/app/api/graph/neo4j'
-import { type ScopeFields, resolveScopeGroups } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SELECT, type ScopeFields, resolveScopeGroups } from '@/lib/scopeGroups'
 
 /** A single parsed coverage gap. Only `source` is relied on here. */
 export interface CoverageGap {
@@ -52,6 +52,9 @@ export function parseCoverageGaps(raw: unknown): CoverageGap[] | null {
  */
 export const SCOPE_SELECT = {
   ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true,
+  // An IP project's hostname policy is part of its scope: which scanned names
+  // still count as covered hosts is the current policy's call (design §6.3).
+  ...IP_HOSTNAME_SELECT,
 } as const
 
 export function currentScanRoots(project: ScopeFields): Set<string> | null {

@@ -1,6 +1,9 @@
 import { Prisma } from '@prisma/client'
 import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
-import { resolveScopeGroups, scopeGuardrailNames } from '@/lib/scopeGroups'
+import {
+  IP_HOSTNAME_DEFAULTS, IP_HOSTNAME_FIELDS, type ScopeFields, ipHostnamePolicyChanged, resolveScopeGroups,
+  scopeGuardrailNames,
+} from '@/lib/scopeGroups'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 
 export interface ImportScopeResult {
@@ -75,6 +78,18 @@ export function normalizeImportedScope(fields: Record<string, unknown>): ImportS
     }
   }
 
+  // The hostname policy applies only in IP mode. A bundle of another mode that
+  // carries one (edited, or exported after a mode flip an older release did not
+  // clean) imports without it: it scanned nothing there.
+  if (!ipMode && IP_HOSTNAME_FIELDS.some(k => k in fields)
+      && ipHostnamePolicyChanged(fields as ScopeFields, IP_HOSTNAME_DEFAULTS)) {
+    for (const key of IP_HOSTNAME_FIELDS) {
+      const value = IP_HOSTNAME_DEFAULTS[key]
+      fields[key] = Array.isArray(value) ? [] : value
+    }
+    warnings.push('Dropped the hostname policy (Hostnames on target IPs): it applies only to IP-mode projects.')
+  }
+
   const blocked = firstHardBlocked(scopeGuardrailNames({
     ipMode,
     domainBatchMode: batchMode,
@@ -82,6 +97,9 @@ export function normalizeImportedScope(fields: Record<string, unknown>): ImportS
     targetDomain: typeof fields.targetDomain === 'string' ? fields.targetDomain : '',
     subdomainList: Array.isArray(fields.subdomainList)
       ? fields.subdomainList.filter((s): s is string => typeof s === 'string')
+      : [],
+    ipHostnameInclude: Array.isArray(fields.ipHostnameInclude)
+      ? fields.ipHostnameInclude.filter((s): s is string => typeof s === 'string')
       : [],
   }))
   if (blocked) {

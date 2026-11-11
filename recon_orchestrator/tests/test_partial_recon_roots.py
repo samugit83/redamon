@@ -321,6 +321,30 @@ class TestEndpoint:
         _start(_request())
         assert spy.calls[0]["config"]["domains"] == ["ip-targets.p1"]
 
+    def test_ip_mode_guardrails_the_hostname_include_bases(self, monkeypatch, spy):
+        """Design §9: the include entries' base names, never the synthetic root."""
+        _project(monkeypatch, {**IP_MODE, "ipHostnameMode": "record_filter",
+                               "ipHostnameInclude": ["*.alpha.test"]})
+        seen = []
+
+        def _blocked(name):
+            seen.append(name)
+            return False, ""
+
+        monkeypatch.setattr("hard_guardrail.is_hard_blocked", _blocked)
+        _start(_request())
+        assert seen == ["alpha.test"]
+        assert spy.calls[0]["config"]["domains"] == ["ip-targets.p1"]
+
+    def test_ip_mode_with_a_blocked_include_entry_refuses_the_run(self, monkeypatch, spy):
+        _project(monkeypatch, {**IP_MODE, "ipHostnameMode": "record_filter",
+                               "ipHostnameInclude": ["*.alpha.test", "whitehouse.gov"]})
+        with pytest.raises(HTTPException) as ei:
+            _start(_request())
+        assert ei.value.status_code == 403
+        assert "whitehouse.gov" in ei.value.detail
+        assert spy.calls == []
+
     def test_the_roe_window_is_still_enforced(self, monkeypatch, spy):
         _project(monkeypatch, {**SINGLE, "roeTimeWindowEnabled": True,
                                "roeTimeWindowTimezone": "UTC", "roeTimeWindowDays": []})

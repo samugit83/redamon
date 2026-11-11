@@ -71,7 +71,7 @@ set of recon tuning settings, and query the attack-surface graph.
 | `mute_findings` | Mute 1-5000 findings with a reason. Never a proven or kept-visible one, never over an existing mute; no cap on a token's total; stamped `muted_channel=mcp` + token prefix. | `triage:mute` |
 | `unmute_findings` | Unmute 1-5000 findings from the muted list, writing the Mute Rules exemption FIRST. A rule's mute only with `includeRuleMutes`, never during a recon scan. | `triage:mute` |
 | `search_muted_findings` | Page every muted finding with the Muted Nodes filters (who muted, rule, token, text), with exact facets. The only source of a muted finding's id. | `triage:read` |
-| `update_project_scope` | Change an existing project's eight target LISTS (batch hosts, GitHub org/repos, GVM strategy, supply-chain org/repo/ref/scope). Guardrail on every listed host, scan root and registrable domain, and the refusal names the host; a third-party widening (a host the old list did not admit) needs an authorization record. | `project:rescope` (+ `engagement:authorize` to pass `authorization`) |
+| `update_project_scope` | Change an existing project's target LISTS (batch hosts, GitHub org/repos, GVM strategy, supply-chain org/repo/ref/scope, and an IP project's hostname policy: `ipHostnameMode`, its include/exclude filters, passive expansion, the scan_all confirmation and the two caps). Guardrail on every listed host, scan root, registrable domain and hostname include entry, and the refusal names the host; a third-party widening (a host the old list did not admit, a hostname policy that scans more) needs an authorization record, and `scan_all` is refused on a third-party engagement outright. | `project:rescope` (+ `engagement:authorize` to pass `authorization`) |
 
 **Deliberately not exposed:** the agent chat, partial recon, project
 delete/import, secrets and LLM keys, re-pointing an existing project's target
@@ -737,17 +737,25 @@ badge. The unversioned digests written before (over the field set before and
 after `mcpKaliExecEnabled` and `updateGraphDb` left presets) are still accepted:
 that is the backfill, with no migration step to run.
 
-**Rescope.** `update_project_scope` reopens eight `create_only` fields, the
-registry's `rescope: true`, which are the target lists the project form already
-lets a person edit after creation. The target domain, the address list, the
-targeting mode, ownership verification and the target guardrail stay refused
-whatever the token holds.
+**Rescope.** `update_project_scope` reopens the `create_only` fields the
+registry marks `rescope: true`, which are the target lists the project form
+already lets a person edit after creation: a batch project's host list, the
+other scanners' targets (GitHub, GVM, supply chain) and an IP project's hostname
+policy (`ipHostname*`: the mode, the include/exclude filters, passive expansion,
+the scan_all confirmation and the two caps). The target domain, the address
+list, the targeting mode, ownership verification and the target guardrail stay
+refused whatever the token holds.
 
-A batch that gains a host or wildcard entry pauses every enabled `ScanSchedule`
-of the project in the same transaction (`pausedSchedules` in the result,
-`pausedScheduleIds` in the audit). A scheduled run is a full recon of the whole
-batch that nobody watches start, so it must not be the first thing to reach a
-host an agent added; a person resumes the schedules in the Scans tab. A
+A batch that gains a host or wildcard entry, or a hostname policy that widens (a
+mode that scans more names, an include entry added, an exclude entry removed,
+passive expansion turned on, a cap raised; `ip_only` -> `record_only` is not
+one), pauses every enabled `ScanSchedule` of the project in the same transaction
+(`pausedSchedules` in the result, `pausedScheduleIds` in the audit). A scheduled
+run is a full recon that nobody watches start, so it must not be the first thing
+to reach a host an agent added; a person resumes the schedules in the Scans tab.
+Only this MCP path pauses: a widening saved from the project form shows a
+warning counting the enabled schedules and pauses nothing (decision D-24). A
+narrowing of the hostname policy returns `hostnamePolicyMarked` instead. A
 narrowing, the GitHub and supply-chain targets (no scheduled run reads them),
 `apply_recon_preset` and `update_recon_settings` pause nothing and only report
 `affectedSchedules`: those change how a run scans, capped by the engagement's

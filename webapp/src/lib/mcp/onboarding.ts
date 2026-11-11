@@ -306,9 +306,10 @@ const AUTHORIZATION = [
   'can; the permanent guardrail checks every host and root and cannot be switched off. Afterwards',
   'the target domain, the address list and mode, the subdomain seed list, the ownership verification',
   'fields and the LLM target guardrail stay fixed whatever the token holds. Only the target LISTS the',
-  'form also edits - a domain batch\'s host list and the other scanners\' targets - change, through',
-  'update_project_scope (project:rescope), under both guardrails, with an authorization record for a',
-  'third-party widening, and with the scan schedules paused when the batch gains a host. This is',
+  'form also edits - a domain batch\'s host list, the other scanners\' targets and an IP project\'s',
+  'hostname policy - change, through update_project_scope (project:rescope), under both guardrails,',
+  'with an authorization record for a third-party widening, and with the scan schedules paused when',
+  'the batch gains a host or the hostname policy widens. This is',
   'deliberate: "rescan my own projects" must never be able to become "scan anyone, with the safety',
   'off".',
   '',
@@ -954,7 +955,8 @@ const REFERENCES: ReferenceSpec[] = [
     intro:
       'Everything that has to be true BEFORE a scan is allowed to run. A project\'s targeting ' +
       'mode, domain and address list are fixed when it is created, so this is where they are ' +
-      'decided; its other target lists (a batch host list, the other scanners\' targets) change ' +
+      'decided; its other target lists (a batch host list, the other scanners\' targets, an IP ' +
+      'project\'s hostname policy) change ' +
       'only through update_project_scope, under its own permission, and widening a third-party ' +
       'engagement there needs a new authorization record; the engagement\'s LIMITS are ordinary ' +
       'settings you can change either way and ' +

@@ -446,6 +446,19 @@ model Project {
   subdomainList               String[] @default([]) @map("subdomain_list")
   ipMode                      Boolean  @default(false) @map("ip_mode")
   targetIps                   String[] @default([]) @map("target_ips")
+  /// Hostnames on target IPs (IP mode only): what a run does with the names it
+  /// sees on the target addresses. ip_only looks none up; record_only records
+  /// them; record_filter also scans the ones matching include minus exclude;
+  /// scan_all scans every one, needs ipHostnameScanAllConfirmed and is refused on
+  /// a third_party engagement. Validated by reconSettings/crossField.ts on every
+  /// write path and re-validated by recon at load; rescopable over MCP.
+  ipHostnameMode              String   @default("ip_only") @map("ip_hostname_mode")
+  ipHostnameInclude           String[] @default([]) @map("ip_hostname_include")
+  ipHostnameExclude           String[] @default([]) @map("ip_hostname_exclude")
+  ipHostnamePassiveExpand     Boolean  @default(true) @map("ip_hostname_passive_expand")
+  ipHostnameScanAllConfirmed  Boolean  @default(false) @map("ip_hostname_scan_all_confirmed")
+  ipHostnameMaxScanned        Int      @default(100) @map("ip_hostname_max_scanned")
+  ipHostnamePassiveMaxNames   Int      @default(500) @map("ip_hostname_passive_max_names")
   /// Domain batch: the third targeting mode. Mutually exclusive with ipMode.
   /// One full recon walks the derived groups in order, appending to one graph.
   domainBatchMode             Boolean  @default(false) @map("domain_batch_mode")

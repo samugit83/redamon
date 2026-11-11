@@ -11,14 +11,21 @@
  */
 import { validateCrossFieldRules, writeFireteamAudit } from '@/lib/reconSettings/crossField'
 import { JEV_ENGINE_SELECT, validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
+import { IP_HOSTNAME_FIELDS } from '@/lib/scopeGroups'
 
 export { JEV_ENGINE_SELECT }
 
 /**
  * The first rule `updateData` breaks, or null. `existing` is the stored row
- * (with at least `userId` and JEV_ENGINE_SELECT), or null for a project the
- * caller could not load. `updateData` may be normalized in place
- * (`attackSkillConfig`).
+ * (with at least `userId` and JEV_ENGINE_SELECT, plus every column a rule the
+ * write can touch reads: the PUT selects the hostname policy, `ipMode` and
+ * `engagementKind`), or null for a project the caller could not load.
+ *
+ * The rules judge the EFFECTIVE row, the stored row with `updateData` applied: a
+ * partial save cannot otherwise tell "only in IP mode" or "scan_all needs its
+ * confirmation". `updateData` may be normalized in place (`attackSkillConfig`,
+ * the hostname policy), including a policy field it did not carry, such as the
+ * scan_all confirmation a mode change resets.
  */
 export async function guardProjectWrite(args: {
   existing: ({ userId: string } & Record<string, unknown>) | null
@@ -26,10 +33,20 @@ export async function guardProjectWrite(args: {
   actorUserId: string
 }): Promise<string | null> {
   const { existing, updateData, actorUserId } = args
-  const crossFieldError = await validateCrossFieldRules(updateData, Object.keys(updateData), actorUserId, {
+  const effective: Record<string, unknown> = existing ? { ...existing, ...updateData } : updateData
+  const crossFieldError = await validateCrossFieldRules(effective, Object.keys(updateData), actorUserId, {
     ownerUserId: existing ? existing.userId : undefined,
   })
   if (crossFieldError) return crossFieldError
+  if (existing) {
+    if ('attackSkillConfig' in updateData) updateData.attackSkillConfig = effective.attackSkillConfig
+    for (const key of IP_HOSTNAME_FIELDS) {
+      if (effective[key] === undefined) continue
+      if (key in updateData || JSON.stringify(effective[key]) !== JSON.stringify(existing[key])) {
+        updateData[key] = effective[key]
+      }
+    }
+  }
 
   // A switch onto the Jev engine needs a selected Jev provider on the OWNER's account.
   if (existing) {

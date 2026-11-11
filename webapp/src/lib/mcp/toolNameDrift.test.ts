@@ -218,6 +218,12 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       // The registry decides which rate fields the RoE ceiling caps (roe_capped),
       // and a count copied into prose said 17 long after it was 20.
       /\b\d+ rate fields\b/i,
+      // update_project_scope reopened an IP project's hostname policy too, so the
+      // batch host list and the other scanners' targets stopped being the only
+      // lists that move, and "eight" stopped being their count.
+      /\beight target[- ]list/i,
+      /only a batch host list and the other scanners'? targets/i,
+      /host list and the other scanners'? targets (- change|are the one exception)/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

@@ -765,6 +765,16 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
     settings['TARGET_DOMAIN'] = project.get('targetDomain', '')
     settings['IP_MODE'] = project.get('ipMode', False)
     settings['TARGET_IPS'] = project.get('targetIps', [])
+    # The hostname policy of an IP-mode project, read ad hoc like the two keys
+    # above and kept out of DEFAULT_AGENT_SETTINGS: it is scope, not an agent
+    # tuning knob, and an absent column must read as the strictest mode.
+    settings['IP_HOSTNAME_MODE'] = project.get('ipHostnameMode') or 'ip_only'
+    settings['IP_HOSTNAME_INCLUDE'] = list(project.get('ipHostnameInclude') or [])
+    settings['IP_HOSTNAME_EXCLUDE'] = list(project.get('ipHostnameExclude') or [])
+    settings['IP_HOSTNAME_PASSIVE_EXPAND'] = project.get('ipHostnamePassiveExpand', True) is True
+    settings['IP_HOSTNAME_SCAN_ALL_CONFIRMED'] = project.get('ipHostnameScanAllConfirmed') is True
+    settings['IP_HOSTNAME_MAX_SCANNED'] = project.get('ipHostnameMaxScanned', 100)
+    settings['IP_HOSTNAME_PASSIVE_MAX_NAMES'] = project.get('ipHostnamePassiveMaxNames', 500)
     # Domain batch has an EMPTY targetDomain: its scope is the derived group roots.
     # Without these two the agent's guardrails see no target at all and skip
     # themselves, which is the opposite of fail-closed. See target_scope_domains().

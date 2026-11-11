@@ -1,4 +1,8 @@
 import { describe, test, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import path from 'path'
+import { PRESET_FIELD_KEYS } from '@/lib/project-preset-utils'
+import { IP_HOSTNAME_FIELDS } from '@/lib/scopeGroups'
 import { matchesTargetFilter, resolveIpModeForPreset, type TargetFilter } from './targeting'
 import { RECON_PRESETS } from './index'
 import type { ReconPreset } from './types'
@@ -145,5 +149,24 @@ describe('resolveIpModeForPreset: Domain batch projects', () => {
     // Existing call sites pass two arguments; they must not change meaning.
     expect(resolveIpModeForPreset('domain', 'create')).toBe(false)
     expect(resolveIpModeForPreset('ip', 'create')).toBe(true)
+  })
+})
+
+describe('presets never set the IP-mode hostname policy (D-17)', () => {
+  test('no built-in preset carries a hostname policy field', () => {
+    for (const p of RECON_PRESETS) {
+      for (const key of IP_HOSTNAME_FIELDS) expect(p.parameters, `${p.id}: ${key}`).not.toHaveProperty(key)
+    }
+  })
+
+  test('a preset cannot hold one', () => {
+    for (const key of IP_HOSTNAME_FIELDS) expect(PRESET_FIELD_KEYS, key).not.toContain(key)
+  })
+
+  test('the preset generator is told to leave every one of them out', () => {
+    const route = readFileSync(path.join(process.cwd(), 'src/app/api/presets/generate/route.ts'), 'utf8')
+    const rule = route.split('\n').find(l => l.includes('IP-mode hostname policy')) ?? ''
+    expect(rule).toMatch(/Do NOT include/)
+    for (const key of IP_HOSTNAME_FIELDS) expect(rule, key).toContain(key)
   })
 })

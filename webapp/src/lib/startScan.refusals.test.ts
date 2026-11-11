@@ -277,3 +277,27 @@ describe('dispatchStart tells the queue what the start really did (plan 12.6)', 
     expect(r).toMatchObject({ ok: false, status: 500, code: 'spawn_failed', error: 'Failed to start: image missing' })
   })
 })
+
+describe('dispatchStart on an IP project whose hostname policy recon would refuse', () => {
+  const IP_PROJECT = {
+    id: 'p1', userId: 'u1', supplyChainInputMode: null, targetDomain: '', ipMode: true,
+    domainBatchMode: false, domainBatchHosts: [], engagementKind: 'internal',
+  }
+
+  test('a queued partial recon is refused permanently, with the reason', async () => {
+    h.findUnique.mockResolvedValue({ ...IP_PROJECT, ipHostnameMode: 'scan_all', ipHostnameScanAllConfirmed: false })
+    h.legacy.mockResolvedValue([])
+    const r = await dispatchStart('partial_recon', 'p1', { payload: { tool_id: 'Tlsx' } })
+    expect(r).toMatchObject({ ok: false, status: 422 })
+    expect(r.error).toContain('not confirmed')
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+    expect(classifyStartFailure(r.status, { error: r.error }).temporary).toBe(false)
+    expect(h.findUnique.mock.calls.some(([arg]) => arg?.select?.ipHostnameScanAllConfirmed === true)).toBe(true)
+  })
+
+  test('a scanner that never loads the recon settings is not judged on it', async () => {
+    h.findUnique.mockResolvedValue({ ...IP_PROJECT, ipHostnameMode: 'record_filter', ipHostnameInclude: [] })
+    await dispatchStart('github_hunt', 'p1')
+    expect(h.orchestratorFetch).toHaveBeenCalled()
+  })
+})

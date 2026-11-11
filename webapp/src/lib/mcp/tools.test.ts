@@ -342,6 +342,36 @@ describe('get_recon_settings', () => {
       expect(select, `${secret} must not be selected`).not.toHaveProperty(secret)
     }
   })
+
+  test('an IP project lists the toggles its hostname mode forces as effective_overrides (D-20)', async () => {
+    h.findProject
+      .mockResolvedValueOnce({ id: 'p1', userId: 'owner' })
+      .mockResolvedValueOnce({ ipMode: true, ipHostnameMode: 'ip_only', shodanReverseDns: true })
+    const r = await getReconSettings(ctx(), 'p1') as Record<string, unknown>
+    expect(r.effective_overrides).toEqual([
+      { key: 'tlsxRevPtrSni', value: false, reason: 'forced by Hostnames on target IPs: ip_only' },
+      { key: 'shodanReverseDns', value: false, reason: 'forced by Hostnames on target IPs: ip_only' },
+      { key: 'vhostSniUseGraphCandidates', value: false, reason: 'forced by Hostnames on target IPs: ip_only' },
+    ])
+    // The stored value is still echoed: settings report what was written.
+    expect((r.settings as Record<string, unknown>).shodanReverseDns).toBe(true)
+    const select = h.findProject.mock.calls[1][0].select
+    expect(select.ipMode && select.ipHostnameMode).toBe(true)
+  })
+
+  test('a recording mode forces only the reverse-PTR SNI; a domain project nothing', async () => {
+    h.findProject
+      .mockResolvedValueOnce({ id: 'p1', userId: 'owner' })
+      .mockResolvedValueOnce({ ipMode: true, ipHostnameMode: 'record_filter' })
+    const r = await getReconSettings(ctx(), 'p1') as Record<string, unknown>
+    expect(r.effective_overrides).toEqual([
+      { key: 'tlsxRevPtrSni', value: false, reason: 'forced by Hostnames on target IPs: record_filter' },
+    ])
+    h.findProject
+      .mockResolvedValueOnce({ id: 'p1', userId: 'owner' })
+      .mockResolvedValueOnce({ ipMode: false, ipHostnameMode: 'ip_only' })
+    expect(await getReconSettings(ctx(), 'p1')).not.toHaveProperty('effective_overrides')
+  })
 })
 
 // --- graph_summary ----------------------------------------------------------------

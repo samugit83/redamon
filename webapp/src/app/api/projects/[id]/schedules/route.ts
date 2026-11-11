@@ -14,7 +14,7 @@ import {
   ScheduleValidationError,
 } from '@/lib/scanSchedule'
 import { fetchScanEnvelope } from '@/lib/scanEnvelope'
-import { scopeStartProblem } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SELECT, scopeStartProblem } from '@/lib/scopeGroups'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -148,7 +148,10 @@ export const POST = withRouteErrors('Failed to create the schedule', async (requ
   if (validated.enabled) {
     const project = await prisma.project.findUnique({
       where: { id },
-      select: { ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true },
+      select: {
+        ipMode: true, domainBatchMode: true, domainBatchHosts: true, targetDomain: true, subdomainList: true,
+        engagementKind: true, ...IP_HOSTNAME_SELECT,
+      },
     })
     const problem = project ? scopeStartProblem(project) : null
     if (problem) {

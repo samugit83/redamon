@@ -8,7 +8,8 @@ import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { describeInvalid, normalizeHost, splitWildcard, validateDomainBatch } from '@/lib/domainBatch'
-import { resolveScopeGroups, scopeGuardrailNames, softGuardrailNames } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_FIELDS, resolveScopeGroups, scopeGuardrailNames, softGuardrailNames } from '@/lib/scopeGroups'
+import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -204,11 +205,16 @@ export async function POST(request: NextRequest) {
     }
 
     const rawSubdomains = optionalParams.subdomainList
+    const rawInclude = optionalParams.ipHostnameInclude
     const scopeFields = {
       ipMode, domainBatchMode, domainBatchHosts: batchHosts, targetDomain,
       subdomainList: Array.isArray(rawSubdomains)
         ? rawSubdomains.filter((s): s is string => typeof s === 'string')
         : typeof rawSubdomains === 'string' ? rawSubdomains.split(',') : [],
+      // An IP project's hard-guardrail names are its hostname include entries.
+      ipHostnameInclude: Array.isArray(rawInclude)
+        ? rawInclude.filter((s): s is string => typeof s === 'string')
+        : typeof rawInclude === 'string' ? rawInclude.split(',') : [],
     }
     // The single-domain target and prefixes get the same rules as a batch entry
     // (no public suffix, no IP, prefixes of any depth): a direct POST bypasses
@@ -280,6 +286,7 @@ export async function POST(request: NextRequest) {
       'roeExcludedHosts', 'roeExcludedHostReasons', 'roeTimeWindowDays',
       'roeForbiddenTools', 'roeForbiddenCategories',
       'roeThirdPartyProviders', 'roeComplianceFrameworks',
+      'ipHostnameInclude', 'ipHostnameExclude',
     ]
     for (const key of STRING_ARRAY_FIELDS) {
       if (key in optionalParams && typeof optionalParams[key] === 'string') {
@@ -378,6 +385,21 @@ export async function POST(request: NextRequest) {
         if (e instanceof UserSkillError) return NextResponse.json({ error: e.message, code: e.code }, { status: 400 })
         throw e
       }
+    }
+
+    // The rules over several fields that a save runs, on the whole new row (B-25):
+    // a create that skipped them was a way around them. The toggles were just
+    // normalized above, so they are not judged twice.
+    const createRow: Record<string, unknown> = {
+      ...sanitizedParams, ipMode: ipMode === true, domainBatchMode: domainBatchMode === true,
+    }
+    const crossFieldError = await validateCrossFieldRules(
+      createRow, Object.keys(createRow).filter(k => k !== 'attackSkillConfig'), userId, { ownerUserId: userId })
+    if (crossFieldError) {
+      return NextResponse.json({ error: crossFieldError }, { status: 400 })
+    }
+    for (const key of IP_HOSTNAME_FIELDS) {
+      if (key in createRow) sanitizedParams[key] = createRow[key]
     }
 
     // The document's artefacts come from the server, never from the body: the

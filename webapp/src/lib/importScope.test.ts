@@ -88,3 +88,39 @@ describe('normalizeImportedScope: a single-domain bundle', () => {
     expect(res.warnings.join(' ')).toContain('*')
   })
 })
+
+describe('normalizeImportedScope: the hostname policy (Hostnames on target IPs)', () => {
+  const IP = { ipMode: true, targetIps: ['203.0.113.10'] }
+
+  test('an IP bundle whose include entry is hard-blocked is refused, naming it', () => {
+    const res = normalizeImportedScope({
+      ...IP, ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com', '*.agency.gov.uk'],
+    })
+    expect(res.status).toBe(403)
+    expect(res.error).toContain('agency.gov.uk')
+  })
+
+  test('an IP bundle with a clean policy keeps it', () => {
+    const fields: Record<string, unknown> = { ...IP, ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com'] }
+    expect(normalizeImportedScope(fields)).toEqual({ warnings: [] })
+    expect(fields.ipHostnameMode).toBe('record_filter')
+  })
+
+  test('a domain bundle carrying a policy imports without it, with a warning', () => {
+    const fields: Record<string, unknown> = {
+      targetDomain: 'example.com', subdomainList: [],
+      ipHostnameMode: 'scan_all', ipHostnameScanAllConfirmed: true, ipHostnameInclude: ['*.example.com'],
+    }
+    const res = normalizeImportedScope(fields)
+    expect(res.error).toBeUndefined()
+    expect(fields).toMatchObject({
+      ipHostnameMode: 'ip_only', ipHostnameInclude: [], ipHostnameExclude: [], ipHostnameScanAllConfirmed: false,
+    })
+    expect(res.warnings.join(' ')).toContain('only to IP-mode projects')
+  })
+
+  test('a domain bundle at the defaults, or without the columns, gets no warning', () => {
+    expect(normalizeImportedScope({ targetDomain: 'example.com', ipHostnameMode: 'ip_only' }).warnings).toEqual([])
+    expect(normalizeImportedScope({ targetDomain: 'example.com' }).warnings).toEqual([])
+  })
+})

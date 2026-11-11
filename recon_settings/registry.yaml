@@ -4561,6 +4561,131 @@ fields:
       to. 0 means no handshake at all: the tag then uses only the CDN signals the
       run already holds. The handshakes skip RoE-excluded hosts and are paced at
       the engagement rate ceiling, and stealth mode sets this to 0.
+  ipHostnameExclude:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_EXCLUDE"
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    validator: hostname
+    group: scope
+    meaning: >-
+      IP mode with ipHostnameMode record_filter: hostnames never scanned even
+      when an include entry matches them (exclude wins). Domain-batch syntax:
+      "*.example.com" matches its subdomains only, "example.com" that exact
+      host; no IP literal, no public suffix, at most 200 entries. Adding an
+      entry narrows what is scanned, removing one is a widening. An entry recon
+      cannot read at load stops every name from being scanned in that run.
+      Changed after creation only by update_project_scope or the project form.
+  ipHostnameInclude:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_INCLUDE"
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    validator: hostname
+    group: scope
+    meaning: >-
+      IP mode with ipHostnameMode record_filter: which hostnames seen on the
+      target IPs may be scanned. Domain-batch syntax: "*.example.com" matches
+      its subdomains only, "example.com" that exact host; no IP literal, no
+      public suffix, no protected government or public-institution domain, at
+      most 200 entries, and record_filter needs at least one. A matching name
+      is scanned only when no exclude entry matches it and every address it
+      resolves to is a target. Adding an entry is a widening. Changed after
+      creation only by update_project_scope or the project form.
+  ipHostnameMaxScanned:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_MAX_SCANNED"
+    unit: count
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    bounds: { min: 1, max: 2000 }
+    group: scope
+    meaning: >-
+      IP mode with ipHostnameMode record_filter or scan_all: the most hostnames
+      one run scans, across every target IP. The names past it, in sorted
+      order, are recorded with the reason cap_reached and not scanned. Raising
+      it is a widening. Changed after creation only by update_project_scope or
+      the project form.
+  ipHostnameMode:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_MODE"
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    values: [ip_only, record_only, record_filter, scan_all]
+    group: scope
+    meaning: >-
+      Hostnames on target IPs: what an IP-mode project does with the names it
+      sees on its addresses (certificate names, reverse DNS, passive DNS,
+      redirects). ip_only (the default) looks none up and never sends one;
+      record_only records them in the graph and scans only the IPs;
+      record_filter also scans the names matching ipHostnameInclude minus
+      ipHostnameExclude; scan_all scans every name found except on shared CDN
+      edges, needs ipHostnameScanAllConfirmed and is refused on a third_party
+      engagement. A name is scanned only when every address it resolves to is
+      a target. Ignored outside IP mode. Moving towards scan_all is a widening:
+      over update_project_scope it pauses the enabled schedules and, on a
+      third_party engagement, needs an authorization record.
+  ipHostnamePassiveExpand:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_PASSIVE_EXPAND"
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    group: scope
+    meaning: >-
+      IP mode with ipHostnameMode record_filter: also search passive sources
+      (certificate logs, HackerTarget, Subfinder, urlscan) for the subdomains of
+      every "*.x" include entry, at most ipHostnamePassiveMaxNames names per
+      run. A name found this way still has to pass the same filters and resolve
+      only to target IPs. Turning it on is a widening.
+  ipHostnamePassiveMaxNames:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_PASSIVE_MAX_NAMES"
+    unit: count
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    bounds: { min: 1, max: 10000 }
+    group: scope
+    meaning: >-
+      IP mode with ipHostnamePassiveExpand on: the most names the passive search
+      of the include domains keeps in one run, across all of them, before any
+      is resolved. Raising it is a widening.
+  ipHostnameScanAllConfirmed:
+    tool: targeting
+    runtime_key: "IP_HOSTNAME_SCAN_ALL_CONFIRMED"
+    unit: none
+    phase: standalone
+    traffic: none
+    roe_capped: false
+    mcp: create_only
+    rescope: true
+    group: scope
+    meaning: >-
+      The operator's confirmation that every hostname found on the target IPs
+      may be scanned. ipHostnameMode scan_all requires it (a write without it is
+      refused, and so is a run), and any write that leaves scan_all resets it to
+      false, so returning to scan_all asks again.
   ipMode:
     tool: targeting
     runtime_key: "IP_MODE"

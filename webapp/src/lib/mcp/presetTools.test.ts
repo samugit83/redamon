@@ -389,6 +389,36 @@ describe('apply_recon_preset', () => {
     expect(h.projectUpdateMany.mock.calls[0][0].data).not.toHaveProperty('ipMode')
   })
 
+  test('an IP preset relying on hostnames, on an ip_only IP project, says why it will find none (D-17)', async () => {
+    h.projectFind.mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+      args.select && Object.keys(args.select).length === 2 && 'userId' in args.select
+        ? { id: 'p1', userId: 'owner' }
+        : projectRow({ ipMode: true, ipHostnameMode: 'ip_only' }))
+    const r = await applyReconPreset(ctx(), { projectId: 'p1', presetId: 'internal-network', dryRun: true }) as
+      Record<string, unknown>
+    expect(r.hostnameModeNote).toMatch(/Hostnames on target IPs is ip_only/)
+    expect(r.hostnameModeNote).toMatch(/update_project_scope/)
+    expect(r).not.toHaveProperty('targetMismatch')
+    expect(h.projectFind.mock.calls.some(([a]) => a?.select?.ipHostnameMode === true)).toBe(true)
+  })
+
+  test('no note once the project records hostnames, nor for a preset that needs none', async () => {
+    h.projectFind.mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+      args.select && Object.keys(args.select).length === 2 && 'userId' in args.select
+        ? { id: 'p1', userId: 'owner' }
+        : projectRow({ ipMode: true, ipHostnameMode: 'record_only' }))
+    const recording = await applyReconPreset(ctx(), { projectId: 'p1', presetId: 'large-network', dryRun: true })
+    expect(recording).not.toHaveProperty('hostnameModeNote')
+    const other = await applyReconPreset(ctx(), { projectId: 'p1', presetId: 'stealth-recon', dryRun: true })
+    expect(other).not.toHaveProperty('hostnameModeNote')
+  })
+
+  test('the presets named as relying on hostnames are real IP presets', async () => {
+    const { IP_PRESETS_RELYING_ON_HOSTNAMES } = await import('./presetTools')
+    const { getPresetById } = await import('@/lib/recon-presets')
+    for (const id of IP_PRESETS_RELYING_ON_HOSTNAMES) expect(getPresetById(id)?.targetProfile, id).toBe('ip')
+  })
+
   test('a fireteam change writes the fireteam audit', async () => {
     h.presetFindFirst.mockResolvedValue(userPreset({ settings: { fireteamMaxConcurrent: 2 } }))
     await applyReconPreset(ctx(), { projectId: 'p1', presetId: 'up1' })

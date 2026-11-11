@@ -29,6 +29,7 @@ import { sanitizeImportedOpenApiSettings } from '@/lib/validation/openapiSetting
 import { importRevision, MAX_IMPORTED_REVISIONS, REVISIONS_BUNDLE_PATH } from '@/lib/roe/revisionBundle'
 import { jevImportWarnings } from '@/lib/reconSettings/jevEngine'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
+import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { PROJECT_EXPORT_EXCLUDED, isPluginArchivePath } from '@/lib/projectExport/pluginExclusion'
 import { validateSerializedScanChange } from '@/lib/reconSettings/serializedScanGate'
 import { skillToggleWarnings, trimImportedSkillToggles } from '@/lib/userSkills'
@@ -350,6 +351,16 @@ export async function POST(request: NextRequest) {
       if (trimmed.value) projectFields.attackSkillConfig = trimmed.value
       else delete projectFields.attackSkillConfig
       skillToggleNotes.push(...skillToggleWarnings(trimmed, 'project'))
+    }
+
+    // The rules over several fields every create path runs (B-25), on the row as
+    // it will be created: a bundle is untrusted, and the import is a second
+    // create_project. The toggles were trimmed just above, so they are not judged twice.
+    const crossFieldError = await validateCrossFieldRules(
+      projectFields, Object.keys(projectFields).filter(k => k !== 'attackSkillConfig'), userId,
+      { ownerUserId: userId })
+    if (crossFieldError) {
+      return NextResponse.json({ error: `${crossFieldError} The bundle was not imported.` }, { status: 400 })
     }
 
     // A person picks the brain: an imported project never arrives on Agent in

@@ -138,6 +138,43 @@ class TestFetch:
         assert settings['SCOPE_GROUPS_SOURCE'] == 'legacy'
         assert settings['SUBDOMAIN_LIST'] == ['www.']
 
+    def test_the_hostname_policy_is_read_ad_hoc(self):
+        """Read like ipMode/targetIps (design §10), for P7's scope text."""
+        settings = self._fetch({
+            'ipMode': True, 'targetIps': ['203.0.113.10'], 'ipHostnameMode': 'record_filter',
+            'ipHostnameInclude': ['*.example.com'], 'ipHostnameExclude': ['old.example.com'],
+            'ipHostnamePassiveExpand': False, 'ipHostnameScanAllConfirmed': False,
+            'ipHostnameMaxScanned': 7, 'ipHostnamePassiveMaxNames': 9})
+        assert settings['IP_HOSTNAME_MODE'] == 'record_filter'
+        assert settings['IP_HOSTNAME_INCLUDE'] == ['*.example.com']
+        assert settings['IP_HOSTNAME_EXCLUDE'] == ['old.example.com']
+        assert settings['IP_HOSTNAME_PASSIVE_EXPAND'] is False
+        assert settings['IP_HOSTNAME_SCAN_ALL_CONFIRMED'] is False
+        assert settings['IP_HOSTNAME_MAX_SCANNED'] == 7
+        assert settings['IP_HOSTNAME_PASSIVE_MAX_NAMES'] == 9
+
+    def test_an_absent_hostname_policy_reads_as_the_strictest(self):
+        settings = self._fetch({'ipMode': True, 'targetIps': ['203.0.113.10'],
+                                'ipHostnameMode': None, 'ipHostnameInclude': None})
+        assert settings['IP_HOSTNAME_MODE'] == 'ip_only'
+        assert settings['IP_HOSTNAME_INCLUDE'] == []
+        assert settings['IP_HOSTNAME_EXCLUDE'] == []
+        assert settings['IP_HOSTNAME_SCAN_ALL_CONFIRMED'] is False
+        assert settings['IP_HOSTNAME_PASSIVE_EXPAND'] is True
+
+    def test_only_a_literal_true_confirms_scan_all(self):
+        settings = self._fetch({'ipMode': True, 'ipHostnameScanAllConfirmed': 'true'})
+        assert settings['IP_HOSTNAME_SCAN_ALL_CONFIRMED'] is False
+
+    def test_the_hostname_policy_is_not_an_agent_default(self):
+        """Scope, not an agent tuning knob: no DEFAULT_AGENT_SETTINGS entry, so
+        /defaults and the agent settings columns never carry it."""
+        for key in ('IP_HOSTNAME_MODE', 'IP_HOSTNAME_INCLUDE', 'IP_HOSTNAME_EXCLUDE',
+                    'IP_HOSTNAME_PASSIVE_EXPAND', 'IP_HOSTNAME_SCAN_ALL_CONFIRMED',
+                    'IP_HOSTNAME_MAX_SCANNED', 'IP_HOSTNAME_PASSIVE_MAX_NAMES'):
+            assert key not in ps.DEFAULT_AGENT_SETTINGS
+            assert key not in ps.AGENT_SETTING_COLUMNS
+
     def test_a_settings_load_records_the_updated_at_it_saw(self):
         resp = MagicMock()
         resp.json.return_value = {'targetDomain': 'example.com', 'updatedAt': 'v2'}

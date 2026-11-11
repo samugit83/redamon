@@ -29,6 +29,7 @@ import {
   type ResolvedMcpToken,
 } from '@/lib/mcpAuth'
 import { projectReconSettings, reconSettingsSelect } from '@/lib/reconSettings/filter'
+import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
 import { resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { McpToolError } from '@/lib/mcp/errors'
@@ -392,6 +393,10 @@ export async function getReconSettings(ctx: McpContext, projectId: string) {
     select,
   })
   if (!row) throw new McpToolError('Project not found', 'not_found')
+  // An IP project's hostname mode forces some toggles at scan start (decision
+  // D-20): `settings` echoes what is stored, this says which stored value a run
+  // will not use and why.
+  const overrides = ipHostnameOverrides(row as Record<string, unknown>)
   return {
     projectId,
     // Returned as METADATA, not as a setting: update_recon_settings tells the
@@ -399,6 +404,7 @@ export async function getReconSettings(ctx: McpContext, projectId: string) {
     // anti-clobber control was unreachable through its own documented flow.
     updatedAt: (row as { updatedAt?: Date }).updatedAt?.toISOString() ?? null,
     settings: projectReconSettings(row as Record<string, unknown>),
+    ...(overrides.length > 0 ? { effective_overrides: overrides } : {}),
   }
 }
 

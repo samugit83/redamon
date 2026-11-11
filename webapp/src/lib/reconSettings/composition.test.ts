@@ -156,6 +156,9 @@ describe('T45 each disposition behaves the way it is documented', () => {
     expect(problems).toEqual([])
     expect(fieldsWhere(s => s.rescope === true).map(f => f.key).sort()).toEqual([
       'domainBatchHosts', 'githubTargetOrg', 'githubTargetRepos', 'gvmScanTargets',
+      // Hostnames on target IPs: the policy and its caps move with the scope (D-04, D-05).
+      'ipHostnameExclude', 'ipHostnameInclude', 'ipHostnameMaxScanned', 'ipHostnameMode',
+      'ipHostnamePassiveExpand', 'ipHostnamePassiveMaxNames', 'ipHostnameScanAllConfirmed',
       'supplyChainOrgName', 'supplyChainRepoRef', 'supplyChainRepoScope', 'supplyChainRepoUrl',
     ])
   })

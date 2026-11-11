@@ -38,6 +38,12 @@ NOT_CONSUMERS = {"project_settings.py", "roe_parse_prompt.py"}
 KNOWN_UNCONSUMED = {
     "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED":
         "resource_enum.py says the tool-arg-path resolver is a stub; the toggle reaches nothing",
+    "IP_HOSTNAME_INCLUDE": "consumed from P3/P4/P5 (ip_mode plan)",
+    "IP_HOSTNAME_EXCLUDE": "consumed from P3/P4/P5 (ip_mode plan)",
+    "IP_HOSTNAME_PASSIVE_EXPAND": "consumed from P3/P4/P5 (ip_mode plan)",
+    "IP_HOSTNAME_SCAN_ALL_CONFIRMED": "consumed from P3/P4/P5 (ip_mode plan)",
+    "IP_HOSTNAME_MAX_SCANNED": "consumed from P3/P4/P5 (ip_mode plan)",
+    "IP_HOSTNAME_PASSIVE_MAX_NAMES": "consumed from P3/P4/P5 (ip_mode plan)",
 }
 
 
