@@ -277,10 +277,12 @@ class TestResourceEnumOpenApiGraph(unittest.TestCase):
         self.assertEqual([r['u'] for r in endpoints], [A[0]])
 
     def test_source_status_is_written_and_replaced_on_the_runs_domain(self):
+        # Filed under the run's scan root (here the org itself), since several
+        # scan roots share one org Domain (21a4c69f; schema_sections.md).
         self._import({}, status=['src-1|0123456789ab|ok|2026-10-19T00:00:00Z'])
         rows = self._run('MATCH (d:Domain {name: "example.com", user_id: $u, project_id: $p}) '
                          'RETURN d.openapi_source_status AS s', u=A[0], p=A[1])
-        self.assertEqual(rows[0]['s'], ['src-1|0123456789ab|ok|2026-10-19T00:00:00Z'])
+        self.assertEqual(rows[0]['s'], ['example.com|src-1|0123456789ab|ok|2026-10-19T00:00:00Z'])
         self._import({}, status=[])
         rows = self._run('MATCH (d:Domain {name: "example.com", user_id: $u, project_id: $p}) '
                          'RETURN d.openapi_source_status AS s', u=A[0], p=A[1])

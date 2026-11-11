@@ -3,7 +3,9 @@
   * prune_unseen_findings(keep_hosts=...) leaves every finding about a skipped
     host untouched (not deleted, not stamped stale), however the writer stored
     the host, and still prunes the same source's findings on other hosts;
-  * update_graph_coverage stamps only this project's Domain.
+  * update_graph_coverage stamps only this project's Domain, and tags each
+    gap with the scan root whose group cut it (21a4c69f, one Domain per
+    registrable domain: several roots share that record).
 
 Self-skips unless the neo4j driver imports AND a database answers. To run it:
 
@@ -13,6 +15,7 @@ Self-skips unless the neo4j driver imports AND a database answers. To run it:
     redamon-agent python -m pytest tests/test_recon_coverage_graph_live.py -v
 """
 
+import json
 import os
 import sys
 import time
@@ -139,13 +142,16 @@ class TestReconCoverageGraphLive(unittest.TestCase):
             rows = {r["p"]: r for r in s.run(
                 "MATCH (d:Domain {user_id: $u}) RETURN d.project_id AS p, "
                 "d.recon_coverage_gaps AS gaps, d.recon_skipped_hosts AS hosts, "
-                "d.recon_nuclei_truncated AS truncated, d.recon_coverage_at AS at", u=self.uid)}
+                "d.recon_nuclei_truncated AS truncated, d.recon_coverage_at AS at, "
+                "d.recon_coverage_roots AS roots", u=self.uid)}
         mine, other = rows[self.pid], rows[self.other_pid]
-        self.assertEqual(mine["gaps"], '[{"source":"nuclei"}]')
+        self.assertEqual(json.loads(mine["gaps"]), [{"source": "nuclei", "root": "example.test"}])
+        self.assertEqual(list(mine["roots"]), ["example.test"])
         self.assertEqual(list(mine["hosts"]), ["a.example.test:443"])
         self.assertIs(mine["truncated"], True)
         self.assertIsNotNone(mine["at"])
         self.assertIsNone(other["gaps"])
+        self.assertIsNone(other["roots"])
         self.assertIsNone(other["at"])
 
 
