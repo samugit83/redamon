@@ -124,11 +124,14 @@ class VerbatimPassthroughTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_stdio_env_passed_verbatim(self):
+        # As `env -i` arguments (NF-14): an `env` value would be ${VAR}-expanded by the adapter.
         srv = reg.MCPServer.model_validate(_stdio_server(
             env={"FOO": "bar", "BAZ": "qux-with-special-chars-$%"},
         ))
         cfg, warnings = reg.to_mcp_servers_dict([srv])
-        self.assertEqual(cfg["mystdio"]["env"], {"FOO": "bar", "BAZ": "qux-with-special-chars-$%"})
+        self.assertNotIn("env", cfg["mystdio"])
+        self.assertIn("FOO=bar", cfg["mystdio"]["args"])
+        self.assertIn("BAZ=qux-with-special-chars-$%", cfg["mystdio"]["args"])
         self.assertEqual(warnings, [])
 
     def test_dollar_brace_pattern_not_interpreted(self):
@@ -155,9 +158,11 @@ class ToMcpServersDictTests(unittest.TestCase):
         srv = reg.MCPServer.model_validate(_stdio_server(env={"FOO": "bar"}))
         cfg, warnings = reg.to_mcp_servers_dict([srv])
         self.assertEqual(cfg["mystdio"]["transport"], "stdio")
-        self.assertEqual(cfg["mystdio"]["command"], "uvx")
-        self.assertEqual(cfg["mystdio"]["args"], ["mcp-server-time"])
-        self.assertEqual(cfg["mystdio"]["env"], {"FOO": "bar"})
+        # Started through `env -i` with exactly its own env plus PATH/HOME/LANG (NF-14).
+        self.assertEqual(cfg["mystdio"]["command"], reg.STDIO_ENV_LAUNCHER)
+        self.assertEqual(cfg["mystdio"]["args"][:2], ["-i", "--"])
+        self.assertEqual(cfg["mystdio"]["args"][-3:], ["FOO=bar", "uvx", "mcp-server-time"])
+        self.assertNotIn("env", cfg["mystdio"])
 
     def test_disabled_server_skipped(self):
         srv = reg.MCPServer.model_validate(_http_server(enabled=False))
@@ -165,23 +170,24 @@ class ToMcpServersDictTests(unittest.TestCase):
         self.assertEqual(cfg, {})
 
     def test_bearer_auth_resolves_env(self):
+        # A system server's only (OQ-R1): test_mcp_user_token_env_var.py has the user side.
         with patch.dict(os.environ, {"MY_TOKEN": "secret123"}, clear=False):
             srv = reg.MCPServer.model_validate(_http_server(
-                auth={"type": "bearer", "token_env_var": "MY_TOKEN"},
+                id="nmap", auth={"type": "bearer", "token_env_var": "MY_TOKEN"},
             ))
             cfg, warnings = reg.to_mcp_servers_dict([srv])
-            self.assertEqual(cfg["myhttp"]["headers"]["Authorization"], "Bearer secret123")
+            self.assertEqual(cfg["nmap"]["headers"]["Authorization"], "Bearer secret123")
             self.assertEqual(warnings, [])
 
     def test_missing_auth_env_surfaces_warning(self):
         with patch.dict(os.environ, {}, clear=True):
             srv = reg.MCPServer.model_validate(_http_server(
-                auth={"type": "bearer", "token_env_var": "ABSENT_TOKEN"},
+                id="nmap", auth={"type": "bearer", "token_env_var": "ABSENT_TOKEN"},
             ))
             cfg, warnings = reg.to_mcp_servers_dict([srv])
             self.assertTrue(any(w.code == "env_var_unset" for w in warnings))
             # Without the token, no Authorization header is added
-            self.assertNotIn("headers", cfg["myhttp"])
+            self.assertNotIn("headers", cfg["nmap"])
 
     def test_bearer_auth_direct_token_used_verbatim(self):
         srv = reg.MCPServer.model_validate(_http_server(

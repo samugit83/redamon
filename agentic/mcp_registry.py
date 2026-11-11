@@ -38,6 +38,19 @@ SYSTEM_SERVER_IDS: Set[str] = {
     "playwright",
 }
 
+#: The only variables a stdio MCP server inherits from the agent (NF-14). The agent
+#: holds every tenant's data and the master secrets; its child gets its own `env` and these.
+STDIO_INHERITED_ENV: Tuple[str, ...] = ("PATH", "HOME", "LANG")
+
+#: `env -i` starts the server with exactly the environment named on its command line.
+STDIO_ENV_LAUNCHER = "/usr/bin/env"
+
+TOKEN_ENV_VAR_REFUSED = "token_env_var_refused"
+TOKEN_ENV_VAR_REFUSED_MESSAGE = (
+    "auth.token_env_var names one of the agent's own environment variables and is not "
+    "accepted on an MCP server you add: paste the token instead"
+)
+
 # =============================================================================
 # SCHEMA
 # =============================================================================
@@ -112,6 +125,12 @@ class MCPServer(BaseModel):
         elif self.transport == "stdio":
             if not self.command:
                 raise ValueError(f"server '{self.id}': command is required for transport 'stdio'")
+            # `env -i` reads a word holding '=' as a variable, not as the command.
+            if "=" in self.command:
+                raise ValueError(f"server '{self.id}': a stdio command cannot contain '='")
+        for name in self.env:
+            if not name or "=" in name or "\0" in name:
+                raise ValueError(f"server '{self.id}': env name {name!r} is not a variable name")
 
         # Tool name uniqueness within the server
         seen: Set[str] = set()
@@ -227,8 +246,7 @@ def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
 
     Token resolution order:
     1. ``auth.token`` literal — used verbatim.
-    2. ``auth.token_env_var`` resolved via os.getenv (legacy fallback,
-       not exposed in the UI form).
+    2. ``auth.token_env_var`` resolved via os.getenv, for a system server only.
     """
     headers: Dict[str, str] = {}
     missing: List[str] = []
@@ -242,10 +260,12 @@ def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
         if srv.auth.token:
             # Literal bearer token — used as-is.
             token = srv.auth.token
+        elif srv.auth.token_env_var and srv.id not in SYSTEM_SERVER_IDS:
+            # Only the operator's own servers read the agent's environment (OQ-R1): a
+            # user's server naming INTERNAL_API_KEY would carry it to its own URL.
+            # parse_user_servers strips it first; this holds for any other path.
+            logger.warning(f"[rbac] mcp token_env_var refused server={srv.id}")
         elif srv.auth.token_env_var:
-            # Backward-compat alternative: resolve a named env var. Not
-            # exposed in the UI form, but kept for any saved server that
-            # might still use it.
             token = os.environ.get(srv.auth.token_env_var)
             if not token:
                 missing.append(srv.auth.token_env_var)
@@ -268,6 +288,20 @@ def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
     return headers, missing
 
 
+def stdio_spawn_env(srv: MCPServer) -> Dict[str, str]:
+    """The whole environment of a stdio server's process: its own `env` over the
+    agent's PATH, HOME and LANG. Never `os.environ`, never a `${VAR}` expanded."""
+    env = {k: os.environ[k] for k in STDIO_INHERITED_ENV if os.environ.get(k)}
+    env.update(srv.env or {})
+    return env
+
+
+def stdio_launch(srv: MCPServer) -> Tuple[str, List[str]]:
+    """Command and arguments that start `srv` with exactly `stdio_spawn_env(srv)`."""
+    pairs = [f"{k}={v}" for k, v in stdio_spawn_env(srv).items()]
+    return STDIO_ENV_LAUNCHER, ["-i", "--", *pairs, srv.command, *srv.args]
+
+
 def to_mcp_servers_dict(
     servers: List[MCPServer],
 ) -> Tuple[Dict[str, Dict[str, Any]], List[ValidationError]]:
@@ -275,7 +309,8 @@ def to_mcp_servers_dict(
     Convert MCPServer list into the dict shape consumed by MultiServerMCPClient.
 
     Returns (config_dict, warnings). Disabled servers are skipped entirely.
-    Headers and stdio env values are passed through verbatim.
+    Headers are passed through verbatim; a stdio server starts through `env -i`
+    with exactly `stdio_spawn_env(srv)`.
     """
     config: Dict[str, Dict[str, Any]] = {}
     warnings: List[ValidationError] = []
@@ -302,14 +337,16 @@ def to_mcp_servers_dict(
             config[srv.id] = entry
 
         elif srv.transport == "stdio":
+            # No `env` key: langchain-mcp-adapters expands `${VAR}` in stdio env values
+            # from the agent's environment (0.3.0, sessions.py), so `${INTERNAL_API_KEY}`
+            # would reach the child as the key. Arguments it passes through untouched.
+            command, args = stdio_launch(srv)
             entry = {
-                "command": srv.command,
-                "args": list(srv.args),
+                "command": command,
+                "args": args,
                 "transport": "stdio",
                 "encoding": srv.encoding,
             }
-            if srv.env:
-                entry["env"] = dict(srv.env)
             if srv.cwd:
                 entry["cwd"] = srv.cwd
             config[srv.id] = entry
@@ -395,6 +432,26 @@ def manifest_tool_phase_view() -> Dict[str, List[str]]:
 # =============================================================================
 
 
+def _without_token_env_var(entry: Any) -> Tuple[Any, Optional[ValidationError]]:
+    """A user's server minus `auth.token_env_var` (OQ-R1): the agent's environment is
+    the operator's, and a server naming INTERNAL_API_KEY would send it to its own URL.
+    The server still loads, with its literal token or with no auth at all."""
+    if not isinstance(entry, dict):
+        return entry, None
+    auth = entry.get("auth")
+    if not isinstance(auth, dict) or not auth.get("token_env_var"):
+        return entry, None
+    sid = str(entry.get("id") or "<unnamed>")
+    logger.warning(f"[rbac] mcp token_env_var refused server={sid}")
+    kept = {k: v for k, v in auth.items() if k != "token_env_var"}
+    out = {k: v for k, v in entry.items() if k != "auth"}
+    if kept.get("token"):
+        out["auth"] = kept
+    return out, ValidationError(
+        server_id=sid, code=TOKEN_ENV_VAR_REFUSED, message=TOKEN_ENV_VAR_REFUSED_MESSAGE,
+    )
+
+
 def parse_user_servers(raw: Any) -> Tuple[List[MCPServer], List[ValidationError]]:
     """
     Parse and validate user-supplied mcpServers JSON (a list of dicts from
@@ -412,6 +469,9 @@ def parse_user_servers(raw: Any) -> Tuple[List[MCPServer], List[ValidationError]
     errors: List[ValidationError] = []
 
     for i, entry in enumerate(raw):
+        entry, refused = _without_token_env_var(entry)
+        if refused:
+            errors.append(refused)
         try:
             parsed.append(MCPServer.model_validate(entry))
         except Exception as exc:
