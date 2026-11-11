@@ -33,6 +33,36 @@ from recon.cache_scan import (
 _MAX_URLS = 200
 _MAX_VECTORS_PER_URL = 55
 
+# Every cache finding is written as cache_poisoning, the WCVS-surfaced ones
+# included (source_engine "wcvs"); the "wcvs" finding source is cut with it.
+_FINDING_SOURCE = "cache_poisoning"
+_FINDING_SOURCE_ALIASES = ("wcvs",)
+
+
+def _note_untested(urls, reason: str) -> None:
+    """Keep the earlier cache findings of the hosts these URLs are on. Never raises.
+
+    run_cache_scan reports a cut, a failure and a clean test alike as "no
+    finding", and nothing reached main's _note_phase_error, so the prune read
+    them as gone. A finding is matched to its host, not its URL, so a host with
+    one untested URL keeps all of them; the cut is for this scan's sources
+    alone (README "Degrade by host before degrading by source"), since the
+    other modules reached those hosts. ``reason`` is a fixed phrase, never
+    target text.
+    """
+    try:
+        from recon.helpers import circuit_breaker as cb
+        hosts = sorted({cb.host_key(u) for u in urls if isinstance(u, str)} - {""})
+        if not hosts:
+            return
+        cb.note_degraded("cache_scan", hosts=hosts, host_source=_FINDING_SOURCE,
+                         aliases=_FINDING_SOURCE_ALIASES, source_only_hosts=True,
+                         reason=reason)
+        print(f"[!][CachePoison] {len(hosts)} host(s) not fully tested ({reason}): "
+              f"their earlier cache findings are kept")
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
+
 
 def _build_retry_session(retry_count: int = 1, backoff: float = 0.5) -> requests.Session:
     """requests.Session with retry/backoff on 429/5xx (Cloudflare-friendly)."""
@@ -121,6 +151,7 @@ def _cap_urls(urls: list[str], cap: int) -> list[str]:
         depth += 1
     print(f"[*][CachePoison] Target cap {cap}: scanning {len(chosen)} of {len(urls)} URL(s) "
           f"across {len(hosts)} host(s); dropped {len(urls) - len(chosen)}")
+    _note_untested([u for u in urls if u not in chosen], f"target cap {cap}")
     return [u for u in urls if u in chosen]
 
 
@@ -167,7 +198,12 @@ def run_cache_scan(combined_result: dict, settings: dict) -> dict:
         return combined_result
 
     # ---- Phase 1: WCVS breadth sweep -------------------------------------
-    wcvs_candidates = wcvs_runner.run_wcvs(target_urls, settings)
+    # A candidate WCVS did not surface is never re-tested natively, so a WCVS
+    # run that did not finish leaves every target untested for its findings.
+    wcvs_outcome: dict = {}
+    wcvs_candidates = wcvs_runner.run_wcvs(target_urls, settings, outcome=wcvs_outcome)
+    if wcvs_outcome.get("incomplete"):
+        _note_untested(target_urls, f"WCVS {wcvs_outcome['incomplete']}")
     # index WCVS candidates by URL
     wcvs_by_url: dict[str, list[dict]] = {}
     for c in wcvs_candidates:
@@ -206,10 +242,15 @@ def run_cache_scan(combined_result: dict, settings: dict) -> dict:
     by_target: dict[str, dict] = {}
     all_findings: list[dict] = []
     cacheable_count = 0
+    untested: dict[str, list[str]] = {}
     for url, entry, cc in results:
         by_target[url] = entry
         all_findings.extend(entry["findings"])
         cacheable_count += cc
+        if entry.get("unchecked"):
+            untested.setdefault(entry["unchecked"], []).append(url)
+    for reason, urls in sorted(untested.items()):
+        _note_untested(urls, reason)
 
     duration = round(time.time() - start, 1)
     scan_metadata = {
@@ -239,7 +280,15 @@ def _failed_url(url, error):
     print(f"[!][CachePoison] {url} confirmation failed: {error}")
     return (url, {"oracle": {"cacheable": False, "indicator": "",
                              "signals": [f"error: {error}"], "saw_hit": False},
-                  "findings": []}, 0)
+                  "findings": [], "unchecked": "confirmation error"}, 0)
+
+
+def _oracle_unanswered(oracle_info: dict) -> bool:
+    """detect_cache_oracle got no response at all (a timeout, a refused or reset
+    connection): it reports that as an uncacheable result whose only signal is
+    ``error: ...``, and no header signal starts that way."""
+    return not oracle_info.get("cacheable") and any(
+        str(s).startswith("error: ") for s in oracle_info.get("signals") or ())
 
 
 def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
@@ -260,6 +309,9 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
             behavioral=behavioral, behavioral_delay=behavioral_delay,
         )
         target_entry = {"oracle": oracle_info, "findings": []}
+        if _oracle_unanswered(oracle_info):
+            # Not "no cache here": nothing was tested, so its findings stay.
+            target_entry["unchecked"] = "no answer"
         if not oracle_info["cacheable"]:
             # Nothing to poison. Web cache deception targets exactly these pages,
             # though: a private account page the cache declines to keep, which a

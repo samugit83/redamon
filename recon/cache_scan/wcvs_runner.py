@@ -83,7 +83,8 @@ def safety_skip_tests(allow_deception: bool, allow_cpdos: bool) -> list[str]:
     return skip
 
 
-def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redamon/.cache_scan") -> list[dict]:
+def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redamon/.cache_scan",
+             outcome: dict | None = None) -> list[dict]:
     """Run WCVS over the target URLs and return parsed candidate findings.
 
     Each candidate dict: {url, technique, vector_name, reason, reflections,
@@ -91,8 +92,12 @@ def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redam
     raw_request, raw_response, source="wcvs"}.
 
     Returns [] on any error (non-fatal — the native engine can still run its own
-    hypotheses). Temp files are always cleaned up.
+    hypotheses). Temp files are always cleaned up. A run that did not finish
+    (a timeout, no report, an error) returns what it got, so ``outcome``, when
+    given, gains ``incomplete``: a fixed phrase saying why. The caller cannot
+    tell that from a clean sweep that found nothing otherwise.
     """
+    outcome = outcome if outcome is not None else {}
     if not target_urls:
         return []
 
@@ -132,12 +137,15 @@ def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redam
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired:
+            # Which URLs a cut-short run finished is not known: none counts as swept.
             print(f"[!][CachePoison] WCVS timed out after {timeout}s — parsing partial report")
+            outcome["incomplete"] = f"timed out after {timeout}s"
 
         # WCVS writes WCVS_<date>_<rand>_Report.json into out_dir.
         reports = glob.glob(str(out_dir / "*_Report.json"))
         if not reports:
             print("[-][CachePoison] WCVS produced no report")
+            outcome.setdefault("incomplete", "produced no report")
             return []
         from recon.helpers.docker_helpers import fix_file_ownership
         for r in reports:
@@ -151,7 +159,8 @@ def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redam
         print(f"[+][CachePoison] WCVS surfaced {len(candidates)} candidate(s)")
         return candidates
     except Exception as e:
-        print(f"[!][CachePoison] WCVS run failed: {e}")
+        print(f"[!][CachePoison] WCVS run failed ({type(e).__name__})")
+        outcome["incomplete"] = f"failed ({type(e).__name__})"
         return []
     finally:
         # Clean the run dir (targets + report already parsed into memory).
