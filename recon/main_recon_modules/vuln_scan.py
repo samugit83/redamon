@@ -84,6 +84,7 @@ from recon.helpers import (
 )
 from recon.helpers.security_checks import page_content_enabled
 from recon.helpers.isolated_result import TopLevelKeys
+from recon.helpers.target_admission import admit_urls
 
 # Every top-level key run_vuln_scan writes; the security checks nest inside
 # vuln_scan. technology_cves exists only when the CVE lookup ran.
@@ -574,6 +575,16 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     if run_nuclei:
         # Build target URLs using httpx/naabu data if available
         target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=NUCLEI_SCAN_ALL_IPS)
+        # The crawler's and httpx's URLs (build_target_urls sources 1-2) name
+        # whatever host those tools reached, a redirect or a link included, not
+        # only the gated DNS targets; Nuclei resolves each host itself.
+        target_urls, _ = admit_urls(settings, recon_data, target_urls, module="nuclei")
+        if not target_urls:
+            print("[-][Nuclei] No target URL is left after the Rules of Engagement and the "
+                  "target list - skipping Nuclei")
+            run_nuclei = False
+
+    if run_nuclei:
         # IP mode keeps Nuclei's redirects on the host it was given (B-07).
         nuclei_ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"))
 
@@ -628,6 +639,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 discovered_urls = resource_enum_data.get("discovered_urls", [])
                 # Filter for URLs with parameters
                 dast_urls = [url for url in discovered_urls if '?' in url and '=' in url]
+                dast_urls, _ = admit_urls(settings, recon_data, dast_urls, module="nuclei")
                 if dast_urls:
                     print(f"[*][Nuclei] Using {len(dast_urls)} URLs with parameters from resource_enum")
                 else:
