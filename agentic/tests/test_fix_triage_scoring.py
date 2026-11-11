@@ -17,6 +17,8 @@ user's board.
 Run: ./agentic/run_tests.sh tests/test_fix_triage_scoring.py
 """
 
+import functools
+import importlib.util
 import json
 import os
 import re
@@ -80,27 +82,31 @@ def producer_check_types() -> set:
     return types
 
 
-def _python_string_block(text: str, opener: str) -> set:
-    """The quoted strings of the tuple or frozenset that starts at `opener`."""
-    start = text.index(opener)
-    end = text.index(")", start)
-    return set(re.findall(r'"([^"]+)"', text[start + len(opener):end]))
+@functools.lru_cache(maxsize=None)
+def js_patterns():
+    """js_recon's pattern module, loaded by path: it is stdlib-only, but
+    importing it through `recon.helpers` pulls recon-image dependencies the
+    agent image lacks. Reading the compiled table, not the source text, keeps
+    every rule visible whatever form it is written in (`_token(prefix, rest)`)."""
+    if not JS_PATTERNS_SRC.exists():
+        raise unittest.SkipTest(f"{JS_PATTERNS_SRC} is not mounted in this container")
+    spec = importlib.util.spec_from_file_location("_triage_test_js_recon_patterns", JS_PATTERNS_SRC)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def producer_secret_names() -> dict:
     """{producer: {secret_type names}} from the two pattern tables. js_recon
     also writes the names it re-reads a hit under (DERIVED_SECRET_NAMES)."""
     hunt = set(re.findall(r'^\s*"([^"]+)":\s*r["\']', _read(GITHUB_HUNT_SRC), re.M))
-    js_src = _read(JS_PATTERNS_SRC)
-    js = set(re.findall(r'^\s*\("([^"]+)",\s*r["\']', js_src, re.M))
-    js |= _python_string_block(js_src, "DERIVED_SECRET_NAMES = (")
+    js = {p["name"] for p in js_patterns().JS_SECRET_PATTERNS}
+    js |= set(js_patterns().DERIVED_SECRET_NAMES)
     return {"github_hunt": hunt, "js_recon": js}
 
 
 def js_public_client_key_names() -> set:
-    """js_recon's PUBLIC_CLIENT_KEY_NAMES, read from its source: the recon
-    module is not importable in the agent image."""
-    return _python_string_block(_read(JS_PATTERNS_SRC), "PUBLIC_CLIENT_KEY_NAMES = frozenset({")
+    return set(js_patterns().PUBLIC_CLIENT_KEY_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -799,12 +805,11 @@ if __name__ == "__main__":
 # Plan 05.5: a keyword-anchored pattern with a generic value is medium
 # ---------------------------------------------------------------------------
 def js_pattern(name: str) -> tuple:
-    """(severity, confidence, category) of one js_recon pattern, from its source."""
-    m = re.search(r'^\s*\("' + re.escape(name) + r'",\s*r"(?:[^"\\]|\\.)*",\s*"(\w+)",\s*"(\w+)",\s*"(\w+)"',
-                  _read(JS_PATTERNS_SRC), re.M)
-    if m is None:
-        raise AssertionError(f"no js_recon pattern named {name}")
-    return m.group(1), m.group(2), m.group(3)
+    """(severity, confidence, category) of one js_recon pattern."""
+    for p in js_patterns().JS_SECRET_PATTERNS:
+        if p["name"] == name:
+            return p["severity"], p["confidence"], p["category"]
+    raise AssertionError(f"no js_recon pattern named {name}")
 
 
 class TestKeywordAnchoredConfidence(unittest.TestCase):
