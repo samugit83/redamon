@@ -196,6 +196,13 @@ with that admin as actor and no password or hash; it then checks that the act-as
 its target and that a logout row names who signed out. It reads both audit tables through `psql`
 in the `postgres` container and prints `SKIP` without a stack.
 
+`tests/rbac_user_delete_teardown_live.sh` deletes a throwaway `rbac-teardown-owner@e2e.local`
+account whose project holds an engagement authorization, a `Domain` node and a
+`recon_<id>.json`: the delete must answer 200 and leave no account, project, authorization row,
+graph node or file, with the record archived as `user_deleted` and a `user.delete` row listing
+the project. Its trap removes every fixture, the archive row included. It also needs the
+`neo4j` and `recon-orchestrator` containers, and prints `SKIP` without them.
+
 ### The RBAC upgrade harness
 
 `tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`

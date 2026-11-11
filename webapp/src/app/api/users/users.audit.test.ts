@@ -34,6 +34,9 @@ vi.mock('@/lib/session', () => ({
   isInternalRequest: () => false,
 }))
 vi.mock('@/lib/workspacePurge', () => ({ purgeProjectWorkspace: async () => undefined }))
+// The teardown of each project has its own tests (route.delete.teardown.test.ts);
+// here it only has to succeed, so the row can be read.
+vi.mock('@/lib/projectTeardown', () => ({ teardownProject: async () => ({ ok: true, steps: [] }) }))
 vi.mock('@/lib/prisma', () => {
   const pick = (row: UserRow, select?: Record<string, boolean>) =>
     select ? Object.fromEntries(Object.keys(select).filter(k => select[k]).map(k => [k, row[k as keyof UserRow]])) : { ...row }
@@ -67,7 +70,7 @@ vi.mock('@/lib/prisma', () => {
     },
     project: {
       findMany: async ({ where }: { where: { userId: string } }) =>
-        h.projects.filter(p => p.userId === where.userId).map(p => ({ id: p.id })),
+        h.projects.filter(p => p.userId === where.userId).map(p => ({ id: p.id, userId: p.userId })),
     },
     capturedHttpTransaction: { findMany: async () => [] },
     mcpAccessToken: {
@@ -254,6 +257,7 @@ describe('user.delete', () => {
     expect(row).toMatchObject({
       actorId: 'admin-1', targetType: 'user', targetId: 'member-1',
       before: { email: 'member-1@e2e.local', role: 'standard', ownedProjectCount: 2 },
+      after: { projectsDeleted: ['p1', 'p2'] },
     })
     expectNoSecret(row)
   })

@@ -3,7 +3,7 @@ import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
-import { purgeProjectWorkspace } from '@/lib/workspacePurge'
+import { teardownProject } from '@/lib/projectTeardown'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { requireStepUp } from '@/lib/authz/stepUp'
@@ -242,27 +242,51 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       if (refusal) return refusal
     }
 
-    // Collect this user's captured-traffic body refs BEFORE the cascade removes
-    // the rows (user -> projects -> captured rows), so we can GC the now-orphaned
-    // blobs afterward (§6.6). Prisma cascade never touches the filesystem.
-    let capturedBodyRefs: (string | null)[] = []
-    try {
-      const doomed = await prisma.capturedHttpTransaction.findMany({
-        where: { userId: id }, select: { reqBodyRef: true, respBodyRef: true },
-      })
-      capturedBodyRefs = doomed.flatMap(r => [r.reqBodyRef, r.respBodyRef])
-    } catch (e) {
-      console.warn('Could not enumerate captured body refs before user delete:', e)
+    // The teardown below cannot be undone, so a deletion the last-admin rule
+    // refuses is refused before it; the delete itself checks again under the lock.
+    if (targetIsAdmin) {
+      const allowed = await withLastAdminGuard(id, async () => undefined)
+      if (!allowed.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
     }
 
-    // The cascade deletes the user's projects; their workspaces are on disk.
-    let projectIds: string[] = []
-    let ownedProjectCount: number | null = null
-    try {
-      projectIds = (await prisma.project.findMany({ where: { userId: id }, select: { id: true } })).map(p => p.id)
-      ownedProjectCount = projectIds.length
-    } catch (e) {
-      console.warn('Could not list projects before user delete:', e)
+    // Each project goes through the project-delete teardown first (HD-11): the
+    // cascade alone leaves its graph, files, workspace and running work behind, and
+    // a project holding an authorization record refuses it (the key is Restrict).
+    const projects = await prisma.project.findMany({
+      where: { userId: id }, select: { id: true, userId: true }, orderBy: { createdAt: 'asc' },
+    })
+    const auditBefore = { email: target?.email ?? null, role: target?.role ?? null, ownedProjectCount: projects.length }
+    const projectsDeleted: string[] = []
+    for (const project of projects) {
+      const result = await teardownProject(project, { actorUserId: session.userId, archiveReason: 'user_deleted' })
+      if (result.ok) {
+        projectsDeleted.push(project.id)
+        continue
+      }
+      // Its owner deleted it meanwhile, through the project route's own teardown.
+      if (result.code === 'project_not_found') continue
+      console.error(`[rbac] user-delete teardown failed project=${project.id} step=${result.failedStep}`)
+      // Not `user.delete`: the account still exists.
+      await writeUserAudit(request, session, {
+        action: 'user.delete_failed',
+        targetId: id,
+        before: auditBefore,
+        after: { projectsDeleted, failedProjectId: project.id, failedStep: result.failedStep, code: result.code },
+      })
+      if (result.failedStep === 'archive_authorizations') {
+        return NextResponse.json(
+          {
+            error:
+              'Could not archive the engagement authorization records of one of this user\'s ' +
+              'projects, so the user was not deleted. The record of what authorized an ' +
+              'engagement must outlive the engagement. Retry, or contact an administrator.',
+            code: 'authorization_archive_failed',
+            projectId: project.id,
+          },
+          { status: 500 }
+        )
+      }
+      throw result.error
     }
 
     if (targetIsAdmin) {
@@ -279,20 +303,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     await writeUserAudit(request, session, {
       action: 'user.delete',
       targetId: id,
-      before: { email: target?.email ?? null, role: target?.role ?? null, ownedProjectCount },
+      before: auditBefore,
+      after: { projectsDeleted },
     })
-
-    await Promise.allSettled(projectIds.map(pid => purgeProjectWorkspace(pid)))
-
-    if (capturedBodyRefs.length > 0) {
-      try {
-        const { gcOrphanBodies } = await import('@/lib/captureBodies')
-        const gc = await gcOrphanBodies(capturedBodyRefs)
-        if (gc.deleted > 0) console.log(`[user-delete] GC'd ${gc.deleted} captured body blobs for user ${id}`)
-      } catch (e) {
-        console.warn('Captured body-blob GC failed on user delete:', e)
-      }
-    }
 
     return NextResponse.json({ success: true })
   } catch (error: unknown) {

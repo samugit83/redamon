@@ -25,6 +25,7 @@ const mockQueryRaw = vi.fn()
 const mockCount = vi.fn()
 const mockExecuteRaw = vi.fn()
 const mockTransaction = vi.fn()
+const mockProjectDelete = vi.fn()
 
 vi.mock('@/lib/prisma', () => {
   const db: Record<string, unknown> = {
@@ -35,7 +36,14 @@ vi.mock('@/lib/prisma', () => {
       count: (...args: unknown[]) => mockCount(...args),
     },
     capturedHttpTransaction: { findMany: vi.fn().mockResolvedValue([]) },
-    project: { findMany: (...args: unknown[]) => mockProjectFindMany(...args) },
+    project: {
+      findMany: (...args: unknown[]) => mockProjectFindMany(...args),
+      delete: (...args: unknown[]) => mockProjectDelete(...args),
+    },
+    // The rest of what the project teardown (lib/projectTeardown.ts) reads or writes.
+    jobQueue: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    conversation: { findMany: vi.fn().mockResolvedValue([]) },
+    engagementAuthorization: { count: vi.fn().mockResolvedValue(0) },
     $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
     $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
   }
@@ -47,6 +55,15 @@ vi.mock('@/lib/prisma', () => {
 vi.mock('@/lib/workspacePurge', () => ({
   purgeProjectWorkspace: (...args: unknown[]) => mockPurge(...args),
 }))
+// The teardown's other external boundaries: no network in a unit test.
+vi.mock('@/lib/orchestrator', () => ({
+  orchestratorFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ deleted: [], runs: [] }) }),
+}))
+vi.mock('@/lib/agentFetch', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/agentFetch')>('@/lib/agentFetch')),
+  agentFetch: vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) }),
+}))
+vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn(), close: vi.fn() }) }))
 
 vi.mock('@/lib/session', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
@@ -89,6 +106,8 @@ beforeEach(() => {
   mockIsInternal.mockReturnValue(false)
   mockProjectFindMany.mockReset()
   mockProjectFindMany.mockResolvedValue([])
+  mockProjectDelete.mockReset()
+  mockProjectDelete.mockResolvedValue({})
   mockPurge.mockReset()
   mockPurge.mockResolvedValue(undefined)
   mockQueryRaw.mockReset()
@@ -310,20 +329,25 @@ describe('DELETE /api/users/[id]', () => {
 
   test("deleting a user purges each of their projects' workspaces, after the delete", async () => {
     mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
-    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a' }, { id: 'proj-b' }])
+    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a', userId: 'user-2' }, { id: 'proj-b', userId: 'user-2' }])
     const order: string[] = []
+    mockProjectDelete.mockImplementation(async ({ where }: { where: { id: string } }) => { order.push(`project-delete ${where.id}`) })
     mockDelete.mockImplementation(async () => { order.push('delete') })
     mockPurge.mockImplementation(async (pid: string) => { order.push(`purge ${pid}`) })
     const res = await DELETE(delReq(), makeParams('user-2'))
     expect(res.status).toBe(200)
-    expect(mockProjectFindMany).toHaveBeenCalledWith({ where: { userId: 'user-2' }, select: { id: true } })
-    // The agent refuses a purge while the web app still answers for the project.
-    expect(order).toEqual(['delete', 'purge proj-a', 'purge proj-b'])
+    expect(mockProjectFindMany).toHaveBeenCalledWith({
+      where: { userId: 'user-2' }, select: { id: true, userId: true }, orderBy: { createdAt: 'asc' },
+    })
+    // The agent refuses a purge while the web app still answers for the project:
+    // each project's teardown purges after that project's row is gone (HD-11).
+    expect(order).toEqual(['project-delete proj-a', 'purge proj-a', 'project-delete proj-b', 'purge proj-b', 'delete'])
   })
 
   test('a failed purge never fails the user delete', async () => {
     mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
-    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a' }])
+    mockProjectFindMany.mockResolvedValue([{ id: 'proj-a', userId: 'user-2' }])
+    mockProjectDelete.mockResolvedValue({ id: 'proj-a' })
     mockDelete.mockResolvedValue({})
     mockPurge.mockRejectedValue(new Error('agent down'))
     const res = await DELETE(delReq(), makeParams('user-2'))
