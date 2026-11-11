@@ -3742,16 +3742,58 @@ _update_apply_env() {
     fi
 }
 
+# The read-only report of what the new release changes for the accounts of this install
+# (webapp/scripts/rbac-upgrade-preview.mjs), run from the webapp image this update just
+# built against the live database. `run --no-deps` starts a one-off container: the running
+# webapp, its port and its startup scripts are untouched. -T and </dev/null because the
+# single-host deploy pipes its remote script into this shell's stdin, so nothing here may
+# read it. Only an update that rebuilt the webapp changes what the report covers.
+#   $1 true for --preview (print, never ask)   $2 true when the webapp image was rebuilt
+# Returns 0 to go on, 1 when the operator answered no, 2 when --preview got no report.
+_update_preview() {
+    local preview_only="$1" webapp_rebuilt="$2" rc=0 answer=""
+    if [[ "$webapp_rebuilt" != true ]]; then
+        if [[ "$preview_only" == true ]]; then
+            info "This update does not change the webapp: there is nothing to preview."
+        fi
+        return 0
+    fi
+    if ! _service_running postgres; then
+        warn "Upgrade preview skipped: the database is not running."
+        [[ "$preview_only" == true ]] && return 2
+        return 0
+    fi
+    info "Upgrade preview (read-only) from the new webapp image:"
+    docker compose run --rm --no-deps -T --entrypoint node webapp scripts/rbac-upgrade-preview.mjs </dev/null || rc=$?
+    # The script's exit status: 0 nothing changes for anyone (no question, as a
+    # single-operator install expects), 10 (REVIEW_EXIT) changes to read, else no report.
+    case "$rc" in
+        0) return 0 ;;
+        10) ;;
+        *)
+            warn "The upgrade preview did not run (exit $rc); the update itself does not depend on it."
+            [[ "$preview_only" == true ]] && return 2
+            return 0 ;;
+    esac
+    [[ "$preview_only" == true ]] && return 0
+    # A deploy, a CI job or `update | tee` is not someone at a terminal: print and go on.
+    [[ -t 0 && -t 1 ]] || return 0
+    read -erp "Continue? [Y/n] " answer || return 1
+    [[ "$answer" =~ ^[Nn] ]] && return 1
+    return 0
+}
+
 cmd_update() {
     # --gpu / --cpu are accepted here too, so switching the PyTorch variant does
     # not require a full `install`. Unlike install, omitting them PRESERVES the
     # existing sticky choice (same contract as the GVM/KB flags: an update must
     # never silently flip a decision the user made at install time).
-    local gpu_mode="" update_args=()
+    local gpu_mode="" preview_only=false update_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --gpu) gpu_mode="on";  update_args+=("$1") ;;
             --cpu) gpu_mode="off"; update_args+=("$1") ;;
+            --preview) preview_only=true; update_args+=("$1") ;;
             *) error "Unknown flag: $1"; exit 1 ;;
         esac
         shift
@@ -3832,7 +3874,11 @@ cmd_update() {
 
         if [[ "$old_head" == "$new_head" ]]; then
             success "Already up to date (v$(get_version))."
-            _update_apply_env
+            if [[ "$preview_only" == true ]]; then
+                info "Nothing to preview: there is no new version to apply."
+            else
+                _update_apply_env
+            fi
             return
         fi
 
@@ -3941,14 +3987,16 @@ cmd_update() {
     ensure_osv_db
     ensure_sca_intel
 
-    # Rebuild the capture-proxy image if its source changed, then refresh a running
-    # proxy onto it. Build-only + best-effort: a failure must not abort the update.
+    # Rebuild the capture-proxy image if its source changed; the running proxy is
+    # refreshed onto it after the preview below. Build-only + best-effort: a failure
+    # must not abort the update.
+    local capture_rebuilt=false
     if [[ "$rebuild_capture" == "true" ]]; then
         info "Rebuilding capture proxy image (redamon-capture-proxy:latest)..."
         if ! compose_build --profile capture build capture-proxy; then
             warn "capture-proxy image failed to build; the existing image keeps working. Re-run later: docker compose --profile capture build capture-proxy"
         else
-            _reconcile_capture_if_running
+            capture_rebuilt=true
         fi
     fi
 
@@ -3960,6 +4008,29 @@ cmd_update() {
     if [[ "$rebuild_plugins" == "true" ]] && ! _plugins_build_runner; then
         _update_resume_hint
         exit 1
+    fi
+
+    # Everything is built and nothing has restarted yet: the last point where the
+    # operator can still say no. Stopping here keeps the pre-pull commit in
+    # UPDATE_PENDING_FILE, so the next `update` finishes this one.
+    local webapp_rebuilt=false preview_rc=0
+    [[ " ${rebuild_core[*]-} " == *" webapp "* ]] && webapp_rebuilt=true
+    _update_preview "$preview_only" "$webapp_rebuilt" || preview_rc=$?
+    if [[ "$preview_only" == true ]]; then
+        info "Preview only: the images are built and nothing was restarted. ./redamon.sh update applies v${new_version}."
+        [[ $preview_rc -eq 0 ]] || exit 1
+        return 0
+    fi
+    if [[ $preview_rc -eq 1 ]]; then
+        warn "Update stopped before any service restarted: v${old_version} keeps running on the old images."
+        warn "  Run ./redamon.sh update to finish it; it shows the preview again."
+        exit 1
+    fi
+
+    # It restarts the proxy, so it waits for the answer above; the old orchestrator still
+    # serves it here, and the second reconcile at the end applies the new spawn spec.
+    if [[ "$capture_rebuilt" == true ]]; then
+        _reconcile_capture_if_running
     fi
 
     # Before any service is recreated: it loads the plugins overlay into COMPOSE_FILE.
@@ -4125,7 +4196,7 @@ cmd_update() {
     # reconciled AFTER the orchestrator has been recreated onto the new code, not
     # only after its own image was rebuilt.
     #
-    # The early _reconcile_capture_if_running (next to the image build above)
+    # The early _reconcile_capture_if_running (after the image build above)
     # refreshes the pair onto the new IMAGE, but it necessarily runs while the
     # OLD orchestrator is still serving, so the pair comes back with the old
     # SPAWN SPEC - old mounts, old env. Anything this release adds to that spec
@@ -5033,7 +5104,10 @@ cmd_help() {
     echo -e "  ${GREEN}install --kbase${NC}      Build with Knowledge Base (~4.4 GB heavier, local KB enabled)"
     echo -e "  ${GREEN}install --gpu${NC}        Build the KB on CUDA PyTorch (~2.5 GB heavier; needs nvidia-container-toolkit)"
     echo -e "  ${GREEN}install --cpu${NC}        Force CPU-only PyTorch (default; auto-detected when neither flag is given)"
-    echo -e "  ${GREEN}update${NC}           Pull latest version and smart-rebuild changed services"
+    echo -e "  ${GREEN}update${NC}           Pull latest version and smart-rebuild changed services; before the restart"
+    echo -e "                   it previews what changes for existing accounts and, in a terminal, asks to continue"
+    echo -e "  ${GREEN}update --preview${NC} Same pull and build, then print the preview and stop: nothing restarts,"
+    echo -e "                   but the checkout IS pulled (a later 'update' applies it)"
     echo -e "  ${GREEN}up${NC}               Start services"
     echo -e "  ${GREEN}up dev${NC}           Start in dev mode (hot-reload, auto-detects GVM mode)"
     echo -e "  ${GREEN}down${NC}             Stop services (preserves data)"
@@ -5056,6 +5130,7 @@ cmd_help() {
     echo "  ./redamon.sh install --gvm --kbase # First-time setup with everything"
     echo "  ./redamon.sh install --kbase --gpu  # Knowledge Base on the GPU (CUDA PyTorch)"
     echo "  ./redamon.sh update           # Update to latest version"
+    echo "  ./redamon.sh update --preview # See what an update changes for accounts; pulls and builds, restarts nothing"
     echo "  ./redamon.sh up               # Start after reboot"
     echo "  ./redamon.sh up dev           # Dev mode with hot-reload (auto-detects GVM)"
     echo "  ./redamon.sh create-admin     # Create the admin login (or reset it)"
