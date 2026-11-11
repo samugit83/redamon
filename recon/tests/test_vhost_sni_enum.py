@@ -557,15 +557,27 @@ class TestCollectGraphCandidates:
         assert "acme.com" in out
 
     def test_pulls_external_domains(self):
+        # The aggregate's own keys (recon/helpers/external_domains.py). The
+        # source read `name` / `ips`, which nothing writes (B-17).
         recon = {
             "external_domains_aggregated": [
-                {"name": "external.acme.com", "ips": ["5.5.5.5"]},
-                {"name": "wrongip.acme.com", "ips": ["1.1.1.1"]},
+                {"domain": "external.example.com", "ips_seen": ["203.0.113.5"]},
+                {"domain": "wrongip.example.com", "ips_seen": ["198.51.100.1"]},
             ],
         }
-        out = _collect_graph_candidates(recon, "5.5.5.5")
-        assert "external.acme.com" in out
-        assert "wrongip.acme.com" not in out
+        out = _collect_graph_candidates(recon, "203.0.113.5")
+        assert "external.example.com" in out
+        assert "wrongip.example.com" not in out
+
+    def test_builds_the_external_domains_aggregate_when_absent(self):
+        # Phase A runs before the pipeline aggregates them (B-17).
+        recon = {"urlscan": {"external_domains": [
+            {"domain": "external.example.com", "source": "urlscan", "ip": "203.0.113.5"},
+            {"domain": "wrongip.example.com", "source": "urlscan", "ip": "198.51.100.1"},
+        ]}}
+        out = _collect_graph_candidates(recon, "203.0.113.5")
+        assert "external.example.com" in out
+        assert "wrongip.example.com" not in out
 
     def test_pulls_cnames(self):
         recon = {

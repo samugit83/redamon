@@ -41,11 +41,14 @@ def fake_whois():
 
 
 def test_an_empty_parse_is_returned_at_once_with_no_sleep(fake_whois):
-    fake, sleep = fake_whois
+    # An address is asked through the registry client, never python-whois's
+    # whois() (its hidden PTR lookup): see test_ip_hostnames_mode_gates.py.
+    domain_whois, sleep = fake_whois
     empty = _entry(org="Example Hosting")
-    fake.return_value = empty
-    result, target = get_whois_data("198.51.100.7")
+    with mock.patch.object(whois_recon, "_ip_whois", return_value=empty) as fake:
+        result, target = get_whois_data("198.51.100.7")
     assert fake.call_count == 1
+    domain_whois.assert_not_called()
     sleep.assert_not_called()
     assert result is empty and target == "198.51.100.7"
 
@@ -81,9 +84,10 @@ def test_unknown_domain_is_no_data(fake_whois):
 
 
 def test_no_output_is_no_data_for_an_ip(fake_whois):
-    fake, sleep = fake_whois
-    fake.side_effect = WhoisError("Whois command returned no output")
-    result, _ = get_whois_data("198.51.100.7")
+    _, sleep = fake_whois
+    with mock.patch.object(whois_recon, "_ip_whois",
+                           side_effect=WhoisError("Whois command returned no output")) as fake:
+        result, _ = get_whois_data("198.51.100.7")
     assert result == {} and fake.call_count == 1
     sleep.assert_not_called()
 

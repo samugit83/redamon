@@ -216,6 +216,22 @@ describe('computeReconDelta', () => {
     expect(computeReconDelta(withoutJev, reformatted).totals.stable).toBe(0)
   })
 
+  test('a hostname recorded on a target IP changes only when its evidence does', () => {
+    // Every IP-mode run re-evaluates every recorded name and stamps the time;
+    // the same names with the same reasons are no change, a new reason is one.
+    const recorded = { domain: 'web.example.com', sources: ['ptr'], ips_seen: ['203.0.113.10'],
+                       ip_hostname_reason: 'record_only', ip_hostname_org: 'example.com' }
+    const run1 = graph([node('1', 'ExternalDomain', { ...recorded, ip_hostname_evaluated_at: 'monday' })])
+    const run2 = graph([node('2', 'ExternalDomain', { ...recorded, ip_hostname_evaluated_at: 'tuesday' })])
+    expect(VOLATILE_PROPERTIES.has('ip_hostname_evaluated_at')).toBe(true)
+    expect(computeReconDelta(run1, run2).totals).toMatchObject({ changed: 0, stable: 1 })
+    const refused = graph([node('3', 'ExternalDomain', {
+      ...recorded, ip_hostname_reason: 'roe_excluded', ip_hostname_evaluated_at: 'wednesday' })])
+    const d = computeReconDelta(run2, refused)
+    expect(d.totals).toMatchObject({ changed: 1, stable: 0 })
+    expect(VOLATILE_PROPERTIES.has('ip_hostname_reason')).toBe(false)
+  })
+
   test('an empty base means everything is new (first comparison)', () => {
     const d = computeReconDelta(graph([]), after)
     expect(d.totals.added).toBe(7)

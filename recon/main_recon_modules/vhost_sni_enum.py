@@ -224,6 +224,14 @@ def run_vhost_sni_enrichment(
             "source": "vhost_sni_wordlist", "reason": "shared CDN edge",
             "skipped": len(wordlist_skipped),
         }])
+    ip_mode_names = _ip_mode_names(combined_result, settings, ip_port_map) if use_graph_candidates else None
+
+    # IP mode's base URLs are its addresses: a name answering on one is a
+    # finding on that address, never a new URL to probe (a recorded name is no
+    # target, I-4; a selected one reaches httpx through the name selection).
+    if inject_discovered and (combined_result.get("metadata") or {}).get("ip_mode"):
+        print("[-][VhostSni] IP mode: a hidden vhost is reported on its IP, never added as a base URL")
+        inject_discovered = False
 
     print(f"[*][VhostSni] Probing {len(ip_port_map)} IP target(s) with concurrency={concurrency}")
     for ip, ports in ip_port_map.items():
@@ -234,7 +242,10 @@ def run_vhost_sni_enrichment(
                 apex_domain=apex,
                 default_prefixes=default_prefixes if use_default_wordlist and ip not in edge_ips else [],
                 custom_lines=custom_lines,
-                graph_candidates=_collect_graph_candidates(combined_result, ip) if use_graph_candidates else [],
+                graph_candidates=(
+                    [] if not use_graph_candidates
+                    else ip_mode_names.get(ip, []) if ip_mode_names is not None
+                    else _collect_graph_candidates(combined_result, ip)),
                 test_l7=test_l7,
                 test_l4=test_l4,
                 timeout=timeout,
@@ -1252,6 +1263,11 @@ def _dns_known_names(combined_result: dict, ip: str) -> set[str]:
         host = str(info.get("host") or "").strip().lower().rstrip(".")
         if host and not _looks_like_ip(host):
             names.add(host)
+    # IP mode keeps its names out of the dns block: every hostname the run
+    # recorded on its targets was seen there (a PTR answer, a certificate,
+    # passive DNS), so it is that host's own site, never a hidden one.
+    if (combined_result.get("metadata") or {}).get("ip_mode"):
+        names |= set(((combined_result.get("ip_hostnames") or {}).get("candidates")) or {})
     return names
 
 
@@ -1286,12 +1302,16 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
                 if isinstance(san, str) and san.strip():
                     out.add(san.strip().lower().lstrip("*."))
 
-    # 4. ExternalDomain / aggregated external_domains co-resident on IP
-    for ed in (combined_result.get("external_domains_aggregated") or []):
-        if isinstance(ed, dict):
-            for ed_ip in (ed.get("ips") or []):
-                if ed_ip == ip and ed.get("name"):
-                    out.add(str(ed["name"]).strip().lower())
+    # 4. External domains seen on this IP. The pipeline aggregates them only
+    # after this module ran, so the aggregate is built here when absent; its
+    # entries are {domain, ips_seen} (recon/helpers/external_domains.py).
+    aggregated = combined_result.get("external_domains_aggregated")
+    if aggregated is None:
+        from recon.helpers.external_domains import _aggregate_external_domains
+        aggregated = _aggregate_external_domains(combined_result)
+    for ed in aggregated or []:
+        if isinstance(ed, dict) and ed.get("domain") and ip in (ed.get("ips_seen") or []):
+            out.add(str(ed["domain"]).strip().lower())
 
     # 5. CNAME targets from DNSRecord-shaped entries in dns map
     for sub_name, sub_info in (dns.get("subdomains") or {}).items():
@@ -1302,9 +1322,6 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
         for cn in cnames:
             if isinstance(cn, str) and cn.strip():
                 out.add(cn.strip().lower().rstrip("."))
-
-    # IP mode's PTR names need no source of their own: main records each one in
-    # the dns block with its address, so source 1 reads it (as a DNS-known name).
 
     # 6. tlsx SAN list, matched on the scanned IP. Covers non-HTTP TLS ports and
     # bare IPs httpx never dialled; empty when tlsx is off (harmless).
@@ -1318,6 +1335,45 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
                     out.add(san.strip().lower().lstrip("*."))
 
     return [h for h in out if h and "." in h]
+
+
+def _ip_mode_names(combined_result: dict, settings: dict, ips: Iterable[str]) -> Optional[dict[str, list[str]]]:
+    """IP mode: {target IP: the recorded hostnames this probe may try on it};
+    None outside IP mode, where the graph sources above apply.
+
+    A name is tried only on a target IP it was seen on, so the probe stays on
+    the targets. None in IP only (D-09: the custom FQDN lines are its only
+    names). None at all when IP attribution did not run, and none on a shared
+    CDN edge or on an IP whose attribution failed (B-31): an edge answers a
+    name with whichever tenant's site it serves.
+    """
+    if not (combined_result.get("metadata") or {}).get("ip_mode"):
+        return None
+    from recon.helpers.ip_hostnames import hostname_mode, may_send
+    from recon.main_recon_modules.ip_attribution import ATTRIBUTION_FAILED
+    if hostname_mode(settings) == "ip_only":
+        print("[-][VhostSni] IP only: no discovered hostname is tried (custom FQDN lines only)")
+        return {}
+    attribution = combined_result.get("ip_attribution")
+    if not isinstance(attribution, dict):
+        print("[-][VhostSni] IP attribution did not run: no recorded hostname is tried on the target IPs")
+        return {}
+    by_ip = attribution.get("by_ip") or {}
+    usable, edges = set(), set()
+    for ip in ips:
+        entry = by_ip.get(ip)
+        if not isinstance(entry, dict) or ATTRIBUTION_FAILED in (entry.get("ownership_reasons") or ()):
+            continue
+        (edges if entry.get("ownership") == "shared_edge" else usable).add(ip)
+    if edges:
+        print(f"[-][VhostSni] Recorded hostnames are not tried on {len(edges)} shared CDN edge IP(s)")
+    out: dict[str, list[str]] = {}
+    for name, candidate in (((combined_result.get("ip_hostnames") or {}).get("candidates")) or {}).items():
+        if may_send(candidate):
+            for ip in candidate.get("ips_seen") or ():
+                if ip in usable:
+                    out.setdefault(ip, []).append(name)
+    return out
 
 
 # =============================================================================

@@ -104,6 +104,7 @@ group into one row per node.
 - recon_nuclei_truncated (boolean): a Nuclei pass hit NUCLEI_MAX_RUNTIME and was stopped; its partial findings were kept
 - is_wildcard_zone (boolean): RedAmon's wildcard control probed random names under this domain and they resolved, so the zone answers EVERY name (wildcard DNS); false when they did not resolve; absent when it was never checked (DNS resolution off, or the probe failed). Names that only resolve through the wildcard are not kept as Subdomains
 - wildcard_ips (list[string]): the addresses the wildcard answers with (empty when the zone is no wildcard)
+- ip_hostname_mode (string): only on the IP-mode mock root (`is_mock: true`): what the last full IP-mode run did with the hostnames it saw on the target IPs: "ip_only" (looked none up), "record_only", "record_filter" or "scan_all". Absent until a full IP-mode run wrote it, which tells "never ran in a recording mode" from "a recording run found no name"
 
 Additional properties present on this node type, not yet described:
 - admin_name (string)
@@ -164,6 +165,9 @@ Additional properties present on this node type, not yet described:
 - source (string): discovery source ("crt.sh", "hackertarget", "knockpy", "shodan_rdns", "shodan_dns", "urlscan", "fofa", "otx_passive_dns", "censys_rdns", "uncover"; "tlsx", "certificate_san" or "js_recon" for a name a later step added). A urlscan name seen recently is resolved and scanned like a discovered one (URLScan's Inject settings); one the scan did not resolve stays status "unverified"
 - is_wildcard_zone (boolean): set only on a subdomain that is itself a zone the wildcard control checked (a scan root below its org, or a parent with many discovered names), with the same meaning as on Domain
 - wildcard_ips (list[string]): set only on a subdomain that is itself a zone the wildcard control checked (a scan root below its org, or a parent with many discovered names), with the same meaning as on Domain
+- ip_hostname_reason (string): on a hostname an IP-mode run selected to scan on its target IPs (`source` "ip_hostname_selection"): "scanned", or "out_of_policy" once the project's hostname policy no longer admits it. Count a name as scanned only when the reason is "scanned" and the project's current policy still admits it
+- ip_hostname_sources (list[string]): on such a name, the sources that saw it on the target IPs (the codes of ExternalDomain.sources)
+- ip_hostname_evaluated_at (datetime): on such a name, when the run that selected it evaluated it
 
 Additional properties present on this node type, not yet described:
 - actual_ip (string)
@@ -264,7 +268,7 @@ Additional properties present on this node type, not yet described:
 - ownership (string): "shared_edge" (a CDN edge serving many tenants), "dedicated" (the certificate the address presents without SNI covers a target domain) or "unknown" (neither can be shown). Written by IP attribution after the HTTP probe; never "not ours", since a real server on a cloud provider has a generic PTR and the cloud's whois. Absent on an IP no run has attributed yet: read it as unknown
 - ownership_reasons (list[string]): why `ownership` says what it says, sorted, e.g. ["default certificate covers no target domain", "in a published CDN edge range"]; "default certificate not checked (stealth mode)" when no handshake was made
 - default_cert_names (list[string]): the CN and SANs of the certificate the address presents to a TLS client that sends no SNI, sorted; absent when no handshake read one
-- current_dns_names (int): how many names in the scan's own DNS results resolved to the address; 0 means no current name points at it (the address may have left the target). An IP-mode target is listed by address, so 0 says nothing there
+- current_dns_names (int): how many names in the scan's own DNS results resolved to the address; 0 means no current name points at it (the address may have left the target). On an IP-mode target it counts the hostnames recorded on the address instead, and is 0 when the run looked no name up (IP only): the operator listed the address, so 0 says nothing about it leaving the target
 
 Additional properties present on this node type, not yet described:
 - ip_mode (boolean)
@@ -1335,9 +1339,9 @@ Additional properties present on this node type, not yet described:
 - file_name (string): original file name if available
 - source (string): discovery tool ("otx", "virustotal")
 - first_seen (datetime): when first associated with this indicator
-**ExternalDomain** - Hosts encountered during recon that are under none of the project's scan roots (informational only; it may share an org with a scan root, e.g. `mail.example.com` when only `*.api.example.com` is in scope)
+**ExternalDomain** - Hosts encountered during recon that are under none of the project's scan roots (informational only; it may share an org with a scan root, e.g. `mail.example.com` when only `*.api.example.com` is in scope). In IP mode also every hostname seen on a target IP and not scanned (`ip_hostname_reason` set): a recorded name, never a target
 - domain (string): foreign domain name
-- sources (string[]): discovery sources (http_probe_redirect, urlscan, urlscan_redirect, gau, katana, hakrawler, zap_ajax_spider, jsluice, cert_discovery, otx_passive_dns). "urlscan_redirect": a public urlscan visit started on the target and ended on this site; its redirect_from_urls are the target's masked start URLs, its unmasked_redirect_from_urls the same start URLs whole, and its redirect_to_urls hold the origin only
+- sources (string[]): discovery sources (http_probe_redirect, urlscan, urlscan_redirect, gau, katana, hakrawler, zap_ajax_spider, jsluice, cert_discovery, otx_passive_dns). "urlscan_redirect": a public urlscan visit started on the target and ended on this site; its redirect_from_urls are the target's masked start URLs, its unmasked_redirect_from_urls the same start URLs whole, and its redirect_to_urls hold the origin only. A name recorded on a target IP adds what saw it there: ptr, tlsx_san, tlsx_cn, httpx_san, httpx_cn, attribution_cert (a certificate the address served this run), http_redirect (the address redirected to it), and from third-party indexes shodan_rdns, shodan_hostnames, otx_passive_dns, censys_rdns, censys_cert, fofa_host, fofa_domain, fofa_cname, fofa_cert, netlas_host, zoomeye_hostname, zoomeye_rdns
 - redirect_from_urls (string[]): in-scope URLs that redirected to this domain
 - unmasked_redirect_from_urls (string[]): for urlscan_redirect, the target's start URLs with their values, newest first, at most 25. For the operator's UI only: a graph query that names them is refused
 - redirect_to_urls (string[]): foreign URLs encountered
@@ -1349,6 +1353,9 @@ Additional properties present on this node type, not yet described:
 - times_seen (integer): total encounters
 - first_seen_at (datetime)
 - updated_at (datetime)
+- ip_hostname_reason (string): IP mode only: why a hostname seen on a target IP was recorded and not scanned, the selection rule's first refusal: "record_only" (the mode records and scans no name), "hard_blocked", "roe_excluded", "invalid_filter", "filter_excluded", "filter_no_match", "no_registrable_domain", "attribution_unavailable", "shared_edge_ip", "dns_disabled", "resolver_unavailable", "no_current_resolution", "never_scannable_address", "resolves_outside_targets", "wildcard_zone", "cap_reached" or "moved_during_scan". Absent on an ExternalDomain no IP-mode run recorded
+- ip_hostname_org (string): IP mode: the recorded name's registrable domain; absent when the name is a public suffix
+- ip_hostname_evaluated_at (datetime): IP mode: when the run that recorded the name evaluated it
 **UserInput** - User-provided values for partial recon runs (custom subdomains, IPs, etc.)
 - id (string, UUID): unique identifier
 - input_type (string): "subdomains", "ips", "urls", "domains"
@@ -1441,7 +1448,7 @@ not so you can query for one.
 - `(ui:UserInput)-[:PRODUCED]->(i:IP)` - Partial recon run produced this IP
 - `(ui:UserInput)-[:PRODUCED]->(e:Endpoint)` - Endpoint declared by an API specification document the operator gave a partial OpenAPI run
 - `(ui:UserInput)-[:PRODUCED]->(v:Vulnerability)` - Route exposure finding a partial run wrote for a base URL the operator typed
-- `(d:Domain)-[:HAS_EXTERNAL_DOMAIN]->(ed:ExternalDomain)` - Domain encountered foreign domain during recon
+- `(d:Domain)-[:HAS_EXTERNAL_DOMAIN]->(ed:ExternalDomain)` - Domain encountered foreign domain during recon. In IP mode the mock root also links every hostname recorded on a target IP (see SEEN_ON)
 - `(s:Subdomain)-[:BELONGS_TO]->(d:Domain)` - Subdomain belongs to Domain
 - `(d:Domain)-[:HAS_IP]->(i:IP)` - An address uncover's org-wide search tied to this org Domain, with no hostname to hang it on. NOT the apex's A record: the apex's own addresses are on `Subdomain {name: d.name}` via RESOLVES_TO, when the apex is a target
 - `(d:Domain)-[:HAS_SUBDOMAIN]->(s:Subdomain)` - Domain has subdomain. The INVERSE of BELONGS_TO; both directions are written, so traverse whichever reads better and never assume only one exists
@@ -1456,6 +1463,7 @@ not so you can query for one.
 ### OTX Threat Intelligence Relationships
 - `(d:Domain)-[:HISTORICALLY_RESOLVED_TO {first_seen, last_seen, record_type}]->(i:IP)` - Domain has historically resolved to this IP (from OTX domain/passive_dns)
 - `(s:Subdomain)-[:HISTORICALLY_RESOLVED_TO {source, first_seen, last_seen}]->(i:IP)` - An address a public urlscan visit of this host recorded (source 'urlscan'; first_seen and last_seen are the earliest and latest visit dates, ISO-8601 strings). History, NOT current DNS: the address may belong to someone else now and is never a scan target as the host's current IP. Only in-scope hosts the RoE does not exclude, with a routable address, get one. Origin Discovery reads it as a clue for the real server behind a CDN. Typical query: `MATCH (s:Subdomain {user_id: $uid, project_id: $pid})-[r:HISTORICALLY_RESOLVED_TO]->(i:IP) RETURN s.name, i.address, r.source, r.last_seen`
+- `(ed:ExternalDomain)-[:SEEN_ON {sources, first_seen, last_seen, resolves_here, cert_covers, reason}]->(i:IP)` - IP mode: a hostname some source saw on this target IP, recorded and not scanned. Not HISTORICALLY_RESOLVED_TO, which is a dated past DNS answer of an in-scope host that DNS drift and Origin Discovery read as history: SEEN_ON says only "observed on this target address", and a recorded name never gets HISTORICALLY_RESOLVED_TO. sources are the codes of what saw it on this address (see ExternalDomain.sources); first_seen / last_seen (ISO date strings) come only from dated sources (passive DNS, the search engines' records) and are absent otherwise; cert_covers is true when a certificate this address served in the run covers the name; resolves_here says whether the name's current A/AAAA answer includes this address, absent when the name was not resolved (record-only runs resolve none); reason repeats the name's ip_hostname_reason. Typical query: `MATCH (ed:ExternalDomain {user_id: $uid, project_id: $pid})-[r:SEEN_ON]->(i:IP) RETURN ed.domain, i.address, r.sources, ed.ip_hostname_reason`
 - `(i:IP)-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)` - IP appears in OTX threat pulse
 - `(d:Domain)-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)` - Domain appears in OTX threat pulse
 - `(b:BaseURL)-[:CONTACTS_MALICIOUS_HOST {matched_host, evidence, source_url}]->(tp:ThreatPulse)` -

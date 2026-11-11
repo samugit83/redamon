@@ -136,6 +136,14 @@ def _split_url(url: str) -> tuple[str, str]:
 logger = logging.getLogger(__name__)
 
 
+def _names_left_to_the_hostnames_hook(recon_data: dict) -> bool:
+    """IP mode: a hostname a source saw on a target address is written only by
+    update_graph_from_ip_hostnames, which knows every source's evidence and
+    the selection rule's reason. Written here as well, it became a Subdomain
+    or an ExternalDomain with one source's partial view (B-14, B-15)."""
+    return bool(((recon_data or {}).get("metadata") or {}).get("ip_mode"))
+
+
 class OsintMixin:
     def update_graph_from_shodan(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         """
@@ -332,7 +340,9 @@ class OsintMixin:
             # source 'shodan_rdns' (and a domain-DNS record's 'shodan_dns'), so
             # readers that mean "resolves now" skip it. ON CREATE only: an edge
             # DNS wrote first stays forward DNS.
-            for ip, hostnames in shodan_data.get("reverse_dns", {}).items():
+            reverse_dns = ({} if _names_left_to_the_hostnames_hook(recon_data)
+                           else shodan_data.get("reverse_dns", {}))
+            for ip, hostnames in reverse_dns.items():
                 for hostname in hostnames:
                     if not hostname:
                         continue
@@ -1524,7 +1534,9 @@ class OsintMixin:
                             # first-writer fields: DNS's `resolved` must survive a
                             # passive sighting, or http_probe (which demotes only
                             # `resolved` hosts) never marks a silent one `no_http`.
-                            for hostname in host.get("reverse_dns_names") or []:
+                            rdns_names = ([] if _names_left_to_the_hostnames_hook(recon_data)
+                                          else host.get("reverse_dns_names") or [])
+                            for hostname in rdns_names:
                                 root = attach_for_host(hostname, recon_data)[1] if hostname else None
                                 if not root:
                                     continue
@@ -1711,7 +1723,9 @@ class OsintMixin:
                             # FOFA host may carry port suffix (e.g. "sub.example.com:8080") — strip it
                             host_raw = (row.get("host") or "").strip()
                             host = host_raw.split(":")[0] if ":" in host_raw else host_raw
-                            root = attach_for_host(host, recon_data)[1] if host and host != ip else None
+                            root = (attach_for_host(host, recon_data)[1]
+                                    if host and host != ip and not _names_left_to_the_hostnames_hook(recon_data)
+                                    else None)
                             if root:
                                 session.run(
                                     """
@@ -1814,8 +1828,10 @@ class OsintMixin:
 
                         # ── passive DNS hostnames ────────────────────────
                         pdns_records = rep.get("passive_dns") or []
+                        if _names_left_to_the_hostnames_hook(recon_data):
+                            pdns_records = []
                         # Fallback to legacy hostname list if new format absent
-                        if not pdns_records:
+                        elif not pdns_records:
                             pdns_records = [
                                 {"hostname": h, "first": "", "last": "", "record_type": ""}
                                 for h in (rep.get("passive_dns_hostnames") or [])
@@ -2553,7 +2569,9 @@ class OsintMixin:
                                     stats["relationships_created"] += 1
 
                             # Hostname / rDNS → Subdomain node (in-scope only)
-                            for hostname_val in {row.get("hostname"), row.get("rdns")}:
+                            row_names = (set() if _names_left_to_the_hostnames_hook(recon_data)
+                                         else {row.get("hostname"), row.get("rdns")})
+                            for hostname_val in row_names:
                                 if not hostname_val:
                                     continue
                                 hostname_val = hostname_val.strip().lower()

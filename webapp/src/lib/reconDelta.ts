@@ -128,6 +128,9 @@ export const VOLATILE_PROPERTIES = new Set([
   'anon_page_class',
   'anon_page_class_confidence',
   'anon_page_class_source',
+  // Every IP-mode run re-evaluates every hostname seen on a target IP and
+  // stamps when; the name's reason (ip_hostname_reason) is what changes.
+  'ip_hostname_evaluated_at',
   // Per-host coverage stamps on BaseURL: every run restamps every host it
   // looked at, and a cut that moves between runs is the scan, not the target.
   ...COVERAGE_STAMP_PROPERTIES,

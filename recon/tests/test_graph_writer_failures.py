@@ -317,6 +317,9 @@ class TestTheWriterTable:
         "update_graph_from_urlscan_enrichment", "update_graph_from_censys",
         "update_graph_from_fofa", "update_graph_from_otx", "update_graph_from_virustotal",
         "update_graph_from_zoomeye", "update_graph_from_supply_chain_recon",
+        # Recorded hostnames (ExternalDomain + SEEN_ON) and the run's hostname
+        # mode on the mock root: assets, no finding to keep.
+        "update_graph_from_ip_hostnames",
     }
 
     def _queued_writers(self) -> set:

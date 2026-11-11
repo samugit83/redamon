@@ -1306,6 +1306,33 @@ def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> N
         combined_result["metadata"].setdefault("phase_errors", {})["ip_attribution"] = str(e)
 
 
+def _ip_hostnames_step(combined_result: dict, settings: dict, output_file) -> None:
+    """IP mode: collect the hostnames seen on the target IPs and record them
+    (recon/helpers/ip_hostnames.py). Never raises: a failure records no name
+    and the run goes on with its addresses.
+
+    The writer is queued in every mode, ip_only included, because it also
+    stamps the run's hostname mode on the mock root. In the record modes the
+    hook rewrites the attributed IPs' current_dns_names (D-10), so their
+    attribution write goes again, after the first on the serial queue.
+    """
+    from recon.helpers import ip_hostnames
+    try:
+        block = ip_hostnames.hostname_step(combined_result, settings)
+    except Exception as e:  # noqa: BLE001 - the addresses are the run; names are extra
+        print(f"[!][IpNames] Hostname recording failed ({type(e).__name__}): no name is recorded this run")
+        combined_result["metadata"].setdefault("phase_errors", {})["ip_hostnames"] = str(e)
+        return
+    if block is None:
+        return
+    if block["mode"] != "ip_only":
+        combined_result["metadata"].setdefault("modules_executed", []).append("ip_hostnames")
+    save_recon_file(combined_result, output_file)
+    _graph_update_bg("update_graph_from_ip_hostnames", combined_result, USER_ID, PROJECT_ID)
+    if block["mode"] != "ip_only" and "ip_attribution" in combined_result:
+        _graph_update_bg("update_graph_from_ip_attribution", combined_result, USER_ID, PROJECT_ID)
+
+
 # The Nmap merge lives in recon.helpers.nmap_merge, so partial recon reaches it
 # without importing this file.
 from recon.helpers.nmap_merge import (  # noqa: E402
@@ -1397,7 +1424,6 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         Complete reconnaissance data dict (same shape as run_domain_recon output)
     """
     import ipaddress
-    from recon.main_recon_modules.domain_recon import dns_lookup
 
     print("\n" + "=" * 70)
     print("               RedAmon - IP-Based Reconnaissance")
@@ -1428,7 +1454,13 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             except ValueError as e:
                 print(f"[!][Pipeline] Invalid CIDR {entry}: {e}")
         else:
-            expanded_ips.append(entry)
+            # One spelling per address (`2001:DB8:0::1` is `2001:db8::1`): the
+            # tools report the canonical one, and a second spelling would be a
+            # second IP node that no finding and no SEEN_ON edge ever meets.
+            try:
+                expanded_ips.append(str(ipaddress.ip_address(entry)))
+            except ValueError:
+                expanded_ips.append(entry)
 
     expanded_ips = list(dict.fromkeys(expanded_ips))  # deduplicate preserving order
     print(f"[*][Pipeline] Expanded {len(target_ips)} entries to {len(expanded_ips)} individual IPs")
@@ -1437,30 +1469,32 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     expanded_ips = _filter_roe_excluded(expanded_ips, settings, label="IP")
 
     # Step 2: Reverse DNS for each IP
+    from recon.helpers.ip_hostnames import hostname_mode
     from recon.helpers.ip_placeholders import placeholder_for
-    from recon.helpers.target_admission import forward_verdict, target_set
-    targets = target_set(expanded_ips)
+    from recon.main_recon_modules.domain_recon import reverse_dns_lookup_all
     # Every target keeps its label: it carries the address to naabu, httpx's
     # DNS fallback, GVM and the graph, whatever its PTR says (R-4).
     ip_to_hostname = {ip: placeholder_for(ip) for ip in expanded_ips}
-    ptr_names = {}  # PTR name -> the listed IPs it answered for, once per name (B-27)
-    ptr_kept = []
-    ptr_refused = []
+    # A PTR answer is evidence for the hostnames hook, never a scope entry:
+    # the name's own A/AAAA can point anywhere (B-01), and only the selection
+    # rule may make a name a target.
+    ptr_answers = {}
     subdomains_dns = {}
 
     dns_enabled = settings.get('DNS_ENABLED', True)
+    names_mode = hostname_mode(settings)
 
     # The orchestrator takes the progress label from these GROUP headers only
     # (PIPELINE_HEADER_PHASES in recon_orchestrator/container_manager.py).
     print(f"\n[*][Pipeline] GROUP 1: Reverse DNS + DNS + IP WHOIS (IP mode)")
 
-    if dns_enabled:
+    if dns_enabled and names_mode != "ip_only":
         print(f"\n[*][DNS] IP STEP 1: Reverse DNS Lookup")
         print("-" * 40)
 
         # Parallel PTR lookups: one IP at a time serialised the whole /24 sweep.
-        # A per-/24 reverse-zone breaker inside reverse_dns_lookup skips a zone
-        # whose PTR authority stopped answering (and the resolver breaker skips
+        # A per-/24 reverse-zone breaker inside the lookup skips a zone whose
+        # PTR authority stopped answering (and the resolver breaker skips
         # everything if the resolver itself is down), so a dead range no longer
         # costs one timeout per IP.
         _rdns_retries = settings.get('DNS_MAX_RETRIES', 3)
@@ -1468,7 +1502,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         _rdns_results = {}
         with ThreadPoolExecutor(max_workers=_rdns_workers, thread_name_prefix="rdns") as _rdns_pool:
             _rdns_futs = {
-                _rdns_pool.submit(reverse_dns_lookup, ip, _rdns_retries): ip
+                _rdns_pool.submit(reverse_dns_lookup_all, ip, _rdns_retries): ip
                 for ip in expanded_ips
             }
             for _fut in as_completed(_rdns_futs):
@@ -1476,15 +1510,18 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 try:
                     _rdns_results[_ip] = _fut.result()
                 except Exception:  # noqa: BLE001 - a lookup crash is a miss
-                    _rdns_results[_ip] = None
+                    _rdns_results[_ip] = []
         # Apply results in the original order for deterministic output.
         for ip in expanded_ips:
-            hostname = _rdns_results.get(ip)
-            if hostname and not hostname.replace('-', '').replace('.', '').isdigit():
-                ptr_names.setdefault(hostname, []).append(ip)
-                print(f"[+][DNS] {ip} -> {hostname}")
+            names = [n for n in _rdns_results.get(ip) or []
+                     if not n.replace('-', '').replace('.', '').isdigit()]
+            if names:
+                ptr_answers[ip] = names
+                print(f"[+][DNS] {ip} -> {', '.join(names)}")
             else:
                 print(f"[-][DNS] {ip} -> no PTR (using {ip_to_hostname[ip]})")
+    elif dns_enabled:
+        print(f"\n[-][DNS] IP STEP 1: Reverse DNS Lookup — SKIPPED (IP only: no hostname is looked up)")
     else:
         print(f"\n[-][DNS] IP STEP 1: Reverse DNS Lookup — SKIPPED (disabled)")
 
@@ -1503,31 +1540,6 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             "actual_ip": ip,
         }
         subdomain_names.append(ip_to_hostname[ip])
-
-    if dns_enabled:
-        print(f"\n[*][DNS] IP STEP 2: DNS Resolution for Discovered Hosts")
-        print("-" * 40)
-
-        # A PTR name is scanned only when its forward answer is non-empty and
-        # every address in it is a target (I-1): a PTR record is the address
-        # owner's claim, the name's own A/AAAA can point anywhere (B-01).
-        for hostname, ptr_ips in ptr_names.items():
-            print(f"[*][DNS] Resolving: {hostname}")
-            host_dns = dns_lookup(hostname)
-            host_ips = host_dns.get("ips") or {}
-            answer = (host_ips.get("ipv4") or []) + (host_ips.get("ipv6") or [])
-            reason = forward_verdict(answer, targets)
-            if reason is None:
-                subdomains_dns[hostname] = host_dns
-                subdomain_names.append(hostname)
-                ptr_kept.append(hostname)
-                print(f"[+][DNS] {hostname}: every address is a target ({', '.join(answer)})")
-            else:
-                ptr_refused.append(hostname)
-                print(f"[-][DNS] {hostname} (PTR of {', '.join(ptr_ips)}) not scanned: {reason}"
-                      + (f" ({', '.join(answer)})" if answer else ""))
-    else:
-        print(f"\n[-][DNS] IP STEP 2: DNS Resolution — SKIPPED (disabled)")
 
     # Step 4: IP WHOIS (best-effort)
     ip_whois = {}
@@ -1564,7 +1576,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     else:
         print(f"\n[-][WHOIS] IP STEP 3: IP WHOIS Lookup — SKIPPED (disabled)")
 
-    # Build the subdomain_filter (all IPs, their labels, the PTR names kept above)
+    # Build the subdomain_filter (all IPs and their labels)
     # This becomes allowed_hosts for http_probe scope checking
     subdomain_filter = list(dict.fromkeys(expanded_ips + subdomain_names))
 
@@ -1591,10 +1603,12 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             "subdomain_filter": subdomain_filter,
             "anonymous_mode": False,
             "bruteforce_mode": False,
-            "modules_executed": ["ip_recon", "reverse_dns"],
+            "modules_executed": ["ip_recon"] + (
+                ["reverse_dns"] if dns_enabled and names_mode != "ip_only" else []),
             "circuit_breakers": _breaker_mode(),
         },
         "domain": mock_domain,
+        "ip_hostnames": {"mode": names_mode, **({"ptr": ptr_answers} if names_mode != "ip_only" else {})},
         "whois": {"ip_whois": ip_whois},
         "subdomains": subdomain_names,
         "subdomain_count": len(subdomain_names),
@@ -1830,6 +1844,9 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     _reachcheck_shodan_cves(combined_result, settings)
     _write_shodan_cves(combined_result)
     _write_netlas(combined_result)
+    # Every name source has answered (PTR, certificates, redirects, the OSINT
+    # indexes, the IP attribution's default certificate): collect and record.
+    _ip_hostnames_step(combined_result, settings, output_file)
 
     # Check if active scans should be skipped
     skip_active_scans, skip_reason = should_skip_active_scans(combined_result)
@@ -1960,10 +1977,14 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     print(f"\n{'=' * 70}")
     print(f"[✓][Pipeline] IP RECON COMPLETE")
     print(f"[+][Pipeline] IPs scanned: {len(expanded_ips)}")
-    print(f"[+][Pipeline] PTR names scanned (every address a target): {len(ptr_kept)}")
-    if ptr_refused:
-        print(f"[-][Pipeline] PTR names not scanned (an address outside the targets, or none): "
-              f"{len(ptr_refused)}")
+    hostnames = combined_result.get("ip_hostnames") or {}
+    if hostnames.get("mode", names_mode) == "ip_only":
+        print("[-][Pipeline] Hostnames on target IPs: not looked up (IP only)")
+    else:
+        counts = hostnames.get("summary") or {}
+        print(f"[+][Pipeline] Hostnames on target IPs ({names_mode}): {counts.get('found', 0)} found, "
+              f"{counts.get('scanned', 0)} scanned, {counts.get('recorded', 0)} recorded"
+              + (f", {counts['truncated']} not kept (volume limit)" if counts.get("truncated") else ""))
     print(f"[+][Pipeline] Output saved: {output_file}")
     print(f"{'=' * 70}")
 

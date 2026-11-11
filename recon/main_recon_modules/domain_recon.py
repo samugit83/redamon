@@ -1670,18 +1670,22 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
 
 
 def reverse_dns_lookup(ip_address: str, max_retries: int = 3):
-    """
-    Perform reverse DNS (PTR) lookup for an IP address.
+    """The first PTR name of an address, or None. Kept for callers that want
+    one name; an IP-mode run asks reverse_dns_lookup_all."""
+    names = reverse_dns_lookup_all(ip_address, max_retries)
+    return names[0] if names else None
 
-    Args:
-        ip_address: IPv4 or IPv6 address string
-        max_retries: Number of retry attempts
 
-    Returns:
-        Hostname string if PTR record found, None otherwise
+def reverse_dns_lookup_all(ip_address: str, max_retries: int = 3) -> list:
+    """Every PTR name of an address, in answer order, without the root dot or
+    duplicates; [] when there is none or no answer could be had.
+
+    A shared host carries one PTR record per site, and the resolver may rotate
+    their order, so keeping only the first lost the others and made the one
+    kept depend on the resolver.
     """
     if resolver_breaker.is_open():
-        return None
+        return []
 
     # Per-/24 (reverse-zone) breaker: a zone whose PTR authority stops answering
     # is skipped for its remaining IPs, instead of timing out on each one. A
@@ -1689,7 +1693,7 @@ def reverse_dns_lookup(ip_address: str, max_retries: int = 3):
     # count against it.
     zone_breaker = _rdns_zone_breaker(ip_address)
     if zone_breaker is not None and _breaker_is_open(zone_breaker):
-        return None
+        return []
 
     definitive = _dns_definitive_errors()
     for attempt in range(max_retries):
@@ -1697,24 +1701,27 @@ def reverse_dns_lookup(ip_address: str, max_retries: int = 3):
             rev_name = dns.reversename.from_address(ip_address)
             answers = dns.resolver.resolve(rev_name, 'PTR')
             _rdns_record_ok(zone_breaker)
-            # Return first PTR record, strip trailing dot
-            hostname = str(answers[0]).rstrip('.')
-            return hostname
+            names = []
+            for answer in answers:
+                name = str(answer).rstrip('.')
+                if name and name not in names:
+                    names.append(name)
+            return names
         except definitive:
             _rdns_record_ok(zone_breaker)  # a definitive answer = zone is alive
-            return None
+            return []
         except (dns.resolver.LifetimeTimeout, dns.resolver.Timeout,
                 dns.resolver.NoNameservers):
             if resolver_breaker.note_transient():
-                return None
+                return []
             if attempt < max_retries - 1:
                 time.sleep(1)
                 continue
             _rdns_record_timeout(zone_breaker)
-            return None
+            return []
         except Exception:
-            return None
-    return None
+            return []
+    return []
 
 
 def _rdns_zone_breaker(ip_address: str):

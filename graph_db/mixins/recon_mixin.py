@@ -13,6 +13,7 @@ by per-topic sub-mixins in the graph_db.mixins.recon package:
     TriageMixin    -> finding triage verdicts + mute/unmute suppression
     UserInputMixin -> user input nodes + partial discovery + tool input gathering
     IpAttributionMixin -> each IP's ownership tag (shared_edge / dedicated / unknown)
+    IpHostnamesMixin -> hostnames recorded on IP-mode target IPs (ExternalDomain + SEEN_ON)
 
 The public surface is unchanged: Neo4jClient(... ReconMixin ...) resolves
 every original method via MRO.
@@ -33,6 +34,7 @@ from graph_db.mixins.recon.ai_surface_recon_mixin import AiSurfaceReconMixin
 from graph_db.mixins.recon.triage_mixin import TriageMixin
 from graph_db.mixins.recon.tlsx_mixin import TlsxMixin
 from graph_db.mixins.recon.ip_attribution_mixin import IpAttributionMixin
+from graph_db.mixins.recon.ip_hostnames_mixin import IpHostnamesMixin
 
 
 class ReconMixin(
@@ -51,5 +53,6 @@ class ReconMixin(
     TriageMixin,
     TlsxMixin,
     IpAttributionMixin,
+    IpHostnamesMixin,
 ):
     pass

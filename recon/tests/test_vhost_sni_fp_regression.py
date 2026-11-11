@@ -153,6 +153,23 @@ WORDS = [
 ]
 
 
+def _recorded_on_ip(names, reason="record_only"):
+    """What the IP-mode hostnames hook leaves for the later modules: the names
+    it recorded on the target IP, and the IP attribution they need."""
+    return {
+        "ip_hostnames": {"mode": "record_only", "candidates": {
+            n: {"ips_seen": [IP], "reason": reason} for n in names}},
+        "ip_attribution": {"by_ip": {IP: {"ownership": "unknown"}}},
+    }
+
+
+def _ip_mode(recon):
+    recon["domain"] = "ip-targets.proj1"
+    # An IP-mode run always declares its targets; without them nothing is admitted.
+    recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True, "expanded_ips": [IP]}
+    return recon
+
+
 def _run(responder, words=WORDS, recon=None, **settings):
     fake = FakeCurl(responder)
     cr = recon or _recon()
@@ -608,13 +625,17 @@ class TestCandidateScope:
         assert f"login.{APEX}" in probed
         assert out["by_ip"][IP]["out_of_scope_skipped"] == 2
 
-    def test_ip_mode_keeps_ptr_names(self):
-        recon = self._graph_recon()
-        recon["domain"] = "ip-targets.proj1"
-        # An IP-mode run always declares its targets; without them nothing is admitted.
-        recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True, "expanded_ips": [IP]}
-        out, fake = _run(self.responder, words=[], recon=recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True)
-        assert "edge-203-0-113-10.cdn-provider.test" in fake.probed_hosts()
+    def test_ip_mode_probes_the_names_recorded_on_the_ip(self):
+        # IP mode's names are the hostnames hook's candidates, each tried only
+        # on a target IP it was seen on; the dns block holds labels only, and
+        # its graph sources (a CNAME target here) are not IP mode's names.
+        recon = self._graph_recon(**_recorded_on_ip(["edge-203-0-113-10.cdn-provider.test"]))
+        _ip_mode(recon)
+        out, fake = _run(self.responder, words=[], recon=recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True,
+                         IP_MODE=True, IP_HOSTNAME_MODE="record_only")
+        probed = fake.probed_hosts()
+        assert "edge-203-0-113-10.cdn-provider.test" in probed
+        assert "example-tenant.idp-provider.test" not in probed and f"login.{APEX}" not in probed
         assert out["by_ip"][IP]["out_of_scope_skipped"] == 0
 
     def test_roe_exclusion_removes_even_a_wordlist_name(self):
@@ -896,12 +917,37 @@ class TestNoWordlistOnCdnEdges:
 # ===========================================================================
 def test_ip_mode_ptr_name_serving_its_site_is_not_hidden():
     ptr = "web-7.hosting-provider.test"
-    recon = _recon(dns={"subdomains": {ptr: {"ips": {"ipv4": [IP], "ipv6": []}}}})
-    recon["domain"] = "ip-targets.proj1"
-    # An IP-mode run always declares its targets; without them nothing is admitted.
-    recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True, "expanded_ips": [IP]}
+    # The PTR answer reaches vhost/SNI as a name the hostnames hook recorded on the IP.
+    recon = _ip_mode(_recon(**_recorded_on_ip([ptr])))
     out, fake = _run_https(_shared_ip_responder({ptr: _same_page(ptr)}), [], recon,
-                           VHOST_SNI_USE_GRAPH_CANDIDATES=True)
+                           VHOST_SNI_USE_GRAPH_CANDIDATES=True, IP_MODE=True,
+                           IP_HOSTNAME_MODE="record_only")
     assert ptr in fake.probed_hosts()
     assert out["findings"] == []
     assert out["by_ip"][IP]["suppressed_dns_known"] == 1
+
+
+def test_ip_mode_never_injects_a_hostname_as_a_discovered_baseurl():
+    # A recorded name is no target (I-4), and an IP-mode run's base URLs are
+    # its addresses: neither a recorded name nor an operator's custom line
+    # that answered differently becomes a BaseURL through this probe.
+    recorded, typed = "web-7.hosting-provider.test", "intranet.hosting-provider.test"
+    recon = _ip_mode(_recon(**_recorded_on_ip([recorded])))
+    distinct = {recorded: _same_page(recorded), typed: lambda layer: _proc(200, ADMIN_APP)}
+    out, fake = _run_https(_shared_ip_responder(distinct), [typed], recon,
+                           VHOST_SNI_USE_GRAPH_CANDIDATES=True, VHOST_SNI_INJECT_DISCOVERED=True,
+                           IP_MODE=True, IP_HOSTNAME_MODE="record_only")
+    assert {recorded, typed} <= fake.probed_hosts()
+    assert [f["hostname"] for f in out["findings"]] == [typed]
+    assert out["discovered_baseurls"] == []
+    assert not (recon.get("http_probe") or {}).get("by_url")
+
+
+def test_every_recorded_name_is_a_known_name_on_every_target():
+    recon = _ip_mode(_recon(**_recorded_on_ip(["a.hosting-provider.test"])))
+    recon["ip_hostnames"]["candidates"]["b.hosting-provider.test"] = {
+        "ips_seen": ["203.0.113.11"], "reason": "roe_excluded"}
+    assert {"a.hosting-provider.test", "b.hosting-provider.test"} <= vsm._dns_known_names(recon, IP)
+    # Outside IP mode the block is not a source.
+    recon["metadata"]["ip_mode"] = False
+    assert vsm._dns_known_names(recon, IP) == set()

@@ -6,6 +6,7 @@ Output is saved as structured JSON to the output folder.
 
 import ipaddress
 import json
+import re
 import time
 import whois
 from typing import Any, Optional
@@ -31,6 +32,78 @@ def _is_ip(value: str) -> bool:
         return False
 
 
+#: The keys a regional registry names an address block's holder with, most
+#: specific first: ARIN's OrgName, RIPE's and AFRINIC's org-name, LACNIC's
+#: owner, then the free-text descr RIPE, APNIC and AFRINIC all carry.
+_ORG_KEYS = ("orgname", "org-name", "owner", "descr")
+_FIELD = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$")
+#: The only servers an ARIN referral is followed to: the other regional
+#: registries. An rwhois:// referral names an ISP's own server.
+_REGISTRY_SERVERS = frozenset({
+    "whois.ripe.net", "whois.apnic.net", "whois.lacnic.net", "whois.afrinic.net", "whois.registro.br",
+})
+
+
+def registry_fields(text: str) -> dict:
+    """{"org", "country"} from a registry's WHOIS answer, each only when found.
+
+    python-whois's generic parser knows none of the registries' keys, so an
+    IP's answer parsed empty. The first value of the first organisation key
+    present wins, and the first country.
+    """
+    fields: dict = {}
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith(("%", "#")):
+            continue
+        match = _FIELD.match(line)
+        if match and match.group(2):
+            fields.setdefault(match.group(1).lower(), match.group(2))
+    out = {}
+    org = next((fields[k] for k in _ORG_KEYS if k in fields), None)
+    if org:
+        out["org"] = org
+    if fields.get("country"):
+        out["country"] = fields["country"]
+    return out
+
+
+def _referral(text: str):
+    """The regional registry ARIN refers the block to, or None."""
+    for line in (text or "").splitlines():
+        match = _FIELD.match(line)
+        if match and match.group(1).lower() == "referralserver":
+            server = match.group(2).lower()
+            host = server[len("whois://"):].split(":", 1)[0].strip("/") if server.startswith("whois://") else ""
+            return host if host in _REGISTRY_SERVERS else None
+    return None
+
+
+def _ip_whois(address: str) -> dict:
+    """IP WHOIS at the registries, asked with the address itself.
+
+    python-whois 0.9.6 resolves an address's PTR with socket.gethostbyaddr
+    before asking, then queries the PTR name's registered domain: a hidden
+    lookup outside the resolver breakers, which IP only must not send (I-7),
+    and an answer about a domain's registrant instead of the address block.
+    ARIN answers for every address (IPv6 too, for which the library finds no
+    server) and refers a block another registry holds; only that registry's
+    answer is read. The library's own recursion would append it to ARIN's,
+    whose first OrgName is then the registry itself.
+    """
+    from whois.exceptions import WhoisError
+    from whois.whois import NICClient
+
+    client = NICClient()
+    text = client.whois(address, NICClient.ANICHOST, 0,
+                        quiet=True, ignore_socket_errors=False, timeout=10)
+    if not text:
+        raise WhoisError("Whois command returned no output")
+    server = _referral(text)
+    if server:
+        text = client.whois(address, server, 0, quiet=True, ignore_socket_errors=False, timeout=10)
+    return registry_fields(text)
+
+
 def _query(domain: str, is_ip: bool):
     """One WHOIS call, typed: (result, outcome, detail, retry_once_only).
 
@@ -44,6 +117,9 @@ def _query(domain: str, is_ip: bool):
         WhoisDomainNotFoundError, WhoisError, WhoisQuotaExceededError,
     )
     try:
+        if is_ip:
+            fields = _ip_whois(domain)
+            return fields, (Outcome.OK if fields else Outcome.NO_DATA), ("" if fields else "empty record"), False
         w = whois.whois(domain, ignore_socket_errors=False, quiet=True)
     except WhoisQuotaExceededError:
         return None, Outcome.FATAL, "quota exceeded", False

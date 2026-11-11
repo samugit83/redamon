@@ -650,8 +650,13 @@ def run_shodan_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
     key_rotator = settings.get("SHODAN_KEY_ROTATOR")
     shodan_workers = settings.get("SHODAN_WORKERS", 5)
 
+    # IP only asks no name and keeps none (I-7), whatever the stored toggle
+    # says: a run that skipped the settings overrides still gets no PTR here.
+    from recon.helpers.ip_hostnames import names_off
+    no_names = names_off(combined_result, settings)
+
     do_host = settings.get("SHODAN_HOST_LOOKUP", False)
-    do_rdns = settings.get("SHODAN_REVERSE_DNS", False)
+    do_rdns = settings.get("SHODAN_REVERSE_DNS", False) and not no_names
     do_ddns = settings.get("SHODAN_DOMAIN_DNS", False)
     do_cves = settings.get("SHODAN_PASSIVE_CVES", False)
 
@@ -702,6 +707,10 @@ def run_shodan_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
             shodan_data["hosts"] = _run_host_lookup(ips, api_key, key_rotator=key_rotator,
                                                     max_workers=shodan_workers,
                                                     answered=host_answered)
+            if no_names:
+                for host in shodan_data["hosts"]:
+                    if isinstance(host, dict) and host.get("hostnames"):
+                        host["hostnames"] = []
             print(f"[+][Shodan] Host lookup complete: {len(shodan_data['hosts'])} hosts enriched")
 
         # 2. Reverse DNS (falls back to InternetDB hostnames on 403)

@@ -265,6 +265,12 @@ def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: d
     if ceiling:
         cmd.extend(["--max-rate", f"{ceiling:g}"])
 
+    # IP mode asks nothing about names unless its hostname mode records them,
+    # and then only through the hostnames hook: without -n nmap sends a PTR
+    # query for every target that answers. Its hostnames are not parsed.
+    if settings.get('IP_MODE'):
+        cmd.append("-n")
+
     # Without -6 nmap skips an IPv6 target ("you have to use the -6 option"),
     # still exits 0 and lists it status="skipped", so it was never scanned.
     try:

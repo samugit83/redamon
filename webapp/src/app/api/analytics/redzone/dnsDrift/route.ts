@@ -23,12 +23,15 @@ export async function GET(request: NextRequest) {
     // Surface owned domains with either:
     //   - HISTORICALLY_RESOLVED_TO edges to IPs: the Domain's (OTX passive
     //     DNS) and its Subdomains' (addresses public urlscan visits recorded), or
-    //   - HAS_EXTERNAL_DOMAIN edges to foreign domains seen redirecting
+    //   - HAS_EXTERNAL_DOMAIN edges to foreign domains seen redirecting. A
+    //     hostname an IP-mode run only recorded on a target IP (it carries
+    //     ip_hostname_reason) is no drift; one a target IP redirected to is.
     //   - Any dangling Subdomain (no DNS, no_http) belonging to the domain
     const result = await session.run(
       `MATCH (d:Domain {project_id: $pid})
        OPTIONAL MATCH (d)-[rel:HISTORICALLY_RESOLVED_TO]->(ipHist:IP)
        OPTIONAL MATCH (d)-[:HAS_EXTERNAL_DOMAIN]->(ext:ExternalDomain)
+         WHERE ext.ip_hostname_reason IS NULL OR size(coalesce(ext.redirect_from_urls, [])) > 0
        OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(sd:Subdomain)
          WHERE sd.has_dns_records = false OR sd.status = 'no_http'
        OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(anySd:Subdomain)-[dnsr:RESOLVES_TO]->(currentIp:IP)
