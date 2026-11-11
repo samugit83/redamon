@@ -134,13 +134,15 @@ def _completed(cmd, rc=0, stdout="", stderr=""):
 
 
 @contextlib.contextmanager
-def _tools():
+def _tools(redirects=None):
     """Fake Subjack, BadDNS, Nuclei and the AI probe's HTTP; yield what each
     was handed.
 
     Every tool reports each target it was handed as a takeover, so every
-    name it saw reaches the AI probe.
+    name it saw reaches the AI probe. ``redirects`` maps a Nuclei target URL
+    to the ``matched-at`` URL Nuclei reports after following a redirect.
     """
+    redirects = redirects or {}
     seen = {"subjack": None, "baddns": None, "nuclei": None, "probe": []}
 
     def run(cmd, **_kw):
@@ -166,7 +168,7 @@ def _tools():
             urls = (work_dir / "nuclei_takeover_targets.txt").read_text().split()
             seen["nuclei"] = urls
             (work_dir / "nuclei_takeover_output.jsonl").write_text("".join(json.dumps(
-                {"template-id": "github-takeover", "matched-at": u,
+                {"template-id": "github-takeover", "matched-at": redirects.get(u, u),
                  "info": {"name": "github-takeover", "severity": "high", "tags": ["takeover"]}}) + "\n"
                 for u in urls))
             return _completed(cmd)
@@ -270,6 +272,23 @@ def test_the_inputs_are_unchanged_without_an_exclusion(settings):
     assert sorted(baseline["subjack"]) == [APEX, GHOST, LEGACY, MIXED, WWW]
     assert sorted(baseline["nuclei"]) == sorted(ALIVE)
     assert not _roe_gaps("takeover")
+
+
+REDIRECTED = "elsewhere.example.org"
+
+
+@pytest.mark.parametrize("settings", [{}, _roe(EXCLUDED_RANGE)])
+@pytest.mark.parametrize("matched_at", [f"https://{REDIRECTED}/login", "http://198.51.100.50/"])
+def test_the_ai_probe_never_fetches_a_host_the_run_did_not_admit(settings, matched_at):
+    """Nuclei follows redirects and names its finding after the URL that
+    matched, which can be a host no layer was handed."""
+    with _tools(redirects={f"https://{WWW}/": matched_at}) as seen:
+        out = runner.run_subdomain_takeover(_domain_run(), settings={**SETTINGS, **settings})
+    stray = urlparse(matched_at).hostname
+    assert stray not in _hosts(seen["probe"])
+    # The finding stands on its static evidence; only the extra request is not sent.
+    assert stray in {f["hostname"] for f in out["subdomain_takeover"]["findings"]}
+    assert WWW in _hosts(seen["probe"])
 
 
 def test_ip_mode_keeps_its_own_rules_under_an_exclusion():

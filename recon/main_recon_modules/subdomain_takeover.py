@@ -419,17 +419,34 @@ def run_subdomain_takeover(
         # ai_waf_likely back into score_finding() which subtracts 40 points
         # so AI-flagged collisions land in manual_review.
         if ai_classifier_enabled and ai_pipeline_model:
+            # The probe is a request of its own, so it goes only to a host this
+            # run admitted (scope and RoE, every address). A Nuclei finding is
+            # named after the URL that matched, which a followed redirect can put
+            # on a host no layer was handed.
+            from urllib.parse import urlsplit
+            admitted = set(subdomains)
+            for url in alive_urls:
+                try:
+                    host = (urlsplit(url).hostname or "").rstrip(".")
+                except ValueError:
+                    continue
+                if host:
+                    admitted.add(host)
+            probe_able = [n for n in normalized if n.get("hostname") in admitted]
+            if len(probe_able) != len(normalized):
+                print(f"[-][Takeover-AI] {len(normalized) - len(probe_able)} candidate(s) on a host "
+                      "this run did not admit -- not probed, their static signal stands")
             # Skip the LLM for findings the certificate already settles: a clean
             # cert naming this host proves the SaaS edge serves the legit
             # customer, so the WAF-collision question is moot. A handshake is
             # cheaper and deterministic than an LLM call.
             to_disambiguate = [
-                n for n in normalized
+                n for n in probe_able
                 if not (n.get("cert_name_match") and not (n.get("cert_expired")
                         or n.get("cert_self_signed") or n.get("cert_mismatched")))
             ]
             if to_disambiguate:
-                settled = len(normalized) - len(to_disambiguate)
+                settled = len(probe_able) - len(to_disambiguate)
                 print(f"[*][Takeover-AI] Disambiguating {len(to_disambiguate)} candidate(s) via LLM cascade"
                       + (f" ({settled} settled by certificate)" if settled else ""))
                 try:
@@ -444,13 +461,13 @@ def run_subdomain_takeover(
                     # Never let AI failure abort the takeover scan -- emit warning
                     # and continue with the static findings.
                     print(f"[!][Takeover-AI] Cascade pass failed: {e}")
-            elif normalized:
+            elif probe_able:
                 # Candidates exist but a clean certificate already settled every
                 # one of them. Saying "no candidates" here would misreport a
                 # working cost optimisation as an empty scan.
-                print(f"[*][Takeover-AI] All {len(normalized)} candidate(s) settled by "
+                print(f"[*][Takeover-AI] All {len(probe_able)} candidate(s) settled by "
                       "certificate evidence -- no LLM calls needed")
-            else:
+            elif not normalized:
                 # Cascade is on but Subjack/Nuclei produced zero candidates,
                 # so there's nothing for the LLM to classify. Log explicitly
                 # so the absence of [Takeover-AI] activity is intentional,
