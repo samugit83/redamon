@@ -4230,12 +4230,12 @@ async def graph_triage(body: GraphTriageRequest):
     own Neo4j driver, so the tenant scoping and the muteable-label guard have
     exactly one implementation (`graph_db/mixins/recon/triage_mixin.py`).
 
-    Auth is the MASTER key only, deliberately stricter than `/graph/exec`.
-    `/graph/exec` accepts the scoped SCANNER_API_KEY because the kali-sandbox
-    holds it and needs read-only graph access; this endpoint WRITES suppression
-    state, and the sandbox is the least-trusted, target-facing component. It
-    stays outside the LLM rate-limit bucket either way: these are cheap graph
-    operations, not billed LLM calls.
+    Auth is the MASTER key only, stricter than `/graph/exec`, which a Kali
+    terminal's graph run credential also opens for its read-only queries: this
+    endpoint WRITES suppression state, and the sandbox is the least-trusted,
+    target-facing component. Neither route takes the scanner key. It stays
+    outside the LLM rate-limit bucket: these are cheap graph operations, not
+    billed LLM calls.
     """
     # `require_master_internal_auth` fails open with no key so a bare dev
     # install still boots. This route writes suppression and verdict state, so

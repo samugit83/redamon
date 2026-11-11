@@ -217,17 +217,14 @@ def master_key_is_weak() -> bool:
 async def require_master_internal_auth(request: Request) -> None:
     """FastAPI dependency: the MASTER key only. Rejects the scanner token.
 
-    `require_internal_auth_only` accepts SCANNER_API_KEY as well, which is
-    correct for the read-only, fixed-op `/graph/exec`: the kali-sandbox holds
-    that token by design and needs graph reads.
-
-    It is NOT correct for an endpoint that MUTATES triage state. The worker is
-    the least-trusted, target-facing component and deliberately does not hold
+    `require_internal_auth_only` accepts SCANNER_API_KEY as well, which the scan
+    containers hold on purpose. That is NOT correct for an endpoint that MUTATES
+    triage state: they are target-facing and deliberately do not hold
     INTERNAL_API_KEY (see docker-compose.yml). Without this stricter dependency
-    a compromised worker could suppress findings so neither the operator nor the
-    agent ever sees them, or stamp `triage_source='human'` so a later AI pass
-    would refuse to correct it -- an integrity attack on the product's own
-    output, mounted with a token we hand the worker on purpose.
+    a compromised scan container could suppress findings so neither the operator
+    nor the agent ever sees them, or stamp `triage_source='human'` so a later AI
+    pass would refuse to correct it -- an integrity attack on the product's own
+    output, mounted with a token we hand those containers on purpose.
 
     Fail-open when no master key exists mirrors `_key_ok`, so a dev install with
     no secrets behaves as documented rather than bricking.
@@ -273,11 +270,12 @@ async def require_configured_master_auth(request: Request) -> None:
 async def require_internal_auth_only(request: Request) -> None:
     """FastAPI dependency: AUTH ONLY (no LLM rate-limit / daily spend cap).
 
-    For NON-LLM internal endpoints that authenticate the same way but are cheap
-    high-frequency calls (e.g. /graph/exec graph reads) or rare control actions
-    (/emergency-stop-all). Applying the LLM token bucket / 5000-per-day cap to
-    these would throttle a legitimate bulk graph walk and let graph reads exhaust
-    the LLM budget, which they must not (STRIDE S8 non-breaking requirement)."""
+    For NON-LLM internal endpoints that authenticate the same way (the master key
+    or the scoped SCANNER_API_KEY) but are cheap, frequent calls or rare control
+    actions. Applying the LLM token bucket / 5000-per-day cap to these would
+    throttle legitimate bulk calls and let them exhaust the LLM budget, which they
+    must not (STRIDE S8 non-breaking requirement). The graph read proxy does not
+    use it: `/graph/exec` takes `require_master_or_run_credential('graph')`."""
     provided = request.headers.get("x-internal-key", "")
     if not _key_ok(provided):
         raise HTTPException(status_code=401, detail="Unauthorized")
