@@ -5,10 +5,11 @@ Orchestrates all 6 analysis modules (patterns, validators, sourcemap,
 dependency, endpoints, framework) against JS files discovered by the
 recon pipeline. Runs as a post-resource_enum phase.
 
-Three modes:
-  1. Post-recon: analyze JS URLs from combined_result['resource_enum']
-  2. Standalone: crawl target domain then analyze
-  3. Manual upload: analyze user-uploaded JS files
+Two input sources, read together in one run:
+  1. JS URLs from combined_result['resource_enum'] (the full pipeline, or the
+     graph-built result partial recon passes in)
+  2. Manual upload: user-uploaded JS files
+It never crawls a target on its own to find more JS files.
 """
 
 import atexit
