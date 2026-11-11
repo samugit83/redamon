@@ -1,17 +1,21 @@
-"""An RoE-excluded host never becomes a Subdomain through Uncover (D2).
+"""An RoE-excluded host never reaches the graph through Uncover (D2).
 
 merge_uncover_into_pipeline removes from the payload's ``hosts`` every name its
 gates refuse (group scope, RoE, syntax, non-routable address, wildcard DNS),
 and both the full pipeline and partial Uncover run it before
-update_graph_from_uncover. A search-engine URL keeps its host, though, and the
+update_graph_from_uncover. A search-engine URL kept its host, though, and the
 writer minted a Subdomain for every URL host: an RoE-excluded name came back as
 a Subdomain, and partial Naabu, httpx and Nuclei read their targets from the
-graph. A URL's host now becomes a Subdomain only when the payload names it as a
-host; any other host's BaseURL joins the Subdomain already in the graph, or the
-Domain.
+graph.
+
+- The merge drops a URL whose host its gates refused or the RoE excludes, in an
+  ENUMERATE and an EXACT group, so such a host gets no BaseURL or Endpoint.
+- The writer never mints a Subdomain from a URL: a URL's BaseURL joins the
+  Subdomain already in the graph, or the Domain.
 
 The real merge and the real writer run; DNS and Neo4j are the fakes (an empty
-graph). Only example.com names are used.
+graph). Only example.com names and the special-purpose addresses the
+non-routable gate is about are used.
 """
 from __future__ import annotations
 
@@ -32,6 +36,8 @@ from recon.main_recon_modules.uncover_enrich import merge_uncover_into_pipeline 
 ROOT = "example.com"
 KEPT = "api.example.com"
 EXCLUDED = "shop.example.com"
+# Resolves to the cloud-metadata address: the non-routable gate refuses it.
+METADATA = "meta.example.com"
 ROE = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": [EXCLUDED]}
 PID = "proj-uncover-roe"
 
@@ -75,6 +81,12 @@ def _domain_owned_base_urls(session) -> set:
             if "(d:Domain" in cypher and "HAS_BASE_URL" in cypher}
 
 
+def _named(session, name: str) -> list:
+    """Every statement with a parameter naming ``name`` (a host, a URL)."""
+    return [cypher for cypher, params in session.calls
+            if any(isinstance(v, str) and name in v for v in params.values())]
+
+
 def _payload() -> dict:
     return {"hosts": [KEPT, EXCLUDED], "ips": [], "ip_ports": {},
             "urls": [f"https://{KEPT}/login", f"https://{EXCLUDED}/cart"],
@@ -88,6 +100,8 @@ def _dns(monkeypatch):
     from recon.helpers import circuit_breaker, wildcard_control
 
     def getaddrinfo(host, *_a, **_k):
+        if host == METADATA:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
         raise socket.gaierror(socket.EAI_NONAME, "unknown name")
 
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
@@ -104,8 +118,8 @@ def _group_recon(mode: str, exact_hosts=()) -> dict:
                          "include_root_domain": False, "subdomain_filter": list(exact_hosts)}}
 
 
-def _full_run(combined: dict, settings: dict):
-    payload = _payload()
+def _full_run(combined: dict, settings: dict, payload=None):
+    payload = payload or _payload()
     merge_uncover_into_pipeline(combined, payload, ROOT, settings=settings)
     combined["uncover"] = payload
     writer, session = _writer()
@@ -116,33 +130,71 @@ def _full_run(combined: dict, settings: dict):
 # --------------------------------------------------------------------------- #
 # Full pipeline
 # --------------------------------------------------------------------------- #
-def test_an_enumerate_group_writes_no_subdomain_for_an_excluded_url_host():
+def test_an_enumerate_group_writes_nothing_for_an_excluded_host():
     payload, session, stats = _full_run(_group_recon("enumerate"), ROE)
 
     assert payload["hosts"] == [KEPT]
-    assert EXCLUDED not in _minted(session)
+    assert payload["urls"] == [f"https://{KEPT}/login"]
+    assert _named(session, EXCLUDED) == []
     assert KEPT in _minted(session)
-    # The URL is still recorded; the Domain owns its BaseURL, as it owns an IP URL's.
-    assert f"https://{EXCLUDED}" in _domain_owned_base_urls(session)
-    assert stats["urls_created"] == 2
+    assert stats["urls_created"] == 1
     assert stats["errors"] == []
 
 
-def test_an_exact_group_writes_no_subdomain_for_an_excluded_listed_host():
-    # An EXACT group keeps a URL on a listed host and no discovered name at all.
+def test_an_exact_group_writes_nothing_for_an_excluded_listed_host():
+    # An EXACT group keeps a URL on a listed host and no discovered name at
+    # all; the RoE still wins over the operator's list.
     payload, session, stats = _full_run(_group_recon("exact", exact_hosts=[KEPT, EXCLUDED]), ROE)
 
     assert payload["hosts"] == []
-    assert sorted(payload["urls"]) == [f"https://{KEPT}/login", f"https://{EXCLUDED}/cart"]
-    assert EXCLUDED not in _minted(session)
+    assert payload["urls"] == [f"https://{KEPT}/login"]
+    assert _named(session, EXCLUDED) == []
+    assert stats["urls_created"] == 1
     assert stats["errors"] == []
 
 
+def test_an_exact_group_without_an_roe_keeps_every_listed_host_url():
+    payload, _session, _stats = _full_run(_group_recon("exact", exact_hosts=[KEPT, EXCLUDED]), {})
+
+    assert payload["urls"] == [f"https://{KEPT}/login", f"https://{EXCLUDED}/cart"]
+
+
 def test_without_an_roe_exclusion_both_hosts_are_subdomains():
-    payload, session, _stats = _full_run(_group_recon("enumerate"), {})
+    payload, session, stats = _full_run(_group_recon("enumerate"), {})
 
     assert payload["hosts"] == [KEPT, EXCLUDED]
+    assert payload["urls"] == [f"https://{KEPT}/login", f"https://{EXCLUDED}/cart"]
     assert {KEPT, EXCLUDED} <= _minted(session)
+    assert stats["urls_created"] == 2
+
+
+def test_the_url_of_a_name_another_gate_refused_is_dropped():
+    payload = {**_payload(), "hosts": [KEPT, METADATA],
+               "urls": [f"https://{KEPT}/login", f"https://{METADATA}/latest"]}
+    payload, session, _stats = _full_run(_group_recon("enumerate"), {}, payload)
+
+    assert payload["hosts"] == [KEPT]
+    assert payload["urls"] == [f"https://{KEPT}/login"]
+    assert _named(session, METADATA) == []
+
+
+def test_an_excluded_url_host_the_payload_never_named_is_dropped():
+    # A row whose url names another host than its host field.
+    payload = {**_payload(), "hosts": [KEPT]}
+    payload, session, _stats = _full_run(_group_recon("enumerate"), ROE, payload)
+
+    assert payload["urls"] == [f"https://{KEPT}/login"]
+    assert _named(session, EXCLUDED) == []
+
+
+def test_a_host_already_in_the_dns_map_keeps_its_url():
+    # Discovery admitted it, so the merge does not gate it again.
+    combined = _group_recon("enumerate")
+    combined["dns"]["subdomains"][KEPT] = {"ips": {"ipv4": []}}
+    payload = {**_payload(), "hosts": [KEPT], "urls": [f"https://{KEPT}/login"]}
+    payload, _session, _stats = _full_run(combined, ROE, payload)
+
+    assert payload["urls"] == [f"https://{KEPT}/login"]
 
 
 def test_a_url_host_the_payload_does_not_name_joins_no_new_subdomain():
@@ -168,7 +220,7 @@ def test_a_url_host_the_payload_does_not_name_joins_no_new_subdomain():
 # --------------------------------------------------------------------------- #
 # Partial Uncover
 # --------------------------------------------------------------------------- #
-def test_partial_uncover_writes_no_subdomain_for_an_excluded_url_host(monkeypatch):
+def test_partial_uncover_writes_nothing_for_an_excluded_host(monkeypatch):
     import recon.partial_recon as pr
     from recon.partial_recon_modules import helpers, osint_enrichment
 
@@ -197,5 +249,6 @@ def test_partial_uncover_writes_no_subdomain_for_an_excluded_url_host(monkeypatc
         statuses = osint_enrichment.run_uncover(cfg)
 
     assert statuses[ROOT] == "ok"
-    assert EXCLUDED not in _minted(session)
+    assert _named(session, EXCLUDED) == []
     assert KEPT in _minted(session)
+    assert any(f"https://{KEPT}" in (params.get("base_url") or "") for _c, params in session.calls)

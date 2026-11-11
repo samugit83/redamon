@@ -543,6 +543,29 @@ def run_uncover_expansion(
             pass
 
 
+def _drop_refused_urls(uncover_data: dict, refused: set, settings: Optional[dict]) -> None:
+    """Keep only the URLs on a host the merge did not refuse, in place.
+
+    update_graph_from_uncover writes each URL as a BaseURL and an Endpoint,
+    and partial scans read those back as targets. ``refused`` is the names the
+    gates dropped; the RoE is checked on every URL host as well, because a
+    search-engine row's url can name a host its host field does not, and no
+    gate saw that one.
+    """
+    from recon.helpers.roe_scope import _filter_roe_excluded
+
+    urls = uncover_data.get("urls") or []
+    if not urls:
+        return
+    hosts = {_extract_hostname_from_url(u) for u in urls} - refused
+    admitted = set(_filter_roe_excluded(sorted(hosts), settings or {}, label="Uncover URL host"))
+    kept = [u for u in urls if _extract_hostname_from_url(u) in admitted]
+    if len(kept) != len(urls):
+        print(f"[*][Uncover] {len(urls) - len(kept)} URL(s) dropped: their host failed the "
+              f"scope gates or the RoE excludes it")
+    uncover_data["urls"] = kept
+
+
 def merge_uncover_into_pipeline(
     combined_result: dict,
     uncover_data: dict,
@@ -557,6 +580,8 @@ def merge_uncover_into_pipeline(
     discovered name (merge_discovered_hostnames): apex allow-list, RoE
     exclusions, hostname syntax, and no name resolving to a non-routable
     address. ``domain`` empty means no apex to test against: nothing is added.
+    A URL whose host those gates refused, or the RoE excludes, leaves the
+    payload too.
 
     Returns count of new assets merged.
     """
@@ -575,6 +600,7 @@ def merge_uncover_into_pipeline(
                                 if scope.admits(_extract_hostname_from_url(u))]
         if dropped:
             print(f"[*][Uncover] Listed hosts only (exact scope): {dropped} discovered name(s)/IP(s) not merged")
+        _drop_refused_urls(uncover_data, set(), settings)
         return 0
 
     dns = combined_result.setdefault("dns", {})
@@ -582,6 +608,7 @@ def merge_uncover_into_pipeline(
     merged = 0
 
     new_hosts = [h for h in uncover_data.get("hosts", []) if h not in subdomains]
+    rejected: set = set()
     if new_hosts:
         from recon.helpers.target_helpers import merge_discovered_hostnames
         before = set(subdomains)
@@ -595,6 +622,7 @@ def merge_uncover_into_pipeline(
         if rejected:
             uncover_data["hosts"] = [h for h in uncover_data.get("hosts", []) if h not in rejected]
             print(f"[*][Uncover] {len(rejected)} hostname(s) failed the scope gates and are dropped")
+    _drop_refused_urls(uncover_data, rejected, settings)
 
     existing_ips = set()
     domain_dns = dns.get("domain", {})
