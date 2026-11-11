@@ -151,3 +151,23 @@ p1-estop-scope-admin	1.11	admin_a	GET	/api/agent/emergency-stop-all	-	200;has="s
 p1-estop-scope-admin-acting	1.11	admin_a_as_member_a	GET	/api/agent/emergency-stop-all	-	200;has="scope":"all"	req:HD-07
 p1-estop-member-own	1.11	member_c	POST	/api/agent/emergency-stop-all	-	200;has="scope":"own";has="stopped":0	req:HD-07
 p1-estop-deleted	1.11	deleted	POST	/api/agent/emergency-stop-all	-	401	req:HD-07
+#
+# ---- step 1.9: the agent's webapp-only routes, MCP reload / manifest / test, stdio servers ----
+# A member's stdio server or draft is refused before anything is written or spawned (NF-14,
+# audited), and so is a server naming an agent variable as its bearer (OQ-R1). The admin's
+# stdio save is refused AFTER the stdio check by the schema (no name), so nothing is written.
+# No row reloads the shared agent as an admin (it would reconnect every user's MCP tools).
+# includeSkillContent answers the master key only (NF-15): the owner's browser and an admin
+# acting as the owner get the project without the raw servers.
+p1-mcp-reload-member	1.9	member_c	POST	/api/mcp/reload	{}	403	req:HD-03
+p1-mcp-manifest-own	1.9	member_a	GET	/api/mcp/manifest	-	200;has=rbac-fake-server;has=••••••••0001;lacks=${A_MCP_BEARER}	req:HD-15
+p1-mcp-manifest-other	1.9	member_b	GET	/api/mcp/manifest	-	200;lacks=rbac-fake-server;lacks=${A_MCP_BEARER}	req:HD-15
+p1-mcp-test-member-stdio	1.9	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"stdio","command":"id"}}	403;has=stdio_admin_only	req:NF-14
+p1-mcp-test-member-http	1.9	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	200;has="ok":false	req:NF-14
+p1-mcp-test-other-account	1.9	member_c	POST	/api/mcp/test	{"userId":"${MEMBER_A_ID}","server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	403	req:NF-14
+p1-mcp-test-token-env-var	1.9	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/","auth":{"type":"bearer","token_env_var":"INTERNAL_API_KEY"}}}	422;has=token_env_var_refused	req:NF-17
+p1-mcp-save-member-stdio	1.9	member_c	POST	/api/users/${MEMBER_C_ID}/mcp	{"id":"rbac-stdio","name":"rbac stdio","transport":"stdio","command":"id"}	403;has=stdio_admin_only	req:NF-14
+p1-mcp-save-admin-stdio-gate	1.9	admin_a	POST	/api/users/${ADMIN_A_ID}/mcp	{"id":"rbac-stdio","transport":"stdio","command":"id"}	400;lacks=stdio_admin_only	req:NF-14
+p1-mcp-save-token-env-var	1.9	member_c	POST	/api/users/${MEMBER_C_ID}/mcp	{"id":"rbac-envvar","name":"rbac envvar","transport":"streamable_http","url":"http://127.0.0.1:9/","auth":{"type":"bearer","token_env_var":"INTERNAL_API_KEY"}}	422;has=token_env_var_refused	req:NF-17
+p1-skillcontent-owner	1.9	member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;lacks=userMcpServers;lacks=${A_MCP_BEARER}	req:NF-15
+p1-skillcontent-actas	1.9	admin_a_as_member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;lacks=userMcpServers;lacks=${A_MCP_BEARER}	req:NF-15

@@ -142,8 +142,8 @@ bl-loginonly-cypherfix-health-member	0.5	member_c	GET	/api/cypherfix/health	-	20
 bl-loginonly-tunnel-config-member	0.5	member_c	GET	/api/global/tunnel-config	-	200	login-only hole:F-04 superseded-by:p1
 bl-loginonly-gvm-available-member	0.5	member_c	GET	/api/gvm/available	-	200	login-only
 bl-loginonly-trufflehog-available-member	0.5	member_c	GET	/api/js-recon/trufflehog/available	-	200	login-only
-bl-loginonly-mcp-manifest-member	0.5	member_c	GET	/api/mcp/manifest	-	200	login-only hole:F-14
-bl-loginonly-mcp-reload-member	0.5	member_c	POST	/api/mcp/reload	[]	422	login-only hole:F-02 probe:invalid-body
+bl-loginonly-mcp-manifest-member	0.5	member_c	GET	/api/mcp/manifest	-	200	login-only hole:F-14 superseded-by:p1
+bl-loginonly-mcp-reload-member	0.5	member_c	POST	/api/mcp/reload	[]	422	login-only hole:F-02 probe:invalid-body superseded-by:p1
 bl-loginonly-nuclei-list-member	0.5	member_c	GET	/api/nuclei-templates	-	200	login-only hole:F-07
 bl-loginonly-nuclei-upload-member	0.5	member_c	POST	/api/nuclei-templates	{}	400	login-only hole:F-07 probe:invalid-body
 bl-loginonly-nuclei-delete-member	0.5	member_c	DELETE	/api/nuclei-templates	-	400	login-only hole:F-07 probe:invalid-body
@@ -187,10 +187,10 @@ bl-member-traffic-ingest	0.5	member_a	POST	/api/traffic/${PA_ID}/ingest	{"source
 # ---- NF-14, NF-15 ----
 # mcp/test: a member tests an HTTP draft with no userId; the agent tries 127.0.0.1:9 in its own
 # container and reports the refused connection. Never a stdio draft.
-bl-mcptest-member	0.5	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	200;has="ok":false	hole:NF-14
+bl-mcptest-member	0.5	member_c	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	200;has="ok":false	hole:NF-14 superseded-by:p1
 bl-mcptest-anon	0.5	anon	POST	/api/mcp/test	{"server":{"id":"rbac-probe","name":"rbac probe","enabled":true,"transport":"streamable_http","url":"http://127.0.0.1:9/"}}	401	-
-bl-skillcontent-owner	0.5	member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15
-bl-skillcontent-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15
+bl-skillcontent-owner	0.5	member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15 superseded-by:p1
+bl-skillcontent-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;has=userMcpServers;has=${A_MCP_BEARER}	hole:NF-15 superseded-by:p1
 bl-skillcontent-other	0.5	member_b	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	404	-
 #
 # ---- project delete (last: it removes the two throwaway projects) ----
