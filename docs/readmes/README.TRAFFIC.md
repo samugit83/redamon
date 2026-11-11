@@ -227,7 +227,7 @@ on the direct (non-proxy) path, so internal identifiers cannot leak to a target.
 | nuclei | `-proxy` + `-H` | same |
 | ffuf | `-x` + `-H` | same |
 | hakrawler | `-proxy` + `-H` | same |
-| kiterunner | `--proxy` + `-H` | same |
+| kiterunner method detection (httpx) | `-proxy` + `-H` | same |
 | arjun | `HTTP_PROXY` env + `--headers` | same |
 | openapi | `requests` `proxies=` + `X-Redamon-Ctx` header, set in the same branch as the proxy | same |
 | agent curl | `-x` + `-H` | `redamon-capture-proxy:8888` (DNS) |
@@ -256,7 +256,11 @@ attacker-defined commands, so no per-tool flag can force them through the proxy.
 Closing this needs container-level transparent egress on the kali-sandbox plus a
 default-identity tag, tracked as future hardening. Recon-side Python probes
 (`security_checks`, cache-scan/WCVS, GraphQL, JS/AI-surface fetchers) and the
-`ai_attack_surface_scan` container are likewise not yet routed.
+`ai_attack_surface_scan` container are likewise not yet routed, and so is
+Kiterunner's brute force: `kr scan` (v1.0.2) has no proxy flag and ignores the
+proxy environment variables, so under capture it runs direct, untagged (the tag
+rides only with the proxy), and logs that its requests are not captured. Only
+its httpx method-detection probes are routed.
 
 ### The Phase-0 side door
 

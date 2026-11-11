@@ -338,10 +338,10 @@ flowchart LR
     end
 
     subgraph G5["GROUP 5 — parallel + sequential"]
-        RE[Resource Enum<br/>Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider ∥ Kiterunner<br/>then jsluice → FFuf → Arjun → OpenAPI]
+        RE[Resource Enum<br/>Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider ∥ Kiterunner<br/>crawlers one at a time under an RoE ceiling<br/>then jsluice → FFuf → Arjun → OpenAPI]
     end
 
-    subgraph G6["GROUP 6 Phase A — parallel (up to 7-way fan-out, enabled tools only)"]
+    subgraph G6["GROUP 6 Phase A — parallel (up to 7-way fan-out, enabled tools only; one at a time under an RoE ceiling)"]
         VS[Vuln Scan — Nuclei]
         GQL[GraphQL Security<br/>Introspection + graphql-cop]
         TKO[Subdomain Takeover<br/>Subjack + Nuclei + BadDNS]
@@ -501,7 +501,7 @@ flowchart TB
         direction TB
         Out4b --> FanOut6
 
-        subgraph FanOut6["ThreadPoolExecutor — up to 7 parallel tasks (one shared deep-copy snapshot; _isolated wrappers copy again)"]
+        subgraph FanOut6["ThreadPoolExecutor — up to 7 parallel tasks, one worker under an RoE ceiling (one shared deep-copy snapshot; _isolated wrappers copy again)"]
             direction LR
             Nuclei[Nuclei Scanner]
             GraphQL[GraphQL Security Scanner]
@@ -657,7 +657,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
 | **GROUP 5b** | JS Recon Scanner (250+ regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks; optionally TruffleHog in a hardened sidecar, its keys merged one per key) | 5 analyzers parallel per file (TruffleHog in its own worker, on its own running-time budget) | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |
 | **GROUP 5.5** | Supply-Chain Recon (black-box package harvest + offline OSV verdict, retire.js over served JS, optional GuardDog; then incident enrichment, malicious-host correlation and typosquat detection) | Sequential; dispatches the DIRTY analyzer | Needs JS files from GROUP 5b; runs if `SUPPLY_CHAIN_RECON_ENABLED` |
-| **GROUP 6 Phase A** | Vuln Scan (Nuclei) ∥ GraphQL Security Testing ∥ Subdomain Takeover ∥ VHost & SNI Enumeration ∥ Web Cache Poisoning ∥ Origin Discovery ∥ Route Exposure | Up to 7 parallel tasks (ThreadPoolExecutor, `_isolated` wrappers), each only when enabled | Needs endpoints from GROUP 5/5b |
+| **GROUP 6 Phase A** | Vuln Scan (Nuclei) ∥ GraphQL Security Testing ∥ Subdomain Takeover ∥ VHost & SNI Enumeration ∥ Web Cache Poisoning ∥ Origin Discovery ∥ Route Exposure | Up to 7 parallel tasks (ThreadPoolExecutor, `_isolated` wrappers), each only when enabled; under an RoE rate ceiling one at a time, in the same order (`_run_phase_a_fan_out`) | Needs endpoints from GROUP 5/5b |
 | **GROUP 6 Phase B** | MITRE Enrichment (CWE + CAPEC) | Sequential | Needs CVEs from Phase A (Nuclei) |
 
 ### IP attribution
@@ -780,7 +780,12 @@ What follows from that:
   Takeover notes each failed layer's targets by host for `takeover_scan` alone
   (Subjack or BadDNS: every subdomain; Nuclei: the hosts of its live URLs; a
   BadDNS per-target timeout: that name); a Subjack timeout still keeps the rows
-  it wrote. The cache scan does the same for `cache_poisoning` (and its `wcvs`
+  it wrote, and a BadDNS run timeout keeps the findings it printed and notes
+  only the names from the last one with a printed finding onwards (BadDNS
+  prints a name's findings once it is done with it, in target order). The
+  GraphQL scan keeps `graphql_cop` alone, by host, on an endpoint whose
+  graphql-cop timed out, could not start or returned no report; the native
+  GraphQL checks reached that host. The cache scan does the same for `cache_poisoning` (and its `wcvs`
   alias) on the hosts past the 200-URL cap, of a URL whose confirmation raised
   or that never answered the oracle, and on every target of an unfinished WCVS
   run. The serialized scan degrades its whole source on an error, or when
@@ -793,6 +798,26 @@ What follows from that:
   the Phase A tools in `_LIVE_URL_PHASE_A`); `security_check` is kept except on
   the addresses the port checks read and the orgs the DNS checks asked. A tool
   switched off prunes as before.
+- **A failed probe is not "no live URL".** When httpx could not run (Docker
+  missing or down, the image unavailable, an exit or its runtime budget with
+  nothing written, an exception), `run_http_probe` records
+  `metadata.phase_errors.http_probe`, keeps the `http_probe` source, and is not
+  listed in `modules_executed`. `should_skip_active_scans` then takes the skip
+  above with the reason `http_probe failed (...)`, and `_note_gate_skipped`
+  notes "http_probe failed, no host probed": `security_check` is kept on every
+  host, the port- and DNS-check ones included, and JS Recon and AI Surface
+  Recon, which still run without httpx's pages, keep their findings by host
+  too. A tlsx run cut short (timeout, exit, missing runner) keeps the rows it
+  printed and notes `security_check` by host on every target it did not answer,
+  under module `tlsx`; one that answered nothing records a phase error.
+- **A finding is matched on every host it names.** The keep regexes and the
+  `only_hosts` lookup read the scalar host fields (`_KEEP_HOST_FIELDS` in
+  `graph_db/mixins/base_mixin.py`) and each element of a list field
+  (`_KEEP_HOST_LIST_FIELDS`: `source_urls`, the JS files that import a
+  dependency-confusion package). A cut host among them keeps the finding; a
+  re-checked one makes it a prune candidate, and a kept host still wins. Host
+  names may contain `_` (`_dmarc.example.com`): the coverage notes keep them
+  like any other host.
 - **A source can prune only the hosts it re-checked (positive coverage).** A
   module that calls `circuit_breaker.note_checked(source, hosts=..., checks=...,
   module=...)` records the hosts it reached a verdict on, and

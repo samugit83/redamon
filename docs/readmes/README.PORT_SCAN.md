@@ -450,6 +450,9 @@ prefix cannot tell an Akamai edge from a customer's server.
        (recon_scope(...).include_root)
    └── dns.subdomains: every subdomain with records, and its IPv4/IPv6 IPs
    └── Build the IP-to-hostnames mapping
+   └── RoE admission (admit_host_targets, module naabu): drop an excluded
+       address, a name the RoE excludes, and a name left with no admitted
+       address; under RoE IP/CIDR entries, hand naabu addresses only
    └── Target list = the hostnames followed by the IPs
 
 3. SCAN EXECUTION
@@ -474,6 +477,18 @@ prefix cannot tell an Akamai edge from a customer's server.
        none and saves after the fan-in)
    └── The temp dir is removed
 ```
+
+**RoE exclusions on resolved addresses.** An RoE IP or CIDR entry is checked on
+every address a name resolved to, not only on IP targets
+(`recon/helpers/target_admission.py`). An excluded address is never a naabu,
+masscan or nmap target, and a name with one excluded and one allowed address is
+scanned on the allowed one only. naabu resolves a name itself, so while an IP or
+CIDR entry is set it is handed addresses only; each name still gets the ports
+found on its addresses through `ip_to_hostnames`. Masscan and nmap pass their
+address lists through the same gate (`admit_ip_map`), since the port scan's map
+can carry an address a passive source added. Each refusal is logged once as
+`[-][RoE] <tool>: not sent to ...` and noted under the coverage source
+`roe_excluded`. With no exclusion in force every target list is unchanged.
 
 ### Docker Command Structure
 

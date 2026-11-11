@@ -178,7 +178,19 @@ default: with the chain stored, nothing needs the pre-redirect page itself.
 
 **What "in scope" means** (`is_host_in_scope()`): a subdomain of a scan root
 (the root itself only when it is a target); for an EXACT scope group or a
-filtered run, exactly the listed hosts; any IP otherwise.
+filtered run, exactly the listed hosts. An IP literal is in scope only as one
+of the run's own addresses (`_run_addresses`): one it resolved, port-scanned or
+asked httpx to probe, less those the RoE excludes, compared in canonical form
+so any IPv6 spelling matches. An in-scope host that redirects to someone
+else's address (`http://203.0.113.50/sso`) is therefore an off-scope redirect,
+and that page's title, technologies and certificate are not credited to the
+target.
+
+**IPv6 literals.** `url_port` and `extract_host_from_url` parse with
+`urllib.parse`: `https://[2001:db8::10]:8443` keeps port 8443 and its host
+comes back bare (`2001:db8::10`, the form the graph keys an IP by), and
+userinfo (`user@host`) is never read as the host. A port that is not a number
+reads as `-1`.
 
 ---
 
@@ -544,8 +556,11 @@ BANNER_GRAB_MAX_LENGTH = 1000
 For every open port in `port_scan.by_host` that is not in
 `BANNER_GRAB_SKIP_PORTS` (every port in `HTTP_PORTS` and `HTTPS_PORTS`, plus
 9090 and 8800, which httpx already probes), `grab_banner_for_target()` connects
-to the host's IP, reads what the service sends first, sends the port's probe if
-nothing came, and retries over TLS on 993, 995, 465, 636 and 990.
+to the host's IP (`socket.create_connection`, so an IPv6 address is reached
+too), reads what the service sends first, sends the port's probe if nothing
+came, and retries over TLS on 993, 995, 465, 636 and 990. Targets the RoE
+excludes are never connected to (see
+[RoE admission of the target list](#roe-admission-of-the-target-list)).
 `identify_service()` matches the banner against `SERVICE_PATTERNS`.
 
 FTP and SMTP both greet with `220`, so their patterns are anchored at the start
@@ -857,6 +872,8 @@ Wappalyzer-detected technologies are automatically included in CVE lookup, becau
    └── no port_scan → build_targets_from_dns()
    └── apply_custom_port_scope(): with NAABU_CUSTOM_PORTS set, drop every
        URL on another port
+   └── admit_urls(): drop a URL whose host the RoE excludes, by name or, under
+       IP/CIDR entries, by any address the run resolved it to (below)
 
 3. PROBE EXECUTION
    └── targets.txt in a per-run dir /tmp/redamon/.httpx_temp_<id>
@@ -899,6 +916,24 @@ HTTP_PORTS  = {80, 8080, 8000, 8888, 8008, 3000, 5000, 9000}  # -> http://host:p
 ```
 
 `build_targets_from_dns()` (the fallback) probes each resolved host (the root only when it is a target): with `NAABU_CUSTOM_PORTS` set, exactly those ports; otherwise ports 80 and 443 plus 8080, 8000, 8888, 3000, 5000, 9000 over HTTP and 8443, 4443, 9443 over HTTPS. In IP mode a mock hostname is replaced by its IP.
+
+### RoE admission of the target list
+
+httpx resolves each name itself, so the URL list passes the Rules of Engagement
+admission gate (`admit_urls` in `recon/helpers/target_admission.py`) after the
+custom-port guard. A URL survives when its host is an admitted IP literal, or a
+name the RoE host entries do not exclude whose every known address is outside
+the RoE IP and CIDR entries. While such an entry is set, a name with no known
+address is refused too and recorded as not checked, so its earlier findings
+are kept. Each refusal is logged once (`[-][RoE] httpx: not sent to ...`) and
+noted under the coverage source `roe_excluded`. With no exclusion the list,
+and so the httpx command, is unchanged.
+
+The banner grab connects to addresses itself, and `by_host` can hold one a
+passive source or a partial run's graph rows added, so its targets pass the
+same gate (module `banner_grab`): an excluded address, an address reached only
+through an excluded name, and, under IP or CIDR entries, a name with no known
+address are not connected to.
 
 ### Docker Command Structure
 
@@ -1172,9 +1207,13 @@ HTTPX_RETRIES = 3
 
 With no live URL, the pipeline skips resource enumeration, Nuclei and the web checks, and the Phase A tools that read URLs (`metadata.active_scans_skipped`). Subdomain Takeover (Subjack and BadDNS read names, not URLs), the port and service checks (admin and database ports, Redis, SMTP relay, Kubernetes API), the org DNS checks and certificate hygiene still run. A skipped source that was switched on is noted degraded ("not run: no live HTTP URL") by host on the group's hosts, so its earlier findings are kept there and it shows as a coverage gap; one switched off prunes as usual.
 
+#### "[!][httpx] ... - nothing was probed; earlier findings are kept"
+
+httpx could not run: Docker missing or down, the image unavailable, an exit or its runtime budget with nothing written, or an exception. A failed probe is not "no live URL". It records `metadata.phase_errors.http_probe`, keeps the `http_probe` source, and is not listed in `modules_executed`. The pipeline takes the same skip as above (`SKIPPING ACTIVE SCANS: http_probe failed (...)`), with the coverage reason "http_probe failed, no host probed", and keeps more: `security_check` on every host, the port- and DNS-check ones included, since the web checks were not re-checked anywhere, and the findings of JS Recon and AI Surface Recon, which still run without httpx's pages.
+
 #### "Probe hit its ...s budget"
 
-The probe outlived `httpx_budget()` and was stopped; downstream phases run on what it found. Raise `HTTPX_THREADS`, or lower `HTTPX_RETRIES`, or probe fewer URLs.
+The probe outlived `httpx_budget()` and was stopped; downstream phases run on what it found. If it had written nothing by then, the probe counts as failed (see above). Raise `HTTPX_THREADS`, or lower `HTTPX_RETRIES`, or probe fewer URLs.
 
 #### Scan too slow
 

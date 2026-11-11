@@ -434,11 +434,26 @@ Kiterunner provides API endpoint bruteforcing using real Swagger/OpenAPI specifi
 | `KITERUNNER_ENABLED` | `bool` | `True` | Enable/disable Kiterunner discovery |
 | (Binary auto-download) | - | `~/.redamon/tools/kiterunner/kr` | Auto-downloaded from GitHub releases |
 | `KITERUNNER_WORDLIST` | `str` | `"apiroutes-251227"` | Wordlist (354k+ API routes) |
-| `KITERUNNER_RATE_LIMIT` | `int` | `100` | Requests per second |
+| `KITERUNNER_RATE_LIMIT` | `int` | `100` | Passed as kr's `--delay`, which kr v1.0.2 parses and never applies: it limits nothing |
 | `KITERUNNER_CONNECTIONS` | `int` | `100` | Concurrent connections |
 | `KITERUNNER_TIMEOUT` | `int` | `10` | Request timeout per endpoint (seconds) |
 | `KITERUNNER_SCAN_TIMEOUT` | `int` | `300` | Overall scan timeout (seconds) |
 | `KITERUNNER_THREADS` | `int` | `50` | Scanning threads |
+
+**Nothing bounds kr's request rate.** `-x` (connections per host) and `-j`
+(hosts at once) cap concurrency, not requests per second: even `-x 1 -j 1` sends
+back to back as fast as the target answers. So under an RoE rate ceiling
+(`ROE_GLOBAL_MAX_RPS`, in full and partial recon) Kiterunner does not run: it
+logs `[-][Kiterunner] Not run: kr cannot hold the N rps RoE ceiling`, returns no
+endpoints, and records a coverage gap entry (`resource_enum` / `kiterunner`),
+never a switch-off. Kiterunner writes Endpoint assets, not findings, so the gap
+keeps nothing from the prune. With no ceiling the command is unchanged.
+
+The method-detection probes (OPTIONS, then one httpx run per method) run in
+containers named `kiterunner-methods-<run id>-<8 hex>`, killed by that name at
+their timeout. What httpx wrote before the cut is read: the endpoints it
+answered keep their detected methods, the others keep Kiterunner's, and the
+cut is noted as a `kiterunner` coverage gap entry.
 
 ### 2. Kiterunner Wordlists
 
@@ -468,7 +483,6 @@ Run `kr wordlist list` to see all available wordlists.
 ```python
 KITERUNNER_ENABLED = True
 KITERUNNER_WORDLIST = "apiroutes-251227"
-KITERUNNER_RATE_LIMIT = 200
 KITERUNNER_SCAN_TIMEOUT = 120
 ```
 **Expected:** ~1-2 minutes per target
@@ -477,7 +491,6 @@ KITERUNNER_SCAN_TIMEOUT = 120
 ```python
 KITERUNNER_ENABLED = True
 KITERUNNER_WORDLIST = "apiroutes-251227"
-KITERUNNER_RATE_LIMIT = 100
 KITERUNNER_CONNECTIONS = 100
 KITERUNNER_SCAN_TIMEOUT = 300
 ```
@@ -487,7 +500,6 @@ KITERUNNER_SCAN_TIMEOUT = 300
 ```python
 KITERUNNER_ENABLED = True
 KITERUNNER_WORDLIST = "apiroutes-251227"
-KITERUNNER_RATE_LIMIT = 50
 KITERUNNER_CONNECTIONS = 50
 KITERUNNER_SCAN_TIMEOUT = 600
 ```
@@ -668,9 +680,13 @@ sit under the project scope).
 - **Credentials.** The Authenticated Session profile's headers go to the exact
   document origin (scheme, host, port) only; cookies are cleared per request and
   no ambient credentials are used.
-- **Rate.** One request clock per scan on the engagement ceiling
-  (`ROE_GLOBAL_MAX_RPS`), shared by every Domain-batch group and partial root;
-  redirects and references count.
+- **Rate.** Every request takes a slot of the process-wide request clock on the
+  engagement ceiling (`ROE_GLOBAL_MAX_RPS`, `recon/helpers/request_pacer.py`),
+  which the security checks, the cache scan, the GraphQL scan, Route Exposure
+  and the takeover AI probe share, as do every Domain-batch group and partial
+  root; redirects and references count. The wait for a slot extends the
+  document's `OPENAPI_TIMEOUT` deadline instead of counting against it: a long
+  queue for the ceiling is not a slow server.
 - **Capture proxy.** With traffic capture on, document requests go through the
   proxy with the signed context tag; direct requests never carry it. TLS is not
   verified, as for every recon fetcher.
@@ -1484,8 +1500,8 @@ Solutions:
 # Try different wordlist
 KITERUNNER_WORDLIST = "aspx-251227"  # For ASP.NET
 
-# Reduce rate to avoid WAF
-KITERUNNER_RATE_LIMIT = 50
+# Fewer concurrent requests to avoid WAF blocks (kr applies no rate limit)
+KITERUNNER_CONNECTIONS = 20
 
 # Add authentication headers
 KITERUNNER_HEADERS = ["Authorization: Bearer <token>"]
@@ -1506,9 +1522,11 @@ KITERUNNER_TIMEOUT = 15
 
 #### "Kiterunner too aggressive (WAF blocks)"
 
+Fewer connections and threads lower the concurrency; `KITERUNNER_RATE_LIMIT`
+does not slow kr down. When the engagement sets a request rate, set the RoE
+ceiling: Kiterunner then does not run.
+
 ```python
-# Stealth mode
-KITERUNNER_RATE_LIMIT = 30
 KITERUNNER_CONNECTIONS = 20
 KITERUNNER_THREADS = 10
 ```
@@ -1555,7 +1573,7 @@ Run Kiterunner manually (binary auto-downloads to ~/.redamon/tools/kiterunner/):
 
 | Risk | Mitigation |
 |------|------------|
-| Rate limiting/bans | Reduce `KATANA_RATE_LIMIT` and `KITERUNNER_RATE_LIMIT` |
+| Rate limiting/bans | Reduce `KATANA_RATE_LIMIT`; Kiterunner has no working rate limit, so lower its concurrency or set the RoE ceiling, under which it does not run |
 | WAF blocking | Use custom User-Agent, reduce rate |
 | API bruteforce detection | Lower `KITERUNNER_CONNECTIONS` and `KITERUNNER_THREADS` |
 | Legal issues | Only scan authorized targets |
@@ -1571,8 +1589,7 @@ KATANA_CUSTOM_HEADERS = [
     "User-Agent: Mozilla/5.0 (compatible; SecurityScanner/1.0)"
 ]
 
-# Kiterunner (API Bruteforce)
-KITERUNNER_RATE_LIMIT = 50
+# Kiterunner (API Bruteforce): concurrency only, kr applies no rate limit
 KITERUNNER_CONNECTIONS = 30
 KITERUNNER_THREADS = 20
 ```

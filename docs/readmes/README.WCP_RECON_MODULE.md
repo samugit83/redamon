@@ -242,11 +242,13 @@ flowchart TD
     U["target_urls"] --> TF["write targets.txt<br/>/tmp/redamon/.cache_scan/run_id/"]
     TF --> CMD["build_wcvs_command<br/>docker run --net=host redamon-wcvs"]
     CMD --> SKIP["safety_skip_tests<br/>-st dos / deception / css"]
-    CMD --> RUN["subprocess.run · timeout"]
+    CMD --> RUN["run_tool_container · timeout<br/>container wcvs-run_id-8hex"]
     RUN --> RPT["WCVS_date_rand_Report.json<br/>written incrementally per URL"]
     RPT --> PARSE["parse_wcvs_report"]
     PARSE --> CAND["candidates[]<br/>url · technique · vector_name · …"]
-    RUN -.->|"timeout / no report / bad JSON"| EMPTY["return [] · non-fatal"]
+    RUN -.->|"timeout"| KILL["container killed by name<br/>partial report parsed"]
+    KILL --> PARSE
+    RUN -.->|"no report / bad JSON"| EMPTY["return [] · non-fatal"]
 
     classDef g fill:#e8e8e8,stroke:#555,color:#000
     classDef d fill:#bdbdbd,stroke:#444,color:#000
@@ -304,7 +306,11 @@ flowchart TD
 
 WCVS writes the report **incrementally** after every scanned URL (the package-global
 `report` is re-serialized per website). So the file always exists and contains all
-completed websites - on a timeout we parse the partial report gracefully. Only
+completed websites - on a timeout we parse the partial report gracefully.
+WCVS runs through `docker_helpers.run_tool_container` (tool `wcvs`), which names
+the container `wcvs-<run id>-<8 hex>` and, on a timeout, kills it by that name
+before the partial report is read: a timeout of `subprocess.run` alone stops
+only the docker CLI, and the daemon-owned container would scan on. Only
 `isVulnerable` websites and results are kept; each `check` becomes one candidate. Any
 error returns `[]` (non-fatal; native hypotheses still run).
 
