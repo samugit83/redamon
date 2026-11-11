@@ -44,12 +44,12 @@ The lab binds all three services to **host loopback (127.0.0.1)** with `network_
 
 1. Create a RedAmon project. **`targetIps`**: `127.0.0.1`. **`ipMode`**: `true`. Enable Naabu + httpx (Nmap is optional but helpful for `ai_runtime_version`).
 2. Either disable the **hard guardrail** for loopback or use a public-DNS shim domain that points at `127.0.0.1`. The hard guardrail at [recon_orchestrator/hard_guardrail.py](../../../recon_orchestrator/hard_guardrail.py) is intentionally strict — make sure the lab target is allowed before triggering a full scan.
-3. Trigger the scan via the webapp UI or:
-   ```bash
-   curl -X POST http://localhost:8010/recon/<project_id>/start \
-        -H "Content-Type: application/json" \
-        -d '{"project_id":"<project_id>","user_id":"<user_id>","webapp_api_url":"http://localhost:3000"}'
-   ```
+3. Trigger the scan from the webapp UI, or through the webapp's API while signed in
+   (`POST http://localhost:3000/api/recon/<project_id>/start` with your session cookie).
+   Do not call the orchestrator (`:8010`) directly: every start there needs the
+   `X-Orchestrator-Key` and the scan's job credential, which only the webapp mints, so a
+   hand-written start is refused (401 without the key, 403 `job_credential_missing`
+   without the credential).
 
 ## Verify the graph state
 

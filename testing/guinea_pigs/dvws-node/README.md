@@ -175,8 +175,9 @@ To run only this module against the target:
 ```bash
 # In RedAmon project settings: enable VHost & SNI, leave defaults
 # Then in the workflow graph, click Play on the VHost & SNI node
-# Or via API:
-curl -X POST http://localhost:8010/recon/<projectId>/partial \
+# Or via the webapp's API while signed in (send your session cookie; the
+# orchestrator on :8010 refuses a start without the job credential the webapp mints):
+curl -X POST http://localhost:3000/api/recon/<projectId>/partial \
   -H "Content-Type: application/json" \
   -d '{"tool_id":"VhostSni","graph_inputs":{"domain":"gpigs.devergolabs.com"}}'
 ```

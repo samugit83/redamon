@@ -548,9 +548,9 @@ graph TB
     subgraph TB3 [Semi-trusted compute]
         AGENT[agent - holds INTERNAL_API_KEY, NEO4J, LLM keys]
     end
-    subgraph TB4 [Least-trusted - target facing, no secrets]
+    subgraph TB4 [Least-trusted - target facing, no master key]
         KALI[kali-sandbox worker]
-        SCAN[spawned scanners - host net, INTERNAL_API_KEY]
+        SCAN[spawned scanners - host net, SCANNER_API_KEY + job credential, NEO4J_PASSWORD]
     end
     subgraph TB5 [External / untrusted]
         TGT[Targets + OSINT + LLM APIs]
@@ -585,7 +585,7 @@ graph TB
 | webapp/agent → service APIs | `X-Internal-Key` (`INTERNAL_API_KEY`) header; the scoped `SCANNER_API_KEY` opens only the scan routes (the agent's `/llm/*` and `/jev/*`; the webapp's settings, project and traffic-ingest reads) and only beside the scan's job credential, bound to its tenant and project (RBAC step 1.16); `/graph/exec` takes the master key or a run credential (worker → graph below) | A master-key caller of `/graph/exec` names the tenant in the body |
 | orchestrator → Docker daemon | **docker-broker** blocks by default: only the Docker API routes the tools use are forwarded (exec, archive, update, build, image push/tag and the rest get a 403); `create` is filtered: image allowlist, denies `--privileged`, binds outside `/tmp/redamon` and three read-only repository tool directories, docker.sock mount, read-write named volumes other than `nuclei-templates`, dangerous caps/namespaces, `unconfined` | Broker is sole guard for host-root-equivalent socket |
 | worker → graph | `/graph/exec` and `/text-to-cypher` require the master key or a `graph` run credential (`require_master_or_run_credential`); the terminal's `redagraph` presents the one the agent minted for that connection (one user and project, honoured only while that connection is open, at most 12 h), never the scanner key, which the worker no longer holds; write Cypher blocked (regex, now incl. `apoc.atomic.*`) + `user_id`/`project_id` tenant filter injected; worker holds no Neo4j creds | With a run credential the tenant comes from it and the body's ids are ignored; master-key callers (the webapp) still name the tenant in the body |
-| spawned scanner → host | Host network + `NET_RAW`; mounts the **broker** socket, not raw socket; capability-restricted | Scanners do hold `INTERNAL_API_KEY` |
+| spawned scanner → host | Host network + `NET_RAW`; mounts the **broker** socket, not raw socket; capability-restricted; no `INTERNAL_API_KEY`: the five scans that call back hold the scoped `SCANNER_API_KEY` and their job credential (one tenant and project, 7 days), the AI attack and TruffleHog containers neither | Every scan that writes the graph (all but TruffleHog) holds `NEO4J_PASSWORD`, the database's one account, so a compromised scan container reads and writes every tenant's graph; the bare scanner key still signs `source=recon` capture tags for any tenant (SECURITY_POSTURE §20) |
 | platform → targets/LLMs | Hard guardrail (`.gov/.mil/.edu/.int` + ~310 intergovernmental domains, non-disableable) + LLM soft guardrail + RoE time-window pre-flight | Soft guardrail is LLM-based ("be lenient"); fails open |
 | DBs | PostgreSQL/Neo4j on bridge net with credentials | Secrets stored plaintext at rest in `user_settings`/`user_llm_providers` |
 | plugin worker → webapp Gateway | Only through the `plugin-gateway` proxy, which passes `/api/plugin-gateway/v1/*` and `/api/plugin-runner/v1/*` and nothing else; a call token bound to (plugin, user, project, session), limited to its action or job and to `PLUGIN_GATEWAY_CALLS_PER_TOKEN` calls; every call re-checks the plugin's state, the permission (granted and declared) and the tenancy; transcripts masked and capped | A plugin with `session:read` sees target data; masking is not anonymisation |

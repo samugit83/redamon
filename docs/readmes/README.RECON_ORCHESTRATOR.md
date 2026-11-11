@@ -429,12 +429,16 @@ When starting a recon, the orchestrator:
      `INTERNAL_API_KEY`, and `REDAMON_JOB_CREDENTIAL`, the job credential the
      webapp minted for this start (RBAC step 1.16). Every start endpoint verifies
      that credential (`job_credential.py`), admits the scan under its tenant
-     rather than the body's `user_id` (403 `job_credential_*` otherwise), and
-     refuses with 503 `scanner_key_missing` when no scanner key is configured.
-     The webapp (settings, project, traffic ingest) and the agent (`/llm/*`,
-     `/jev/*`) accept the key only together with the credential, for its tenant
-     and project. The AI attack surface and TruffleHog containers call nothing
-     back and get no credential.
+     rather than the body's `user_id` (403 `job_credential_*` otherwise; 503
+     `job_credential_unverifiable` first when `INTERNAL_API_KEY` is weak or
+     unset), and refuses with 503 `scanner_key_missing` when no scanner key is
+     configured. The webapp (settings, project, traffic ingest) and the agent
+     (`/llm/*`, `/jev/*`) accept the key only together with the credential, for
+     its tenant and project. The AI attack surface and TruffleHog containers call
+     nothing back and get neither the key nor a credential. Every scan that writes
+     the graph (all but TruffleHog) also gets `NEO4J_URI`/`NEO4J_USER`/
+     `NEO4J_PASSWORD`, the database's one account: a residual
+     (SECURITY_POSTURE §20).
 
 ### Partial Recon Typed Input
 
@@ -589,11 +593,9 @@ key once from `.env`:
 ```bash
 export KEY=$(grep '^ORCHESTRATOR_API_KEY=' .env | cut -d= -f2)
 
-# Start recon
-curl -X POST http://localhost:8010/recon/test-project/start \
-  -H "X-Orchestrator-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "user-1"}'
+# Starting a scan is not done here: every start needs the job credential the webapp
+# mints for it (RBAC step 1.16) and is refused without it (403 job_credential_missing).
+# Start scans from the webapp: the UI, or POST /api/recon/<projectId>/start signed in.
 
 # Check status
 curl -H "X-Orchestrator-Key: $KEY" http://localhost:8010/recon/test-project/status
