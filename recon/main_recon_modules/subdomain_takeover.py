@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -48,6 +49,32 @@ from recon.helpers import (
     score_finding,
 )
 from recon.helpers.takeover_helpers import same_provider_family
+
+_FINDING_SOURCE = "takeover_scan"
+
+
+def _note_layer_unchecked(layer: str, targets: Iterable[str], reason: str) -> None:
+    """Keep the earlier takeover findings of the hosts a layer did not check. Never raises.
+
+    A layer that times out, crashes or cannot start returns what a clean run
+    returns, and this module reports its own failures to nobody, so the prune
+    would read "no takeover finding on these hosts" as "gone". Every layer
+    writes takeover_scan and every finding names its host, so the cut is by
+    host (README "Degrade by host before degrading by source") and for
+    takeover_scan alone: the other modules reached those hosts. ``reason`` is
+    a fixed phrase or an exception class name, never tool output.
+    """
+    try:
+        from recon.helpers import circuit_breaker as cb
+        hosts = sorted({cb.host_key(t) for t in targets if isinstance(t, str)} - {""})
+        if not hosts:
+            return
+        cb.note_degraded("subdomain_takeover", hosts=hosts, host_source=_FINDING_SOURCE,
+                         source_only_hosts=True, reason=f"{layer} {reason}")
+        print(f"[!][Takeover] {layer} {reason}: {len(hosts)} host(s) not checked, "
+              f"their earlier takeover findings are kept")
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
 
 
 def _hosts_answering_2xx(recon_data: dict) -> set[str]:
@@ -220,17 +247,22 @@ def run_subdomain_takeover(
     try:
         normalized: list[dict] = []
 
+        # A layer that raises costs its own targets, not the other layers.
         if subjack_enabled and subdomains:
-            subjack_raw = _run_subjack(
-                subdomains=sorted(subdomains),
-                work_dir=work_dir,
-                settings=settings,
-            )
-            for raw in subjack_raw:
-                norm = normalize_subjack_result(raw)
-                if norm:
-                    normalized.append(norm)
-            print(f"[+][Takeover] Subjack: {sum(1 for r in subjack_raw if r.get('vulnerable'))} vulnerable row(s)")
+            try:
+                subjack_raw = _run_subjack(
+                    subdomains=sorted(subdomains),
+                    work_dir=work_dir,
+                    settings=settings,
+                )
+                for raw in subjack_raw:
+                    norm = normalize_subjack_result(raw)
+                    if norm:
+                        normalized.append(norm)
+                print(f"[+][Takeover] Subjack: {sum(1 for r in subjack_raw if r.get('vulnerable'))} vulnerable row(s)")
+            except Exception as e:
+                print(f"[!][Takeover] Subjack layer failed ({type(e).__name__})")
+                _note_layer_unchecked("Subjack", subdomains, f"raised {type(e).__name__}")
 
         if nuclei_takeovers_enabled and alive_urls:
             try:
@@ -246,7 +278,8 @@ def run_subdomain_takeover(
                         normalized.append(norm)
                 print(f"[+][Takeover] Nuclei takeovers: {len(nuclei_raw)} raw finding(s)")
             except Exception as e:
-                print(f"[!][Takeover] Nuclei takeover scan failed: {e}")
+                print(f"[!][Takeover] Nuclei takeover scan failed ({type(e).__name__})")
+                _note_layer_unchecked("Nuclei", alive_urls, f"raised {type(e).__name__}")
 
         if settings.get("BADDNS_ENABLED", False) and subdomains:
             try:
@@ -261,7 +294,8 @@ def run_subdomain_takeover(
                         normalized.append(norm)
                 print(f"[+][Takeover] BadDNS: {len(baddns_raw)} raw finding(s)")
             except Exception as e:
-                print(f"[!][Takeover] BadDNS scan failed: {e}")
+                print(f"[!][Takeover] BadDNS scan failed ({type(e).__name__})")
+                _note_layer_unchecked("BadDNS", subdomains, f"raised {type(e).__name__}")
 
         # --------------------------------------------------------------
         # 3. Enrich with CNAME resolution + live-target validation
@@ -533,6 +567,7 @@ def _run_subjack(
     """
     if not shutil.which("subjack"):
         print("[!][Takeover][Subjack] binary not found in PATH -- skipping subjack layer")
+        _note_layer_unchecked("Subjack", subdomains, "binary not found")
         return []
 
     targets_file = work_dir / "subjack_targets.txt"
@@ -565,14 +600,19 @@ def _run_subjack(
             check=False,
         )
     except subprocess.TimeoutExpired:
+        # It never says which names it reached, so every one stays unchecked;
+        # the rows it already wrote are still real findings.
         print(f"[!][Takeover][Subjack] run timed out after {run_timeout}s")
-        return []
+        _note_layer_unchecked("Subjack", subdomains, f"timed out after {run_timeout}s")
+        return _load_subjack_json(output_file) if output_file.exists() else []
     except FileNotFoundError:
         print("[!][Takeover][Subjack] binary not available")
+        _note_layer_unchecked("Subjack", subdomains, "binary not available")
         return []
 
     if proc.returncode not in (0, None):
-        # Subjack sometimes exits non-zero when nothing is vulnerable -- log but continue
+        # Subjack sometimes exits non-zero when nothing is vulnerable, so the
+        # exit code cannot tell a failure from a clean run -- log but continue
         stderr = (proc.stderr or "").strip()
         if stderr:
             print(f"[!][Takeover][Subjack] stderr: {stderr[:300]}")
@@ -634,6 +674,7 @@ def _run_nuclei_takeover(urls: list[str], work_dir: Path, settings: dict) -> lis
     """
     if not is_docker_installed() or not is_docker_running():
         print("[!][Takeover][Nuclei] Docker unavailable -- skipping nuclei layer")
+        _note_layer_unchecked("Nuclei", urls, "Docker unavailable")
         return []
 
     nuclei_image = settings.get("NUCLEI_DOCKER_IMAGE", "projectdiscovery/nuclei:latest")
@@ -700,15 +741,20 @@ def _run_nuclei_takeover(urls: list[str], work_dir: Path, settings: dict) -> lis
             fix_file_ownership(output_file)
         except Exception:
             pass
+        _note_layer_unchecked("Nuclei", urls, f"timed out after {run_timeout}s")
         return _load_nuclei_jsonl(output_file)
     except FileNotFoundError:
         print("[!][Takeover][Nuclei] docker binary missing")
+        _note_layer_unchecked("Nuclei", urls, "docker binary missing")
         return []
 
     if proc.returncode not in (0, None):
         stderr = (proc.stderr or "").strip()
         if stderr:
             print(f"[!][Takeover][Nuclei] stderr: {stderr[:300]}")
+        # Nuclei exits 0 whether or not a template matched: anything else is a
+        # docker error, a kill or a fatal nuclei error (as vuln_scan reads it).
+        _note_layer_unchecked("Nuclei", urls, f"exited {proc.returncode}")
 
     # Fix ownership on output so we can read it as the recon user
     try:
@@ -739,6 +785,7 @@ def _run_baddns(
     """
     if not is_docker_installed() or not is_docker_running():
         print("[!][Takeover][BadDNS] Docker unavailable -- skipping baddns layer")
+        _note_layer_unchecked("BadDNS", subdomains, "Docker unavailable")
         return []
 
     baddns_image = settings.get("BADDNS_DOCKER_IMAGE", "redamon-baddns:latest")
@@ -751,9 +798,11 @@ def _run_baddns(
         )
         if inspect.returncode != 0:
             print(f"[!][Takeover][BadDNS] image {baddns_image} not found on host -- run `docker compose --profile tools build baddns-scanner`")
+            _note_layer_unchecked("BadDNS", subdomains, "image not found")
             return []
     except Exception as e:
         print(f"[!][Takeover][BadDNS] cannot inspect image: {e}")
+        _note_layer_unchecked("BadDNS", subdomains, "image inspect failed")
         return []
 
     targets_filename = "baddns_targets.txt"
@@ -812,15 +861,20 @@ def _run_baddns(
             )
         except Exception as e:
             print(f"[!][Takeover][BadDNS] failed to kill orphan container: {e}")
+        _note_layer_unchecked("BadDNS", subdomains, f"timed out after {run_timeout}s")
         return []
     except FileNotFoundError:
         print("[!][Takeover][BadDNS] docker binary missing")
+        _note_layer_unchecked("BadDNS", subdomains, "docker binary missing")
         return []
 
     if proc.returncode not in (0, None):
         stderr = (proc.stderr or "").strip()
         if stderr:
             print(f"[!][Takeover][BadDNS] stderr: {stderr[:400]}")
+        # The batch entrypoint ends 0 however its targets went: anything else is
+        # a docker error, a kill or a refused targets file.
+        _note_layer_unchecked("BadDNS", subdomains, f"exited {proc.returncode}")
 
     # Surface the entrypoint's summary line on stderr so orchestrator logs
     # show scanned/skipped/findings totals even on successful runs.
@@ -830,8 +884,29 @@ def _run_baddns(
             if ("baddns-batch] summary:" in summary_line
                     or "] timeout after" in summary_line):
                 print(f"[*][Takeover][BadDNS] {summary_line}")
+    timed_out = _baddns_timed_out_targets(stderr, subdomains)
+    if timed_out:
+        _note_layer_unchecked("BadDNS", timed_out, "per-target timeout")
 
     return _parse_baddns_stdout(proc.stdout or "")
+
+
+_BADDNS_TARGET_TIMEOUT = re.compile(r"\[baddns-batch\] timeout after \d+s on (\S+)\s*$")
+
+
+def _baddns_timed_out_targets(stderr: str, subdomains: Iterable[str]) -> list[str]:
+    """The names the batch entrypoint gave up on (its per-target timeout).
+
+    Only names this run asked about count: the line is read back from a
+    container's stderr.
+    """
+    asked = {s.lower() for s in subdomains}
+    names = set()
+    for line in (stderr or "").splitlines():
+        match = _BADDNS_TARGET_TIMEOUT.search(line.strip())
+        if match and match.group(1).lower() in asked:
+            names.add(match.group(1).lower())
+    return sorted(names)
 
 
 def _parse_baddns_stdout(stdout: str) -> list[dict]:
