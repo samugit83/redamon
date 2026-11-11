@@ -59,7 +59,7 @@ beforeEach(() => {
 
 describe('a self-service password change revokes the user tokens', () => {
   test('it revokes every live token in the same transaction', async () => {
-    const res = await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    const res = await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
 
     expect(res.status).toBe(200)
     expect(h.updateManyTokens).toHaveBeenCalledWith({
@@ -71,17 +71,17 @@ describe('a self-service password change revokes the user tokens', () => {
   })
 
   test('it reports how many tokens were revoked', async () => {
-    const res = await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    const res = await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(await res.json()).toMatchObject({ success: true, revokedMcpTokens: 3 })
   })
 
   test('already-revoked tokens are not re-stamped', async () => {
-    await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(h.updateManyTokens.mock.calls[0][0].where.revokedAt).toBeNull()
   })
 
   test('the revocation is audited', async () => {
-    await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'mcp-token.revoke-all',
       targetId: 'owner',
@@ -90,7 +90,7 @@ describe('a self-service password change revokes the user tokens', () => {
 
   test('no audit noise when the user had no tokens', async () => {
     h.transaction.mockResolvedValue([{}, { count: 0 }])
-    await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(h.audit).not.toHaveBeenCalled()
   })
 })
@@ -119,7 +119,7 @@ describe("an admin reset also revokes the target user's tokens", () => {
 describe('a refused password change revokes nothing', () => {
   test('a wrong current password leaves the tokens alone', async () => {
     h.verifyPassword.mockResolvedValue(false)
-    const res = await PUT(req({ newPassword: 'brand-new', currentPassword: 'wrong' }), params('owner'))
+    const res = await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'wrong' }), params('owner'))
 
     expect(res.status).toBe(401)
     expect(h.transaction).not.toHaveBeenCalled()
@@ -128,7 +128,7 @@ describe('a refused password change revokes nothing', () => {
 
   test('a non-admin changing someone else changes nothing', async () => {
     h.getSession.mockResolvedValue({ userId: 'mallory', role: 'standard' })
-    const res = await PUT(req({ newPassword: 'brand-new' }), params('victim'))
+    const res = await PUT(req({ newPassword: 'brand-new-passphrase' }), params('victim'))
 
     expect(res.status).toBe(403)
     expect(h.transaction).not.toHaveBeenCalled()
@@ -141,11 +141,51 @@ describe('a refused password change revokes nothing', () => {
   })
 })
 
+describe('floor 12: every new password meets the one policy (HD-12)', () => {
+  test('11 characters -> 400 password_too_short, nothing written', async () => {
+    const res = await PUT(req({ newPassword: 'a'.repeat(11), currentPassword: 'old' }), params('owner'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'Password must be at least 12 characters', code: 'password_too_short',
+    })
+    expect(h.hashPassword).not.toHaveBeenCalled()
+    expect(h.transaction).not.toHaveBeenCalled()
+  })
+
+  test('12 characters are accepted', async () => {
+    const res = await PUT(req({ newPassword: 'a'.repeat(12), currentPassword: 'old' }), params('owner'))
+    expect(res.status).toBe(200)
+    expect(h.hashPassword).toHaveBeenCalledWith('a'.repeat(12))
+  })
+
+  test('73 bytes -> 400 password_too_long (bcrypt would ignore the rest)', async () => {
+    const res = await PUT(req({ newPassword: 'a'.repeat(73), currentPassword: 'old' }), params('owner'))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('password_too_long')
+    expect(h.transaction).not.toHaveBeenCalled()
+  })
+
+  test('an admin reset meets the same floor', async () => {
+    h.getSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+    const res = await PUT(req({ newPassword: 'short-reset' }), params('victim'))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('password_too_short')
+    expect(h.transaction).not.toHaveBeenCalled()
+  })
+
+  test('a password that is not a string is refused, never hashed', async () => {
+    const res = await PUT(req({ newPassword: 123456789012345, currentPassword: 'old' }), params('owner'))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('password_too_short')
+    expect(h.hashPassword).not.toHaveBeenCalled()
+  })
+})
+
 describe('a password change the database refused', () => {
   test('answers the fixed sentence with its Prisma code', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     h.transaction.mockRejectedValue(Object.assign(new Error('Transaction already closed'), { code: 'P2028' }))
-    const res = await PUT(req({ newPassword: 'brand-new', currentPassword: 'old' }), params('owner'))
+    const res = await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to change password', code: 'P2028' })
   })

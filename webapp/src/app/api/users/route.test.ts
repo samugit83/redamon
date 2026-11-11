@@ -41,7 +41,7 @@ beforeEach(() => {
   mockIsInternal.mockReset()
 })
 
-const NEW_ADMIN = { name: 'evil', email: 'evil@x.z', password: 'pw', role: 'admin' }
+const NEW_ADMIN = { name: 'evil', email: 'evil@x.z', password: 'twelve-chars', role: 'admin' }
 
 describe('POST /api/users — S2/E2 write-bypass removal', () => {
   test('EXPLOIT: internal key mints an admin → now 403, no write', async () => {
@@ -87,5 +87,54 @@ describe('POST /api/users — a database failure', () => {
     const res = await POST(postReq(NEW_ADMIN))
     expect(res.status).toBe(409)
     expect((await res.json()).error).toBe('A user with this email already exists')
+  })
+})
+
+describe('POST /api/users — password floor (HD-12)', () => {
+  beforeEach(() => {
+    mockIsInternal.mockReturnValue(false)
+    mockGetSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+  })
+
+  test('11 characters -> 400 password_too_short, no account created', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: 'a'.repeat(11) }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'Password must be at least 12 characters', code: 'password_too_short',
+    })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  test('73 bytes -> 400 password_too_long, no account created', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: 'a'.repeat(73) }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('password_too_long')
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  test('12 characters -> 201 with the hash stored', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: 'a'.repeat(12) }))
+    expect(res.status).toBe(201)
+    expect(mockCreate.mock.calls[0][0].data.password).toBe(`hashed:${'a'.repeat(12)}`)
+  })
+
+  test('an empty password still means a passwordless account', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: '' }))
+    expect(res.status).toBe(201)
+    expect('password' in mockCreate.mock.calls[0][0].data).toBe(false)
+    expect((await res.json()).hasPassword).toBe(false)
+  })
+
+  test('no password field at all is passwordless too', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z' }))
+    expect(res.status).toBe(201)
+    expect('password' in mockCreate.mock.calls[0][0].data).toBe(false)
+  })
+
+  test('a password that is not a string is refused, never hashed', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: 1234567890123 }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('password_too_short')
+    expect(mockCreate).not.toHaveBeenCalled()
   })
 })

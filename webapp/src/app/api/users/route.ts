@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma'
 import { hashPassword } from '@/lib/auth'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
+import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 
 // GET /api/users - List users (admin: all, standard: self only, internal: all)
 export async function GET(request: NextRequest) {
@@ -71,6 +72,14 @@ export async function POST(request: NextRequest) {
         { error: 'Name and email are required' },
         { status: 400 }
       )
+    }
+
+    // An empty or absent password makes a passwordless (managed) account.
+    if (password !== undefined && password !== null && password !== '') {
+      const check = validateNewPassword(typeof password === 'string' ? password : '')
+      if (!check.ok) {
+        return NextResponse.json({ error: check.message, code: check.code }, { status: 400 })
+      }
     }
 
     const user = await prisma.user.create({

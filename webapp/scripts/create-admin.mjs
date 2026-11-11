@@ -16,8 +16,12 @@ if (!name || !email || !password) {
   process.exit(1)
 }
 
-if (password.length < 4) {
-  console.error('ERROR: Password must be at least 4 characters')
+// The floor of src/lib/authz/passwordPolicy.ts, repeated because this standalone
+// script cannot import TypeScript; passwordPolicy.drift.test.ts keeps them equal.
+const MIN_PASSWORD_LENGTH = 12
+
+if ([...password].length < MIN_PASSWORD_LENGTH) {
+  console.error(`ERROR: Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
   process.exit(1)
 }
 

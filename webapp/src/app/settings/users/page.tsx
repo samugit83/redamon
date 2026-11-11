@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/providers/AuthProvider'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
 import { Modal } from '@/components/ui'
+import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
 type ModalState =
@@ -79,6 +80,13 @@ export default function UsersPage() {
       setFormError('Name and email are required')
       return
     }
+    if (password) {
+      const check = validateNewPassword(password)
+      if (!check.ok) {
+        setFormError(check.message)
+        return
+      }
+    }
     if (password && password !== confirmPassword) {
       setFormError('Passwords do not match')
       return
@@ -100,8 +108,9 @@ export default function UsersPage() {
   async function handleSetPassword() {
     setFormError('')
     setFormSuccess('')
-    if (!password || password.length < 4) {
-      setFormError('Password must be at least 4 characters')
+    const check = validateNewPassword(password)
+    if (!check.ok) {
+      setFormError(check.message)
       return
     }
     if (password !== confirmPassword) {
@@ -131,8 +140,9 @@ export default function UsersPage() {
       setFormError('Current password is required')
       return
     }
-    if (!password || password.length < 4) {
-      setFormError('New password must be at least 4 characters')
+    const check = validateNewPassword(password)
+    if (!check.ok) {
+      setFormError(check.message)
       return
     }
     if (password !== confirmPassword) {

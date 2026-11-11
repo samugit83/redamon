@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from '@/lib/auth'
 import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
+import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -21,11 +22,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const { newPassword, currentPassword } = await request.json()
 
-    if (!newPassword || newPassword.length < 4) {
-      return NextResponse.json(
-        { error: 'Password must be at least 4 characters' },
-        { status: 400 }
-      )
+    const check = validateNewPassword(typeof newPassword === 'string' ? newPassword : '')
+    if (!check.ok) {
+      return NextResponse.json({ error: check.message, code: check.code }, { status: 400 })
     }
 
     const isAdmin = session.role === 'admin'
