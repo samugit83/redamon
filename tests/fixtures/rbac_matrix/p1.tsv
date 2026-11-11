@@ -210,3 +210,12 @@ p1-whats-new-member	1.18	member_c	GET	/api/admin/whats-new	-	403;has="code":"for
 p1-whats-new-admin	1.18	admin_a	GET	/api/admin/whats-new	-	200;has="dismissed"	req:HD-32
 p1-auth-me-member-no-rbac	1.18	member_c	GET	/api/auth/me	-	200;lacks="rbac"	req:HD-30
 p1-auth-me-admin-rbac	1.18	admin_a	GET	/api/auth/me	-	200;has="rbac":{"compat":	req:HD-30
+#
+# ---- step 1.20: the last baseline hole rows ----
+# A member may upload and delete its own templates (F-07), so the baseline's two invalid-body
+# probes still reach the body checks and keep their 400; the owner rules are the p1-nuclei-*
+# rows above and tests/rbac_nuclei_templates_live.sh. The member's session list keeps its 200
+# with its own projects' sessions only (p1-sessions-list-member), its template list its 200
+# with its own and the instance templates (p1-nuclei-list-member).
+p1-nuclei-upload-invalid-body-member	1.20	member_c	POST	/api/nuclei-templates	{}	400;has=invalid_multipart	req:HD-08
+p1-nuclei-delete-no-path-member	1.20	member_c	DELETE	/api/nuclei-templates	-	400;has=Missing path parameter	req:HD-08

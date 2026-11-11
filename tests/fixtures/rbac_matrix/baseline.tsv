@@ -133,7 +133,7 @@ bl-loginonly-estop-member	0.5	member_c	GET	/api/agent/emergency-stop-all	-	405	l
 bl-loginonly-agent-health-member	0.5	member_c	GET	/api/agent/health	-	200	login-only
 bl-loginonly-host-ip-member	0.5	member_c	GET	/api/agent/host-ip	-	200	login-only
 bl-loginonly-job-kill-member	0.5	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
-bl-loginonly-sessions-member	0.5	member_c	GET	/api/agent/sessions	-	200	login-only hole:F-01
+bl-loginonly-sessions-member	0.5	member_c	GET	/api/agent/sessions	-	200	login-only hole:F-01 superseded-by:p1
 bl-loginonly-session-interact-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
 bl-loginonly-session-kill-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
 bl-loginonly-tunnel-status-member	0.5	member_c	GET	/api/agent/tunnel-status	-	200	login-only
@@ -144,9 +144,9 @@ bl-loginonly-gvm-available-member	0.5	member_c	GET	/api/gvm/available	-	200	logi
 bl-loginonly-trufflehog-available-member	0.5	member_c	GET	/api/js-recon/trufflehog/available	-	200	login-only
 bl-loginonly-mcp-manifest-member	0.5	member_c	GET	/api/mcp/manifest	-	200	login-only hole:F-14 superseded-by:p1
 bl-loginonly-mcp-reload-member	0.5	member_c	POST	/api/mcp/reload	[]	422	login-only hole:F-02 probe:invalid-body superseded-by:p1
-bl-loginonly-nuclei-list-member	0.5	member_c	GET	/api/nuclei-templates	-	200	login-only hole:F-07
-bl-loginonly-nuclei-upload-member	0.5	member_c	POST	/api/nuclei-templates	{}	400	login-only hole:F-07 probe:invalid-body
-bl-loginonly-nuclei-delete-member	0.5	member_c	DELETE	/api/nuclei-templates	-	400	login-only hole:F-07 probe:invalid-body
+bl-loginonly-nuclei-list-member	0.5	member_c	GET	/api/nuclei-templates	-	200	login-only hole:F-07 superseded-by:p1
+bl-loginonly-nuclei-upload-member	0.5	member_c	POST	/api/nuclei-templates	{}	400	login-only hole:F-07 probe:invalid-body superseded-by:p1
+bl-loginonly-nuclei-delete-member	0.5	member_c	DELETE	/api/nuclei-templates	-	400	login-only hole:F-07 probe:invalid-body superseded-by:p1
 bl-loginonly-project-defaults-member	0.5	member_c	GET	/api/projects/defaults	-	200	login-only
 bl-loginonly-skills-member	0.5	member_c	GET	/api/skills	-	200	login-only
 bl-loginonly-system-stats-member	0.5	member_c	GET	/api/system/stats	-	200	login-only
