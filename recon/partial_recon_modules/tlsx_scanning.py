@@ -21,6 +21,7 @@ from recon.partial_recon_modules.helpers import (
     scope_roots,
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
+from recon.partial_recon_modules.port_scanning import measured_port_data
 
 
 def run_tlsx(config: dict) -> None:
@@ -134,12 +135,14 @@ def run_tlsx(config: dict) -> None:
             if not graph_client.verify_connection():
                 print("[!][Partial Recon] Neo4j not reachable -- graph not updated")
                 return
-            # Custom ports: create Port/Service/IP nodes first so the tlsx MATCH
-            # on Service lands (update_graph_from_tlsx uses MATCH, not MERGE, for
-            # Service enrichment).
+            # Custom ports: write the IP nodes first, so the tlsx writer's MATCH
+            # on a typed address lands. The custom ports ride in by_ip only, and
+            # by_host is the graph's own ports, which tlsx did not measure: none
+            # of them is written back (D5).
             if user_ports:
                 graph_client.update_graph_from_port_scan(
-                    recon_data=port_data, user_id=user_id, project_id=project_id)
+                    recon_data=measured_port_data(port_data, {}),
+                    user_id=user_id, project_id=project_id)
             stats = graph_client.update_graph_from_tlsx(
                 recon_data=result, user_id=user_id, project_id=project_id)
             print(f"[+][Partial Recon] tlsx graph update: {json.dumps(stats, default=str)}")

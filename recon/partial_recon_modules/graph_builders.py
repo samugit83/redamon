@@ -723,13 +723,18 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                   record=None) -> None:
         """Record one host -> IP -> ports row in by_ip, by_host and ip_to_hostnames.
 
-        The IP's CDN tag rides along: a partial run writes this data back through
-        update_graph_from_port_scan, which sets IP.is_cdn from it, so an entry
-        without the tag would reset every tagged IP to false.
+        Everything a write-back through update_graph_from_port_scan could lower
+        rides along: the IP's CDN tag, and on each port detail the IP it is open
+        on and the graph's passive_only mark (null on a Port from before the
+        mark), which tells the writer the port is no active hit of this run.
+        by_host stays keyed by hostname and lists every address's ports, the
+        way the target builders (httpx) read it; the detail's `ip` keeps a
+        port of the host's second address off its first.
         """
         get = getattr(record, "get", None)
         is_cdn = bool(get("is_cdn")) if get else False
         cdn = (get("cdn_name") if get else None) or None
+        port_details = [{**pd, "ip": ip_addr} for pd in port_details]
         if ip_addr not in recon_data["port_scan"]["by_ip"]:
             recon_data["port_scan"]["by_ip"][ip_addr] = {
                 "ip": ip_addr,
@@ -765,7 +770,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 if pnum not in existing["ports"]:
                     existing["ports"].append(pnum)
             for pd in port_details:
-                if not any(epd["port"] == pd["port"] for epd in existing["port_details"]):
+                if not any(epd["port"] == pd["port"] and epd.get("ip") == pd["ip"]
+                           for epd in existing["port_details"]):
                     existing["port_details"].append(pd)
 
         recon_data["port_scan"]["ip_to_hostnames"].setdefault(ip_addr, [])
@@ -780,7 +786,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 pnum = int(p["number"])
                 numbers.append(pnum)
                 all_ports_set.add(pnum)
-                details.append({"port": pnum, "protocol": p["protocol"] or "tcp", "service": ""})
+                details.append({"port": pnum, "protocol": p["protocol"] or "tcp", "service": "",
+                                "passive_only": p.get("passive_only")})
         return numbers, details
 
     def _dns_entry(host: str) -> dict:
@@ -805,7 +812,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                     "OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)\n"
                     "RETURN {ROOT}, i.address AS ip, i.version AS version, "
                     "i.is_cdn AS is_cdn, i.cdn_name AS cdn_name, "
-                    "collect(DISTINCT {number: p.number, protocol: p.protocol}) AS ports")
+                    "collect(DISTINCT {number: p.number, protocol: p.protocol, "
+                    "passive_only: p.passive_only}) AS ports")
             for record in apex_records:
                 root = record["root"]
                 ip_addr = record["ip"]
@@ -832,7 +840,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 OPTIONAL MATCH (i)-[:HAS_PORT]->(p:Port)
                 RETURN d.name AS root, s.name AS subdomain, i.address AS ip, i.version AS version,
                        i.is_cdn AS is_cdn, i.cdn_name AS cdn_name,
-                       collect(DISTINCT {number: p.number, protocol: p.protocol}) AS ports
+                       collect(DISTINCT {number: p.number, protocol: p.protocol,
+                                         passive_only: p.passive_only}) AS ports
                 """,
                 domains=scope.orgs, uid=user_id, pid=project_id,
             )

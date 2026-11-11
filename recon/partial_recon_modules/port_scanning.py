@@ -447,6 +447,29 @@ def _drop_ports_nmap_found_closed(recon_data: dict, injected: dict) -> int:
     return len(dropped)
 
 
+def measured_port_data(recon_data: dict, measured: dict) -> dict:
+    """recon_data for update_graph_from_port_scan, its by_host cut to what was measured.
+
+    D5: a partial run writes only what its tool measured. by_host was rebuilt
+    from the graph, and writing it back would mark every port open and
+    actively found again, Shodan-only ones included. `measured` maps a by_host
+    key to the ports this run's tool saw there; every other port is left out.
+    by_ip stays whole: the writer reads it for the IP node alone (typed
+    addresses need theirs) and never lowers is_cdn.
+    """
+    port_scan = recon_data.get("port_scan") or {}
+    by_host = {}
+    for host, entry in (port_scan.get("by_host") or {}).items():
+        ports = measured.get(host)
+        if not ports or not isinstance(entry, dict):
+            continue
+        details = [pd for pd in entry.get("port_details") or [] if pd.get("port") in ports]
+        if details:
+            by_host[host] = {**entry, "ports": sorted({pd["port"] for pd in details}),
+                             "port_details": details}
+    return {**recon_data, "port_scan": {**port_scan, "by_host": by_host}}
+
+
 def run_nmap(config: dict) -> None:
     """
     Run partial Nmap service detection + NSE vulnerability scanning
@@ -687,10 +710,12 @@ def run_nmap(config: dict) -> None:
 
                 # If user provided custom ports, create Port nodes first
                 # (update_graph_from_nmap only enriches Port nodes that exist, and
-                # a custom port is not one of the new ports it creates itself)
+                # a custom port is not one of the new ports it creates itself).
+                # Only the custom ports still there after the closed ones were
+                # dropped: the graph's own ports are not this run's measurement.
                 if user_ports and "port_scan" in result:
                     ps_stats = graph_client.update_graph_from_port_scan(
-                        recon_data=result,
+                        recon_data=measured_port_data(result, injected_ports),
                         user_id=user_id,
                         project_id=project_id,
                     )

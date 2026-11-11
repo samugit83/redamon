@@ -23,6 +23,26 @@ from recon.partial_recon_modules.helpers import (
     scope_roots,
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
+from recon.partial_recon_modules.port_scanning import measured_port_data
+
+
+def _answered_ports(result: dict) -> dict:
+    """{host: {port, ...}} from the URLs httpx was asked for and got a response on.
+
+    by_url is keyed by the requested URL, so its host and port are the probe's
+    target even when the page redirected elsewhere.
+    """
+    from urllib.parse import urlsplit
+    answered: dict = {}
+    for url in ((result.get("http_probe") or {}).get("by_url") or {}):
+        try:
+            parts = urlsplit(str(url))
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            continue
+        if parts.hostname:
+            answered.setdefault(parts.hostname.lower(), set()).add(port)
+    return answered
 
 
 def run_httpx(config: dict) -> None:
@@ -429,10 +449,18 @@ def run_httpx(config: dict) -> None:
         with Neo4jClient() as graph_client:
             if graph_client.verify_connection():
                 # Create Port nodes for user-injected targets (subdomains + IPs)
-                # so the full chain IP -> Port -> Service -> BaseURL connects
+                # so the full chain IP -> Port -> Service -> BaseURL connects.
+                # Only the typed targets' ports httpx got an answer on: the
+                # graph's own ports, and a probed port that stayed silent, are
+                # not this run's measurement (D5).
                 if (resolved_hostnames or user_ip_addrs) and "port_scan" in result:
+                    typed = {h.lower() for h in [*resolved_hostnames, *user_ip_addrs]}
+                    answered = _answered_ports(result)
+                    measured = {key: answered[key.lower()]
+                                for key in result["port_scan"].get("by_host", {})
+                                if key.lower() in typed and key.lower() in answered}
                     ps_stats = graph_client.update_graph_from_port_scan(
-                        recon_data=result,
+                        recon_data=measured_port_data(result, measured),
                         user_id=user_id,
                         project_id=project_id,
                     )
