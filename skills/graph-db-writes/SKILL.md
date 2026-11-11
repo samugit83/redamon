@@ -76,6 +76,11 @@ graph-write rules it depends on.
   does NOT mean "gone". The caller passes `keep_hosts` (anchored regexes, matched
   against `_KEEP_HOST_FIELDS` with `toStringOrNull`, passed as a Cypher parameter)
   to `prune_unseen_findings`, and skips the prune entirely for a degraded source.
+  A finding that names hosts in a list (`source_urls`) is matched on every
+  element too (`_KEEP_HOST_LIST_FIELDS`): `toStringOrNull` of a list is null, so
+  a list field missing from that tuple keeps nothing. Host names may contain `_`
+  (`_dmarc.example.com`); the coverage accumulator and `_KEEP_HOST_CHARS` must
+  keep accepting it, or such a host drops out of every note.
   What was cut is recorded on the coverage record of the **org** `Domain` (one per
   registrable domain), merged across the run's groups of that org —
   `recon_coverage_at`, `recon_coverage_gaps` (each entry tagged with its scan
