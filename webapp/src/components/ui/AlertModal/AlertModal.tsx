@@ -61,6 +61,14 @@ export function useAlertModal() {
   return context
 }
 
+/**
+ * The same dialogs, or null outside an AlertProvider: for a widget that also renders
+ * outside the app shell (scan cards, their tests) and degrades instead of throwing.
+ */
+export function useOptionalAlertModal(): AlertContextValue | null {
+  return useContext(AlertContext)
+}
+
 interface AlertProviderProps {
   children: ReactNode
 }

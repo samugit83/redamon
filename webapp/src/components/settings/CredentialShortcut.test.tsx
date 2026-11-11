@@ -10,7 +10,8 @@
  * Run: npx vitest run src/components/settings/CredentialShortcut.test.tsx
  */
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { AlertProvider } from '@/components/ui/AlertModal'
 import { CredentialShortcut } from './CredentialShortcut'
 import type { CredentialKeysApi } from '@/hooks/useCredentialKeys'
 
@@ -30,6 +31,8 @@ function fakeKeys(overrides: Partial<CredentialKeysApi> = {}): CredentialKeysApi
 }
 
 const KEY = 'trufflehogGithubToken'
+/** Every save says how to answer a re-entry refusal (a re-pointed endpoint, review of 1.6). */
+const REENTRY_OPTIONS = { onSecretReentry: expect.any(Function) }
 const LABEL = 'Secret Multiscanner GitHub Token'
 
 describe('CredentialShortcut', () => {
@@ -84,7 +87,7 @@ describe('CredentialShortcut', () => {
     render(<CredentialShortcut settingsKey={KEY} keys={keys} />)
     fireEvent.change(screen.getByLabelText(LABEL), { target: { value: '  ghp_abc  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(keys.save).toHaveBeenCalledWith(KEY, 'ghp_abc'))
+    await waitFor(() => expect(keys.save).toHaveBeenCalledWith(KEY, 'ghp_abc', REENTRY_OPTIONS))
   })
 
   test('Enter saves without submitting the surrounding form', async () => {
@@ -98,7 +101,7 @@ describe('CredentialShortcut', () => {
     const input = screen.getByLabelText(LABEL)
     fireEvent.change(input, { target: { value: 'ghp_abc' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(keys.save).toHaveBeenCalledWith(KEY, 'ghp_abc'))
+    await waitFor(() => expect(keys.save).toHaveBeenCalledWith(KEY, 'ghp_abc', REENTRY_OPTIONS))
     // The shortcut lives inside the project form; Enter must not save the project.
     expect(onSubmit).not.toHaveBeenCalled()
   })
@@ -177,5 +180,61 @@ describe('CredentialShortcut', () => {
   test('a key that did load as set shows no read error', () => {
     render(<CredentialShortcut settingsKey={KEY} keys={fakeKeys({ isSet: () => true, loadError: 'stale' })} />)
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  describe('a new GitHub Enterprise host with a stored token (re-entry, review of 1.6)', () => {
+    const REENTRY = {
+      field: 'githubEnterpriseToken', fields: ['githubEnterpriseToken'], endpoint: 'githubEnterpriseHost',
+      message: 'The GitHub Enterprise host changed: type the GitHub Enterprise token again, or clear it.',
+    }
+    /** A save that is refused once and hands the widget's answer back, as the hook does. */
+    function refusingKeys() {
+      const answers: (Record<string, string> | null)[] = []
+      const save = vi.fn(async (_n: string, _v: string, opts?: { onSecretReentry?: (r: typeof REENTRY) => Promise<Record<string, string> | null> }) => {
+        const secrets = await opts!.onSecretReentry!(REENTRY)
+        answers.push(secrets)
+        return secrets !== null
+      })
+      return { keys: fakeKeys({ save: save as CredentialKeysApi['save'] }), answers }
+    }
+    async function saveHost(keys: CredentialKeysApi) {
+      render(<AlertProvider><CredentialShortcut settingsKey="githubEnterpriseHost" keys={keys} optional /></AlertProvider>)
+      fireEvent.change(screen.getByLabelText('GitHub Enterprise Host'), { target: { value: 'ghe2.example.com' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      return screen.findByRole('dialog')
+    }
+
+    test('the dialog says why and asks for the token; typed, it goes with the same save', async () => {
+      const { keys, answers } = refusingKeys()
+      const dialog = await saveHost(keys)
+      expect(dialog).toHaveTextContent('type the GitHub Enterprise token again')
+      fireEvent.change(within(dialog).getByLabelText('GitHub Enterprise Token'), { target: { value: '  ghe_typed  ' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(answers).toEqual([{ githubEnterpriseToken: 'ghe_typed' }]))
+      expect(await screen.findByText('Saved to Global Settings.')).toBeDefined()
+    })
+
+    test('left empty, the stored token is cleared in the same save', async () => {
+      const { keys, answers } = refusingKeys()
+      const dialog = await saveHost(keys)
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(answers).toEqual([{ githubEnterpriseToken: '' }]))
+    })
+
+    test('cancelled, nothing is saved and the typed host stays to retry', async () => {
+      const { keys, answers } = refusingKeys()
+      const dialog = await saveHost(keys)
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(answers).toEqual([null]))
+      expect((screen.getByLabelText('GitHub Enterprise Host') as HTMLInputElement).value).toBe('ghe2.example.com')
+    })
+
+    test('outside the app shell (no alert provider) the refusal is only reported', async () => {
+      const { keys, answers } = refusingKeys()
+      render(<CredentialShortcut settingsKey="githubEnterpriseHost" keys={keys} optional />)
+      fireEvent.change(screen.getByLabelText('GitHub Enterprise Host'), { target: { value: 'ghe2.example.com' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(answers).toEqual([null]))
+    })
   })
 })

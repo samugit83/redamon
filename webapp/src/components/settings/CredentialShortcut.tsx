@@ -5,8 +5,33 @@ import Link from 'next/link'
 import { Eye, EyeOff, ExternalLink } from 'lucide-react'
 import { SETTINGS_KEYS_HREF } from '@/lib/settingsLinks'
 import { credentialField, isSecretField } from '@/lib/credentialFields'
-import type { CredentialKeysApi } from '@/hooks/useCredentialKeys'
+import { useOptionalAlertModal } from '@/components/ui/AlertModal'
+import type { CredentialKeysApi, SecretReentryPrompt } from '@/hooks/useCredentialKeys'
 import styles from './CredentialShortcut.module.css'
+
+/** The secrets a re-pointed endpoint needs again, typed in the confirm dialog. */
+function ReentryFields({ prompt, onChange }: { prompt: SecretReentryPrompt; onChange: (field: string, value: string) => void }) {
+  const baseId = useId()
+  return (
+    <div className={styles.reentry}>
+      <p>{prompt.message}</p>
+      {prompt.fields.map((f, i) => (
+        <div key={f} className={styles.reentryField}>
+          <label htmlFor={`${baseId}-${i}`}>{credentialField(f)?.label ?? f}</label>
+          <input
+            id={`${baseId}-${i}`}
+            className="textInput"
+            type="password"
+            autoComplete="new-password"
+            spellCheck={false}
+            onChange={e => onChange(f, e.target.value)}
+          />
+        </div>
+      ))}
+      <p className={styles.hint}>Leave it empty to clear the stored value: nothing stored is sent to the new address.</p>
+    </div>
+  )
+}
 
 interface CredentialShortcutProps {
   /** The UserSettings column, e.g. 'trufflehogGithubToken'. */
@@ -39,6 +64,7 @@ export function CredentialShortcut({
 }: CredentialShortcutProps) {
   const field = credentialField(settingsKey)
   const inputId = useId()
+  const alerts = useOptionalAlertModal()
   const [draft, setDraft] = useState('')
   const [visible, setVisible] = useState(false)
   const [justSaved, setJustSaved] = useState(false)
@@ -52,10 +78,23 @@ export function CredentialShortcut({
   const busy = keys.saving === settingsKey
   const blocking = !isSet && !optional
 
+  // A new endpoint (the GitHub Enterprise host) whose stored secret the server will not
+  // carry over (HD-24): ask for it, or to clear it, so both go in the same save.
+  const askForSecrets = async (prompt: SecretReentryPrompt): Promise<Record<string, string> | null> => {
+    if (!alerts) return null
+    const typed: Record<string, string> = Object.fromEntries(prompt.fields.map(f => [f, '']))
+    const confirmed = await alerts.confirm(
+      <ReentryFields prompt={prompt} onChange={(f, v) => { typed[f] = v }} />,
+      `Save the new ${field.label}`,
+      { confirmLabel: 'Save' },
+    )
+    return confirmed ? Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, v.trim()])) : null
+  }
+
   const commit = async () => {
     const value = draft.trim()
     if (!value || busy) return
-    const ok = await keys.save(settingsKey, value)
+    const ok = await keys.save(settingsKey, value, { onSecretReentry: askForSecrets })
     if (ok) {
       setDraft('')
       setVisible(false)

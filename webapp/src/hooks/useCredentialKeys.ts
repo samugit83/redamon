@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useOptionalProject } from '@/providers/ProjectProvider'
-import { readApiError } from '@/lib/apiError'
+import { readApiError, type ApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
 
 /**
@@ -23,6 +23,26 @@ import { failureText } from '@/components/settings/failureText'
 /** The prefix the API masks secrets with. Writing it back is a no-op server-side. */
 export const MASK_PREFIX = '••••'
 
+/** A save refused because it re-points a stored secret (400 secret_reentry_required, HD-24). */
+export interface SecretReentryPrompt {
+  /** The first secret to type again. */
+  field: string
+  /** Every stored secret the new endpoint would have received. */
+  fields: string[]
+  /** The setting whose change asks for them, e.g. githubEnterpriseHost. */
+  endpoint: string
+  /** The server's sentence. */
+  message: string
+}
+
+export interface SaveOptions {
+  /**
+   * Asked when the save re-points a stored secret: resolves the secrets to send with the
+   * same save (a typed value, or '' to clear it), or null to give up.
+   */
+  onSecretReentry?: (r: SecretReentryPrompt) => Promise<Record<string, string> | null>
+}
+
 export interface CredentialKeysApi {
   loading: boolean
   /** True once the key has a stored value. Never reveals what it is. */
@@ -30,7 +50,7 @@ export interface CredentialKeysApi {
   /** The masked value for display, or '' when unset. */
   masked: (name: string) => string
   /** Persists one key. Resolves true on success. */
-  save: (name: string, value: string) => Promise<boolean>
+  save: (name: string, value: string, options?: SaveOptions) => Promise<boolean>
   /** The key currently being written, or null. */
   saving: string | null
   error: string
@@ -41,6 +61,13 @@ export interface CredentialKeysApi {
 
 const LOAD_FAILED = "Couldn't read your saved keys"
 const SAVE_FAILED = 'Could not save the key'
+
+function reentryOf(err: ApiError): SecretReentryPrompt | null {
+  const b = err.body
+  if (err.code !== 'secret_reentry_required' || typeof b?.field !== 'string') return null
+  const fields = Array.isArray(b.fields) ? b.fields.filter((f): f is string => typeof f === 'string') : [b.field]
+  return { field: b.field, fields, endpoint: typeof b.endpoint === 'string' ? b.endpoint : '', message: err.reason }
+}
 
 
 export function useCredentialKeys(): CredentialKeysApi {
@@ -82,19 +109,31 @@ export function useCredentialKeys(): CredentialKeysApi {
 
   const masked = useCallback((name: string) => values[name] ?? '', [values])
 
-  const save = useCallback(async (name: string, value: string) => {
+  const save = useCallback(async (name: string, value: string, options: SaveOptions = {}) => {
     if (!userId) { setError('No user in session'); return false }
     setSaving(name)
     setError('')
+    const put = (body: Record<string, string>) => fetch(`/api/users/${userId}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
     try {
-      const res = await fetch(`/api/users/${userId}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [name]: value }),
-      })
+      let res = await put({ [name]: value })
       if (!res.ok) {
-        setError((await readApiError(res, SAVE_FAILED)).message)
-        return false
+        let err = await readApiError(res, SAVE_FAILED)
+        // A new endpoint (the GitHub Enterprise host) cannot keep its stored secret: the
+        // caller supplies it, or clears it, and both go in ONE save, never the host alone.
+        const reentry = reentryOf(err)
+        const secrets = reentry && options.onSecretReentry ? await options.onSecretReentry(reentry) : null
+        if (secrets) {
+          res = await put({ [name]: value, ...secrets })
+          if (!res.ok) err = await readApiError(res, SAVE_FAILED)
+        }
+        if (!res.ok) {
+          setError(err.message)
+          return false
+        }
       }
       // Re-read rather than storing what was typed: the value we hold must be
       // the masked one, so a later save of a DIFFERENT key cannot send this

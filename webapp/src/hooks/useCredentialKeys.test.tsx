@@ -150,4 +150,46 @@ describe('useCredentialKeys', () => {
     expect(ok).toBe(false)
     expect(result.current.error).toBe('No user in session')
   })
+
+  describe('a new GitHub Enterprise host with a stored token (re-entry, review of 1.6)', () => {
+    const REFUSAL = {
+      ok: false, status: 400,
+      json: async () => ({
+        error: 'The GitHub Enterprise host changed: type the GitHub Enterprise token again, or clear it.',
+        code: 'secret_reentry_required', field: 'githubEnterpriseToken', fields: ['githubEnterpriseToken'], endpoint: 'githubEnterpriseHost',
+      }),
+    }
+    const puts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT').map(([, init]) => JSON.parse(init.body))
+
+    test('the caller is asked, and the host goes with the typed token in the same request', async () => {
+      const { result } = renderHook(() => useCredentialKeys())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      fetchMock.mockResolvedValueOnce(REFUSAL)
+      const onSecretReentry = vi.fn().mockResolvedValue({ githubEnterpriseToken: 'ghe_typed' })
+
+      let ok: boolean | undefined
+      await act(async () => { ok = await result.current.save('githubEnterpriseHost', 'ghe2.example.com', { onSecretReentry }) })
+
+      expect(ok).toBe(true)
+      expect(onSecretReentry).toHaveBeenCalledWith(expect.objectContaining({ field: 'githubEnterpriseToken', fields: ['githubEnterpriseToken'] }))
+      expect(puts()).toEqual([
+        { githubEnterpriseHost: 'ghe2.example.com' },
+        { githubEnterpriseHost: 'ghe2.example.com', githubEnterpriseToken: 'ghe_typed' },
+      ])
+      expect(result.current.error).toBe('')
+    })
+
+    test('declined, nothing more is sent and the server\'s sentence is the error', async () => {
+      const { result } = renderHook(() => useCredentialKeys())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      fetchMock.mockResolvedValueOnce(REFUSAL)
+
+      let ok: boolean | undefined
+      await act(async () => { ok = await result.current.save('githubEnterpriseHost', 'ghe2.example.com', { onSecretReentry: async () => null }) })
+
+      expect(ok).toBe(false)
+      expect(puts()).toHaveLength(1)
+      expect(result.current.error).toContain('type the GitHub Enterprise token again')
+    })
+  })
 })

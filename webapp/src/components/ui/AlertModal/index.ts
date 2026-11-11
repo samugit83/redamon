@@ -1,1 +1,1 @@
-export { AlertProvider, useAlertModal } from './AlertModal'
+export { AlertProvider, useAlertModal, useOptionalAlertModal } from './AlertModal'
