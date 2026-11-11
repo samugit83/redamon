@@ -48,6 +48,7 @@ except Exception:
     pass
 
 from recon.helpers import ai_signal_catalog as cat
+from recon.helpers import request_pacer
 
 # Vendored data (Apache-2.0): Cisco MCP YARA rules + Julius probe packs.
 # Lives beside the module (the sibling `data/` dir is a root-owned runtime cache).
@@ -71,6 +72,17 @@ _MCP_THREAT_MAP = {
 # --------------------------------------------------------------------------- #
 def _log(msg: str, sym: str = "*") -> None:
     print(f"[{sym}][AISurfaceRecon] {msg}", flush=True)
+
+
+def _paced(send, url: str, **kwargs):
+    """One probe through ``send`` (a session's get or post) after a slot of
+    the process-wide RoE pacer, so the host workers share the ceiling with
+    every other in-process requester. Every probe here is sent with
+    allow_redirects=False: one call is one request."""
+    request_pacer.acquire()
+    response = send(url, **kwargs)
+    request_pacer.back_off_on_429(response)
+    return response
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +171,8 @@ def _probe_chat(base_url: str, cand: dict, session: requests.Session,
     latencies = []
     for path in paths[:24]:
         url = base_url.rstrip("/") + path
+        # The wait for a slot is the ceiling's, not the endpoint's latency.
+        request_pacer.acquire()
         t0 = time.monotonic()
         try:
             r = session.post(url, data=body,
@@ -167,6 +181,7 @@ def _probe_chat(base_url: str, cand: dict, session: requests.Session,
         except requests.RequestException:
             continue
         latencies.append((time.monotonic() - t0) * 1000.0)
+        request_pacer.back_off_on_429(r)
         ctype = r.headers.get("Content-Type", "")
         is_sse = "text/event-stream" in ctype.lower()
         iface = None
@@ -207,9 +222,9 @@ def _mcp_detect(base_url: str, session: requests.Session, timeout: float) -> dic
     for path in cat.AI_MCP_PROBE_PATHS:
         url = base_url.rstrip("/") + path
         try:
-            r = session.post(url, json=init,
-                             headers={"Accept": "application/json, text/event-stream"},
-                             timeout=timeout, allow_redirects=False, verify=False)
+            r = _paced(session.post, url, json=init,
+                       headers={"Accept": "application/json, text/event-stream"},
+                       timeout=timeout, allow_redirects=False, verify=False)
         except requests.RequestException:
             continue
         if r.status_code == 401 and r.headers.get("WWW-Authenticate"):
@@ -243,48 +258,89 @@ def _first_sse_json(text: str) -> dict | None:
     return None
 
 
+def _mcp_paced_hooks(budget: asyncio.Timeout) -> dict:
+    """httpx event hooks: every request the MCP SDK sends (the handshake, each
+    listing, the event stream, the closing DELETE, each redirect hop) takes a
+    slot of the process-wide RoE pacer, and a 429 backs off every requester.
+
+    The wait sleeps on the loop's thread: this loop runs this one listing, and
+    the listing's deadline cannot fire during the sleep, so it is moved by the
+    wait before anything else runs. The queue is the ceiling's, not a slow
+    server's.
+    """
+    async def before(request):
+        waited = request_pacer.acquire()
+        when = budget.when()
+        if waited and when is not None:
+            budget.reschedule(when + waited)
+
+    async def after(response):
+        request_pacer.back_off_on_429(response)
+
+    return {"request": [before], "response": [after]}
+
+
 def _mcp_enumerate(url: str, timeout: float) -> dict | None:
     """Use the MCP SDK to list tools/resources/prompts. Async -> own loop."""
-    async def _go():
+    async def _list(conn):
         from mcp import ClientSession
-        # The transport export was renamed (streamablehttp_client ->
-        # streamable_http_client) and its yielded tuple dropped the session-id
-        # callback (3-tuple -> 2-tuple) in a later SDK. Support both.
-        try:
-            from mcp.client.streamable_http import streamable_http_client as _client
-        except ImportError:
-            from mcp.client.streamable_http import streamablehttp_client as _client
-        async with _client(url) as conn:
-            read, write = conn[0], conn[1]  # tolerate 2- or 3-tuple
-            async with ClientSession(read, write) as s:
-                init = await s.initialize()
-                tools = await s.list_tools()
-                try:
-                    resources = await s.list_resources()
-                    res = [r.model_dump(by_alias=True) for r in resources.resources]
-                except Exception:
-                    res = []
-                try:
-                    prompts = await s.list_prompts()
-                    prm = [p.model_dump(by_alias=True) for p in prompts.prompts]
-                except Exception:
-                    prm = []
-                # Attribute names migrated camelCase -> snake_case across SDK
-                # versions; read both. model_dump(by_alias=True) yields camelCase
-                # wire keys (inputSchema) on every version.
-                si = getattr(init, "serverInfo", None) or getattr(init, "server_info", None)
-                return {
-                    "server_name": getattr(si, "name", None) if si else None,
-                    "server_version": getattr(si, "version", None) if si else None,
-                    "protocol_version": (getattr(init, "protocolVersion", None)
-                                         or getattr(init, "protocol_version", None)),
-                    "instructions": getattr(init, "instructions", None),
-                    "tools": [t.model_dump(by_alias=True) for t in tools.tools],
-                    "resources": res,
-                    "prompts": prm,
-                }
+        read, write = conn[0], conn[1]  # tolerate 2- or 3-tuple
+        async with ClientSession(read, write) as s:
+            init = await s.initialize()
+            tools = await s.list_tools()
+            try:
+                resources = await s.list_resources()
+                res = [r.model_dump(by_alias=True) for r in resources.resources]
+            except Exception:
+                res = []
+            try:
+                prompts = await s.list_prompts()
+                prm = [p.model_dump(by_alias=True) for p in prompts.prompts]
+            except Exception:
+                prm = []
+            # Attribute names migrated camelCase -> snake_case across SDK
+            # versions; read both. model_dump(by_alias=True) yields camelCase
+            # wire keys (inputSchema) on every version.
+            si = getattr(init, "serverInfo", None) or getattr(init, "server_info", None)
+            return {
+                "server_name": getattr(si, "name", None) if si else None,
+                "server_version": getattr(si, "version", None) if si else None,
+                "protocol_version": (getattr(init, "protocolVersion", None)
+                                     or getattr(init, "protocol_version", None)),
+                "instructions": getattr(init, "instructions", None),
+                "tools": [t.model_dump(by_alias=True) for t in tools.tools],
+                "resources": res,
+                "prompts": prm,
+            }
+
+    async def _go():
+        from mcp.shared._httpx_utils import create_mcp_http_client
+        async with asyncio.timeout(timeout * 4) as budget:
+            hooks = _mcp_paced_hooks(budget)
+
+            def paced_client(**kwargs):
+                client = create_mcp_http_client(**kwargs)
+                own = client.event_hooks
+                client.event_hooks = {kind: [*own.get(kind, ()), *added]
+                                      for kind, added in hooks.items()}
+                return client
+
+            # The transport export was renamed (streamablehttp_client ->
+            # streamable_http_client) and its yielded tuple dropped the
+            # session-id callback (3-tuple -> 2-tuple) in a later SDK. Support
+            # both; each takes its HTTP client from us, so it is paced.
+            try:
+                from mcp.client.streamable_http import streamable_http_client
+            except ImportError:
+                from mcp.client.streamable_http import streamablehttp_client
+                async with streamablehttp_client(url, httpx_client_factory=paced_client) as conn:
+                    return await _list(conn)
+            async with paced_client() as http, \
+                    streamable_http_client(url, http_client=http) as conn:
+                return await _list(conn)
+
     try:
-        return asyncio.run(asyncio.wait_for(_go(), timeout * 4))
+        return asyncio.run(_go())
     except Exception:
         return None
 
@@ -440,7 +496,7 @@ def _probe_openapi(base_url: str, session: requests.Session, timeout: float,
     for path in cat.AI_OPENAPI_DISCOVERY_PATHS:
         url = base_url.rstrip("/") + path
         try:
-            r = session.get(url, timeout=timeout, allow_redirects=False, verify=False)
+            r = _paced(session.get, url, timeout=timeout, allow_redirects=False, verify=False)
         except requests.RequestException:
             continue
         if r.status_code != 200:
@@ -748,8 +804,8 @@ def _confirm_vector_dbs(combined_result: dict, session: requests.Session,
             for path, expect in reads:
                 url = f"{scheme}://{_url_authority(host)}:{port}{path}"
                 try:
-                    r = session.get(url, timeout=timeout, verify=False,
-                                    allow_redirects=False)
+                    r = _paced(session.get, url, timeout=timeout, verify=False,
+                               allow_redirects=False)
                 except requests.RequestException:
                     continue
                 if r.status_code == 200 and (not expect or expect in (r.text or "")):

@@ -9,7 +9,9 @@ exactly so results are comparable.
 
 It is intentionally standalone (no graph, no settings) so the same engine can
 later be reused by the ai_guardrail_probe container and the ai_offensive_server
-MCP. The only network primitive is `requests`.
+MCP. The only network primitive is `requests`, and every request first takes a
+slot of recon's process-wide RoE pacer (recon/helpers/request_pacer.py; inert
+with no ceiling).
 
 Matcher semantics (verbatim from the Julius Go source):
   * Rules within one request  -> AND (all must pass).
@@ -40,6 +42,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import requests
+
+from recon.helpers import request_pacer
 
 try:  # PyYAML is already in the recon image
     import yaml
@@ -195,20 +199,21 @@ def _match_rule(rule: MatchRule, status: int, body: str, headers: dict) -> bool:
     return (not result) if rule.negate else result
 
 
+def _send(session: requests.Session, method: str, url: str, **kwargs) -> requests.Response:
+    """One request, never a redirect followed, after a slot of the RoE pacer."""
+    request_pacer.acquire()
+    resp = session.request(method, url, allow_redirects=False, verify=False, **kwargs)
+    request_pacer.back_off_on_429(resp)
+    return resp
+
+
 def _do_request(
     session: requests.Session, base_url: str, req: ProbeRequest, timeout: float
 ) -> bool:
     url = base_url.rstrip("/") + req.path
     try:
-        resp = session.request(
-            req.method,
-            url,
-            headers=req.headers or None,
-            data=req.body,
-            timeout=timeout,
-            allow_redirects=False,
-            verify=False,
-        )
+        resp = _send(session, req.method, url, headers=req.headers or None,
+                     data=req.body, timeout=timeout)
     except requests.RequestException:
         return False
     # Cap body read to keep memory bounded.
@@ -245,15 +250,9 @@ def _extract_models(
     path = models_cfg.get("path", "/")
     method = str(models_cfg.get("method", "GET") or "GET").upper()
     try:
-        resp = session.request(
-            method,
-            base_url.rstrip("/") + path,
-            headers=models_cfg.get("headers") or None,
-            data=models_cfg.get("body"),
-            timeout=timeout,
-            allow_redirects=False,
-            verify=False,
-        )
+        resp = _send(session, method, base_url.rstrip("/") + path,
+                     headers=models_cfg.get("headers") or None,
+                     data=models_cfg.get("body"), timeout=timeout)
         data = resp.json()
     except Exception:
         return []

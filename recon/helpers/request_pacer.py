@@ -15,6 +15,10 @@ never exceed the ceiling, and a Domain batch's groups (run one after another in
 one process) never reset it. With RoE off or no ceiling the pacer is inert:
 ``acquire`` returns at once, without taking a lock or reading the clock.
 
+A target's 429 slows every requester down, not just the one it answered::
+
+    request_pacer.back_off_on_429(response)    # or back_off_retry_after(value)
+
 The process configures it once from the run's settings (``configure``). A
 module that holds the settings may pass them to ``pacer(settings)``, which
 configures it only when nothing did yet. Import it as
@@ -163,6 +167,32 @@ def acquire() -> float:
 def ceiling() -> float:
     """The process-wide ceiling in force, 0.0 when requests are not paced."""
     return _PACER.rps
+
+
+# Retry-After is the target's to set: one answer holds every in-process
+# requester back this long at most.
+BACK_OFF_MAX_S = 30.0
+
+
+def back_off_retry_after(retry_after: Any = None) -> None:
+    """A 429 pushes every in-process requester's next slot back by its
+    Retry-After seconds (1 s when absent or not a number), at most
+    ``BACK_OFF_MAX_S``. Inert with no ceiling."""
+    try:
+        seconds = float(retry_after)
+    except (TypeError, ValueError):
+        seconds = 1.0
+    _PACER.back_off(min(BACK_OFF_MAX_S, max(1.0, seconds)))
+
+
+def back_off_on_429(response: Any) -> None:
+    """``back_off_retry_after`` when ``response`` (requests, urllib3 or httpx) is a 429."""
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(response, "status", None)
+    if status == 429:
+        headers = getattr(response, "headers", None) or {}
+        back_off_retry_after(headers.get("Retry-After"))
 
 
 def reset() -> None:
