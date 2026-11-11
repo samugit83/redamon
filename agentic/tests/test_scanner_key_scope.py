@@ -175,7 +175,9 @@ class WholeAppTests(_Keys):
         job = machine_credential.mint(
             {"aud": "scan", "ten": "u1", "pid": "p1", "job": "j1", "exp": 4_102_444_800},
             machine_credential.derive_key(MASTER, machine_credential.JOB_CREDENTIAL_LABEL))
-        self.assertTrue(_accepts(scan, {"x-internal-key": SCANNER, "x-redamon-job": job}))
+        # The gate also asks the webapp who owns the credential's project now.
+        with patch.object(llm_guard, "_job_project_owner", return_value="u1"):
+            self.assertTrue(_accepts(scan, {"x-internal-key": SCANNER, "x-redamon-job": job}))
 
     def test_no_route_outside_the_scan_routes_accepts_the_bare_scanner_key(self):
         open_ = [

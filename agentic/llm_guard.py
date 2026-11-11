@@ -23,6 +23,7 @@ the MCP / WS-ticket rollout convention, so a pre-secret install never hard
 limits are always active (they need no secret) and bound damage either way.
 """
 
+import asyncio
 import hmac
 import logging
 import os
@@ -396,6 +397,32 @@ def job_credential_refusal(code: str, status: int = 401) -> HTTPException:
     })
 
 
+_PROJECT_LOOKUP_TIMEOUT_S = 10
+
+
+def _job_project_owner(project_id: str) -> Optional[str]:
+    """The account that owns `project_id` now, as the webapp answers the master key;
+    None when the project does not exist. Raises when the webapp gives no readable
+    answer. Uncached, like the /jev/* owner binding: a deletion takes effect on the
+    next call."""
+    import urllib.parse
+
+    import requests
+
+    webapp_url = os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
+    resp = requests.get(f"{webapp_url}/api/projects/{urllib.parse.quote(project_id, safe='')}",
+                        headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
+                        timeout=_PROJECT_LOOKUP_TIMEOUT_S)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    data = resp.json()
+    owner = data.get("userId") if isinstance(data, dict) else None
+    if not isinstance(owner, str) or not owner:
+        raise ValueError("the webapp's project answer names no owner")
+    return owner
+
+
 async def require_master_or_job_credential(request: Request) -> Optional[dict]:
     """FastAPI dependency for the scan containers' routes (/llm/*, /jev/*): the MASTER
     key, or the scanner key TOGETHER WITH a valid job credential (X-Redamon-Job), the
@@ -408,6 +435,11 @@ async def require_master_or_job_credential(request: Request) -> Optional[dict]:
     left out is filled from the claims (`scan_job_ids`), and the limits count against
     the tenant. The bare scanner key answers 401 `job_credential_missing`. A weak
     master key answers 503: no credential can be verified without it.
+
+    The credential's project must still exist and belong to its tenant (403
+    `job_credential_project_gone`; 503 `job_credential_project_unverifiable` when the
+    webapp cannot say), so one copied out of a scan stops spending its owner's model
+    key once the project is deleted or has another owner, though it lives 7 days.
     """
     if master_key_is_weak():
         raise HTTPException(
@@ -436,6 +468,14 @@ async def require_master_or_job_credential(request: Request) -> Optional[dict]:
         value = body.get(field)
         if value and str(value) != claims[claim]:
             raise job_credential_refusal(code, 403)
+    try:
+        owner = await asyncio.to_thread(_job_project_owner, claims["pid"])
+    except Exception as e:  # noqa: BLE001 - any failure to answer fails closed
+        logger.warning("[rbac] job credential refused reason=project_unverifiable (%s)", type(e).__name__)
+        raise HTTPException(status_code=503, detail={
+            "error": "the scan's project could not be checked", "code": "job_credential_project_unverifiable"})
+    if owner != claims["ten"]:
+        raise job_credential_refusal("project_gone", 403)
     _enforce_llm_limits(request, claims["ten"])
     return claims
 

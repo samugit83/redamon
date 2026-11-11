@@ -6,7 +6,10 @@ A scan calls them with the scanner key and X-Redamon-Job, the credential the web
 minted for its start. The route acts for the credential's tenant and project: a body
 user_id or project_id naming anyone else is refused, one left out is filled from the
 credential, and the LLM limits count against the tenant. The bare scanner key opens
-nothing; the master key (the webapp) keeps the body's ids.
+nothing; the master key (the webapp) keeps the body's ids. The credential's project
+must still exist and belong to its tenant (asked of the webapp on every call), so a
+credential copied out of a scan stops spending its owner's model key once the project
+is deleted or has another owner.
 """
 import os
 import sys
@@ -14,7 +17,7 @@ import time
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -91,6 +94,18 @@ class _Base(unittest.TestCase):
             p = patch.object(api, target, side_effect=fake)
             p.start()
             self.addCleanup(p.stop)
+
+        # The webapp's answer to "who owns this project now".
+        self.projects = {"proj-1": "owner-1", "proj-2": "owner-2"}
+        self.owner_lookups = []
+
+        def _owner(project_id):
+            self.owner_lookups.append(project_id)
+            return self.projects.get(project_id)
+
+        p = patch.object(llm_guard, "_job_project_owner", side_effect=_owner)
+        p.start()
+        self.addCleanup(p.stop)
 
     def post(self, path, body, *, key=SCANNER, job=None):
         headers = {"x-internal-key": key} if key else {}
@@ -185,6 +200,70 @@ class UserFromTheCredential(_Base):
         self.assertIn(first.status_code, (200, 502))
         self.assertEqual(second.status_code, 429)
         self.assertIn(other.status_code, (200, 502))
+
+
+class TheCredentialsProjectMustLive(_Base):
+    def test_a_credential_whose_project_is_gone_or_has_another_owner_is_refused(self):
+        for live in ({}, {"proj-1": "new-owner"}):
+            self.projects = live
+            with self.assertLogs("llm_guard", level="WARNING") as logs:
+                for path, body in SCAN_ROUTES.items():
+                    with self.subTest(path=path, live=live):
+                        r = self.post(path, body, job=_job())
+                        self.assertEqual(r.status_code, 403, r.text)
+                        self.assertEqual(r.json()["detail"]["code"], "job_credential_project_gone")
+            self.assertIn("[rbac] job credential refused reason=project_gone", "\n".join(logs.output))
+        self.assertEqual(self.built_for + self.jev_for, [])
+
+    def test_a_webapp_that_cannot_answer_fails_closed(self):
+        def _down(_project_id):
+            raise ConnectionError("webapp down")
+
+        with patch.object(llm_guard, "_job_project_owner", side_effect=_down):
+            r = self.post("/llm/nuclei-tags", LLM_BODIES["/llm/nuclei-tags"], job=_job())
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "job_credential_project_unverifiable")
+        self.assertEqual(self.built_for, [])
+
+    def test_asked_afresh_on_every_call_and_never_for_the_master_key(self):
+        for _ in range(2):
+            self.post("/llm/nuclei-tags", LLM_BODIES["/llm/nuclei-tags"], job=_job())
+        self.assertEqual(self.owner_lookups, ["proj-1", "proj-1"])
+        self.post("/llm/nuclei-tags", {**LLM_BODIES["/llm/nuclei-tags"], "user_id": "u-body"}, key=MASTER)
+        self.assertEqual(self.owner_lookups, ["proj-1", "proj-1"])
+
+    def test_a_refused_project_counts_nothing_against_the_limits(self):
+        self.projects = {}
+        with patch.object(llm_guard, "_daily_cap", llm_guard._DailyCap(1)):
+            gone = self.post("/llm/nuclei-tags", LLM_BODIES["/llm/nuclei-tags"], job=_job())
+            self.projects = {"proj-1": "owner-1"}
+            live = self.post("/llm/nuclei-tags", LLM_BODIES["/llm/nuclei-tags"], job=_job())
+        self.assertEqual(gone.status_code, 403)
+        self.assertIn(live.status_code, (200, 502), live.text)
+
+
+class ProjectOwnerLookup(unittest.TestCase):
+    def _lookup(self, response, project_id="proj 1"):
+        with patch.dict(os.environ, {**KEYS, "WEBAPP_API_URL": "http://webapp:3000/"}), \
+                patch("requests.get", return_value=response) as get:
+            return llm_guard._job_project_owner(project_id), get
+
+    def test_it_asks_the_webapp_with_the_master_key(self):
+        owner, get = self._lookup(Mock(status_code=200, json=lambda: {"id": "proj 1", "userId": "owner-1"}))
+        self.assertEqual(owner, "owner-1")
+        self.assertEqual(get.call_args[0][0], "http://webapp:3000/api/projects/proj%201")
+        self.assertEqual(get.call_args[1]["headers"], {"X-Internal-Key": MASTER})
+
+    def test_a_deleted_project_has_no_owner(self):
+        self.assertIsNone(self._lookup(Mock(status_code=404))[0])
+
+    def test_an_answer_it_cannot_read_raises(self):
+        failing = Mock(status_code=500)
+        failing.raise_for_status.side_effect = RuntimeError("HTTP 500")
+        for response in (failing, Mock(status_code=200, json=lambda: {"id": "proj 1"}),
+                         Mock(status_code=200, json=lambda: ["not", "a", "project"])):
+            with self.subTest(response=response), self.assertRaises(Exception):
+                self._lookup(response)
 
 
 class MasterKeyUnchanged(_Base):
