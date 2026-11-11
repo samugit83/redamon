@@ -9,8 +9,10 @@ import { requireEffectiveUser } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import { featureModelsMap, parseFeatureModelsPatch, type FeatureModelsPatch } from '@/lib/featureModels'
 import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
-import { internalError } from '@/lib/routeErrors'
+import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { normalizeGithubHost, secretReentryResponse, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
+import { loadPrincipal } from '@/lib/authz/principal'
+import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { followUpWarning, type SaveWarning } from './saveWarnings'
 
 interface RouteParams {
@@ -24,6 +26,55 @@ function maskSecret(value: string): string {
 }
 
 const TUNNEL_FIELDS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
+
+const TUNNELS_ADMIN_ONLY =
+  'The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
+
+/**
+ * The tunnel settings this PUT would change. A masked secret keeps the stored value and
+ * an unchanged value is no change, so the Global Settings page's full-form save, which
+ * sends all four every time, changes nothing.
+ */
+function changedTunnelFields(existing: Record<string, unknown> | null, body: Record<string, unknown>): string[] {
+  const changed: string[] = TUNNEL_FIELDS.filter((f) => {
+    if (!(f in body)) return false
+    const stored = (existing?.[f] as string | undefined) ?? ''
+    const sent = body[f]
+    const next = typeof sent === 'string' && sent.startsWith('••••') && existing ? stored : sent
+    return next !== stored
+  })
+  const storedEnabled = (existing?.tunnelsEnabled as boolean | undefined) ?? false
+  if ('tunnelsEnabled' in body && Boolean(body.tunnelsEnabled) !== storedEnabled) changed.push('tunnelsEnabled')
+  return changed
+}
+
+/**
+ * Whether the signed-in account may change the instance tunnel (HD-06, F-05): an admin,
+ * the member who kept the `tunnels` legacy grant, or a pre-upgrade account under the
+ * escape hatch. `record: false` asks without counting a use of that hatch.
+ */
+async function tunnelAccess(record: boolean): Promise<{ access: SharedToolAccess; actorId: string | null }> {
+  const session = await getSession()
+  if (!session) return { access: { allowed: false, via: null }, actorId: null }
+  // getSession read the role from the database: an admin needs no second read.
+  if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actorId: session.userId }
+  const principal = await loadPrincipal(session.userId)
+  if (!principal) return { access: { allowed: false, via: null }, actorId: null }
+  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actorId: principal.id }
+}
+
+/**
+ * Tells a browser whether to offer the tunnel controls. Only a hint: a failed read leaves
+ * it out, the page then keeps the controls, and the PUT still decides.
+ */
+async function tunnelControlsHint(): Promise<{ canManageTunnels?: boolean }> {
+  try {
+    return { canManageTunnels: (await tunnelAccess(false)).access.allowed }
+  } catch (err) {
+    console.warn(`[rbac] tunnel access hint unavailable code=${safeErrorCode(err)}`)
+    return {}
+  }
+}
 
 /**
  * Every secret column, masked to its last 4 characters for any caller that is
@@ -136,11 +187,13 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const scanner = isScannerRequest(request)
     const denied = scanner ? null : await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
-    const internal = (isInternalRequest(request) || scanner) && request.nextUrl.searchParams.get('internal') === 'true'
+    const service = isInternalRequest(request) || scanner
+    const internal = service && request.nextUrl.searchParams.get('internal') === 'true'
 
     let settings = await prisma.userSettings.findUnique({
       where: { userId: id },
     })
+    const tunnelHint = service ? {} : await tunnelControlsHint()
 
     // Fetch rotation configs
     const rotationRows = await prisma.apiKeyRotationConfig.findMany({
@@ -222,6 +275,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         scaIntelIgnoreSuffixes: 'oastify.com,oast.fun,mburpcollab.com,canarytokens.com,pipedream.net',
         featureModels: {},
         rotationConfigs,
+        ...tunnelHint,
       })
     }
 
@@ -229,7 +283,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       settings = maskSecrets(settings)
     }
 
-    return NextResponse.json({ ...settings, rotationConfigs })
+    return NextResponse.json({ ...settings, rotationConfigs, ...tunnelHint })
   } catch (error) {
     return internalError(error, 'Failed to fetch user settings')
   }
@@ -295,6 +349,23 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const existing = await prisma.userSettings.findUnique({
       where: { userId: id },
     })
+
+    // The tunnel is one listener for the whole instance (HD-06): changing it is refused
+    // here, before any check of the request's values and before anything is written.
+    const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
+    let tunnelActorId: string | null = null
+    let tunnelVia = 'internal'
+    if (tunnelChanges.length && !isInternalRequest(request)) {
+      const { access, actorId } = await tunnelAccess(true)
+      if (!access.allowed || !access.via) {
+        return NextResponse.json(
+          { error: TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },
+          { status: 403 },
+        )
+      }
+      tunnelActorId = actorId
+      tunnelVia = access.via
+    }
 
     // The GHE host is the ALLOWLIST every supply-chain host check is made
     // against, so it is normalized and validated on the way in rather than at
@@ -468,9 +539,15 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // explicitly enabled them; otherwise we push an empty (stop) config so a
     // credential edit alone can never bring a tunnel up. The request carries the
     // TUNNEL_AUTH_TOKEN so a rogue container can't drive :8015 (S14).
-    const credChanged = TUNNEL_FIELDS.some(f => f in body && data[f] !== (existing?.[f] ?? ''))
-    const enabledChanged = enabledProvided && desiredEnabled !== (existing?.tunnelsEnabled ?? false)
-    if (credChanged || enabledChanged) {
+    if (tunnelChanges.length) {
+      // Which fields changed and through what right, never their values.
+      await writeAudit({
+        actorId: tunnelActorId,
+        action: 'settings.tunnel_changed',
+        targetType: 'user',
+        targetId: id,
+        after: { fields: tunnelChanges, via: tunnelVia },
+      })
       const config = settings.tunnelsEnabled
         ? {
             ngrokAuthtoken: settings.ngrokAuthtoken,

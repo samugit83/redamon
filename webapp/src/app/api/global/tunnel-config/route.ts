@@ -1,16 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { isInternalRequest, requireSession } from '@/lib/session'
+import { isInternalRequest } from '@/lib/session'
+
+/**
+ * Tunnels are stored per account but run as one listener for the instance. The row
+ * answered is the enabled one first (the last enable pushed it to the sandbox), then the
+ * most recent save, then the lowest id, so every call names the same tunnel; step 2.4's
+ * move to instance settings reuses this order.
+ */
+const TUNNEL_ROW_ORDER = [
+  { tunnelsEnabled: 'desc' as const },
+  { updatedAt: 'desc' as const },
+  { id: 'asc' as const },
+]
 
 // GET /api/global/tunnel-config
-// Internal-only endpoint for kali-sandbox boot and agent runtime.
-// Returns unmasked tunnel credentials from the first user's settings.
+// The unmasked tunnel credentials, for the internal key only (HD-05): the agent's
+// chisel lookup (agentic/utils.py) is the caller. Anyone else, an admin's browser
+// included, gets 404 before anything is read.
 export async function GET(request: NextRequest) {
-  // The agent's chisel lookup calls this with X-Internal-Key and no cookie
-  // (agentic/utils.py), so the key is admitted before the session check.
   if (!isInternalRequest(request)) {
-    const session = await requireSession()
-    if (session instanceof NextResponse) return session
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
   try {
     const settings = await prisma.userSettings.findFirst({
@@ -20,6 +30,7 @@ export async function GET(request: NextRequest) {
           { chiselServerUrl: { not: '' } },
         ],
       },
+      orderBy: TUNNEL_ROW_ORDER,
       select: {
         ngrokAuthtoken: true,
         chiselServerUrl: true,

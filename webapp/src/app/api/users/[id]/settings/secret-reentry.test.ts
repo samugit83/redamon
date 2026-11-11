@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   rotationFindMany: vi.fn(),
   requireUserAccess: vi.fn(),
   fetch: vi.fn(),
+  session: { userId: 'u1', role: 'standard' },
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -32,7 +33,7 @@ vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => h.requireUserAccess(...a),
   isInternalRequest: () => false,
   isScannerRequest: () => false,
-  getSession: async () => ({ userId: 'u1', role: 'standard' }),
+  getSession: async () => h.session,
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
 
@@ -55,6 +56,7 @@ beforeEach(() => {
   h.findUnique.mockResolvedValue(STORED)
   h.rotationFindMany.mockResolvedValue([])
   h.upsert.mockImplementation(async ({ update }: { update: Record<string, unknown> }) => ({ ...STORED, ...update }))
+  h.session = { userId: 'u1', role: 'standard' }
 })
 
 describe('settings PUT: re-entry when an endpoint changes', () => {
@@ -84,7 +86,10 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
     expect(h.upsert.mock.calls[0][0].update.githubEnterpriseToken).toBe(STORED.githubEnterpriseToken)
   })
 
+  // Re-pointing the tunnel is for an account that may change it (HD-06, tunnel-gating.test.ts):
+  // u1 signs in as an admin here, so the re-entry rule is what answers.
   test('a new chisel URL with the masked auth is 400 naming chiselAuth; no tunnel is configured', async () => {
+    h.session = { userId: 'u1', role: 'admin' }
     const res = await put({ chiselServerUrl: 'http://evil.example.net:9090', chiselAuth: '••••••••pass' })
     expect(res.status).toBe(400)
     expect((await res.json()).field).toBe('chiselAuth')
@@ -93,6 +98,7 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
   })
 
   test('a new chisel URL with the auth typed again is saved and pushed', async () => {
+    h.session = { userId: 'u1', role: 'admin' }
     const res = await put({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed' })
     expect(res.status).toBe(200)
     const pushed = JSON.parse(h.fetch.mock.calls[0][1].body)

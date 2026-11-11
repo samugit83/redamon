@@ -3,7 +3,9 @@
  * 01_current_state.md §1.2). The middleware admits any validly signed cookie, so a
  * deleted account kept them until its 7-day cookie expired: each now reads the
  * account first and answers 401 without one, before it calls a service or touches
- * a file. Real tokens are signed; the cookie store, Prisma and fetch are mocked.
+ * a file. One of them, /api/global/tunnel-config, has since become internal-key only
+ * (HD-05, step 1.10): it answers 404 to every session and is checked separately below.
+ * Real tokens are signed; the cookie store, Prisma and fetch are mocked.
  *
  * @vitest-environment node
  */
@@ -57,7 +59,6 @@ const ROUTES: Case[] = [
   { path: '/api/agent/tunnel-status', load: () => import('./agent/tunnel-status/route') },
   { path: '/api/community-skills', load: () => import('./community-skills/route') },
   { path: '/api/cypherfix/health', load: () => import('./cypherfix/health/route') },
-  { path: '/api/global/tunnel-config', load: () => import('./global/tunnel-config/route') },
   { path: '/api/gvm/available', load: () => import('./gvm/available/route') },
   { path: '/api/js-recon/trufflehog/available', load: () => import('./js-recon/trufflehog/available/route') },
   { path: '/api/mcp/manifest', load: () => import('./mcp/manifest/route') },
@@ -113,17 +114,18 @@ afterAll(() => {
 })
 
 describe('the former login-only routes read the account first', () => {
-  test('the list is the twenty routes the manifest recorded as login-only, now session-guarded', () => {
+  test('the list is the twenty routes the manifest recorded as login-only: nineteen session-guarded, one internal', () => {
     const paths = ROUTES.map(r => r.path)
-    expect(paths).toHaveLength(20)
+    expect(paths).toHaveLength(19)
     const byPath = new Map(ROUTE_MANIFEST.map(e => [e.path, e.guard]))
     expect(paths.filter(p => byPath.get(p) !== 'session')).toEqual([])
+    expect(byPath.get('/api/global/tunnel-config')).toBe('internal')
   })
 
-  test("each of the 20 former login-only routes answers 401 for a deleted user's valid token", async () => {
+  test("each of the 19 session-guarded former login-only routes answers 401 for a deleted user's valid token", async () => {
     authCookie = await createToken('deleted-user', 'admin')
     const results = await callAll()
-    expect(results.length).toBeGreaterThanOrEqual(22)
+    expect(results.length).toBeGreaterThanOrEqual(21)
     expect(results.filter(r => r.status !== 401)).toEqual([])
     // Refused before any service call, file or settings read.
     expect(fetchSpy).not.toHaveBeenCalled()
@@ -152,10 +154,21 @@ describe('the former login-only routes read the account first', () => {
     expect(userFindUnique).not.toHaveBeenCalled()
   })
 
-  test('a wrong internal key on the tunnel config is not a session either', async () => {
+  test('a wrong internal key on the tunnel config is refused (404, HD-05)', async () => {
     const { GET } = await import('./global/tunnel-config/route')
     const res = await GET(request('GET', '/api/global/tunnel-config', { 'x-internal-key': 'wrong' }))
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(404)
     expect(settingsFindFirst).not.toHaveBeenCalled()
+  })
+
+  test("the tunnel config answers a deleted user's token, and a live member's, with 404 and reads nothing", async () => {
+    const { GET } = await import('./global/tunnel-config/route')
+    authCookie = await createToken('deleted-user', 'admin')
+    expect((await GET(request('GET', '/api/global/tunnel-config'))).status).toBe(404)
+    dbRoles.set('member', 'standard')
+    authCookie = await createToken('member', 'standard')
+    expect((await GET(request('GET', '/api/global/tunnel-config'))).status).toBe(404)
+    expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(userFindUnique).not.toHaveBeenCalled()
   })
 })

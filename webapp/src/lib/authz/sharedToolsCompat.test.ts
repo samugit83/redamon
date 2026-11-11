@@ -151,6 +151,16 @@ describe('every compat use is visible', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await sharedToolAccess(PRE, 'tunnels')).toEqual({ allowed: true, via: 'compat' })
   })
+
+  test('a screen asking whether to offer the tool (record: false) is not a use: no warning, no row', async () => {
+    expect(await sharedToolAccess(PRE, 'tunnels', { record: false })).toEqual({ allowed: true, via: 'compat' })
+    expect(await sharedToolAccess(POST, 'tunnels', { record: false })).toEqual({ allowed: false, via: null })
+    expect(warn).not.toHaveBeenCalled()
+    expect(compatRows()).toEqual([])
+    // The next real use is still recorded.
+    await sharedToolAccess(PRE, 'tunnels')
+    expect(compatRows()).toHaveLength(1)
+  })
 })
 
 describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {

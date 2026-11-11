@@ -77,7 +77,15 @@ async function recordCompatUse(userId: string, tool: SharedTool): Promise<void> 
   await writeAudit({ actorId: userId, action: COMPAT_USED_ACTION, targetType: 'shared_tool', targetId: tool })
 }
 
-export async function sharedToolAccess(principal: SharedToolPrincipal, tool: SharedTool): Promise<SharedToolAccess> {
+/**
+ * `record: false` is for a screen deciding whether to offer the tool: that is not a use, so
+ * it neither warns nor audits, and the record of who still needs the escape hatch stays true.
+ */
+export async function sharedToolAccess(
+  principal: SharedToolPrincipal,
+  tool: SharedTool,
+  { record = true }: { record?: boolean } = {},
+): Promise<SharedToolAccess> {
   if (!(SHARED_TOOLS as readonly string[]).includes(tool)) return DENIED
   if (principal.role === 'admin') return { allowed: true, via: 'admin' }
   const grant = LEGACY_GRANT_FOR[tool]
@@ -86,7 +94,7 @@ export async function sharedToolAccess(principal: SharedToolPrincipal, tool: Sha
   // No cutoff row means the backfill never ran: no account is known to predate the upgrade.
   const since = await legacyCutoff()
   if (!since || principal.createdAt.getTime() > since.getTime()) return DENIED
-  await recordCompatUse(principal.id, tool)
+  if (record) await recordCompatUse(principal.id, tool)
   return { allowed: true, via: 'compat' }
 }
 

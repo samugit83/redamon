@@ -239,6 +239,9 @@ export default function SettingsPage() {
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>({})
+  // The tunnel is one listener for the whole instance (HD-06). Only an explicit `false`
+  // from the settings GET hides its controls: the PUT is what refuses a change.
+  const [canManageTunnels, setCanManageTunnels] = useState(true)
 
   // Key Rotation
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationInfo>>({})
@@ -542,6 +545,7 @@ export default function SettingsPage() {
         if (data.rotationConfigs) {
           setRotationConfigs(data.rotationConfigs)
         }
+        setCanManageTunnels(data.canManageTunnels !== false)
         setSettingsLoaded(true)
         setSettingsLoadError(null)
       } else {
@@ -624,9 +628,12 @@ export default function SettingsPage() {
       // here - strip them so a stale save on this page can't clobber those edits.
       // featureModels likewise: the Models by feature tiles save their own keys,
       // and a stale copy riding this save would put back models changed since.
+      // The tunnel fields only from an account that may change the tunnel: anyone
+      // else's save of their own keys must not depend on a tunnel they cannot touch.
       const settingsPayload = Object.fromEntries(
         Object.entries(settings).filter(([k]) =>
-          !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels')
+          !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels'
+          && (canManageTunnels || !(TUNNEL_SETTING_KEYS as readonly string[]).includes(k)))
       )
       const resp = await fetch(`/api/users/${userId}/settings`, {
         method: 'PUT',
@@ -719,7 +726,7 @@ export default function SettingsPage() {
     } finally {
       setSettingsSaving(false)
     }
-  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError])
+  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError, canManageTunnels])
 
   const updateSetting = useCallback(<K extends keyof UserSettings>(field: K, value: UserSettings[K]) => {
     setSettings(prev => ({ ...prev, [field]: value }))
@@ -838,7 +845,7 @@ export default function SettingsPage() {
 
   const confirmImport = useCallback(() => {
     if (!pendingImport) return
-    setSettings(prev => ({ ...prev, ...pendingImport.keys, ...pendingImport.tunneling }))
+    setSettings(prev => ({ ...prev, ...pendingImport.keys, ...(canManageTunnels ? pendingImport.tunneling : {}) }))
     for (const [tool, cfg] of Object.entries(pendingImport.rotation)) {
       setRotationConfigs(prev => ({
         ...prev,
@@ -852,7 +859,7 @@ export default function SettingsPage() {
     setSettingsDirty(true)
     setPendingImport(null)
     toast.success('Keys imported - click "Save Settings" to persist.')
-  }, [pendingImport])
+  }, [pendingImport, canManageTunnels])
 
   const searchParams = useSearchParams()
   const validTabs = ['providers', 'skills', 'chat-skills', 'tradecraft', 'keys', 'mcp', 'mcp-tokens', 'system']
@@ -1709,7 +1716,9 @@ export default function SettingsPage() {
           </h2>
         </div>
         <p className={styles.sectionHint}>
-          Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).
+          {canManageTunnels
+            ? 'Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).'
+            : 'Reverse shell tunneling (ngrok or chisel) is one listener shared by every user of this instance.'}
         </p>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
@@ -1718,6 +1727,8 @@ export default function SettingsPage() {
             {settingsLoadError}. Saving is off until they load, so nothing stored is overwritten.{' '}
             <button type="button" className="textButton" onClick={retrySettings}>Retry</button>
           </div>
+        ) : !canManageTunnels ? (
+          <TunnelStatusReadOnly />
         ) : (
           <div className={styles.settingsGrid}>
             <div className="formGroup">
@@ -2007,7 +2018,7 @@ export default function SettingsPage() {
             <ul style={{ margin: 0, paddingLeft: '18px' }}>
               {pendingImport.keyCount > 0 && <li><strong>{pendingImport.keyCount}</strong> API key{pendingImport.keyCount > 1 ? 's' : ''}</li>}
               {pendingImport.rotationCount > 0 && <li><strong>{pendingImport.rotationCount}</strong> rotation config{pendingImport.rotationCount > 1 ? 's' : ''}</li>}
-              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}</li>}
+              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}{!canManageTunnels && ' (not imported: the tunnel is managed by an administrator)'}</li>}
             </ul>
             <p style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
               Empty values and masked values are skipped. You must click <strong>Save Settings</strong> after import to persist.
@@ -2210,6 +2221,42 @@ const BADGE_STYLES: Record<string, React.CSSProperties> = {
     // A badge with no entry here renders in the AI-Agent blue fallback. Define
   // every badge you add.
   }
+
+/** The settings that change the instance tunnel, which the PUT refuses without the right. */
+const TUNNEL_SETTING_KEYS = ['tunnelsEnabled', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
+
+type TunnelView = { kind: 'loading' } | { kind: 'error' } | { kind: 'loaded'; providers: string[] }
+
+/** The Tunneling section for an account that may not change the tunnel: its state and who manages it. */
+function TunnelStatusReadOnly() {
+  const [view, setView] = useState<TunnelView>({ kind: 'loading' })
+  useEffect(() => {
+    let live = true
+    fetch('/api/agent/tunnel-status', { cache: 'no-store' })
+      .then(async res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const body = await res.json() as Partial<Record<'ngrok' | 'chisel', { active?: boolean }>>
+        const providers = (['ngrok', 'chisel'] as const).filter(p => body?.[p]?.active === true)
+        if (live) setView({ kind: 'loaded', providers })
+      })
+      .catch(() => { if (live) setView({ kind: 'error' }) })
+    return () => { live = false }
+  }, [])
+
+  return (
+    <div className={styles.settingsGrid}>
+      <div className="formGroup">
+        <span className="formLabel">Tunnel status</span>
+        <span role="status">
+          {view.kind === 'loading' && <><Loader2 size={14} className={styles.spin} /> Checking...</>}
+          {view.kind === 'error' && 'Status unavailable'}
+          {view.kind === 'loaded' && (view.providers.length ? `On (${view.providers.join(' and ')})` : 'Off')}
+        </span>
+        <span className="formHint">The tunnel is managed by an administrator.</span>
+      </div>
+    </div>
+  )
+}
 
 /** The id of a SecretField input; CredentialDrawer rows use `credential-key-<name>`. */
 const secretFieldId = (name: string) => `settings-secret-${name}`

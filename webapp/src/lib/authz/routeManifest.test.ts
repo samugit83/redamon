@@ -41,7 +41,8 @@ beforeAll(() => {
  * The twenty routes the middleware's login check was all that guarded
  * (01_current_state.md §1.2). Each now reads the session first, so a deleted
  * account's still-valid cookie gets 401 (HD-10); a later step that gives one of
- * them a stronger guard moves it out of `session` here in the same commit.
+ * them a stronger guard moves it out of `session` here in the same commit
+ * (STRONGER_THAN_SESSION).
  */
 const FORMER_LOGIN_ONLY = [
   '/api/agent/emergency-stop-all',
@@ -54,7 +55,6 @@ const FORMER_LOGIN_ONLY = [
   '/api/agent/tunnel-status',
   '/api/community-skills',
   '/api/cypherfix/health',
-  '/api/global/tunnel-config',
   '/api/gvm/available',
   '/api/js-recon/trufflehog/available',
   '/api/mcp/manifest',
@@ -65,6 +65,12 @@ const FORMER_LOGIN_ONLY = [
   '/api/system/stats',
   '/api/ws',
 ]
+
+/** Former login-only routes a later step moved to a stronger guard, with that guard. */
+const STRONGER_THAN_SESSION: Record<string, string> = {
+  // Unmasked tunnel credentials: the agent's internal-key lookup only (HD-05, step 1.10).
+  '/api/global/tunnel-config': 'internal',
+}
 
 describe('the manifest and the route tree', () => {
   test('every route file is in the manifest', () => {
@@ -88,10 +94,12 @@ describe('the manifest and the route tree', () => {
     expect(wrong, `methods out of date: ${FIX}`).toEqual([])
   })
 
-  test('no route is login-only: the 20 former login-only routes read the session', () => {
+  test('no route is login-only: the 20 former login-only routes read the session or something stronger', () => {
     const listed = ROUTE_MANIFEST.filter(e => e.guard === 'login-only').map(e => e.path)
     expect(listed, 'a route the middleware alone guards must read the session (HD-10)').toEqual([])
+    expect(FORMER_LOGIN_ONLY.length + Object.keys(STRONGER_THAN_SESSION).length).toBe(20)
     expect(FORMER_LOGIN_ONLY.filter(p => byPath.get(p)?.guard !== 'session')).toEqual([])
+    for (const [p, guard] of Object.entries(STRONGER_THAN_SESSION)) expect(byPath.get(p)?.guard, p).toBe(guard)
   })
 
   test('the JSON copy equals the manifest', () => {

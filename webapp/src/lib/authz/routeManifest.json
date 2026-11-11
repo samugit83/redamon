@@ -87,7 +87,7 @@
   {"path":"/api/github-hunt/[projectId]/start","guard":"project","methods":["POST"]},
   {"path":"/api/github-hunt/[projectId]/status","guard":"project","methods":["GET"]},
   {"path":"/api/github-hunt/[projectId]/stop","guard":"project","methods":["POST"]},
-  {"path":"/api/global/tunnel-config","guard":"session","methods":["GET"]},
+  {"path":"/api/global/tunnel-config","guard":"internal","methods":["GET"]},
   {"path":"/api/global/tunnel-config/sync","guard":"public","methods":["POST"]},
   {"path":"/api/graph","guard":"project","methods":["GET","DELETE"]},
   {"path":"/api/graph-views","guard":"project","methods":["GET","POST"]},
