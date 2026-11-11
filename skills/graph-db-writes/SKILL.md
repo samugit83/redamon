@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.1.0"
+  version: "1.2.0"
   scope: [root]
   auto_invoke:
     - "Writing to the Neo4j graph or editing a graph_db mixin"
@@ -92,11 +92,24 @@ graph-write rules it depends on.
   on those hosts (`prune_unseen_findings(..., only_hosts=, types=)`), so a host
   it never reached keeps its findings even when nobody called `note_degraded`.
   Degraded still wins. Skip it when switched off by configuration, and for a
-  source whose findings carry no host field. A source that records only some of
+  source whose findings carry no host field. A host the source's own filter
+  dropped before asking (a CDN edge, a private address) was decided, not
+  skipped: record it as checked (`note_cve_coverage(considered=...)` in
+  [passive_cve_coverage.py](../../recon/helpers/passive_cve_coverage.py) does
+  this for the passive CVE lookups). A source that records only some of
   its finding types (`checks=`, as `security_check` does for its DNS and service
   probes) also gets one source-level prune for every other type
   (`_checked_prune_batches` passes `exclude_types=`), so the types it does not
   record still prune as before.
+- **NEVER queue a background writer of findings without a `_WRITER_SOURCES`
+  row** in [recon/main.py](../../recon/main.py) naming the
+  `_PHASE_FINDING_SOURCES` phase whose sources it writes. A finding the write
+  did not MERGE keeps last run's `updated_at`, so the prune reads it as gone;
+  with the row, a writer that raises, reports an item error, finds Neo4j
+  unreachable or is never queued notes those sources degraded
+  (`graph write failed (<writer>)`), which wins over `note_checked`. A writer
+  of assets only goes in the test's `ASSET_ONLY` instead:
+  `recon/tests/test_graph_writer_failures.py` fails a queued writer in neither.
 - **NEVER attach to `Domain {name: <scan root>}`.** A writer decides scope and
   attach separately (`graph_db/mixins/recon/scope.py`): `scan_root_for_host` /
   `attach_for_host` say whether a host is in scope, and `org_for_scan_root` names
