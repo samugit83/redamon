@@ -11,8 +11,8 @@ import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
-import { classifyOrchestratorThrow, graphLockedStartRefusal } from '@/lib/startFullScan'
-import { withGraphStartLock } from '@/lib/projectGraphLock'
+import { classifyOrchestratorThrow } from '@/lib/startFullScan'
+import { startUnderGraphLock } from '@/lib/startScan'
 import { internalError } from '@/lib/routeErrors'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
@@ -28,21 +28,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const __denied = await guardProject(projectId)
     if (__denied) return __denied
 
-    // S-4: held from the activation check through the orchestrator's answer,
-    // after which the activation's writer check sees the run. Without it an
-    // activation could start swapping the graph in between, and the run would
-    // write into the half-restored graph.
-    const held = await withGraphStartLock(projectId, () => startPartialRecon(request, projectId))
-    if (held.acquired) return held.value
-    const refused = graphLockedStartRefusal(held.heldBy)
-    return NextResponse.json(
-      {
-        error: refused.error,
-        ...(refused.activationInProgress ? { activationInProgress: true } : {}),
-        ...(refused.busy ? { busy: refused.busy } : {}),
-      },
-      { status: refused.status },
-    )
+    // S-4: held from the activation check through the orchestrator's answer
+    // (startUnderGraphLock), since the run writes the live graph.
+    return await startUnderGraphLock(projectId, () => startPartialRecon(request, projectId))
   } catch (error) {
     return internalError(error, 'Failed to start partial recon', { log: 'Error starting partial recon' })
   }

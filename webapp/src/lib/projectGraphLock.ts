@@ -1,15 +1,19 @@
 /**
  * The per-project graph-operation lock (S-4).
  *
- * Four paths check the project's graph and then change it or the version
- * timeline: a full-scan start (freeze, rotate, then the scan wipes the graph), a
- * partial-recon start (the run writes the graph), "save current as a version"
- * (freeze, rotate) and a version activation (freeze, clear, restore, move the
- * pointer). Each checks the others first, but a check holds only until the
- * checker's next await: a start that passed its activation check could freeze a
- * half-restored graph and spawn a scan into the swap. So each path holds this
- * lock from its guard check through its last write, which for a start is the
- * orchestrator's answer (from then on the writer checks see the scan).
+ * Several paths check the project's graph and then change it or the version
+ * timeline: a full-scan start (freeze, rotate, then the scan wipes the graph),
+ * every other scan start, whose run writes findings into the graph (partial
+ * recon, GVM, GitHub hunt, TruffleHog, supply chain, AI attack surface; see
+ * startScan.ts), "save current as a version" (freeze, rotate) and a version
+ * activation (freeze, clear, restore, move the pointer). The login-recording
+ * start is not one of them: it writes Postgres only, which neither a save nor
+ * an activation reads. Each checks the others first, but a check holds only
+ * until the checker's next await: a start that passed its activation check
+ * could freeze a half-restored graph or spawn a scan into the swap. So each
+ * path holds this lock from its guard check through its last write, which for
+ * a start is the orchestrator's answer (from then on the writer checks see the
+ * scan).
  *
  * Starts queue behind the project's other starts, so a double-clicked Start
  * waits and then meets the first scan in its writer check. A save or an
