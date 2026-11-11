@@ -330,8 +330,26 @@ OVERRIDES: dict[str, str] = {
     "cveLookupMaxCves": "Maximum CVEs attached to one service before enrichment stops adding more.",
     "wappalyzerMinConfidence": "The confidence percentage below which a Wappalyzer technology match is discarded.",
     "wappalyzerRequireHtml": "Whether a technology match requires an HTML response, which suppresses matches on JSON and binary endpoints.",
-    "jsReconStandaloneCrawlScope": "How far a standalone JS recon run may crawl from its seed: same host, same domain, or anywhere.",
-    "jsReconStandaloneCrawlDepth": "How many links deep a standalone JS recon run crawls from its seed.",
+    # Retired columns, kept so an upgrade or a rollback never drops data. Spelled
+    # out because the templates would describe them as live: aiSurfaceReconCacheEnabled
+    # matches `*Enabled` ("Whether ... runs").
+    "jsReconStandaloneCrawlScope": (
+        "Retired: nothing reads it. JS recon has no standalone crawl; it analyses the "
+        "JavaScript the pipeline's crawlers found. Closed on every surface, with no input."
+    ),
+    "jsReconStandaloneCrawlDepth": (
+        "Retired: nothing reads it. JS recon has no standalone crawl; it analyses the "
+        "JavaScript the pipeline's crawlers found. Closed on every surface, with no input."
+    ),
+    "katanaScope": (
+        "Retired: nothing reads it. Katana always crawls with field scope fqdn. Closed on "
+        "every surface, with no input."
+    ),
+    "aiSurfaceReconCacheEnabled": (
+        "Retired: nothing reads it. AI attack-surface recon has no probe cache, and one that "
+        "skipped re-testing would leave earlier findings unchecked. Closed on every surface, "
+        "with no input."
+    ),
     "jsReconRegexPatterns": "Additional regular expressions applied to retrieved JavaScript, on top of the shipped set.",
     "kiterunnerMethodDetectionMode": "How kiterunner establishes which HTTP methods a discovered route accepts.",
     "trufflehogIncludeDetectors": "Restricts the run to these detectors. Empty means every detector runs.",
