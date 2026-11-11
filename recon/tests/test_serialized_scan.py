@@ -485,9 +485,11 @@ class TestScanner(unittest.TestCase):
         self.assertEqual(seen, [("native_java", "cookie", "sess", ["base64"])])
         self.assertNotIn("port-scan", out.getvalue())
 
-    def test_an_error_prints_no_target_text_and_writes_no_partial_result(self):
-        # Empty, not partial: a partial result would let the run prune candidates the
-        # failed part never re-checked.
+    def test_regression_an_error_keeps_every_earlier_candidate_out_of_the_prune(self):
+        # R-23: the empty result alone read as "every candidate is gone", and the
+        # prune deleted them, including ones an agent was about to confirm. The
+        # failed parts said nothing about any host, so the whole source is kept.
+        from recon.helpers import circuit_breaker as cb
         cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
         out = io.StringIO()
         with mock.patch("recon.serialized_scan.scanner._scan_forms",
@@ -497,6 +499,42 @@ class TestScanner(unittest.TestCase):
         self.assertEqual(result["serialized_scan"]["findings"], [])
         self.assertIn("RuntimeError", out.getvalue())
         self.assertNotIn("example.test", out.getvalue())
+        report = cb.coverage_report()
+        self.assertEqual(report.degraded_sources, frozenset({"serialized_scan"}))
+        gap, = report.gaps
+        self.assertRegex(gap["source"], r"^[a-z0-9_]{1,64}$")
+        self.assertEqual((gap["source"], gap["module"]), ("serialized_scan", "serialized_scan"))
+        self.assertIn("RuntimeError", gap["reason"])
+        self.assertNotIn("example.test", gap["reason"])
+
+    def test_a_failed_input_phase_keeps_the_candidates_and_still_scans(self):
+        # resource_enum's endpoints and forms, and http_probe's headers, are the
+        # corpus: a phase that raised gave none, so its candidates were never re-read.
+        from recon.helpers import circuit_breaker as cb
+        for phase in ("resource_enum", "http_probe"):
+            with self.subTest(phase=phase):
+                cb.reset_registry()
+                cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+                cr["metadata"] = {"phase_errors": {phase: "boom"}}
+                self.assertEqual(len(self._seen(cr)), 1)
+                report = cb.coverage_report()
+                self.assertIn("serialized_scan", report.degraded_sources)
+                self.assertIn(phase, report.gaps[0]["reason"])
+
+    def test_a_clean_scan_and_an_unrelated_phase_error_note_nothing(self):
+        from recon.helpers import circuit_breaker as cb
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+        cr["metadata"] = {"phase_errors": {"nmap": "boom"}}
+        self.assertEqual(len(self._seen(cr)), 1)
+        self.assertFalse(cb.coverage_report().degraded)
+
+    def test_switched_off_it_notes_nothing(self):
+        from recon.helpers import circuit_breaker as cb
+        cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})
+        cr["metadata"] = {"phase_errors": {"resource_enum": "boom"}}
+        run_serialized_scan(cr, {"SERIALIZED_SCAN_ENABLED": False})
+        self.assertNotIn("serialized_scan", cr)
+        self.assertFalse(cb.coverage_report().degraded)
 
     def test_a_failing_jev_pass_never_costs_the_candidates(self):
         cr = self._probe({"set_cookie": f"sess={self.JAVA_B64}"})

@@ -330,17 +330,47 @@ def _param_values(pdata: dict) -> list:
     return out
 
 
+_FINDING_SOURCE = "serialized_scan"
+# The phases whose output is the corpus (headers and Set-Cookie; endpoints,
+# parameters and forms). Each records its crash in metadata.phase_errors.
+_INPUT_PHASES = ("http_probe", "resource_enum")
+
+
+def _keep_candidates(reason: str) -> None:
+    """Keep every earlier serialized-object candidate out of the prune. Never raises.
+
+    This scan never raises, so main's _note_phase_error never fires for it, and
+    a run that re-read nothing would read as "every candidate is gone". A
+    failure here says nothing about which hosts were read, so the whole
+    source is cut (README "Degrade by host before degrading by source": no
+    host to degrade by).
+    """
+    try:
+        from recon.helpers import circuit_breaker as cb
+        cb.note_degraded(_FINDING_SOURCE, sources=[_FINDING_SOURCE], reason=reason)
+        print(f"[!][SerializedScan] {reason}: earlier candidates are kept")
+    except Exception:  # noqa: BLE001 - coverage bookkeeping never fails the scan
+        pass
+
+
 def run_serialized_scan(combined_result: dict, settings: dict) -> dict:
     """Scan the in-memory corpus; mutate combined_result in place, return it.
 
     Guarded by SERIALIZED_SCAN_ENABLED. Never raises: on any error it writes an
-    empty result and logs, so a malformed corpus can never fail the pipeline.
+    empty result, logs, and keeps every earlier candidate out of the prune, so a
+    malformed corpus can neither fail the pipeline nor delete candidates.
     """
     if not settings.get("SERIALIZED_SCAN_ENABLED", False):
         print("[-][SerializedScan] disabled")
         return combined_result
 
     print("[*][SerializedScan] scanning in-memory corpus for serialized-object signatures")
+    metadata = combined_result.get("metadata")
+    phase_errors = metadata.get("phase_errors") if isinstance(metadata, dict) else None
+    failed_inputs = [p for p in _INPUT_PHASES if isinstance(phase_errors, dict) and p in phase_errors]
+    if failed_inputs:
+        # Still scanned: what the other input gave is new candidates to write.
+        _keep_candidates(f"input phase failed ({', '.join(failed_inputs)})")
     findings: list = []
     try:
         roe_excluded = settings.get("ROE_EXCLUDED_HOSTS", []) or []
@@ -360,10 +390,11 @@ def run_serialized_scan(combined_result: dict, settings: dict) -> dict:
         _scan_resource_enum(combined_result, roe_excluded, sink)
         _scan_forms(combined_result, roe_excluded, sink)
     except Exception as e:  # noqa: BLE001 - never-raise contract (plan §5.2)
-        # Empty, not partial: a partial result would let the run prune the
-        # candidates the failed part never re-checked. The type only: a message
+        # An empty result alone is what the prune reads as "every candidate is
+        # gone"; the degraded note is what keeps them. The type only: a message
         # can quote target text, and the drawer reads phases out of stdout.
         print(f"[!][SerializedScan] Error ({type(e).__name__}) - no candidates this run")
+        _keep_candidates(f"scan raised {type(e).__name__}")
         combined_result["serialized_scan"] = normalizers.build_result([])
         return combined_result
 
