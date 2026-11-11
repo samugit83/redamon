@@ -37,6 +37,7 @@ import { notifyJevProviderChanged } from '@/hooks/useHasJevProvider'
 import { JevProviderSection } from '@/components/settings/JevProviderSection'
 import { actionFailedText, failureText, saveWarningLines } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 
 /** A Secret Multiscanner credential column (TRUFFLEHOG_KEY_FIELDS). */
 type TrufflehogField = `trufflehog${string}`
@@ -238,6 +239,11 @@ export default function SettingsPage() {
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null)
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
+  // A save that re-points a configured host or tunnel server waits on the password (ID-25).
+  const [settingsStepUp, setSettingsStepUp] = useState<{
+    retry: (password: string) => Promise<void>
+    cancel: () => void
+  } | null>(null)
   const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>({})
   // The tunnel is one listener for the whole instance (HD-06). Only an explicit `false`
   // from the settings GET hides its controls: the PUT is what refuses a change.
@@ -635,13 +641,12 @@ export default function SettingsPage() {
           !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels'
           && (canManageTunnels || !(TUNNEL_SETTING_KEYS as readonly string[]).includes(k)))
       )
-      const resp = await fetch(`/api/users/${userId}/settings`, {
+      const send = (stepUpPassword?: string) => fetch(`/api/users/${userId}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...settingsPayload, rotationConfigs: rotPayload }),
+        body: JSON.stringify({ ...settingsPayload, rotationConfigs: rotPayload, ...(stepUpPassword ? { stepUpPassword } : {}) }),
       })
-      if (resp.ok) {
-        const data = await resp.json()
+      const applySaved = (data: Awaited<ReturnType<Response['json']>>) => {
         setSettings({
           ...trufflehogValues(data),
           githubAccessToken: data.githubAccessToken || '',
@@ -709,9 +714,26 @@ export default function SettingsPage() {
         toast.success('Settings saved')
         const warnings = saveWarningLines(data)
         if (warnings.length) toast.warning(warnings.join('\n'), 'Saved, but not applied')
+      }
+      const resp = await send()
+      if (resp.ok) {
+        applySaved(await resp.json())
         return true
       }
       const err = await readApiError(resp, 'Failed to save settings')
+      // The dialog sends the password with the same save; this save resolves with its outcome.
+      if (err.code === 'step_up_required') {
+        return await new Promise<boolean>(resolve => setSettingsStepUp({
+          retry: async (password) => {
+            const again = await send(password)
+            // Thrown, the dialog stays open and shows why (a wrong password, a lockout).
+            if (!again.ok) throw await readApiError(again, 'Failed to save settings')
+            applySaved(await again.json())
+            resolve(true)
+          },
+          cancel: () => resolve(false),
+        }))
+      }
       toast.error(err.message)
       // A new GitHub Enterprise host or chisel URL needs its secret typed again
       // (HD-24): take the person to the field the answer names.
@@ -1912,6 +1934,17 @@ export default function SettingsPage() {
       </Modal>
 
       <ApiUsageReportModal controller={apiUsage} />
+
+      {settingsStepUp && (
+        <StepUpModal
+          isOpen
+          title="Confirm the new endpoint"
+          message="The GitHub Enterprise token, or the tunnel, will go to a new address. Enter your password to save the change."
+          confirmLabel="Save"
+          onConfirm={settingsStepUp.retry}
+          onClose={() => { settingsStepUp.cancel(); setSettingsStepUp(null) }}
+        />
+      )}
 
       {/* Key Rotation Modal */}
       <Modal

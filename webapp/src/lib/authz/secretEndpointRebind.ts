@@ -135,6 +135,23 @@ const SETTINGS_BINDINGS: { endpoint: string; secret: string; normalize?: (v: unk
   { endpoint: 'chiselServerUrl', secret: 'chiselAuth' },
 ]
 
+/**
+ * The settings endpoint a PUT re-points, or null (ID-25 asks the step-up for it): a host or
+ * URL changed to a new value while something is configured for it, the old endpoint or its
+ * secret. Setting one on an empty row, or clearing it, moves nothing stored.
+ */
+export function settingsEndpointChange(
+  stored: Record<string, unknown> | null,
+  body: Record<string, unknown>,
+): string | null {
+  if (!stored) return null
+  const due = SETTINGS_BINDINGS.find(b =>
+    changed(body, b.endpoint, stored[b.endpoint], b.normalize)
+    && (b.normalize ?? text)(body[b.endpoint]) !== ''
+    && (hasStored(stored[b.endpoint]) || hasStored(stored[b.secret])))
+  return due ? due.endpoint : null
+}
+
 /** The settings PUT: it writes only the fields the body names, so an omitted secret stays. */
 export function settingsSecretReentry(
   stored: Record<string, unknown> | null,

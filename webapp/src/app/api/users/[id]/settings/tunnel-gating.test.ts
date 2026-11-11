@@ -69,6 +69,17 @@ vi.mock('@/lib/session', () => ({
   getSession: vi.fn(async () => session),
 }))
 
+// The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
+// requireStepUp does: no password 403 step_up_required, a wrong one 403 step_up_failed.
+const mockStepUp = vi.hoisted(() => vi.fn(async (_req: unknown, password: unknown) => {
+  const { NextResponse } = await import('next/server')
+  if (password === 'right-password') return null
+  return password
+    ? NextResponse.json({ error: 'Password is incorrect', code: 'step_up_failed' }, { status: 403 })
+    : NextResponse.json({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }, { status: 403 })
+}))
+vi.mock('@/lib/authz/stepUp', () => ({ requireStepUp: mockStepUp }))
+
 import { GET, PUT } from './route'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
@@ -220,7 +231,8 @@ describe('who may change the tunnel — HD-06', () => {
   test('legacy holder allowed', async () => {
     signInMember('m1', ['kali_terminal', 'tunnels'])
     wireUpsert({ ...STORED, userId: 'm1' })
-    const res = await PUT(put('m1', { chiselServerUrl: 'http://vps2.example:9090', chiselAuth: 'user:typed-again' }), params('m1'))
+    // ID-25: re-pointing the configured chisel server also takes the holder's password.
+    const res = await PUT(put('m1', { chiselServerUrl: 'http://vps2.example:9090', chiselAuth: 'user:typed-again', stepUpPassword: 'right-password' }), params('m1'))
     expect(res.status).toBe(200)
     expect(mockUpsert.mock.calls[0][0].update).toMatchObject({ chiselServerUrl: 'http://vps2.example:9090' })
     expect(lastPush(fetchSpy)).not.toBeNull()
@@ -232,6 +244,17 @@ describe('who may change the tunnel — HD-06', () => {
     })
     // Which fields, never their values.
     expect(JSON.stringify(rows[0])).not.toMatch(/vps2|typed-again|STORED/)
+  })
+
+  test('a re-pointed chisel server without the password is refused after the tunnel check: nothing written, pushed or audited (ID-25)', async () => {
+    signInMember('m1', ['kali_terminal', 'tunnels'])
+    wireUpsert({ ...STORED, userId: 'm1' })
+    const res = await PUT(put('m1', { chiselServerUrl: 'http://vps2.example:9090', chiselAuth: 'user:typed-again' }), params('m1'))
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_required')
+    expect(mockUpsert).not.toHaveBeenCalled()
+    expect(lastPush(fetchSpy)).toBeNull()
+    expect(auditRows('settings.tunnel_changed')).toEqual([])
   })
 
   test('another grant is not the tunnel grant', async () => {

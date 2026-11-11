@@ -41,6 +41,11 @@ export interface SaveOptions {
    * same save (a typed value, or '' to clear it), or null to give up.
    */
   onSecretReentry?: (r: SecretReentryPrompt) => Promise<Record<string, string> | null>
+  /**
+   * Asked when the save re-points a configured endpoint (403 step_up_required, ID-25):
+   * resolves the signed-in person's password, sent with the same save, or null to give up.
+   */
+  onStepUp?: () => Promise<string | null>
 }
 
 export interface CredentialKeysApi {
@@ -119,21 +124,28 @@ export function useCredentialKeys(): CredentialKeysApi {
       body: JSON.stringify(body),
     })
     try {
-      let res = await put({ [name]: value })
-      if (!res.ok) {
-        let err = await readApiError(res, SAVE_FAILED)
-        // A new endpoint (the GitHub Enterprise host) cannot keep its stored secret: the
-        // caller supplies it, or clears it, and both go in ONE save, never the host alone.
-        const reentry = reentryOf(err)
-        const secrets = reentry && options.onSecretReentry ? await options.onSecretReentry(reentry) : null
-        if (secrets) {
-          res = await put({ [name]: value, ...secrets })
-          if (!res.ok) err = await readApiError(res, SAVE_FAILED)
+      // A new endpoint (the GitHub Enterprise host) cannot keep its stored secret, and
+      // re-pointing a configured one takes the password: each is asked once, and what the
+      // caller answers rides with the same key in ONE save, never the host alone.
+      let body: Record<string, string> = { [name]: value }
+      let askedSecrets = false
+      let askedPassword = false
+      for (;;) {
+        const res = await put(body)
+        if (res.ok) break
+        const err = await readApiError(res, SAVE_FAILED)
+        const reentry = askedSecrets ? null : reentryOf(err)
+        if (reentry && options.onSecretReentry) {
+          askedSecrets = true
+          const secrets = await options.onSecretReentry(reentry)
+          if (secrets) { body = { ...body, ...secrets }; continue }
+        } else if (err.code === 'step_up_required' && !askedPassword && options.onStepUp) {
+          askedPassword = true
+          const password = await options.onStepUp()
+          if (password) { body = { ...body, stepUpPassword: password }; continue }
         }
-        if (!res.ok) {
-          setError(err.message)
-          return false
-        }
+        setError(err.message)
+        return false
       }
       // Re-read rather than storing what was typed: the value we hold must be
       // the masked one, so a later save of a DIFFERENT key cannot send this

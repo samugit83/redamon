@@ -293,3 +293,32 @@ describe('HD-24: a new chisel URL with the masked auth asks for it again', () =>
     await waitFor(() => expect(screen.getByPlaceholderText('Enter chisel auth')).toHaveFocus())
   })
 })
+
+describe('ID-25: re-pointing the chisel server asks for the password (review of 1.6)', () => {
+  test('the refused save opens the password dialog; the password goes with the same save', async () => {
+    routes[`GET ${BASE}/settings`] = {
+      status: 200,
+      body: { chiselServerUrl: 'http://vps.example:9090', chiselAuth: '••••••••pass', rotationConfigs: {} },
+    }
+    let n = 0
+    routes[`PUT ${BASE}/settings`] = () => (n++ === 0
+      ? { status: 403, body: { error: 'Enter your password to confirm this action.', code: 'step_up_required' } }
+      : { status: 200, body: { chiselServerUrl: 'http://elsewhere.example:9090', chiselAuth: '••••••••ped!', rotationConfigs: {} } })
+    renderPage()
+    fireEvent.change(await screen.findByPlaceholderText('e.g. http://your-vps.com:9090'), { target: { value: 'http://elsewhere.example:9090' } })
+    fireEvent.change(screen.getByPlaceholderText('Enter chisel auth'), { target: { value: 'user:typed!' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('new address')
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'my-password' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText('Settings saved')).toBeInTheDocument()
+    const bodies = puts().map(c => JSON.parse(String((c[1] as RequestInit).body)))
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0].stepUpPassword).toBeUndefined()
+    expect(bodies[1]).toMatchObject({ chiselServerUrl: 'http://elsewhere.example:9090', chiselAuth: 'user:typed!', stepUpPassword: 'my-password' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+})

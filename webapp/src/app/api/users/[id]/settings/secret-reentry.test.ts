@@ -36,6 +36,16 @@ vi.mock('@/lib/session', () => ({
   getSession: async () => h.session,
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
+// The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
+// requireStepUp does: no password 403 step_up_required, a wrong one 403 step_up_failed.
+const mockStepUp = vi.hoisted(() => vi.fn(async (_req: unknown, password: unknown) => {
+  const { NextResponse } = await import('next/server')
+  if (password === 'right-password') return null
+  return password
+    ? NextResponse.json({ error: 'Password is incorrect', code: 'step_up_failed' }, { status: 403 })
+    : NextResponse.json({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }, { status: 403 })
+}))
+vi.mock('@/lib/authz/stepUp', () => ({ requireStepUp: mockStepUp }))
 
 import { PUT } from './route'
 
@@ -75,7 +85,8 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
   })
 
   test('a new GitHub Enterprise host with the token typed again is saved', async () => {
-    const res = await put({ githubEnterpriseHost: 'https://GHE2.example.com/', githubEnterpriseToken: 'ghp_typed_again' })
+    // ID-25: re-pointing also takes the signed-in user's password (review of 1.6)
+    const res = await put({ githubEnterpriseHost: 'https://GHE2.example.com/', githubEnterpriseToken: 'ghp_typed_again', stepUpPassword: 'right-password' })
     expect(res.status).toBe(200)
     expect(h.upsert.mock.calls[0][0].update).toMatchObject({ githubEnterpriseHost: 'ghe2.example.com', githubEnterpriseToken: 'ghp_typed_again' })
   })
@@ -99,7 +110,8 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
 
   test('a new chisel URL with the auth typed again is saved and pushed', async () => {
     h.session = { userId: 'u1', role: 'admin' }
-    const res = await put({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed' })
+    // ID-25: re-pointing also takes the signed-in user's password (review of 1.6)
+    const res = await put({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed', stepUpPassword: 'right-password' })
     expect(res.status).toBe(200)
     const pushed = JSON.parse(h.fetch.mock.calls[0][1].body)
     expect(pushed).toMatchObject({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed' })
@@ -108,5 +120,46 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
   test('a whole-form save with nothing re-pointed keeps every masked secret', async () => {
     const res = await put({ ...STORED, githubEnterpriseToken: '••••••••1234', chiselAuth: '••••••••pass', tavilyApiKey: '••••ored' })
     expect(res.status).toBe(200)
+  })
+})
+
+describe('settings PUT: re-pointing a configured endpoint takes the password too (ID-25, review of 1.6)', () => {
+  test('a new GitHub Enterprise host with a new token and no password: 403 step_up_required, nothing written', async () => {
+    const res = await put({ githubEnterpriseHost: 'collector.example.net', githubEnterpriseToken: 'ghp_junk' })
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_required')
+    expect(h.upsert).not.toHaveBeenCalled()
+  })
+
+  test('a wrong password: 403 step_up_failed, nothing written', async () => {
+    const res = await put({ githubEnterpriseHost: 'collector.example.net', githubEnterpriseToken: 'ghp_junk', stepUpPassword: 'guess' })
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_failed')
+    expect(h.upsert).not.toHaveBeenCalled()
+  })
+
+  test('a new chisel URL with new auth and no password: refused, no tunnel is configured; the password is never written', async () => {
+    h.session = { userId: 'u1', role: 'admin' }
+    const res = await put({ chiselServerUrl: 'http://collector.example.net:9090', chiselAuth: 'user:junk' })
+    expect(res.status).toBe(403)
+    expect(h.upsert).not.toHaveBeenCalled()
+    expect(h.fetch).not.toHaveBeenCalled()
+    await put({ chiselServerUrl: 'http://collector.example.net:9090', chiselAuth: 'user:junk', stepUpPassword: 'right-password' })
+    expect('stepUpPassword' in h.upsert.mock.calls[0][0].update).toBe(false)
+  })
+
+  test('re-entry is asked first: a masked token with a new host is 400 before any password', async () => {
+    const res = await put({ githubEnterpriseHost: 'collector.example.net', githubEnterpriseToken: '••••••••1234' })
+    expect(res.status).toBe(400)
+    expect(mockStepUp).not.toHaveBeenCalled()
+  })
+
+  test('a first host on an empty row, clearing the host, or a save that keeps it ask for no password', async () => {
+    h.findUnique.mockResolvedValue({ userId: 'u1', githubEnterpriseHost: '', githubEnterpriseToken: '' })
+    expect((await put({ githubEnterpriseHost: 'ghe.example.com', githubEnterpriseToken: 'ghp_first' })).status).toBe(200)
+    h.findUnique.mockResolvedValue(STORED)
+    expect((await put({ githubEnterpriseHost: '', githubEnterpriseToken: '' })).status).toBe(200)
+    expect((await put({ ...STORED, githubEnterpriseToken: '••••••••1234', chiselAuth: '••••••••pass' })).status).toBe(200)
+    expect(mockStepUp).not.toHaveBeenCalled()
   })
 })

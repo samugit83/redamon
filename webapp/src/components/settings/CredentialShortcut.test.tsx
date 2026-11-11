@@ -32,7 +32,7 @@ function fakeKeys(overrides: Partial<CredentialKeysApi> = {}): CredentialKeysApi
 
 const KEY = 'trufflehogGithubToken'
 /** Every save says how to answer a re-entry refusal (a re-pointed endpoint, review of 1.6). */
-const REENTRY_OPTIONS = { onSecretReentry: expect.any(Function) }
+const REENTRY_OPTIONS = { onSecretReentry: expect.any(Function), onStepUp: expect.any(Function) }
 const LABEL = 'Secret Multiscanner GitHub Token'
 
 describe('CredentialShortcut', () => {
@@ -234,6 +234,41 @@ describe('CredentialShortcut', () => {
       render(<CredentialShortcut settingsKey="githubEnterpriseHost" keys={keys} optional />)
       fireEvent.change(screen.getByLabelText('GitHub Enterprise Host'), { target: { value: 'ghe2.example.com' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(answers).toEqual([null]))
+    })
+  })
+
+  describe('a re-pointed host asks for the password (ID-25, review of 1.6)', () => {
+    function stepUpKeys() {
+      const answers: (string | null)[] = []
+      const save = vi.fn(async (_n: string, _v: string, opts?: { onStepUp?: () => Promise<string | null> }) => {
+        const password = await opts!.onStepUp!()
+        answers.push(password)
+        return password !== null
+      })
+      return { keys: fakeKeys({ save: save as CredentialKeysApi['save'] }), answers }
+    }
+
+    test('the password dialog opens; the typed password is handed to the save', async () => {
+      const { keys, answers } = stepUpKeys()
+      render(<AlertProvider><CredentialShortcut settingsKey="githubEnterpriseHost" keys={keys} optional /></AlertProvider>)
+      fireEvent.change(screen.getByLabelText('GitHub Enterprise Host'), { target: { value: 'ghe2.example.com' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog).toHaveTextContent('new address')
+      fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'my-password' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(answers).toEqual(['my-password']))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    })
+
+    test('cancelled, nothing is handed over', async () => {
+      const { keys, answers } = stepUpKeys()
+      render(<AlertProvider><CredentialShortcut settingsKey="githubEnterpriseHost" keys={keys} optional /></AlertProvider>)
+      fireEvent.change(screen.getByLabelText('GitHub Enterprise Host'), { target: { value: 'ghe2.example.com' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
       await waitFor(() => expect(answers).toEqual([null]))
     })
   })

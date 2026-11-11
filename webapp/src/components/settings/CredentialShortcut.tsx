@@ -6,6 +6,7 @@ import { Eye, EyeOff, ExternalLink } from 'lucide-react'
 import { SETTINGS_KEYS_HREF } from '@/lib/settingsLinks'
 import { credentialField, isSecretField } from '@/lib/credentialFields'
 import { useOptionalAlertModal } from '@/components/ui/AlertModal'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { CredentialKeysApi, SecretReentryPrompt } from '@/hooks/useCredentialKeys'
 import styles from './CredentialShortcut.module.css'
 
@@ -68,6 +69,8 @@ export function CredentialShortcut({
   const [draft, setDraft] = useState('')
   const [visible, setVisible] = useState(false)
   const [justSaved, setJustSaved] = useState(false)
+  // Re-pointing a configured endpoint takes the password (ID-25): the dialog answers the save.
+  const [stepUpAsk, setStepUpAsk] = useState<{ resolve: (password: string | null) => void } | null>(null)
 
   // An unknown key would render an unlabelled box telling the user to set
   // something it cannot name. credentialFields.test.ts makes this unreachable.
@@ -91,10 +94,12 @@ export function CredentialShortcut({
     return confirmed ? Object.fromEntries(Object.entries(typed).map(([k, v]) => [k, v.trim()])) : null
   }
 
+  const askForPassword = () => new Promise<string | null>(resolve => setStepUpAsk({ resolve }))
+
   const commit = async () => {
     const value = draft.trim()
     if (!value || busy) return
-    const ok = await keys.save(settingsKey, value, { onSecretReentry: askForSecrets })
+    const ok = await keys.save(settingsKey, value, { onSecretReentry: askForSecrets, onStepUp: askForPassword })
     if (ok) {
       setDraft('')
       setVisible(false)
@@ -162,6 +167,17 @@ export function CredentialShortcut({
       )}
 
       {!compact && <p className={styles.hint}>{field.hint}</p>}
+
+      {stepUpAsk && (
+        <StepUpModal
+          isOpen
+          title={`Save the new ${field.label}`}
+          message="What is stored for it, and the requests that use it, will go to a new address. Enter your password to save the change."
+          confirmLabel="Save"
+          onConfirm={async password => { stepUpAsk.resolve(password) }}
+          onClose={() => { stepUpAsk.resolve(null); setStepUpAsk(null) }}
+        />
+      )}
 
       <div className={styles.links}>
         <Link href={SETTINGS_KEYS_HREF}>All keys in Global Settings</Link>

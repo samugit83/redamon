@@ -16,6 +16,7 @@ import {
   mcpServerSecretReentry,
   normalizeGithubHost,
   secretReentryResponse,
+  settingsEndpointChange,
   settingsSecretReentry,
 } from './secretEndpointRebind'
 
@@ -176,6 +177,31 @@ describe('settings: GitHub Enterprise host and chisel URL', () => {
     expect(normalizeGithubHost('HTTPS://GHE.Example.com/orgs/acme')).toBe('ghe.example.com')
     expect(normalizeGithubHost('  ghe.example.com ')).toBe('ghe.example.com')
     expect(normalizeGithubHost(null)).toBe('')
+  })
+})
+
+describe('settingsEndpointChange: what re-points a configured host or tunnel server (ID-25)', () => {
+  const stored = { githubEnterpriseHost: 'ghe.example.com', githubEnterpriseToken: 'ghp_stored', chiselServerUrl: 'http://vps.example.com:9090', chiselAuth: '' }
+
+  test('a new GitHub Enterprise host, or a new chisel URL, re-points what is configured', () => {
+    expect(settingsEndpointChange(stored, { githubEnterpriseHost: 'ghe2.example.com', githubEnterpriseToken: 'typed' })).toBe('githubEnterpriseHost')
+    expect(settingsEndpointChange(stored, { chiselServerUrl: 'http://vps2.example.com:9090' })).toBe('chiselServerUrl')
+  })
+
+  test('the same endpoint written differently, or no endpoint in the body, is no change', () => {
+    expect(settingsEndpointChange(stored, { githubEnterpriseHost: 'HTTPS://GHE.example.com/orgs/acme' })).toBeNull()
+    expect(settingsEndpointChange(stored, { tavilyApiKey: 'x' })).toBeNull()
+  })
+
+  test('setting one for the first time, or clearing it, moves nothing stored', () => {
+    expect(settingsEndpointChange({ githubEnterpriseHost: '', githubEnterpriseToken: '' }, { githubEnterpriseHost: 'ghe.example.com' })).toBeNull()
+    expect(settingsEndpointChange(stored, { githubEnterpriseHost: '' })).toBeNull()
+    expect(settingsEndpointChange(null, { githubEnterpriseHost: 'ghe.example.com' })).toBeNull()
+  })
+
+  test('a token stored without a host is configured too: setting the host points it', () => {
+    expect(settingsEndpointChange({ githubEnterpriseHost: '', githubEnterpriseToken: 'ghp_stored' }, { githubEnterpriseHost: 'ghe.example.com' }))
+      .toBe('githubEnterpriseHost')
   })
 })
 

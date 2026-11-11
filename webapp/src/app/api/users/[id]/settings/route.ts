@@ -12,7 +12,8 @@ import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
 import { maskMcpServersForApi } from '@/lib/mcp/mask'
 import type { MCPServer } from '@/lib/mcp/schema'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
-import { normalizeGithubHost, secretReentryResponse, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
+import { normalizeGithubHost, secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
+import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { followUpWarning, type SaveWarning } from './saveWarnings'
@@ -398,6 +399,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // address. Before anything in this PUT is written.
     const reentry = settingsSecretReentry(existing as Record<string, unknown> | null, body)
     if (reentry) return secretReentryResponse(reentry)
+    // Re-pointing a configured host or tunnel server also takes the signed-in person's
+    // password (ID-25): with a secret typed again the rule above passes, yet the scans'
+    // requests or the tunnel follow the endpoint. The internal key has no password.
+    if (!isInternalRequest(request) && settingsEndpointChange(existing as Record<string, unknown> | null, body)) {
+      const refused = await requireStepUp(request, body.stepUpPassword)
+      if (refused) return refused
+    }
 
     const data: Record<string, string> = {}
     const fields = ['githubAccessToken', 'supplyChainGithubToken', 'githubEnterpriseHost', 'githubEnterpriseToken', 'tavilyApiKey', 'shodanApiKey', 'serpApiKey', 'nvdApiKey', 'vulnersApiKey', 'urlscanApiKey', 'censysApiToken', 'censysOrgId', 'fofaApiKey', 'otxApiKey', 'netlasApiKey', 'virusTotalApiKey', 'zoomEyeApiKey', 'criminalIpApiKey', 'securitytrailsApiKey', 'viewdnsApiKey', 'quakeApiKey', 'hunterApiKey', 'publicWwwApiKey', 'hunterHowApiKey', 'googleApiKey', 'googleApiCx', 'onypheApiKey', 'driftnetApiKey', 'wpscanApiToken', 'pdcpApiKey', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth',

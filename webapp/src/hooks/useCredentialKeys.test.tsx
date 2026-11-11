@@ -192,4 +192,39 @@ describe('useCredentialKeys', () => {
       expect(result.current.error).toContain('type the GitHub Enterprise token again')
     })
   })
+
+  test('a re-pointed host asks for the token, then for the password, and sends all three in the last save (ID-25)', async () => {
+    const { result } = renderHook(() => useCredentialKeys())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false, status: 400,
+        json: async () => ({ error: 'type the GitHub Enterprise token again', code: 'secret_reentry_required', field: 'githubEnterpriseToken', fields: ['githubEnterpriseToken'], endpoint: 'githubEnterpriseHost' }),
+      })
+      .mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }) })
+    const onStepUp = vi.fn().mockResolvedValue('my-password')
+
+    let ok: boolean | undefined
+    await act(async () => {
+      ok = await result.current.save('githubEnterpriseHost', 'ghe2.example.com', {
+        onSecretReentry: async () => ({ githubEnterpriseToken: 'ghe_typed' }), onStepUp,
+      })
+    })
+
+    expect(ok).toBe(true)
+    expect(onStepUp).toHaveBeenCalledTimes(1)
+    const puts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT').map(([, init]) => JSON.parse(init.body))
+    expect(puts.at(-1)).toEqual({ githubEnterpriseHost: 'ghe2.example.com', githubEnterpriseToken: 'ghe_typed', stepUpPassword: 'my-password' })
+  })
+
+  test('a declined password saves nothing more and reports the refusal', async () => {
+    const { result } = renderHook(() => useCredentialKeys())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }) })
+    let ok: boolean | undefined
+    await act(async () => { ok = await result.current.save('githubEnterpriseHost', 'ghe2.example.com', { onStepUp: async () => null }) })
+    expect(ok).toBe(false)
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
+    expect(result.current.error).toContain('step_up_required')
+  })
 })
