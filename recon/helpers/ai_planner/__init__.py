@@ -1,21 +1,16 @@
 """AI-planner helpers that delegate small LLM classification calls to the agent.
 
-D3: these callers must present the internal/scanner key so the agent's now-
-guarded ``/llm/*`` endpoints accept the request.
+D3: these callers must present the scanner key so the agent's guarded
+``/llm/*`` and ``/jev/*`` endpoints accept the request, and since step 1.16 the
+scan's job credential beside it, from which the agent takes the user.
 """
 
-import os
+from recon.helpers.scan_auth import scan_auth_headers
 
 
 def internal_key_headers() -> dict:
-    """Header dict carrying the internal/scanner API key for agent /llm/* calls.
-
-    Prefers the scoped ``SCANNER_API_KEY`` (S3/E6) and falls back to
-    ``INTERNAL_API_KEY``. An empty value is harmless before the secret is
-    generated -- the agent guard fails open until a key exists.
-    """
-    key = os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY") or ""
-    return {"X-Internal-Key": key}
+    """The headers of an agent /llm/* or /jev/* call: the scanner key and the job credential."""
+    return scan_auth_headers()
 
 
 # One breaker shared by every agent /llm/* hook: they all reach the same agent,

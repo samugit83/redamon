@@ -101,6 +101,18 @@ def _apply_env_overrides(settings: dict[str, Any]) -> dict[str, Any]:
     return settings
 
 
+def _scan_auth_headers() -> dict:
+    """The scoped scanner key (S3/E6) and the scan's job credential (step 1.16): the
+    webapp reads a project or its owner's settings only with both. INTERNAL_API_KEY no
+    longer reaches a scan container; it is left for a CLI run by an operator."""
+    headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY")
+                                  or os.environ.get("INTERNAL_API_KEY", ""))}
+    job = os.environ.get("REDAMON_JOB_CREDENTIAL", "")
+    if job:
+        headers["X-Redamon-Job"] = job
+    return headers
+
+
 def fetch_gvm_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     """
     Fetch GVM scan settings from webapp API.
@@ -117,11 +129,7 @@ def fetch_gvm_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}"
     logger.info(f"Fetching GVM settings from {url}")
 
-    # S3/E6: scanners receive the SCOPED SCANNER_API_KEY; fall back to the master
-    # INTERNAL_API_KEY only on pre-secret installs. The webapp accepts either.
-    _internal_headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY")
-                                            or os.environ.get("INTERNAL_API_KEY", ""))}
-    response = requests.get(url, timeout=30, headers=_internal_headers)
+    response = requests.get(url, timeout=30, headers=_scan_auth_headers())
     response.raise_for_status()
     project = response.json()
 

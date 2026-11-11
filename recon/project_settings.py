@@ -1182,8 +1182,8 @@ def _fetch_user_api_key(user_id: str, webapp_url: str, key_name: str) -> str:
     import requests as _req
     try:
         url = f"{webapp_url.rstrip('/')}/api/users/{user_id}/settings?internal=true"
-        _headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY", ""))}
-        resp = _req.get(url, timeout=10, headers=_headers)
+        from recon.helpers.scan_auth import scan_auth_headers
+        resp = _req.get(url, timeout=10, headers=scan_auth_headers())
         resp.raise_for_status()
         return resp.json().get(key_name, '')
     except Exception as e:
@@ -1196,8 +1196,8 @@ def _fetch_user_settings_full(user_id: str, webapp_url: str) -> dict:
     import requests as _req
     try:
         url = f"{webapp_url.rstrip('/')}/api/users/{user_id}/settings?internal=true"
-        _headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY", ""))}
-        resp = _req.get(url, timeout=10, headers=_headers)
+        from recon.helpers.scan_auth import scan_auth_headers
+        resp = _req.get(url, timeout=10, headers=scan_auth_headers())
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -1580,8 +1580,8 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}"
     logger.info(f"Fetching project settings from {url}")
 
-    _internal_headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY", ""))}
-    response = requests.get(url, timeout=30, headers=_internal_headers)
+    from recon.helpers.scan_auth import scan_auth_headers
+    response = requests.get(url, timeout=30, headers=scan_auth_headers())
     response.raise_for_status()
     project = response.json()
 
@@ -2511,8 +2511,8 @@ def fetch_node_filters(project_id: str, webapp_url: str | None = None) -> dict |
     if not project_id or not webapp_url:
         return None
     url = f"{webapp_url.rstrip('/')}/api/projects/{project_id}"
-    headers = {"X-Internal-Key": (os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY", ""))}
-    response = requests.get(url, timeout=30, headers=headers)
+    from recon.helpers.scan_auth import scan_auth_headers
+    response = requests.get(url, timeout=30, headers=scan_auth_headers())
     response.raise_for_status()
     node_filter = response.json().get('nodeFilter')
     if node_filter is None:

@@ -7,8 +7,8 @@ a `captured_http_transaction` row, so the /traffic UI and later the agent tools 
 query real request/response data instead of only URLs + hashes.
 
 There is no capture proxy yet in Phase 0. Recon POSTs the transactions straight to
-the webapp ingest endpoint (`POST /api/traffic/{project_id}/ingest`) using the same
-`X-Internal-Key: SCANNER_API_KEY` it already uses to read project settings. The
+the webapp ingest endpoint (`POST /api/traffic/{project_id}/ingest`) with the same
+scanner key and job credential it reads project settings with (scan_auth.py). The
 webapp is the sole Postgres writer and stamps the tenant (user_id/project_id) from
 the project owner — recon never sends tenant fields it could forge.
 
@@ -237,10 +237,9 @@ def capture_httpx_transactions(httpx_results, settings, phase="informational"):
 
         import requests
 
-        headers = {
-            "X-Internal-Key": (os.environ.get("SCANNER_API_KEY") or os.environ.get("INTERNAL_API_KEY", "")),
-            "Content-Type": "application/json",
-        }
+        from recon.helpers.scan_auth import scan_auth_headers
+
+        headers = {**scan_auth_headers(), "Content-Type": "application/json"}
         url = f"{webapp_url.rstrip('/')}/api/traffic/{project_id}/ingest"
 
         stored = 0
