@@ -56,10 +56,13 @@ class Api(unittest.TestCase):
 
     def nl_routes(self):
         settings = {"OPENAI_MODEL": "loop/mcp"}
+        # /text-to-cypher fails closed without a master key (RBAC 1.15): the webapp's call.
+        master = {"INTERNAL_API_KEY": "loop-test-master-key"}
         with mock.patch("project_settings.fetch_agent_settings", return_value=settings), \
                 mock.patch("requests.get", side_effect=AssertionError("providers must not be fetched")):
-            yield self.client.post("/text-to-cypher", json={
-                "question": "list domains", "user_id": "u1", "project_id": "p1"})
+            with mock.patch.dict(os.environ, master):
+                yield self.client.post("/text-to-cypher", headers={"x-internal-key": master["INTERNAL_API_KEY"]},
+                                       json={"question": "list domains", "user_id": "u1", "project_id": "p1"})
             yield self.client.post("/graph/nl-query", json={
                 "question": "list domains", "user_id": "u1", "project_id": "p1"})
 

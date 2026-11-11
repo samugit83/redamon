@@ -511,8 +511,10 @@ class Route(unittest.TestCase):
         url = connect.call_args.args[0]
         self.assertIn("user_id=uT", url)
         self.assertIn("project_id=pT", url)
-        self.assertEqual(connect.call_args.kwargs["additional_headers"],
-                         {"Authorization": "Bearer mcp-token-for-test"})
+        # Plus the shell's graph run credential (step 1.15, test_run_credential.py).
+        headers = connect.call_args.kwargs["additional_headers"]
+        self.assertEqual(headers["Authorization"], "Bearer mcp-token-for-test")
+        self.assertEqual(sorted(headers), ["Authorization", "X-Redamon-Run"])
         for _ in range(50):
             if not PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT"):
                 break

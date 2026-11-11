@@ -34,7 +34,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
-                       require_master_internal_auth)
+                       require_master_internal_auth, require_master_or_run_credential,
+                       run_credential_claims)
 from logging_config import setup_logging
 from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
 from agent_in_the_loop.broker import get_broker
@@ -3510,12 +3511,20 @@ async def _generate_validated_cypher(
     )
 
 
+# The graph and traffic routes the sandbox calls back with a run credential (T15).
+# Each is declared in the route's dependencies and taken as a parameter too; FastAPI
+# solves it once per request.
+_GRAPH_GATE = require_master_or_run_credential("graph")
+_GRAPH_GATE_BILLED = require_master_or_run_credential("graph", billed=True)
+_TRAFFIC_GATE = require_master_or_run_credential("traffic")
+
+
 @app.post(
     "/text-to-cypher",
     tags=["Graph"],
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(_GRAPH_GATE_BILLED)],
 )
-async def text_to_cypher(body: TextToCypherRequest):
+async def text_to_cypher(body: TextToCypherRequest, run_cred: Optional[dict] = Depends(_GRAPH_GATE_BILLED)):
     """
     Generate a Cypher query from a natural language description.
 
@@ -3525,16 +3534,18 @@ async def text_to_cypher(body: TextToCypherRequest):
     Returns the raw Cypher (without tenant filters) for the webapp to save and execute.
 
     BILLED: one request can cost up to 9 provider calls (3 attempts, each wrapped
-    in retry_llm_call), spending the key of the user named in the body. It was
-    previously unauthenticated, so anyone who could reach the agent port could
-    spend any user's LLM budget. `require_internal_auth` applies the token bucket
-    and the daily spend cap, and the caller is trusted to have resolved the
-    identity it sends (mcp_plan.md P0-3).
+    in retry_llm_call), spending one user's provider key. The gate applies the
+    token bucket and the daily spend cap. With the master key (the webapp, which
+    resolved the identity it sends) that user is the body's; with a terminal's run
+    credential (redagraph `ask`) it is the credential's, and the body's ids are
+    ignored. The scanner key alone is refused.
     """
+    cred = run_credential_claims(run_cred)
+    user_id, project_id = (cred["ten"], cred["pid"]) if cred else (body.user_id, body.project_id)
     try:
-        manager = await _build_cypher_manager(body.user_id, body.project_id)
+        manager = await _build_cypher_manager(user_id, project_id)
         cypher = await _generate_validated_cypher(
-            manager, body.question, body.user_id, body.project_id, body.for_graph_view
+            manager, body.question, user_id, project_id, body.for_graph_view
         )
     except _CypherSetupError as e:
         return JSONResponse(content={"error": e.message, **e.fields}, status_code=e.status)
@@ -4735,8 +4746,8 @@ class GraphExecRequest(BaseModel):
     source: str = ""
 
 
-@app.post("/graph/exec", tags=["Graph"], dependencies=[Depends(require_internal_auth_only)])
-async def graph_exec(body: GraphExecRequest):
+@app.post("/graph/exec", tags=["Graph"], dependencies=[Depends(_GRAPH_GATE)])
+async def graph_exec(body: GraphExecRequest, run_cred: Optional[dict] = Depends(_GRAPH_GATE)):
     from graph_db.tenant_filter import (
         find_disallowed_write_operation,
         has_labelled_node_pattern,
@@ -4744,18 +4755,15 @@ async def graph_exec(body: GraphExecRequest):
         TenantScopeError,
     )
 
-    if not body.user_id or not body.project_id:
+    # The tenant: a terminal's run credential decides it and the body's ids are
+    # ignored; the master key (the webapp, whose MCP graph client derived the
+    # tenant from the database) keeps the body's.
+    cred = run_credential_claims(run_cred)
+    user_id, project_id = (cred["ten"], cred["pid"]) if cred else (body.user_id, body.project_id)
+    if not user_id or not project_id:
         return JSONResponse(status_code=400, content={"error": "missing tenant identity"})
-
-    # R12 (phased): the caller is now authenticated (require_internal_auth), but
-    # the tenant is still derived from the request BODY. Log the legacy body-
-    # identity use so the migration surface is observable; the enforce-flip
-    # (claim-derived tenant threaded from terminal->redagraph) is a tracked
-    # follow-on. A foothold inside the authenticated worker can still assert a
-    # tenant here — a strictly smaller surface than the prior anonymous LAN read.
-    logger.info(
-        "graph/exec: authenticated caller, body-identity tenant (R12 legacy path) "
-        "user=%s project=%s op=%s", body.user_id, body.project_id, body.op)
+    logger.info("graph/exec: %s tenant user=%s project=%s op=%s",
+                "run-credential" if cred else "master-key", user_id, project_id, body.op)
 
     op = body.op
     if op == "schema":
@@ -4767,12 +4775,12 @@ async def graph_exec(body: GraphExecRequest):
         final, params = "CALL db.schema.visualization()", {}
     elif op == "types":
         final = _GRAPH_TYPES_CYPHER
-        params = {"tenant_user_id": body.user_id, "tenant_project_id": body.project_id}
+        params = {"tenant_user_id": user_id, "tenant_project_id": project_id}
     elif op == "summary":
         # Two fixed queries, so this op answers alone rather than making the
         # caller issue two and stitch them. It returns early, so it takes the
         # MCP concurrency ceiling here rather than at the shared exit below.
-        params = {"tenant_user_id": body.user_id, "tenant_project_id": body.project_id}
+        params = {"tenant_user_id": user_id, "tenant_project_id": project_id}
         if body.source == "mcp":
             async with _graph_exec_mcp_semaphore():
                 return await asyncio.to_thread(_graph_exec_summary, params)
@@ -4792,10 +4800,10 @@ async def graph_exec(body: GraphExecRequest):
         if not has_labelled_node_pattern(cypher):
             return JSONResponse(status_code=400, content={"error": "query has no labelled node pattern; cannot scope to tenant"})
         try:
-            final = scope_query(cypher, body.user_id, body.project_id)
+            final = scope_query(cypher, user_id, project_id)
         except TenantScopeError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
-        params = {"tenant_user_id": body.user_id, "tenant_project_id": body.project_id}
+        params = {"tenant_user_id": user_id, "tenant_project_id": project_id}
     else:
         return JSONResponse(status_code=400, content={"error": f"unknown op {op!r}"})
 
@@ -4986,8 +4994,9 @@ def _verify_traffic_ctx(ctx: str) -> Optional[dict]:
     """Verify the signed agent tag and return its claims, or None (fail closed).
 
     The tag is HMAC-signed with INTERNAL_API_KEY, which the kali worker does not
-    hold, so it can present the scoped SCANNER_API_KEY for transport auth yet
-    cannot mint a tag for a tenant it was not issued for."""
+    hold, so it cannot mint a tag for a tenant it was not issued for. Transport
+    auth is the run credential the agent minted beside the tag (`_TRAFFIC_GATE`);
+    `_ctx_mismatch` holds the two to the same user and project."""
     try:
         from redamon_ctx import verify_tag
     except Exception:  # noqa: BLE001
@@ -5001,6 +5010,21 @@ def _verify_traffic_ctx(ctx: str) -> Optional[dict]:
     if not payload or not payload.get("user_id") or not payload.get("project_id"):
         return None
     return payload
+
+
+def _ctx_mismatch(claims: dict, run_cred) -> Optional[JSONResponse]:
+    """403 when the run credential names another user or project than the ctx tag.
+
+    Both are minted by this agent for the same proxy_brain call, so a mismatch is
+    a credential copied from another run (they expire, the tag does not)."""
+    cred = run_credential_claims(run_cred)
+    if cred is None or (claims.get("user_id"), claims.get("project_id")) == (cred["ten"], cred["pid"]):
+        return None
+    logger.warning("[rbac] run credential refused reason=ctx_mismatch aud=traffic")
+    return JSONResponse(status_code=403, content={
+        "error": "the run credential and the traffic ctx name different tenants",
+        "code": "run_credential_ctx_mismatch",
+    })
 
 
 def _apply_traffic_tenant(claims: dict) -> None:
@@ -5018,14 +5042,17 @@ def _apply_traffic_tenant(claims: dict) -> None:
         current_phase.set(claims["phase"])
 
 
-@app.post("/traffic/exec", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
-async def traffic_exec(body: TrafficExecRequest):
+@app.post("/traffic/exec", tags=["Traffic"], dependencies=[Depends(_TRAFFIC_GATE)])
+async def traffic_exec(body: TrafficExecRequest, run_cred: Optional[dict] = Depends(_TRAFFIC_GATE)):
     """Read-only corpus access for the kali `redamon` SDK. Constrained ops only;
     tenant from the verified tag; every underlying query hard-injects the tenant
     filter (traffic_tools). Returns the tool's formatted text under `result`."""
     claims = _verify_traffic_ctx(body.ctx)
     if not claims:
         return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+    refused = _ctx_mismatch(claims, run_cred)
+    if refused:
+        return refused
     _apply_traffic_tenant(claims)
 
     import json as _json
@@ -5060,8 +5087,8 @@ async def traffic_exec(body: TrafficExecRequest):
     return JSONResponse(content={"result": out})
 
 
-@app.post("/traffic/replay", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
-async def traffic_replay(body: TrafficReplayRequest):
+@app.post("/traffic/replay", tags=["Traffic"], dependencies=[Depends(_TRAFFIC_GATE)])
+async def traffic_replay(body: TrafficReplayRequest, run_cred: Optional[dict] = Depends(_TRAFFIC_GATE)):
     """ACTIVE replay PREPARE. Validates tenant + phase, reads the origin
     (tenant-scoped), builds the host-pinned curl and signs the replay lineage
     tag. The worker performs the send through the capture proxy. Per-send gating
@@ -5069,6 +5096,9 @@ async def traffic_replay(body: TrafficReplayRequest):
     claims = _verify_traffic_ctx(body.ctx)
     if not claims:
         return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+    refused = _ctx_mismatch(claims, run_cred)
+    if refused:
+        return refused
 
     # Per-send phase gate (the tag carries the session phase). Active sends are
     # confined to the exploitation phases, mirroring TOOL_PHASE_MAP for the old
@@ -5171,8 +5201,8 @@ class TrafficBrowserRequest(BaseModel):
     anonymous: bool = False    # open only: no session in the browser context
 
 
-@app.post("/traffic/browser", tags=["Traffic"], dependencies=[Depends(require_internal_auth_only)])
-async def traffic_browser(body: TrafficBrowserRequest):
+@app.post("/traffic/browser", tags=["Traffic"], dependencies=[Depends(_TRAFFIC_GATE)])
+async def traffic_browser(body: TrafficBrowserRequest, run_cred: Optional[dict] = Depends(_TRAFFIC_GATE)):
     """Browser PREPARE for the kali `redamon.browser` SDK. Mirrors /traffic/replay:
     validates tenant + phase, re-reads the origin transaction tenant-scoped to pin
     the host, and (for `open`) signs the capture-lineage tag the browser stamps on
@@ -5181,6 +5211,9 @@ async def traffic_browser(body: TrafficBrowserRequest):
     claims = _verify_traffic_ctx(body.ctx)
     if not claims:
         return JSONResponse(status_code=401, content={"error": "invalid or missing traffic ctx"})
+    refused = _ctx_mismatch(claims, run_cred)
+    if refused:
+        return refused
 
     # Browsing emits live traffic; confine it to the exploitation phases exactly
     # like /traffic/replay. Fail closed on anything else.
@@ -5560,6 +5593,22 @@ async def kali_exec_cancel(job_id: str, project_id: str = Query(...)):
 _KALI_TERMINAL_WS_URL = os.environ.get("KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016")
 
 
+def _terminal_run_credential(claims: dict) -> str:
+    """The graph credential redagraph presents from this terminal, or "" when none
+    can be minted (a weak master key): the shell still opens, redagraph says why."""
+    import uuid
+
+    from machine_credential import TERMINAL_TTL_SECONDS, CredentialRefused, mint_run_credential
+
+    try:
+        # Phase 5 makes `ten` the project's tenant rather than the ticket's user.
+        return mint_run_credential("graph", str(claims["sub"]), str(claims["pid"]),
+                                   uuid.uuid4().hex, TERMINAL_TTL_SECONDS)
+    except (CredentialRefused, ValueError) as e:
+        logger.warning("[rbac] terminal run credential not minted: %s", getattr(e, "code", type(e).__name__))
+        return ""
+
+
 @app.websocket("/ws/kali-terminal")
 async def kali_terminal_proxy(websocket: WebSocket):
     """
@@ -5573,7 +5622,9 @@ async def kali_terminal_proxy(websocket: WebSocket):
     the terminal) and a same-origin request. An unset AGENT_WS_TICKET_SECRET
     fails CLOSED (mirrors S2). Identity is taken from the verified claims, never
     from the browser's self-asserted frame, and forwarded to the upstream, which
-    admits only this proxy: it presents the MCP_AUTH_TOKEN bearer (NF-04).
+    admits only this proxy: it presents the MCP_AUTH_TOKEN bearer (NF-04). The
+    upgrade also carries a graph run credential bound to that user and project,
+    which the shell's redagraph presents to /graph/exec (HD-19).
     """
     from ws_ticket import authorize_ws
 
@@ -5598,8 +5649,15 @@ async def kali_terminal_proxy(websocket: WebSocket):
     _sep = "&" if urlparse(_KALI_TERMINAL_WS_URL).query else "?"
     upstream_url = f"{_KALI_TERMINAL_WS_URL}{_sep}{_tenant}"
     # Unset: no header, and the terminal server refuses the upgrade (it fails closed).
+    # The run credential rides only on an authenticated upgrade, in a header: a query
+    # parameter would land in access logs.
     _mcp_token = os.environ.get("MCP_AUTH_TOKEN", "")
-    upstream_headers = {"Authorization": f"Bearer {_mcp_token}"} if _mcp_token else {}
+    upstream_headers = {}
+    if _mcp_token:
+        upstream_headers["Authorization"] = f"Bearer {_mcp_token}"
+        _run_credential = _terminal_run_credential(claims)
+        if _run_credential:
+            upstream_headers["X-Redamon-Run"] = _run_credential
 
     await websocket.accept()
     PROXIED_SOCKETS.add(websocket, "kali-terminal", claims)

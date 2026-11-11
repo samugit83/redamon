@@ -28,6 +28,7 @@ import logging
 import os
 import threading
 import time
+from typing import Optional
 
 from fastapi import HTTPException, Request
 
@@ -190,11 +191,12 @@ async def require_internal_auth(request: Request) -> None:
     provided = request.headers.get("x-internal-key", "")
     if not _key_ok(provided):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    _enforce_llm_limits(request, await _extract_user_id(request))
 
-    ip = _client_ip(request)
-    user_id = await _extract_user_id(request)
 
-    if not _rate_limiter.allow(f"{user_id}|{ip}"):
+def _enforce_llm_limits(request: Request, user_id: str) -> None:
+    """The token bucket and the daily spend cap of one billed call by `user_id`."""
+    if not _rate_limiter.allow(f"{user_id}|{_client_ip(request)}"):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     if not _daily_cap.allow(user_id):
         raise HTTPException(status_code=429, detail="Daily LLM call cap exceeded")
@@ -279,3 +281,81 @@ async def require_internal_auth_only(request: Request) -> None:
     provided = request.headers.get("x-internal-key", "")
     if not _key_ok(provided):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ---------------------------------------------------------------------------
+# Master key or run credential (RBAC T15): the in-sandbox routes
+# ---------------------------------------------------------------------------
+RUN_CREDENTIAL_HEADER = "x-redamon-run"
+_RUN_GATES: dict = {}
+
+
+def run_credential_refusal(code: str, aud: str, status: int = 401) -> HTTPException:
+    """Log a refused run credential and build the answer the sandbox client reads."""
+    logger.warning("[rbac] run credential refused reason=%s aud=%s", code, aud)
+    return HTTPException(status_code=status, detail={
+        "error": "run credential expired" if code == "expired" else "run credential refused",
+        "code": f"run_credential_{code}",
+    })
+
+
+def require_master_or_run_credential(aud: str, *, billed: bool = False):
+    """FastAPI dependency for a route the sandbox calls back: the MASTER key, or a
+    valid run credential (X-Redamon-Run) of audience `aud`. Fails closed.
+
+    It returns None for the master key (the webapp, whose callers resolved the
+    tenant from the database, so the route keeps the body's ids) and the verified
+    claims for a credential, whose `ten` and `pid` the route uses instead of the
+    body's. The bare scanner key opens nothing here: the sandbox no longer holds
+    it, and a scan container has no business on these routes. A weak master key
+    answers 503, as `require_configured_master_auth` does, since no credential can
+    be verified without it. `billed` adds the LLM token bucket and daily cap,
+    counted against the credential's tenant (the master key's: the body user).
+
+    One callable per (aud, billed), so a route can declare it in `dependencies`
+    and also take its value as a parameter: FastAPI solves it once per request.
+    """
+    from machine_credential import RUN_AUDIENCES
+
+    if aud not in RUN_AUDIENCES:
+        raise ValueError(f"not a run credential audience: {aud!r}")
+    gate = _RUN_GATES.get((aud, billed))
+    if gate is not None:
+        return gate
+
+    async def gate(request: Request) -> Optional[dict]:
+        if master_key_is_weak():
+            raise HTTPException(
+                status_code=503,
+                detail="INTERNAL_API_KEY is not configured; this endpoint is disabled. "
+                       "Generate the secret via redamon.sh.",
+            )
+        provided = request.headers.get("x-internal-key", "")
+        if provided and hmac.compare_digest(provided.encode(), os.environ["INTERNAL_API_KEY"].encode()):
+            if billed:
+                _enforce_llm_limits(request, await _extract_user_id(request))
+            return None
+        token = request.headers.get(RUN_CREDENTIAL_HEADER, "")
+        if not token:
+            raise run_credential_refusal("missing", aud)
+        from machine_credential import CredentialRefused, verify_run_credential
+        try:
+            claims = verify_run_credential(token, aud)
+        except CredentialRefused as e:
+            raise run_credential_refusal(e.code, aud)
+        if billed:
+            _enforce_llm_limits(request, claims["ten"])
+        return claims
+
+    gate.__name__ = gate.__qualname__ = f"require_master_or_run_credential_{aud}{'_billed' if billed else ''}"
+    gate.run_credential_audience = aud
+    gate.run_credential_billed = billed
+    _RUN_GATES[(aud, billed)] = gate
+    return gate
+
+
+def run_credential_claims(value) -> Optional[dict]:
+    """A route parameter filled by the gate above: claims for a credential, None for
+    the master key. A handler called directly (a unit test) gets the Depends marker,
+    which counts as the master key: only FastAPI fills it in production."""
+    return value if isinstance(value, dict) else None

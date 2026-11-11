@@ -2447,6 +2447,22 @@ class PhaseAwareToolExecutor:
         except Exception:
             return ""
 
+    def _build_run_credential(self, aud: str) -> str:
+        """Mint the run credential proxy_brain's SDK presents to the agent's traffic
+        routes in place of the scanner key (RBAC T15): 15 minutes, bound to the same
+        user and project as the ctx tag. Returns "" when it cannot be minted."""
+        try:
+            import uuid
+
+            from agent_context import current_log_session_id
+            from machine_credential import TRAFFIC_TTL_SECONDS, mint_run_credential
+            # A node-level set_tenant_context can blank the session id mid-run.
+            run_id = current_session_id.get() or current_log_session_id.get() or uuid.uuid4().hex
+            return mint_run_credential(aud, current_user_id.get(), current_project_id.get(), run_id,
+                                       TRAFFIC_TTL_SECONDS)
+        except Exception:
+            return ""
+
     def _extract_text_from_output(self, output) -> str:
         """
         Extract clean text from MCP tool output.
@@ -2686,8 +2702,10 @@ class PhaseAwareToolExecutor:
         # proxy_brain: the signed tenant/session tag is how its kali `redamon` SDK
         # reaches the corpus (/traffic/exec) and the replay path (/traffic/replay),
         # so it is injected UNCONDITIONALLY — independent of the capture-proxy
-        # toggle — and the LLM never sees it. Fail closed if we can't mint it: a
-        # tag-less run would be a request the agent cannot tenant-scope.
+        # toggle — and the LLM never sees it, nor the run credential the SDK
+        # presents for transport auth. Both overwrite whatever the model put in
+        # the args. Fail closed if either cannot be minted: a run without them is
+        # a request the agent cannot tenant-scope or authenticate.
         if tool_name == "proxy_brain":
             _pb_ctx = self._build_redamon_ctx("proxy_brain")
             if not _pb_ctx:
@@ -2695,7 +2713,13 @@ class PhaseAwareToolExecutor:
                     "success": False, "output": None,
                     "error": "proxy_brain: no tenant/session context — cannot mint the traffic tag.",
                 }
-            tool_args = {**tool_args, "_redamon_ctx": _pb_ctx}
+            _pb_run = self._build_run_credential("traffic")
+            if not _pb_run:
+                return {
+                    "success": False, "output": None,
+                    "error": "proxy_brain: cannot mint the run credential (is INTERNAL_API_KEY configured?).",
+                }
+            tool_args = {**tool_args, "_redamon_ctx": _pb_ctx, "_redamon_run": _pb_run}
 
         # Dispatch logic pulled into a closure so we can re-invoke with a
         # fresh tool reference after an MCP reconnect.

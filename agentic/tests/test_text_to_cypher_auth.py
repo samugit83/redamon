@@ -40,12 +40,15 @@ class TextToCypherAuthTests(unittest.TestCase):
         self.assertIsNotNone(_route("/text-to-cypher"), "/text-to-cypher route missing")
 
     def test_requires_billed_internal_auth(self):
+        # RBAC 1.15 (NF-01): the master key or a graph run credential, never the
+        # bare scanner key; still billed (token bucket + daily spend cap).
         deps = _dep_names(_route("/text-to-cypher"))
         self.assertIn(
-            "require_internal_auth",
+            "require_master_or_run_credential_graph_billed",
             deps,
             f"/text-to-cypher is not gated by the BILLED dependency (deps: {deps})",
         )
+        self.assertNotIn("require_internal_auth", deps)
 
     def test_not_merely_auth_only(self):
         # require_internal_auth_only skips the token bucket and the daily spend
