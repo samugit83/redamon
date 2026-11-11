@@ -8,6 +8,7 @@ import { isLoopModel } from '@/lib/agentInTheLoop'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
+import { writeUserAudit } from '@/lib/userAudit'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -25,6 +26,41 @@ const USER_SELECT = {
   createdAt: true,
   updatedAt: true,
 } as const
+
+type AuditedFields = { name?: string | null; email?: string | null; role?: string | null }
+
+/**
+ * `user.update` (name, email) and `user.role_changed`, each only for the fields this
+ * request wrote that really changed. The remembered model defaults are preferences
+ * the project form saves often, not account administration: no row.
+ */
+async function auditUserEdit(
+  request: NextRequest,
+  session: { userId: string; role: string },
+  id: string,
+  written: Record<string, string>,
+  before: AuditedFields | null,
+  after: AuditedFields,
+): Promise<void> {
+  const changed = (k: keyof AuditedFields) => k in written && (before?.[k] ?? null) !== (after[k] ?? null)
+  const fields = (['name', 'email'] as const).filter(changed)
+  if (fields.length > 0) {
+    await writeUserAudit(request, session, {
+      action: 'user.update',
+      targetId: id,
+      before: Object.fromEntries(fields.map(k => [k, before?.[k] ?? null])),
+      after: Object.fromEntries(fields.map(k => [k, after[k] ?? null])),
+    })
+  }
+  if (changed('role')) {
+    await writeUserAudit(request, session, {
+      action: 'user.role_changed',
+      targetId: id,
+      before: { role: before?.role ?? null },
+      after: { role: after.role ?? null },
+    })
+  }
+}
 
 /** Another admin's account changes hands only with the acting admin's own password. */
 async function isAnotherAdmin(sessionUserId: string, targetId: string): Promise<boolean> {
@@ -143,7 +179,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     if (data.role !== 'standard') {
+      const before = ('name' in data || 'email' in data || 'role' in data)
+        ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
+        : null
       const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
+      await auditUserEdit(request, session, id, data, before, user)
       return NextResponse.json(user)
     }
 
@@ -152,9 +192,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       const refusal = await requireStepUp(request, stepUpPassword)
       if (refusal) return refusal
     }
-    const result = await withLastAdminGuard(id, tx => tx.user.update({ where: { id }, data, select: USER_SELECT }))
+    const result = await withLastAdminGuard(id, async (tx, before) => ({
+      before,
+      user: await tx.user.update({ where: { id }, data, select: USER_SELECT }),
+    }))
     if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
-    return NextResponse.json(result.value)
+    await auditUserEdit(request, session, id, data, result.value.before, result.value.user)
+    return NextResponse.json(result.value.user)
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
       return NextResponse.json(
@@ -189,7 +233,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    const targetIsAdmin = await isAnotherAdmin(session.userId, id)
+    // Self-deletion is refused above, so an admin target is another admin.
+    const target = await prisma.user.findUnique({ where: { id }, select: { email: true, role: true } })
+    const targetIsAdmin = target?.role === 'admin'
     if (targetIsAdmin) {
       const body = await request.json().catch(() => null)
       const refusal = await requireStepUp(request, body?.stepUpPassword)
@@ -211,8 +257,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
     // The cascade deletes the user's projects; their workspaces are on disk.
     let projectIds: string[] = []
+    let ownedProjectCount: number | null = null
     try {
       projectIds = (await prisma.project.findMany({ where: { userId: id }, select: { id: true } })).map(p => p.id)
+      ownedProjectCount = projectIds.length
     } catch (e) {
       console.warn('Could not list projects before user delete:', e)
     }
@@ -227,6 +275,12 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         where: { id }
       })
     }
+
+    await writeUserAudit(request, session, {
+      action: 'user.delete',
+      targetId: id,
+      before: { email: target?.email ?? null, role: target?.role ?? null, ownedProjectCount },
+    })
 
     await Promise.allSettled(projectIds.map(pid => purgeProjectWorkspace(pid)))
 

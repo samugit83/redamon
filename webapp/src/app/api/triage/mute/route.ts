@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { requireProjectOwner, callGraphTriage } from '@/lib/triageClient'
+import { requireProjectOwner, graphTriage } from '@/lib/triageClient'
+import { auditSingleMute } from '@/lib/triage/muteAudit'
 import { readJsonBody } from '@/lib/jsonBody'
 import { invalidateCache } from '@/app/api/graph/cache'
 import { activationBusy, activationBusyResponse } from '@/lib/activationLock'
@@ -40,13 +41,15 @@ export const POST = withRouteErrors('The finding could not be muted.', async (re
   }
   if (await activationBusy(caller.projectId)) return activationBusyResponse()
 
-  const res = await callGraphTriage('mute', caller, {
+  const muteReason = typeof reason === 'string' ? reason.slice(0, 500) : ''
+  const answer = await graphTriage('mute', caller, {
     node_id: nodeId,
-    reason: typeof reason === 'string' ? reason.slice(0, 500) : '',
+    reason: muteReason,
     muted_by: caller.userId,
   })
   // The Graph Map serves a cached copy for up to 10 s; a muted finding must
   // leave it now, not then.
-  if (res.ok) invalidateCache(caller.projectId)
-  return res
+  if (answer.status >= 200 && answer.status < 300) invalidateCache(caller.projectId)
+  await auditSingleMute(caller, answer, { key: nodeId, reason: muteReason })
+  return NextResponse.json(answer.body, { status: answer.status })
 })

@@ -3,12 +3,21 @@ import { AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { isSecureRequest } from '@/lib/cookieSecurity'
+import { getSession } from '@/lib/session'
+import { actingAsUserId } from '@/lib/userAudit'
 
 export async function POST(request: NextRequest) {
   const meta = getClientMeta(request)
+  // Signing out never fails: an unreadable account only leaves the row without an actor.
+  const session = await getSession().catch(() => null)
+  const actingAs = session ? await actingAsUserId(request, session) : null
   await writeAudit({
+    actorId: session?.userId ?? null,
     action: 'auth.logout', targetType: 'session',
-    after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
+    after: {
+      ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent,
+      ...(actingAs ? { actingAsUserId: actingAs } : {}),
+    },
   })
   const response = NextResponse.json({ ok: true })
   const expire = {

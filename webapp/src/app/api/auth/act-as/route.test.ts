@@ -31,6 +31,7 @@ vi.mock('@/lib/audit', () => ({
 
 import bcrypt from 'bcryptjs'
 import { __resetThrottle } from '@/lib/loginThrottle'
+import { createActAsToken } from '@/lib/auth'
 import { POST, DELETE } from './route'
 
 function req(body?: unknown): NextRequest {
@@ -117,6 +118,39 @@ describe('DELETE /api/auth/act-as', () => {
     expect(await res.json()).toEqual({ actingAs: null })
     expect(res.headers.get('set-cookie') || '').toMatch(/Max-Age=0/i)
   })
+
+  // HD-14: the cookie is decoded before it is cleared, so the end row names whom
+  // the admin stopped acting as.
+  const delWithCookie = (cookie: string) =>
+    new NextRequest('http://localhost:3000/api/auth/act-as', { method: 'DELETE', headers: { cookie } })
+
+  test('end row carries the target', async () => {
+    mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    const token = await createActAsToken('admin-1', 'user-X')
+    const res = await DELETE(delWithCookie(`redamon-act-as=${token}`))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie') || '').toMatch(/Max-Age=0/i)
+    expect(mockWriteActAsAudit).toHaveBeenCalledTimes(1)
+    expect(mockWriteActAsAudit).toHaveBeenCalledWith({ adminId: 'admin-1', targetUserId: 'user-X', event: 'end' })
+  })
+
+  test('a DELETE with no act-as cookie writes no row', async () => {
+    mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    const res = await DELETE(req())
+    expect(res.status).toBe(200)
+    expect(mockWriteActAsAudit).not.toHaveBeenCalled()
+  })
+
+  test('a cookie another admin minted, or one that does not verify, writes no row and is still cleared', async () => {
+    mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    const foreign = await createActAsToken('admin-2', 'user-X')
+    for (const cookie of [`redamon-act-as=${foreign}`, 'redamon-act-as=not.a.token']) {
+      const res = await DELETE(delWithCookie(cookie))
+      expect(res.status).toBe(200)
+      expect(res.headers.get('set-cookie') || '').toMatch(/Max-Age=0/i)
+    }
+    expect(mockWriteActAsAudit).not.toHaveBeenCalled()
+  })
 })
 
 describe('act-as — a failure inside the handler', () => {
@@ -133,7 +167,11 @@ describe('act-as — a failure inside the handler', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
     mockWriteActAsAudit.mockRejectedValueOnce(Object.assign(new Error('Timed out'), { code: 'P2024' }))
-    const res = await DELETE(new NextRequest('http://localhost:3000/api/auth/act-as', { method: 'DELETE' }))
+    // The end row is written only for an act-as cookie this admin minted (HD-14).
+    const token = await createActAsToken('admin-1', 'user-X')
+    const res = await DELETE(new NextRequest('http://localhost:3000/api/auth/act-as', {
+      method: 'DELETE', headers: { cookie: `redamon-act-as=${token}` },
+    }))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Could not stop switching user', code: 'P2024' })
   })

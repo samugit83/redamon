@@ -331,6 +331,51 @@ describe('POST /api/triage/mute', () => {
     expect(await res.json()).toEqual({ muted: true, already: true, label: 'Vulnerability' })
     expect(sentBodies()[0]).toMatchObject({ op: 'mute', node_id: 'v1', muted_by: OWNER })
   })
+
+  // HD-14: the MCP mute tools' row shape (`lib/mcp/muteTools.ts`), source `ui`, the
+  // real signed-in actor, and the account an admin acted as.
+  test('single mute audited', async () => {
+    mockAgentFetch.mockResolvedValue(agentReply({ muted: true, already: false, label: 'Vulnerability' }))
+    const res = await postMute(post(URL, { projectId: PROJECT, nodeId: 'v1', reason: 'scanner noise' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ muted: true, already: false, label: 'Vulnerability' })
+    expect(mockAudit).toHaveBeenCalledTimes(1)
+    expect(mockAudit).toHaveBeenCalledWith({
+      actorId: 'admin-bob',
+      action: 'muted_nodes.muted',
+      targetType: 'project',
+      targetId: PROJECT,
+      after: {
+        reason: 'scanner noise',
+        count: 1,
+        items: [{ key: 'v1', label: 'Vulnerability', outcome: 'muted' }],
+        actingAsUserId: OWNER,
+      },
+      source: 'ui',
+    })
+  })
+
+  test('single mute audited: the owner muting in their own project is the actor', async () => {
+    mockSession.mockResolvedValue({ userId: OWNER, role: 'standard' })
+    mockAgentFetch.mockResolvedValue(agentReply({ muted: true, label: 'Secret' }))
+    await postMute(post(URL, { projectId: PROJECT, nodeId: 'v1' }))
+    expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: OWNER,
+      after: { reason: '', count: 1, items: [{ key: 'v1', label: 'Secret', outcome: 'muted' }] },
+    }))
+  })
+
+  test('no row when nothing was muted: already muted, no match, an agent failure', async () => {
+    for (const [body, status] of [
+      [{ muted: true, already: true, label: 'Vulnerability' }, 200],
+      [{ muted: false, label: null }, 200],
+      [{ error: 'boom', code: 'neo4j_down' }, 503],
+    ] as const) {
+      mockAgentFetch.mockResolvedValue(agentReply(body, status))
+      await postMute(post(URL, { projectId: PROJECT, nodeId: 'v1', reason: 'noise' }))
+    }
+    expect(mockAudit).not.toHaveBeenCalled()
+  })
 })
 
 describe('the Muted Nodes list splits agents from people', () => {

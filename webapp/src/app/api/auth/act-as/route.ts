@@ -6,6 +6,7 @@ import { writeActAsAudit } from '@/lib/audit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { requireStepUp } from '@/lib/authz/stepUp'
+import { presentedActAs } from '@/lib/userAudit'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -69,9 +70,14 @@ export const DELETE = withRouteErrors('Could not stop switching user', async (re
   const admin = await requireAdmin()
   if (admin instanceof NextResponse) return admin
 
-  // We don't know the impersonated target here (cookie is opaque to this route);
-  // record the end event attributed to the admin (R2).
-  await writeActAsAudit({ adminId: admin.userId, targetUserId: '', event: 'end' })
+  // The cookie is decoded before it is cleared, so the end row names the target.
+  // No cookie of this admin's means nothing was being acted as: the browser sends
+  // this DELETE on every admin page load and after a refused restore, so a row
+  // there would only be noise.
+  const claims = await presentedActAs(request)
+  if (claims && claims.sub === admin.userId) {
+    await writeActAsAudit({ adminId: admin.userId, targetUserId: claims.act, event: 'end' })
+  }
   const res = NextResponse.json({ actingAs: null })
   res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), maxAge: 0 })
   return res

@@ -31,6 +31,10 @@ vi.mock('@/lib/agentAuth', () => ({
 vi.mock('@/app/api/graph/neo4j', () => ({
   getGraphSession: () => ({ run: mockRun, close: mockClose }),
 }))
+const mockSession = vi.fn()
+const mockAudit = vi.fn()
+vi.mock('@/lib/session', () => ({ getSession: () => mockSession() }))
+vi.mock('@/lib/audit', () => ({ writeAudit: (e: unknown) => mockAudit(e) }))
 
 import { POST } from './route'
 
@@ -61,6 +65,7 @@ beforeEach(() => {
   mockAgentFetch.mockResolvedValue(
     new Response(JSON.stringify({ muted: true, label: 'Vulnerability' }), { status: 200 }))
   mockRun.mockResolvedValue(node(['Vulnerability'], 'vuln-abc'))
+  mockSession.mockResolvedValue({ userId: OWNER, role: 'standard' })
 })
 
 describe('authorisation', () => {
@@ -137,5 +142,45 @@ describe('resolution', () => {
     const res = await POST(req({ projectId: PROJECT, graphId: '12' }))
     expect(res.status).toBe(422)
     expect(mockAgentFetch).not.toHaveBeenCalled()
+  })
+})
+
+// HD-14: the same row as `/api/triage/mute`, keyed on the finding's stored id, with
+// the graph id the table showed.
+describe('single mute audited', () => {
+  test('the stored key, the label, the graph id and the real actor', async () => {
+    const res = await POST(req({ projectId: PROJECT, graphId: '12' }))
+    expect(res.status).toBe(200)
+    expect(mockAudit).toHaveBeenCalledTimes(1)
+    expect(mockAudit).toHaveBeenCalledWith({
+      actorId: OWNER,
+      action: 'muted_nodes.muted',
+      targetType: 'project',
+      targetId: PROJECT,
+      after: {
+        reason: '',
+        count: 1,
+        items: [{ key: 'vuln-abc', label: 'Vulnerability', outcome: 'muted' }],
+        graphId: '12',
+      },
+      source: 'ui',
+    })
+  })
+
+  test('an admin acting as the owner is the actor; the owner is named as acted as', async () => {
+    mockSession.mockResolvedValue({ userId: 'admin-bob', role: 'admin' })
+    await POST(req({ projectId: PROJECT, graphId: '12' }))
+    expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: 'admin-bob',
+      after: expect.objectContaining({ actingAsUserId: OWNER }),
+    }))
+  })
+
+  test('no row when nothing was muted or the mute was refused', async () => {
+    mockAgentFetch.mockResolvedValue(new Response(JSON.stringify({ muted: true, already: true, label: 'Vulnerability' }), { status: 200 }))
+    await POST(req({ projectId: PROJECT, graphId: '12' }))
+    mockRun.mockResolvedValue(node(['Subdomain'], 'sub-1'))
+    expect((await POST(req({ projectId: PROJECT, graphId: '12' }))).status).toBe(422)
+    expect(mockAudit).not.toHaveBeenCalled()
   })
 })

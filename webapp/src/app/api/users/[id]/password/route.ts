@@ -6,6 +6,7 @@ import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
+import { writeUserAudit } from '@/lib/userAudit'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -90,6 +91,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         source: 'api',
       })
     }
+
+    // The host scripts write the same two actions with source `system`.
+    await writeUserAudit(request, session, {
+      action: isSelf ? 'user.password_changed' : 'user.credentials_reset',
+      targetId: id,
+      after: { revokedMcpTokens: revoked.count },
+    })
 
     return NextResponse.json({ success: true, revokedMcpTokens: revoked.count })
   } catch (error) {

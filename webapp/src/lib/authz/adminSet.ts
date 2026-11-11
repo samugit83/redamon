@@ -18,24 +18,35 @@ export const LAST_ADMIN_REFUSAL = {
   code: 'last_admin',
 } as const
 
+/** The target as read under the lock, before the write: what an audit row's `before` shows. */
+export interface GuardedAccount {
+  name: string
+  email: string
+  role: string
+}
+
 /**
  * Runs `write` unless it would remove the last admin with a password: `targetId` is
  * read under the lock, and when it is such an admin, another one must remain.
- * `{ok: false}` means nothing was written.
+ * `write` gets that read (never the hash). `{ok: false}` means nothing was written.
  */
 export async function withLastAdminGuard<T>(
   targetId: string,
-  write: (tx: Prisma.TransactionClient) => Promise<T>,
+  write: (tx: Prisma.TransactionClient, target: GuardedAccount | null) => Promise<T>,
 ): Promise<{ ok: true; value: T } | { ok: false }> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ADMIN_SET_LOCK}))`
-    const target = await tx.user.findUnique({ where: { id: targetId }, select: { role: true, password: true } })
+    const target = await tx.user.findUnique({
+      where: { id: targetId },
+      select: { name: true, email: true, role: true, password: true },
+    })
     if (target && target.role === 'admin' && target.password !== '') {
       const others = await tx.user.count({
         where: { role: 'admin', id: { not: targetId }, password: { not: '' } },
       })
       if (others === 0) return { ok: false as const }
     }
-    return { ok: true as const, value: await write(tx) }
+    const account = target && { name: target.name, email: target.email, role: target.role }
+    return { ok: true as const, value: await write(tx, account) }
   })
 }

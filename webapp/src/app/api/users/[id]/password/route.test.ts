@@ -93,7 +93,8 @@ describe('a self-service password change revokes the user tokens', () => {
   test('no audit noise when the user had no tokens', async () => {
     h.transaction.mockResolvedValue([{}, { count: 0 }])
     await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
-    expect(h.audit).not.toHaveBeenCalled()
+    // HD-14: the change itself is always audited; no revoke row when nothing was revoked.
+    expect(h.audit.mock.calls.map(c => (c[0] as { action: string }).action)).toEqual(['user.password_changed'])
   })
 })
 
