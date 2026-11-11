@@ -1,20 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { archiveProjectAuthorizations } from '@/lib/engagementArchive'
 import prisma from '@/lib/prisma'
-import { agentFetch } from '@/lib/agentFetch'
 import { Prisma } from '@prisma/client'
-import { unlink } from 'fs/promises'
-import { existsSync } from 'fs'
-import path from 'path'
-import { getGraphSession } from '@/app/api/graph/neo4j'
-import { batchGroupFiles } from '@/lib/reconOutputFiles'
-import { clearProjectGraph } from '@/lib/graphRestore'
-import { orchestratorFetch } from '@/lib/orchestrator'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
-import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { teardownProject } from '@/lib/projectTeardown'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
-import { callGraphTriage } from '@/lib/triageClient'
 import { pickProjectColumns } from '@/lib/projectColumns'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { writeAudit } from '@/lib/audit'
@@ -33,17 +23,9 @@ import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings
 import { internalError } from '@/lib/routeErrors'
 import { projectModelProblem } from '@/lib/agentInTheLoop'
 
-// Path to output directories (fallback for local deletion)
-const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/data/recon-output'
-const GVM_OUTPUT_PATH = process.env.GVM_OUTPUT_PATH || '/data/gvm-output'
-const GITHUB_HUNT_OUTPUT_PATH = process.env.GITHUB_HUNT_OUTPUT_PATH || '/data/github-hunt-output'
-
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
-
-// Recon orchestrator URL for file deletion
-const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -598,56 +580,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-/**
- * Stop every running partial recon of a project. They are run-keyed, so each
- * one is listed and stopped by id. A partial run over a Domain batch walks up to
- * fifty roots, long enough to keep writing into a project that no longer exists.
- */
-async function stopPartialRecons(projectId: string): Promise<void> {
-  try {
-    const res = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/recon/${projectId}/partial/all`)
-    if (!res.ok) return
-    const data = await res.json().catch(() => ({}))
-    const runs: Array<{ run_id?: unknown; status?: unknown }> = Array.isArray(data?.runs) ? data.runs : []
-    await Promise.allSettled(
-      runs
-        .filter(run => typeof run?.run_id === 'string'
-          && (run.status === 'running' || run.status === 'starting' || run.status === 'stopping'))
-        .map(run => orchestratorFetch(
-          `${RECON_ORCHESTRATOR_URL}/recon/${projectId}/partial/${encodeURIComponent(run.run_id as string)}/stop?graceful=false`,
-          { method: 'POST' },
-        )),
-    )
-  } catch (e) {
-    console.warn('Could not stop partial recons before project delete:', e)
-  }
-}
-
 // DELETE /api/projects/[id] - Delete project and all associated data
-/** Stop every live chat run of a project, best-effort (never throws). */
-async function stopProjectChatRuns(projectId: string): Promise<void> {
-  let running: { userId: string; sessionId: string }[] = []
-  try {
-    running = await prisma.conversation.findMany({
-      where: { projectId, agentRunning: true },
-      select: { userId: true, sessionId: true },
-    })
-  } catch (e) {
-    console.warn('Could not read the running chats before project delete:', e)
-    return
-  }
-  const results = await Promise.allSettled(running.map(c => agentFetch('/agent-session/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: c.userId, project_id: projectId, session_id: c.sessionId }),
-  })))
-  results.forEach((r, i) => {
-    if (r.status === 'rejected' || !r.value.ok) {
-      console.warn(`Could not stop chat ${running[i].sessionId} before project delete (continuing)`)
-    }
-  })
-}
-
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
@@ -658,169 +591,26 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const access = await requireProjectAccess(eff, id)
     if (access instanceof NextResponse) return access
 
-    // Collect captured-traffic body refs BEFORE the cascade removes the rows, so
-    // we can ref-counted-GC the now-unreferenced blobs afterward (§6.6). Prisma
-    // cascade removes the rows but never touches the filesystem.
-    let capturedBodyRefs: (string | null)[] = []
-    try {
-      const doomed = await prisma.capturedHttpTransaction.findMany({
-        where: { projectId: id }, select: { reqBodyRef: true, respBodyRef: true },
-      })
-      capturedBodyRefs = doomed.flatMap(r => [r.reqBodyRef, r.respBodyRef])
-    } catch (e) {
-      console.warn('Could not enumerate captured body refs before project delete:', e)
-    }
-
-    // C-7: stop in-flight work BEFORE deleting. A container that is mid-write keeps
-    // writing project_id-stamped nodes after the row is gone, resurrecting the
-    // deleted project's graph as unreachable orphans; and a scanner falls back to
-    // DEFAULT_*_SETTINGS on a 404, so a job dispatched against a deleted project
-    // would scan with defaults. Cancel queued work and stop running scans first.
-    try {
-      await prisma.jobQueue.updateMany({
-        where: { projectId: id, status: { in: ['queued', 'dispatching', 'running', 'needs_review'] } },
-        data: { status: 'canceled', finishedAt: new Date() },
-      })
-    } catch (e) {
-      console.warn('Could not cancel queued jobs before project delete:', e)
-    }
-
-    // A triage run lives in the agent's memory. Deleting the project without
-    // telling it leaves the run working against a project that no longer
-    // exists, for as long as it takes the next heartbeat to fail (X12).
-    // Best-effort: an unreachable agent must not block the delete, because the
-    // run's publish and heartbeat both fail closed on the missing project.
-    try {
-      await callGraphTriage('stop_run', { userId: eff.userId, projectId: id })
-    } catch (e) {
-      console.warn('Could not stop a triage run before project delete:', e)
-    }
-    // A running chat of this project is an orphan once the row is gone, whatever
-    // its model, and an Agent in the Loop run would keep offering its steps to
-    // the owner's agent. Stopped the way a conversation delete stops its run.
-    // The conversations cascade with the project, so they are read first.
-    // Best-effort: a stop that fails must not block the delete.
-    await stopProjectChatRuns(id)
-    // Best-effort stop of each PROJECT-LEVEL scan container. ai_attack runs are
-    // keyed by run-id, not project, so they are not stopped here; they finish on
-    // their own and their orphaned nodes are swept by the graph read-path
-    // reconcile.
-    // GVM and the GitHub hunt write a stopped run's saved results to the graph
-    // before removing the container, as a backstop for a scan killed mid-write.
-    // The graph is cleared below, so here that write could only land after the
-    // clear and leave the deleted project's nodes behind: ingest=false skips it.
-    // A recon stop drains its queued writes for up to RECON_STOP_GRACE_S unless
-    // it is hard: graceful=false kills it and answers once it is gone.
-    const stopQuery: Record<string, string> = {
-      recon: '?graceful=false', gvm: '?ingest=false', 'github-hunt': '?ingest=false',
-    }
-    await Promise.allSettled([
-      ...['recon', 'gvm', 'github-hunt', 'supply-chain'].map(kind =>
-        orchestratorFetch(
-          `${RECON_ORCHESTRATOR_URL}/${kind}/${id}/stop${stopQuery[kind] ?? ''}`,
-          { method: 'POST' },
-        ),
-      ),
-      // TruffleHog is run-keyed (one run per source, several in parallel), so a
-      // single project-level stop would leave every source but one running with
-      // its project row already gone. stop-all loops the nested state dict.
-      orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/trufflehog/${id}/stop-all`, { method: 'POST' }),
-      stopPartialRecons(id),
-    ])
-
-    // Archive the authorization records BEFORE the delete. Every other Project
-    // child cascades; these do not, because the record of what authorized a
-    // project is the thing an incident review needs most and deleting the
-    // project is exactly when it stops being recoverable. The foreign key is
-    // `Restrict`, so a failed archive fails the delete rather than quietly
-    // taking the records with it.
-    const archived = await archiveProjectAuthorizations(id)
-    if (archived.error) {
-      return NextResponse.json(
-        {
-          error:
-            'Could not archive this project\'s engagement authorization records, so it was ' +
-            'not deleted. The record of what authorized an engagement must outlive the ' +
-            'engagement. Retry, or contact an administrator.',
-          code: 'authorization_archive_failed',
-        },
-        { status: 500 }
-      )
-    }
-    if (archived.archived > 0) {
-      console.log(`[project-delete] archived ${archived.archived} authorization record(s) for ${id}`)
-    }
-
-    // 1. Delete project from PostgreSQL (cascades captured_http_transactions +
-    //    job_queue rows)
-    await prisma.project.delete({
-      where: { id }
-    })
-
-    // 1a. The agent workspace (only once the row is gone: the agent acts only on
-    //     a project the web app answers 404 for).
-    await purgeProjectWorkspace(id)
-
-    // 1b. GC captured body blobs this project exclusively owned (ref-counted).
-    if (capturedBodyRefs.length > 0) {
-      try {
-        const { gcOrphanBodies } = await import('@/lib/captureBodies')
-        const gc = await gcOrphanBodies(capturedBodyRefs)
-        if (gc.deleted > 0) console.log(`[project-delete] GC'd ${gc.deleted} captured body blobs for project ${id}`)
-      } catch (e) {
-        console.warn('Captured body-blob GC failed on project delete:', e)
+    // The teardown's tenant is the owner the access check read, not the caller:
+    // in log-only BOLA mode a non-owner gets this far.
+    const result = await teardownProject(
+      { id, userId: access?.project.userId ?? eff.userId },
+      { actorUserId: eff.userId },
+    )
+    if (!result.ok) {
+      if (result.failedStep === 'archive_authorizations') {
+        return NextResponse.json(
+          {
+            error:
+              'Could not archive this project\'s engagement authorization records, so it was ' +
+              'not deleted. The record of what authorized an engagement must outlive the ' +
+              'engagement. Retry, or contact an administrator.',
+            code: 'authorization_archive_failed',
+          },
+          { status: 500 }
+        )
       }
-    }
-
-    // 2. Delete all output JSON files via orchestrator (it has write permissions)
-    //    This covers: recon, GVM, and GitHub Secret Hunt JSON files
-    try {
-      const orchestratorResponse = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/project/${id}/files`, {
-        method: 'DELETE',
-      })
-      if (orchestratorResponse.ok) {
-        const result = await orchestratorResponse.json()
-        console.log(`Orchestrator deleted files:`, result.deleted)
-      } else {
-        console.warn(`Orchestrator failed to delete files: ${orchestratorResponse.status}`)
-      }
-    } catch (orchestratorError) {
-      console.warn(`Failed to call orchestrator for file deletion: ${orchestratorError}`)
-
-      // Fallback: try to delete locally (may fail in Docker due to read-only mounts)
-      const filesToDelete = [
-        { path: path.join(RECON_OUTPUT_PATH, `recon_${id}.json`), name: 'recon' },
-        ...(await batchGroupFiles(RECON_OUTPUT_PATH, id)).map(p => ({ path: p, name: 'recon group' })),
-        { path: path.join(GVM_OUTPUT_PATH, `gvm_${id}.json`), name: 'GVM' },
-        { path: path.join(GITHUB_HUNT_OUTPUT_PATH, `github_hunt_${id}.json`), name: 'GitHub hunt' },
-      ]
-      for (const file of filesToDelete) {
-        if (existsSync(file.path)) {
-          try {
-            await unlink(file.path)
-            console.log(`Deleted ${file.name} file locally: ${file.path}`)
-          } catch (err) {
-            console.warn(`Failed to delete ${file.name} file locally: ${err}`)
-          }
-        }
-      }
-    }
-
-    // 3. Delete all Neo4j nodes for this project
-    try {
-      const session = getGraphSession()
-      try {
-        // Via the shared helper: a raw `MATCH (n {project_id})` here also swept
-        // the global CVE/CWE/CAPEC nodes, which are shared with every other
-        // project that found them, taking those projects' links down too.
-        await clearProjectGraph(session, id)
-        console.log(`Deleted Neo4j nodes for project: ${id}`)
-      } finally {
-        await session.close()
-      }
-    } catch (neo4jError) {
-      // Log but don't fail the request if Neo4j cleanup fails
-      console.warn(`Failed to delete Neo4j data: ${neo4jError}`)
+      throw result.error
     }
 
     return NextResponse.json({ success: true })
