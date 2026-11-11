@@ -29,7 +29,9 @@ Properties written on each Vulnerability:
     cert_issuer            certificate issuer (Phase 3 cert signals)
     cert_subject_cn        certificate subject CN
     cert_name_match        the cert names this host (proves legit customer)
-    cert_provider          provider identified from the cert (CNAME-independent)
+    cert_provider          the edge a cert SAN names, else the issuer's family;
+                           recorded only: an issuer never names or contradicts
+                           takeover_provider (it says who signed, not who serves)
     cert_expired, cert_self_signed, cert_mismatched   cert verdict booleans
 """
 
