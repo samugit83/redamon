@@ -114,3 +114,8 @@ p1-tunnel-member-full-save	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	
 p1-tunnel-change-admin	1.10	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host	req:HD-06
 p1-tunnel-hint-member	1.10	member_b	GET	/api/users/${MEMBER_B_ID}/settings	-	200;has="canManageTunnels":false	req:HD-06 req:UI-03
 p1-tunnel-hint-admin	1.10	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":true	req:HD-06 req:UI-03
+#
+# ---- step 1.6 review fixes ----
+# The settings row also carries the MCP servers JSON: the admin's masked read of /settings
+# returns the seeded server with its bearer masked (the /mcp read is p1-admin-reads-other-masked).
+p1-admin-reads-other-settings-masked	1.6	admin_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=rbac-fake-server;has=••••••••0001;lacks=${A_MCP_BEARER};lacks=${A_TAVILY_SECRET}	req:HD-23

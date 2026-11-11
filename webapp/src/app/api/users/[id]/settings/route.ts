@@ -9,6 +9,8 @@ import { requireEffectiveUser } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import { featureModelsMap, parseFeatureModelsPatch, type FeatureModelsPatch } from '@/lib/featureModels'
 import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
+import { maskMcpServersForApi } from '@/lib/mcp/mask'
+import type { MCPServer } from '@/lib/mcp/schema'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { normalizeGithubHost, secretReentryResponse, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { loadPrincipal } from '@/lib/authz/principal'
@@ -139,6 +141,15 @@ function maskSecrets<T extends Record<string, unknown>>(row: T): T {
   const out: Record<string, unknown> = { ...row }
   for (const f of SECRET_FIELDS) {
     if (typeof out[f] === 'string') out[f] = maskSecret(out[f] as string)
+  }
+  // The row also holds the MCP servers: their bearer tokens, header values and stdio
+  // env values are masked as /api/users/[id]/mcp masks them (HD-23). A value that is
+  // not a list of servers cannot be masked field by field, so it is not returned.
+  if ('mcpServers' in out) {
+    const servers = Array.isArray(out.mcpServers) ? out.mcpServers : []
+    out.mcpServers = maskMcpServersForApi(
+      servers.filter((s): s is MCPServer => !!s && typeof s === 'object' && !Array.isArray(s)),
+    )
   }
   return out as T
 }
