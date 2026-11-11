@@ -1641,7 +1641,8 @@ async def close_open_sockets(body: WsCloseRequest):
     """Close the open sockets of `kinds` that belong to a user and/or a project.
 
     A ticket is checked only when its socket opens, so ending someone's access
-    must also end the sockets they hold open; no webapp route calls this yet.
+    must also end the sockets they hold open; the webapp calls this when an
+    admin removes a member's Kali terminal grant.
     Closing an `agent` socket also stops its run. A user or a project is
     required, so a caller's bug never closes every socket of the instance.
 
