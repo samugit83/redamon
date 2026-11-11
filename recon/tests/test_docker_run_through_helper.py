@@ -40,7 +40,6 @@ NOT_YET_MIGRATED = {
     ("helpers/docker_helpers.py", "ensure_templates_volume"): 2,
 
     # Unnamed: a timeout kills only the docker CLI.
-    ("helpers/resource_enum/kiterunner_helpers.py", "detect_kiterunner_methods"): 2,
     # The alpine `rm` that cleans nuclei's root-owned temp files, with no timeout.
     ("main_recon_modules/vuln_scan.py", "run_vuln_scan"): 1,
 }

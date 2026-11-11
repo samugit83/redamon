@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 from recon.helpers import request_pacer
+from recon.helpers.docker_helpers import run_tool_container
 from recon.helpers.subprocess_helpers import run_with_heartbeat
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -596,6 +597,28 @@ def merge_kiterunner_into_by_base_url(
     return by_base_url, stats
 
 
+_METHOD_PROBE_TOOL = "kiterunner-methods"
+_METHOD_PROBE_TIMEOUT_S = 300
+
+
+def _note_method_probe_cut(probe: str) -> None:
+    """A method probe that hit its deadline: its container was stopped, and the
+    endpoints it had not answered for keep the method Kiterunner found. A gap
+    entry only: method detection writes no findings, so nothing to keep from the
+    prune. Never raises.
+    """
+    print(f"[!][Kiterunner] {probe} probe timed out after {_METHOD_PROBE_TIMEOUT_S}s -- "
+          f"stopped its container, reading what it wrote")
+    try:
+        from recon.helpers import circuit_breaker as _cb
+        _cb.note_degraded("resource_enum", entries=[{
+            "source": "kiterunner",
+            "reason": f"{probe} method probe timed out after {_METHOD_PROBE_TIMEOUT_S}s",
+            "skipped": 0}])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def detect_kiterunner_methods(
     kr_results: List[Dict],
     verify_docker_image: str,
@@ -698,7 +721,9 @@ def detect_kiterunner_methods(
                 cmd.extend(["-proxy", _cap_url, "-H", f"X-Redamon-Ctx: {_cap_token}"])
 
             try:
-                subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if run_tool_container(cmd, tool=_METHOD_PROBE_TOOL,
+                                      timeout=_METHOD_PROBE_TIMEOUT_S).timed_out:
+                    _note_method_probe_cut("OPTIONS")
 
                 if output_file.exists():
                     with open(output_file, 'r') as f:
@@ -735,8 +760,6 @@ def detect_kiterunner_methods(
                             except json.JSONDecodeError:
                                 continue
 
-            except subprocess.TimeoutExpired:
-                print("[!][Kiterunner] OPTIONS probe timeout")
             except Exception as e:
                 print(f"[!][Kiterunner] OPTIONS probe error: {e}")
 
@@ -775,7 +798,9 @@ def detect_kiterunner_methods(
                     cmd.extend(["-proxy", _cap_url, "-H", f"X-Redamon-Ctx: {_cap_token}"])
 
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    if run_tool_container(cmd, tool=_METHOD_PROBE_TOOL,
+                                          timeout=_METHOD_PROBE_TIMEOUT_S).timed_out:
+                        _note_method_probe_cut(method)
 
                     if output_file.exists():
                         with open(output_file, 'r') as f:
@@ -799,8 +824,6 @@ def detect_kiterunner_methods(
                                 except json.JSONDecodeError:
                                     continue
 
-                except subprocess.TimeoutExpired:
-                    print(f"[!][Kiterunner] {method} probe timeout")
                 except Exception as e:
                     print(f"[!][Kiterunner] {method} probe error: {e}")
     finally:
