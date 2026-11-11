@@ -50,7 +50,11 @@ from recon.helpers import (
 )
 from recon.helpers import request_pacer
 from recon.helpers.docker_helpers import run_tool_container, tool_container_name
-from recon.helpers.takeover_helpers import is_placeholder_provider, same_provider_family
+from recon.helpers.takeover_helpers import (
+    is_placeholder_provider,
+    provider_from_sans,
+    same_provider_family,
+)
 
 _FINDING_SOURCE = "takeover_scan"
 
@@ -385,20 +389,24 @@ def run_subdomain_takeover(
                 cert_prov = provider_from_cert(cert.get("issuer"), sans)
                 if cert_prov:
                     n["cert_provider"] = cert_prov
+                # Only a SAN on the provider's own edge domain says which edge
+                # serves the host. An issuer says who signed the certificate
+                # (Google Trust Services also signs Cloudflare's; ACM and
+                # Cloudflare sign customers' own names), so it is recorded
+                # above and never names, nor contradicts, the provider.
+                edge_prov = provider_from_sans(sans)
+                if edge_prov:
                     current = (n.get("takeover_provider") or "").lower()
                     if is_placeholder_provider(current):
-                        n["takeover_provider"] = cert_prov
-                    elif not same_provider_family(cert_prov, current):
+                        n["takeover_provider"] = edge_prov
+                    elif not same_provider_family(edge_prov, current):
                         # Same rule as the CNAME check: the edge's default
                         # certificate (*.azurewebsites.net) corroborates a
                         # generic `azure` template, it does not contradict it.
                         n["cert_provider_mismatch"] = True
-                    # The edge presents its own default cert (a SAN on the
-                    # provider's edge domain) and does NOT name this host ->
-                    # claimable. An issuer alone (ACM, Cloudflare, Google Trust
-                    # Services) also signs customers' certificates: one naming
-                    # other names is a customer's, not the edge's default.
-                    if not n["cert_name_match"] and provider_from_cert(None, sans):
+                    # The edge presents its own default cert and does NOT
+                    # name this host -> claimable.
+                    if not n["cert_name_match"]:
                         n["cert_provider_default"] = True
 
         # --------------------------------------------------------------

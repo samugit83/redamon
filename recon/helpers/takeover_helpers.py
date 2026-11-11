@@ -202,14 +202,15 @@ def provider_from_cname(cname: Optional[str]) -> Optional[str]:
     return best_match[1]
 
 
-# Issuer-string fragments that identify the SaaS edge that issued the cert. A
-# THIRD independent provider signal (alongside CNAME and tool fingerprint) that
-# works even when the host has NO CNAME at all.
+# Issuer-string fragments naming who signed a certificate. That is not the edge
+# serving the host: Google Trust Services also signs Cloudflare's certificates,
+# Amazon (ACM) and Cloudflare sign their customers' own names. So the issuer is
+# recorded (cert_provider) but never names a finding's provider and never
+# disagrees with one; only a SAN on the edge's own domain does (provider_from_sans).
 _ISSUER_PROVIDER_MARKERS: dict[str, str] = {
     "cloudflare": "cloudflare",
-    # ACM issues for every AWS service and for customers' own names, so the
-    # issuer names only the family: same_provider_family matches it with any
-    # aws-* provider, and it is not auto-exploitable as aws-s3 is.
+    # ACM signs for every AWS service and for customers' own names: the
+    # issuer names the AWS family, never S3.
     "amazon": "aws",
     "google trust services": "google",
     "github": "github-pages",
@@ -221,20 +222,28 @@ _ISSUER_PROVIDER_MARKERS: dict[str, str] = {
 }
 
 
-def provider_from_cert(issuer: Optional[str], sans: Optional[list]) -> Optional[str]:
-    """Provider identity from a certificate's issuer + SAN list.
-
-    Works with NO CNAME. First tries the SAN entries against the same
-    PROVIDER_FROM_SIGNAL suffix table provider_from_cname uses (a provider's
-    default cert names its own edge domain in the SAN), then falls back to
-    issuer-string markers. Returns a canonical provider slug or None.
-    """
+def provider_from_sans(sans: Optional[list]) -> Optional[str]:
+    """The provider whose own edge domain a certificate names in a SAN (a
+    provider's default certificate does), by the suffix table
+    provider_from_cname uses. Works with NO CNAME. A slug or None."""
     for san in sans or []:
         if not isinstance(san, str):
             continue
         prov = provider_from_cname(san)
         if prov:
             return prov
+    return None
+
+
+def provider_from_cert(issuer: Optional[str], sans: Optional[list]) -> Optional[str]:
+    """What a certificate names: the edge from a SAN (provider_from_sans),
+    else who signed it, from issuer-string markers. Only the SAN half may name
+    or contradict a finding's provider; see _ISSUER_PROVIDER_MARKERS.
+    Returns a canonical provider slug or None.
+    """
+    prov = provider_from_sans(sans)
+    if prov:
+        return prov
     lowered = (issuer or "").lower()
     for marker, provider in _ISSUER_PROVIDER_MARKERS.items():
         if marker in lowered:
@@ -768,9 +777,9 @@ def score_finding(
         -40  ai_waf_likely (the AI classifier identified the response as a
              WAF block page disguised as a third-party SaaS unclaimed page —
              strong signal of a fingerprint collision)
-        -25  cert_provider_mismatch (cert issuer/SAN identifies a provider that
-             disagrees with the CNAME-derived one — independent fingerprint
-             evidence, no CNAME needed)
+        -25  cert_provider_mismatch (a cert SAN on a provider's edge domain
+             disagrees with the finding's provider — independent fingerprint
+             evidence, no CNAME needed; the issuer alone never sets it)
         -35  cert_name_match AND cert clean (not expired/self_signed/mismatched):
              a valid cert naming THIS host proves the SaaS edge serves the legit
              customer. Stronger than the DNS-only cname_alive -30, and unlike it

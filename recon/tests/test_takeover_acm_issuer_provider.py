@@ -7,7 +7,8 @@ customers' own names, so the issuer says "AWS" and nothing finer. Mapped to
 +20 as auto-exploitable, exempt from the live-CNAME -30, and a -25
 cert_provider_mismatch on a CloudFront or Elastic Beanstalk finding, which are
 AWS too. The family slug `aws` is the same family as every `aws-*` provider
-(same_provider_family) and is not auto-exploitable.
+(same_provider_family) and is not auto-exploitable. Since S-27 the issuer is
+only recorded as cert_provider: it never names the finding's provider.
 
 Scanners and DNS probes are mocked; the certificate is an http_probe one. The
 full pipeline and partial recon share run_subdomain_takeover.
@@ -73,15 +74,18 @@ def test_an_acm_certificate_does_not_make_an_unknown_finding_an_s3_one(monkeypat
     # An ELB CNAME names no provider in the table, so only the certificate does.
     f = _run(monkeypatch, cname="app-123.us-east-1.elb.amazonaws.com",
              cert_san="www.example.test")
-    assert f["takeover_provider"] == "aws", \
-        "an ACM certificate made the finding an S3 one (+20 auto-exploitable)"
+    # The issuer alone names no provider at all (S-27): the finding keeps the
+    # tool's placeholder, and the certificate records the AWS family.
+    assert f["takeover_provider"] == "unknown", \
+        "an ACM certificate named the finding's provider"
     assert f["takeover_provider"] not in th.AUTO_EXPLOITABLE_PROVIDERS
     assert f["cert_provider"] == "aws"
-    # Subjack +25, CNAME +10, live CNAME -30 (no auto-exploitable exemption);
-    # no default-cert bonus: an issuer-only ACM certificate is a customer's (S-25).
-    assert f["confidence"] == 5
+    # Subjack +25, CNAME +10, live CNAME -30 (no auto-exploitable exemption),
+    # unknown provider -10, floor 0; no default-cert bonus: an issuer-only ACM
+    # certificate is a customer's (S-25).
+    assert f["confidence"] == 0
     assert f["verdict"] == "manual_review"
-    assert f["id"] == th.finding_id(HOST, "aws", "cname")
+    assert f["id"] == th.finding_id(HOST, "unknown", "cname")
 
 
 def test_an_acm_certificate_corroborates_a_cloudfront_finding(monkeypatch):

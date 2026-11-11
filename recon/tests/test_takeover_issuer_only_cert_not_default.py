@@ -10,9 +10,10 @@ issue their customers' certificates too, so an issuer-only certificate that
 names other names than this host is a customer's certificate, not the edge's
 default: it is no evidence that the name is claimable.
 
-The provider (and with it the finding id) still comes from the issuer: only
-the bonus changes. Scanners and DNS probes are mocked; the certificate is an
-http_probe one. The full pipeline and partial recon share run_subdomain_takeover.
+Since S-27 the issuer does not name the finding's provider either (it is only
+recorded as cert_provider), so the finding keeps the tool's placeholder.
+Scanners and DNS probes are mocked; the certificate is an http_probe one. The
+full pipeline and partial recon share run_subdomain_takeover.
 """
 from __future__ import annotations
 
@@ -75,15 +76,15 @@ def test_a_customer_certificate_for_other_names_is_not_the_edges_default(
         monkeypatch, issuer, provider, cname):
     f = _run(monkeypatch, cname=cname, san=["www.example.org", "shop.example.org"],
              issuer=issuer)
-    assert f["cert_provider"] == provider and f["takeover_provider"] == provider
+    assert f["cert_provider"] == provider and f["takeover_provider"] == "unknown"
     assert f["cert_name_match"] is False
     assert not f.get("cert_provider_default"), \
         "an issuer-only certificate naming other names scored as the edge's default (+20)"
-    # Subjack +25, CNAME +10, live CNAME of a provider that is not auto-exploitable -30.
-    assert f["confidence"] == 5
+    # Subjack +25, CNAME +10, live CNAME of a provider that is not
+    # auto-exploitable -30, unknown provider -10, floor 0.
+    assert f["confidence"] == 0
     assert f["verdict"] == "manual_review"
-    # The provider still comes from the issuer, so the finding id does not move.
-    assert f["id"] == th.finding_id(HOST, provider, "cname")
+    assert f["id"] == th.finding_id(HOST, "unknown", "cname")
 
 
 def test_control_the_edges_own_certificate_is_still_its_default(monkeypatch):
