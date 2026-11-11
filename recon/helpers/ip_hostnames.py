@@ -42,6 +42,11 @@ LIVE_SOURCES = frozenset({
     "ptr", "tlsx_san", "tlsx_cn", "httpx_san", "httpx_cn", "attribution_cert", "http_redirect",
 })
 
+#: The source prefix of a name record_filter's passive search of the filter
+#: domains found (recon/helpers/ip_hostnames_expand.py): seen on no target IP,
+#: so its current DNS answer alone can make it a target.
+PASSIVE_PREFIX = "passive_"
+
 #: How the per-IP log line groups the sources. Index certificates (Censys,
 #: FOFA) stay with their index: "cert" means a certificate served this run.
 _FAMILY = {
@@ -308,18 +313,39 @@ def collect(combined_result: dict) -> dict:
     return out
 
 
-def _summarise(name: str, seen_on: dict, org: Optional[str]) -> dict:
+def _summarise(name: str, seen_on: dict, org: Optional[str], passive: Iterable[str] = ()) -> dict:
     firsts = [e["first_seen"] for e in seen_on.values() if e["first_seen"]]
     lasts = [e["last_seen"] for e in seen_on.values() if e["last_seen"]]
     return {
         "ips_seen": list(seen_on),
-        "sources": sorted({s for e in seen_on.values() for s in e["sources"]}),
+        "sources": sorted({s for e in seen_on.values() for s in e["sources"]} | set(passive)),
         "first_seen": min(firsts) if firsts else None,
         "last_seen": max(lasts) if lasts else None,
         "cert_covers": any(e["cert_covers"] for e in seen_on.values()),
         "org_domain": org,
         "seen_on": seen_on,
     }
+
+
+def _passive(candidate: dict) -> list:
+    return [s for s in candidate["sources"] if s.startswith(PASSIVE_PREFIX)]
+
+
+def add_passive(candidates: dict, names: dict) -> None:
+    """Add record_filter's passive-search names ({name: its passive_<src>
+    sources}) to the collected candidates. A name no target IP showed gets no
+    ips_seen: only its current DNS answer, checked by the same rule, can make
+    it a target. A name a target IP showed keeps that evidence."""
+    from recon.helpers.public_suffix import org_domain
+    for raw, sources in (names or {}).items():
+        name = candidate_name(raw)
+        tags = [s for s in sources or () if isinstance(s, str) and s.startswith(PASSIVE_PREFIX)]
+        if name is None or not tags:
+            continue
+        if name in candidates:
+            candidates[name]["sources"] = sorted(set(candidates[name]["sources"]) | set(tags))
+        else:
+            candidates[name] = _summarise(name, {}, org_domain(name), tags)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +388,9 @@ def bound(candidates: dict) -> tuple[dict, dict, dict, int]:
             del kept_on[name][ip]
             per_ip_cut[ip] = per_ip_cut.get(ip, 0) + 1
 
-    survivors = [n for n, seen in kept_on.items() if seen]
+    # A name the passive search found stands without a target IP; it ranks
+    # after every observed name when the per-run limit cuts.
+    survivors = [n for n, seen in kept_on.items() if seen or _passive(candidates[n])]
     dropped = len(candidates) - len(survivors)
     ranked = _ranked(survivors, lambda n: list(kept_on[n].values()))
     run_cut: dict[str, int] = {}
@@ -374,7 +402,7 @@ def bound(candidates: dict) -> tuple[dict, dict, dict, int]:
     kept = {}
     for name in sorted(ranked[:MAX_CANDIDATES_PER_RUN]):
         cand = candidates[name]
-        kept[name] = _summarise(name, kept_on[name], cand["org_domain"])
+        kept[name] = _summarise(name, kept_on[name], cand["org_domain"], _passive(cand))
     return kept, per_ip_cut, run_cut, dropped
 
 
@@ -485,11 +513,13 @@ def _workers(settings: dict) -> int:
 
 
 def _evaluate(candidates: dict, combined_result: dict, settings: dict, mode: str, edge, failed,
-              resolve: Optional[Callable[[str], Any]]):
+              resolve: Optional[Callable[[str], Any]], wildcard_zone: Iterable[str] = ()):
     """The rule over the run's candidates; returns (Evaluation, TargetSet).
 
     Recording modes resolve nothing (the rule stops at check 4); the
-    guardrail and the RoE still come first.
+    guardrail and the RoE still come first. `wildcard_zone` is check 15's
+    set: the passive-search names the wildcard-DNS control dropped (empty
+    when the search did not run).
     """
     from recon.helpers.roe_scope import _is_roe_excluded
     from recon.helpers.target_admission import target_set
@@ -500,7 +530,7 @@ def _evaluate(candidates: dict, combined_result: dict, settings: dict, mode: str
     common = dict(targets=targets, shared_edge=edge, attribution_failed=failed,
                   hard_blocked=lambda n: bool(is_hard_blocked(n)[0]),
                   roe_excluded=lambda n: bool(_is_roe_excluded(n, excluded)),
-                  wildcard_zone=set())
+                  wildcard_zone=set(wildcard_zone))
     if mode not in SELECTING:
         return evaluate(evidence, mode=mode, include=[], exclude=[], resolve=lambda _n: (),
                         dns_enabled=False, resolver_up=False, cap=0, **common), targets
@@ -653,22 +683,41 @@ def _reasons_text(counts: dict) -> str:
     return ", ".join(f"{counts[k]} {k}" for k in sorted(counts, key=lambda k: (-counts[k], k)))
 
 
-def _mode_line(mode: str, settings: dict) -> str:
+def _mode_line(mode: str, settings: dict, passive: bool = False) -> str:
     def count(key):
         value = settings.get(key)
         return len(value) if isinstance(value, list) else "?"
 
     if mode == "record_filter":
+        expansion = ""
+        if passive:
+            expansion = ", passive expansion on"
+        elif settings.get("IP_HOSTNAME_PASSIVE_EXPAND") is False:
+            expansion = ", passive expansion off"
         return (f"[*][IpNames] Mode: record_filter (include {count('IP_HOSTNAME_INCLUDE')}, "
-                f"exclude {count('IP_HOSTNAME_EXCLUDE')})")
+                f"exclude {count('IP_HOSTNAME_EXCLUDE')}{expansion})")
     if mode == "scan_all":
         return "[*][IpNames] Mode: scan_all (shared CDN edges never scanned)"
     return f"[*][IpNames] Mode: {mode}"
 
 
+def _join_passive(passive_search: Any, candidates: dict, mode: str):
+    """Join record_filter's passive search (ip_hostnames_expand.start) and add
+    its names to the candidates. Returns its result, or None when there is
+    none to use. A search handed to any other mode is joined and dropped."""
+    if passive_search is None:
+        return None
+    found = passive_search.join()
+    if mode != "record_filter":
+        return None
+    add_passive(candidates, found.names)
+    return found
+
+
 def hostname_step(combined_result: dict, settings: Optional[dict], *,
                   resolve: Optional[Callable[[str], Any]] = None,
-                  late_scan: Optional[Callable[[dict, list, dict, Any], Optional[dict]]] = None) -> Optional[dict]:
+                  late_scan: Optional[Callable[[dict, list, dict, Any], Optional[dict]]] = None,
+                  passive_search: Any = None) -> Optional[dict]:
     """Collect the hostnames seen on the target IPs, select, scan and record.
 
     Writes combined_result["ip_hostnames"] and returns it; None outside IP
@@ -680,6 +729,8 @@ def hostname_step(combined_result: dict, settings: Optional[dict], *,
     names on their pinned answer and returns the subset recon dict the graph
     is given (late_names.scan_late_names by default); the caller writes it
     after this step, which by then has withdrawn every moved name from it.
+    `passive_search` is the running ip_hostnames_expand.PassiveSearch, joined
+    here: its names join the candidates before the volume bound.
     """
     if not is_ip_mode(combined_result):
         return None
@@ -691,7 +742,7 @@ def hostname_step(combined_result: dict, settings: Optional[dict], *,
         print("[-][IpNames] IP only: hostname discovery off")
         return block
 
-    print(_mode_line(mode, settings))
+    print(_mode_line(mode, settings, passive_search is not None))
     rule_mode = mode
     if mode == "scan_all" and settings.get("IP_HOSTNAME_SCAN_ALL_CONFIRMED") is not True:
         # The settings loader refuses the run first; this is the hook's own
@@ -699,9 +750,15 @@ def hostname_step(combined_result: dict, settings: Optional[dict], *,
         print("[!][IpNames] scan_all is not confirmed: every name is recorded, none is scanned")
         rule_mode = "record_only"
 
-    kept, per_ip_cut, run_cut, dropped = bound(collect(combined_result))
+    candidates = collect(combined_result)
+    expansion = _join_passive(passive_search, candidates, rule_mode)
+    kept, per_ip_cut, run_cut, dropped = bound(candidates)
     edge, failed = _attribution_sets(combined_result)
-    evaluation, target_ips = _evaluate(kept, combined_result, settings, rule_mode, edge, failed, resolve)
+    # Check 15 refuses a name only the search found that a wildcard alone
+    # answers. A name a target IP showed was observed there: turning the
+    # search on must not cost it the scan it gets without it.
+    wildcard = {n for n in (expansion.wildcard_zone if expansion else ()) if n in kept and not kept[n]["ips_seen"]}
+    evaluation, target_ips = _evaluate(kept, combined_result, settings, rule_mode, edge, failed, resolve, wildcard)
     for name, cand in kept.items():
         cand["on_shared_edge"] = None if edge is None else any(
             canonical_ip(ip) in edge for ip in cand["ips_seen"])
@@ -744,8 +801,13 @@ def hostname_step(combined_result: dict, settings: Optional[dict], *,
                "reasons": _counted(c["reason"] for c in kept.values())}
     if rule_mode in SELECTING:
         summary.update(probe)
-    total = (f"[+][IpNames] Total: {summary['found']} found on {summary['ips_with_names']} of "
-             f"{len(targets)} IPs → {scanned_total} scanned, {summary['recorded']} recorded")
+    if expansion is not None:
+        summary["expansion"] = expansion.summary()
+    passive_only = sum(1 for c in kept.values() if not c["ips_seen"])
+    total = (f"[+][IpNames] Total: {summary['found']} found"
+             + (f" ({passive_only} only by the passive search)" if passive_only else "")
+             + f" on {summary['ips_with_names']} of {len(targets)} IPs → {scanned_total} scanned, "
+             f"{summary['recorded']} recorded")
     if rule_mode in SELECTING and evaluation.selected:
         total += f"; {probe['probed']} probed by httpx, {probe['live']} live"
     print(total + (f"; {dropped} not kept (volume limit)" if dropped else ""))

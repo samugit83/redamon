@@ -357,7 +357,7 @@ def test_a_hook_failure_is_a_phase_error_never_a_crash(rm, capsys):
 def test_the_step_sits_after_the_netlas_write_and_before_the_active_scan_gate(rm):
     body = inspect.getsource(rm.run_ip_recon)
     netlas = body.index("_write_netlas(combined_result)")
-    hook = body.index("_ip_hostnames_step(combined_result, settings, output_file)")
+    hook = body.index("_ip_hostnames_step(combined_result, settings, output_file, passive_search=passive_search)")
     gate = body.index("should_skip_active_scans(combined_result)")
     assert netlas < hook < gate
     # Pipeline progress headers are GROUP lines only; the hook prints none.

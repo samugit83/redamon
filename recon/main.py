@@ -1338,11 +1338,13 @@ def _run_ip_attribution(combined_result: dict, settings: dict, output_file) -> N
         combined_result["metadata"].setdefault("phase_errors", {})["ip_attribution"] = str(e)
 
 
-def _ip_hostnames_step(combined_result: dict, settings: dict, output_file) -> None:
+def _ip_hostnames_step(combined_result: dict, settings: dict, output_file, passive_search=None) -> None:
     """IP mode: collect the hostnames seen on the target IPs, scan the ones the
     hostname rule selects (M4/M1) and record the rest
     (recon/helpers/ip_hostnames.py). Never raises: a failure records no name
-    and the run goes on with its addresses.
+    and the run goes on with its addresses. `passive_search` is M4's running
+    search of the filter domains (recon/helpers/ip_hostnames_expand.py),
+    joined there.
 
     The writer is queued in every mode, ip_only included, because it also
     stamps the run's hostname mode on the mock root. The selected names' pages
@@ -1361,7 +1363,8 @@ def _ip_hostnames_step(combined_result: dict, settings: dict, output_file) -> No
         return late["sub"]
 
     try:
-        block = ip_hostnames.hostname_step(combined_result, settings, late_scan=late_scan)
+        block = ip_hostnames.hostname_step(combined_result, settings, late_scan=late_scan,
+                                           passive_search=passive_search)
     except Exception as e:  # noqa: BLE001 - the addresses are the run; names are extra
         print(f"[!][IpNames] Hostname recording failed ({type(e).__name__}): no name is recorded this run")
         combined_result["metadata"].setdefault("phase_errors", {})["ip_hostnames"] = str(e)
@@ -1512,6 +1515,12 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     # RoE: filter out excluded hosts (supports exact match + CIDR)
     expanded_ips = _filter_roe_excluded(expanded_ips, settings, label="IP")
+
+    # record_filter's passive search of the filter domains asks third-party
+    # indexes only, never a target, so it runs beside PTR, WHOIS and the scans.
+    # It gets the settings alone and the hostnames hook joins it.
+    from recon.helpers import ip_hostnames_expand
+    passive_search = ip_hostnames_expand.start(settings)
 
     # Step 2: Reverse DNS for each IP
     from recon.helpers.ip_hostnames import hostname_mode
@@ -1891,7 +1900,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
     _write_netlas(combined_result)
     # Every name source has answered (PTR, certificates, redirects, the OSINT
     # indexes, the IP attribution's default certificate): collect and record.
-    _ip_hostnames_step(combined_result, settings, output_file)
+    _ip_hostnames_step(combined_result, settings, output_file, passive_search=passive_search)
 
     # Check if active scans should be skipped
     skip_active_scans, skip_reason = should_skip_active_scans(combined_result)
