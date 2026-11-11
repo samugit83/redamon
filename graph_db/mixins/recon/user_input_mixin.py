@@ -3,10 +3,20 @@
 Part of the recon_mixin.py split. Methods pasted unchanged.
 """
 import json
-from datetime import datetime
 
 from graph_db.cpe_resolver import _is_ip_address
 from graph_db.mixins.recon.scope import _normalize_host, org_for_scan_root, root_for_host
+
+# The UserInput ids create_user_input_node made in this process. A partial run
+# is one container process, so these are the run's own nodes: the only
+# still-running ones its end-of-run orphan cleanup may delete, since another
+# run's node may be waiting for that run's results (httpx makes its node before
+# it scans).
+_CREATED_THIS_RUN: set = set()
+
+
+def user_inputs_created_this_run() -> frozenset:
+    return frozenset(_CREATED_THIS_RUN)
 
 
 def _user_input_root(domain, values: list) -> str:
@@ -79,6 +89,7 @@ class UserInputMixin:
                 user_id=user_id,
                 project_id=project_id,
             )
+        _CREATED_THIS_RUN.add(node_id)
 
         # A missing root Domain is created through ensure_root_domains, the only
         # root-Domain MERGE outside the run's own domain write
@@ -98,23 +109,32 @@ class UserInputMixin:
 
         return node_id
 
-    def update_user_input_status(self, user_input_id: str, status: str, stats: dict = None) -> None:
-        """Update the status and stats of a UserInput node."""
-        with self.driver.session() as session:
-            props = {"status": status, "updated_at": datetime.now().isoformat()}
-            if status == "completed":
-                props["completed_at"] = datetime.now().isoformat()
-            if stats:
-                props["stats"] = json.dumps(stats)
+    def update_user_input_status(self, user_input_id: str, status: str, stats: dict = None, *,
+                                 user_id: str, project_id: str) -> bool:
+        """Set a UserInput node's status ("completed" or "error") and stats.
 
-            session.run(
-                """
-                MATCH (ui:UserInput {id: $id, user_id: $props.user_id,
-                                     project_id: $props.project_id})
-                SET ui += $props
+        The node is matched on its key, {id, user_id, project_id}: a UserInput
+        id alone does not name one project's node. Returns whether the node
+        was found; a miss is printed, since the run's record then stays
+        "running".
+        """
+        props = {"status": status}
+        if stats:
+            props["stats"] = json.dumps(stats, default=str)
+        completed = ", ui.completed_at = datetime()" if status == "completed" else ""
+        with self.driver.session() as session:
+            record = session.run(
+                f"""
+                MATCH (ui:UserInput {{id: $id, user_id: $user_id, project_id: $project_id}})
+                SET ui += $props, ui.updated_at = datetime(){completed}
+                RETURN count(ui) AS matched
                 """,
-                id=user_input_id, props=props,
-            )
+                id=user_input_id, user_id=user_id, project_id=project_id, props=props,
+            ).single()
+        matched = bool(record and record["matched"])
+        if not matched:
+            print(f"[!][graph-db] UserInput {user_input_id} not found; status {status!r} not recorded")
+        return matched
 
     def update_graph_from_partial_discovery(
         self,

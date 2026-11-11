@@ -204,5 +204,5 @@ def _link_user_input(client, roots, user_id, project_id, custom_urls, keys, stat
     client.update_user_input_status(user_input_id, "completed", {
         "endpoints_created": stats.get("endpoints_created", 0),
         "parameters_created": stats.get("parameters_created", 0),
-    })
+    }, user_id=user_id, project_id=project_id)
     print(f"[+][OpenAPI] Linked {len(rows)} declared endpoint(s) to the custom documents via UserInput")

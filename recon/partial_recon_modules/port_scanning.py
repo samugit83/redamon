@@ -354,7 +354,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                                     ui_id=user_input_id, addr=ip_addr, uid=user_id, pid=project_id,
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked {len(user_ip_addrs)} IPs via PRODUCED")
 
@@ -775,7 +775,7 @@ def run_nmap(config: dict) -> None:
                                     ui_id=user_input_id, addr=ip_addr, uid=user_id, pid=project_id,
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked {len(user_ip_addrs)} IPs via PRODUCED")
 

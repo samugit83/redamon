@@ -58,6 +58,21 @@ def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, pro
                 print(f"[+][Partial Recon] Created/merged {len(subdomains)} user subdomain nodes in graph")
 
 
+# Set by update_user_input_status after the run wrote the node's edges, so a
+# node in one of these states will get no further edge.
+_FINISHED_STATUSES = ("completed", "error")
+
+
+def _orphans_no_run_will_link(orphans, own_ids) -> list:
+    """The ids of the orphan UserInputs no live run can still link: this run's
+    own, and those whose run has finished. A 'running' node another run made
+    may be waiting for that run's results (httpx makes its node before it
+    scans), and a node with no status comes from a writer that never sets one,
+    so neither is this run's to judge."""
+    return sorted(row["id"] for row in orphans
+                  if row["id"] in own_ids or row.get("status") in _FINISHED_STATUSES)
+
+
 def _cleanup_orphan_user_inputs(user_id: str, project_id: str) -> int:
     """
     Delete UserInput nodes that have no outgoing relationships (except
@@ -73,28 +88,40 @@ def _cleanup_orphan_user_inputs(user_id: str, project_id: str) -> int:
       - HAS_VULNERABILITY (Nuclei via BaseURL)
       - etc.
 
-    This function checks for ANY outgoing relationship from UserInput.
-    If the node only has the incoming HAS_USER_INPUT and nothing going out,
-    it's an orphan and gets deleted.
+    Up to twelve partial runs of a project run at once, so only the orphans
+    _orphans_no_run_will_link names are deleted, and the delete re-checks the
+    missing edge in case a run linked its node since the read.
 
     Returns:
         Number of orphan UserInput nodes deleted.
     """
     try:
         from graph_db import Neo4jClient
+        from graph_db.mixins.recon.user_input_mixin import user_inputs_created_this_run
         with Neo4jClient() as graph_client:
             if not graph_client.verify_connection():
                 return 0
             with graph_client.driver.session() as session:
-                result = session.run(
+                orphans = [dict(row) for row in session.run(
                     """
                     MATCH (ui:UserInput {user_id: $uid, project_id: $pid})
                     WHERE NOT (ui)-->()
+                    RETURN ui.id AS id, ui.status AS status
+                    """,
+                    uid=user_id, pid=project_id,
+                )]
+                ids = _orphans_no_run_will_link(orphans, user_inputs_created_this_run())
+                if not ids:
+                    return 0
+                result = session.run(
+                    """
+                    MATCH (ui:UserInput {user_id: $uid, project_id: $pid})
+                    WHERE ui.id IN $ids AND NOT (ui)-->()
                     WITH ui, ui.id AS uid_id
                     DETACH DELETE ui
                     RETURN count(uid_id) AS deleted
                     """,
-                    uid=user_id, pid=project_id,
+                    uid=user_id, pid=project_id, ids=ids,
                 )
                 record = result.single()
                 deleted = record["deleted"] if record else 0

@@ -270,7 +270,7 @@ def run_subdomain_discovery(config: dict) -> dict:
             )
 
             if user_input_id:
-                graph_client.update_user_input_status(user_input_id, "completed", stats)
+                graph_client.update_user_input_status(user_input_id, "completed", stats, user_id=user_id, project_id=project_id)
                 print(f"[+][Partial Recon] Created UserInput + linked to discovery results")
 
             print(f"[+][Partial Recon] {domain}: {json.dumps(stats, default=str)}")

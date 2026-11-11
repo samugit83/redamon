@@ -508,7 +508,7 @@ def run_httpx(config: dict) -> None:
                                     version=ip_version, ui_id=user_input_id,
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Linked {len(user_ip_addrs)} IPs via UserInput PRODUCED")
 
@@ -523,7 +523,7 @@ def run_httpx(config: dict) -> None:
                 from graph_db import Neo4jClient
                 with Neo4jClient() as gc:
                     if gc.verify_connection():
-                        gc.update_user_input_status(user_input_id, "error", {"error": str(e)})
+                        gc.update_user_input_status(user_input_id, "error", {"error": str(e)}, user_id=user_id, project_id=project_id)
             except Exception:
                 pass
         raise

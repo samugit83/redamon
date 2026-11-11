@@ -272,7 +272,7 @@ def run_jsrecon(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 

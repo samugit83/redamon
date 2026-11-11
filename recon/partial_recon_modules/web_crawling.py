@@ -291,7 +291,7 @@ def run_katana(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 
@@ -568,7 +568,7 @@ def run_hakrawler(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 
@@ -917,7 +917,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 
@@ -1260,7 +1260,7 @@ def run_ffuf(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 
@@ -1849,7 +1849,7 @@ def run_jsluice(config: dict) -> None:
                                     host=parsed.netloc.split(":")[0],
                                 )
                             graph_client.update_user_input_status(
-                                user_input_id, "completed", stats
+                                user_input_id, "completed", stats, user_id=user_id, project_id=project_id
                             )
                             print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
 

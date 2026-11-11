@@ -168,7 +168,7 @@ def _link_user_urls(graph_client, user_urls, url_attach_to, roots, user_id, proj
             root_orgs=root_orgs(roots),
         )
         linked = graph_client.link_route_exposure_user_input(user_input_id, produced, user_id, project_id)
-        graph_client.update_user_input_status(user_input_id, "completed", {"findings": linked})
+        graph_client.update_user_input_status(user_input_id, "completed", {"findings": linked}, user_id=user_id, project_id=project_id)
         print(f"[*][Partial Recon][RouteExposure] Created UserInput node for {len(user_urls)} URL(s), "
               f"PRODUCED {linked} finding(s)")
     except Exception as e:  # noqa: BLE001
