@@ -508,10 +508,14 @@ TEMPLATES: list[tuple[re.Pattern[str], str]] = [
         "runs INSIDE its phase, and scanModules decides whether the phase runs at all. Setting "
         "one without the other is a silent no-op.",
     ),
+    # The name says only that a clock stops something. Whether it bounds one
+    # request or the whole run, and what a cut run keeps, differ per tool, so a
+    # claim about either belongs in an OVERRIDE or the curated YAML.
     (
         re.compile(r"(Timeout|ScanTimeout|RunTimeout|ValidationTimeout)$"),
-        "How long {tool} may spend before it is abandoned, in {unit}. A run that hits it "
-        "contributes whatever it found so far rather than failing the scan.",
+        "A wall-clock time limit for {tool}, in {unit}. Whether it bounds one request, one "
+        "target or the whole run, and what a run that hits it keeps, depend on the tool: "
+        "the name says neither.",
     ),
     (
         re.compile(r"(Threads|Concurrency|Workers|Parallelism|Connections)$"),
