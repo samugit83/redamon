@@ -57,9 +57,11 @@ def test_a_malformed_answer_then_a_real_verdict_uses_the_verdict():
 def test_the_soft_webapp_check_reports_unknown_and_stays_open():
     import api
 
-    orchestrator = MagicMock(_initialized=True, llm=MagicMock())
+    orchestrator = MagicMock(_initialized=True)
     broken = AsyncMock(side_effect=RuntimeError('no parseable JSON verdict in any response'))
+    # The check builds the named user's own client (RBAC HD-16), not orchestrator.llm.
     with patch.object(api, 'orchestrator', orchestrator), \
+         patch.object(api, '_build_llm_for_user', return_value=MagicMock()), \
          patch('orchestrator_helpers.guardrail.check_target_allowed', broken):
         result = asyncio.run(api.check_target_guardrail(api.GuardrailRequest(target_domains=['example.com'])))
     assert result['allowed'] is True

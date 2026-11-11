@@ -1480,7 +1480,6 @@ class TradecraftLookupManager:
         self.default_ttl = default_ttl
         self._resources: List[_Resource] = []
         self._by_slug: Dict[str, _Resource] = {}
-        self._github_token: str = ""
         self._section_sem = asyncio.Semaphore(max(1, section_picker_concurrency))
 
     # ---- Per-session catalog (ContextVar-backed; isolates concurrent projects) ----
@@ -1543,8 +1542,17 @@ class TradecraftLookupManager:
         self._by_slug = {r.slug: r for r in out if r.slug}
         logger.info(f"[tradecraft] manager initialized resources={len(out)}")
 
-    def set_github_token(self, token: str) -> None:
-        self._github_token = token or ""
+    @staticmethod
+    def _run_github_token() -> str:
+        """The GitHub token of the run being served, read at call time (RBAC T17).
+
+        Only the settings bound to the run's task count, as tools.run_user_settings:
+        never a token a previous run left on this shared manager, nor the module-global
+        snapshot of the last-loaded (another owner's) project.
+        """
+        import project_settings
+        user_settings = (project_settings._settings_ctx.get() or {}).get("USER_SETTINGS") or {}
+        return str(user_settings.get("githubAccessToken") or "")
 
     # ---- TOOL_REGISTRY entry builder ----
 
@@ -1837,7 +1845,7 @@ class TradecraftLookupManager:
                 f"Error: resource '{resource_id}' not configured. "
                 f"Available: {', '.join(sorted(self._by_slug.keys())) or '(none)'}."
             )
-        token = r.github_token_override or self._github_token
+        token = r.github_token_override or self._run_github_token()
         ttl = r.cache_ttl_sec or DEFAULT_TTLS_BY_TYPE.get(
             r.resource_type, get_setting('TRADECRAFT_DEFAULT_TTL_SEC', self.default_ttl))
         cache_status = "miss"

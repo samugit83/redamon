@@ -1,6 +1,9 @@
 """LLM initialization and project settings helpers."""
 
+import hashlib
+import json
 import logging
+from collections import OrderedDict
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -505,8 +508,105 @@ def llm_setup_failure(model: str, exc: BaseException) -> dict:
     return {"code": "llm_setup_failed", "model": model, "error_class": type(exc).__name__}
 
 
+class LlmClientCache:
+    """The agent's model clients, one per (model id, provider fingerprint, owner).
+
+    Each run is bound to the client built from its own owner's providers (RBAC T17,
+    F-16). The single slot this replaces was rebuilt only when the model id changed,
+    so a second owner on the same model id ran on the first owner's key. Least
+    recently used out; a key holds a SHA-256, never a credential.
+    """
+
+    MAX_ENTRIES = 32
+
+    def __init__(self):
+        self._entries: "OrderedDict[tuple[str, str, str], BaseChatModel]" = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def keys(self) -> list:
+        return list(self._entries)
+
+    def get_or_build(self, key: tuple[str, str, str], build) -> BaseChatModel:
+        llm = self._entries.get(key)
+        if llm is not None:
+            self._entries.move_to_end(key)
+            return llm
+        llm = build()
+        self._entries[key] = llm
+        while len(self._entries) > self.MAX_ENTRIES:
+            self._entries.popitem(last=False)
+        return llm
+
+
+def provider_fingerprint(providers: list, custom_config: dict | None) -> str:
+    """SHA-256 of everything a client is built from: a changed key, base URL or
+    header is a different client."""
+    blob = json.dumps({"providers": providers or [], "custom": custom_config or None},
+                      sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def credential_owner(providers: list) -> str:
+    """The account whose provider rows these are (the webapp sends each row's userId)."""
+    for p in providers or []:
+        if isinstance(p, dict) and p.get("userId"):
+            return str(p["userId"])
+    return ""
+
+
+def _build_llm_from_settings(model: str, settings: dict) -> BaseChatModel:
+    """Build `model` from the providers in this run's settings (DB-driven, no env-var fallback)."""
+    user_providers = settings.get('USER_LLM_PROVIDERS', []) or []
+    openai_p = _resolve_provider_key(user_providers, "openai")
+    anthropic_p = _resolve_provider_key(user_providers, "anthropic")
+    openrouter_p = _resolve_provider_key(user_providers, "openrouter")
+    bedrock_p = _resolve_provider_key(user_providers, "bedrock")
+    deepseek_p = _resolve_provider_key(user_providers, "deepseek")
+    gemini_p = _resolve_provider_key(user_providers, "gemini")
+    glm_p = _resolve_provider_key(user_providers, "glm")
+    kimi_p = _resolve_provider_key(user_providers, "kimi")
+    qwen_p = _resolve_provider_key(user_providers, "qwen")
+    xai_p = _resolve_provider_key(user_providers, "xai")
+    mistral_p = _resolve_provider_key(user_providers, "mistral")
+    return setup_llm(
+        model,
+        openai_api_key=(openai_p or {}).get("apiKey"),
+        anthropic_api_key=(anthropic_p or {}).get("apiKey"),
+        openrouter_api_key=(openrouter_p or {}).get("apiKey"),
+        deepseek_api_key=(deepseek_p or {}).get("apiKey"),
+        gemini_api_key=(gemini_p or {}).get("apiKey"),
+        glm_api_key=(glm_p or {}).get("apiKey"),
+        kimi_api_key=(kimi_p or {}).get("apiKey"),
+        qwen_api_key=(qwen_p or {}).get("apiKey"),
+        xai_api_key=(xai_p or {}).get("apiKey"),
+        mistral_api_key=(mistral_p or {}).get("apiKey"),
+        aws_access_key_id=(bedrock_p or {}).get("awsAccessKeyId"),
+        aws_secret_access_key=(bedrock_p or {}).get("awsSecretKey"),
+        aws_bearer_token=(bedrock_p or {}).get("awsBearerToken"),
+        aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
+        custom_llm_config=settings.get('CUSTOM_LLM_CONFIG'),
+    )
+
+
+def _client_cache(orchestrator) -> LlmClientCache:
+    cache = getattr(orchestrator, "_llm_cache", None)
+    if not isinstance(cache, LlmClientCache):
+        cache = LlmClientCache()
+        orchestrator._llm_cache = cache
+    return cache
+
+
 def apply_project_settings(orchestrator, project_id: str) -> None:
-    """Load project settings from webapp API and reconfigure LLM if model changed."""
+    """Load the project's settings and bind THIS run's model client to the task.
+
+    The client is the cache entry of the run's own model id, provider fingerprint
+    and owner. A run whose model cannot be built gets no client, never another
+    run's, and `llm_setup_failure` says why. apply_project_settings is fully
+    synchronous, so the binding is atomic for this task; nodes, Fireteam members
+    and text-to-Cypher read it through `current_llm`.
+    """
     settings = load_project_settings(project_id)
 
     # HTTP traffic capture (Phase 1): the per-project routing gate is now read
@@ -514,74 +614,20 @@ def apply_project_settings(orchestrator, project_id: str) -> None:
     # time (tools.py), so concurrent sessions can't clobber a shared flag. No
     # per-turn mutation of the shared tool_executor is needed here anymore.
 
-    new_model = settings.get('OPENAI_MODEL', 'claude-opus-4-6')
-
-    # Re-run LLM setup if model changed OR if LLM is None (previous setup failed)
-    model_changed = new_model != orchestrator.model_name
-    need_setup = model_changed or orchestrator.llm is None
-    if need_setup:
-        if model_changed:
-            logger.info(f"Model changed: {orchestrator.model_name} -> {new_model}")
-        else:
-            logger.info(f"Retrying LLM setup for {new_model} (previous attempt failed)")
-        orchestrator.model_name = new_model
-
-        # Resolve keys from user's LLM providers (DB-driven)
-        user_providers = settings.get('USER_LLM_PROVIDERS', [])
-        custom_config = settings.get('CUSTOM_LLM_CONFIG')
-
-        # Build kwargs from DB providers (no env-var fallback)
-        openai_p = _resolve_provider_key(user_providers, "openai")
-        anthropic_p = _resolve_provider_key(user_providers, "anthropic")
-        openrouter_p = _resolve_provider_key(user_providers, "openrouter")
-        bedrock_p = _resolve_provider_key(user_providers, "bedrock")
-        deepseek_p = _resolve_provider_key(user_providers, "deepseek")
-        gemini_p = _resolve_provider_key(user_providers, "gemini")
-        glm_p = _resolve_provider_key(user_providers, "glm")
-        kimi_p = _resolve_provider_key(user_providers, "kimi")
-        qwen_p = _resolve_provider_key(user_providers, "qwen")
-        xai_p = _resolve_provider_key(user_providers, "xai")
-        mistral_p = _resolve_provider_key(user_providers, "mistral")
-
-        try:
-            orchestrator.llm = setup_llm(
-                new_model,
-                openai_api_key=(openai_p or {}).get("apiKey"),
-                anthropic_api_key=(anthropic_p or {}).get("apiKey"),
-                openrouter_api_key=(openrouter_p or {}).get("apiKey"),
-                deepseek_api_key=(deepseek_p or {}).get("apiKey"),
-                gemini_api_key=(gemini_p or {}).get("apiKey"),
-                glm_api_key=(glm_p or {}).get("apiKey"),
-                kimi_api_key=(kimi_p or {}).get("apiKey"),
-                qwen_api_key=(qwen_p or {}).get("apiKey"),
-                xai_api_key=(xai_p or {}).get("apiKey"),
-                mistral_api_key=(mistral_p or {}).get("apiKey"),
-                aws_access_key_id=(bedrock_p or {}).get("awsAccessKeyId"),
-                aws_secret_access_key=(bedrock_p or {}).get("awsSecretKey"),
-                aws_bearer_token=(bedrock_p or {}).get("awsBearerToken"),
-                aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
-                custom_llm_config=custom_config,
-            )
-        except (ValueError, Exception) as e:
-            logger.error(f"LLM setup failed for {new_model}: {type(e).__name__}: {e}")
-            orchestrator.llm = None
-            orchestrator.llm_setup_failure = llm_setup_failure(new_model, e)
-            set_llm_context(None)
-            return
+    model = settings.get('OPENAI_MODEL', 'claude-opus-4-6')
+    providers = settings.get('USER_LLM_PROVIDERS', []) or []
+    key = (model, provider_fingerprint(providers, settings.get('CUSTOM_LLM_CONFIG')),
+           credential_owner(providers))
+    try:
+        llm = _client_cache(orchestrator).get_or_build(
+            key, lambda: _build_llm_from_settings(model, settings))
+    except Exception as e:
+        logger.error(f"LLM setup failed for {model}: {type(e).__name__}: {e}")
+        llm = None
+        orchestrator.llm_setup_failure = llm_setup_failure(model, e)
+    else:
         orchestrator.llm_setup_failure = None
 
-        # Update Neo4j tool's LLM for text-to-Cypher queries
-        if orchestrator.neo4j_manager:
-            orchestrator.neo4j_manager.llm = orchestrator.llm
-            logger.info("Updated Neo4j tool LLM")
-
-    # Store user settings on orchestrator for other components (Tavily key)
-    user_settings = settings.get('USER_SETTINGS', {})
-    if user_settings:
-        orchestrator._user_settings = user_settings
-
-    # Bind THIS session's resolved LLM to the current asyncio task so concurrent
-    # sessions for different projects each read their own model at run time
-    # instead of a shared, race-prone orchestrator.llm. apply_project_settings is
-    # fully synchronous, so this capture is atomic for this task.
-    set_llm_context(orchestrator.llm)
+    # On AgentOrchestrator `llm` is this task's view of current_llm, not a shared slot.
+    orchestrator.llm = llm
+    set_llm_context(llm)

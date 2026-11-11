@@ -6,9 +6,9 @@ The endpoint must resolve the LLM in this order:
      five recon AI classifiers use. This decouples tradecraft ingestion
      from the agent's current chat model and from project-load order
      (fixes the 401 path the user hit after a container restart).
-  2. Else, if `orchestrator.llm` is set, reuse it (back-compat for old
-     resources written before this field existed).
-  3. Else, fall back to `_build_llm_for_user(user_id)`.
+  2. Else, `_build_llm_for_user(user_id)`: the named user's own client, never
+     the orchestrator's (RBAC HD-16: that was the client of whichever chat run
+     loaded last, i.e. possibly another owner's key).
 
 We assert on the LLM-resolution branch by injecting stub builders that
 return tagged identities, then capturing which identity ends up in the
@@ -170,19 +170,20 @@ class TradecraftVerifyModelParamTests(unittest.TestCase):
         self.assertIn("bedrock/amazon.nova-micro-v1:0", captured["llm"].source)
 
     # ------------------------------------------------------------------
-    # Branch 2: model omitted + orchestrator.llm set -> reuse orchestrator.llm.
+    # Branch 2: model omitted -> the user's own client, even when a chat run's
+    # client is loaded (RBAC HD-16, by design: it was another owner's, maybe).
     # (Back-compat: rows written before the column existed have llmModel="".
     # The webapp sends model="" → falsey → back-compat path.)
     # ------------------------------------------------------------------
 
-    def test_no_model_falls_back_to_orchestrator_llm(self):
+    def test_no_model_builds_the_users_client_never_the_orchestrators(self):
         r, captured = self._post_verify(
             model=None,
             user_id="user-1",
             orchestrator_llm=_Tag("orchestrator-chat-llm"),
         )
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(captured["llm"].source, "orchestrator-chat-llm")
+        self.assertEqual(captured["llm"].source, "build-for-user:user-1")
 
     def test_empty_string_model_treated_as_unset(self):
         """Webapp sends '' for legacy rows; the agent treats it as unset."""
@@ -192,11 +193,7 @@ class TradecraftVerifyModelParamTests(unittest.TestCase):
             orchestrator_llm=_Tag("orchestrator-chat-llm"),
         )
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(captured["llm"].source, "orchestrator-chat-llm")
-
-    # ------------------------------------------------------------------
-    # Branch 3: model omitted + orchestrator.llm None -> _build_llm_for_user.
-    # ------------------------------------------------------------------
+        self.assertEqual(captured["llm"].source, "build-for-user:user-1")
 
     def test_no_model_no_orchestrator_llm_falls_back_to_user_builder(self):
         r, captured = self._post_verify(

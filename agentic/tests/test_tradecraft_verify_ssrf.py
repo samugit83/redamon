@@ -102,12 +102,13 @@ class VerifyRouteRequiresInternalKey(unittest.TestCase):
             return {"summary": "s", "resource_type": "agentic-crawl", "sitemap": {},
                     "crawl_stopped_because": "", "crawl_stats": {}, "last_error": ""}
 
+        # The route builds the named user's own client (RBAC HD-16), not orch.llm.
         with patch.dict(os.environ, {"INTERNAL_API_KEY": self.KEY}), \
              patch.object(self.api, "orchestrator") as orch, \
+             patch.object(self.api, "_build_llm_for_user", return_value=object()), \
              patch("orchestrator_helpers.tradecraft_lookup.verify_resource", new=fake_verify), \
              patch("orchestrator_helpers.tradecraft_lookup.validate_url", return_value=(True, "")):
             orch._initialized = True
-            orch.llm = object()
             orch._mcp_manager = None
             r = self.TestClient(self.api.app).post(
                 "/tradecraft/verify",

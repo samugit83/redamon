@@ -21,7 +21,6 @@ from state import (
     summarize_trace_for_response,
 )
 from project_settings import get_setting
-from orchestrator_helpers.key_rotation import KeyRotator
 from tools import (
     MCPToolsManager,
     Neo4jToolManager,
@@ -35,7 +34,7 @@ from orchestrator_helpers import (
     create_config,
     get_config_values,
 )
-from orchestrator_helpers.llm_setup import setup_llm, apply_project_settings
+from orchestrator_helpers.llm_setup import apply_project_settings
 from agent_context import current_llm, current_llm_wait_listener
 from agent_in_the_loop.broker import get_broker
 from agent_in_the_loop import is_loop_llm
@@ -91,8 +90,6 @@ class AgentOrchestrator:
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         self.neo4j_password = os.getenv("NEO4J_PASSWORD")
 
-        self.model_name: Optional[str] = None
-        self.llm: Optional[BaseChatModel] = None
         self.tool_executor: Optional[PhaseAwareToolExecutor] = None
         self.neo4j_manager: Optional[Neo4jToolManager] = None
         self.graph = None
@@ -119,6 +116,21 @@ class AgentOrchestrator:
         self._initialized = True
 
         logger.info("AgentOrchestrator initialized (LLM deferred until project settings loaded)")
+
+    @property
+    def llm(self) -> Optional[BaseChatModel]:
+        """This run's model client, or None outside a run (RBAC T17).
+
+        There is no shared slot: `apply_project_settings` binds each run's own
+        client (llm_setup.LlmClientCache) to its task through `current_llm`, which
+        the graph's nodes and Fireteam members inherit. A task that never loaded a
+        project reads None, never the client of whichever run loaded last.
+        """
+        return current_llm.get()
+
+    @llm.setter
+    def llm(self, value: Optional[BaseChatModel]) -> None:
+        current_llm.set(value)
 
     async def recover_orphaned_fireteams(self) -> None:
         """Mark fireteams from a prior process (still 'running') as cancelled.
@@ -207,87 +219,23 @@ class AgentOrchestrator:
     # =========================================================================
 
     def _apply_project_settings(self, project_id: str) -> None:
-        """Load project settings and reconfigure LLM if model changed."""
+        """Load project settings and bind this run's model client and tradecraft catalog.
+
+        No credential is written onto a shared manager here (RBAC T17): the search
+        tools, their rotation pools and the tradecraft GitHub token are read at call
+        time from the run's own USER_SETTINGS (tools.run_user_settings), so an empty
+        key means none, never the previous run's.
+        """
         apply_project_settings(self, project_id)
 
-        # Update tool API keys and rotation from user settings
-        user_settings = getattr(self, '_user_settings', {})
-        rotation_configs = user_settings.get('rotationConfigs', {})
-
-        def _build_rotator(main_key: str, tool_name: str) -> KeyRotator:
-            cfg = rotation_configs.get(tool_name, {})
-            extra = cfg.get('extraKeys', [])
-            rotate_n = cfg.get('rotateEveryN', 10)
-            return KeyRotator([main_key] + extra, rotate_n)
-
-        # Tavily (web_search)
-        tavily_key = user_settings.get('tavilyApiKey', '')
-        if tavily_key and self._web_search_manager and self._web_search_manager.api_key != tavily_key:
-            self._web_search_manager.api_key = tavily_key
-            new_tool = self._web_search_manager.get_tool()
-            if new_tool and self.tool_executor:
-                self.tool_executor.update_web_search_tool(new_tool)
-                logger.info("Updated Tavily web search tool with user settings key")
-        if tavily_key and self._web_search_manager:
-            self._web_search_manager.key_rotator = _build_rotator(tavily_key, 'tavily')
-
-        # Knowledge Base config (KB_ENABLED, KB_SCORE_THRESHOLD, KB_TOP_K,
-        # KB_MMR_*, KB_OVERFETCH_FACTOR, KB_SOURCE_BOOSTS, KB_ENABLED_SOURCES) is
-        # NO LONGER stamped onto the shared KB / web-search manager here (which
-        # raced across concurrent sessions). It is read per-session at use-time
-        # from the task-isolated settings inside the web_search tool closure
-        # (tools.py), which passes each knob as a per-call override to
-        # PentestKnowledgeBase.query()/is_sufficient(); unset (None) project
-        # values fall back to the KB's own kb_config.yaml baseline, preserving the
-        # prior precedence. The KB instance stays attached to the web-search
-        # manager from construction; the closure gates on KB_ENABLED per session.
-
-        # Shodan. The per-project enable/disable is NO LONGER done by swapping the
-        # tool in/out of the shared _all_tools registry (which raced across
-        # concurrent sessions). Shodan stays registered; PhaseAwareToolExecutor
-        # .execute() gates it per-session on the task-isolated SHODAN_ENABLED. Here
-        # we only refresh the (user-global) API key on the shared manager.
-        shodan_key = user_settings.get('shodanApiKey', '')
-        if self._shodan_manager and self.tool_executor:
-            if shodan_key and self._shodan_manager.api_key != shodan_key:
-                self._shodan_manager.api_key = shodan_key
-                shodan_tool = self._shodan_manager.get_tool()
-                self.tool_executor.update_shodan_tool(shodan_tool)
-                logger.info("Updated Shodan OSINT tool with user settings key")
-        if shodan_key and self._shodan_manager:
-            self._shodan_manager.key_rotator = _build_rotator(shodan_key, 'shodan')
-
-        # WPScan / URLScan / PDCP API keys are no longer stamped onto the shared
-        # tool_executor here (which raced across concurrent sessions). They are
-        # read at tool-execution time from the task-isolated USER_SETTINGS via
-        # get_setting() inside PhaseAwareToolExecutor.execute() (tools.py), so each
-        # session injects its own key.
-
-        # Google dork (SerpAPI)
-        serp_api_key = user_settings.get('serpApiKey', '')
-        if self._google_dork_manager and self.tool_executor:
-            if serp_api_key and self._google_dork_manager.api_key != serp_api_key:
-                self._google_dork_manager.api_key = serp_api_key
-                google_dork_tool = self._google_dork_manager.get_tool()
-                self.tool_executor.update_google_dork_tool(google_dork_tool)
-                logger.info("Updated Google dork tool with SerpAPI key")
-        if serp_api_key and self._google_dork_manager:
-            self._google_dork_manager.key_rotator = _build_rotator(serp_api_key, 'serp')
-
-        # Tradecraft Lookup
         if self._tradecraft_manager and self.tool_executor:
-            tc_enabled = get_setting('TRADECRAFT_TOOL_ENABLED', True)
-            tc_resources = get_setting('TRADECRAFT_RESOURCES', []) or []
-            github_token = user_settings.get('githubAccessToken', '')
             # The tradecraft tool stays permanently registered on the executor
             # (get_tool no longer swapped per turn, which raced). Per session we
             # only bind this project's resources + prompt catalog; a disabled
             # project clears its own resources so the always-registered tool
             # returns "resource not configured".
-            if tc_enabled:
-                self._tradecraft_manager.set_resources(tc_resources)
-                self._tradecraft_manager.set_github_token(github_token)
-                self._tradecraft_manager.llm = self.llm
+            if get_setting('TRADECRAFT_TOOL_ENABLED', True):
+                self._tradecraft_manager.set_resources(get_setting('TRADECRAFT_RESOURCES', []) or [])
                 self._tradecraft_manager.section_picker_llm = self._build_section_picker_llm()
                 # tier2_threshold_bytes / fetch_timeout / default_ttl are read per
                 # session at use-time from the task-isolated TRADECRAFT_* settings.
@@ -298,7 +246,6 @@ class AgentOrchestrator:
                     f"Tradecraft Lookup: {len(self._tradecraft_manager._resources)} resources"
                 )
             else:
-                # Disabled for this project: no resources, no prompt catalog.
                 self._tradecraft_manager.set_resources([])
                 from prompts.tool_registry import pop_tradecraft_entry
                 pop_tradecraft_entry()
@@ -335,10 +282,9 @@ class AgentOrchestrator:
     def _build_section_picker_llm(self):
         """This session's "Tradecraft section picker" LLM, or None.
 
-        Read from the task-isolated USER_SETTINGS / USER_LLM_PROVIDERS (never
-        the shared `self._user_settings`, which holds whichever project loaded
-        last). None means no model is set or it cannot be built, and the picker
-        then chooses the page by text match.
+        Read from the task-isolated USER_SETTINGS / USER_LLM_PROVIDERS, never
+        another run's. None means no model is set or it cannot be built, and the
+        picker then chooses the page by text match.
         """
         from feature_models import feature_model
         user_settings = get_setting('USER_SETTINGS', {}) or {}
@@ -354,50 +300,6 @@ class AgentOrchestrator:
                 f"Section picker model {model} could not be built "
                 f"({e.__class__.__name__}); pages are picked by text match")
             return None
-
-    def _setup_llm(self) -> None:
-        """Initialize the LLM based on current model_name.
-
-        Resolves keys from the cached project settings (if loaded)
-        or from whatever user providers are available.
-        """
-        from project_settings import get_settings
-        from orchestrator_helpers.llm_setup import _resolve_provider_key
-
-        settings = get_settings()
-        user_providers = settings.get('USER_LLM_PROVIDERS', [])
-        custom_config = settings.get('CUSTOM_LLM_CONFIG')
-
-        openai_p = _resolve_provider_key(user_providers, "openai")
-        anthropic_p = _resolve_provider_key(user_providers, "anthropic")
-        openrouter_p = _resolve_provider_key(user_providers, "openrouter")
-        bedrock_p = _resolve_provider_key(user_providers, "bedrock")
-        deepseek_p = _resolve_provider_key(user_providers, "deepseek")
-        gemini_p = _resolve_provider_key(user_providers, "gemini")
-        glm_p = _resolve_provider_key(user_providers, "glm")
-        kimi_p = _resolve_provider_key(user_providers, "kimi")
-        qwen_p = _resolve_provider_key(user_providers, "qwen")
-        xai_p = _resolve_provider_key(user_providers, "xai")
-        mistral_p = _resolve_provider_key(user_providers, "mistral")
-
-        self.llm = setup_llm(
-            self.model_name,
-            openai_api_key=(openai_p or {}).get("apiKey"),
-            anthropic_api_key=(anthropic_p or {}).get("apiKey"),
-            openrouter_api_key=(openrouter_p or {}).get("apiKey"),
-            deepseek_api_key=(deepseek_p or {}).get("apiKey"),
-            gemini_api_key=(gemini_p or {}).get("apiKey"),
-            glm_api_key=(glm_p or {}).get("apiKey"),
-            kimi_api_key=(kimi_p or {}).get("apiKey"),
-            qwen_api_key=(qwen_p or {}).get("apiKey"),
-            xai_api_key=(xai_p or {}).get("apiKey"),
-            mistral_api_key=(mistral_p or {}).get("apiKey"),
-            aws_access_key_id=(bedrock_p or {}).get("awsAccessKeyId"),
-            aws_secret_access_key=(bedrock_p or {}).get("awsSecretKey"),
-            aws_bearer_token=(bedrock_p or {}).get("awsBearerToken"),
-            aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
-            custom_llm_config=custom_config,
-        )
 
     # =========================================================================
     # TOOLS & GRAPH SETUP
@@ -421,12 +323,13 @@ class AgentOrchestrator:
         mcp_manager = MCPToolsManager(server_configs=server_configs)
         mcp_tools = await mcp_manager.get_tools()
 
-        # Setup Neo4j graph query tool (LLM is None until project settings are loaded)
+        # No client of its own: text-to-Cypher runs on the calling run's client
+        # (current_llm), so it is never another owner's.
         self.neo4j_manager = Neo4jToolManager(
             uri=self.neo4j_uri,
             user=self.neo4j_user,
             password=self.neo4j_password,
-            llm=self.llm
+            llm=None,
         )
         graph_tool = self.neo4j_manager.get_tool()
         # The two companions ride on the SAME condition as query_graph:
@@ -445,28 +348,23 @@ class AgentOrchestrator:
             from prompts.tool_registry import TOOL_REGISTRY, WEB_SEARCH_TAVILY_ONLY
             TOOL_REGISTRY["web_search"] = WEB_SEARCH_TAVILY_ONLY
 
-        # Setup Tavily web search tool (key resolved later via update_tavily_key)
+        # The search tools are always registered and read each run's own key at
+        # call time (keys_from_run): a run without a key gets "not configured".
         # KB is passed in so web_search can check it before falling back to Tavily
         self._web_search_manager = WebSearchToolManager(
             knowledge_base=self._knowledge_base,
+            keys_from_run=True,
         )
         web_search_tool = self._web_search_manager.get_tool()
-
-        # Setup Shodan OSINT tool (key resolved later via _apply_project_settings)
-        self._shodan_manager = ShodanToolManager()
+        self._shodan_manager = ShodanToolManager(keys_from_run=True)
         shodan_tool = self._shodan_manager.get_tool()
-
-        # Setup Google dork tool (key resolved later via _apply_project_settings)
-        self._google_dork_manager = GoogleDorkToolManager()
+        self._google_dork_manager = GoogleDorkToolManager(keys_from_run=True)
         google_dork_tool = self._google_dork_manager.get_tool()
 
         # Setup Tradecraft Lookup tool (resources resolved later via _apply_project_settings).
         # get_tool() returns None until at least one enabled resource is loaded.
         from orchestrator_helpers.tradecraft_lookup import TradecraftLookupManager
-        self._tradecraft_manager = TradecraftLookupManager(
-            llm=self.llm,
-            mcp_manager=mcp_manager,
-        )
+        self._tradecraft_manager = TradecraftLookupManager(mcp_manager=mcp_manager)
         # Tool starts as None; orchestrator hot-swaps it once resources load.
         tradecraft_tool = self._tradecraft_manager.get_tool()
         # Strip the registry entry until resources are loaded so the
@@ -614,10 +512,10 @@ class AgentOrchestrator:
 
         # Add nodes — async wrappers that pass instance state to extracted functions
         async def _initialize(state, config=None):
-            return await initialize_node(state, config, llm=(current_llm.get() or self.llm), neo4j_creds=neo4j_creds)
+            return await initialize_node(state, config, llm=self.llm, neo4j_creds=neo4j_creds)
 
         async def _think(state, config=None):
-            return await think_node(state, config, llm=(current_llm.get() or self.llm), guidance_queues=self._guidance_queues, neo4j_creds=neo4j_creds, streaming_callbacks=self._streaming_callbacks, graph_view_cyphers=self._graph_view_cyphers)
+            return await think_node(state, config, llm=self.llm, guidance_queues=self._guidance_queues, neo4j_creds=neo4j_creds, streaming_callbacks=self._streaming_callbacks, graph_view_cyphers=self._graph_view_cyphers)
 
         async def _execute_tool(state, config=None):
             return await execute_tool_node(state, config, tool_executor=self.tool_executor, streaming_callbacks=self._streaming_callbacks, session_manager_base=_SESSION_MANAGER_BASE, graph_view_cyphers=self._graph_view_cyphers)
@@ -640,7 +538,7 @@ class AgentOrchestrator:
 
         async def _generate_response(state, config=None):
             await sweep_session_bodies(self.tool_executor, state)
-            return await generate_response_node(state, config, llm=(current_llm.get() or self.llm), streaming_callbacks=self._streaming_callbacks, neo4j_creds=neo4j_creds)
+            return await generate_response_node(state, config, llm=self.llm, streaming_callbacks=self._streaming_callbacks, neo4j_creds=neo4j_creds)
 
         async def _await_tool_confirmation(state, config=None):
             return await await_tool_confirmation_node(state, config)
@@ -649,10 +547,10 @@ class AgentOrchestrator:
             return await process_tool_confirmation_node(state, config)
 
         # --- Fireteam (multi-agent) ---
-        # Prebuild the member graph once. Reads self.llm at call time via
-        # getter (self.llm is None here; populated by _setup_llm later).
+        # Prebuild the member graph once. Reads the member run's own client at
+        # call time (self.llm is the task's current_llm).
         self.fireteam_member_graph = build_fireteam_member_graph(
-            llm_getter=lambda: (current_llm.get() or self.llm),
+            llm_getter=lambda: self.llm,
             tool_executor=self.tool_executor,
             streaming_callbacks=self._streaming_callbacks,
             session_manager_base=_SESSION_MANAGER_BASE,
@@ -672,7 +570,7 @@ class AgentOrchestrator:
         async def _fireteam_collect(state, config=None):
             return await fireteam_collect_node(
                 state, config,
-                llm=(current_llm.get() or self.llm),
+                llm=self.llm,
                 neo4j_creds=neo4j_creds,
                 streaming_callbacks=self._streaming_callbacks,
             )
@@ -1102,7 +1000,7 @@ class AgentOrchestrator:
         (and only while it runs), and reports the run's end state to its driver.
         For a provider model it only registers the run.
         """
-        uses_loop = is_loop_llm(current_llm.get() or self.llm)
+        uses_loop = is_loop_llm(self.llm)
         final_state = None
         # Every node and Fireteam member runs in a task created inside astream,
         # so it inherits this listener and a rate-limit wait reaches the drawer.
@@ -1154,10 +1052,8 @@ class AgentOrchestrator:
 
         # Fail fast: if no LLM could be configured, return an error immediately
         # instead of letting the guardrail's fail-closed mask it as "Target Blocked".
-        # Mirror EXACTLY the resolution the graph nodes use (current_llm.get() or
-        # self.llm): the per-session LLM is authoritative when set, with the shared
-        # self.llm as fallback.
-        if (current_llm.get() or self.llm) is None:
+        # The same read the graph nodes make: this run's own client.
+        if self.llm is None:
             return await self._report_llm_unavailable(streaming_callback, user_id, project_id, session_id)
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with streaming: {question[:10000]}")

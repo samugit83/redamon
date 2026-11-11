@@ -255,7 +255,6 @@ async def check_target_guardrail(body: GuardrailRequest):
     """
     from orchestrator_helpers.hard_guardrail import is_hard_blocked
     from orchestrator_helpers.guardrail import check_target_allowed
-    from project_settings import DEFAULT_AGENT_SETTINGS
 
     # Hard guardrail: deterministic, non-disableable. Checks EVERY domain the
     # caller named: a Domain-batch create sends its roots in target_domains and
@@ -269,72 +268,23 @@ async def check_target_guardrail(body: GuardrailRequest):
     if not orchestrator or not orchestrator._initialized:
         return {"allowed": True, "reason": "Agent not initialized, guardrail skipped"}
 
-    # Ensure LLM is set up. An Agent in the Loop adapter counts as no LLM: it
-    # answers only inside a chat run, and this check has no driver.
-    if not orchestrator.llm or is_loop_llm(orchestrator.llm):
-        if body.project_id:
-            try:
-                orchestrator._apply_project_settings(body.project_id)
-            except Exception as e:
-                logger.warning(f"Guardrail: failed to load project settings: {e}")
-        # Still no LLM? Bootstrap with default model + user's API keys from DB
-        if not orchestrator.llm or is_loop_llm(orchestrator.llm):
-            try:
-                from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
-                import requests as _requests
-
-                model_name = DEFAULT_AGENT_SETTINGS['OPENAI_MODEL']
-                user_providers = []
-
-                # Fetch user's LLM providers from DB (needed for API keys)
-                if body.user_id:
-                    webapp_url = os.environ.get('WEBAPP_API_URL', 'http://webapp:3000')
-                    try:
-                        resp = _requests.get(
-                            f"{webapp_url.rstrip('/')}/api/users/{body.user_id}/llm-providers?internal=true",
-                            headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
-                            timeout=10,
-                        )
-                        resp.raise_for_status()
-                        user_providers = resp.json()
-                    except Exception as e:
-                        logger.warning(f"Guardrail: failed to fetch user LLM providers: {e}")
-
-                openai_p = _resolve_provider_key(user_providers, "openai")
-                anthropic_p = _resolve_provider_key(user_providers, "anthropic")
-                openrouter_p = _resolve_provider_key(user_providers, "openrouter")
-                deepseek_p = _resolve_provider_key(user_providers, "deepseek")
-                gemini_p = _resolve_provider_key(user_providers, "gemini")
-                glm_p = _resolve_provider_key(user_providers, "glm")
-                kimi_p = _resolve_provider_key(user_providers, "kimi")
-                qwen_p = _resolve_provider_key(user_providers, "qwen")
-                xai_p = _resolve_provider_key(user_providers, "xai")
-                mistral_p = _resolve_provider_key(user_providers, "mistral")
-
-                orchestrator.llm = setup_llm(
-                    model_name,
-                    openai_api_key=(openai_p or {}).get("apiKey"),
-                    anthropic_api_key=(anthropic_p or {}).get("apiKey"),
-                    openrouter_api_key=(openrouter_p or {}).get("apiKey"),
-                    deepseek_api_key=(deepseek_p or {}).get("apiKey"),
-                    gemini_api_key=(gemini_p or {}).get("apiKey"),
-                    glm_api_key=(glm_p or {}).get("apiKey"),
-                    kimi_api_key=(kimi_p or {}).get("apiKey"),
-                    qwen_api_key=(qwen_p or {}).get("apiKey"),
-                    xai_api_key=(xai_p or {}).get("apiKey"),
-                    mistral_api_key=(mistral_p or {}).get("apiKey"),
-                )
-                orchestrator.model_name = model_name
-                logger.info(f"Guardrail: bootstrapped LLM with default model {model_name}")
-            except Exception as e:
-                logger.warning(f"Guardrail: failed to bootstrap default LLM: {e}")
-                return {"allowed": True, "reason": "LLM not configured, guardrail skipped"}
-    if is_loop_llm(orchestrator.llm):
+    # The named user's own client (RBAC T17): never the client of whichever run
+    # loaded last, and nothing is written for the next run. An Agent in the Loop
+    # model counts as no LLM: it answers only inside a chat run, and this check has
+    # no driver.
+    try:
+        llm = _build_llm_for_user(body.user_id or None)
+    except LoopModelNotSupportedHere:
+        llm = None
+    except Exception as e:
+        logger.warning(f"Guardrail: no model for the user ({e.__class__.__name__})")
+        llm = None
+    if llm is None or is_loop_llm(llm):
         return {"allowed": True, "reason": "LLM not configured, guardrail skipped"}
 
     try:
         result = await check_target_allowed(
-            orchestrator.llm,
+            llm,
             target_domain=body.target_domain,
             target_ips=body.target_ips,
             target_domains=body.target_domains,
@@ -1812,7 +1762,7 @@ class TradecraftVerifyRequest(BaseModel):
     force: bool = False
     # Per-resource model override. When set, the verify endpoint builds a
     # provider-agnostic LLM for THIS model (resolving the user's provider
-    # keys) instead of reusing orchestrator.llm. Decouples tradecraft
+    # keys) instead of the user's default model. Decouples tradecraft
     # ingestion from the agent's current chat model and from project-load
     # order (fixes the "agent reverted to default Anthropic after restart"
     # 401 path).
@@ -1935,20 +1885,18 @@ async def tradecraft_verify(body: TradecraftVerifyRequest):
             "crawl_stats": {},
             "last_error": err,
         }
-    # Resolve the LLM used for crawl decisions + summary:
+    # Resolve the LLM used for crawl decisions + summary, always from the named
+    # user's own providers (RBAC T17), never a chat run's client:
     #   1. If the request specifies a per-resource model, build a provider-
     #      agnostic LLM for THAT model from the user's saved providers.
     #      (Same path the 5 recon AI classifiers use.) This is the normal
     #      path — the webapp always sends a model now that the field is
     #      required at create/edit time.
     #   2. Otherwise (back-compat for direct API callers and old rows
-    #      written before this column existed), prefer the orchestrator's
-    #      loaded LLM, then fall back to _build_llm_for_user.
+    #      written before this column existed), _build_llm_for_user.
     try:
         if body.model:
             llm = _build_llm_with_model_for_user(body.model, body.user_id)
-        elif orchestrator.llm is not None and not is_loop_llm(orchestrator.llm):
-            llm = orchestrator.llm
         else:
             llm = _build_llm_for_user(body.user_id)
     except LoopModelNotSupportedHere:
