@@ -202,6 +202,28 @@ class TestFetchNodeFilters:
         with pytest.raises(RuntimeError):
             self._fetch({}, status=500)
 
+    def test_a_refused_job_credential_is_a_sweep_error_never_no_filters(self, monkeypatch):
+        # A scan paused past its job credential's 7 days resumes with an expired one:
+        # the webapp answers 403, and the sweep records a failure (the mute states stay
+        # as they were), never "not armed". A real Response, so raise_for_status is real.
+        import requests
+        refused = requests.Response()
+        refused.status_code = 403
+        refused.url = 'http://webapp:3000/api/projects/p1'
+        refused._content = b'{"code":"job_credential_required","reason":"expired"}'
+        monkeypatch.setenv('WEBAPP_API_URL', 'http://webapp:3000')
+        monkeypatch.setenv('SCANNER_API_KEY', 'scan-key')
+        monkeypatch.setenv('REDAMON_JOB_CREDENTIAL', 'expired.credential')
+        client = _Client()
+        lines = []
+        with mock.patch('requests.get', return_value=refused) as get:
+            out = nfs.run_node_filter_sweep('u1', 'p1', 'ts', RECON_FINDING_SOURCES,
+                                            client_factory=lambda: client, log=lines.append)
+        assert get.call_args[1]['headers']['X-Redamon-Job'] == 'expired.credential'
+        assert 'skipped' not in out and '403' in out['error']
+        assert client.calls == []
+        assert lines[-1].startswith('[!][NODE-FILTER] sweep failed:')
+
     def test_the_webapp_body_arms_a_sweep_with_its_rules_and_exemptions(self):
         # The file is the GET body the webapp route test pins, so a shape change
         # on either side fails one of the two. Without it, a renamed field reads

@@ -2502,8 +2502,10 @@ def fetch_node_filters(project_id: str, webapp_url: str | None = None) -> dict |
     scan start, so it never applies rules older than the operator's latest save:
     a long partial recon must not undo an apply made while it ran.
 
-    Returns None when the project has no filters. Raises on a failed request,
-    and the caller treats that as "filter nothing", never as "no exemptions".
+    Returns None when the project has no filters. Raises on a failed request, a
+    refused job credential included (a scan resumed after its credential expired):
+    the sweep records that as its error and leaves every mute state as it was,
+    never reading it as "no filters" or "no exemptions".
     """
     import requests
 
