@@ -8,6 +8,13 @@ interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
 }
 
+/**
+ * The fields a PUT may write; the rest (slug, type, summary, sitemap, crawl data, errors)
+ * belong to the server. A spread body would also carry a relation input Prisma applies as
+ * a nested write: `user: {connect}` moves the resource to another account.
+ */
+const UPDATABLE_FIELDS = ['name', 'url', 'enabled', 'cacheTtlSec', 'llmModel', 'githubTokenOverride'] as const
+
 function maskSecret(value: string): string {
   if (!value || value.length <= 4) return value ? '••••' : ''
   return '••••••••' + value.slice(-4)
@@ -53,6 +60,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (denied) return denied
 
     const body = await request.json()
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'The body must be a JSON object' }, { status: 400 })
+    }
 
     const existing = await prisma.userTradecraftResource.findFirst({
       where: { id: resourceId, userId: id },
@@ -61,20 +71,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
     }
 
-    // Strip server-managed fields
-    const updateData: Record<string, unknown> = { ...body }
-    delete updateData.id
-    delete updateData.userId
-    delete updateData.slug              // slug is immutable
-    delete updateData.createdAt
-    delete updateData.updatedAt
-    delete updateData.lastVerifiedAt
-    delete updateData.lastRefreshedAt
-    delete updateData.summary           // summary set by /verify
-    delete updateData.sitemap           // sitemap set by /verify
-    delete updateData.resourceType      // type set by /verify
-    delete updateData.crawlStoppedBecause
-    delete updateData.crawlStats
+    const updateData: Record<string, unknown> = {}
+    for (const field of UPDATABLE_FIELDS) {
+      if (field in body) updateData[field] = body[field]
+    }
 
     // Preserve masked github token
     if ('githubTokenOverride' in updateData) {

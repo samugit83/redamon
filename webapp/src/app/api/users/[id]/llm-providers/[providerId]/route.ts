@@ -10,6 +10,17 @@ interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
 }
 
+/**
+ * The settings a PUT may write. A spread body would also carry relation inputs that
+ * Prisma applies as nested writes: `user: {connect}` moves the row to another account,
+ * `jevProjects: {connect}` selects it in other accounts' projects.
+ */
+const UPDATABLE_FIELDS = [
+  'providerType', 'name', 'apiKey', 'baseUrl', 'modelIdentifier', 'defaultHeaders', 'timeout',
+  'temperature', 'maxTokens', 'sslVerify', 'reasoningEnabled', 'reasoningEffort', 'awsRegion',
+  'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken',
+] as const
+
 function maskSecret(value: string): string {
   if (!value || value.length <= 4) return value ? '••••' : ''
   return '••••••••' + value.slice(-4)
@@ -63,6 +74,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (denied) return denied
 
     const body = await request.json()
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'The body must be a JSON object' }, { status: 400 })
+    }
 
     if (body.reasoningEnabled !== undefined && typeof body.reasoningEnabled !== 'boolean') {
       return NextResponse.json(
@@ -107,11 +121,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Preserve masked secrets
     const secretFields = ['apiKey', 'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken'] as const
-    const updateData: Record<string, unknown> = { ...body }
-    delete updateData.id
-    delete updateData.userId
-    delete updateData.createdAt
-    delete updateData.updatedAt
+    const updateData: Record<string, unknown> = {}
+    for (const field of UPDATABLE_FIELDS) {
+      if (field in body) updateData[field] = body[field]
+    }
 
     for (const field of secretFields) {
       if (field in updateData) {

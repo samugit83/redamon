@@ -279,3 +279,38 @@ describe('PUT provider - a new endpoint needs the key typed again (HD-24)', () =
   })
 })
 
+
+describe('PUT provider - only the row\'s own settings reach the update (review of 1.6)', () => {
+  beforeEach(() => mockRequireUserAccess.mockResolvedValue(null))
+
+  test('a relation input, a foreign key, the actor columns and unknown keys never reach prisma.update', async () => {
+    const res = await PUT(put({
+      name: 'renamed', temperature: 0.3,
+      // nested writes Prisma would apply: move the row to another account, or select it in other projects
+      user: { connect: { id: 'attacker' } },
+      jevProjects: { connect: [{ id: 'victim-project' }] },
+      userId: 'attacker', id: 'p-other', createdById: 'attacker', updatedById: 'attacker',
+      createdAt: '2020-01-01T00:00:00Z', updatedAt: '2020-01-01T00:00:00Z',
+      somethingElse: 'x',
+    }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    const { where, data } = mockUpdate.mock.calls[0][0]
+    expect(where).toEqual({ id: 'p1' })
+    expect(data).toMatchObject({ name: 'renamed', temperature: 0.3 })
+    for (const key of ['user', 'jevProjects', 'userId', 'id', 'createdById', 'updatedById', 'createdAt', 'updatedAt', 'somethingElse']) {
+      expect(key in data, key).toBe(false)
+    }
+  })
+
+  test('every setting the form edits still reaches the update', async () => {
+    const form = {
+      providerType: 'openai_compatible', name: 'n', apiKey: 'sk-typed', baseUrl: PROVIDER.baseUrl,
+      modelIdentifier: 'm', defaultHeaders: { 'X-A': 'b' }, timeout: 30, temperature: 0.1, maxTokens: 100,
+      sslVerify: false, reasoningEnabled: true, reasoningEffort: 'low', awsRegion: 'eu-west-1',
+      awsAccessKeyId: 'AK', awsSecretKey: 'SK', awsBearerToken: 'BT',
+    }
+    const res = await PUT(put(form), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data).toEqual(form)
+  })
+})
