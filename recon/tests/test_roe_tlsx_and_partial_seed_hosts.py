@@ -1,14 +1,17 @@
-"""tlsx gets only RoE-admitted names (R-2, design decision D2).
+"""tlsx and the partial archive sources get only RoE-admitted hosts (R-2,
+design decision D2).
 
 tlsx is handed ``name:port`` lines and resolves each name itself, so a name the
 RoE refuses on one of its addresses can land on that address even when the
-line was built from an allowed one.
+line was built from an allowed one. Gau's URL verification and method probe
+(httpx) request every archived URL whose host is in the list
+``graph_target_hosts`` returns, which a partial run checked against the RoE by
+name only.
 
 Each test reads what the tool is really handed: the tlsx target file (only
-``subprocess.Popen`` is replaced); a partial run's comes from the real
-port-scan graph builder, over a fake Neo4j answering from a fixed set of rows.
-With no RoE exclusion the target file is the one built without RoE keys at
-all.
+``subprocess.Popen`` is replaced) and the URLs Gau's verifier receives.
+Neo4j is a fake answering from a fixed set of rows. With no RoE exclusion the
+lists are the ones built without RoE keys at all.
 Reserved names and documentation ranges only; no Docker, no network.
 """
 from __future__ import annotations
@@ -303,3 +306,107 @@ def test_partial_tlsx_targets_are_unchanged_without_an_exclusion(settings, monke
     baseline = _partial_tlsx_lines({}, monkeypatch)
     assert _partial_tlsx_lines(settings, monkeypatch) == baseline
     assert f"{MIXED}:{TLS_PORT}" in baseline
+
+
+# --------------------------------------------------------------------------
+# graph_target_hosts (partial Gau, ParamSpider)
+# --------------------------------------------------------------------------
+
+def _target_hosts(settings, monkeypatch, include_graph=True, reachable=True) -> list:
+    from recon.partial_recon_modules.graph_builders import graph_target_hosts
+    client = type("_C", (_Client,), {"reachable": reachable})
+    monkeypatch.setattr("graph_db.Neo4jClient", client)
+    _run_settings(settings)
+    return graph_target_hosts("u1", "p1", [APEX], None, include_root_domain=True,
+                              include_graph=include_graph)
+
+
+def test_graph_target_hosts_drop_a_name_resolving_into_an_excluded_range(monkeypatch):
+    hosts = _target_hosts(_roe(EXCLUDED_RANGE), monkeypatch)
+    assert {LEGACY, MIXED}.isdisjoint(hosts)
+    # Nothing shows a name with no known address stays off the range.
+    assert UNKNOWN not in hosts
+    assert {APEX, WWW} <= set(hosts)
+    gaps = _roe_gaps("partial_graph_targets")
+    assert gaps, "the refusal is noted under the roe_excluded coverage source"
+    # The unknown name is "not checked", never "gone": its findings are kept.
+    assert UNKNOWN in circuit_breaker.coverage_report().skipped_hosts
+
+
+def test_graph_target_hosts_without_an_ip_entry_keep_a_name_with_no_address(monkeypatch):
+    hosts = _target_hosts(_roe("other.example.com"), monkeypatch)
+    assert {APEX, LEGACY, MIXED, WWW, UNKNOWN} <= set(hosts)
+
+
+@pytest.mark.parametrize("settings", NO_ROE)
+def test_graph_target_hosts_are_unchanged_without_an_exclusion(settings, monkeypatch):
+    baseline = _target_hosts({}, monkeypatch)
+    assert _target_hosts(settings, monkeypatch) == baseline
+    assert {APEX, LEGACY, MIXED, WWW, UNKNOWN} <= set(baseline)
+
+
+@pytest.mark.parametrize("include_graph,reachable", [(False, True), (True, False)])
+def test_graph_target_hosts_without_graph_rows_still_gate_the_apex(include_graph, reachable, monkeypatch):
+    # The apex's addresses are read for the gate even when the operator left
+    # the graph's names out; with no graph at all the apex has no known
+    # address and is refused (fail closed).
+    hosts = _target_hosts(_roe(EXCLUDED_RANGE), monkeypatch, include_graph, reachable)
+    assert hosts == ([APEX] if reachable else [])
+    for settings in ({}, *NO_ROE, _roe("other.example.com")):
+        assert _target_hosts(settings, monkeypatch, include_graph, reachable) == [APEX]
+
+
+def test_graph_target_hosts_drop_an_apex_resolving_into_an_excluded_range(monkeypatch):
+    hosts = _target_hosts(_roe(f"{APEX_IP}/32"), monkeypatch)
+    assert APEX not in hosts
+    assert {LEGACY, MIXED, WWW} <= set(hosts)
+
+
+def test_graph_target_hosts_in_ip_mode_stay_on_the_targets(monkeypatch):
+    """P0c's IP-mode rule is untouched: a name only when every address it
+    resolves to is a target, never the synthetic root."""
+    from recon.partial_recon_modules.graph_builders import graph_target_hosts
+    monkeypatch.setattr("graph_db.Neo4jClient", _Client)
+    settings = {"IP_MODE": True, "TARGET_IPS": [MIXED_OK, WWW_IP], **_roe(EXCLUDED_RANGE)}
+    partial_helpers.set_run_roe(settings)
+    partial_helpers.set_run_ip_targets(settings)
+    assert graph_target_hosts("u1", "p1", [APEX], None, include_root_domain=True) == [WWW]
+
+
+class _StopVerify(BaseException):
+    pass
+
+
+def _gau_verified_urls(settings, monkeypatch) -> list:
+    """The archived URLs partial Gau hands its httpx verifier."""
+    import recon.helpers.resource_enum as resource_enum
+    from recon.partial_recon_modules import web_crawling
+    archived = [f"https://{h}/old" for h in (APEX, LEGACY, MIXED, WWW, UNKNOWN)]
+    seen = {}
+
+    def verify(urls, **_k):
+        seen["urls"] = list(urls)
+        raise _StopVerify
+
+    monkeypatch.setattr("graph_db.Neo4jClient", _Client)
+    monkeypatch.setattr(resource_enum, "pull_gau_docker_image", lambda *_a, **_k: True)
+    monkeypatch.setattr(resource_enum, "run_gau_discovery",
+                        lambda domains, *_a, **_k: ([u for u in archived if urlparse(u).hostname in domains], {}))
+    monkeypatch.setattr(resource_enum, "verify_gau_urls", verify)
+    run_settings = _run_settings({"GAU_VERIFY_URLS": True, **settings})
+    with pytest.raises(_StopVerify):
+        web_crawling.run_gau({"_settings": run_settings, "domains": [APEX], "domain": APEX})
+    return seen["urls"]
+
+
+def test_partial_gau_never_verifies_a_url_on_a_name_resolving_into_an_excluded_range(monkeypatch):
+    hosts = _hosts(_gau_verified_urls(_roe(EXCLUDED_RANGE), monkeypatch))
+    assert {LEGACY, MIXED, UNKNOWN}.isdisjoint(hosts)
+    assert {APEX, WWW} <= hosts
+
+
+@pytest.mark.parametrize("settings", NO_ROE)
+def test_partial_gau_verification_is_unchanged_without_an_exclusion(settings, monkeypatch):
+    baseline = _gau_verified_urls({}, monkeypatch)
+    assert _gau_verified_urls(settings, monkeypatch) == baseline
+    assert {LEGACY, MIXED} <= _hosts(baseline)

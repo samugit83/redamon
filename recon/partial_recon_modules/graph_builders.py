@@ -676,8 +676,16 @@ def graph_target_hosts(user_id: str, project_id: str, domains, domain_groups,
     group never listed. With the graph unreachable, only the apexes are
     returned. A caller not yet migrated (a single string) keeps its one root.
     IP mode: _ip_mode_target_hosts.
+
+    Every host then passes the RoE admission gate on the addresses the graph
+    resolved it to (_graph_address_gate): Gau's verifier and method probe
+    request each archived URL on these hosts, and resolve the name themselves.
+    Under RoE IP or CIDR entries those addresses are read even when the
+    graph's names are left out, and with no graph to read them from no host is
+    admitted (nothing shows it stays off the excluded ranges).
     """
     from graph_db import Neo4jClient
+    from recon.helpers.target_admission import admission_context, admit_targets
 
     roots = _as_roots(domains)
     if run_is_ip_mode():
@@ -694,26 +702,32 @@ def graph_target_hosts(user_id: str, project_id: str, domains, domain_groups,
             # Without scope groups a wildcard/single root keeps its apex, and a
             # literal group lists its apex only when it wrote ".".
             hosts.add(root)
-    if not include_graph or not roots:
+    address_rules = admission_context(_run_roe()).ip_rules
+    if not roots or not (include_graph or address_rules):
         return sorted(hosts)
 
     with Neo4jClient() as graph_client:
         if not graph_client.verify_connection():
             print("[!][Partial Recon] Neo4j not reachable, cannot fetch graph subdomains")
-            return sorted(hosts)
+            if not address_rules:
+                return sorted(hosts)
+            return sorted(admit_targets(_run_roe(), names=dict.fromkeys(hosts, ()),
+                                        module=_ADMISSION_MODULE, resolves_names=True).names)
         with graph_client.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (d:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(s:Subdomain)
-                WHERE toLower(d.name) IN $domains
-                RETURN d.name AS root, s.name AS sub
-                """,
-                domains=scope.orgs, uid=user_id, pid=project_id,
-            )
-            for record in result:
-                if scope.keeps(record["sub"], record["root"]):
-                    hosts.add(record["sub"])
-    return sorted(hosts)
+            if include_graph:
+                result = session.run(
+                    """
+                    MATCH (d:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(s:Subdomain)
+                    WHERE toLower(d.name) IN $domains
+                    RETURN d.name AS root, s.name AS sub
+                    """,
+                    domains=scope.orgs, uid=user_id, pid=project_id,
+                )
+                for record in result:
+                    if scope.keeps(record["sub"], record["root"]):
+                        hosts.add(record["sub"])
+            admits = _graph_address_gate(session, user_id, project_id)
+            return sorted(h for h in hosts if admits(h.strip().lower()))
 
 
 def _ip_mode_target_hosts(user_id: str, project_id: str, roots: list, include_graph: bool) -> list:
