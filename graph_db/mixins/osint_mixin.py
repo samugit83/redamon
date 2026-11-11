@@ -3014,19 +3014,26 @@ class OsintMixin:
                         # it ("1.2.3.4" -> "1-2-3-4", http_mixin), so a dotted
                         # Subdomain would be a duplicate host nothing else
                         # links to. Those fall through to the Domain.
+                        # A URL never creates the Subdomain (D2): a URL keeps
+                        # its host when merge_uncover_into_pipeline refuses the
+                        # name (RoE, group scope, non-routable), and partial
+                        # scans read every Subdomain back as a target. The
+                        # names the merge admitted were written above.
                         host = _urlparse(url).hostname or ""
+                        owned = False
                         if host and not _is_ip_address(host):
-                            session.run(
+                            rec = session.run(
                                 """
                                 MATCH (u:BaseURL {url: $base_url, user_id: $user_id, project_id: $project_id})
-                                MERGE (s:Subdomain {name: $host, user_id: $user_id, project_id: $project_id})
-                                ON CREATE SET s.source = 'uncover', s.status = 'unverified',
-                                              s.updated_at = datetime()
+                                MATCH (s:Subdomain {name: $host, user_id: $user_id, project_id: $project_id})
                                 MERGE (s)-[:HAS_BASE_URL]->(u)
+                                RETURN count(s) AS n
                                 """,
                                 base_url=base_url, host=host,
                                 user_id=user_id, project_id=project_id,
-                            )
+                            ).single()
+                            owned = bool(rec and rec["n"])
+                        if owned:
                             stats["relationships_created"] += 1
                         elif domain:
                             session.run(

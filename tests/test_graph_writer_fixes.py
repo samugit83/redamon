@@ -304,7 +304,7 @@ class TestUncoverEndpointsJoinTheGraph(unittest.TestCase):
         """An uncover URL on sub.example.com belongs to that host, not to the
         apex; the old code lost which host a URL was found on."""
         block = self._block()
-        self.assertIn("MERGE (s:Subdomain {name: $host,", block)
+        self.assertIn("MATCH (s:Subdomain {name: $host,", block)
         self.assertIn("[:HAS_BASE_URL]->(u)", block)
 
     def test_the_splitter_agrees_with_the_canonical_one(self):
