@@ -39,8 +39,12 @@ MCP_RELOAD_DEFERRED_MESSAGE = (
 
 
 def server_set_hash(servers) -> str:
+    """The identity of the toolset a server list loads. A disabled server loads no
+    tool and opens no connection, so it is left out: an owner whose only server is
+    disabled runs on the same toolset as an owner with none."""
+    loading = [s for s in (servers or []) if not (isinstance(s, dict) and s.get("enabled") is False)]
     return hashlib.sha256(
-        json.dumps(servers or [], sort_keys=True, default=str).encode("utf-8")
+        json.dumps(loading, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
 
 

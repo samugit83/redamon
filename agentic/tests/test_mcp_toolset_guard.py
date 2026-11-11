@@ -109,6 +109,15 @@ class GuardRules(_FreshGuard):
         self.guard.admit_run("owner-a", [SRV_A])
         self.assertTrue(self.guard.admit_reload(None, [SRV_A]))
 
+    def test_a_disabled_server_does_not_make_a_different_set(self):
+        # A disabled server loads no tool and opens no connection: its owner's toolset
+        # is the empty one, so it must not refuse an owner with no server at all.
+        disabled = {**SRV_A, "enabled": False}
+        self.assertEqual(server_set_hash([disabled]), server_set_hash([]))
+        self.assertNotEqual(server_set_hash([disabled, SRV_B]), server_set_hash([]))
+        self.guard.admit_run("owner-a", [disabled])
+        self.guard.admit_run("owner-b", [])
+
     def test_the_hash_ignores_key_order(self):
         self.assertEqual(server_set_hash([{"a": 1, "b": 2}]), server_set_hash([{"b": 2, "a": 1}]))
         self.assertEqual(server_set_hash(None), server_set_hash([]))
