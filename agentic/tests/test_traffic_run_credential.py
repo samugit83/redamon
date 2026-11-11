@@ -33,9 +33,9 @@ MASTER = "master-key-for-traffic-credential-tests"
 SCANNER = "scanner-key-for-traffic-credential-tests"
 
 
-def _tag(user_id="uA", project_id="pA", phase="exploitation"):
+def _tag(user_id="uA", project_id="pA", phase="exploitation", session_id="s1"):
     return sign_tag({"source": "agent", "user_id": user_id, "project_id": project_id,
-                     "session_id": "s1", "tool": "proxy_brain", "phase": phase}, MASTER)
+                     "session_id": session_id, "tool": "proxy_brain", "phase": phase}, MASTER)
 
 
 class _Base(unittest.TestCase):
@@ -71,8 +71,8 @@ class _Base(unittest.TestCase):
         self._e.stop()
 
     @staticmethod
-    def cred(ten="uA", pid="pA", aud="traffic"):
-        return mc.mint_run_credential(aud, ten, pid, "s1", mc.TRAFFIC_TTL_SECONDS)
+    def cred(ten="uA", pid="pA", aud="traffic", run="s1"):
+        return mc.mint_run_credential(aud, ten, pid, run, mc.TRAFFIC_TTL_SECONDS)
 
     def post(self, path, body, **headers):
         return self.client.post(path, json=body, headers=headers)
@@ -118,6 +118,27 @@ class TrafficRoutes(_Base):
                                         for line in logs.output), logs.output)
         self.assertEqual(self.queries, [])
         self.fetch.assert_not_awaited()
+
+    def test_refuse_a_credential_of_another_run(self):
+        """The tag carries its run's phase: a credential minted for another run of the same
+        user and project must not borrow it (the agent mints both for one call, run = session)."""
+        for path, body in _ROUTES.items():
+            with self.subTest(path=path):
+                with self.assertLogs("api", level="WARNING") as logs:
+                    res = self.post(path, body(_tag(session_id="s1")), **{"X-Redamon-Run": self.cred(run="s2")})
+                self.assertEqual(res.status_code, 403, res.text)
+                self.assertEqual(res.json()["code"], "run_credential_ctx_mismatch")
+                self.assertTrue(any("[rbac] run credential refused reason=ctx_mismatch" in line
+                                    for line in logs.output), logs.output)
+        self.assertEqual(self.queries, [])
+        self.fetch.assert_not_awaited()
+
+    def test_a_tag_without_a_session_takes_any_run_of_its_user_and_project(self):
+        # The agent falls back to the log session id or a random run id when the
+        # session id is blank, and then signs the tag without one.
+        res = self.post("/traffic/exec", _ROUTES["/traffic/exec"](_tag(session_id=None)),
+                        **{"X-Redamon-Run": self.cred(run="log-session-or-random")})
+        self.assertEqual(res.status_code, 200, res.text)
 
     def test_a_graph_credential_does_not_open_traffic(self):
         res = self.post("/traffic/exec", _ROUTES["/traffic/exec"](_tag()), **{"X-Redamon-Run": self.cred(aud="graph")})
@@ -173,6 +194,16 @@ class ProxyBrainGetsACredential(unittest.TestCase):
         self.assertLessEqual(claims["exp"], int(time.time()) + mc.TRAFFIC_TTL_SECONDS)
         self.assertNotEqual(sent["_redamon_ctx"], "llm-forged")
         self.assertEqual(sent["code"], "print(1)")
+
+    def test_the_credential_names_the_same_run_as_the_tag_it_rides_with(self):
+        from redamon_ctx import verify_tag
+        ex, tool = self._executor()
+        with mock.patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER}):
+            self._run(ex, {"code": "print(1)"})
+            sent = tool.ainvoke.call_args.args[0]
+            claims = mc.verify_run_credential(sent["_redamon_run"], "traffic")
+            tag = verify_tag(sent["_redamon_ctx"], {"agent": MASTER})
+        self.assertEqual(tag["session_id"], claims["run"])
 
     def test_no_credential_no_run(self):
         ex, tool = self._executor()

@@ -279,6 +279,54 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
             call = self._open()
         self.assertEqual(call.kwargs["additional_headers"], {"Authorization": "Bearer mcp-token-for-test"})
 
+    def test_the_credential_works_while_its_terminal_is_open_and_dies_when_it_closes(self):
+        """HD-19: the proxy records the credential's run on its socket; /graph/exec honours
+        the credential only while that socket is registered."""
+        from fastapi.responses import JSONResponse
+
+        ran = []
+
+        def respond(final, params):
+            ran.append(params)
+            return JSONResponse(content={"records": []})
+
+        def graph(token):
+            return self.client.post("/graph/exec", headers={"X-Redamon-Run": token},
+                                    json={"op": "types", "user_id": "uT", "project_id": "pT"})
+
+        connect = mock.MagicMock(side_effect=lambda *a, **k: _EchoKali())
+        with mock.patch.object(self.api.websockets, "connect", connect), \
+                mock.patch.object(self.api, "_graph_exec_respond", side_effect=respond):
+            with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uT', pid='pT')}") as ws:
+                ws.send_text("hello")
+                self.assertEqual(ws.receive_text(), "hello")
+                token = connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"]
+                run = mc.verify_run_credential(token, "graph")["run"]
+                [entry] = [e for e in self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT")]
+                self.assertEqual(entry.run, run)
+                open_res = graph(token)
+            closed_res = None
+            for _ in range(50):  # the proxy's finally forgets the socket once the browser side has gone
+                closed_res = graph(token)
+                if closed_res.status_code != 200:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(open_res.status_code, 200, open_res.text)
+        self.assertEqual(ran[0], {"tenant_user_id": "uT", "tenant_project_id": "pT"})
+        self.assertEqual(closed_res.status_code, 401, closed_res.text)
+        self.assertEqual(closed_res.json()["detail"]["code"], "run_credential_closed")
+        self.assertEqual(self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT"), [])
+
+    def test_a_terminal_opened_without_a_credential_records_no_run(self):
+        connect = mock.MagicMock(side_effect=lambda *a, **k: _EchoKali())
+        with mock.patch.dict(os.environ, {"INTERNAL_API_KEY": "changeme"}), \
+                mock.patch.object(self.api.websockets, "connect", connect):
+            with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uN', pid='pN')}") as ws:
+                ws.send_text("hello")
+                self.assertEqual(ws.receive_text(), "hello")
+                [entry] = self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uN")
+                self.assertIsNone(entry.run)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

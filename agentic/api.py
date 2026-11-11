@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
                        require_master_internal_auth, require_master_or_run_credential,
-                       run_credential_claims)
+                       run_credential_claims, set_run_liveness)
 from logging_config import setup_logging
 from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
 from agent_in_the_loop.broker import get_broker
@@ -3543,6 +3543,10 @@ async def _generate_validated_cypher(
 _GRAPH_GATE = require_master_or_run_credential("graph")
 _GRAPH_GATE_BILLED = require_master_or_run_credential("graph", billed=True)
 _TRAFFIC_GATE = require_master_or_run_credential("traffic")
+# A graph credential is honoured only while the terminal it was handed to is open:
+# the shell's environment is readable by every root process of the shared sandbox,
+# so a copy must die with that terminal (closed tab, /ws/close), not after 12 hours.
+set_run_liveness("graph", lambda claims: PROXIED_SOCKETS.holds_run(claims["run"], claims["ten"], claims["pid"]))
 
 
 @app.post(
@@ -5039,16 +5043,23 @@ def _verify_traffic_ctx(ctx: str) -> Optional[dict]:
 
 
 def _ctx_mismatch(claims: dict, run_cred) -> Optional[JSONResponse]:
-    """403 when the run credential names another user or project than the ctx tag.
+    """403 when the run credential names another user, project or run than the ctx tag.
 
     Both are minted by this agent for the same proxy_brain call, so a mismatch is
-    a credential copied from another run (they expire, the tag does not)."""
+    a credential or a tag copied from another run (they expire, the tag does not).
+    The run counts when the tag names its session (the credential's `run` is then
+    that session id): the tag carries the run's phase, which a credential of another
+    run must not borrow."""
     cred = run_credential_claims(run_cred)
-    if cred is None or (claims.get("user_id"), claims.get("project_id")) == (cred["ten"], cred["pid"]):
+    if cred is None:
+        return None
+    same_tenant = (claims.get("user_id"), claims.get("project_id")) == (cred["ten"], cred["pid"])
+    same_run = not claims.get("session_id") or claims["session_id"] == cred["run"]
+    if same_tenant and same_run:
         return None
     logger.warning("[rbac] run credential refused reason=ctx_mismatch aud=traffic")
     return JSONResponse(status_code=403, content={
-        "error": "the run credential and the traffic ctx name different tenants",
+        "error": "the run credential and the traffic ctx name different tenants or runs",
         "code": "run_credential_ctx_mismatch",
     })
 
@@ -5619,20 +5630,22 @@ async def kali_exec_cancel(job_id: str, project_id: str = Query(...)):
 _KALI_TERMINAL_WS_URL = os.environ.get("KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016")
 
 
-def _terminal_run_credential(claims: dict) -> str:
-    """The graph credential redagraph presents from this terminal, or "" when none
-    can be minted (a weak master key): the shell still opens, redagraph says why."""
+def _terminal_run_credential(claims: dict) -> tuple:
+    """(credential, run id) redagraph presents from this terminal, or ("", None) when
+    none can be minted (a weak master key): the shell still opens, redagraph says why.
+    The run id goes on the proxied socket, which keeps the credential alive."""
     import uuid
 
     from machine_credential import TERMINAL_TTL_SECONDS, CredentialRefused, mint_run_credential
 
+    run_id = uuid.uuid4().hex
     try:
         # Phase 5 makes `ten` the project's tenant rather than the ticket's user.
         return mint_run_credential("graph", str(claims["sub"]), str(claims["pid"]),
-                                   uuid.uuid4().hex, TERMINAL_TTL_SECONDS)
+                                   run_id, TERMINAL_TTL_SECONDS), run_id
     except (CredentialRefused, ValueError) as e:
         logger.warning("[rbac] terminal run credential not minted: %s", getattr(e, "code", type(e).__name__))
-        return ""
+        return "", None
 
 
 @app.websocket("/ws/kali-terminal")
@@ -5650,7 +5663,8 @@ async def kali_terminal_proxy(websocket: WebSocket):
     from the browser's self-asserted frame, and forwarded to the upstream, which
     admits only this proxy: it presents the MCP_AUTH_TOKEN bearer (NF-04). The
     upgrade also carries a graph run credential bound to that user and project,
-    which the shell's redagraph presents to /graph/exec (HD-19).
+    which the shell's redagraph presents to /graph/exec (HD-19); it is honoured
+    only while this socket stays registered.
     """
     from ws_ticket import authorize_ws
 
@@ -5679,14 +5693,17 @@ async def kali_terminal_proxy(websocket: WebSocket):
     # parameter would land in access logs.
     _mcp_token = os.environ.get("MCP_AUTH_TOKEN", "")
     upstream_headers = {}
+    _run_id = None
     if _mcp_token:
         upstream_headers["Authorization"] = f"Bearer {_mcp_token}"
-        _run_credential = _terminal_run_credential(claims)
+        _run_credential, _run_id = _terminal_run_credential(claims)
         if _run_credential:
             upstream_headers["X-Redamon-Run"] = _run_credential
 
     await websocket.accept()
-    PROXIED_SOCKETS.add(websocket, "kali-terminal", claims)
+    # Registered before the upstream dial, so the shell never holds a credential
+    # this socket does not yet keep alive; its `finally` removal ends it.
+    PROXIED_SOCKETS.add(websocket, "kali-terminal", claims, run=_run_id)
 
     close_code, close_reason = 1000, ""
     try:

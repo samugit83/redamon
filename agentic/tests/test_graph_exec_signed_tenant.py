@@ -7,7 +7,10 @@ graph and billed any user's model key. Now each takes
 `require_master_or_run_credential('graph')`: the master key (the webapp, which
 derives the tenant from its own database) keeps the body's ids; a run credential
 (the Kali terminal's redagraph) decides the tenant, the project and the key owner,
-and the body's ids are ignored; the scanner key alone opens neither.
+and the body's ids are ignored; the scanner key alone opens neither. A graph
+credential is good only while the terminal socket it was handed to is open (the
+proxy records its run on the socket), so one copied out of the shared sandbox
+dies with that terminal rather than 12 hours later.
 
 Run: ./agentic/run_tests.sh tests/test_graph_exec_signed_tenant.py
 """
@@ -31,6 +34,16 @@ import machine_credential as mc  # noqa: E402
 MASTER = "master-key-for-graph-credential-tests"
 SCANNER = "scanner-key-for-graph-credential-tests"
 LABELLED = "MATCH (d:Domain) RETURN d.name AS name"
+
+
+class _FakeSocket:
+    """A proxied browser socket: /ws/close closes it."""
+
+    def __init__(self):
+        self.closed = None
+
+    async def close(self, code=1000, reason=""):
+        self.closed = (code, reason)
 
 
 class _Base(unittest.TestCase):
@@ -57,15 +70,24 @@ class _Base(unittest.TestCase):
 
         self._r = mock.patch.object(self.api, "_graph_exec_respond", side_effect=respond)
         self._r.start()
+        # A graph credential is good only while the terminal it was handed to is open.
+        self.terminal = self.open_terminal()
 
     def tearDown(self):
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
         self._r.stop()
         self._e.stop()
         llm_guard.reset_state()
 
+    def open_terminal(self, sub="uA", pid="pA", run="term-1"):
+        ws = _FakeSocket()
+        self.api.PROXIED_SOCKETS.add(ws, "kali-terminal", {"sub": sub, "pid": pid, "sid": "s1"}, run=run)
+        self.addCleanup(self.api.PROXIED_SOCKETS.remove, ws)
+        return ws
+
     @staticmethod
-    def cred(ten="uA", pid="pA", aud="graph", ttl=600, now=None):
-        return mc.mint_run_credential(aud, ten, pid, "term-1", ttl, now=now)
+    def cred(ten="uA", pid="pA", aud="graph", ttl=600, now=None, run="term-1"):
+        return mc.mint_run_credential(aud, ten, pid, run, ttl, now=now)
 
     def exec_(self, body, **headers):
         return self.client.post("/graph/exec", json=body, headers=headers)
@@ -181,6 +203,79 @@ class TextToCypher(_Base):
         with mock.patch.object(llm_guard._daily_cap, "cap", 1):
             self.assertEqual(self.ask(**{"X-Redamon-Run": token}).status_code, 200)
             self.assertEqual(self.ask(**{"X-Redamon-Run": token}).status_code, 429)
+
+    def test_a_closed_terminals_credential_bills_nobody(self):
+        token = self.cred()
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
+        res = self.ask(**{"X-Redamon-Run": token})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "run_credential_closed")
+        self.build.assert_not_awaited()
+        # Refused before the token bucket and the daily cap count a call for the tenant.
+        self.assertNotIn("uA", llm_guard._daily_cap._state)
+
+
+class TheCredentialDiesWithItsTerminal(_Base):
+    """HD-19: a copied graph credential stops working when its terminal closes, not 12 hours later."""
+
+    def body(self):
+        return {"op": "types", "user_id": "uA", "project_id": "pA"}
+
+    def test_a_closed_terminal_socket_refuses_its_credential(self):
+        token = self.cred()
+        self.assertEqual(self.exec_(self.body(), **{"X-Redamon-Run": token}).status_code, 200)
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
+        with self.assertLogs("llm_guard", level="WARNING") as logs:
+            res = self.exec_(self.body(), **{"X-Redamon-Run": token})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "run_credential_closed")
+        self.assertTrue(any("[rbac] run credential refused reason=closed aud=graph" in line
+                            for line in logs.output), logs.output)
+        self.assertEqual(len(self.ran), 1)
+
+    def test_ws_close_ends_the_credential_of_the_sockets_it_closes(self):
+        token = self.cred()
+        self.assertEqual(self.exec_(self.body(), **{"X-Redamon-Run": token}).status_code, 200)
+        res = self.client.post("/ws/close", json={"user_id": "uA", "kinds": ["kali-terminal"]},
+                               headers={"X-Internal-Key": MASTER})
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["by_kind"], {"kali-terminal": 1})
+        self.assertIsNotNone(self.terminal.closed)
+        res = self.exec_(self.body(), **{"X-Redamon-Run": token})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "run_credential_closed")
+
+    def test_a_run_no_open_terminal_was_handed_is_refused(self):
+        res = self.exec_(self.body(), **{"X-Redamon-Run": self.cred(run="never-opened")})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "run_credential_closed")
+        self.assertEqual(self.ran, [])
+
+    def test_another_users_or_projects_open_terminal_does_not_keep_it_alive(self):
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
+        self.open_terminal(sub="uB", pid="pA", run="term-1")
+        self.open_terminal(sub="uA", pid="pB", run="term-1")
+        res = self.exec_(self.body(), **{"X-Redamon-Run": self.cred()})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(self.ran, [])
+
+    def test_an_open_terminal_with_no_credential_keeps_none_alive(self):
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
+        self.open_terminal(run=None)
+        res = self.exec_(self.body(), **{"X-Redamon-Run": self.cred()})
+        self.assertEqual(res.status_code, 401, res.text)
+
+    def test_the_master_key_needs_no_open_terminal(self):
+        self.api.PROXIED_SOCKETS.remove(self.terminal)
+        res = self.exec_(self.body(), **{"X-Internal-Key": MASTER})
+        self.assertEqual(res.status_code, 200, res.text)
+
+    def test_without_a_liveness_check_a_graph_credential_is_refused(self):
+        # Fail closed: a process that never said which terminals are open honours none.
+        with mock.patch.dict(llm_guard._RUN_LIVENESS, clear=True):
+            res = self.exec_(self.body(), **{"X-Redamon-Run": self.cred()})
+        self.assertEqual(res.status_code, 401, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "run_credential_closed")
 
 
 class RouteGates(_Base):

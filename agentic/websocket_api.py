@@ -649,6 +649,9 @@ class ProxiedSocket:
     pid: str
     sid: str
     opened_at: float = field(default_factory=time.time)
+    # The run of the graph credential a terminal's shell was handed: it is honoured
+    # only while this entry exists (holds_run).
+    run: Optional[str] = None
 
 
 class ProxiedSocketRegistry:
@@ -662,15 +665,22 @@ class ProxiedSocketRegistry:
         # By identity: two sockets of the same user, project and kind are two entries.
         self._entries: Dict[int, ProxiedSocket] = {}
 
-    def add(self, ws, kind: str, claims: dict) -> ProxiedSocket:
+    def add(self, ws, kind: str, claims: dict, run: Optional[str] = None) -> ProxiedSocket:
         if kind not in PROXIED_KINDS:
             raise ValueError(f"not a proxied socket kind: {kind!r}")
         entry = ProxiedSocket(
             ws=ws, kind=kind, sub=str(claims["sub"]),
             act=str(claims["act"]) if claims.get("act") else None,
-            pid=str(claims["pid"]), sid=str(claims["sid"]))
+            pid=str(claims["pid"]), sid=str(claims["sid"]), run=run or None)
         self._entries[id(ws)] = entry
         return entry
+
+    def holds_run(self, run: str, user_id: str, project_id: str) -> bool:
+        """Whether an open terminal socket was handed the graph credential of `run`,
+        for that user and project: a copy of the credential dies with the socket."""
+        return bool(run) and any(
+            e.kind == "kali-terminal" and e.run == run and e.sub == user_id and e.pid == project_id
+            for e in list(self._entries.values()))
 
     def remove(self, ws) -> None:
         entry = self._entries.get(id(ws))

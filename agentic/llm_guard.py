@@ -289,6 +289,22 @@ async def require_internal_auth_only(request: Request) -> None:
 RUN_CREDENTIAL_HEADER = "x-redamon-run"
 _RUN_GATES: dict = {}
 
+#: Audiences whose credential is honoured only while the run it names is open. A
+#: terminal's graph credential sits in its shell's environment, which every root
+#: process of the shared sandbox can read, so it must die with the terminal rather
+#: than live out its 12 hours.
+LIVE_RUN_AUDIENCES = frozenset({"graph"})
+#: aud -> check(claims) -> bool, set by the process that holds those runs (api.py:
+#: the open Kali terminal sockets). Unset, such a credential is refused.
+_RUN_LIVENESS: dict = {}
+
+
+def set_run_liveness(aud: str, check) -> None:
+    """Name the check that says whether a verified `aud` credential's run is still open."""
+    if aud not in LIVE_RUN_AUDIENCES:
+        raise ValueError(f"not a live-run audience: {aud!r}")
+    _RUN_LIVENESS[aud] = check
+
 
 def run_credential_refusal(code: str, aud: str, status: int = 401) -> HTTPException:
     """Log a refused run credential and build the answer the sandbox client reads."""
@@ -309,8 +325,10 @@ def require_master_or_run_credential(aud: str, *, billed: bool = False):
     body's. The bare scanner key opens nothing here: the sandbox no longer holds
     it, and a scan container has no business on these routes. A weak master key
     answers 503, as `require_configured_master_auth` does, since no credential can
-    be verified without it. `billed` adds the LLM token bucket and daily cap,
-    counted against the credential's tenant (the master key's: the body user).
+    be verified without it. A credential of a LIVE_RUN_AUDIENCES audience must
+    also name a run that is still open (`set_run_liveness`), else `closed`; this
+    runs before `billed` adds the LLM token bucket and daily cap, counted against
+    the credential's tenant (the master key's: the body user).
 
     One callable per (aud, billed), so a route can declare it in `dependencies`
     and also take its value as a parameter: FastAPI solves it once per request.
@@ -343,6 +361,10 @@ def require_master_or_run_credential(aud: str, *, billed: bool = False):
             claims = verify_run_credential(token, aud)
         except CredentialRefused as e:
             raise run_credential_refusal(e.code, aud)
+        if aud in LIVE_RUN_AUDIENCES:
+            live = _RUN_LIVENESS.get(aud)
+            if live is None or not live(claims):
+                raise run_credential_refusal("closed", aud)
         if billed:
             _enforce_llm_limits(request, claims["ten"])
         return claims
