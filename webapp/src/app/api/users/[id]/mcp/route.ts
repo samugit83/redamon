@@ -9,8 +9,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
-import { mcpServerSchema, validateMcpServers, type MCPServer } from '@/lib/mcp/schema'
+import { isStdioServer, mcpServerSchema, namesTokenEnvVar, validateMcpServers, type MCPServer } from '@/lib/mcp/schema'
 import { maskMcpServersForApi, restoreMaskedToken } from '@/lib/mcp/mask'
+import { actingAccount, ownerRunsStdio, stdioRefusal, tokenEnvVarRefusal } from '@/lib/mcp/userServerAccess'
 import { internalError } from '@/lib/routeErrors'
 import { reloadAgentMcp } from './reload'
 
@@ -32,7 +33,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     })
     const raw = (settings?.mcpServers as unknown) ?? []
     const servers = Array.isArray(raw) ? (raw as MCPServer[]) : []
-    return NextResponse.json({ servers: maskMcpServersForApi(servers) })
+    // The tab shows a member's saved stdio servers as not run, and offers stdio only to an admin.
+    return NextResponse.json({ servers: maskMcpServersForApi(servers), stdioAllowed: await ownerRunsStdio(id) })
   } catch (error) {
     return internalError(error, 'Failed to list MCP servers')
   }
@@ -44,6 +46,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
     const body = await request.json()
+
+    const refused = await refuseUserServer(request, id, body)
+    if (refused) return refused
 
     const parsed = mcpServerSchema.safeParse(body)
     if (!parsed.success) {
@@ -78,7 +83,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       create: { userId: id, mcpServers: next as unknown as object },
     })
 
-    const warnings = await reloadAgentMcp(next)
+    const warnings = await reloadAgentMcp(id, next)
     // Mask the literal token in the response so the UI shows the placeholder.
     const [returned] = maskMcpServersForApi([newServer])
     return NextResponse.json({
@@ -88,4 +93,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   } catch (error) {
     return internalError(error, 'Failed to add MCP server')
   }
+}
+
+/**
+ * A server the account may not save, whatever else it holds: one naming an agent
+ * variable as its bearer (OQ-R1, any owner) or a stdio server of a non-admin owner
+ * (NF-14). Null when it may go on to validation.
+ */
+export async function refuseUserServer(request: NextRequest, ownerId: string, body: unknown): Promise<NextResponse | null> {
+  if (namesTokenEnvVar(body)) return tokenEnvVarRefusal()
+  if (isStdioServer(body) && !(await ownerRunsStdio(ownerId))) {
+    return stdioRefusal({
+      actorId: await actingAccount(request), ownerId, serverId: (body as { id?: unknown }).id, via: 'save',
+    })
+  }
+  return null
 }

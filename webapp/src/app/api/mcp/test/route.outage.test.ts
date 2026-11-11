@@ -17,7 +17,13 @@ const fetchMock = vi.fn()
 
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => mockRequireUserAccess(...a),
+  requireSession: async () => ({ userId: 'u1', role: 'admin' }),
+  isInternalRequest: () => false,
 }))
+// SERVER is a stdio draft: its owner is an administrator, so the stdio rule (step 1.9,
+// route.test.ts) lets it through to the outage handling this file covers.
+vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: async (id: string) => ({ id, role: 'admin' }) }))
+vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn() }))
 vi.mock('@/lib/prisma', () => ({
   default: { userSettings: { findUnique: (...a: unknown[]) => mockUserSettingsFindUnique(...a) } },
 }))

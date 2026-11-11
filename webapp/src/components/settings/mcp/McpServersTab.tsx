@@ -8,6 +8,7 @@ import {
   TRANSPORTS,
   BUILTIN_RESERVED_TOOL_NAMES,
   SYSTEM_SERVER_IDS,
+  STDIO_ADMIN_ONLY_MESSAGE,
   type MCPServer,
   type ToolSpec,
   type Transport,
@@ -188,6 +189,9 @@ const LOAD_FAILED = "Couldn't load your MCP Tool Plugins"
 
 export default function McpServersTab({ userId, onDirtyChange }: Props) {
   const [servers, setServers] = useState<MCPServer[]>([])
+  // Whether this account's stdio servers run (an administrator's: NF-14). The server
+  // refuses the rest anyway; until it answers, nothing is greyed out.
+  const [stdioAllowed, setStdioAllowed] = useState(true)
   const [loading, setLoading] = useState(false)
   // Never a silent empty list: that reads as "nothing saved" and invites a duplicate.
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -238,6 +242,7 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
       if (r.ok) {
         const data = await r.json()
         setServers(Array.isArray(data.servers) ? data.servers : [])
+        setStdioAllowed(data.stdioAllowed !== false)
         setLoadError(null)
       } else {
         setLoadError(failureText(LOAD_FAILED, await readApiError(r, LOAD_FAILED)))
@@ -582,12 +587,14 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
             <div className={styles.presetsGrid}>
               {MCP_PRESETS.map(preset => {
                 const alreadyAdded = servers.some(s => s.id === preset.template.id)
+                const stdioRefused = !stdioAllowed && preset.template.transport === 'stdio'
                 return (
                   <button
                     key={preset.key}
                     className={styles.presetCard}
                     onClick={() => startFromPreset(preset)}
-                    title={preset.whyForRedamon}
+                    disabled={stdioRefused}
+                    title={stdioRefused ? STDIO_ADMIN_ONLY_MESSAGE : preset.whyForRedamon}
                   >
                     <div className={styles.presetCardTop}>
                       <span className={styles.presetCardLabel}>{preset.label}</span>
@@ -626,7 +633,10 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
               </tr>
             </thead>
             <tbody>
-              {servers.map(srv => (
+              {servers.map(srv => {
+                // Kept in the member's settings, never run: the agent is shared (NF-14).
+                const notRun = !stdioAllowed && srv.transport === 'stdio'
+                return (
                 <tr key={srv.id}>
                   <td>
                     <div className={styles.cellTitle}>{srv.name || srv.id}</div>
@@ -636,13 +646,15 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
                     <span className={styles.transportPill}>
                       {transportIcon(srv.transport)} {srv.transport}
                     </span>
+                    {notRun && <div className={styles.cellSub} role="note">{STDIO_ADMIN_ONLY_MESSAGE}</div>}
                   </td>
                   <td>{srv.tools.length}</td>
                   <td>
-                    <label className={styles.switch}>
+                    <label className={styles.switch} title={notRun ? STDIO_ADMIN_ONLY_MESSAGE : undefined}>
                       <input
                         type="checkbox"
-                        checked={srv.enabled}
+                        checked={srv.enabled && !notRun}
+                        disabled={notRun}
                         onChange={() => onToggleEnabled(srv)}
                       />
                       <span></span>
@@ -657,7 +669,8 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
                     </button>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}
@@ -802,7 +815,9 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
         <label className={styles.field}>
           <span>transport</span>
           <select value={editing.transport} onChange={e => updateField('transport', e.target.value as Transport)}>
-            {TRANSPORTS.map(t => <option key={t} value={t}>{t}</option>)}
+            {TRANSPORTS.map(t => (
+              <option key={t} value={t} disabled={t === 'stdio' && !stdioAllowed && editing.transport !== 'stdio'}>{t}</option>
+            ))}
           </select>
         </label>
 

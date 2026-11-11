@@ -67,6 +67,33 @@ export const toolSpecSchema = z.object({
 
 export const MASK_PREFIX = '••••'
 
+/**
+ * A stdio server runs its `command` as root inside the agent, which holds every
+ * tenant's data and the master secrets (NF-14, OQ-48): only an administrator's
+ * are saved, tested or loaded. A member's saved ones stay in their settings.
+ */
+export const STDIO_ADMIN_ONLY_CODE = 'stdio_admin_only'
+export const STDIO_ADMIN_ONLY_MESSAGE =
+  "stdio servers run inside the agent with every user's data; ask an administrator"
+
+/**
+ * `auth.token_env_var` names one of the agent's own environment variables, so a
+ * server naming INTERNAL_API_KEY sent the master key to its own URL (OQ-R1): no
+ * user's server may carry it. The agent ignores it on a saved one too.
+ */
+export const TOKEN_ENV_VAR_CODE = 'token_env_var_refused'
+export const TOKEN_ENV_VAR_MESSAGE =
+  "auth.token_env_var names one of the agent's own environment variables and is not accepted: paste the token instead"
+
+export function isStdioServer(srv: unknown): boolean {
+  return !!srv && typeof srv === 'object' && (srv as { transport?: unknown }).transport === 'stdio'
+}
+
+export function namesTokenEnvVar(srv: unknown): boolean {
+  const auth = srv && typeof srv === 'object' ? (srv as { auth?: unknown }).auth : undefined
+  return !!auth && typeof auth === 'object' && !!(auth as { token_env_var?: unknown }).token_env_var
+}
+
 export const bearerAuthSchema = z.object({
   type: z.literal('bearer'),
   token: z.string().optional(),

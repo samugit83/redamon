@@ -130,7 +130,7 @@
   {"path":"/api/mcp-server","guard":"public","methods":["GET","POST","DELETE"]},
   {"path":"/api/mcp/manifest","guard":"session","methods":["GET"]},
   {"path":"/api/mcp/reload","guard":"session","methods":["POST"]},
-  {"path":"/api/mcp/test","guard":"user","methods":["POST"],"note":"requireUserAccess runs only when the body names a userId, so it is login-only in effect (NF-14, step 1.9)"},
+  {"path":"/api/mcp/test","guard":"user","methods":["POST"]},
   {"path":"/api/models","guard":"effective-user","methods":["POST"]},
   {"path":"/api/mute-rule-presets","guard":"effective-user","methods":["GET","POST"]},
   {"path":"/api/mute-rule-presets/[id]","guard":"effective-user","methods":["GET","PATCH","DELETE"]},

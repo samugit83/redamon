@@ -1,4 +1,5 @@
 import { agentFetch } from '@/lib/agentFetch'
+import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { followUpWarning, type SaveWarning } from '../settings/saveWarnings'
 
 /**
@@ -11,9 +12,11 @@ const RELOAD_TIMEOUT_MS = 10_000
 /**
  * Ask the running agent to pick up the saved MCP Tool Plugins. Awaited, so a
  * failed reload (agent down, internal key mismatch, a tool-name collision the
- * agent refuses) reaches the person instead of reading as applied.
+ * agent refuses) reaches the person instead of reading as applied. A non-admin
+ * owner's stdio servers are never sent (NF-14): they stay saved, unrun.
  */
-export async function reloadAgentMcp(userMcpServers: unknown): Promise<SaveWarning[]> {
+export async function reloadAgentMcp(ownerId: string, saved: unknown): Promise<SaveWarning[]> {
+  const userMcpServers = serversForAgent(ownerId, saved, await ownerRunsStdio(ownerId))
   const warning = await followUpWarning('agent', 'The agent did not reload its MCP Tool Plugins', () =>
     agentFetch('/mcp/reload', {
       method: 'POST',

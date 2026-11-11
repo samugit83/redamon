@@ -247,3 +247,42 @@ describe('ID-25: re-pointing a saved server asks for the password (review of 1.6
     await waitFor(() => expect(screen.queryByText('Edit MCP Tool Plugin: probe')).toBeNull())
   })
 })
+
+describe('stdio servers are an administrator\'s (NF-14, OQ-48)', () => {
+  const STDIO_ONLY = "stdio servers run inside the agent with every user's data; ask an administrator"
+
+  test('a member sees a saved stdio server as not run, with the reason, and cannot switch it on', async () => {
+    answers.list = json(200, { servers: [SERVER], stdioAllowed: false })
+    render(<McpServersTab userId="u1" />)
+    const row = (await screen.findByText('Probe')).closest('tr') as HTMLElement
+    expect(within(row).getByText(STDIO_ONLY)).toBeTruthy()
+    const toggle = within(row).getByRole('checkbox') as HTMLInputElement
+    expect(toggle.disabled).toBe(true)
+    expect(toggle.checked).toBe(false)
+  })
+
+  test('a member is offered no stdio preset and no stdio transport', async () => {
+    answers.list = json(200, { servers: [SERVER], stdioAllowed: false })
+    render(<McpServersTab userId="u1" />)
+    await screen.findByText('Probe')
+    const stdioPresets = screen.getAllByText('stdio').map(el => el.closest('button')).filter(Boolean) as HTMLButtonElement[]
+    expect(stdioPresets.length).toBeGreaterThan(0)
+    for (const card of stdioPresets) {
+      expect(card.disabled).toBe(true)
+      expect(card.title).toBe(STDIO_ONLY)
+    }
+    fireEvent.click(screen.getByText('Add MCP'))
+    const option = (await screen.findByRole('option', { name: 'stdio' })) as HTMLOptionElement
+    expect(option.disabled).toBe(true)
+  })
+
+  test('an administrator keeps every stdio control', async () => {
+    answers.list = json(200, { servers: [SERVER], stdioAllowed: true })
+    render(<McpServersTab userId="u1" />)
+    const row = (await screen.findByText('Probe')).closest('tr') as HTMLElement
+    expect(within(row).queryByText(STDIO_ONLY)).toBeNull()
+    expect((within(row).getByRole('checkbox') as HTMLInputElement).disabled).toBe(false)
+    fireEvent.click(screen.getByText('Add MCP'))
+    expect(((await screen.findByRole('option', { name: 'stdio' })) as HTMLOptionElement).disabled).toBe(false)
+  })
+})

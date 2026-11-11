@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
 import { mcpServerSchema, validateMcpServers, type MCPServer } from '@/lib/mcp/schema'
-import { maskMcpServersForApi, restoreMaskedToken } from '../route'
+import { maskMcpServersForApi, refuseUserServer, restoreMaskedToken } from '../route'
 import { internalError } from '@/lib/routeErrors'
 import { mcpServerEndpointChange, mcpServerSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
@@ -26,6 +26,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     // The step-up password rides with the save and is never part of the server.
     const { stepUpPassword, ...body } = await request.json()
+
+    const refused = await refuseUserServer(request, id, body)
+    if (refused) return refused
 
     // Look up the existing record first so we can restore the literal auth
     // token if the user submitted a masked placeholder. This must happen
@@ -87,7 +90,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       data: { mcpServers: next as unknown as object },
     })
 
-    const warnings = await reloadAgentMcp(next)
+    const warnings = await reloadAgentMcp(id, next)
     const [returned] = maskMcpServersForApi([updated])
     return NextResponse.json({
       server: returned, servers: maskMcpServersForApi(next),
@@ -120,7 +123,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       data: { mcpServers: next as unknown as object },
     })
 
-    const warnings = await reloadAgentMcp(next)
+    const warnings = await reloadAgentMcp(id, next)
     // Masked like every other answer here: the remaining servers hold literal tokens.
     return NextResponse.json({ servers: maskMcpServersForApi(next), ...(warnings.length ? { warnings } : {}) })
   } catch (error) {

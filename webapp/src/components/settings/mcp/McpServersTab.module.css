@@ -369,9 +369,15 @@
   min-height: 88px;
 }
 
-.presetCard:hover {
+.presetCard:hover:not(:disabled) {
   border-color: var(--accent-primary);
   transform: translateY(-1px);
+}
+
+/* A stdio preset a member cannot add (NF-14): the title says why. */
+.presetCard:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .presetCardTop {
