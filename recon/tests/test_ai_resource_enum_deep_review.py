@@ -18,8 +18,14 @@ exact failure modes I describe above.
 """
 from __future__ import annotations
 
+import os
+import re
 import sys
+import uuid
 from pathlib import Path
+from unittest import mock
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -461,32 +467,55 @@ def test_annotator_idempotent_repeat_runs():
 
 
 # ===========================================================================
-# Mixin smoke — Endpoint method preservation under partial recon
+# Live Neo4j — the writers, the partial module and the report's queries
 # ===========================================================================
+# These need the stack's database. They read NEO4J_URI / NEO4J_USER /
+# NEO4J_PASSWORD like the *_graph_live tests (there is no default password) and
+# skip when the driver, the password or the database is missing. To run them:
+#
+#   docker run --rm --network redamon-network -v "$PWD:/repo" -w /repo/recon \
+#     -e PYTHONPATH=/repo/recon:/repo -e NEO4J_URI=bolt://neo4j:7687 \
+#     -e NEO4J_USER -e NEO4J_PASSWORD --entrypoint python redamon-recon \
+#     -m pytest tests/test_ai_resource_enum_deep_review.py -m live -v
+#
+# Each one writes into a throwaway project that its fixture deletes.
+
+LIVE_ROOT = "example.com"
+LIVE_HOST = "api.example.com"
+LIVE_BASE = f"https://{LIVE_HOST}"
+CHAT = "/v1/chat/completions"
+
 
 def _neo4j_driver():
+    """A driver for the stack's Neo4j, or a pytest skip when there is none."""
     try:
         from neo4j import GraphDatabase  # type: ignore
-    except Exception:
-        return None
+    except ImportError:
+        pytest.skip("neo4j driver not installed")
+    password = os.getenv("NEO4J_PASSWORD")
+    if not password:
+        pytest.skip("NEO4J_PASSWORD not set")
+    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    drv = GraphDatabase.driver(uri, auth=(os.getenv("NEO4J_USER", "neo4j"), password))
     try:
-        drv = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "changeme123"))
         drv.verify_connectivity()
-        return drv
     except Exception:
-        return None
+        drv.close()
+        pytest.skip(f"no Neo4j reachable at {uri}")
+    return drv
 
 
-def _cleanup(session, uid: str, pid: str):
-    session.run(
-        """
-        MATCH (n)
-        WHERE (n:BaseURL OR n:Endpoint OR n:Parameter OR n:Technology)
-          AND n.user_id = $u AND n.project_id = $p
-        DETACH DELETE n
-        """,
-        u=uid, p=pid,
-    )
+@pytest.fixture
+def live_graph():
+    """(driver, user_id, project_id) on a throwaway project, deleted afterwards."""
+    drv = _neo4j_driver()
+    uid, pid = "lap2-deep-user", f"lap2-deep-{uuid.uuid4().hex[:8]}"
+    try:
+        yield drv, uid, pid
+    finally:
+        with drv.session() as s:
+            s.run("MATCH (n {user_id: $u, project_id: $p}) DETACH DELETE n", u=uid, p=pid)
+        drv.close()
 
 
 def _resource_mixin_instance(driver):
@@ -499,150 +528,82 @@ def _resource_mixin_instance(driver):
     return _Scratch(driver)
 
 
-def test_mixin_preserves_post_endpoint_when_classifier_writes_ai_props():
-    """Bug regression: partial-recon classifier loads a POST endpoint from
-    Neo4j, runs the classifier, then writes back. The mixin must update the
-    existing POST endpoint, NOT create a new GET endpoint."""
-    drv = _neo4j_driver()
-    if drv is None:
-        print("SKIP: test_mixin_preserves_post_endpoint_when_classifier_writes_ai_props (neo4j unreachable)")
-        return
-    uid, pid = "lap2-deep-user", "lap2-deep-method-preservation"
-    try:
-        with drv.session() as s:
-            _cleanup(s, uid, pid)
-        mixin = _resource_mixin_instance(drv)
-        # First call: simulate the existing pipeline creating a POST endpoint
-        recon_data_initial = {
-            "resource_enum": {
-                "by_base_url": {
-                    "https://api.test.invalid": {
-                        "endpoints": {
-                            "/v1/chat/completions": {
-                                "methods": ["POST"],
-                                "parameters": {"query": [], "body": [{"name": "messages"}], "path": []},
-                                "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0},
-                            }
-                        },
-                        "summary": {"methods": {"POST": 1}, "categories": {}},
-                    }
-                }
-            }
-        }
-        mixin.update_graph_from_resource_enum(recon_data_initial, uid, pid)
-
-        # Second call: simulate the partial-recon classifier writing back ONLY
-        # the AI properties — it should NOT change the method or duplicate.
-        recon_data_partial = {
-            "resource_enum": {
-                "by_base_url": {
-                    "https://api.test.invalid": {
-                        "endpoints": {
-                            "/v1/chat/completions": {
-                                "methods": ["POST"],  # Same method!
-                                "ai_interface_type": "llm-chat",
-                                "parameters": {"query": [], "body": [{"name": "messages", "is_ai_prompt_injectable": True}], "path": []},
-                                "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0},
-                            }
-                        },
-                        "summary": {"methods": {"POST": 1}, "categories": {}},
-                    }
-                }
-            }
-        }
-        mixin.update_graph_from_resource_enum(recon_data_partial, uid, pid)
-
-        with drv.session() as s:
-            rows = s.run(
-                """
-                MATCH (e:Endpoint {path:'/v1/chat/completions',
-                                   baseurl:'https://api.test.invalid',
-                                   user_id:$u, project_id:$p})
-                RETURN e.method AS method, e.ai_interface_type AS t
-                ORDER BY e.method
-                """,
-                u=uid, p=pid,
-            ).data()
-            assert len(rows) == 1, f"expected 1 endpoint after re-run, got {len(rows)}: {rows}"
-            assert rows[0]["method"] == "POST"
-            assert rows[0]["t"] == "llm-chat"
-            _cleanup(s, uid, pid)
-    finally:
-        drv.close()
+def _live_crawl(endpoints: dict) -> dict:
+    """A resource_enum recon payload for LIVE_BASE: {path: endpoint entry}."""
+    return {"domain": LIVE_ROOT, "subdomains": [LIVE_HOST],
+            "resource_enum": {"by_base_url": {LIVE_BASE: {"endpoints": endpoints}}, "forms": []}}
 
 
-def test_mixin_coalesce_does_not_clobber_existing_ai_props_when_param_off():
-    """Re-running with the param toggle off should NOT erase previously
-    stamped is_ai_prompt_injectable values. Tested via COALESCE in the MERGE."""
-    drv = _neo4j_driver()
-    if drv is None:
-        print("SKIP: test_mixin_coalesce_does_not_clobber_existing_ai_props_when_param_off (neo4j unreachable)")
-        return
-    uid, pid = "lap2-deep-user", "lap2-deep-coalesce"
-    try:
-        with drv.session() as s:
-            _cleanup(s, uid, pid)
-        mixin = _resource_mixin_instance(drv)
+def _chat(**ai) -> dict:
+    """The crawl's POST chat endpoint with its `messages` body parameter."""
+    messages = {"name": "messages"}
+    if "is_ai_prompt_injectable" in ai:
+        messages["is_ai_prompt_injectable"] = ai.pop("is_ai_prompt_injectable")
+    return {"methods": ["POST"], **ai,
+            "parameters": {"query": [], "body": [messages], "path": []},
+            "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0}}
 
-        # Run 1: classifier stamped is_ai_prompt_injectable=true
-        run1 = {
-            "resource_enum": {
-                "by_base_url": {
-                    "https://api.test.invalid": {
-                        "endpoints": {
-                            "/v1/chat/completions": {
-                                "methods": ["POST"],
-                                "ai_interface_type": "llm-chat",
-                                "parameters": {"query": [], "body": [{"name": "messages", "is_ai_prompt_injectable": True}], "path": []},
-                                "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0},
-                            }
-                        },
-                        "summary": {"methods": {"POST": 1}, "categories": {}},
-                    }
-                }
-            }
-        }
-        mixin.update_graph_from_resource_enum(run1, uid, pid)
 
-        # Run 2: classifier-off (no AI keys on the param dict)
-        run2 = {
-            "resource_enum": {
-                "by_base_url": {
-                    "https://api.test.invalid": {
-                        "endpoints": {
-                            "/v1/chat/completions": {
-                                "methods": ["POST"],
-                                # No ai_interface_type, no AI keys on param
-                                "parameters": {"query": [], "body": [{"name": "messages"}], "path": []},
-                                "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0},
-                            }
-                        },
-                        "summary": {"methods": {"POST": 1}, "categories": {}},
-                    }
-                }
-            }
-        }
-        mixin.update_graph_from_resource_enum(run2, uid, pid)
+def _chat_rows(drv, uid, pid) -> list:
+    with drv.session() as s:
+        return s.run(
+            """
+            MATCH (e:Endpoint {path: $path, baseurl: $b, user_id: $u, project_id: $p})
+            RETURN e.method AS method, e.ai_interface_type AS t, e.has_parameters AS has_params
+            ORDER BY e.method
+            """,
+            path=CHAT, b=LIVE_BASE, u=uid, p=pid,
+        ).data()
 
-        with drv.session() as s:
-            row = s.run(
-                """
-                MATCH (p:Parameter {name:'messages', position:'body',
-                                    endpoint_path:'/v1/chat/completions',
-                                    baseurl:'https://api.test.invalid',
-                                    user_id:$u, project_id:$p})
-                RETURN p.is_ai_prompt_injectable AS flag
-                """,
-                u=uid, p=pid,
-            ).single()
-            assert row is not None
-            # COALESCE should have preserved the True from run 1
-            assert row["flag"] is True, (
-                f"COALESCE should preserve existing AI prop value, got {row['flag']!r}"
-            )
-            _cleanup(s, uid, pid)
-    finally:
-        drv.close()
+
+def _messages_flag(drv, uid, pid):
+    with drv.session() as s:
+        row = s.run(
+            """
+            MATCH (p:Parameter {name: 'messages', position: 'body', endpoint_path: $path,
+                                baseurl: $b, user_id: $u, project_id: $p})
+            RETURN p.is_ai_prompt_injectable AS flag
+            """,
+            path=CHAT, b=LIVE_BASE, u=uid, p=pid,
+        ).single()
+    assert row is not None, "the messages Parameter is missing"
+    return row["flag"]
+
+
+@pytest.mark.live
+def test_mixin_preserves_post_endpoint_when_classifier_writes_ai_props(live_graph):
+    """Bug regression: the partial classifier loads a POST endpoint from Neo4j,
+    classifies it and writes the AI fields back. The write must tag the
+    existing POST endpoint, not create a GET one beside it."""
+    drv, uid, pid = live_graph
+    mixin = _resource_mixin_instance(drv)
+    mixin.update_graph_from_resource_enum(_live_crawl({CHAT: _chat()}), uid, pid)
+
+    # What run_endpoint_ai_classifier hands its writer for that endpoint.
+    stats = mixin.update_graph_from_endpoint_ai_classifier(
+        {LIVE_BASE: {"endpoints": {CHAT: {
+            "methods": ["POST"], "ai_interface_type": "llm-chat",
+            "parameters": {"body": [{"name": "messages", "is_ai_prompt_injectable": True}]}}}}},
+        uid, pid)
+
+    assert stats["errors"] == []
+    assert _chat_rows(drv, uid, pid) == [{"method": "POST", "t": "llm-chat", "has_params": True}]
+    assert _messages_flag(drv, uid, pid) is True
+
+
+@pytest.mark.live
+def test_mixin_coalesce_does_not_clobber_existing_ai_props_when_param_off(live_graph):
+    """A later crawl with the classifier off (no AI keys on the endpoint or the
+    parameter) must not erase the AI fields an earlier write stamped."""
+    drv, uid, pid = live_graph
+    mixin = _resource_mixin_instance(drv)
+    mixin.update_graph_from_resource_enum(
+        _live_crawl({CHAT: _chat(ai_interface_type="llm-chat", is_ai_prompt_injectable=True)}), uid, pid)
+
+    mixin.update_graph_from_resource_enum(_live_crawl({CHAT: _chat()}), uid, pid)
+
+    assert _chat_rows(drv, uid, pid) == [{"method": "POST", "t": "llm-chat", "has_params": True}]
+    assert _messages_flag(drv, uid, pid) is True
 
 
 # ===========================================================================
@@ -789,8 +750,7 @@ def test_prisma_schema_has_all_5_columns():
     """The Prisma schema must declare all 5 columns with @default(true)."""
     schema_path = PROJECT_ROOT / "webapp" / "prisma" / "schema.prisma"
     if not schema_path.exists():
-        print(f"SKIP: schema.prisma not found at {schema_path}")
-        return
+        pytest.skip(f"schema.prisma not found at {schema_path}")
     source = schema_path.read_text()
     for field in (
         "resourceEnumAiClassifierEnabled",
@@ -824,143 +784,92 @@ def test_parent_ai_map_does_not_normalise_default_ports():
     assert m.get("https://host.test") is True
 
 
-def test_queryai_surface_cypher_syntax_valid():
-    """Smoke-test the queryAiSurface Cypher: EXPLAIN against live Neo4j
-    confirms the query parses. The query uses property keys (ai_interface_type,
-    is_ai_rag_ingest, is_ai_prompt_injectable) that may not exist yet — EXPLAIN
-    treats that as a warning, not an error."""
-    drv = _neo4j_driver()
-    if drv is None:
-        print("SKIP: test_queryai_surface_cypher_syntax_valid (neo4j unreachable)")
-        return
-    queries = [
-        # rollup
-        """MATCH (e:Endpoint {project_id: $pid})
-           WHERE e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm'
-           RETURN e.ai_interface_type AS interfaceType, count(*) AS count
-           ORDER BY count DESC""",
-        # rag count
-        """MATCH (e:Endpoint {project_id: $pid}) WHERE e.is_ai_rag_ingest = true
-           RETURN count(e) AS n""",
-        # prompt-injectable param count
-        """MATCH (p:Parameter {project_id: $pid}) WHERE p.is_ai_prompt_injectable = true
-           RETURN count(p) AS n""",
-        # per-endpoint detail
-        """MATCH (b:BaseURL {project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
-           WHERE (e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm')
-              OR e.is_ai_rag_ingest = true
-           OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
-             WHERE p.is_ai_prompt_injectable = true
-           WITH b, e, collect(DISTINCT p.name) AS promptParams
-           RETURN b.url AS baseUrl, e.path AS path, e.ai_interface_type AS interfaceType,
-                  COALESCE(e.is_ai_rag_ingest, false) AS isRagIngest, promptParams
-           ORDER BY interfaceType, baseUrl, path
-           LIMIT 50""",
-    ]
-    try:
-        with drv.session() as s:
-            for q in queries:
-                # EXPLAIN parses the query without running it
-                s.run("EXPLAIN " + q, pid="lap2-cypher-smoke").consume()
-    finally:
-        drv.close()
+REPORT_DATA = PROJECT_ROOT / "webapp" / "src" / "lib" / "report" / "reportData.ts"
 
 
-def test_e2e_partial_recon_path_runs_against_seeded_graph():
-    """End-to-end smoke for the partial-recon flow:
-    1. Seed a graph with a POST endpoint + params (no AI tags yet)
-    2. Invoke the partial-recon flow directly
-    3. Verify the original endpoint got AI-tagged in place (not duplicated)
+def _report_ai_surface_queries() -> list:
+    """The Cypher strings the report's queryAiSurface runs, read from its source."""
+    if not REPORT_DATA.exists():
+        pytest.skip(f"webapp source not mounted at {REPORT_DATA}")
+    source = REPORT_DATA.read_text()
+    start = source.index("async function queryAiSurface(")
+    end = source.find("\nasync function ", start + 1)
+    return re.findall(r"session\.run\(\s*`([^`]*)`", source[start:end if end != -1 else None])
+
+
+@pytest.mark.live
+def test_report_ai_surface_queries_read_what_the_writers_wrote(live_graph):
+    """The client report's AI-surface section (queryAiSurface) over a graph the
+    full run's annotator and writer built: the rollup leaves out the 'non-llm'
+    sentinel, the RAG and prompt-parameter counts and the per-endpoint detail
+    name exactly the endpoints and parameter the classifier tagged."""
+    from recon.main_recon_modules.resource_enum import _annotate_ai_endpoint_classifier
+
+    drv, uid, pid = live_graph
+    organized = _make_organized(LIVE_BASE, {
+        CHAT: _chat(),
+        "/v1/vector_stores": {"methods": ["POST"], "parameters": {"query": [], "body": [], "path": []}},
+        "/login": {"methods": ["GET"], "parameters": {"query": [{"name": "user"}], "body": [], "path": []}},
+    })
+    _annotate_ai_endpoint_classifier(organized, ON, {})
+    stats = _resource_mixin_instance(drv).update_graph_from_resource_enum(
+        {"domain": LIVE_ROOT, "subdomains": [LIVE_HOST], "resource_enum": {**organized, "forms": []}}, uid, pid)
+    assert stats["errors"] == []
+
+    queries = _report_ai_surface_queries()
+    assert len(queries) >= 4, "queryAiSurface no longer starts with rollup, RAG, parameter and detail queries"
+    rollup, rag, params, detail = queries[:4]
+    with drv.session() as s:
+        def run(q):
+            return s.run(q, pid=pid).data()
+
+        assert run(rollup) == [{"interfaceType": "llm-chat", "count": 1}]
+        assert run(rag) == [{"n": 1}]
+        assert run(params) == [{"n": 1}]
+        assert run(detail) == [
+            {"baseUrl": LIVE_BASE, "path": CHAT, "interfaceType": "llm-chat",
+             "isRagIngest": False, "promptParams": ["messages"]},
+            {"baseUrl": LIVE_BASE, "path": "/v1/vector_stores", "interfaceType": "non-llm",
+             "isRagIngest": True, "promptParams": []},
+        ]
+        # The rest of the section's queries (some splice in the mute filter)
+        # must at least parse.
+        for q in queries[4:]:
+            if "${" not in q:
+                s.run("EXPLAIN " + q, pid=pid).consume()
+
+
+@pytest.mark.live
+def test_e2e_partial_recon_path_runs_against_seeded_graph(live_graph):
+    """End-to-end run of the partial-recon module over a crawled graph:
+    1. Seed a POST endpoint + its parameter (no AI tags yet) with the crawl writer
+    2. Run run_endpoint_ai_classifier with the scope partial_recon prepares
+    3. The original endpoint is AI-tagged in place (not duplicated), and what
+       the crawl measured (has_parameters) is untouched
     """
-    drv = _neo4j_driver()
-    if drv is None:
-        print("SKIP: test_e2e_partial_recon_path_runs_against_seeded_graph (neo4j unreachable)")
-        return
-    uid, pid = "lap2-deep-user", "lap2-deep-e2e-partial"
+    import recon.partial_recon as pr
+    from recon.partial_recon_modules.endpoint_ai_classification import run_endpoint_ai_classifier
+    from recon.partial_recon_modules.helpers import set_project_scope, set_run_roe
+
+    drv, uid, pid = live_graph
+    _resource_mixin_instance(drv).update_graph_from_resource_enum(_live_crawl({CHAT: _chat()}), uid, pid)
+
+    settings = {"TARGET_DOMAIN": LIVE_ROOT, "IP_MODE": False, "DOMAIN_BATCH_MODE": True,
+                "VERIFY_DOMAIN_OWNERSHIP": False, "ROE_ENABLED": False,
+                "SCOPE_GROUPS": [{"scanRoot": LIVE_ROOT, "orgDomain": LIVE_ROOT, "mode": "enumerate",
+                                  "includeRoot": True, "exactHosts": []}]}
+    cfg = {"tool_id": "EndpointAiClassifier", "domains": [LIVE_ROOT], "include_graph_targets": True}
     try:
-        with drv.session() as s:
-            _cleanup(s, uid, pid)
-        mixin = _resource_mixin_instance(drv)
-        # Seed: one POST endpoint at /v1/chat/completions + 'messages' param.
-        # NO AI tags applied yet.
-        seed = {
-            "resource_enum": {
-                "by_base_url": {
-                    "https://api.test.invalid": {
-                        "endpoints": {
-                            "/v1/chat/completions": {
-                                "methods": ["POST"],
-                                "parameters": {"query": [], "body": [{"name": "messages"}], "path": []},
-                                "parameter_count": {"total": 1, "query": 0, "body": 1, "path": 0},
-                            }
-                        },
-                        "summary": {"methods": {"POST": 1}, "categories": {}},
-                    }
-                }
-            }
-        }
-        mixin.update_graph_from_resource_enum(seed, uid, pid)
-
-        # Now invoke the partial-recon flow (simulated — we replicate its key
-        # steps without going through Docker / config files). Neo4jClient
-        # reads NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD from env, so set them
-        # the same way the orchestrator does.
-        import os
-        prev = {
-            k: os.environ.get(k)
-            for k in ("USER_ID", "PROJECT_ID", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD")
-        }
-        os.environ["USER_ID"] = uid
-        os.environ["PROJECT_ID"] = pid
-        os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
-        os.environ.setdefault("NEO4J_USER", "neo4j")
-        os.environ.setdefault("NEO4J_PASSWORD", "changeme123")
-        try:
-            from recon.partial_recon_modules.endpoint_ai_classification import run_endpoint_ai_classifier
-            run_endpoint_ai_classifier({})
-        finally:
-            for k, v in prev.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-
-        # Verify: same POST endpoint, now AI-tagged, no duplicate.
-        with drv.session() as s:
-            rows = s.run(
-                """
-                MATCH (e:Endpoint {path:'/v1/chat/completions',
-                                   baseurl:'https://api.test.invalid',
-                                   user_id:$u, project_id:$p})
-                RETURN e.method AS method, e.ai_interface_type AS t,
-                       e.has_parameters AS has_params
-                """,
-                u=uid, p=pid,
-            ).data()
-            assert len(rows) == 1, f"expected 1 endpoint, got {len(rows)}: {rows}"
-            assert rows[0]["method"] == "POST", f"method clobbered to {rows[0]['method']!r}"
-            assert rows[0]["t"] == "llm-chat", f"ai_interface_type wrong: {rows[0]['t']!r}"
-            # Bug #3 regression: has_parameters must still be True (parameter_count
-            # was recomputed from real params, not defaulted to zero)
-            assert rows[0]["has_params"] is True, "has_parameters got reset to False (parameter_count bug)"
-
-            # Verify the parameter got is_ai_prompt_injectable=true
-            param = s.run(
-                """
-                MATCH (p:Parameter {name:'messages', position:'body',
-                                    endpoint_path:'/v1/chat/completions',
-                                    baseurl:'https://api.test.invalid',
-                                    user_id:$u, project_id:$p})
-                RETURN p.is_ai_prompt_injectable AS flag
-                """,
-                u=uid, p=pid,
-            ).single()
-            assert param is not None, "Parameter row missing after partial recon"
-            assert param["flag"] is True, f"is_ai_prompt_injectable should be True, got {param['flag']!r}"
-
-            _cleanup(s, uid, pid)
+        assert pr._prepare_scope(cfg, settings, pid) == {}
+        # The module opens its own client from the environment, as in a container.
+        with mock.patch.dict(os.environ, {"USER_ID": uid, "PROJECT_ID": pid}):
+            assert run_endpoint_ai_classifier(cfg) is None
     finally:
-        drv.close()
+        set_project_scope([])
+        set_run_roe({})
+
+    assert _chat_rows(drv, uid, pid) == [{"method": "POST", "t": "llm-chat", "has_params": True}]
+    assert _messages_flag(drv, uid, pid) is True
 
 
 def test_workflow_view_registration_consistent():
