@@ -357,6 +357,12 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        coalesce(v.oid, v.nvt_oid) AS oid,
        v.verdict AS verdict, v.confidence_tier AS confidence_tier,
        v.takeover_method AS takeover_method, v.cache_impact AS cache_impact,
+       // What grouping.group_key splits these sources' fix items on: the cache
+       // vector, the takeover provider, the GraphQL check and the AI class.
+       v.cache_technique AS cache_technique, v.cache_header AS cache_header,
+       v.cache_param AS cache_param, v.takeover_provider AS takeover_provider,
+       v.vulnerability_type AS vulnerability_type,
+       v.ai_owasp_llm_id AS ai_owasp_llm_id, v.ai_payload_class AS ai_payload_class,
        v.confidence_score AS confidence_score, v.confidence AS confidence,
        v.ai_asr AS ai_asr, v.ai_oracle_kind AS ai_oracle_kind,
        v.introspection_enabled AS introspection_enabled,

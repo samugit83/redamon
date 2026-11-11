@@ -122,21 +122,35 @@ def group_key(finding: dict) -> str:
         header = _slug(finding.get("missing_header") or "", 60)
         return (f"check:{check}:{header}" if header else f"check:{check}")[:MAX_KEY_LENGTH]
 
+    # The four branches below read the properties their writers store. When a
+    # node lacks them (an older or imported one), the finding falls through to
+    # its own group: a key with empty parts would make every finding of that
+    # source one fix item.
     if source == "takeover_scan":
-        return (f"takeover:{_slug(finding.get('provider'))}:"
-                f"{_slug(finding.get('takeover_method'))}")[:MAX_KEY_LENGTH]
+        provider = _slug(finding.get("takeover_provider"))
+        if provider:
+            return f"takeover:{provider}:{_slug(finding.get('takeover_method'))}"[:MAX_KEY_LENGTH]
 
     if source == "cache_poisoning":
-        return (f"cache:{_slug(finding.get('technique'))}:"
-                f"{_slug(finding.get('vector'))}")[:MAX_KEY_LENGTH]
+        # One fix per technique and unkeyed input (a header, a parameter, or a
+        # deception URL shape); the hosts that share it are members.
+        technique = _slug(finding.get("cache_technique"))
+        vector = _slug(finding.get("cache_header") or finding.get("cache_param"))
+        if technique or vector:
+            return f"cache:{technique}:{vector}"[:MAX_KEY_LENGTH]
 
     if source in ("graphql_scan", "graphql_cop"):
-        return f"graphql:{_slug(finding.get('vulnerability_type') or finding.get('name'))}"[:MAX_KEY_LENGTH]
+        # The GraphQL writer stores no `name`, only `vulnerability_type`.
+        kind = _slug(finding.get("vulnerability_type") or finding.get("name"))
+        if kind:
+            return f"graphql:{kind}"[:MAX_KEY_LENGTH]
 
     if source in ("ai_surface_recon", "ai_attack", "garak", "pyrit",
                   "promptfoo", "giskard"):
-        return (f"ai:{_slug(finding.get('ai_owasp_llm_id'))}:"
-                f"{_slug(finding.get('payload_class'))}")[:MAX_KEY_LENGTH]
+        owasp = _slug(finding.get("ai_owasp_llm_id"))
+        payload = _slug(finding.get("ai_payload_class"))
+        if owasp or payload:
+            return f"ai:{owasp}:{payload}"[:MAX_KEY_LENGTH]
 
     if label in ("Secret", "GithubSecret", "MultiscannerFinding"):
         # Hash the VALUE when one is stored, so the same leaked key found in
