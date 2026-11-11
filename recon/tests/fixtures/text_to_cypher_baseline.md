@@ -391,8 +391,7 @@ urlscan properties (from the newest public urlscan visit of this base URL; a vis
 - graphql_queries_count: Full counts
 - graphql_mutations_count: Full counts
 - graphql_subscriptions_count (integer): Full counts
-- graphql_cop_ran (boolean): True if graphql-cop executed against this endpoint
-- graphql_cop_scanned_at (datetime): ISO timestamp of last graphql-cop run
+- graphql_cop_scanned_at (datetime): ISO timestamp of the last graphql-cop run against this endpoint; absent when graphql-cop never ran on it. No "ran" flag is stored: test this property
 - graphql_graphiql_exposed (boolean): GraphiQL / Playground UI detected
 - graphql_tracing_enabled (boolean): Apollo tracing extension is on
 - graphql_get_allowed (boolean): GET-method queries accepted (CSRF vector)
