@@ -22,7 +22,7 @@ import {
 import type { ChatItem, Message, FileDownloadItem, Phase, FireteamItem, FireteamMemberPanel } from '../types'
 import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } from '../AgentTimeline'
 import { findToolCardIndex, settleRunningTools } from './toolCardState'
-import { agentErrorText, isPersistFailedNotice, type AgentErrorPayload } from './agentErrorText'
+import { agentErrorText, isPersistFailedNotice, reopensPendingRequest, type AgentErrorPayload } from './agentErrorText'
 import { endsRateLimitWait, rateLimitWaitFromPayload, type RateLimitWait } from './rateLimitWait'
 import { stampLoopStatus, type LoopStatusView } from './loopStatus'
 import {
@@ -833,6 +833,13 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             timestamp: new Date(),
           } as Message])
           break
+        }
+        if (reopensPendingRequest(payload)) {
+          // The request comes again at once: the guard against a duplicate request
+          // while an answer is in flight would drop it.
+          isProcessingApproval.current = false
+          isProcessingQuestion.current = false
+          isProcessingToolConfirmation.current = false
         }
         const errorMessage: Message = {
           type: 'message',

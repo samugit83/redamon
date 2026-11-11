@@ -22,7 +22,9 @@ from state import (
     summarize_trace_for_response,
 )
 from project_settings import get_setting
-from mcp_toolset_guard import McpToolsetBusy, server_set_hash, toolset_guard
+from mcp_toolset_guard import (
+    MCP_TOOLSET_BUSY_RESUME_MESSAGE, McpToolsetBusy, server_set_hash, toolset_guard,
+)
 from tools import (
     MCPToolsManager,
     Neo4jToolManager,
@@ -1019,6 +1021,18 @@ class AgentOrchestrator:
             msg, recoverable=False, code="agent_run_failed", **provider_error_details(exc))
         return InvokeResponse(error=msg)
 
+    async def _refuse_resume(self, streaming_callback, exc: McpToolsetBusy,
+                             kind: str, pending) -> InvokeResponse:
+        """A refused resume leaves the run paused on the same request: the answer was
+        neither applied nor saved, so the refusal is recoverable and the request is
+        shown again for the person to answer once the other run has finished."""
+        await streaming_callback.on_error(
+            MCP_TOOLSET_BUSY_RESUME_MESSAGE, recoverable=True, code=exc.code)
+        resend = getattr(streaming_callback, "resend_pending_request", None)
+        if pending and resend is not None:
+            await resend(kind, pending)
+        return InvokeResponse(error=MCP_TOOLSET_BUSY_RESUME_MESSAGE)
+
     # =========================================================================
     # STREAMING PUBLIC API
     # =========================================================================
@@ -1042,18 +1056,21 @@ class AgentOrchestrator:
             toolset_guard().release_run(lease)
 
     async def _stream_graph(self, graph_input, config, streaming_callback,
-                            user_id: str, project_id: str, session_id: str):
+                            user_id: str, project_id: str, session_id: str, on_admitted=None):
         """Run the graph with streaming inside a run scope; return the final state.
 
         The scope lets an Agent in the Loop model open steps for this session
         (and only while it runs), and reports the run's end state to its driver.
         For a provider model it only registers the run. The run holds the user MCP
         toolset for as long as it streams, and streams only once its owner's set is
-        loaded (_mcp_toolset_lease).
+        loaded (_mcp_toolset_lease). `on_admitted` runs once the run is admitted and
+        its set loaded: a resume saves the person's answer there, never before.
         """
         uses_loop = is_loop_llm(self.llm)
         final_state = None
         async with self._mcp_toolset_lease(user_id):
+            if on_admitted is not None:
+                on_admitted()
             # Every node and Fireteam member runs in a task created inside astream,
             # so it inherits this listener and a rate-limit wait reaches the drawer.
             listener = current_llm_wait_listener.set(
@@ -1162,9 +1179,11 @@ class AgentOrchestrator:
         decision: str,
         modification: Optional[str],
         streaming_callback,
-        guidance_queue=None
+        guidance_queue=None,
+        on_admitted=None,
     ) -> InvokeResponse:
-        """Resume after approval with streaming callbacks."""
+        """Resume after approval with streaming callbacks. `on_admitted` saves the
+        decision once the run is admitted (_stream_graph)."""
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
@@ -1178,6 +1197,7 @@ class AgentOrchestrator:
         self._streaming_callbacks[session_id] = streaming_callback
         self._guidance_queues[session_id] = guidance_queue
 
+        pending = None
         try:
             config = create_config(user_id, project_id, session_id)
 
@@ -1185,6 +1205,7 @@ class AgentOrchestrator:
             if not current_state or not current_state.values:
                 await streaming_callback.on_error("No pending session found", recoverable=False)
                 return InvokeResponse(error="No pending session found")
+            pending = current_state.values.get("phase_transition_pending")
 
             update_data = {
                 "user_approval_response": decision,
@@ -1196,7 +1217,8 @@ class AgentOrchestrator:
             }
 
             final_state = await self._stream_graph(
-                update_data, config, streaming_callback, user_id, project_id, session_id)
+                update_data, config, streaming_callback, user_id, project_id, session_id,
+                on_admitted=on_admitted)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1217,6 +1239,8 @@ class AgentOrchestrator:
             else:
                 raise RuntimeError("No final state returned")
 
+        except McpToolsetBusy as e:
+            return await self._refuse_resume(streaming_callback, e, "approval", pending)
         except Exception as e:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Resume streaming error: {e}")
             return await self._report_run_failure(streaming_callback, "The agent run failed after the approval", e)
@@ -1232,9 +1256,11 @@ class AgentOrchestrator:
         project_id: str,
         answer: str,
         streaming_callback,
-        guidance_queue=None
+        guidance_queue=None,
+        on_admitted=None,
     ) -> InvokeResponse:
-        """Resume after answer with streaming callbacks."""
+        """Resume after answer with streaming callbacks. `on_admitted` saves the
+        answer once the run is admitted (_stream_graph)."""
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
@@ -1248,6 +1274,7 @@ class AgentOrchestrator:
         self._streaming_callbacks[session_id] = streaming_callback
         self._guidance_queues[session_id] = guidance_queue
 
+        pending = None
         try:
             config = create_config(user_id, project_id, session_id)
 
@@ -1255,6 +1282,7 @@ class AgentOrchestrator:
             if not current_state or not current_state.values:
                 await streaming_callback.on_error("No pending session found", recoverable=False)
                 return InvokeResponse(error="No pending session found")
+            pending = current_state.values.get("pending_question")
 
             update_data = {
                 "user_question_answer": answer,
@@ -1265,7 +1293,8 @@ class AgentOrchestrator:
             }
 
             final_state = await self._stream_graph(
-                update_data, config, streaming_callback, user_id, project_id, session_id)
+                update_data, config, streaming_callback, user_id, project_id, session_id,
+                on_admitted=on_admitted)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1286,6 +1315,8 @@ class AgentOrchestrator:
             else:
                 raise RuntimeError("No final state returned")
 
+        except McpToolsetBusy as e:
+            return await self._refuse_resume(streaming_callback, e, "question", pending)
         except Exception as e:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Resume streaming error: {e}")
             return await self._report_run_failure(streaming_callback, "The agent run failed after the answer", e)
@@ -1302,9 +1333,11 @@ class AgentOrchestrator:
         decision: str,
         modifications: Optional[dict],
         streaming_callback,
-        guidance_queue=None
+        guidance_queue=None,
+        on_admitted=None,
     ) -> InvokeResponse:
-        """Resume after tool confirmation with streaming callbacks."""
+        """Resume after tool confirmation with streaming callbacks. `on_admitted`
+        saves the decision once the run is admitted (_stream_graph)."""
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
@@ -1318,6 +1351,7 @@ class AgentOrchestrator:
         self._streaming_callbacks[session_id] = streaming_callback
         self._guidance_queues[session_id] = guidance_queue
 
+        pending = None
         try:
             config = create_config(user_id, project_id, session_id)
 
@@ -1325,6 +1359,7 @@ class AgentOrchestrator:
             if not current_state or not current_state.values:
                 await streaming_callback.on_error("No pending session found", recoverable=False)
                 return InvokeResponse(error="No pending session found")
+            pending = current_state.values.get("tool_confirmation_pending")
 
             update_data = {
                 "tool_confirmation_response": decision,
@@ -1339,7 +1374,8 @@ class AgentOrchestrator:
             }
 
             final_state = await self._stream_graph(
-                update_data, config, streaming_callback, user_id, project_id, session_id)
+                update_data, config, streaming_callback, user_id, project_id, session_id,
+                on_admitted=on_admitted)
 
             if final_state:
                 response = self._build_response(final_state)
@@ -1360,6 +1396,8 @@ class AgentOrchestrator:
             else:
                 raise RuntimeError("No final state returned")
 
+        except McpToolsetBusy as e:
+            return await self._refuse_resume(streaming_callback, e, "tool_confirmation", pending)
         except Exception as e:
             logger.error(f"[{user_id}/{project_id}/{session_id}] Resume streaming error: {e}")
             return await self._report_run_failure(streaming_callback, "The agent run failed after the tool confirmation", e)

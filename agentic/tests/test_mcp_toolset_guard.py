@@ -359,9 +359,7 @@ def _broker():
 BOUND_S = 10
 
 
-class RunAdmission(_Loading):
-    """The guard at run start, through the orchestrator's streaming entry points."""
-
+class _Runs(_Loading):
     def setUp(self):
         super().setUp()
         for target, value in (("orchestrator.get_broker", _broker),
@@ -383,6 +381,10 @@ class RunAdmission(_Loading):
         cb = _Callback()
         coro = orch.invoke_with_streaming("q", owner, f"p-{owner}", f"s-{owner}", cb)
         return coro, cb
+
+
+class RunAdmission(_Runs):
+    """The guard at run start, through the orchestrator's streaming entry points."""
 
     def test_a_run_on_another_set_is_refused_while_another_owners_run_is_live(self):
         orch = self._orch()
@@ -508,6 +510,146 @@ class RunAdmission(_Loading):
         self.assertEqual(cb_a.errors[0]["code"], "agent_run_failed")
         self.assertEqual(cb_b.errors, [])
         self.assertEqual(self.guard.loaded_hash, server_set_hash([SRV_B]))
+
+
+# Each way a paused run is resumed: the orchestrator call, the state it is paused in,
+# the request the person answered, and the persisted row of their answer.
+_PENDING = {"confirmation_id": "c1", "mode": "single",
+            "tools": [{"tool_name": "create_issue", "tool_args": {}}]}
+RESUMES = (
+    ("tool_confirmation", "resume_after_tool_confirmation_with_streaming", ("approve", None),
+     {"awaiting_tool_confirmation": True, "tool_confirmation_pending": _PENDING}, _PENDING),
+    ("approval", "resume_after_approval_with_streaming", ("approve", None),
+     {"awaiting_user_approval": True,
+      "phase_transition_pending": {"from_phase": "informational", "to_phase": "exploitation"}},
+     {"from_phase": "informational", "to_phase": "exploitation"}),
+    ("question", "resume_after_answer_with_streaming", ("yes",),
+     {"awaiting_user_question": True, "pending_question": {"question": "Which port?", "format": "text"}},
+     {"question": "Which port?", "format": "text"}),
+)
+
+
+class RefusedResume(_Runs):
+    """A paused run whose resume is refused stays answerable: the person's answer is
+    neither applied nor saved, the refusal is recoverable, and the request is shown
+    again."""
+
+    def test_a_refused_resume_keeps_the_request_answerable(self):
+        for kind, method, args, state, pending in RESUMES:
+            with self.subTest(kind=kind):
+                orch = self._orch()
+                saved = []
+
+                async def resume(graph, cb):
+                    self._as_owner(orch, "owner-b", [SRV_B], graph)
+                    return await asyncio.wait_for(getattr(orch, method)(
+                        "s-owner-b", "owner-b", "p-owner-b", *args, cb,
+                        on_admitted=lambda: saved.append(kind)), BOUND_S)
+
+                async def main():
+                    graph_a = _Graph()
+                    run_a, _ = self._owner_run(orch, "owner-a", [SRV_A], graph_a)
+                    task_a = asyncio.create_task(run_a)
+                    await asyncio.wait_for(graph_a.started.wait(), BOUND_S)
+                    refused = _Callback()
+                    try:
+                        await resume(_Graph(state=state, release=True), refused)
+                    finally:
+                        graph_a.release.set()
+                        await asyncio.wait_for(task_a, BOUND_S)
+                    saved_while_refused = list(saved)
+                    admitted = _Callback()
+                    await resume(_Graph(state=state, release=True), admitted)
+                    return refused, saved_while_refused, admitted
+
+                refused, saved_while_refused, admitted = asyncio.run(main())
+                [err] = refused.errors
+                self.assertEqual((err["code"], err["recoverable"]), ("mcp_toolset_busy", True))
+                self.assertIn("not applied", err["message"])
+                self.assertEqual(refused.resent, [(kind, pending)])
+                self.assertEqual(saved_while_refused, [], "an answer that was not applied must not be saved")
+                self.assertEqual((admitted.errors, saved), ([], [kind]))
+
+
+class _WS:
+    def __init__(self):
+        self.sent = []
+        self.client = "test"
+
+    async def send_json(self, msg):
+        self.sent.append(msg)
+
+    async def close(self, code=1000, reason=""):
+        pass
+
+
+class _ResumingOrchestrator:
+    """Answers each resume as the real one does: `admit` decides whether the run is
+    admitted (it then calls on_admitted) or refused."""
+
+    def __init__(self, admit):
+        self.admit = admit
+
+    async def _resume(self, **kw):
+        if self.admit:
+            kw["on_admitted"]()
+
+    resume_after_approval_with_streaming = _resume
+    resume_after_answer_with_streaming = _resume
+    resume_after_tool_confirmation_with_streaming = _resume
+
+
+class AnswerSavedOnlyOnceAdmitted(unittest.TestCase):
+    HANDLERS = (
+        ("handle_tool_confirmation", {"decision": "approve"}, "tool_confirmation_response"),
+        ("handle_approval", {"decision": "approve"}, "approval_response"),
+        ("handle_answer", {"answer": "443"}, "answer_response"),
+    )
+
+    def _answer(self, method, payload, admit):
+        import websocket_api
+        from websocket_api import WebSocketConnection, WebSocketHandler, WebSocketManager
+        saved = mock.AsyncMock(return_value=None)
+
+        async def main():
+            mgr = WebSocketManager()
+            handler = WebSocketHandler(orchestrator=_ResumingOrchestrator(admit), ws_manager=mgr)
+            conn = WebSocketConnection(_WS())
+            await mgr.authenticate(conn, "uB", "pB", "sB", verified=True)
+            await getattr(handler, method)(conn, dict(payload))
+            await asyncio.wait_for(conn._active_task, BOUND_S)
+
+        with mock.patch.object(websocket_api, "save_chat_message", saved), \
+                mock.patch.object(websocket_api, "update_conversation", new=mock.AsyncMock()):
+            asyncio.run(main())
+        return [c.kwargs.get("msg_type") for c in saved.await_args_list]
+
+    def test_a_refused_resume_saves_no_answer_and_an_admitted_one_saves_it(self):
+        for method, payload, row in self.HANDLERS:
+            with self.subTest(method=method):
+                self.assertNotIn(row, self._answer(method, payload, admit=False))
+                self.assertEqual(self._answer(method, payload, admit=True).count(row), 1)
+
+    def test_a_request_shown_again_is_sent_and_never_saved(self):
+        import websocket_api
+        from websocket_api import StreamingCallback, WebSocketConnection, WebSocketManager
+
+        async def main():
+            mgr = WebSocketManager()
+            conn = WebSocketConnection(_WS())
+            await mgr.authenticate(conn, "uB", "pB", "sB", verified=True)
+            cb = StreamingCallback(conn, mgr)
+            for kind in ("tool_confirmation", "approval", "question"):
+                await cb.resend_pending_request(kind, {"k": kind})
+            return conn, cb
+
+        conn, cb = asyncio.run(main())
+        self.assertEqual([(m["type"], m["payload"]) for m in conn.websocket.sent], [
+            ("tool_confirmation_request", {"k": "tool_confirmation"}),
+            ("approval_request", {"k": "approval"}),
+            ("question_request", {"k": "question"}),
+        ])
+        self.assertEqual(cb._persist_queue.qsize(), 0)
 
 
 if __name__ == "__main__":

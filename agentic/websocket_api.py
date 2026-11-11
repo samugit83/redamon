@@ -794,6 +794,13 @@ async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSo
 # STREAMING CALLBACK INTERFACE
 # =============================================================================
 
+_PENDING_REQUEST_FRAMES = {
+    "approval": MessageType.APPROVAL_REQUEST,
+    "question": MessageType.QUESTION_REQUEST,
+    "tool_confirmation": MessageType.TOOL_CONFIRMATION_REQUEST,
+}
+
+
 class StreamingCallback:
     """Callback interface for streaming events from orchestrator.
 
@@ -1443,6 +1450,11 @@ class StreamingCallback:
         self._loop_note("awaiting_human", kind="tool_confirmation")
         logger.info(f"Tool confirmation request sent to session {self.connection.session_id}")
 
+    async def resend_pending_request(self, kind: str, request: dict):
+        """Show a request again after the person's answer to it was refused. Sent
+        only: the stored timeline still ends on this request, unanswered."""
+        await self.connection.send_message(_PENDING_REQUEST_FRAMES[kind], request)
+
     async def on_response(self, answer: str, iteration_count: int, phase: str, task_complete: bool, response_tier: str = "full_report"):
         """Called when agent provides final response"""
         if not self._response_sent:
@@ -1758,12 +1770,6 @@ class WebSocketHandler:
 
             logger.info(f"Processing approval for session {connection.session_id}: {approval_msg.decision}")
 
-            # Persist the user's approval decision so it survives conversation reload
-            callback._persist("approval_response", {
-                "decision": approval_msg.decision,
-                "modification": approval_msg.modification,
-            })
-
             asyncio.create_task(update_conversation(connection.session_id, {"agentRunning": True}))
 
             task = asyncio.create_task(
@@ -1789,6 +1795,12 @@ class WebSocketHandler:
                 modification=approval_msg.modification,
                 streaming_callback=callback,
                 guidance_queue=connection.guidance_queue,
+                # Saved (it survives a reload) only once the run is admitted: a
+                # refused resume leaves the request unanswered, and shows it again.
+                on_admitted=lambda: callback._persist("approval_response", {
+                    "decision": approval_msg.decision,
+                    "modification": approval_msg.modification,
+                }),
             )
             logger.info(f"Approval processed for session {connection.session_id}")
         except asyncio.CancelledError:
@@ -1825,11 +1837,6 @@ class WebSocketHandler:
 
             logger.info(f"Processing answer for session {connection.session_id}")
 
-            # Persist the user's answer so it survives conversation reload
-            callback._persist("answer_response", {
-                "answer": answer_msg.answer,
-            })
-
             asyncio.create_task(update_conversation(connection.session_id, {"agentRunning": True}))
 
             task = asyncio.create_task(
@@ -1854,6 +1861,7 @@ class WebSocketHandler:
                 answer=answer,
                 streaming_callback=callback,
                 guidance_queue=connection.guidance_queue,
+                on_admitted=lambda: callback._persist("answer_response", {"answer": answer}),
             )
             logger.info(f"Answer processed for session {connection.session_id}")
         except asyncio.CancelledError:
@@ -1941,12 +1949,6 @@ class WebSocketHandler:
 
             logger.info(f"Processing tool confirmation for session {connection.session_id}: {confirmation_msg.decision}")
 
-            # Persist the user's tool confirmation decision
-            callback._persist("tool_confirmation_response", {
-                "decision": confirmation_msg.decision,
-                "modifications": confirmation_msg.modifications,
-            })
-
             asyncio.create_task(update_conversation(connection.session_id, {"agentRunning": True}))
 
             task = asyncio.create_task(
@@ -1972,6 +1974,10 @@ class WebSocketHandler:
                 modifications=confirmation_msg.modifications,
                 streaming_callback=callback,
                 guidance_queue=connection.guidance_queue,
+                on_admitted=lambda: callback._persist("tool_confirmation_response", {
+                    "decision": confirmation_msg.decision,
+                    "modifications": confirmation_msg.modifications,
+                }),
             )
             logger.info(f"Tool confirmation processed for session {connection.session_id}")
         except asyncio.CancelledError:

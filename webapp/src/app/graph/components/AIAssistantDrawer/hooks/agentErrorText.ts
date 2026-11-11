@@ -53,6 +53,16 @@ export function agentErrorText(payload: AgentErrorPayload | null | undefined, fa
   return hint ? `${text}. ${hint}` : text
 }
 
+/**
+ * A resume the agent refused because another user's run holds a different set of
+ * MCP Tool Plugins: the answer was not applied, the run is still paused, and the
+ * agent sends the request again right after this frame. A refused new run is not
+ * recoverable and has no request to show again.
+ */
+export function reopensPendingRequest(payload: (AgentErrorPayload & { recoverable?: unknown }) | null | undefined): boolean {
+  return payload?.code === 'mcp_toolset_busy' && payload.recoverable === true
+}
+
 /** The one-time "chat is not being saved" notice: shown, but it does not end the run. */
 export function isPersistFailedNotice(payload: AgentErrorPayload | null | undefined): boolean {
   return payload?.code === 'persist_failed'

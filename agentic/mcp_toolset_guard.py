@@ -28,6 +28,10 @@ MCP_TOOLSET_BUSY_MESSAGE = (
     "Another user's agent run is using a different set of MCP Tool Plugins. "
     "Start again when it has finished."
 )
+MCP_TOOLSET_BUSY_RESUME_MESSAGE = (
+    "Another user's agent run is using a different set of MCP Tool Plugins, so your "
+    "answer was not applied. Send it again when that run has finished."
+)
 MCP_RELOAD_DEFERRED_MESSAGE = (
     "Saved. Another user's agent run is using the agent's MCP Tool Plugins now; "
     "these load at your next run."
