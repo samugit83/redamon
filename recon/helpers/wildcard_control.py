@@ -36,6 +36,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from recon.helpers import request_pacer
+
 LABELS_PER_ZONE = 3
 MAX_ZONES_PER_RUN = 50
 DEEP_PARENT_MIN_CANDIDATES = 5
@@ -139,17 +141,20 @@ def _rps_ceiling(settings: dict) -> float:
 
 
 def _pace(settings: dict) -> None:
+    """The control's own clock, then a slot of the RoE clock every in-process
+    requester shares (inert with no ceiling): its own alone would let the
+    probes use the whole ceiling while the other requesters use it too."""
     rps = _rps_ceiling(settings)
-    if not rps:
-        return
-    cache = _cache("wildcard_control")
-    with _pace_lock:
-        now = time.monotonic()
-        found, next_at = cache.get("next_query_at")
-        start = max(now, next_at) if found else now
-        cache.put("next_query_at", start + 1.0 / rps)
-    if start > now:
-        time.sleep(start - now)
+    if rps:
+        cache = _cache("wildcard_control")
+        with _pace_lock:
+            now = time.monotonic()
+            found, next_at = cache.get("next_query_at")
+            start = max(now, next_at) if found else now
+            cache.put("next_query_at", start + 1.0 / rps)
+        if start > now:
+            time.sleep(start - now)
+    request_pacer.acquire()
 
 
 def _ask(name: str, rtype: str, settings: dict) -> tuple:
