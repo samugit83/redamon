@@ -1080,6 +1080,10 @@ def get_ssl_certificate(hostname: str, port: int = 443, timeout: int = 10) -> Op
     Returns:
         Certificate info dict or None if failed
     """
+    # The checks' raw sockets take a slot of the RoE clock like their _hh_*
+    # requests: one per connection (a handshake, a PING, an AXFR query) and one
+    # per command of a dialogue.
+    request_pacer.acquire()
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -2487,6 +2491,7 @@ def check_zone_transfer(domain: str, timeout: int = 10,
             if excluded and _is_roe_excluded(address, excluded):
                 unchecked.append(f"{address} RoE excluded")
                 continue
+            request_pacer.acquire()
             try:
                 zone = dns.zone.from_xfr(
                     dns.query.xfr(address, domain, timeout=timeout, lifetime=timeout))
@@ -2671,6 +2676,7 @@ def check_redis_no_auth(ip: str, port: int = 6379, timeout: int = 5) -> Optional
     Raises:
         CheckUnknown: no answer (a timeout, a reset, an empty reply)
     """
+    request_pacer.acquire()
     try:
         # create_connection, not an AF_INET socket: it also reaches IPv6.
         sock = socket.create_connection((ip, port), timeout=timeout)
@@ -2860,6 +2866,7 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
             reply cut short), a 4xx reply (busy, greylisting, try again
             later), or a reply mid-dialogue that is not an SMTP reply
     """
+    request_pacer.acquire()
     try:
         sock = socket.create_connection((ip, port), timeout=timeout)
     except ConnectionRefusedError:
@@ -2870,6 +2877,8 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
     replies = _SmtpReplies(sock, timeout)
 
     def ask(command: bytes) -> str:
+        # The slot is waited for before the reply's deadline starts.
+        request_pacer.acquire()
         sock.sendall(command)
         return replies.next()[0]
 
@@ -2881,6 +2890,7 @@ def check_smtp_open_relay(ip: str, port: int = 25, timeout: int = 10) -> Optiona
             raise CheckUnknown(f"SMTP reply {code}")
 
     def quit_politely() -> None:
+        request_pacer.acquire()
         try:
             sock.sendall(b"QUIT\r\n")
         except OSError:
