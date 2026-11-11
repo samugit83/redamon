@@ -402,8 +402,8 @@ def _partial_capture(settings, monkeypatch) -> dict:
 def test_partial_takeover_never_gets_a_typed_name_resolving_into_an_excluded_range(monkeypatch):
     seen = _partial_capture(_roe(EXCLUDED_RANGE), monkeypatch)
     assert TYPED not in seen["subjack"]
-    # The builder drops an excluded address, so a name left with none has no
-    # known address and is refused too.
+    # The builder keeps an excluded address in its DNS block, so a name whose
+    # only address is excluded is refused for it too.
     assert LEGACY not in seen["subjack"] and LEGACY not in _hosts(seen["nuclei"])
     assert WWW in seen["subjack"] and WWW in _hosts(seen["nuclei"])
     assert _roe_gaps("takeover")

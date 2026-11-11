@@ -15,8 +15,8 @@ seeds ZAP would crawl after its own filters. Neo4j is a fake answering from a
 fixed set of rows. With no RoE exclusion the lists are the ones built without
 RoE keys at all.
 
-Two strict xfails at the end pin what is still open: partial Nuclei through the
-vuln-scan graph builder, and the security checks' missing address gate.
+The last section covers partial Nuclei through the vuln-scan graph builder and
+the security checks' address gate.
 Reserved names and documentation ranges only; no Docker, no network.
 """
 from __future__ import annotations
@@ -456,19 +456,16 @@ def test_partial_zap_seeds_are_unchanged_without_an_exclusion(settings, monkeypa
 
 
 # --------------------------------------------------------------------------
-# Still open (strict xfail pins): the vuln-scan graph builder and its readers
+# The vuln-scan graph builder and its readers
 # --------------------------------------------------------------------------
 #
-# _build_vuln_scan_data_from_graph drops a name's RoE-excluded address from
-# its DNS block, so the admission gate at partial Nuclei sees only the allowed
-# address of a mixed name and sends the name, which Nuclei resolves itself.
-# Keeping the address there for the gate (as the port-scan builder does) is
-# blocked by a reader of the same block: run_security_checks, which partial
-# Nuclei and partial SecurityChecks both reach, sends its direct-IP checks to
-# every DNS address and its hostname checks to every name with records, and
-# checks neither against the RoE IP and CIDR entries in domain mode. The full
-# domain run hands it the run's whole DNS block, so the second pin is a live
-# leak there today.
+# _build_vuln_scan_data_from_graph keeps a name's RoE-excluded address in its
+# DNS block (out of its port maps), so the admission gate at partial Nuclei
+# sees a mixed name's excluded address and never sends the name, which Nuclei
+# would resolve itself. run_security_checks, which partial Nuclei and partial
+# SecurityChecks both reach, reads the same block: its direct-IP, WAF-bypass
+# and hostname checks pass the same gate in domain mode, so an excluded
+# address and every name holding one are never probed.
 
 NUCLEI = {"NUCLEI_ENABLED": True, "NUCLEI_TAGS": ["cve"], "NUCLEI_AUTO_UPDATE_TEMPLATES": False,
           "CVE_LOOKUP_ENABLED": False, "SECURITY_CHECK_ENABLED": False, "NUCLEI_MAX_RUNTIME": 0,
