@@ -13,9 +13,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { verifyPassword } from '@/lib/auth'
 import { getSession, requireUserAccess } from '@/lib/session'
-import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
+import { checkStepUp } from '@/lib/authz/stepUp'
 import { writeAudit } from '@/lib/audit'
 import {
   generateToken,
@@ -104,31 +103,19 @@ export const POST = withRouteErrors('Could not create the token', async (request
   }
 
   // Step-up: a stolen 7-day session cookie must not silently become a
-  // credential that outlives logout and password changes.
-  //
-  // THROTTLED with the same limiter the login route uses. This verifies the
-  // same credential with the same slow KDF, so without a throttle it is (a) an
-  // unlimited-rate password oracle for whoever holds a stolen session cookie -
-  // defeating the very step-up it implements - and (b) a cheap CPU-exhaustion
-  // lever for any authenticated user. The key is the token owner's id, so one
-  // account's failures cannot lock out another's.
-  const throttleIp = request.headers?.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-  const lock = checkLockout(`mcp-token-mint:${id}`, throttleIp)
-  if (lock.locked) {
+  // credential that outlives logout and password changes. The helper throttles
+  // it with the login limiter, keyed on this (self-only) owner. This route keeps
+  // the answers its clients know: 401 for a missing or wrong password, 429 locked.
+  const proof = await checkStepUp(request, body.password)
+  if (proof.outcome === 'locked') {
     return NextResponse.json(
-      { error: `Too many incorrect passwords. Try again in ${lock.retryAfterSeconds}s.` },
+      { error: `Too many incorrect passwords. Try again in ${proof.retryAfterSeconds}s.` },
       { status: 429 }
     )
   }
-
-  const password = typeof body.password === 'string' ? body.password : ''
-  const user = await prisma.user.findUnique({ where: { id }, select: { password: true } })
-  if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!password || !(await verifyPassword(password, user.password))) {
-    recordFailure(`mcp-token-mint:${id}`, throttleIp)
+  if (proof.outcome !== 'ok') {
     return NextResponse.json({ error: 'Password is incorrect' }, { status: 401 })
   }
-  clearAttempts(`mcp-token-mint:${id}`, throttleIp)
 
   try {
     const { plaintext, hash, prefix } = generateToken()

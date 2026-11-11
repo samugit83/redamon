@@ -12,8 +12,10 @@ import { NextRequest, NextResponse } from 'next/server'
 vi.stubEnv('AUTH_SECRET', 'c'.repeat(64))
 
 const mockRequireAdmin = vi.fn()
+const mockGetSession = vi.fn()
 vi.mock('@/lib/session', () => ({
   requireAdmin: () => mockRequireAdmin(),
+  getSession: () => mockGetSession(),
 }))
 
 const mockUserFindUnique = vi.fn()
@@ -27,6 +29,8 @@ vi.mock('@/lib/audit', () => ({
   writeAudit: vi.fn(),
 }))
 
+import bcrypt from 'bcryptjs'
+import { __resetThrottle } from '@/lib/loginThrottle'
 import { POST, DELETE } from './route'
 
 function req(body?: unknown): NextRequest {
@@ -39,6 +43,7 @@ function req(body?: unknown): NextRequest {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  __resetThrottle()
 })
 
 describe('POST /api/auth/act-as', () => {
@@ -131,5 +136,54 @@ describe('act-as — a failure inside the handler', () => {
     const res = await DELETE(new NextRequest('http://localhost:3000/api/auth/act-as', { method: 'DELETE' }))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Could not stop switching user', code: 'P2024' })
+  })
+})
+
+// The step-up (HD-09, ID-25): acting as an admin borrows an admin's powers, so it
+// needs the password of the REAL signed-in admin, never the target's.
+describe('acting as an admin needs step-up', () => {
+  const ADMIN_PW = 'admin-one-passphrase'
+  const rows: Record<string, { id: string; role: string; password: string }> = {
+    'admin-1': { id: 'admin-1', role: 'admin', password: bcrypt.hashSync(ADMIN_PW, 4) },
+    'admin-2': { id: 'admin-2', role: 'admin', password: bcrypt.hashSync('admin-two-passphrase', 4) },
+    'user-X': { id: 'user-X', role: 'standard', password: bcrypt.hashSync('member-passphrase', 4) },
+  }
+  beforeEach(() => {
+    mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    mockGetSession.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    mockUserFindUnique.mockImplementation(async (a: { where: { id: string } }) => rows[a.where.id] ?? null)
+  })
+
+  test('acting as an admin needs step-up', async () => {
+    const missing = await POST(req({ targetUserId: 'admin-2' }))
+    expect(missing.status).toBe(403)
+    expect((await missing.json()).code).toBe('step_up_required')
+    expect(missing.headers.get('set-cookie')).toBeNull()
+
+    const wrong = await POST(req({ targetUserId: 'admin-2', stepUpPassword: 'admin-two-passphrase' }))
+    expect(wrong.status).toBe(403)
+    expect((await wrong.json()).code).toBe('step_up_failed')
+    expect(mockWriteActAsAudit).not.toHaveBeenCalled()
+
+    const ok = await POST(req({ targetUserId: 'admin-2', stepUpPassword: ADMIN_PW }))
+    expect(ok.status).toBe(200)
+    expect(await ok.json()).toEqual({ actingAs: 'admin-2' })
+    expect(ok.headers.get('set-cookie') || '').toContain('redamon-act-as=')
+    expect(mockWriteActAsAudit).toHaveBeenCalledWith(expect.objectContaining({ targetUserId: 'admin-2', event: 'start' }))
+  })
+
+  test('acting as a member needs none', async () => {
+    const res = await POST(req({ targetUserId: 'user-X' }))
+    expect(res.status).toBe(200)
+  })
+
+  test('the target is read with its role', async () => {
+    await POST(req({ targetUserId: 'user-X' }))
+    expect(mockUserFindUnique).toHaveBeenCalledWith({ where: { id: 'user-X' }, select: { id: true, role: true } })
+  })
+
+  test('an unknown target is still a 404, before any password check', async () => {
+    const res = await POST(req({ targetUserId: 'ghost', stepUpPassword: 'whatever' }))
+    expect(res.status).toBe(404)
   })
 })

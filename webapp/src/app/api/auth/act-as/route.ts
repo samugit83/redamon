@@ -5,6 +5,7 @@ import { createActAsToken, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeActAsAudit } from '@/lib/audit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { withRouteErrors } from '@/lib/routeErrors'
+import { requireStepUp } from '@/lib/authz/stepUp'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -44,10 +45,16 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
 
   const target = await prisma.user.findUnique({
     where: { id: targetUserId },
-    select: { id: true },
+    select: { id: true, role: true },
   })
   if (!target) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  }
+  // Acting as another admin borrows that admin's account: the acting admin's own
+  // password first, like a reset of it.
+  if (target.role === 'admin') {
+    const refusal = await requireStepUp(request, body?.stepUpPassword)
+    if (refusal) return refusal
   }
 
   const token = await createActAsToken(admin.userId, targetUserId)

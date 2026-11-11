@@ -6,12 +6,32 @@ import { internalError } from '@/lib/routeErrors'
 import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
+import { requireStepUp } from '@/lib/authz/stepUp'
+import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
 const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
+
+const USER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  defaultAgentModel: true,
+  defaultAiPipelineModel: true,
+  createdAt: true,
+  updatedAt: true,
+} as const
+
+/** Another admin's account changes hands only with the acting admin's own password. */
+async function isAnotherAdmin(sessionUserId: string, targetId: string): Promise<boolean> {
+  if (sessionUserId === targetId) return false
+  const target = await prisma.user.findUnique({ where: { id: targetId }, select: { role: true } })
+  return target?.role === 'admin'
+}
 
 // GET /api/users/[id] - Get user by ID
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -83,25 +103,23 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
     const body = await request.json()
-    const { name, email, role, defaultAgentModel, defaultAiPipelineModel } = body
+    const { name, email, role, defaultAgentModel, defaultAiPipelineModel, stepUpPassword } = body
 
     // Check permissions. S2/E2: internal-key no longer bypasses -- updating a
     // user (esp. role escalation) requires a real session.
-    {
-      const session = await getSession()
-      if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      }
+    const session = await getSession()
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
 
-      // Standard users can only update their own name/email
-      if (session.role !== 'admin' && session.userId !== id) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-      }
+    // Standard users can only update their own name/email
+    if (session.role !== 'admin' && session.userId !== id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
 
-      // Only admin can change roles
-      if (role && session.role !== 'admin') {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-      }
+    // Only admin can change roles
+    if (role && session.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const data: Record<string, string> = {}
@@ -124,22 +142,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
-    const user = await prisma.user.update({
-      where: { id },
-      data,
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        defaultAgentModel: true,
-        defaultAiPipelineModel: true,
-        createdAt: true,
-        updatedAt: true,
-      }
-    })
+    if (data.role !== 'standard') {
+      const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
+      return NextResponse.json(user)
+    }
 
-    return NextResponse.json(user)
+    // A demotion, the actor's own included: never of the last admin with a password.
+    if (await isAnotherAdmin(session.userId, id)) {
+      const refusal = await requireStepUp(request, stepUpPassword)
+      if (refusal) return refusal
+    }
+    const result = await withLastAdminGuard(id, tx => tx.user.update({ where: { id }, data, select: USER_SELECT }))
+    if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    return NextResponse.json(result.value)
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
       return NextResponse.json(
@@ -160,19 +175,25 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    {  // S2/E2: deleting a user requires an admin session; no internal bypass.
-      const session = await getSession()
-      if (!session || session.role !== 'admin') {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-      }
+    // S2/E2: deleting a user requires an admin session; no internal bypass.
+    const session = await getSession()
+    if (!session || session.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
 
-      // Prevent self-deletion
-      if (session.userId === id) {
-        return NextResponse.json(
-          { error: 'Cannot delete your own account' },
-          { status: 400 }
-        )
-      }
+    // Prevent self-deletion
+    if (session.userId === id) {
+      return NextResponse.json(
+        { error: 'Cannot delete your own account' },
+        { status: 400 }
+      )
+    }
+
+    const targetIsAdmin = await isAnotherAdmin(session.userId, id)
+    if (targetIsAdmin) {
+      const body = await request.json().catch(() => null)
+      const refusal = await requireStepUp(request, body?.stepUpPassword)
+      if (refusal) return refusal
     }
 
     // Collect this user's captured-traffic body refs BEFORE the cascade removes
@@ -196,9 +217,16 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       console.warn('Could not list projects before user delete:', e)
     }
 
-    await prisma.user.delete({
-      where: { id }
-    })
+    if (targetIsAdmin) {
+      // The deleter is an admin, but a concurrent demotion of the deleter could
+      // leave nobody: the same locked check as a demotion.
+      const result = await withLastAdminGuard(id, tx => tx.user.delete({ where: { id } }))
+      if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    } else {
+      await prisma.user.delete({
+        where: { id }
+      })
+    }
 
     await Promise.allSettled(projectIds.map(pid => purgeProjectWorkspace(pid)))
 

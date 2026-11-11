@@ -39,6 +39,7 @@ vi.mock('@/lib/auth', () => ({
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
 
+import { __resetThrottle } from '@/lib/loginThrottle'
 import { PUT } from './route'
 
 const params = (id = 'owner') => ({ params: Promise.resolve({ id }) })
@@ -55,6 +56,7 @@ beforeEach(() => {
   // The route awaits prisma.$transaction([...]) and destructures the results.
   h.transaction.mockImplementation(async () => [{}, { count: 3 }])
   h.audit.mockResolvedValue(undefined)
+  __resetThrottle()
 })
 
 describe('a self-service password change revokes the user tokens', () => {
@@ -188,5 +190,85 @@ describe('a password change the database refused', () => {
     const res = await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to change password', code: 'P2028' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Step-up (HD-09, ID-25): another admin's reset needs the acting admin's own
+// password; an admin's own change needs the current one, as a member's does.
+// ---------------------------------------------------------------------------
+
+describe('admin-on-admin resets and own changes prove the real password', () => {
+  const ROWS: Record<string, { role: string; password: string }> = {
+    admin1: { role: 'admin', password: 'admin1-hash' },
+    admin2: { role: 'admin', password: 'admin2-hash' },
+    member1: { role: 'standard', password: 'member1-hash' },
+  }
+  const SECRETS: Record<string, string> = { 'admin1-hash': 'admin1-pw', 'admin2-hash': 'admin2-pw', 'member1-hash': 'member1-pw' }
+
+  beforeEach(() => {
+    h.findUser.mockImplementation(async ({ where }: { where: { id: string } }) => ROWS[where.id] ?? null)
+    h.verifyPassword.mockImplementation(async (pw: string, stored: string) => SECRETS[stored] === pw)
+    h.getSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+  })
+
+  test('resetting an admin needs step-up', async () => {
+    const missing = await PUT(req({ newPassword: 'reset-by-admin' }), params('admin2'))
+    expect(missing.status).toBe(403)
+    expect(await missing.json()).toEqual({ error: 'Enter your password to confirm this action.', code: 'step_up_required' })
+
+    const wrong = await PUT(req({ newPassword: 'reset-by-admin', stepUpPassword: 'admin2-pw' }), params('admin2'))
+    expect(wrong.status).toBe(403)
+    expect((await wrong.json()).code).toBe('step_up_failed')
+    expect(h.transaction).not.toHaveBeenCalled()
+
+    const ok = await PUT(req({ newPassword: 'reset-by-admin', stepUpPassword: 'admin1-pw' }), params('admin2'))
+    expect(ok.status).toBe(200)
+    expect(h.updateManyTokens).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'admin2', revokedAt: null } }))
+  })
+
+  test('the step-up checks the acting admin, never the target', async () => {
+    await PUT(req({ newPassword: 'reset-by-admin', stepUpPassword: 'admin1-pw' }), params('admin2'))
+    expect(h.verifyPassword).toHaveBeenCalledWith('admin1-pw', 'admin1-hash')
+    expect(h.verifyPassword).not.toHaveBeenCalledWith(expect.anything(), 'admin2-hash')
+  })
+
+  test('an admin changing their own password needs the current one', async () => {
+    const missing = await PUT(req({ newPassword: 'new-own-passphrase' }), params('admin1'))
+    expect(missing.status).toBe(400)
+    expect(await missing.json()).toEqual({ error: 'Current password is required', code: 'step_up_required' })
+
+    const wrong = await PUT(req({ newPassword: 'new-own-passphrase', currentPassword: 'guess' }), params('admin1'))
+    expect(wrong.status).toBe(401)
+    expect(await wrong.json()).toEqual({ error: 'Current password is incorrect', code: 'step_up_failed' })
+    expect(h.transaction).not.toHaveBeenCalled()
+
+    const ok = await PUT(req({ newPassword: 'new-own-passphrase', currentPassword: 'admin1-pw' }), params('admin1'))
+    expect(ok.status).toBe(200)
+  })
+
+  test('an admin cannot skip the current password with a step-up field', async () => {
+    const res = await PUT(req({ newPassword: 'new-own-passphrase', stepUpPassword: 'admin1-pw' }), params('admin1'))
+    expect(res.status).toBe(400)
+    expect(h.transaction).not.toHaveBeenCalled()
+  })
+
+  test('a member target needs no step-up', async () => {
+    const res = await PUT(req({ newPassword: 'reset-by-admin' }), params('member1'))
+    expect(res.status).toBe(200)
+    expect(h.verifyPassword).not.toHaveBeenCalled()
+  })
+
+  test('wrong current passwords lock the own change like every step-up (429 step_up_locked)', async () => {
+    h.getSession.mockResolvedValue({ userId: 'member1', role: 'standard' })
+    for (let i = 0; i < 5; i++) {
+      expect((await PUT(req({ newPassword: 'new-own-passphrase', currentPassword: 'guess' }), params('member1'))).status).toBe(401)
+    }
+    h.verifyPassword.mockClear()
+    const locked = await PUT(req({ newPassword: 'new-own-passphrase', currentPassword: 'member1-pw' }), params('member1'))
+    expect(locked.status).toBe(429)
+    expect((await locked.json()).code).toBe('step_up_locked')
+    expect(h.verifyPassword).not.toHaveBeenCalled()
+    expect(h.transaction).not.toHaveBeenCalled()
   })
 })

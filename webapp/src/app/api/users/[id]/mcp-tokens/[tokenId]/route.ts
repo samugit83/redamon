@@ -22,9 +22,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { verifyPassword } from '@/lib/auth'
 import { getSession, requireUserAccess } from '@/lib/session'
-import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
+import { checkStepUp } from '@/lib/authz/stepUp'
 import { writeAudit } from '@/lib/audit'
 import {
   isTokenWidening,
@@ -157,19 +156,16 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
         { status: 403 }
       )
     }
-    const throttleIp = request.headers?.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-    // The mint's key, on purpose: both verify the same password, so they share
-    // one attempt budget instead of doubling the guesses a stolen cookie gets.
-    const throttleKey = `mcp-token-mint:${id}`
-    const lock = checkLockout(throttleKey, throttleIp)
-    if (lock.locked) {
+    // The shared step-up: one attempt budget with the mint and every other
+    // step-up route. This route keeps its own answers (401 + passwordRequired).
+    const proof = await checkStepUp(request, body.password)
+    if (proof.outcome === 'locked') {
       return NextResponse.json(
-        { error: `Too many incorrect passwords. Try again in ${lock.retryAfterSeconds}s.` },
+        { error: `Too many incorrect passwords. Try again in ${proof.retryAfterSeconds}s.` },
         { status: 429 }
       )
     }
-    const password = typeof body.password === 'string' ? body.password : ''
-    if (!password) {
+    if (proof.outcome === 'missing') {
       return NextResponse.json(
         {
           error: 'Adding a permission or extending the expiry needs your password.',
@@ -178,16 +174,12 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
         { status: 401 }
       )
     }
-    const user = await prisma.user.findUnique({ where: { id }, select: { password: true } })
-    if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (!(await verifyPassword(password, user.password))) {
-      recordFailure(throttleKey, throttleIp)
+    if (proof.outcome === 'wrong') {
       return NextResponse.json(
         { error: 'Password is incorrect', passwordRequired: true },
         { status: 401 }
       )
     }
-    clearAttempts(throttleKey, throttleIp)
   }
 
   try {

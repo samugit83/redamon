@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { hashPassword, verifyPassword } from '@/lib/auth'
+import { hashPassword } from '@/lib/auth'
 import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -20,7 +21,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { newPassword, currentPassword } = await request.json()
+    const { newPassword, currentPassword, stepUpPassword } = await request.json()
 
     const check = validateNewPassword(typeof newPassword === 'string' ? newPassword : '')
     if (!check.ok) {
@@ -35,30 +36,29 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Standard users must provide current password
-    if (!isAdmin && isSelf) {
-      if (!currentPassword) {
+    if (isSelf) {
+      // Everyone, admins included, proves the current password, through the shared
+      // step-up limiter. The answers keep the statuses this form always had.
+      const proof = await checkStepUp(request, currentPassword)
+      if (proof.outcome === 'missing') {
+        return NextResponse.json({ error: 'Current password is required', code: 'step_up_required' }, { status: 400 })
+      }
+      if (proof.outcome === 'wrong') {
+        return NextResponse.json({ error: 'Current password is incorrect', code: 'step_up_failed' }, { status: 401 })
+      }
+      if (proof.outcome === 'locked') {
         return NextResponse.json(
-          { error: 'Current password is required' },
-          { status: 400 }
+          { error: `Too many incorrect passwords. Try again in ${proof.retryAfterSeconds}s.`, code: 'step_up_locked' },
+          { status: 429, headers: { 'Retry-After': String(proof.retryAfterSeconds) } },
         )
       }
-
-      const user = await prisma.user.findUnique({
-        where: { id },
-        select: { password: true },
-      })
-
-      if (!user || !user.password) {
-        return NextResponse.json({ error: 'User not found' }, { status: 404 })
-      }
-
-      const valid = await verifyPassword(currentPassword, user.password)
-      if (!valid) {
-        return NextResponse.json(
-          { error: 'Current password is incorrect' },
-          { status: 401 }
-        )
+    } else {
+      // An admin resetting another admin takes over that account: the acting
+      // admin's own password first. A member's reset needs none.
+      const target = await prisma.user.findUnique({ where: { id }, select: { role: true } })
+      if (target?.role === 'admin') {
+        const refusal = await requireStepUp(request, stepUpPassword)
+        if (refusal) return refusal
       }
     }
 
