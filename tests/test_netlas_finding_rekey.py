@@ -116,9 +116,9 @@ class TestPlan(unittest.TestCase):
         self.assertEqual([t["new_id"] for t in plan["rekeys"][0]["targets"]],
                          [new_id(A), new_id(B)])
 
-    def test_no_service_parent_is_left_alone(self):
+    def test_no_service_parent_is_unattributable(self):
         plan = rk.plan_project(FakeSession([_old_row()]), {"id": PID, "user_id": UID})
-        self.assertEqual((plan["rekeys"], plan["unmapped"]), ([], [{"old_id": CVE}]))
+        self.assertEqual((plan["rekeys"], plan["unmapped"]), ([], [{"old_id": CVE, "kept": False}]))
 
     def test_the_new_id_is_the_writers(self):
         from graph_db.mixins.osint_mixin import netlas_vuln_id
@@ -126,7 +126,7 @@ class TestPlan(unittest.TestCase):
 
     def test_every_query_is_scoped_to_one_project(self):
         for name in ("OLD_FINDINGS", "READ_NODES", "RENAME", "CREATE_COPY", "MERGE_ONTO_NEW",
-                     "COPY_PROOF", "DELETE_OLD"):
+                     "COPY_PROOF", "DELETE_OLD", "DELETE_UNATTRIBUTABLE"):
             query = getattr(rk, name)
             with self.subTest(query=name):
                 self.assertIn("$pid", query)
@@ -216,7 +216,7 @@ class TestRun(unittest.TestCase):
         self.assertEqual([e for e in conn.log if e[0] == "commit"], [])
         self.assertEqual(len([e for e in conn.log if e[0] == "sql"]), 1, "only the project list")
         self.assertIn("(dry run)", "\n".join(lines))
-        self.assertIn(f"{PID}: 1 to re-key (0 on one IP, 1 on several), 0 left alone", "\n".join(lines))
+        self.assertIn(f"{PID}: 1 to re-key (0 on one IP, 1 on several), 0 unattributable", "\n".join(lines))
         self.assertEqual(summary[PID]["outcomes"], [])
 
     def test_apply_writes_postgres_first_then_the_graph(self):
@@ -236,6 +236,92 @@ class TestRun(unittest.TestCase):
     def test_a_blank_project_id_is_refused(self):
         with self.assertRaises(ValueError):
             rk.run(FakeConn(), FakeDriver(FakeSession()), " ", apply=False)
+
+
+class PruningSession(FakeSession):
+    """Answers the unattributable-row delete as the graph would: the ids in
+    `kept` survive it (stamped stale), every other one is deleted."""
+
+    def __init__(self, old=(), kept=()):
+        super().__init__(old)
+        self.kept = set(kept)
+
+    def run(self, query, **params):
+        result = super().run(query, **params)
+        if "DETACH DELETE" in query and "ids" in params:
+            ids = set(params["ids"])
+            return [{"deleted": len(ids - self.kept), "kept": len(ids & self.kept)}]
+        return result
+
+
+def _unattributable(kept=False):
+    return {"id": CVE, "targets": [], "kept": kept}
+
+
+class TestUnattributable(unittest.TestCase):
+    """A bare-id finding with no Service carrying an IP and port has nothing to
+    re-key to, and names no IP, so since passive CVEs are pruned only on the IPs
+    their lookup decided (5ec9ac12) no scan with Netlas on ever prunes it."""
+
+    def _deletes(self, session):
+        return [(q, p) for q, p in session.writes() if "DETACH DELETE" in q]
+
+    def test_apply_deletes_one_nobody_touched(self):
+        s = PruningSession([_unattributable()])
+        conn, lines = FakeConn(), []
+        summary = rk.run(conn, FakeDriver(s), PID, apply=True, out=lines.append)
+        (query, params), = self._deletes(s)
+        self.assertEqual((params["uid"], params["pid"], params["ids"]), (UID, PID, [CVE]))
+        self.assertEqual(summary[PID]["unattributable"], {"deleted": 1, "kept": 0})
+        self.assertIn("done: 1 deleted", "\n".join(lines))
+        self.assertEqual([e for e in conn.log if e[0] == "commit"], [],
+                         "a delete moves no Postgres row")
+
+    def test_apply_keeps_what_a_person_or_the_agent_touched_stale(self):
+        s = PruningSession([_unattributable(kept=True)], kept=[CVE])
+        lines = []
+        summary = rk.run(FakeConn(), FakeDriver(s), PID, apply=True, out=lines.append)
+        self.assertEqual(summary[PID]["unattributable"], {"deleted": 0, "kept": 1})
+        text = "\n".join(lines)
+        self.assertIn("keep, stamped stale", text)
+        self.assertIn("done: 1 kept stale", text)
+
+    def test_a_dry_run_lists_them_and_deletes_nothing(self):
+        s = PruningSession([_unattributable(), {**_unattributable(kept=True), "id": "CVE-2020-0001"}],
+                           kept=["CVE-2020-0001"])
+        lines = []
+        summary = rk.run(FakeConn(), FakeDriver(s), None, apply=False, out=lines.append)
+        self.assertEqual(s.writes(), [])
+        text = "\n".join(lines)
+        self.assertIn(f"{CVE} hangs off no Service with an IP and port", text)
+        self.assertIn("-> delete (dry run)", text)
+        self.assertIn("-> keep, stamped stale", text)
+        self.assertNotIn("the next full scan prunes it", text)
+        self.assertIn(f"{PID}: 0 to re-key (0 on one IP, 0 on several), 2 unattributable", text)
+        self.assertNotIn("unattributable", summary[PID])
+
+    def test_the_plan_reads_the_prunes_keep_rule(self):
+        plan = rk.plan_project(FakeSession([_unattributable(kept=True)]), {"id": PID, "user_id": UID})
+        self.assertEqual(plan["unmapped"], [{"old_id": CVE, "kept": True}])
+
+    def test_the_delete_spares_what_the_scan_prune_spares(self):
+        from graph_db.node_filters.guards import GUARD_KEEP_CHECK
+        s = PruningSession([_unattributable()])
+        rk.run(FakeConn(), FakeDriver(s), PID, apply=True, out=lambda _l: None)
+        (query, _), = self._deletes(s)
+        self.assertIn(GUARD_KEEP_CHECK, query)
+        self.assertIn("n:Muted AND NOT coalesce(n.muted_by, '') STARTS WITH 'rule:'", query)
+        self.assertLess(query.index("SET n._prune_lock = true"), query.index("n:Muted"),
+                        "the write lock comes before the mute is read")
+        self.assertIn("SET n.stale_since = coalesce(n.stale_since, datetime())", query)
+        self.assertIn("user_id: $uid, project_id: $pid", query)
+        self.assertIn("n.source = 'netlas'", query)
+        self.assertIn("NOT EXISTS", query, "a row a Service now attributes is never deleted")
+        self.assertNotIn("updated_at", query)
+        self.assertIn(GUARD_KEEP_CHECK, rk.OLD_FINDINGS, "the dry run lists what --apply keeps")
+
+    def test_the_docstring_no_longer_promises_a_prune(self):
+        self.assertNotIn("the next full scan prunes it", rk.__doc__)
 
 
 class TestMain(unittest.TestCase):

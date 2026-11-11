@@ -6,9 +6,11 @@ WHY
 A Netlas CVE was written as `Vulnerability {id: <the bare CVE id>}` under the
 Service it was seen on, so one CVE on N IPs was ONE node per project. The
 writer now keys it `netlas-<cve>-<ip>-<port>`, under the IP
-(graph_db/mixins/osint_mixin.py `netlas_vuln_id`). The next full scan prunes
-an old node nobody touched; a muted or human-judged one is kept as stale, and
-everything that names its old id would be left behind:
+(graph_db/mixins/osint_mixin.py `netlas_vuln_id`). The old node names no IP,
+and a passive CVE is pruned only on the IPs its lookup decided
+(recon/helpers/passive_cve_coverage.py), so no scan with Netlas on ever prunes
+it: it stays beside the new findings for ever, and everything that names its
+old id stays on it instead of following the finding:
 
   - the `:Muted` label and the mute properties on the node;
   - the Priority Board layers (`triage_*`), a person's DECISION included;
@@ -27,7 +29,10 @@ the Services it hangs off:
   - several           -> one finding per (IP, port), each a copy of the old node
     with its mute, its layers (a person's DECISION included: it was about this
     CVE on all of them) and its CONFIRMS edges; listed in the output;
-  - no Service parent -> left alone and listed; the next full scan prunes it.
+  - no Service parent -> nothing to re-key it to. Listed; `--apply` deletes it
+    as a scan's prune would have, keeping (stamped `stale_since`) one a person
+    muted or judged or the agent proved. Postgres rows naming it are left, as
+    the prune leaves them.
 When a scan already wrote a new id, the old node's triage layers move onto it
 as one block and the mute with its provenance (as
 tooling/scripts/triage_graph_migrate.py merges duplicates), its CONFIRMS edges
@@ -52,8 +57,9 @@ it, or `--apply` cannot see them running:
     -e RECON_ORCHESTRATOR_URL=http://recon-orchestrator:8010 \\
     --entrypoint python redamon-agent tooling/scripts/netlas_finding_rekey.py --all
 
-Idempotent: a second run finds nothing to re-key. Run it again after a project
-import or a scan-version restore brings bare-id Netlas findings back.
+Idempotent: a second run finds nothing to re-key, and lists again only the
+unattributable findings it kept. Run it again after a project import or a
+scan-version restore brings bare-id Netlas findings back.
 """
 from __future__ import annotations
 
@@ -69,6 +75,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from graph_db.mixins.osint_mixin import netlas_vuln_id  # noqa: E402
+from graph_db.node_filters.guards import GUARD_KEEP_CHECK  # noqa: E402
 from tooling.scripts.dns_finding_rekey import _block_rank  # noqa: E402
 from tooling.scripts.triage_graph_migrate import (  # noqa: E402
     MUTE_PROPS, MUTE_PROVENANCE_PROPS, TRIAGE_PROPS, services_are_up,
@@ -81,13 +88,19 @@ PROJECTS = """
      ORDER BY created_at
 """
 
+# What a scan's prune keeps rather than deletes (base_mixin.prune_unseen_findings):
+# an operator's own mute, and the guards a rule-mute respects.
+_KEPT_BY_PRUNE = ("((n:Muted AND NOT coalesce(n.muted_by, '') STARTS WITH 'rule:')\n"
+                  f"  OR ({GUARD_KEEP_CHECK}))")
+
 OLD_FINDINGS = """
 MATCH (v:Vulnerability {user_id: $uid, project_id: $pid})
 WHERE v.source = 'netlas' AND v.id =~ '(?i)CVE-[0-9]{4}-[0-9]{4,}'
 OPTIONAL MATCH (svc:Service {user_id: $uid, project_id: $pid})-[:HAS_VULNERABILITY]->(v)
 WITH v, [t IN collect(DISTINCT {ip: svc.ip_address, port: svc.port_number})
          WHERE t.ip IS NOT NULL AND t.port IS NOT NULL] AS targets
-RETURN v.id AS id, targets
+WITH v AS n, targets
+RETURN n.id AS id, targets, """ + _KEPT_BY_PRUNE + """ AS kept
 ORDER BY id
 """
 
@@ -146,6 +159,28 @@ MATCH (v:Vulnerability {id: $old, user_id: $uid, project_id: $pid})
 DETACH DELETE v
 """
 
+# The prune a scan no longer runs on these, done once. The Service check is
+# repeated because the plan was read earlier: a row a Service now attributes is
+# a re-key, never a delete.
+DELETE_UNATTRIBUTABLE = """
+MATCH (n:Vulnerability {user_id: $uid, project_id: $pid})
+WHERE n.id IN $ids AND n.source = 'netlas'
+  AND NOT EXISTS {
+    MATCH (svc:Service {user_id: $uid, project_id: $pid})-[:HAS_VULNERABILITY]->(n)
+    WHERE svc.ip_address IS NOT NULL AND svc.port_number IS NOT NULL }
+// The write lock before the mute is read, as the prune takes it: a mute that
+// commits in between is then kept, not deleted with the node.
+SET n._prune_lock = true
+REMOVE n._prune_lock
+WITH n, """ + _KEPT_BY_PRUNE + """ AS keep
+FOREACH (_ IN CASE WHEN keep THEN [1] ELSE [] END |
+  SET n.stale_since = coalesce(n.stale_since, datetime()))
+WITH collect(CASE WHEN keep THEN NULL ELSE n END) AS doomed,
+     count(CASE WHEN keep THEN 1 END) AS kept
+FOREACH (d IN doomed | DETACH DELETE d)
+RETURN size(doomed) AS deleted, kept
+"""
+
 
 def plan_project(session, project: dict) -> dict:
     """The re-keys one project needs. Reads the graph; writes nothing."""
@@ -156,7 +191,7 @@ def plan_project(session, project: dict) -> dict:
         pairs = sorted({(str(t["ip"]), int(t["port"])) for t in row["targets"] or []
                         if t.get("ip") and str(t.get("port", "")).isdigit()})
         if not pairs:
-            unmapped.append({"old_id": row["id"]})
+            unmapped.append({"old_id": row["id"], "kept": bool(row.get("kept"))})
             continue
         rekeys.append({"old_id": row["id"], "cve": cve, "targets": [
             {"ip": ip, "port": port, "new_id": netlas_vuln_id(cve, ip, port)}
@@ -278,8 +313,10 @@ def run(conn, driver, project_id: str | None, apply: bool, out=print) -> dict:
             pid, uid = project["id"], project["user_id"]
             plan = plan_project(session, project)
             for u in plan["unmapped"]:
+                action = ("keep, stamped stale (a person muted or judged it, or the agent "
+                          "proved it)" if u["kept"] else "delete")
                 out(f"[netlas rekey] {pid}: {u['old_id']} hangs off no Service with an IP and "
-                    f"port; left alone, the next full scan prunes it")
+                    f"port, and no scan prunes it -> {action}{suffix}")
             for r in plan["rekeys"]:
                 news = ", ".join(t["new_id"] for t in r["targets"])
                 many = (f"  (one finding per IP: the mute and the decision go to each)"
@@ -296,19 +333,32 @@ def run(conn, driver, project_id: str | None, apply: bool, out=print) -> dict:
                 conn.commit()
                 for r in plan["rekeys"]:
                     outcomes.append(rekey_graph(session, uid, pid, r))
+            removed = None
+            if apply and plan["unmapped"]:
+                record = next(iter(session.run(
+                    DELETE_UNATTRIBUTABLE, uid=uid, pid=pid,
+                    ids=[u["old_id"] for u in plan["unmapped"]])), None)
+                removed = {"deleted": int(record["deleted"] or 0) if record else 0,
+                           "kept": int(record["kept"] or 0) if record else 0}
             if plan["rekeys"] or plan["unmapped"]:
                 summary[pid] = {**plan, "outcomes": outcomes}
+                if removed is not None:
+                    summary[pid]["unattributable"] = removed
                 split = sum(1 for r in plan["rekeys"] if len(r["targets"]) > 1)
-                counted = ", ".join(f"{outcomes.count(o)} {o}"
-                                    for o in ("renamed", "split", "merged", "gone")
-                                    if outcomes.count(o))
+                done = [f"{outcomes.count(o)} {o}"
+                        for o in ("renamed", "split", "merged", "gone") if outcomes.count(o)]
+                if removed:
+                    done += [f"{removed['deleted']} deleted"] if removed["deleted"] else []
+                    done += [f"{removed['kept']} kept stale"] if removed["kept"] else []
                 out(f"[netlas rekey] {pid}: {len(plan['rekeys'])} to re-key "
                     f"({len(plan['rekeys']) - split} on one IP, {split} on several), "
-                    f"{len(plan['unmapped'])} left alone"
-                    + (f"; done: {counted}" if counted else ""))
+                    f"{len(plan['unmapped'])} unattributable"
+                    + (f"; done: {', '.join(done)}" if done else ""))
     total = sum(len(p["rekeys"]) for p in summary.values())
+    unattributable = sum(len(p["unmapped"]) for p in summary.values())
     out(f"[netlas rekey] {'re-keyed' if apply else 'would re-key'} {total} finding(s) "
-        f"in {len(summary)} project(s)")
+        f"in {len(summary)} project(s)"
+        + (f"; {unattributable} unattributable" if unattributable else ""))
     return summary
 
 
