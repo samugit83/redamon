@@ -10,11 +10,14 @@
 # webapp/Dockerfile writes: the harness runs exactly what the image runs at boot.
 #
 # After every run it asserts:
-#   - nothing changed: the row count of every table and every users column (definition
-#     and values) that existed before the run are identical after it; a table or users
-#     column the run added is printed as a NOTE;
-#   - the scenario's own checks: tests/fixtures/rbac_upgrade/checks.sql through psql,
-#     diffed against expected/<scenario>.out.
+#   - nothing changed but what the upgrade adds by design: the row count of every table
+#     and every users column (definition and values) that existed before the run are
+#     identical after it, audit_log counted without the rows of UPGRADE_AUDIT_ACTIONS; a
+#     table or users column the run added is printed as a NOTE;
+#   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
+#     (what the upgrade adds: legacy grants, its marker rows), through psql, diffed
+#     against expected/<scenario>.after.out. The fixture itself is checked with checks.sql
+#     against expected/<scenario>.out before the run.
 #
 # Modes (several may be chained; each runs every scenario):
 #   all       the startup list once
@@ -42,16 +45,19 @@
 #   RBAC_UPGRADE_IMAGE      image under test (default redamon-webapp:latest)
 #   RBAC_UPGRADE_OLD_IMAGE  pinned 7.7.2 image (default redamon-webapp:rbac-7.7.2)
 #   RBAC_UPGRADE_SCENARIOS  scenario name regex (default: all)
+#   RBAC_UPGRADE_FAIL_BACKFILL  the backfill the failure mode breaks: user-skill-toggles
+#                           (default) or rbac-legacy-grants
 #   RBAC_UPGRADE_FAIL_SCRIPT / _FAIL_MARKER / _FAIL_TABLE / _FAIL_LOG
-#                           the backfill the failure mode breaks, its AuditLog marker
-#                           action, the table it reads inside the marker's transaction,
-#                           and the regex of its failure log line
+#                           override that choice: its script, its AuditLog marker action,
+#                           the table it reads inside the marker's transaction, and the
+#                           regex of its failure log line
 #   REDAMON_SHARED_TOOLS_COMPAT, RBAC_*_ENABLED   passed to every run and to serve when set
 #
 # Needs Docker and the images; prints SKIP and exits 0 without them. Live suites
 # (*_live.sh) are not part of the gate.
 #
 # Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure
+#       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 #       bash tests/rbac_upgrade_live.sh serve several_admins
 set -uo pipefail
@@ -64,12 +70,28 @@ PG_IMAGE=postgres:16-alpine
 SCENARIO_FILTER="${RBAC_UPGRADE_SCENARIOS:-}"
 SERVE_PORT=3901
 
-# The existing one-time backfill. A user-skill backfill reads user_attack_skills right
-# after it finds no marker, inside the transaction that writes the marker.
-FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-backfill-user-skill-toggles.mjs}"
-FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-system.user_skill_toggles_backfill}"
-FAIL_TABLE="${RBAC_UPGRADE_FAIL_TABLE:-user_attack_skills}"
-FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-\[skills\] could not backfill user-skill toggles}"
+# Each backfill reads its table right after it finds no marker, inside the transaction
+# that writes the marker: user_attack_skills for the user-skill toggles, users for the
+# legacy grants.
+case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
+  user-skill-toggles)
+    d_script=backfill-user-skill-toggles.mjs; d_marker=system.user_skill_toggles_backfill
+    d_table=user_attack_skills; d_log='\[skills\] could not backfill user-skill toggles' ;;
+  rbac-legacy-grants)
+    d_script=backfill-rbac-legacy-grants.mjs; d_marker=system.rbac_legacy_grants_backfill
+    d_table=users; d_log='\[rbac\] could not backfill legacy grants' ;;
+  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles or rbac-legacy-grants" >&2; exit 2 ;;
+esac
+FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-$d_script}"
+FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-$d_marker}"
+FAIL_TABLE="${RBAC_UPGRADE_FAIL_TABLE:-$d_table}"
+FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
+
+# Audit rows the upgrade writes by design: left out of the row-count comparison and pinned
+# instead, by count, in checks.sql's markers and by checks_after.sql.
+UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill)
+UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
+UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 
 # Obvious fakes: the containers live only for this run, on a private network.
 PG_PASSWORD=rbac-upgrade-fake-pg
@@ -213,7 +235,9 @@ capture_shape() { # records the tables and users columns that exist before a run
 snapshot() { # out_file: row counts of the recorded tables, users column definitions and rows
   local t c count_sql="" col_list="" col_select=""
   for t in $TABLES; do
-    count_sql+="${count_sql:+ UNION ALL }SELECT '$t', count(*) FROM \"$t\""
+    local only=""
+    [ "$t" = audit_log ] && only=" WHERE action NOT IN ($UPGRADE_AUDIT_SQL)"
+    count_sql+="${count_sql:+ UNION ALL }SELECT '$t', count(*) FROM \"$t\"$only"
   done
   for c in $USER_COLS; do
     col_list+="${col_list:+, }'$c'"
@@ -255,6 +279,7 @@ assert_same() { # label expected_file actual_file
 }
 
 run_checks() { psql_db < "$FIX/checks.sql" > "$1" 2>&1; }
+run_checks_after() { { psql_db < "$FIX/checks.sql"; psql_db < "$FIX/checks_after.sql"; } > "$1" 2>&1; }
 
 prepare() { # scenario: a fresh database holding the fixture, its shape and snapshot
   reset_db || { fail "$1: database reset"; return 1; }
@@ -267,12 +292,12 @@ prepare() { # scenario: a fresh database holding the fixture, its shape and snap
   assert_same "$1: fixture holds what expected/$1.out records" "$FIX/expected/$1.out" "$TMP/checks.txt"
 }
 
-verify() { # scenario label: nothing changed, scenario checks
+verify() { # scenario label: nothing else changed, scenario checks
   snapshot "$TMP/after.txt"
   assert_same "$1 $2: row counts and users columns unchanged" "$TMP/before.txt" "$TMP/after.txt"
   note_additions
-  run_checks "$TMP/checks.txt"
-  assert_same "$1 $2: checks.sql matches expected/$1.out" "$FIX/expected/$1.out" "$TMP/checks.txt"
+  run_checks_after "$TMP/checks.txt"
+  assert_same "$1 $2: checks.sql + checks_after.sql match expected/$1.after.out" "$FIX/expected/$1.after.out" "$TMP/checks.txt"
 }
 
 list_ok() { # scenario label log rc

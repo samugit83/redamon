@@ -8,8 +8,10 @@ user, host, scan result or secret is in any file here.
 | --- | --- |
 | `<scenario>.sql` | a full dump (schema and data, `pg_dump --no-owner`), loadable alone into an empty Postgres 16 database |
 | `seed/<scenario>.sql` | the synthetic rows of the scenario, the only hand-written part of its dump |
-| `checks.sql` | the scenario checks the harness runs after every startup list (`psql -At`, `\|` between fields) |
+| `checks.sql` | the scenario checks (`psql -At`, `\|` between fields), run on the fixture and after every startup list |
+| `checks_after.sql` | what the upgrade adds by design (legacy grants, their marker), run after every startup list only |
 | `expected/<scenario>.out` | what `checks.sql` prints on the scenario's dump |
+| `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list |
 
 ## Scenarios
 
@@ -47,6 +49,14 @@ Each dump is the database the pinned image `redamon-webapp:rbac-7.7.2` creates, 
 `\restrict` key, marker ids and times), so regenerate only when a seed changes, and review
 `git diff tests/fixtures/rbac_upgrade/expected` before committing: those files are the
 oracle. Never edit a dump by hand.
+
+`expected/<scenario>.after.out` is NOT generated: it is the reviewed statement of what the
+upgrade must leave, written by hand from the seed and the step's rules (step 1.8: every
+non-admin account with a password keeps `kali_terminal,shell_sessions`, a tunnel holder also
+`tunnels`; the marker counts the holders of each grant). A step that changes the upgrade by
+design appends its queries to `checks_after.sql`, its lines to every `.after.out`, and the
+audit actions it writes to `UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count
+comparison, pinned by count in the markers section instead).
 
 ## The pinned 7.7.2 image
 
