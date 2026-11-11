@@ -177,6 +177,19 @@ from the seed URLs' hosts, so a wider field scope would only send requests to ho
 no scan admitted and then discard what they return. The retired `katanaScope`
 column is kept in Prisma and read by nothing.
 
+**Redirects:** katana follows a redirect inside its HTTP client, before `-fs`,
+`-cos` or `-e` judge anything (those see only the links it queues), so a seed
+answering 302 into an RoE-excluded host would get that host requested. While
+the run admits its targets one by one, that is while any RoE exclusion is in
+force or the project scans by IP (`target_admission.admission_context(...).active`,
+read through `redirects_contained`), Katana gets `-dr` and follows no redirect,
+a same-host one included, and logs `[*][Katana] Redirects not followed: RoE
+exclusions or the IP target list are in force`. The same condition turns off
+Hakrawler's `-subs` and limits the form fetch to same-host redirects (see
+[Hakrawler scope filtering](#2-scope-filtering) and [Form Parsing](#form-parsing)).
+Full and partial runs alike; with no exclusion outside IP mode, every argv and
+fetch is as configured (`recon/tests/test_crawler_redirects_roe.py`).
+
 ---
 
 ### 3. Filtering
@@ -542,7 +555,7 @@ Hakrawler is a DOM-aware web crawler that runs as a Docker container (`jauderho/
 | `HAKRAWLER_THREADS` | `int` | `5` | Concurrent threads |
 | `HAKRAWLER_TIMEOUT` | `int` | `30` | Per-URL timeout in seconds |
 | `HAKRAWLER_MAX_URLS` | `int` | `500` | Maximum URLs to discover |
-| `HAKRAWLER_INCLUDE_SUBS` | `bool` | `True` | Include subdomains in crawl scope |
+| `HAKRAWLER_INCLUDE_SUBS` | `bool` | `True` | Include subdomains in crawl scope. Forced off on an EXACT group, while RoE exclusions are in force, and in IP mode |
 | `HAKRAWLER_INSECURE` | `bool` | `True` | Skip TLS certificate verification |
 | `HAKRAWLER_CUSTOM_HEADERS` | `list` | `[]` | Custom HTTP headers |
 
@@ -552,7 +565,7 @@ Hakrawler scope filtering works at two levels:
 
 | Level | Mechanism | Description |
 |-------|-----------|-------------|
-| **Crawl scope** | `-subs` flag | If `INCLUDE_SUBS=True`, Hakrawler follows links to subdomains of the target. Forced off on an EXACT (listed-hosts) group, in full and partial runs; a partial run passes one flag for every seed, so one EXACT group in it turns it off for the whole run |
+| **Crawl scope** | `-subs` flag | If `INCLUDE_SUBS=True`, Hakrawler follows links to subdomains of the target. Forced off on an EXACT (listed-hosts) group, in full and partial runs; a partial run passes one flag for every seed, so one EXACT group in it turns it off for the whole run. Also forced off while any RoE exclusion is in force and in IP mode (`redirects_contained`): `-subs` widens the only filter hakrawler applies before a request, so it would follow a link or a redirect into an excluded sibling; without it hakrawler stays on the seed's host, same-host redirects included. The log says `[*][Hakrawler] Seed hosts only (RoE exclusions or the IP target list are in force): subdomain crawling off` |
 | **Output scope** | Hostname exact match | After crawling, results are filtered against `target_domains` set (from http_probe). URLs with hostnames not in scope are captured as `ExternalDomain` nodes instead of `Endpoint` nodes |
 
 ### 3. What Hakrawler Finds
@@ -1231,6 +1244,12 @@ The module infers parameter data types from names and sample values:
 ## Form Parsing
 
 The module parses HTML to extract form elements and their inputs.
+
+`fetch_forms_from_urls` requests up to 100 of the URLs Katana and Hakrawler
+reported (3xx ones included) with urllib. While any RoE exclusion is in force or
+the project scans by IP (`redirects_contained`), it follows a redirect only to
+the host the request went to; a refused hop ends that fetch, which is skipped
+like any other failed one. Otherwise it follows redirects as urllib does.
 
 ### Extracted Form Information
 

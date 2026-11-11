@@ -437,9 +437,19 @@ filters the typed `user_inputs` / `user_targets` with `filter_partial_user_input
 (`recon_orchestrator/batch_scope.py`): a host must pass the run's scope groups,
 an IP or CIDR may be no wider than /24 (IPv4) or /120 (IPv6), and an entry the
 project's Rules of Engagement exclude is dropped (a typed CIDR holding an
-excluded address becomes its other hosts). Each dropped entry is logged; a run
-that typed targets, kept none and reads no graph targets is refused with 400.
-The recon container runs its own copy of the filter again on its own settings.
+excluded address becomes its other hosts). Under RoE IP or CIDR entries a typed
+name (host, URL host, `ip_attach_to`) is also resolved and dropped when any
+address it resolves to is excluded, since the tools are handed the name. Each
+dropped entry is logged; a run that typed targets, kept none and reads no graph
+targets is refused with 400. The recon container runs its own copy of the filter
+again on its own settings.
+
+The two copies differ in one place, on purpose. This service resolves from the
+compose network and the scan from the host's resolver (a lab or split-horizon
+zone may answer only there), so a name the orchestrator gets no answer for is
+left to the container, which refuses it when its resolver has no address either
+(noted as a coverage gap under `roe_excluded`). The orchestrator's lookups run
+inside the start request and share a 5 s budget (`dns_budget_s`).
 
 The orchestrator image carries no `recon/`, so `batch_scope.py` keeps a copy
 (`is_roe_excluded`) of the `roe_scope` matcher `_is_roe_excluded`. Both copies run
