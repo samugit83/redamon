@@ -15,7 +15,7 @@ import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { normalizeGithubHost, secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
-import { scannerJobRefusal } from '@/lib/authz/jobCredential'
+import { scannerJobRefusalForLiveProject } from '@/lib/authz/jobCredential'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { followUpWarning, type SaveWarning } from './saveWarnings'
 
@@ -197,10 +197,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // S3/E6: a scan reads its owner's OSINT settings here (recon needs the
     // Shodan/URLScan keys) with the scoped scanner token, on THIS route only
     // (middleware enforces the route scope), unmasked. The bare key reads nothing:
-    // it needs the scan's job credential naming this account (step 1.16, HD-20).
+    // it needs the scan's job credential naming this account (step 1.16, HD-20),
+    // for a project that still exists and is still this account's.
     const scanner = isScannerRequest(request) && !isInternalRequest(request)
     if (scanner) {
-      const refused = scannerJobRefusal(request, { tenant: id })
+      const refused = await scannerJobRefusalForLiveProject(request, { tenant: id })
       if (refused) return refused
     }
     const denied = scanner ? null : await requireUserAccess(request, id, { mode: 'read' })

@@ -17,7 +17,11 @@ vi.stubEnv('INTERNAL_API_KEY', MASTER)
 vi.stubEnv('SCANNER_API_KEY', SCANNER)
 
 const SHODAN = 'shodan-SECRET-0000000000000001'
-const h = vi.hoisted(() => ({ settingsReads: 0 }))
+const h = vi.hoisted(() => ({
+  settingsReads: 0,
+  // The live projects and their owners; a deleted one is simply absent.
+  projects: new Map<string, string>(),
+}))
 
 vi.mock('next/headers', () => ({ cookies: vi.fn(async () => ({ get: () => undefined })) }))
 vi.mock('@/lib/prisma', () => ({
@@ -29,12 +33,18 @@ vi.mock('@/lib/prisma', () => ({
       },
     },
     apiKeyRotationConfig: { findMany: async () => [] },
+    project: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        h.projects.has(where.id) ? { userId: h.projects.get(where.id) } : null,
+    },
   },
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
 vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}) }))
 
-import { mintJobCredential } from '@/lib/authz/machineCredential'
+import {
+  JOB_CREDENTIAL_LABEL, RUN_CREDENTIAL_LABEL, deriveKey, mintJobCredential, mintMachineCredential,
+} from '@/lib/authz/machineCredential'
 import { GET } from './route'
 
 const params = { params: Promise.resolve({ id: 'owner-1' }) }
@@ -45,6 +55,7 @@ function get(headers: Record<string, string>) {
 
 beforeEach(() => {
   h.settingsReads = 0
+  h.projects = new Map([['proj-1', 'owner-1']])
   vi.restoreAllMocks()
 })
 
@@ -71,10 +82,17 @@ describe('the scanner key reads an account\'s settings only with a job credentia
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const good = mintJobCredential({ tenant: 'owner-1', projectId: 'proj-1' })
     const expired = mintJobCredential({ tenant: 'owner-1', projectId: 'proj-1', ttlSeconds: -1 })
+    const exp = Math.floor(Date.now() / 1000) + 3600
+    const sandboxRun = { ten: 'owner-1', pid: 'proj-1', run: 'run-1', exp }
     for (const [token, reason] of [
       [`${good.split('.')[0]}.${'A'.repeat(43)}`, 'bad_signature'],
       [expired, 'expired'],
       ['not-a-token', 'malformed'],
+      // A run credential the agent hands the sandbox, presented as a job credential.
+      [mintMachineCredential({ aud: 'graph', ...sandboxRun }, deriveKey(MASTER, RUN_CREDENTIAL_LABEL)), 'bad_signature'],
+      // Run-shaped claims under the job key: the right audience, a run instead of a job.
+      [mintMachineCredential({ aud: 'scan', ...sandboxRun }, deriveKey(MASTER, JOB_CREDENTIAL_LABEL)), 'missing_claims'],
+      [mintMachineCredential({ aud: 'traffic', ...sandboxRun }, deriveKey(MASTER, JOB_CREDENTIAL_LABEL)), 'wrong_audience'],
     ]) {
       const res = await get({ 'x-internal-key': SCANNER, 'x-redamon-job': token })
       expect(res.status).toBe(403)
@@ -88,6 +106,19 @@ describe('the scanner key reads an account\'s settings only with a job credentia
     const res = await get({ 'x-internal-key': SCANNER, 'x-redamon-job': token })
     expect(res.status).toBe(200)
     expect((await res.json()).shodanApiKey).toBe(SHODAN)
+  })
+
+  test('a credential whose project was deleted, or now belongs to someone else, reads nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const token = mintJobCredential({ tenant: 'owner-1', projectId: 'proj-1' })
+    for (const live of [new Map<string, string>(), new Map([['proj-1', 'new-owner']])]) {
+      h.projects = live
+      const res = await get({ 'x-internal-key': SCANNER, 'x-redamon-job': token })
+      expect(res.status).toBe(403)
+      expect(await res.json()).toMatchObject({ code: 'job_credential_required', reason: 'project_gone' })
+    }
+    expect(h.settingsReads).toBe(0)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[rbac] job credential refused reason=project_gone'))
   })
 
   test('a job credential without the scanner key opens nothing', async () => {
