@@ -78,6 +78,23 @@ def _hh_failed(url, exc) -> None:
         pass
 
 
+# Retry-After is the target's to set: one answer holds every in-process
+# requester back this long at most.
+_HH_BACK_OFF_MAX_S = 30.0
+
+
+def _hh_back_off_if_throttled(resp) -> None:
+    """A 429 pushes the next slot of every in-process requester back (the RoE
+    clock; inert with no ceiling): Retry-After seconds, else 1 s, capped."""
+    if getattr(resp, "status_code", None) != 429:
+        return
+    try:
+        seconds = float(resp.headers.get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        seconds = 1.0
+    request_pacer.pacer().back_off(min(_HH_BACK_OFF_MAX_S, max(1.0, seconds)))
+
+
 # Every request also takes a slot of the process-wide pacer first, so the
 # check pools together stay under the RoE ceiling (inert when there is none).
 def _hh_get(url, *args, **kwargs):
@@ -88,6 +105,7 @@ def _hh_get(url, *args, **kwargs):
         _hh_failed(url, exc)
         raise
     _hh_alive(url)
+    _hh_back_off_if_throttled(resp)
     return resp
 
 
@@ -99,6 +117,7 @@ def _hh_post(url, *args, **kwargs):
         _hh_failed(url, exc)
         raise
     _hh_alive(url)
+    _hh_back_off_if_throttled(resp)
     return resp
 
 
@@ -110,6 +129,7 @@ def _hh_request(method, url, *args, **kwargs):
         _hh_failed(url, exc)
         raise
     _hh_alive(url)
+    _hh_back_off_if_throttled(resp)
     return resp
 
 
