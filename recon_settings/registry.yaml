@@ -3836,7 +3836,12 @@ fields:
       one host. Forced off on an EXACT scope group, which scans only its listed
       hosts: per group in the full pipeline, and for the whole partial run when any
       of its roots is in an EXACT group, since one flag serves every seed. ENUMERATE
-      groups keep this setting.
+      groups keep this setting, except when roeExcludedHosts is non-empty or the
+      project is in IP mode: then it is forced off for the whole run, full and
+      partial, because -subs lets hakrawler follow links and redirects into any
+      sibling subdomain, an RoE-excluded one or a name outside the IP target list
+      included. Off, hakrawler still crawls each seed's own host, same-host
+      redirects included.
   hakrawlerInsecure:
     tool: hakrawler
     runtime_key: "HAKRAWLER_INSECURE"

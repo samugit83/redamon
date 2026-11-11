@@ -4590,7 +4590,7 @@
    "group": "not-tuning",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Follows links onto subdomains of each seed's host (hakrawler -subs), every sibling subdomain when the scan root is itself a seed, rather than staying on one host. Forced off on an EXACT scope group, which scans only its listed hosts: per group in the full pipeline, and for the whole partial run when any of its roots is in an EXACT group, since one flag serves every seed. ENUMERATE groups keep this setting.",
+   "meaning": "Follows links onto subdomains of each seed's host (hakrawler -subs), every sibling subdomain when the scan root is itself a seed, rather than staying on one host. Forced off on an EXACT scope group, which scans only its listed hosts: per group in the full pipeline, and for the whole partial run when any of its roots is in an EXACT group, since one flag serves every seed. ENUMERATE groups keep this setting, except when roeExcludedHosts is non-empty or the project is in IP mode: then it is forced off for the whole run, full and partial, because -subs lets hakrawler follow links and redirects into any sibling subdomain, an RoE-excluded one or a name outside the IP target list included. Off, hakrawler still crawls each seed's own host, same-host redirects included.",
    "optional": false,
    "phase": "resource_enum",
    "prisma_type": "Boolean",
