@@ -80,6 +80,16 @@ def _import_js_recon():
     sys.modules["recon.helpers"].catchall = catchall  # type: ignore[attr-defined]
     spec.loader.exec_module(catchall)
 
+    # The process-wide RoE request clock needs only the stdlib (inert here: no ceiling).
+    spec = importlib.util.spec_from_file_location(
+        "recon.helpers.request_pacer",
+        os.path.join(_REPO_ROOT, "recon", "helpers", "request_pacer.py"),
+    )
+    request_pacer = importlib.util.module_from_spec(spec)
+    sys.modules["recon.helpers.request_pacer"] = request_pacer
+    sys.modules["recon.helpers"].request_pacer = request_pacer  # type: ignore[attr-defined]
+    spec.loader.exec_module(request_pacer)
+
     # Stub the other helpers js_recon needs at import time. We toggle every
     # non-AI analysis pass OFF in the settings so these stubs never execute.
     for name in (
@@ -114,6 +124,11 @@ def _import_js_recon():
     hop_guard.UNSAFE, hop_guard.ROE_EXCLUDED, hop_guard.TOO_MANY_REDIRECTS = "unsafe", "roe_excluded", "too_many_redirects"
     hop_guard.REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
     hop_guard.fetch_hop_by_hop = lambda *a, **kw: None
+    hop_guard.admit_any = lambda url: True
+    # IP-mode admission is read by run_js_recon only, never by _run_analysis.
+    target_admission = types.ModuleType("recon.helpers.target_admission")
+    target_admission.ip_mode_url_admission = lambda *a, **kw: None
+    sys.modules["recon.helpers.target_admission"] = target_admission
     sys.modules["recon.helpers.js_recon.sourcemap"].discover_and_analyze_sourcemaps = lambda *a, **kw: []
     sys.modules["recon.helpers.js_recon.sourcemap"].pseudo_file_base = lambda map_url, js_url: js_url or map_url
     sys.modules["recon.helpers.js_recon.dependency"].detect_dependency_confusion = lambda *a, **kw: []

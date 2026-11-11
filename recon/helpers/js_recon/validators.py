@@ -22,6 +22,8 @@ import threading
 import requests
 from typing import Optional
 
+from recon.helpers import request_pacer
+
 
 # Per-service rate limiting locks
 _service_locks = {}
@@ -78,6 +80,9 @@ def _rate_limited_request(service: str, func, timeout: int = 5):
         return _skipped_result(breaker.detail)
     lock = _get_service_lock(service)
     with lock:
+        # The RoE ceiling counts every request recon sends. A provider's 429
+        # is its own limit, not the engagement's: no back-off of the pacer.
+        request_pacer.acquire()
         epoch = breaker.epoch()
         try:
             result = func(timeout)

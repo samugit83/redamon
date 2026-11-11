@@ -12,6 +12,8 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from recon.helpers import request_pacer
+
 
 # Patterns to extract package names from JS content
 _IMPORT_PATTERNS = [
@@ -60,11 +62,13 @@ def _check_npm_registry(package_name: str, timeout: int = 10) -> Optional[bool]:
         # 404 is a real answer ("not published"), not a failure.
         return cb.json_result(resp, keyed=False, no_data=(404,))
 
-    res = cb.guarded_call(
-        breaker,
-        lambda: requests.get(f'https://registry.npmjs.org/{package_name}', timeout=timeout,
-                             headers={'Accept': 'application/json'}),
-        classify)
+    def lookup():
+        # The RoE ceiling counts every request recon sends, the registry's too.
+        request_pacer.acquire()
+        return requests.get(f'https://registry.npmjs.org/{package_name}', timeout=timeout,
+                            headers={'Accept': 'application/json'})
+
+    res = cb.guarded_call(breaker, lookup, classify)
     if not res.answered:
         # A failure is not cached: a later package retries once the breaker heals.
         return None

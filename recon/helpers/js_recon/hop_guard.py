@@ -19,6 +19,7 @@ try:
     from recon.main_recon_modules.ip_filter import is_url_safe_to_probe
 except ImportError:  # spawned-container path where CWD is on sys.path
     from ip_filter import is_url_safe_to_probe
+from recon.helpers import request_pacer
 from recon.helpers.target_admission import admission_context, admit_targets
 
 MAX_REDIRECTS = 5
@@ -139,11 +140,14 @@ def fetch_hop_by_hop(method: str, url: str, *, timeout: float,
     ``url`` itself). A connection error raises, as requests does.
 
     Every hop is sent with ``allow_redirects=False``: through
-    ``send(method, url, *, timeout, headers, allow_redirects)`` when given (a
-    paced requester; it owns TLS verification), else through requests with
-    ``verify`` (False: a target's self-signed or internal-CA certificate is
-    accepted, as httpx and katana accept it). A 303 turns the method into GET
-    (HEAD stays HEAD); credential headers are dropped on a hop to another host.
+    ``send(method, url, *, timeout, headers, allow_redirects)`` when given (it
+    owns TLS verification), else through requests with ``verify`` (False: a
+    target's self-signed or internal-CA certificate is accepted, as httpx and
+    katana accept it). Each hop that is sent, whoever sends it, first takes a
+    slot of the process-wide RoE pacer (``request_pacer``, inert with no
+    ceiling); a refused hop takes none, and a 429 backs off every in-process
+    requester. A 303 turns the method into GET (HEAD stays HEAD); credential
+    headers are dropped on a hop to another host.
     """
     method = method.upper()
     current = url
@@ -155,7 +159,9 @@ def fetch_hop_by_hop(method: str, url: str, *, timeout: float,
             if refusal is not None:
                 refusal.update(reason=reason, url=current, hop=hop)
             return None
+        request_pacer.acquire()
         resp = _send(send, method, current, timeout=timeout, headers=headers, verify=verify)
+        request_pacer.back_off_on_429(resp)
         location = _redirect_location(resp)
         if location is None:
             return resp

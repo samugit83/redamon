@@ -28,6 +28,7 @@ from urllib.parse import urljoin, urlparse
 from typing import NamedTuple, Optional
 
 from recon.helpers import catchall
+from recon.helpers import request_pacer
 from recon.helpers.roe_scope import _is_roe_excluded
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1363,6 +1364,18 @@ def _validate_secrets(secrets: list, settings: dict) -> list:
     return secrets
 
 
+def _paced(send):
+    """``send`` behind a slot of the process-wide RoE pacer, so the whole
+    endpoint pool, catch-all controls included, stays under the ceiling. No
+    endpoint probe follows a redirect: one call is one request."""
+    def paced(*args, **kwargs):
+        request_pacer.acquire()
+        response = send(*args, **kwargs)
+        request_pacer.back_off_on_429(response)
+        return response
+    return paced
+
+
 def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _ProbeScope, request_func=None) -> list:
     """Validate extracted endpoints with lightweight non-following HTTP probes.
 
@@ -1411,7 +1424,7 @@ def _validate_extracted_endpoints(endpoints: list, settings: dict, scope: _Probe
     # Dedicated parallelism dial for endpoint probes, independent of the shared
     # JS_RECON_CONCURRENCY used for downloads/secret validation.
     workers = _clamp_int(settings.get('JS_RECON_ENDPOINT_CONCURRENCY', 10), 10, 1, 20)
-    requester = request_func or requests.request
+    requester = _paced(request_func or requests.request)
     # One cache per probe method: a HEAD or OPTIONS control says nothing
     # about a GET hit.
     controls = {m: catchall.ControlCache() for m in ('GET', 'HEAD', 'OPTIONS')}

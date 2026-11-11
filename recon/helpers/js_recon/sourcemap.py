@@ -23,6 +23,7 @@ try:
     from recon.main_recon_modules.ip_filter import is_url_safe_to_probe
 except ImportError:  # spawned-container path where CWD is on sys.path
     from ip_filter import is_url_safe_to_probe
+from recon.helpers import request_pacer
 from recon.helpers.js_recon.hop_guard import (
     NOT_ADMITTED, OUT_OF_SCOPE, ROE_EXCLUDED, TOO_MANY_REDIRECTS, UNSAFE,
     admit_any, fetch_hop_by_hop, url_host,
@@ -101,11 +102,13 @@ def _missing_key_control(map_url: str, timeout: int) -> str:
     control = f"{map_url}.{uuid.uuid4().hex[:12]}"
     if not is_url_safe_to_probe(control):
         return 'failed'
+    request_pacer.acquire()
     try:
         resp = requests.get(control, timeout=timeout, headers={'User-Agent': DEFAULT_BROWSER_UA},
                             allow_redirects=False, verify=False)
     except requests.RequestException:
         return 'failed'
+    request_pacer.back_off_on_429(resp)
     return 'denied' if resp.status_code == 403 else 'passed'
 
 
