@@ -193,7 +193,10 @@ def provider_from_cname(cname: Optional[str]) -> Optional[str]:
 # works even when the host has NO CNAME at all.
 _ISSUER_PROVIDER_MARKERS: dict[str, str] = {
     "cloudflare": "cloudflare",
-    "amazon": "aws-s3",
+    # ACM issues for every AWS service and for customers' own names, so the
+    # issuer names only the family: same_provider_family matches it with any
+    # aws-* provider, and it is not auto-exploitable as aws-s3 is.
+    "amazon": "aws",
     "google trust services": "google",
     "github": "github-pages",
     "fastly": "fastly",
