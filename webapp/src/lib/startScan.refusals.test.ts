@@ -301,3 +301,24 @@ describe('dispatchStart on an IP project whose hostname policy recon would refus
     expect(h.orchestratorFetch).toHaveBeenCalled()
   })
 })
+
+describe('dispatchStart sends every kind a job credential for the project owner (step 1.16)', () => {
+  test.each(['gvm', 'github_hunt', 'supply_chain', 'supply_chain_repo', 'partial_recon', 'ai_attack', 'trufflehog'])(
+    '%s', async kind => {
+      const { verifyJobCredential } = await import('@/lib/authz/machineCredential')
+      const saved = process.env.INTERNAL_API_KEY
+      process.env.INTERNAL_API_KEY = 'dispatch-test-master'
+      h.legacy.mockResolvedValue([])
+      try {
+        const r = await dispatchStart(kind, 'p1', { actorUserId: 'admin-1', payload: { source: 'docker' } })
+        expect(r.ok).toBe(true)
+        const sent = JSON.parse(h.orchestratorFetch.mock.calls[0][1].body)
+        expect(verifyJobCredential(sent.job_credential)).toMatchObject({ aud: 'scan', ten: 'u1', pid: 'p1' })
+        expect(sent.user_id).toBe('u1')
+      } finally {
+        if (saved === undefined) delete process.env.INTERNAL_API_KEY
+        else process.env.INTERNAL_API_KEY = saved
+      }
+    },
+  )
+})

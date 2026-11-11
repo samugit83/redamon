@@ -8,6 +8,7 @@ import prisma from '@/lib/prisma'
 import { existsSync } from 'fs'
 import path from 'path'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { scanJobCredential } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -117,6 +118,7 @@ async function startGvmScan(projectId: string): Promise<NextResponse> {
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
+        ...scanJobCredential(projectId, project.userId),
         webapp_api_url: WEBAPP_URL,
       }),
     })

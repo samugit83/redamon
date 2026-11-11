@@ -128,3 +128,21 @@ describe('a version activation in progress', () => {
     expect(h.orchestratorFetch).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('the job credential (step 1.16)', () => {
+  test('the orchestrator call carries a job credential for the project owner', async () => {
+    const { verifyJobCredential } = await import('@/lib/authz/machineCredential')
+    const saved = process.env.INTERNAL_API_KEY
+    process.env.INTERNAL_API_KEY = 'start-path-test-master'
+    try {
+      const res = await call()
+      expect(res.status).toBe(200)
+      const sent = JSON.parse(h.orchestratorFetch.mock.calls[0][1].body)
+      expect(verifyJobCredential(sent.job_credential)).toMatchObject({ aud: 'scan', ten: 'u1', pid: 'p1' })
+      expect(sent.user_id).toBe('u1')
+    } finally {
+      if (saved === undefined) delete process.env.INTERNAL_API_KEY
+      else process.env.INTERNAL_API_KEY = saved
+    }
+  })
+})

@@ -6,6 +6,7 @@ import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { scanJobCredential } from '@/lib/scanJobCredential'
 import { assertGraphNotActivating } from '@/lib/activationLock'
 import { startUnderGraphLock } from '@/lib/startScan'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
@@ -73,6 +74,7 @@ async function startAiAttackScan(request: NextRequest, projectId: string): Promi
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
+        ...scanJobCredential(projectId, project.userId),
         webapp_api_url: WEBAPP_URL,
         tool: body.tool || 'garak',
         targets: body.targets || [],

@@ -769,3 +769,24 @@ describe('an orchestrator that never answered says why, and whether anything sta
     expect(res).toMatchObject({ ok: false, status: 500, upstreamStatus: 500, error: 'Failed to start recon' })
   })
 })
+
+describe('the job credential (step 1.16)', () => {
+  test('the orchestrator call carries a job credential for the project owner, not the actor', async () => {
+    const { verifyJobCredential } = await import('@/lib/authz/machineCredential')
+    const saved = process.env.INTERNAL_API_KEY
+    process.env.INTERNAL_API_KEY = 'start-path-test-master'
+    try {
+      for (const trigger of ['manual', 'scheduled'] as const) {
+        h.orchestratorFetch.mockClear()
+        const res = await startFullScan({ projectId: 'p1', mode: 'new', trigger, actorUserId: 'admin-1' })
+        expect(res.ok).toBe(true)
+        const sent = orchestratorBody()
+        expect(verifyJobCredential(sent.job_credential)).toMatchObject({ aud: 'scan', ten: 'owner', pid: 'p1' })
+        expect(sent.user_id).toBe('owner')
+      }
+    } finally {
+      if (saved === undefined) delete process.env.INTERNAL_API_KEY
+      else process.env.INTERNAL_API_KEY = saved
+    }
+  })
+})

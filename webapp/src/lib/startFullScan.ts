@@ -10,6 +10,7 @@
  */
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { scanJobCredential } from '@/lib/scanJobCredential'
 import { isActivationInProgress } from '@/lib/activationLock'
 import {
   GRAPH_LOCK_HOLDER_PHRASE,
@@ -345,6 +346,7 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
+        ...scanJobCredential(projectId, project.userId),
         webapp_api_url: WEBAPP_URL,
         // Telemetry/history only - the pipeline behaves identically either way.
         mode,

@@ -5,6 +5,7 @@ import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { scanJobCredential } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -73,7 +74,7 @@ async function startTrufflehogScan(request: NextRequest, projectId: string): Pro
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(resolved.body),
+        body: JSON.stringify({ ...resolved.body, ...scanJobCredential(projectId, resolved.body.user_id) }),
       },
     )
   } catch (error) {

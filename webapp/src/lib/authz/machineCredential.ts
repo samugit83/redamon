@@ -129,6 +129,7 @@ const nowSeconds = () => Math.floor(now().getTime() / 1000)
 
 /** A job credential for one scan start of `projectId`, owned by `tenant`. */
 export function mintJobCredential(opts: { tenant: string; projectId: string; ttlSeconds?: number }): string {
+  const key = jobKey()
   if (!opts.tenant || !opts.projectId) throw new Error('a job credential needs its tenant and project')
   return mintMachineCredential({
     aud: JOB_AUDIENCE,
@@ -136,7 +137,7 @@ export function mintJobCredential(opts: { tenant: string; projectId: string; ttl
     pid: opts.projectId,
     job: randomUUID(),
     exp: nowSeconds() + (opts.ttlSeconds ?? JOB_CREDENTIAL_TTL_SECONDS),
-  }, jobKey())
+  }, key)
 }
 
 export function verifyJobCredential(token: unknown): MachineClaims {

@@ -6,6 +6,7 @@ import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { scanJobCredential } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -87,6 +88,7 @@ async function startSupplyChainScan(projectId: string): Promise<NextResponse> {
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
+        ...scanJobCredential(projectId, project.userId),
         webapp_api_url: WEBAPP_URL,
       }),
     })
