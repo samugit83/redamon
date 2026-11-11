@@ -386,12 +386,26 @@ class TestRunGraphqlCop(unittest.TestCase):
                 'https://x.com/graphql', {},
                 {
                     'GRAPHQL_COP_ENABLED': True,
-                    'GRAPHQL_COP_TEST_ALIAS_OVERLOADING': False,
-                    'GRAPHQL_COP_TEST_BATCH_QUERY': False,
+                    'GRAPHQL_COP_TEST_GRAPHIQL': False,
+                    'GRAPHQL_COP_TEST_TRACE_MODE': False,
                 },
             )
         cmd = mock_run.call_args[0][0]
         self.assertNotIn('-e', cmd, "graphql-cop 1.14 doesn't accept -e; filter Python-side")
+
+    def test_dos_exclusion_builds_no_command(self):
+        """R-42: 1.14 cannot leave one test out, so excluding a DoS test skips graphql-cop."""
+        with patch('subprocess.run') as mock_run:
+            out = run_graphql_cop(
+                'https://x.com/graphql', {},
+                {
+                    'GRAPHQL_COP_ENABLED': True,
+                    'GRAPHQL_COP_TEST_ALIAS_OVERLOADING': False,
+                    'GRAPHQL_COP_TEST_BATCH_QUERY': False,
+                },
+            )
+        mock_run.assert_not_called()
+        self.assertIsNone(out)
 
     def test_python_side_filter_strips_excluded_findings(self):
         """Excluded tests must be removed from both `findings` and `raw` by post-filter."""
@@ -410,16 +424,17 @@ class TestRunGraphqlCop(unittest.TestCase):
                 {
                     'GRAPHQL_COP_ENABLED': True,
                     'GRAPHQL_COP_TEST_INTROSPECTION': True,    # include
-                    'GRAPHQL_COP_TEST_ALIAS_OVERLOADING': False,  # EXCLUDE
-                    # GRAPHQL_COP_TEST_GRAPHIQL defaults to True (included)
+                    # A non-DoS test: excluding a DoS one skips graphql-cop (R-42).
+                    'GRAPHQL_COP_TEST_GRAPHIQL': False,        # EXCLUDE
+                    # GRAPHQL_COP_TEST_ALIAS_OVERLOADING defaults to True (included)
                 },
             )
-        # Alias was excluded; other two remain in both raw and findings.
+        # GraphiQL was excluded; other two remain in both raw and findings.
         raw_titles = {f['title'] for f in out['raw']}
-        self.assertEqual(raw_titles, {'Introspection', 'GraphQL IDE'})
+        self.assertEqual(raw_titles, {'Alias Overloading', 'Introspection'})
         vuln_types = {f['vulnerability_type'] for f in out['findings']}
-        self.assertEqual(vuln_types, {'graphql_introspection_enabled', 'graphql_ide_exposed'})
-        self.assertNotIn('graphql_alias_overloading', vuln_types)
+        self.assertEqual(vuln_types, {'graphql_alias_overloading', 'graphql_introspection_enabled'})
+        self.assertNotIn('graphql_ide_exposed', vuln_types)
 
     def test_default_docker_image_used(self):
         mock_result = MagicMock(returncode=0, stdout='[]', stderr='')
