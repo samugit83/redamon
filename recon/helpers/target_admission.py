@@ -99,7 +99,8 @@ class Refusal:
 class Admission:
     """What may be sent. ``names``: names a tool may resolve itself, each with
     its admitted addresses. ``split``: names some of whose addresses are
-    excluded, reachable only through the admitted ones. ``ips``: bare IPs."""
+    excluded, reachable only through the admitted ones, never by name.
+    ``ips``: bare IPs."""
     names: Dict[str, List[str]] = field(default_factory=dict)
     split: Dict[str, List[str]] = field(default_factory=dict)
     ips: List[str] = field(default_factory=list)
@@ -135,10 +136,11 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
     """Admit the targets one tool is about to receive.
 
     ``names`` maps each name to the addresses the run resolved it to; ``ips``
-    are bare addresses. ``resolves_names``: the tool resolves a name itself
-    (httpx, nuclei, a crawler), so a name with any excluded address is refused
-    whole, since the tool could reach it on that address; an IP-target tool
-    (naabu by address, masscan, nmap) keeps the name's other addresses.
+    are bare addresses. A name with an excluded address lands in ``split``
+    with its other addresses, for a tool that targets addresses (naabu by
+    address, masscan, nmap). ``resolves_names``: the tool resolves names
+    itself (httpx, nuclei, a crawler) and could reach such a name on the
+    excluded address, so the name is also recorded as refused.
 
     A name with no known address is refused when RoE IP or CIDR entries exist:
     nothing shows it stays off them. That refusal is "not checked", not "gone",
@@ -188,10 +190,10 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
                 adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "every address excluded"))
         elif len(kept) == len(addrs):
             adm.names[name] = kept
-        elif resolves_names:
-            adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "resolves to an excluded address"))
         else:
             adm.split[name] = kept
+            if resolves_names:
+                adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "resolves to an excluded address"))
 
     for ip in ips:
         if not isinstance(ip, str) or not ip or ip in adm.ips:

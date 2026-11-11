@@ -47,11 +47,11 @@
                  "refused": [["198.51.100.20", "roe_excluded"]]}
     },
     {
-      "id": "name_resolving_tool_refuses_a_mixed_name_whole",
+      "id": "name_resolving_tool_refuses_a_mixed_name_by_name",
       "roe": ["198.51.100.0/24"],
       "resolves_names": true,
       "names": {"mixed.example.com": ["198.51.100.20", "192.0.2.7"]},
-      "expect": {"names": {}, "split": {}, "ips": [],
+      "expect": {"names": {}, "split": {"mixed.example.com": ["192.0.2.7"]}, "ips": [],
                  "refused": [["198.51.100.20", "roe_excluded"], ["mixed.example.com", "roe_excluded"]]}
     },
     {
