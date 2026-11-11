@@ -20,6 +20,11 @@
  * the other, a pair either refuses or leaves the timeline consistent. The S-4
  * cases interleave them; they failed before the paths shared the lock.
  *
+ * The GVM, GitHub-hunt, TruffleHog, supply-chain and AI-attack-surface starts
+ * (their routes and their dispatchStart kinds) run here too: each writes
+ * findings into the live graph, so each raced an activation and a save the same
+ * way the partial recon did.
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
@@ -38,6 +43,8 @@ const w = vi.hoisted(() => ({
   graph: [] as Node[],
   scanRunning: false,
   partialRunning: false,
+  /** The other scanners the orchestrator accepted a start for, by URL segment. */
+  othersRunning: new Set<string>(),
   startsWhileActivating: 0,
   restoring: false,
   engagementHold: Promise.resolve() as Promise<unknown>,
@@ -112,6 +119,12 @@ const fakePrisma = vi.hoisted(() => {
       },
     },
     scanJob: { create: async () => ({ id: `job${++w.jobs}` }) },
+    // A filesystem source needs no target and no credential.
+    trufflehogScanProfile: {
+      findFirst: async () => ({ id: 'prof1', source: 'filesystem', config: {} }),
+      findUnique: async () => ({ id: 'prof1', source: 'filesystem', config: {} }),
+    },
+    userSettings: { findUnique: async () => null },
     $transaction: async (fn: (tx: unknown) => unknown) => fn(client),
   }
   return client
@@ -132,10 +145,20 @@ vi.mock('@/lib/orchestrator', () => ({
       w.partialRunning = true
       return reply({ run_id: 'r1', status: 'starting', roots: ['example.com'] })
     }
+    const other = /\/(gvm|github-hunt|supply-chain|trufflehog|ai-attack-surface)\/p1\/start$/.exec(url)
+    if (init?.method === 'POST' && other) {
+      if (w.project.activationState === 'activating') w.startsWhileActivating += 1
+      w.othersRunning.add(other[1])
+      return reply({ run_id: 'r2', status: 'starting' })
+    }
     if (url.endsWith('/recon/p1/status')) return reply({ status: w.scanRunning ? 'running' : 'idle' })
     if (url.endsWith('/recon/p1/partial/all')) {
       return reply({ runs: w.partialRunning ? [{ run_id: 'r1', status: 'running' }] : [] })
     }
+    const status = /\/(gvm|github-hunt|supply-chain)\/p1\/status$/.exec(url)
+    if (status) return reply({ status: w.othersRunning.has(status[1]) ? 'running' : 'idle' })
+    const runs = /\/(trufflehog|ai-attack-surface)\/p1\/all$/.exec(url)
+    if (runs) return reply({ runs: w.othersRunning.has(runs[1]) ? [{ run_id: 'r2', status: 'running' }] : [] })
     if (url.endsWith('/all')) return reply({ runs: [] })
     return reply({ status: 'idle' })
   },
@@ -173,6 +196,12 @@ vi.mock('@/lib/engagement', async orig => ({
   },
   currentAuthorization: async () => null,
 }))
+// The GVM and GitHub-hunt buttons refuse a project without a recon output file.
+vi.mock('fs', async orig => {
+  const real = await orig<typeof import('fs')>()
+  const existsSync = (p: import('fs').PathLike) => String(p).endsWith('/recon_p1.json') || real.existsSync(p)
+  return { ...real, default: { ...real, existsSync }, existsSync }
+})
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: async () => ({ records: [] }), close: async () => undefined }) }))
 vi.mock('@/app/api/graph/cache', () => ({ invalidateCache: () => undefined }))
 // Neo4j: the capture reads whatever the live graph holds when it runs, inside
@@ -211,7 +240,12 @@ import { serializeSnapshot, deserializeSnapshot } from './scanSnapshot'
 import { POST as activateRoute } from '@/app/api/projects/[id]/versions/[versionId]/activate/route'
 import { POST as saveVersionRoute } from '@/app/api/projects/[id]/versions/route'
 import { POST as partialRoute } from '@/app/api/recon/[projectId]/partial/route'
-import { dispatchStart } from './startScan'
+import { POST as gvmRoute } from '@/app/api/gvm/[projectId]/start/route'
+import { POST as githubHuntRoute } from '@/app/api/github-hunt/[projectId]/start/route'
+import { POST as trufflehogRoute } from '@/app/api/trufflehog/[projectId]/start/route'
+import { POST as supplyChainRoute } from '@/app/api/supply-chain/[projectId]/start/route'
+import { POST as aiAttackRoute } from '@/app/api/ai-attack-surface/[projectId]/start/route'
+import { dispatchStart, type DispatchStartResult } from './startScan'
 
 const graphOf = (prefix: string, n: number): Node[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -260,10 +294,46 @@ const partialStarts: Array<[string, () => Promise<boolean>]> = [
   ['the queue', async () => (await dispatchStart('partial_recon', 'p1', { payload: PARTIAL_BODY })).ok],
 ]
 
+type StartAnswer = { accepted: boolean; status: number; busy?: string }
+const fromRoute = async (res: Response): Promise<StartAnswer> => {
+  const body = (await res.json().catch(() => ({}))) as { busy?: unknown }
+  return { accepted: res.status === 200, status: res.status, ...(typeof body.busy === 'string' ? { busy: body.busy } : {}) }
+}
+const fromQueue = (r: DispatchStartResult): StartAnswer =>
+  ({ accepted: r.ok, status: r.status, ...(r.busy ? { busy: r.busy } : {}) })
+const routeArgs = (body: unknown = {}) => [
+  { json: async () => body } as unknown as NextRequest,
+  { params: Promise.resolve({ projectId: 'p1' }) },
+] as const
+const AI_BODY = { tool: 'garak', targets: [] }
+/**
+ * The other scanners' starts, from the button and from the queue, with the
+ * phrase the activation's writer check names once the orchestrator has the run.
+ */
+const otherStarts: Array<[string, () => Promise<StartAnswer>, string]> = [
+  ['GVM from the button', async () => fromRoute(await gvmRoute(...routeArgs())), 'a GVM vulnerability scan is running'],
+  ['GVM from the queue', async () => fromQueue(await dispatchStart('gvm', 'p1')), 'a GVM vulnerability scan is running'],
+  ['the GitHub hunt from the button', async () => fromRoute(await githubHuntRoute(...routeArgs())), 'a GitHub Secret Hunt is running'],
+  ['the GitHub hunt from the queue', async () => fromQueue(await dispatchStart('github_hunt', 'p1')), 'a GitHub Secret Hunt is running'],
+  ['TruffleHog from the button', async () => fromRoute(await trufflehogRoute(...routeArgs({ source: 'filesystem' }))),
+    'a Secret Multiscanner scan is running'],
+  ['TruffleHog from the queue', async () => fromQueue(await dispatchStart('trufflehog', 'p1', { payload: { source: 'filesystem' } })),
+    'a Secret Multiscanner scan is running'],
+  ['the supply-chain scan from the button', async () => fromRoute(await supplyChainRoute(...routeArgs())), 'a supply-chain scan is running'],
+  ['the supply-chain scan from the queue', async () => fromQueue(await dispatchStart('supply_chain', 'p1')), 'a supply-chain scan is running'],
+  ['an org-batch supply-chain item from the queue', async () => fromQueue(await dispatchStart('supply_chain_repo', 'p1', {
+    payload: { repo_url: 'https://github.com/example/app' } })), 'a supply-chain scan is running'],
+  ['the AI attack surface from the button', async () => fromRoute(await aiAttackRoute(...routeArgs(AI_BODY))),
+    'an AI attack-surface scan is running'],
+  ['the AI attack surface from the queue', async () => fromQueue(await dispatchStart('ai_attack', 'p1', { payload: AI_BODY })),
+    'an AI attack-surface scan is running'],
+]
+
 beforeEach(() => {
   w.project = {
     id: 'p1', userId: 'owner', targetDomain: 'example.com', ipMode: false, targetIps: [],
     domainBatchMode: false, domainBatchHosts: [], subdomainList: [],
+    supplyChainInputMode: 'upload', supplyChainSbomFile: 'package-lock.json',
     activationState: 'idle', activationStartedAt: null, activationVersionId: null,
   }
   const at = new Date('2026-11-01T00:00:00Z')
@@ -277,6 +347,7 @@ beforeEach(() => {
   w.graph = V2_GRAPH.map(n => ({ ...n }))
   w.scanRunning = false
   w.partialRunning = false
+  w.othersRunning = new Set()
   w.startsWhileActivating = 0
   w.restoring = false
   w.engagementHold = Promise.resolve()
@@ -338,6 +409,14 @@ describe('control: one after the other, every pair refuses (the real guards, the
     const res = await activate()
     expect(res.status).toBe(409)
     expect((await res.json()).busy).toBe('a partial recon run is active')
+  })
+
+  test.each(otherStarts)('%s starts on a free graph, and an activation after it is refused', async (_via, startOther, writer) => {
+    expect(await startOther()).toEqual({ accepted: true, status: 200 })
+    expect(w.othersRunning.size).toBe(1)
+    const res = await activate()
+    expect(res.status).toBe(409)
+    expect((await res.json()).busy).toBe(writer)
   })
 })
 
@@ -441,5 +520,46 @@ describe('S-4: interleaved, the start, save-version and activation hold one proj
     body.resolve()
     expect((await save.promise).status).toBe(200)
     expect(currentVersions()).toEqual(['v3'])
+  })
+
+  // Without the lock, the start passed its activation check, the activation's
+  // writer check found no scan yet, and the start then asked the orchestrator
+  // for a run that writes findings into the half-restored graph.
+  test.each(otherStarts)('%s never reaches the orchestrator while an activation swaps the graph', async (_via, startOther) => {
+    const engagement = deferred()
+    const swap = deferred()
+    w.engagementHold = engagement.promise
+    w.swapHold = swap.promise
+
+    const scan = track(startOther())
+    await until(() => w.engagementReached || scan.done)
+    const act = track(activate())
+    await until(() => w.restoring || act.done)
+    engagement.resolve()
+    await until(() => scan.done)
+    swap.resolve()
+    await Promise.all([scan.promise, act.promise])
+
+    expect(w.startsWhileActivating).toBe(0)
+    expect(await scan.promise).toEqual({ accepted: true, status: 200 })
+    const res = await act.promise
+    expect(res.status).toBe(409)
+    expect((await res.json()).busy).toBe('a scan is being started')
+  })
+
+  // Without the lock, the save's writer check found nothing running and the
+  // scan then wrote findings into the graph the save was freezing.
+  test.each(otherStarts)('%s is refused as busy while a save-version holds the lock', async (_via, startOther) => {
+    const body = deferred()
+    const save = track(saveVersion(body.promise))
+    await until(() => w.saveBodyReached || save.done)
+
+    expect(await startOther()).toEqual({
+      accepted: false, status: 409, busy: 'the current graph is being saved as a version',
+    })
+    expect(w.othersRunning.size).toBe(0)
+
+    body.resolve()
+    expect((await save.promise).status).toBe(200)
   })
 })

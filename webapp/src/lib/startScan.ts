@@ -9,7 +9,7 @@
  * version freeze). Every other kind forwards to its orchestrator start endpoint,
  * mirroring its /api/.../start route body exactly.
  */
-import type { NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
@@ -186,22 +186,45 @@ export async function dispatchStart(
     }
   }
 
-  // S-4: a partial recon writes the live graph, so like its button it holds the
-  // project's graph lock from its activation check through the orchestrator's
-  // answer (projectGraphLock.ts).
-  if (kind === 'partial_recon') {
-    const held = await withGraphStartLock(projectId, () => dispatchOtherStart(kind, projectId, opts))
-    if (held.acquired) return held.value
-    const refused = graphLockedStartRefusal(held.heldBy)
-    return {
-      ok: false,
-      status: refused.status,
+  // S-4: every other kind writes the live graph too (graphWriters.ts counts each
+  // as a writer), so like its button it holds the project's graph lock.
+  const held = await withGraphStartLock(projectId, () => dispatchOtherStart(kind, projectId, opts))
+  if (held.acquired) return held.value
+  const refused = graphLockedStartRefusal(held.heldBy)
+  return {
+    ok: false,
+    status: refused.status,
+    error: refused.error,
+    ...(refused.activationInProgress ? { activationInProgress: true } : {}),
+    ...(refused.busy ? { busy: refused.busy } : {}),
+  }
+}
+
+/**
+ * Run a start button's route holding the project's graph lock
+ * (projectGraphLock.ts), for a scan whose run writes the live graph: from the
+ * route's activation check through the orchestrator's answer, after which an
+ * activation's or a version save's writer check sees the run. Without it an
+ * activation could begin swapping the graph between the check and the start,
+ * and the run would write into the half-restored graph; a save could freeze
+ * the graph while the run writes into it. A save or an activation holding the
+ * lock refuses the start with 409.
+ */
+export async function startUnderGraphLock(
+  projectId: string,
+  start: () => Promise<NextResponse>,
+): Promise<NextResponse> {
+  const held = await withGraphStartLock(projectId, start)
+  if (held.acquired) return held.value
+  const refused = graphLockedStartRefusal(held.heldBy)
+  return NextResponse.json(
+    {
       error: refused.error,
       ...(refused.activationInProgress ? { activationInProgress: true } : {}),
       ...(refused.busy ? { busy: refused.busy } : {}),
-    }
-  }
-  return dispatchOtherStart(kind, projectId, opts)
+    },
+    { status: refused.status },
+  )
 }
 
 async function dispatchOtherStart(
