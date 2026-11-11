@@ -52,3 +52,31 @@ p1-own-password-admin-current	1.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/password	
 # a member target needs no step-up; a demotion runs in the locked transaction even when the
 # account is already standard, so this proves the advisory lock on the deployed build
 p1-demote-member-no-stepup	1.4	admin_a	PUT	/api/users/${MEMBER_A_ID}	{"role":"standard"}	200;has=${MEMBER_A_ID}	req:HD-09
+#
+# ---- step 1.6: the admin bypass is a masked read; a re-pointed endpoint needs its secret again ----
+# Every refused row is refused at the gate, before anything is written or sent. The managed and
+# owner controls send a body their handler refuses after the gate (chat-skills POST {} -> 400
+# "name is required"), so nothing is created there either.
+p1-admin-writes-other-settings	1.6	admin_a	PUT	/api/users/${MEMBER_A_ID}/settings	{"tavilyApiKey":"rbac-never-applied"}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-admin-settings	1.6	admin_a	PUT	/api/users/${ADMIN_B_ID}/settings	{"tavilyApiKey":"rbac-never-applied"}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-provider	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/llm-providers	{"providerType":"openai","name":"rbac-never","apiKey":"rbac-never"}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-mcp-server	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/mcp	{}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-attack-skill	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/attack-skills	{}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-chat-skill	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/chat-skills	{}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-tradecraft	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/tradecraft-resources	{}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-skill-batch	1.6	admin_a	POST	/api/users/${MEMBER_A_ID}/attack-skills/batch	{}	403;has=own_account_only	req:HD-23
+p1-admin-writes-other-mcp-test	1.6	admin_a	POST	/api/mcp/test	{"userId":"${MEMBER_A_ID}","server":{"id":"rbac-fake-server","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","auth":{"type":"bearer","token":"••••••••0001"}}}	403;has=own_account_only	req:HD-23
+# act-as a member who can sign in grants no write either
+p1-admin-acting-writes-member	1.6	admin_a_as_member_a	PUT	/api/users/${MEMBER_A_ID}/settings	{"tavilyApiKey":"rbac-never-applied"}	403;has=own_account_only	req:HD-23
+p1-admin-acting-writes-member-skill-batch	1.6	admin_a_as_member_a	POST	/api/users/${MEMBER_A_ID}/attack-skills/batch	{}	403;has=own_account_only	req:HD-23
+# the read stays, masked: the seeded fake bearer never comes back
+p1-admin-reads-other-masked	1.6	admin_a	GET	/api/users/${MEMBER_A_ID}/mcp	-	200;has=rbac-fake-server;has=••••••••0001;lacks=${A_MCP_BEARER}	req:HD-23
+# revoking another account's token stays an admin action: the gate admits it (no such token: 404)
+p1-admin-revokes-other-token-gate	1.6	admin_a	DELETE	/api/users/${MEMBER_A_ID}/mcp-tokens/rbac-no-such-token	-	404	req:HD-23
+# a passwordless managed account is written through act-as, and only through it
+p1-admin-acting-managed-writes	1.6	admin_a_as_managed	POST	/api/users/${MANAGED_ID}/chat-skills	{}	400;has=name is required	req:HD-23
+p1-admin-not-acting-writes-managed	1.6	admin_a	POST	/api/users/${MANAGED_ID}/chat-skills	{}	403;has=own_account_only	req:HD-23
+p1-owner-writes-own-control	1.6	member_a	POST	/api/users/${MEMBER_A_ID}/chat-skills	{}	400;has=name is required	req:HD-23
+# the owner re-pointing a saved MCP server (save or test) with the masked token is refused
+p1-secret-reentry-mcp-server	1.6	member_a	PUT	/api/users/${MEMBER_A_ID}/mcp/rbac-fake-server	{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"••••••••0001"}}	400;has=secret_reentry_required;has=auth.token;lacks=${A_MCP_BEARER}	req:HD-24
+p1-secret-reentry-mcp-test	1.6	member_a	POST	/api/mcp/test	{"userId":"${MEMBER_A_ID}","server":{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"••••••••0001"}}}	400;has=secret_reentry_required;lacks=${A_MCP_BEARER}	req:HD-24
