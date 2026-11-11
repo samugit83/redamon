@@ -144,7 +144,7 @@ const NOTES = [
     'roeForbiddenTools, roeForbiddenCategories, the allow flags and roeMaxSeverityPhase - ARE ' +
     'listed and ARE settable here, in either direction. What keeps them honest is not a ' +
     'write-time direction rule but that every one of them is enforced at scan start whatever ' +
-    'the setting says: a ceiling still rewrites all 17 rate fields, an excluded host is still ' +
+    'the setting says: a ceiling still caps every rate field it governs, an excluded host is still ' +
     'dropped in three places. Read preflight_scope_check to see the resolved configuration.',
   'The engagement RECORD - the client name, the contacts, the dates, the document - is not ' +
     'here and is not writable by any tool on this surface. It is the contract, a person ' +

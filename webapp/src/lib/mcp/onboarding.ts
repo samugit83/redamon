@@ -725,7 +725,7 @@ function renderTokenPowers(tools: Tool[], scopes: readonly McpScope[]): string {
     'configured.',
     '',
     'What keeps them honest is not the write, it is the enforcement: every limit is applied at scan',
-    'start whatever the setting says. A ceiling of 3 rewrites all 17 rate fields; an excluded host',
+    'start whatever the setting says. A ceiling of 3 caps every rate field it governs at 3; an excluded host',
     'is dropped in three separate places; the orchestrator returns 403 outside the window. So',
     'raising a ceiling changes what runs rather than what is checked - and `preflight_scope_check`',
     'reports the RESOLVED configuration, which is the number to report back to a person.',

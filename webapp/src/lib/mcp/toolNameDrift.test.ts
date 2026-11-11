@@ -215,6 +215,9 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       /(missing|absent|entirely)[^.]*that surface was never scanned/i,
       /missing from the census means \*\*never scanned/i,
       /absent entirely was never scanned/i,
+      // The registry decides which rate fields the RoE ceiling caps (roe_capped),
+      // and a count copied into prose said 17 long after it was 20.
+      /\b\d+ rate fields\b/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

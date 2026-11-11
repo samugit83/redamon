@@ -81,7 +81,7 @@ export const MCP_SCOPE_COPY: Record<McpScope, ScopeCopy> = {
       'The engagement limits move in EITHER direction here, and that is deliberate. ' +
       'What makes them safe is not a write-time direction rule but that each one is ' +
       'enforced at scan start whatever the setting says. A rate ceiling of 3 still ' +
-      'rewrites all 17 rate fields; an excluded host is still dropped in three ' +
+      'caps every rate field it governs at 3; an excluded host is still dropped in three ' +
       'places. preflight_scope_check reports the resolved configuration, which is ' +
       'the check that actually holds.\n\n' +
       'Three validators are worth knowing about. A container image outside the ' +
