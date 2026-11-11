@@ -15,6 +15,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from recon.helpers import request_pacer
 from recon.helpers.subprocess_helpers import run_with_heartbeat
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -180,6 +181,30 @@ def ensure_kiterunner_binary(wordlist_name: str) -> Tuple[Optional[str], Optiona
     return None, None
 
 
+def _note_not_run_under_ceiling(target_urls: List[str], ceiling: float) -> None:
+    """Kiterunner has no flag that holds a request rate, so under an RoE ceiling it
+    does not run (decision D3).
+
+    kr v1.0.2 parses ``--delay`` into its config and nothing reads it; ``-x``
+    and ``-j`` cap connections per host and hosts at once, not requests per
+    second, so even ``-x 1 -j 1`` sends back to back as fast as the target
+    answers. Recorded as a coverage gap, never as switched off: the run says
+    these targets were not brute-forced. Kiterunner writes Endpoint assets, not
+    findings, so the gap has nothing to keep from the prune. Never raises.
+    """
+    targets = sum(1 for url in target_urls if url.startswith(('http://', 'https://')))
+    print(f"[-][Kiterunner] Not run: kr cannot hold the {ceiling:g} rps RoE ceiling "
+          f"(its --delay is never applied); {targets} target(s) not brute-forced this run")
+    try:
+        from recon.helpers import circuit_breaker as _cb
+        _cb.note_degraded("resource_enum", entries=[{
+            "source": "kiterunner",
+            "reason": f"not run: kr cannot hold the {ceiling:g} rps RoE ceiling",
+            "skipped": targets}])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_kiterunner_discovery(
     target_urls: List[str],
     binary_path: str,
@@ -201,12 +226,15 @@ def run_kiterunner_discovery(
     Kiterunner uses Swagger/OpenAPI specs to discover hidden API routes.
     Unlike Katana/GAU, it finds endpoints that aren't linked or archived.
 
+    Under an RoE ceiling (the process-wide request pacer is active) it does not
+    run and returns no endpoints: nothing bounds kr's request rate.
+
     Args:
         target_urls: Base URLs to scan (e.g., ["http://example.com"])
         binary_path: Path to Kiterunner binary (kr)
         wordlist_path: Path to wordlist file (.kite)
         wordlist_name: Name of wordlist for display
-        rate_limit: Requests per second limit
+        rate_limit: Requests per second, passed as --delay, which kr v1.0.2 ignores
         connections: Number of connections
         timeout: Request timeout in seconds
         scan_timeout: Overall scan timeout
@@ -225,6 +253,11 @@ def run_kiterunner_discovery(
     print(f"[*][Kiterunner] Targets: {len(target_urls)}")
 
     discovered_endpoints = []
+
+    ceiling = request_pacer.ceiling()
+    if ceiling:
+        _note_not_run_under_ceiling(target_urls, ceiling)
+        return discovered_endpoints
 
     # Check if binary and wordlist are available
     if not binary_path or not wordlist_path:
@@ -274,7 +307,8 @@ def run_kiterunner_discovery(
         else:
             cmd.extend(["-w", wordlist_path])
 
-        # Rate limiting (delay in ms between requests)
+        # kr v1.0.2 never applies --delay, so this paces nothing; it is why a
+        # run under an RoE ceiling stops above instead.
         if rate_limit > 0:
             delay_ms = int(1000 / rate_limit)
             if delay_ms > 0:
