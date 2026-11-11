@@ -69,6 +69,14 @@ check("webapp: another tenant's credential reads nothing (tenant_mismatch)",
       s == 403 and code_of(t) == "tenant_mismatch" and A_TAVILY_SECRET not in t, s)
 s, t = call("GET", settings_url, cred=job(MEMBER_A_ID, PA_ID, exp_in=-1))
 check("webapp: an expired credential reads nothing", s == 403 and code_of(t) == "expired", s)
+# A project that no longer exists (never created here), and one its tenant does not own.
+GONE_ID = "rbac-live-116-deleted-project"
+s, t = call("GET", settings_url, cred=job(MEMBER_A_ID, GONE_ID))
+check("webapp: a credential whose project is gone reads nothing (project_gone)",
+      s == 403 and code_of(t) == "project_gone" and A_TAVILY_SECRET not in t, s)
+s, t = call("GET", settings_url, cred=job(MEMBER_A_ID, PB_ID))
+check("webapp: a credential naming a project its tenant does not own reads nothing (project_gone)",
+      s == 403 and code_of(t) == "project_gone" and A_TAVILY_SECRET not in t, s)
 
 s, t = call("GET", f"{WEBAPP}/api/projects/{PA_ID}")
 check("webapp: the bare scanner key reads no project", s == 403 and "rbac-PA" not in t, s)
@@ -96,6 +104,9 @@ check("agent: a body user other than the credential's is refused",
       s == 403 and code_of(t) == "job_credential_user_mismatch", s)
 s, t = call("POST", f"{AGENT}/llm/nuclei-tags", tags, cred=job(MEMBER_A_ID, PA_ID))
 check("agent: with the credential the route runs for its tenant (no 401/403)", s not in (401, 403), s)
+s, t = call("POST", f"{AGENT}/llm/nuclei-tags", tags, cred=job(MEMBER_A_ID, GONE_ID))
+check("agent: /llm/* refuse a credential whose project is gone (job_credential_project_gone)",
+      s == 403 and code_of(t) == "job_credential_project_gone", s)
 s, t = call("POST", f"{AGENT}/jev/page-type", {"pages": [{"url": "http://rbac.test/"}]})
 check("agent: /jev/* refuse the bare scanner key", s == 401, s)
 s, t = call("POST", f"{AGENT}/jev/page-type", {"pages": [{"url": "http://rbac.test/"}]}, cred=job(MEMBER_A_ID, PA_ID))
