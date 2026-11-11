@@ -257,6 +257,14 @@ def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: d
             timeout_str = f"{timeout_str}s"
         cmd.extend(["--host-timeout", timeout_str])
 
+    # The RoE ceiling as nmap's packet rate; the timing template alone does not
+    # bound it. nmap applies --max-rate to its port and host-discovery probes,
+    # not to the -sV or NSE traffic that follows them.
+    from recon.helpers.request_pacer import ceiling_rps
+    ceiling = ceiling_rps(settings)
+    if ceiling:
+        cmd.extend(["--max-rate", f"{ceiling:g}"])
+
     # Without -6 nmap skips an IPv6 target ("you have to use the -6 option"),
     # still exits 0 and lists it status="skipped", so it was never scanned.
     try:

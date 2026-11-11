@@ -9,7 +9,6 @@ the others.
 import hashlib
 import ipaddress
 import re
-import threading
 from collections import deque
 from datetime import datetime, timezone
 from html import unescape
@@ -17,8 +16,9 @@ from urllib.parse import urljoin, urlsplit
 
 from helpers import proxy_routing
 from recon.helpers.auth_profile import auth_header_lines, profile_from_settings
+from recon.helpers import request_pacer
 from recon.helpers.openapi.fetch import (
-    DocumentError, Fetcher, RequestPacer, decode_document, http_url, origin, parse_headers, public_url,
+    DocumentError, Fetcher, decode_document, http_url, origin, parse_headers, public_url,
 )
 from recon.helpers.openapi.parser import parse_operations
 from recon.helpers.openapi.scope import Scope
@@ -43,24 +43,16 @@ class Diagnostics(list):
                         'message': f'Additional diagnostics omitted after {MAX_DIAGNOSTICS} entries'}
 
 
-# One request clock for the whole process, so the RoE ceiling holds across the
-# groups of a Domain batch and across a partial run's roots.
-_PACER = None
-_PACER_LOCK = threading.Lock()
-
-
 def _pacer_for(settings):
-    global _PACER
-    with _PACER_LOCK:
-        if _PACER is None:
-            _PACER = RequestPacer(settings.get('ROE_GLOBAL_MAX_RPS') or 0)
-        return _PACER
+    """The process-wide request clock (recon/helpers/request_pacer.py), so the RoE
+    ceiling holds across the groups of a Domain batch, a partial run's roots and
+    every other in-process requester. A partial run's process may not have
+    configured it yet; the settings do then."""
+    return request_pacer.pacer(settings)
 
 
 def _reset_pacer():
-    global _PACER
-    with _PACER_LOCK:
-        _PACER = None
+    request_pacer.reset()
 
 
 def _now():

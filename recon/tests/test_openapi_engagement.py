@@ -4,7 +4,7 @@ import json
 import pytest
 
 from helpers import proxy_routing
-from recon.helpers.openapi.fetch import Fetcher, DocumentError
+from recon.helpers.openapi.fetch import Fetcher
 from recon.helpers.openapi.discovery import _reset_pacer, run_openapi_discovery
 
 
@@ -94,7 +94,7 @@ def test_rate_ceiling_covers_redirects_references_and_separate_documents(monkeyp
         return responses[url]
     monkeypatch.setattr('requests.Session.get', get)
     output = discover({}, {'TARGET_DOMAIN': 'example.com',
-        'ROE_GLOBAL_MAX_RPS': 2, 'ROE_ENABLED': False, 'OPENAPI_AUTO_DISCOVER': False,
+        'ROE_GLOBAL_MAX_RPS': 2, 'ROE_ENABLED': True, 'OPENAPI_AUTO_DISCOVER': False,
         'OPENAPI_SOURCES': [{'url': 'https://api.example.com/start'},
                             {'url': 'https://api.example.com/second'}]})
     assert len(output['documents']) == 2
@@ -125,18 +125,18 @@ def test_proxy_tag_is_sent_only_with_capture_proxy(monkeypatch):
     assert all(call['headers']['Authorization'] == 'Bearer fixture' for call in calls)
 
 
-def test_rate_wait_cannot_exceed_document_deadline(monkeypatch):
+def test_rate_wait_does_not_eat_the_document_deadline(monkeypatch):
+    # The wait for a slot is the RoE ceiling's (R-8: the clock is shared by every
+    # in-process requester), so the second document still gets its whole timeout.
     now = [100.0]
     monkeypatch.setattr('recon.helpers.openapi.fetch.time.monotonic', lambda: now[0])
     monkeypatch.setattr('recon.helpers.openapi.fetch.time.sleep', lambda seconds: now.__setitem__(0, now[0] + seconds))
     calls = []
-    monkeypatch.setattr('requests.Session.get', lambda *a, **kw: calls.append(a) or Response())
+    monkeypatch.setattr('requests.Session.get', lambda *a, **kw: calls.append((now[0], kw['timeout'])) or Response())
     fetcher = Fetcher(timeout=1, max_rps=0.1)
     try:
         fetcher.fetch('https://api.example.com/one', {}, 'https://api.example.com')
-        with pytest.raises(DocumentError, match='deadline'):
-            fetcher.fetch('https://api.example.com/two', {}, 'https://api.example.com')
+        fetcher.fetch('https://api.example.com/two', {}, 'https://api.example.com')
     finally:
         fetcher.close()
-    assert len(calls) == 1
-    assert now[0] == 100.0
+    assert calls == [(100.0, 1.0), (110.0, 1.0)]

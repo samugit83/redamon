@@ -11,6 +11,7 @@ import yaml
 from urllib3.exceptions import HTTPError
 
 from helpers import proxy_routing
+from recon.helpers.request_pacer import RequestPacer
 
 # Fetches use verify=False like the rest of recon; one warning per request
 # would flood the run log.
@@ -135,31 +136,6 @@ def decode_document(text):
     return doc
 
 
-class RequestPacer:
-    """A scan-owned request clock shared by its sequential domain groups."""
-
-    def __init__(self, max_rps=0):
-        rate = float(max_rps)
-        if not math.isfinite(rate) or rate < 0:
-            raise DocumentError('Invalid document request rate ceiling')
-        self.request_interval = 1 / rate if rate else 0
-        self.next_request_at = 0.0
-
-    def wait(self, deadline):
-        if self.request_interval:
-            delay = max(0.0, self.next_request_at - time.monotonic())
-            if delay >= deadline - time.monotonic():
-                raise DocumentError('Document fetch deadline exceeded', code='transport_error')
-            if delay:
-                time.sleep(delay)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise DocumentError('Document fetch deadline exceeded', code='transport_error')
-        if self.request_interval:
-            self.next_request_at = time.monotonic() + self.request_interval
-        return remaining
-
-
 class Fetcher:
     def __init__(self, timeout=10, max_requests=500, max_rps=0, *, pacer=None, address_guard=None,
                  health=None, on_request=None):
@@ -215,7 +191,13 @@ class Fetcher:
                 request_headers['X-Redamon-Ctx'] = token
             # Batch groups share pacing, while cache and request budgets remain
             # local to each fetcher. Redirects and references use the same clock.
-            remaining = self.pacer.wait(deadline)
+            # The wait for a slot is the RoE ceiling's, not the target's, so it
+            # extends the deadline: other requesters share the clock, and a long
+            # queue must not read as a slow server.
+            deadline += self.pacer.acquire()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DocumentError('Document fetch deadline exceeded', code='transport_error')
             self.count += 1
             self.session.cookies.clear()
             try:

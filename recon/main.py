@@ -55,6 +55,11 @@ try:
 except Exception as _cap_cfg_err:  # noqa: BLE001 — never block a scan on this
     print(f"[!][capture] routing not configured: {_cap_cfg_err}")
 
+# The RoE ceiling for the requests recon sends itself (security checks, OpenAPI
+# and the other in-process requesters), before any of them runs.
+from recon.helpers import request_pacer
+request_pacer.configure(_settings)
+
 # Extract commonly used settings as module-level variables for compatibility
 TARGET_DOMAIN = _settings['TARGET_DOMAIN']
 SUBDOMAIN_LIST = _settings['SUBDOMAIN_LIST']
@@ -1353,9 +1358,13 @@ def _run_phase_a_fan_out(tools: dict, combined_result: dict, settings: dict,
     """
     if not tools:
         return
-    print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning (fan-out: {', '.join(tools.keys())})")
+    # Under an RoE ceiling each scanner is held to the whole ceiling, so running
+    # them together would multiply it (D3): one at a time, in the same order.
+    sequential = bool(request_pacer.ceiling_rps(settings))
+    mode = "one at a time under the RoE ceiling" if sequential else "fan-out"
+    print(f"\n[*][Pipeline] GROUP 6 Phase A: Active Vulnerability Scanning ({mode}: {', '.join(tools.keys())})")
     print("-" * 40)
-    with ThreadPoolExecutor(max_workers=len(tools)) as pool:
+    with ThreadPoolExecutor(max_workers=1 if sequential else len(tools)) as pool:
         snapshot = _fan_out_snapshot(combined_result)
         futures = {pool.submit(fn, snapshot, settings): key
                    for key, fn in tools.items()}

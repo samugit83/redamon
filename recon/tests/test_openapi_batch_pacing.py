@@ -50,7 +50,7 @@ def clock_and_requests(monkeypatch):
 
 def settings(extra_sources=()):
     return {
-        'DOMAIN_BATCH_MODE': True, 'ROE_GLOBAL_MAX_RPS': 1,
+        'DOMAIN_BATCH_MODE': True, 'ROE_ENABLED': True, 'ROE_GLOBAL_MAX_RPS': 1,
         'UPDATE_GRAPH_DB': False,
         'DOMAIN_BATCH_GROUPS': [{'rootDomain': root, 'prefixes': ['.']} for root in ROOTS],
         'OPENAPI_SOURCES': [{'id': root, 'url': f'https://{root}/spec'} for root in ROOTS]
@@ -137,19 +137,19 @@ def test_shared_clock_keeps_fetcher_caches_and_budgets_separate(clock_and_reques
         second.close()
 
 
-def test_shared_clock_honors_next_groups_document_deadline(clock_and_requests):
-    from recon.helpers.openapi.fetch import DocumentError, Fetcher, RequestPacer
+def test_shared_clock_wait_does_not_eat_next_groups_document_deadline(clock_and_requests):
+    # The next group queues for its slot on the shared clock, then fetches with
+    # its whole timeout: a queue behind other requesters is not a slow server.
+    from recon.helpers.openapi.fetch import Fetcher, RequestPacer
     pacer = RequestPacer(0.1)
     first = Fetcher(timeout=1, pacer=pacer)
     second = Fetcher(timeout=1, pacer=pacer)
     now, calls = clock_and_requests
     try:
         first.fetch('https://one.example.test/spec', {}, 'https://one.example.test')
-        with pytest.raises(DocumentError, match='deadline'):
-            second.fetch('https://two.example.test/spec', {}, 'https://two.example.test')
-        assert len(calls) == 1
-        assert now[0] == 100.0
-        assert second.count == 0
+        second.fetch('https://two.example.test/spec', {}, 'https://two.example.test')
+        assert [stamp for _, stamp in calls] == [100.0, 110.0]
+        assert second.count == 1
     finally:
         first.close()
         second.close()

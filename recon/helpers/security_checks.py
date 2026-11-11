@@ -24,6 +24,7 @@ import concurrent.futures
 
 from recon.helpers import catchall
 from recon.helpers import page_signals
+from recon.helpers import request_pacer
 from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 from recon.helpers.cdn_ranges import (
     collect_asn_cdn_ips,
@@ -76,7 +77,10 @@ def _hh_failed(url, exc) -> None:
         pass
 
 
+# Every request also takes a slot of the process-wide pacer first, so the
+# check pools together stay under the RoE ceiling (inert when there is none).
 def _hh_get(url, *args, **kwargs):
+    request_pacer.acquire()
     try:
         resp = requests.get(url, *args, **kwargs)
     except Exception as exc:
@@ -87,6 +91,7 @@ def _hh_get(url, *args, **kwargs):
 
 
 def _hh_post(url, *args, **kwargs):
+    request_pacer.acquire()
     try:
         resp = requests.post(url, *args, **kwargs)
     except Exception as exc:
@@ -97,6 +102,7 @@ def _hh_post(url, *args, **kwargs):
 
 
 def _hh_request(method, url, *args, **kwargs):
+    request_pacer.acquire()
     try:
         resp = requests.request(method, url, *args, **kwargs)
     except Exception as exc:
@@ -3419,6 +3425,27 @@ def _never_request(url: str) -> bool:
         return True
 
 
+def _note_rate_limit_check_skipped(hostnames: List[str]) -> None:
+    """No rate-limiting verdict under an RoE ceiling: the check needs a burst
+    of logins the ceiling forbids, and a paced burst never meets a limit.
+
+    Not checked, not switched off (D1): the type is recorded with no host, so
+    the prune keeps every earlier no_rate_limiting finding, and the run shows a
+    coverage gap instead of a clean host.
+    """
+    from recon.helpers import circuit_breaker as cb
+    cb.note_checked("security_check", hosts=[], checks=["no_rate_limiting"],
+                    module="security_checks")
+    cb.note_degraded("security_checks", entries=[{
+        "source": "security_check",
+        "reason": "no_rate_limiting not checked: its login burst would break the RoE ceiling",
+        "skipped": len(hostnames),
+    }])
+    print(f"[-][SecurityCheck] Rate Limiting check skipped on {len(hostnames)} host(s): "
+          f"it needs a burst the {request_pacer.ceiling():g} rps RoE ceiling forbids; "
+          f"earlier findings are kept")
+
+
 def run_rate_limit_checks(
     hostnames: List[str],
     recon_data: Dict[str, Any],
@@ -3442,6 +3469,10 @@ def run_rate_limit_checks(
     findings = []
 
     if not enabled_checks.get("no_rate_limiting", True):
+        return findings
+
+    if request_pacer.ceiling():
+        _note_rate_limit_check_skipped(hostnames)
         return findings
 
     # Extract all discovered URLs from recon data. Only live sources: a URL
