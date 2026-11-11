@@ -10,6 +10,7 @@ Run with: python -m unittest tests.test_llm_provider_test_self_heal -v
 """
 
 import json
+import os
 import sys
 import threading
 import unittest
@@ -20,6 +21,20 @@ from unittest.mock import patch
 
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTIC_DIR))
+
+# /llm-provider/test takes the configured master key only (NF-01, step 1.9): every request
+# here carries it; test_scanner_key_scope.py covers the refusals.
+MASTER = "step19-master-key"
+MASTER_HEADERS = {"x-internal-key": MASTER}
+_master_env = patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER})
+
+
+def setUpModule():
+    _master_env.start()
+
+
+def tearDownModule():
+    _master_env.stop()
 
 _OPENAI_TEMPERATURE_ERROR = (
     "Unsupported value: 'temperature' does not support 0 with this model. "
@@ -87,7 +102,7 @@ class ProviderTestSelfHealTests(unittest.TestCase):
         with patch("api.lifespan", fake_lifespan):
             import api as api_module
             from fastapi.testclient import TestClient
-            cls.client = TestClient(api_module.app)
+            cls.client = TestClient(api_module.app, headers=MASTER_HEADERS)
 
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()

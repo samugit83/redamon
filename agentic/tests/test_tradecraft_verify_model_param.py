@@ -19,6 +19,7 @@ Run inside the agent container:
 """
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from contextlib import asynccontextmanager
@@ -27,6 +28,20 @@ from unittest.mock import patch, AsyncMock
 
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTIC_DIR))
+
+# /tradecraft/verify takes the configured master key only (NF-01, step 1.9): every request
+# here carries it; test_scanner_key_scope.py covers the refusals.
+MASTER = "step19-master-key"
+MASTER_HEADERS = {"x-internal-key": MASTER}
+_master_env = patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER})
+
+
+def setUpModule():
+    _master_env.start()
+
+
+def tearDownModule():
+    _master_env.stop()
 
 
 class _Tag:
@@ -76,7 +91,7 @@ class TradecraftVerifyModelParamTests(unittest.TestCase):
             cls.TestClient = TestClient
 
     def _client(self):
-        return self.TestClient(self.api_module.app)
+        return self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
 
     def _post_verify(self, *, model=None, user_id="user-1", orchestrator_llm=_Tag("orchestrator")):
         captured = {}

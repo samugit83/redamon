@@ -47,17 +47,19 @@ class RoutesRegisteredTests(unittest.TestCase):
         route = _route("/graph/nl-query", "POST")
         self.assertIsNotNone(route)
         # It spends the project owner's LLM key, so it needs the token bucket
-        # and daily cap, not just a key check.
+        # and daily cap, not just a key check; the key is the master's (NF-01).
         self.assertIn("require_internal_auth", _dep_names(route))
+        self.assertIn("require_configured_master_auth", _dep_names(route))
 
     def test_schema_doc_is_registered_and_auth_gated(self):
         route = _route("/graph/schema-doc", "GET")
         self.assertIsNotNone(route)
         deps = _dep_names(route)
-        # Auth-only is right here: it costs no LLM call and is a cheap,
-        # high-frequency read, so the LLM bucket must not throttle it.
-        self.assertIn("require_internal_auth_only", deps)
+        # The master key only (NF-01), no LLM bucket: it costs no LLM call and
+        # is a cheap, high-frequency read, so the bucket must not throttle it.
+        self.assertIn("require_configured_master_auth", deps)
         self.assertNotIn("require_internal_auth", deps)
+        self.assertNotIn("require_internal_auth_only", deps)
 
 
 class SchemaDocTests(unittest.IsolatedAsyncioTestCase):

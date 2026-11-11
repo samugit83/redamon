@@ -7,6 +7,7 @@ Run with: python tests/test_mcp_api_endpoints.py
 """
 
 import asyncio
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,20 @@ from unittest.mock import patch, AsyncMock, MagicMock
 
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTIC_DIR))
+
+# The /mcp/* routes take the configured master key only (NF-01, step 1.9): every
+# request here carries it; test_scanner_key_scope.py covers the refusals.
+MASTER = "mcp-endpoints-master-key"
+MASTER_HEADERS = {"x-internal-key": MASTER}
+_master_env = patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER})
+
+
+def setUpModule():
+    _master_env.start()
+
+
+def tearDownModule():
+    _master_env.stop()
 
 
 class FakeOrchestrator:
@@ -63,7 +78,7 @@ class McpManifestEndpointTests(unittest.TestCase):
         reg.set_current([srv], errors=[], warnings=[])
 
     def test_manifest_endpoint_returns_servers(self):
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.get("/mcp/manifest")
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -86,7 +101,7 @@ class McpManifestEndpointTests(unittest.TestCase):
             "tools": [],
         })
         reg.set_current([srv])
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.get("/mcp/manifest")
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -107,7 +122,7 @@ class McpManifestEndpointTests(unittest.TestCase):
             "tools": [],
         })
         reg.set_current([srv])
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.get("/mcp/manifest")
         data = r.json()
         srv_data = next(s for s in data["servers"] if s["id"] == "with_env_auth")
@@ -134,14 +149,15 @@ class McpReloadEndpointTests(unittest.TestCase):
     def test_reload_503_when_orchestrator_not_ready(self):
         # api.orchestrator is None at import-time; no lifespan ran in tests.
         self.api_module.orchestrator = None
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.post("/mcp/reload", json={})
         self.assertEqual(r.status_code, 503)
+        self.assertIn("orchestrator not ready", r.text)
 
     def test_reload_calls_orchestrator_with_payload(self):
         fake = FakeOrchestrator()
         self.api_module.orchestrator = fake
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
 
         payload = {"userMcpServers": [{"id": "x"}]}
         r = client.post("/mcp/reload", json=payload)
@@ -152,7 +168,7 @@ class McpReloadEndpointTests(unittest.TestCase):
     def test_reload_with_empty_body_uses_cached_settings(self):
         fake = FakeOrchestrator()
         self.api_module.orchestrator = fake
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
 
         r = client.post("/mcp/reload")
         self.assertEqual(r.status_code, 200)
@@ -177,7 +193,7 @@ class McpTestEndpointTests(unittest.TestCase):
             cls.TestClient = TestClient
 
     def test_invalid_schema_returns_ok_false(self):
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.post("/mcp/test", json={"id": "missing-fields"})
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -186,7 +202,7 @@ class McpTestEndpointTests(unittest.TestCase):
         self.assertEqual(data["discovered_tools"], [])
 
     def test_disabled_server_short_circuits(self):
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.post("/mcp/test", json={
             "id": "off",
             "name": "Off",
@@ -203,7 +219,7 @@ class McpTestEndpointTests(unittest.TestCase):
         # Regression for issue #165: a stdio preset (e.g. CVE Intel) whose
         # `cwd` was never git-cloned must fail with a clear "install first"
         # message, NOT a bare FileNotFoundError.
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
         r = client.post("/mcp/test", json={
             "id": "cve_intel_extra",
             "name": "CVE Intel (extended)",
@@ -247,7 +263,7 @@ class McpTestEndpointTests(unittest.TestCase):
         import mcp_registry as reg
         before = list(reg.current())
         before_errors = list(reg.current_errors())
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
 
         # Build a fake MCP protocol Tool with raw inputSchema dict.
         fake_tool = MagicMock()
@@ -278,7 +294,7 @@ class McpTestEndpointTests(unittest.TestCase):
         self.assertEqual(before_errors, list(reg.current_errors()))
 
     def test_test_endpoint_surfaces_declared_not_live_warning(self):
-        client = self.TestClient(self.api_module.app)
+        client = self.TestClient(self.api_module.app, headers=MASTER_HEADERS)
 
         payload = {
             "id": "needs",

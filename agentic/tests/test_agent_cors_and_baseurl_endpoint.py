@@ -7,6 +7,7 @@ real orchestrator / Neo4j / kali-sandbox.
 Run with: python -m unittest tests.test_agent_cors_and_baseurl_endpoint -v
 """
 
+import os
 import sys
 import unittest
 from contextlib import asynccontextmanager
@@ -15,6 +16,20 @@ from unittest.mock import patch
 
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_AGENTIC_DIR))
+
+# /llm-provider/test takes the configured master key only (NF-01, step 1.9): every request
+# here carries it; test_scanner_key_scope.py covers the refusals.
+MASTER = "step19-master-key"
+MASTER_HEADERS = {"x-internal-key": MASTER}
+_master_env = patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER})
+
+
+def setUpModule():
+    _master_env.start()
+
+
+def tearDownModule():
+    _master_env.stop()
 
 
 class _AppTestBase(unittest.TestCase):
@@ -64,7 +79,7 @@ class BaseUrlGuardEndpointTests(_AppTestBase):
     """I15/I16: /llm-provider/test rejects metadata + TLS-off-public baseUrls."""
 
     def _post(self, body):
-        return self.client.post("/llm-provider/test", json=body)
+        return self.client.post("/llm-provider/test", json=body, headers=MASTER_HEADERS)
 
     def test_metadata_baseurl_rejected_400(self):
         resp = self._post({

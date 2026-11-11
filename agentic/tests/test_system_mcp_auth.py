@@ -33,8 +33,9 @@ def main():
         return 0
 
     # --- Layer 1: plumbing renders / omits the header correctly ---
+    # A system id: token_env_var is read for the operator's servers only (OQ-R1).
     srv = MCPServer(
-        id="probe",
+        id="network_recon",
         name="probe",
         transport="sse",
         url="http://kali-sandbox:8000/sse",
@@ -44,12 +45,12 @@ def main():
 
     os.environ["MCP_AUTH_TOKEN"] = "unit-test-token"
     cfg, _warn = to_mcp_servers_dict([srv])
-    hdr = cfg["probe"].get("headers", {})
+    hdr = cfg["network_recon"].get("headers", {})
     check("header present when token set", hdr.get("Authorization") == "Bearer unit-test-token")
 
     os.environ.pop("MCP_AUTH_TOKEN", None)
     cfg2, warn2 = to_mcp_servers_dict([srv])
-    hdr2 = cfg2["probe"].get("headers", {})
+    hdr2 = cfg2["network_recon"].get("headers", {})
     check("no Authorization header when token unset", "Authorization" not in hdr2)
     check("env_var_unset warning surfaced", any(w.code == "env_var_unset" for w in warn2))
 

@@ -237,7 +237,10 @@ class GuardrailRequest(BaseModel):
     user_id: str = ""
 
 
-@app.post("/guardrail/check-target", tags=["Guardrail"], dependencies=[Depends(require_internal_auth)])
+# The routes only the webapp calls take the MASTER key, fail-closed (NF-01): the scanner
+# key sits in every target-facing scan container and opens only the scan routes. A billed
+# route keeps require_internal_auth behind it for the LLM rate limit and daily cap.
+@app.post("/guardrail/check-target", tags=["Guardrail"], dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)])
 async def check_target_guardrail(body: GuardrailRequest):
     """
     Check if a target domain or IP list is safe to scan.
@@ -1620,7 +1623,7 @@ async def jev_route_exposure_assess(body: RouteExposureAssessRequest):
     )
 
 
-@app.post("/emergency-stop-all", tags=["System"], dependencies=[Depends(require_internal_auth_only)])
+@app.post("/emergency-stop-all", tags=["System"], dependencies=[Depends(require_configured_master_auth)])
 async def emergency_stop_all():
     """Emergency stop: cancel every running agent task immediately."""
     if not ws_manager:
@@ -1892,7 +1895,7 @@ def _build_llm_for_user(user_id: Optional[str]):
 
 # Authenticated because it fetches a caller-chosen URL from inside the agent's
 # network and spends the named user's LLM keys (CVE-2026-111323).
-@app.post("/tradecraft/verify", tags=["Tradecraft"], dependencies=[Depends(require_internal_auth)])
+@app.post("/tradecraft/verify", tags=["Tradecraft"], dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)])
 async def tradecraft_verify(body: TradecraftVerifyRequest):
     """
     Fetch a tradecraft resource URL, detect its type, build a sitemap, and
@@ -1966,7 +1969,7 @@ async def tradecraft_verify(body: TradecraftVerifyRequest):
         )
 
 
-@app.get("/mcp/manifest", tags=["MCP"], dependencies=[Depends(require_internal_auth_only)])
+@app.get("/mcp/manifest", tags=["MCP"], dependencies=[Depends(require_configured_master_auth)])
 async def get_mcp_manifest():
     """
     Return the current MCP server manifest as seen by the agent.
@@ -1984,7 +1987,7 @@ async def get_mcp_manifest():
     }
 
 
-@app.post("/mcp/reload", tags=["MCP"], dependencies=[Depends(require_internal_auth_only)])
+@app.post("/mcp/reload", tags=["MCP"], dependencies=[Depends(require_configured_master_auth)])
 async def reload_mcp_manifest(payload: dict = None):
     """
     Re-merge system + user MCP servers and reconnect the MCP client.
@@ -2008,7 +2011,7 @@ async def reload_mcp_manifest(payload: dict = None):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.post("/mcp/test", tags=["MCP"], dependencies=[Depends(require_internal_auth_only)])
+@app.post("/mcp/test", tags=["MCP"], dependencies=[Depends(require_configured_master_auth)])
 async def test_mcp_server(server: dict):
     """
     Test connectivity to a single MCP server draft (NOT yet persisted).
@@ -2030,6 +2033,19 @@ async def test_mcp_server(server: dict):
             "elapsed_ms": int((time.monotonic() - started) * 1000),
             "discovered_tools": [],
             "error": f"schema validation failed: {exc}",
+            "warnings": [],
+        }
+
+    # A draft is always a user's server, so it never names one of the agent's own
+    # variables as its bearer (OQ-R1): `INTERNAL_API_KEY` would go to the draft's URL.
+    if srv_obj.auth and srv_obj.auth.token_env_var:
+        logger.warning(f"[rbac] mcp token_env_var refused server={srv_obj.id} via=test")
+        return {
+            "ok": False,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "discovered_tools": [],
+            "error": mcp_registry.TOKEN_ENV_VAR_REFUSED_MESSAGE,
+            "code": mcp_registry.TOKEN_ENV_VAR_REFUSED,
             "warnings": [],
         }
 
@@ -2089,7 +2105,8 @@ async def test_mcp_server(server: dict):
         if srv_obj.transport != "stdio" or not srv_obj.command:
             return None
         import subprocess
-        spawn_env = {**os.environ, **(srv_obj.env or {})}
+        # The server's own env and nothing of the agent's (NF-14), as the client spawn gets.
+        spawn_env = mcp_registry.stdio_spawn_env(srv_obj)
         try:
             proc = subprocess.Popen(
                 [srv_obj.command, *list(srv_obj.args or [])],
@@ -2313,7 +2330,7 @@ class ModelsRequest(BaseModel):
     providers: list[dict] | None = None
 
 
-@app.post("/models", tags=["System"], dependencies=[Depends(require_internal_auth)])
+@app.post("/models", tags=["System"], dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)])
 async def get_models(body: ModelsRequest | None = None):
     """
     Fetch available AI models from all configured providers.
@@ -2427,7 +2444,7 @@ _JEV_TEST_ERRORS = {
 }
 
 
-@app.post("/llm-provider/test", tags=["System"], dependencies=[Depends(require_internal_auth)])
+@app.post("/llm-provider/test", tags=["System"], dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)])
 async def test_llm_provider(body: LlmProviderTestRequest):
     """Test an LLM provider config by sending a simple message."""
     from orchestrator_helpers.llm_setup import setup_llm
@@ -2605,7 +2622,7 @@ async def test_llm_provider(body: LlmProviderTestRequest):
         )
 
 
-@app.get("/files", tags=["Files"], dependencies=[Depends(require_internal_auth_only)])
+@app.get("/files", tags=["Files"], dependencies=[Depends(require_configured_master_auth)])
 async def download_file(
     path: str = Query(..., description="File path inside kali-sandbox (must be under /tmp/)"),
 ):
@@ -3599,7 +3616,7 @@ class GraphNlQueryRequest(BaseModel):
 @app.post(
     "/graph/nl-query",
     tags=["Graph"],
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)],
 )
 async def graph_nl_query(body: GraphNlQueryRequest):
     """Natural language -> tenant-scoped rows, in one call.
@@ -3661,7 +3678,7 @@ async def graph_nl_query(body: GraphNlQueryRequest):
 @app.get(
     "/graph/schema-doc",
     tags=["Graph"],
-    dependencies=[Depends(require_internal_auth_only)],
+    dependencies=[Depends(require_configured_master_auth)],
 )
 async def graph_schema_doc():
     """The graph schema INCLUDING its semantics: what each node type means, what
@@ -5345,7 +5362,7 @@ async def traffic_browser(body: TrafficBrowserRequest, run_cred: Optional[dict] 
 @app.get(
     "/kali/toolbox",
     tags=["Kali"],
-    dependencies=[Depends(require_internal_auth_only)],
+    dependencies=[Depends(require_configured_master_auth)],
 )
 async def kali_toolbox():
     """The Kali sandbox's installed-tooling catalogue, by category.

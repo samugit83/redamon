@@ -1,9 +1,10 @@
 """
-Regression: the agent's /mcp/* endpoints must be internal-auth gated.
+Regression: the agent's /mcp/* endpoints take the master key only (NF-01, NF-14).
 
 /mcp/test spawns an operator-supplied stdio command, and /mcp/manifest returns
 server config; leaving them unauthenticated let any agent-bridge peer reach
-them. This test asserts each carries the require_internal_auth_only dependency.
+them, and the scanner key every scan container holds opened them until step 1.9.
+This test asserts each carries the require_configured_master_auth dependency.
 
 Runs inside the agent container (imports the FastAPI app + its deps):
     python /app/test_mcp_endpoints_gated.py
@@ -28,7 +29,7 @@ def _dep_names(route):
 
 
 class McpEndpointsGatedTests(unittest.TestCase):
-    def test_mcp_endpoints_require_internal_auth(self):
+    def test_mcp_endpoints_require_the_configured_master_key(self):
         found = {}
         for r in api.app.routes:
             p = getattr(r, "path", "")
@@ -37,10 +38,11 @@ class McpEndpointsGatedTests(unittest.TestCase):
         for p in GATED:
             self.assertIn(p, found, f"{p} route not registered")
             self.assertIn(
-                "require_internal_auth_only",
+                "require_configured_master_auth",
                 found[p],
-                f"{p} is not internal-auth gated (deps: {found[p]})",
+                f"{p} is not master-key gated (deps: {found[p]})",
             )
+            self.assertNotIn("require_internal_auth_only", found[p], f"{p} still takes the scanner key")
 
 
 if __name__ == "__main__":

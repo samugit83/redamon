@@ -31,8 +31,9 @@ AGENT="http://localhost:8090"
 curl -s -X DELETE -H "x-internal-key: $KEY" \
   "$WEBAPP/api/users/$USER/mcp/e2e_test_srv" >/dev/null || true
 
-# 1) Baseline: agent reports system MCPs.
-manifest_baseline=$(curl -s "$AGENT/mcp/manifest")
+# 1) Baseline: agent reports system MCPs. The agent's /mcp/* routes take the
+#    master key only (step 1.9).
+manifest_baseline=$(curl -s -H "x-internal-key: $KEY" "$AGENT/mcp/manifest")
 sys_count=$(echo "$manifest_baseline" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["system_server_ids"]))')
 [ "$sys_count" = "5" ] || fail "expected 5 system server ids, got $sys_count"
 ok "baseline: 5 system MCP servers loaded"
@@ -63,7 +64,7 @@ ok "create: user MCP server e2e_test_srv created"
 sleep 3
 
 # 3) Verify agent's manifest now lists the user server.
-manifest_after_add=$(curl -s "$AGENT/mcp/manifest")
+manifest_after_add=$(curl -s -H "x-internal-key: $KEY" "$AGENT/mcp/manifest")
 ids=$(echo "$manifest_after_add" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(s["id"] for s in d["servers"]))')
 echo "$ids" | grep -q 'e2e_test_srv' || fail "agent manifest missing e2e_test_srv: $ids"
 ok "agent reload: e2e_test_srv visible in /mcp/manifest"

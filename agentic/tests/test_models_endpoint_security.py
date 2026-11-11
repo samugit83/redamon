@@ -18,6 +18,7 @@ Run inside the agent container:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import unittest
 from contextlib import asynccontextmanager
@@ -29,6 +30,19 @@ sys.path.insert(0, str(_AGENTIC_DIR))
 
 
 CANARY_KEY = "sk-ant-api03-LEAK-CANARY-DO-NOT-LOG-XXXXXXXXXX"
+
+# /models takes the configured master key only (NF-01, step 1.9): every request
+# here carries it; test_scanner_key_scope.py covers the refusals.
+MASTER = "models-endpoint-master-key"
+_master_env = patch.dict(os.environ, {"INTERNAL_API_KEY": MASTER})
+
+
+def setUpModule():
+    _master_env.start()
+
+
+def tearDownModule():
+    _master_env.stop()
 
 
 class ModelsEndpointSecurityTests(unittest.TestCase):
@@ -48,7 +62,7 @@ class ModelsEndpointSecurityTests(unittest.TestCase):
             cls.TestClient = TestClient
 
     def _client(self):
-        return self.TestClient(self.api_module.app)
+        return self.TestClient(self.api_module.app, headers={"x-internal-key": MASTER})
 
     # ------------------------------------------------------------------
     # Regression: GET must not work — pre-fix this was the leak path.

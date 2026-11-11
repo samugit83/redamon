@@ -47,10 +47,12 @@ class RouteRegistrationTests(unittest.TestCase):
         route = _route("/kali/toolbox", "GET")
         self.assertIsNotNone(route)
         deps = _dep_names(route)
-        # Auth-only, like /graph/schema-doc: it costs no LLM call, so the LLM
-        # token bucket and daily cap must not throttle it.
-        self.assertIn("require_internal_auth_only", deps)
+        # The master key only, like /graph/schema-doc (NF-01: the webapp is its
+        # only caller). It costs no LLM call, so the LLM token bucket and daily
+        # cap must not throttle it.
+        self.assertIn("require_configured_master_auth", deps)
         self.assertNotIn("require_internal_auth", deps)
+        self.assertNotIn("require_internal_auth_only", deps)
 
     def test_it_takes_no_arguments(self):
         """No projectId, so there is no tenant data to leak and no ownership

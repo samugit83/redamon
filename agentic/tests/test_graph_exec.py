@@ -132,8 +132,8 @@ def main():
     # Neither is LLM-rate-limited — graph reads are cheap high-frequency, not
     # billed LLM calls (regression guard). /graph/exec takes the master key or a
     # graph run credential (RBAC 1.15, NF-01), never the bare scanner key.
-    from llm_guard import (require_internal_auth, require_internal_auth_only,
-                           require_master_or_run_credential)
+    from llm_guard import (require_configured_master_auth, require_internal_auth,
+                           require_internal_auth_only, require_master_or_run_credential)
     graph_gate = require_master_or_run_credential("graph")
 
     def _route_deps(path):
@@ -146,7 +146,10 @@ def main():
     es_deps = _route_deps("/emergency-stop-all")
     check("/graph/exec requires the master key or a graph run credential",
           ge_deps is not None and graph_gate in ge_deps and not graph_gate.run_credential_billed)
-    check("/emergency-stop-all requires internal auth (auth-only)", es_deps is not None and require_internal_auth_only in es_deps)
+    # The webapp is its only caller: the master key, fail-closed (NF-01, step 1.9).
+    check("/emergency-stop-all requires the configured master key (auth-only)",
+          es_deps is not None and require_configured_master_auth in es_deps
+          and require_internal_auth_only not in es_deps and require_internal_auth not in es_deps)
     check("/graph/exec is NOT LLM-rate-limited (no require_internal_auth)", require_internal_auth not in (ge_deps or []))
 
     # Regression: auth-only dependency authenticates but never throttles, even

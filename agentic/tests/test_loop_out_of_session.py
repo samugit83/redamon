@@ -13,7 +13,10 @@ from agent_in_the_loop.broker import StepBroker
 from agent_in_the_loop.model import LoopChatModel
 from orchestrator_helpers.model_providers import fetch_all_models
 
-ON = {"AGENT_IN_THE_LOOP_ENABLED": "true", "INTERNAL_API_KEY": ""}
+# The guardrail, NL-query and model-list routes take the configured master key only
+# (NF-01, step 1.9): the webapp's calls carry it.
+MASTER = "loop-test-master-key"
+ON = {"AGENT_IN_THE_LOOP_ENABLED": "true", "INTERNAL_API_KEY": MASTER}
 
 
 class Api(unittest.TestCase):
@@ -27,7 +30,7 @@ class Api(unittest.TestCase):
             import api as api_module
             from fastapi.testclient import TestClient
         cls.api = api_module
-        cls.client = TestClient(api_module.app)
+        cls.client = TestClient(api_module.app, headers={"x-internal-key": MASTER})
 
     def setUp(self):
         env = mock.patch.dict(os.environ, ON)

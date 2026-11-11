@@ -9,8 +9,9 @@ prefix check, neither of which strips shell metacharacters (`;`, `|`, `` ` ``,
 `$(...)`). A path like `/tmp/x; id` therefore ran a second command.
 
 The fix (1) `shlex.quote`s the path so it is always a single literal argument,
-and (2) adds `Depends(require_internal_auth_only)` so the route matches its
-neighbours instead of being unauthenticated.
+and (2) adds an auth dependency so the route is not unauthenticated: since step
+1.9 `Depends(require_configured_master_auth)`, the master key only (the webapp
+is its one caller; NF-01).
 
 Needs fastapi + the agent runtime (imports api.py), so it runs in the agent
 container, not on a bare host:
@@ -146,7 +147,7 @@ def main():
     r_trav = _call(api, "/tmp/../etc/passwd")
     check("guard: /tmp/../ traversal is forbidden (403)", getattr(r_trav, "status_code", None) == 403)
 
-    # ---- 5. The route now carries the internal-auth dependency (declared) ----
+    # ---- 5. The route carries the master-key dependency (declared; NF-01, step 1.9) ----
     files_route = next(
         (r for r in api.app.routes if getattr(r, "path", None) == "/files"), None
     )
@@ -154,8 +155,12 @@ def main():
     if files_route is not None and getattr(files_route, "dependant", None) is not None:
         dep_calls = [d.call for d in files_route.dependant.dependencies]
     check(
-        "auth: /files declares Depends(require_internal_auth_only)",
-        llm_guard.require_internal_auth_only in dep_calls,
+        "auth: /files declares Depends(require_configured_master_auth)",
+        llm_guard.require_configured_master_auth in dep_calls,
+    )
+    check(
+        "auth: /files no longer takes the scanner key (require_internal_auth_only)",
+        llm_guard.require_internal_auth_only not in dep_calls,
     )
 
     # ---- 6. The dependency actually ENFORCES via a real request (TestClient).
