@@ -532,7 +532,7 @@ another runs).
 | `RECON_ORCHESTRATOR_URL` | Recon orchestrator service URL | `http://localhost:8010` |
 | `ORCHESTRATOR_API_KEY` | Sent as `X-Orchestrator-Key` on every orchestrator call; must match the orchestrator's value (auto-generated in `.env`) | (generated) |
 | `INTERNAL_API_KEY` | Master service-to-service key. Attached (as `x-internal-key`) when the webapp proxies to the agent's guarded endpoints; accepted (constant-time) on the internal-route allowlist | (generated) |
-| `SCANNER_API_KEY` | Lower-tier scanner token (S3/E6). Accepted only on GET `settings` + GET `projects`; cannot mint admins or read llm-providers | (generated) |
+| `SCANNER_API_KEY` | Lower-tier scanner token (S3/E6). Accepted only on GET `settings`, GET `projects` and POST `traffic/[projectId]/ingest`, and only beside the scan's job credential (`X-Redamon-Job`, `lib/authz/jobCredential.ts`), which binds the read to its tenant or project; cannot mint admins or read llm-providers | (generated) |
 | `INTERNAL_KEY_ALLOWLIST_ENFORCE` | When `true`, block internal-key requests to routes outside the allowlist; default is log-only | (unset = log-only) |
 | `NODE_ENV` | Environment mode | `development` |
 | `PORT` | Application port | `3000` |

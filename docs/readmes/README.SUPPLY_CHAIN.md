@@ -887,7 +887,7 @@ budgeted: GuardDog runs the packages sequentially, so that knob bounds wall-cloc
 | **Graph tables** | The **Supply-Chain SCA** table (`/api/analytics/redzone/supplyChainSca`) reads this model directly: three sheets (Verdicts / Packages / Advisories) over `Package`, `MalPackageFinding` and `Vulnerability {source:'osv'}`. Not to be confused with **JS Dep Signals** (formerly labelled "Supply-Chain"), which reads `JsReconFinding` nodes. See [the table section](#the-supply-chain-sca-table). |
 | **Settings (5 layers)** | Prisma default -> `recon/project_settings.py` (L2) / `scanners/supply_chain_scan/project_settings.py` (L1) -> `/defaults` -> webapp section, using the `x_enabled` / `xEnabled` / `X_ENABLED` naming. |
 | **redamon.sh** | `supply-chain-sync` populates the DB; `TOOL_IMAGES` + `cmd_update` build/rebuild the two images; `cmd_install`/`up` build them via `--profile tools`. |
-| **SCANNER_API_KEY (S3/E6)** | The L1 scan container fetches settings with the scoped `SCANNER_API_KEY` (falling back to `INTERNAL_API_KEY` on pre-secret installs); the analyzer holds no key at all. |
+| **SCANNER_API_KEY (S3/E6)** | The L1 scan container fetches settings with the scoped `SCANNER_API_KEY` and its scan's job credential (`X-Redamon-Job`, RBAC step 1.16), which limits the read to this project and its owner; the orchestrator never hands it the master key. The analyzer holds no key at all. |
 
 ---
 

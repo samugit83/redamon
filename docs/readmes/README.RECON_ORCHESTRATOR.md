@@ -424,11 +424,17 @@ When starting a recon, the orchestrator:
      volume (mounted at `/var/run/broker`) and selected via the `DOCKER_HOST`
      env var; a named volume is used so the unix socket is shareable across
      containers on both macOS (Docker Desktop) and native Linux
-   - Environment variables: `PROJECT_ID`, `USER_ID`, `WEBAPP_API_URL`, and a
-     scoped **`SCANNER_API_KEY`** (STRIDE S3/E6) injected INSTEAD of the master
-     `INTERNAL_API_KEY` (falls back to the master key only pre-secret). It is
-     accepted by the webapp on GET settings + GET projects and by the agent on
-     `/llm/*`; it cannot mint admins or read llm-provider keys.
+   - Environment variables: `PROJECT_ID`, `USER_ID`, `WEBAPP_API_URL`, a
+     scoped **`SCANNER_API_KEY`** (STRIDE S3/E6), never the master
+     `INTERNAL_API_KEY`, and `REDAMON_JOB_CREDENTIAL`, the job credential the
+     webapp minted for this start (RBAC step 1.16). Every start endpoint verifies
+     that credential (`job_credential.py`), admits the scan under its tenant
+     rather than the body's `user_id` (403 `job_credential_*` otherwise), and
+     refuses with 503 `scanner_key_missing` when no scanner key is configured.
+     The webapp (settings, project, traffic ingest) and the agent (`/llm/*`,
+     `/jev/*`) accept the key only together with the credential, for its tenant
+     and project. The AI attack surface and TruffleHog containers call nothing
+     back and get no credential.
 
 ### Partial Recon Typed Input
 
