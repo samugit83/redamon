@@ -4,7 +4,7 @@ RedAmon - Endpoint Organization Helpers
 Functions for organizing and structuring discovered endpoints.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Mapping, Optional
 from urllib.parse import urlparse, parse_qs
 
 from .classification import classify_endpoint, classify_parameter, infer_parameter_type
@@ -12,13 +12,17 @@ from .katana_helpers import fetch_forms_from_urls
 
 
 def organize_endpoints(
-    discovered_urls: List[str]
+    discovered_urls: List[str],
+    *,
+    settings: Optional[Mapping] = None,
+    recon_data: Optional[Mapping] = None,
 ) -> Dict:
     """
     Organize discovered URLs into structured endpoint data.
 
     Args:
         discovered_urls: List of URLs discovered by Katana
+        settings, recon_data: the run's, for the form fetch (fetch_forms_from_urls)
 
     Returns:
         Structured endpoint data organized by base URL
@@ -27,7 +31,8 @@ def organize_endpoints(
     by_base_url = {}  # base_url -> {path -> endpoint_info}
 
     # Fetch forms directly from discovered URLs (since http_probe doesn't keep body)
-    all_forms = fetch_forms_from_urls(discovered_urls, max_urls=100)
+    all_forms = fetch_forms_from_urls(discovered_urls, max_urls=100,
+                                      settings=settings, recon_data=recon_data)
 
     # Process each discovered URL
     for url in discovered_urls:

@@ -194,11 +194,13 @@ def run_katana(config: dict) -> None:
         KATANA_EXCLUDE_PATTERNS,
         KATANA_PARALLELISM,
         KATANA_CONCURRENCY,
+        settings=settings,
+        recon_data=recon_data,
     )
     print(f"[+][Partial Recon] Katana found {len(katana_urls)} URLs")
 
     # Organize discovered URLs into by_base_url structure
-    organized_data = organize_endpoints(katana_urls)
+    organized_data = organize_endpoints(katana_urls, settings=settings, recon_data=recon_data)
 
     # Mark all endpoints with sources=['katana']
     for base_url, base_data in organized_data['by_base_url'].items():
@@ -471,11 +473,13 @@ def run_hakrawler(config: dict) -> None:
         # The full pipeline filters Hakrawler with the shared crawl excludes too.
         settings.get('KATANA_EXCLUDE_PATTERNS', []),
         settings.get('HAKRAWLER_PARALLELISM', 4),
+        settings=settings,
+        recon_data=recon_data,
     )
     print(f"[+][Partial Recon] Hakrawler found {len(hakrawler_urls)} URLs")
 
     # Organize discovered URLs into by_base_url structure
-    organized_data = organize_endpoints(hakrawler_urls)
+    organized_data = organize_endpoints(hakrawler_urls, settings=settings, recon_data=recon_data)
 
     # Mark all endpoints with sources=['hakrawler']
     for base_url, base_data in organized_data['by_base_url'].items():

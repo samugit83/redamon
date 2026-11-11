@@ -967,6 +967,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 KATANA_EXCLUDE_PATTERNS,
                 KATANA_PARALLELISM,
                 KATANA_CONCURRENCY,
+                settings=settings,
+                recon_data=recon_data,
             )
 
         # Submit Hakrawler crawler if enabled
@@ -985,6 +987,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 HAKRAWLER_CUSTOM_HEADERS,
                 KATANA_EXCLUDE_PATTERNS,
                 HAKRAWLER_PARALLELISM,
+                settings=settings,
+                recon_data=recon_data,
             )
 
         # Submit GAU discovery if enabled
@@ -1111,7 +1115,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     # Organize discovered endpoints
     if katana_urls:
         print("\n[*][Katana] Organizing endpoints...")
-    organized_data = organize_endpoints(katana_urls)
+    organized_data = organize_endpoints(katana_urls, settings=settings, recon_data=recon_data)
 
     # Mark all Katana endpoints with sources=['katana'] (array format)
     for base_url, base_data in organized_data['by_base_url'].items():
@@ -1127,7 +1131,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
 
     if HAKRAWLER_ENABLED and hakrawler_urls:
         print("\n[*][Hakrawler] Organizing and merging endpoints...")
-        hakrawler_organized = organize_endpoints(hakrawler_urls)
+        hakrawler_organized = organize_endpoints(hakrawler_urls, settings=settings, recon_data=recon_data)
         organized_data['by_base_url'], hakrawler_stats = merge_hakrawler_into_by_base_url(
             hakrawler_organized['by_base_url'],
             organized_data['by_base_url'],
