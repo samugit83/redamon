@@ -61,7 +61,6 @@ Bug bounty hunters and pentesters targeting modern web applications built with R
     jsReconIncludeFrameworkJs: true,
     jsReconIncludeArchivedJs: true,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 3,
 
     // Katana: deeper crawl for JS discovery
     katanaEnabled: true,

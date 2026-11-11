@@ -86,6 +86,18 @@ describe('reconPresetSchema', () => {
     })
   })
 
+  test('a preset saved with the settings L-17 removed still loads, without them', () => {
+    const result = reconPresetSchema.safeParse({
+      katanaDepth: 3,
+      katanaScope: 'dn',
+      jsReconStandaloneCrawlDepth: 3,
+      jsReconStandaloneCrawlScope: 'subdomain',
+      aiSurfaceReconCacheEnabled: true,
+    })
+    expect(result.success).toBe(true)
+    expect(result.data).toEqual({ katanaDepth: 3 })
+  })
+
   test('accepts valid number fields', () => {
     const result = reconPresetSchema.safeParse({
       httpxThreads: 50,

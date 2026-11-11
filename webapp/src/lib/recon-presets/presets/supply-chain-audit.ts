@@ -68,7 +68,6 @@ Use \`Full Pipeline - Maximum\` if you want supply-chain findings as one signal 
     jsReconDomSinks: false,
     jsReconDevComments: false,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 3,
 
     // -- Crawling: reach the JS bundles that carry the dependency evidence --
     katanaEnabled: true,

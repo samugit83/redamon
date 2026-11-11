@@ -323,7 +323,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'AI_SURFACE_RECON_VECTOR_DB_READ_ENABLED': True,
     'AI_SURFACE_RECON_JULIUS_PROBE_PACK_ENABLED': True,
     'AI_SURFACE_RECON_LATENCY_BASELINE_ENABLED': True,
-    'AI_SURFACE_RECON_CACHE_ENABLED': True,
     'AI_SURFACE_RECON_PROBE_PACK_VERSION': 'latest',
 
     # Katana Web Crawler
@@ -528,8 +527,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'JS_RECON_INCLUDE_FRAMEWORK_JS': True,
     'JS_RECON_INCLUDE_ARCHIVED_JS': True,
     'JS_RECON_MIN_CONFIDENCE': 'low',
-    'JS_RECON_STANDALONE_CRAWL_DEPTH': 3,
-    'JS_RECON_STANDALONE_CRAWL_SCOPE': 'subdomain',
     'JS_RECON_UPLOADED_FILES': [],
     'JS_RECON_CUSTOM_PATTERNS': '',
     'JS_RECON_CUSTOM_SOURCEMAP_PATHS': '',
@@ -1735,7 +1732,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['AI_SURFACE_RECON_VECTOR_DB_READ_ENABLED'] = project.get('aiSurfaceReconVectorDbReadEnabled', DEFAULT_SETTINGS['AI_SURFACE_RECON_VECTOR_DB_READ_ENABLED'])
     settings['AI_SURFACE_RECON_JULIUS_PROBE_PACK_ENABLED'] = project.get('aiSurfaceReconJuliusProbePackEnabled', DEFAULT_SETTINGS['AI_SURFACE_RECON_JULIUS_PROBE_PACK_ENABLED'])
     settings['AI_SURFACE_RECON_LATENCY_BASELINE_ENABLED'] = project.get('aiSurfaceReconLatencyBaselineEnabled', DEFAULT_SETTINGS['AI_SURFACE_RECON_LATENCY_BASELINE_ENABLED'])
-    settings['AI_SURFACE_RECON_CACHE_ENABLED'] = project.get('aiSurfaceReconCacheEnabled', DEFAULT_SETTINGS['AI_SURFACE_RECON_CACHE_ENABLED'])
     settings['AI_SURFACE_RECON_PROBE_PACK_VERSION'] = project.get('aiSurfaceReconProbePackVersion', DEFAULT_SETTINGS['AI_SURFACE_RECON_PROBE_PACK_VERSION'])
 
     # Katana Web Crawler
@@ -1843,8 +1839,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['JS_RECON_INCLUDE_FRAMEWORK_JS'] = project.get('jsReconIncludeFrameworkJs', DEFAULT_SETTINGS['JS_RECON_INCLUDE_FRAMEWORK_JS'])
     settings['JS_RECON_INCLUDE_ARCHIVED_JS'] = project.get('jsReconIncludeArchivedJs', DEFAULT_SETTINGS['JS_RECON_INCLUDE_ARCHIVED_JS'])
     settings['JS_RECON_MIN_CONFIDENCE'] = project.get('jsReconMinConfidence', DEFAULT_SETTINGS['JS_RECON_MIN_CONFIDENCE'])
-    settings['JS_RECON_STANDALONE_CRAWL_DEPTH'] = project.get('jsReconStandaloneCrawlDepth', DEFAULT_SETTINGS['JS_RECON_STANDALONE_CRAWL_DEPTH'])
-    settings['JS_RECON_STANDALONE_CRAWL_SCOPE'] = project.get('jsReconStandaloneCrawlScope', DEFAULT_SETTINGS['JS_RECON_STANDALONE_CRAWL_SCOPE'])
     settings['JS_RECON_UPLOADED_FILES'] = project.get('jsReconUploadedFiles', DEFAULT_SETTINGS['JS_RECON_UPLOADED_FILES'])
     settings['JS_RECON_CUSTOM_PATTERNS'] = project.get('jsReconCustomPatterns', DEFAULT_SETTINGS['JS_RECON_CUSTOM_PATTERNS'])
     settings['JS_RECON_CUSTOM_SOURCEMAP_PATHS'] = project.get('jsReconCustomSourcemapPaths', DEFAULT_SETTINGS['JS_RECON_CUSTOM_SOURCEMAP_PATHS'])

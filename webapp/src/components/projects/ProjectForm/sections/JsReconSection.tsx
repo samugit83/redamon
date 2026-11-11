@@ -6,7 +6,6 @@ import { Toggle, Modal, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
-import { RegistryFields } from '../RegistryFields'
 import { announceProjectWrite } from '@/lib/projectVersion'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { field as registryField } from '@/lib/reconSettings/registry'
@@ -1003,14 +1002,6 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
 
             </>
           )}
-
-          <RegistryFields
-            keys={['jsReconStandaloneCrawlDepth', 'jsReconStandaloneCrawlScope']}
-            data={data}
-            updateField={updateField}
-            title="Advanced"
-            description="Settings this tool accepts that have no dedicated control. Bounds, options and descriptions come from the settings registry, so they are the same ones the API enforces."
-          />
         </div>
       )}
       {/* Help Guide Modal */}

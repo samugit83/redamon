@@ -406,7 +406,6 @@ describe('Full Pipeline - Active Only preset', () => {
     const p = FULL_ACTIVE_SCAN.parameters
     expect(p.jsReconEnabled).toBe(true)
     expect(p.jsReconMaxFiles).toBeGreaterThanOrEqual(1000)
-    expect(p.jsReconStandaloneCrawlDepth).toBeGreaterThanOrEqual(4)
     expect(p.jsReconValidateKeys).toBe(true)
     expect(p.jsReconExtractEndpoints).toBe(true)
     expect(p.jsReconRegexPatterns).toBe(true)
@@ -929,7 +928,6 @@ describe('Full Pipeline - Maximum preset', () => {
     const p = FULL_MAXIMUM_SCAN.parameters
     expect(p.jsluiceMaxFiles).toBeGreaterThanOrEqual(1000)
     expect(p.jsReconMaxFiles).toBeGreaterThanOrEqual(2000)
-    expect(p.jsReconStandaloneCrawlDepth).toBeGreaterThanOrEqual(5)
     expect(p.jsReconIncludeArchivedJs).toBe(true)
   })
 

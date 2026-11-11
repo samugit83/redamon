@@ -156,7 +156,6 @@ Bug bounty hunters and red teamers who want to maximize credential and secret di
     jsReconIncludeFrameworkJs: true,
     jsReconIncludeArchivedJs: true,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 3,
 
     // ffuf
     ffufEnabled: true,

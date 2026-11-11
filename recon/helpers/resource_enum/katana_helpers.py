@@ -136,9 +136,11 @@ def run_katana_crawler(
             "-c", str(concurrency),
             "-timeout", "30",
             "-crawl-duration", crawl_duration,
-            # Use FQDN scope: restricts crawl to exact hostnames of seed URLs
-            # This prevents crawling parent domains (e.g. sub.example.com won't
-            # crawl example.com). Post-hoc filtering provides additional safety.
+            # FQDN scope keeps the crawl on the seed URLs' exact hostnames. It is
+            # fixed, not a setting: the filter below keeps only allowed_hosts,
+            # which both callers build from those same seeds, so a wider scope
+            # (rdn, dn) would only send requests to hosts no scan admitted,
+            # RoE-excluded names included, and then discard the results.
             "-fs", "fqdn",
         ])
         # Resolve as the DNS step did (recon/helpers/system_resolvers.py).

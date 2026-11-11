@@ -401,6 +401,13 @@ describe('T16 exactly the documented columns are closed', () => {
     // DERIVED from whether any engagement limit is set. As a writable boolean it
     // was a master bypass shipped as a checkbox.
     roeEnabled: 'derived',
+    // Retired (L-17): nothing reads them, and the column stays only so an
+    // upgrade or a rollback drops no data. Settable, they were controls that
+    // changed nothing.
+    katanaScope: 'internal',
+    jsReconStandaloneCrawlDepth: 'internal',
+    jsReconStandaloneCrawlScope: 'internal',
+    aiSurfaceReconCacheEnabled: 'internal',
   }
 
   test('the never set is exactly this list, plus the engagement record', () => {

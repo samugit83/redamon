@@ -198,7 +198,6 @@ Bug bounty hunters who have already triaged a target (perhaps with the Quick Win
     jsReconIncludeFrameworkJs: true,
     jsReconIncludeArchivedJs: true,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 3,
 
     // --- DISABLE ffuf (too noisy, risk of IP ban) ---
     ffufEnabled: false,

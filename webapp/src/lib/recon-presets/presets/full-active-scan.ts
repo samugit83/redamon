@@ -335,6 +335,5 @@ Pentesters with full authorization on an engagement where stealth is irrelevant.
     jsReconIncludeFrameworkJs: true,
     jsReconIncludeArchivedJs: false,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 4,
   },
 }

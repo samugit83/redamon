@@ -826,6 +826,7 @@ model Project {
   aiSurfaceReconVectorDbReadEnabled       Boolean @default(true) @map("ai_surface_recon_vector_db_read_enabled")
   aiSurfaceReconJuliusProbePackEnabled    Boolean @default(true) @map("ai_surface_recon_julius_probe_pack_enabled")
   aiSurfaceReconLatencyBaselineEnabled    Boolean @default(true) @map("ai_surface_recon_latency_baseline_enabled")
+  // Retired: nothing reads it. Kept so an upgrade or a rollback never drops data; drop in a later release.
   aiSurfaceReconCacheEnabled              Boolean @default(true) @map("ai_surface_recon_cache_enabled")
   aiSurfaceReconProbePackVersion          String  @default("latest") @map("ai_surface_recon_probe_pack_version")
 
@@ -838,6 +839,7 @@ model Project {
   katanaJsCrawl               Boolean  @default(true) @map("katana_js_crawl")
   katanaParamsOnly            Boolean  @default(false) @map("katana_params_only")
   katanaExcludePatterns       String[] @default(["/_next/image", "/_next/static", "/_next/data", "/__nextjs", "/_nuxt/", "/__nuxt", "/runtime.", "/polyfills.", "/vendor.", "/webpack", "/chunk.", ".chunk.js", ".bundle.js", "hot-update", "/static/", "/public/", "/dist/", "/build/", "/lib/", "/vendor/", "/node_modules/", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif", ".bmp", ".tiff", ".tif", ".heic", ".heif", ".raw", "/images/", "/img/", "/image/", "/pics/", "/pictures/", "/thumbnails/", "/thumb/", "/thumbs/", ".css", ".scss", ".sass", ".less", ".styl", ".css.map", "/css/", "/styles/", "/style/", "/stylesheet/", ".js.map", ".min.js", "/js/lib/", "/js/vendor/", "/js/plugins/", "jquery", "bootstrap.js", "popper.js", ".woff", ".woff2", ".ttf", ".eot", ".otf", "/fonts/", "/font/", "/webfonts/", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".odt", ".ods", ".odp", ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mkv", ".wav", ".ogg", ".aac", ".m4a", ".flac", "/video/", "/videos/", "/audio/", "/music/", "/sounds/", "/wp-content/uploads/", "/wp-content/themes/", "/wp-includes/", "/sites/default/files/", "/core/assets/", "/pub/static/", "/pub/media/", "/storage/", "/staticfiles/", "/packs/", "cdn.", "cdnjs.", "cloudflare.", "akamai.", "fastly.", "googleapis.com", "gstatic.com", "cloudfront.net", "unpkg.com", "jsdelivr.net", "bootstrapcdn.com", "google-analytics", "googletagmanager", "gtag/", "facebook.com/tr", "facebook.net", "analytics.", "tracking.", "pixel.", "hotjar.", "mouseflow.", "clarity.", "googlesyndication", "doubleclick", "adservice", "platform.twitter", "connect.facebook", "platform.linkedin", "maps.google", "maps.googleapis", "openstreetmap", "mapbox", "recaptcha", "hcaptcha", "captcha", "manifest.json", "sw.js", "service-worker", "browserconfig.xml", "robots.txt", "sitemap.xml", ".well-known/", "favicon", "apple-touch-icon", "android-chrome", "/icons/", "/icon/"]) @map("katana_exclude_patterns")
+  // Retired: nothing reads it. Kept so an upgrade or a rollback never drops data; drop in a later release.
   katanaScope                 String   @default("dn") @map("katana_scope")
   katanaCustomHeaders         String[] @default(["User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", "Accept-Language: en-US,en;q=0.9"]) @map("katana_custom_headers")
   katanaParallelism           Int      @default(8) @map("katana_parallelism")
@@ -923,6 +925,7 @@ model Project {
   jsReconIncludeFrameworkJs   Boolean  @default(true)  @map("js_recon_include_framework_js")
   jsReconIncludeArchivedJs    Boolean  @default(true)  @map("js_recon_include_archived_js")
   jsReconMinConfidence        String   @default("low") @map("js_recon_min_confidence")
+  // Retired: nothing reads these two. Kept so an upgrade or a rollback never drops data; drop in a later release.
   jsReconStandaloneCrawlDepth Int      @default(3)     @map("js_recon_standalone_crawl_depth")
   jsReconStandaloneCrawlScope String   @default("subdomain") @map("js_recon_standalone_crawl_scope")
   jsReconUploadedFiles        String[] @default([])    @map("js_recon_uploaded_files")

@@ -2,12 +2,6 @@
   "_doc": "Per (preset, field) decisions for traffic-decisions.test.ts (drift-map #11). A pair is listed when a built-in recon preset leaves a traffic:active *Enabled toggle whose default is true unnamed (so applying the preset turns it on through the default), or when a passive or stealth preset ends up with one on. The reason is a quote from the preset's description ('description: \"...\"'), from a comment in its source file ('comment: \"...\"'), the registry's stealth profile ('stealth profile: ...'), or the pending marker. To decide a pending pair, name the field in the preset (and delete the pair here) or replace the marker with a quote.",
   "pending": "drift-map #11: decision pending",
   "decisions": [
-    { "field": "aiSurfaceReconCacheEnabled", "reason": "description: \"Every active tool maxed out\"",
-      "presets": ["full-active-scan"] },
-    { "field": "aiSurfaceReconCacheEnabled", "reason": "description: \"Every tool enabled with every parameter pushed to the limit.\"",
-      "presets": ["full-maximum-scan"] },
-    { "field": "aiSurfaceReconCacheEnabled", "reason": "drift-map #11: decision pending",
-      "presets": ["api-security", "bug-bounty-deep", "bug-bounty-quick", "cloud-exposure", "compliance-audit", "cve-hunter", "directory-discovery", "dns-email-security", "full-passive-scan", "graphql-recon", "infrastructure-mapper", "internal-network", "large-network", "osint-investigator", "parameter-injection", "red-team-operator", "secret-hunter", "secret-miner", "stealth-recon", "subdomain-takeover", "supply-chain-audit", "web-app-pentester", "web-cache-poisoning"] },
     { "field": "aiSurfaceReconChatShapeProbeEnabled", "reason": "description: \"Every active tool maxed out\"",
       "presets": ["full-active-scan"] },
     { "field": "aiSurfaceReconChatShapeProbeEnabled", "reason": "description: \"Every tool enabled with every parameter pushed to the limit.\"",

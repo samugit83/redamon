@@ -122,7 +122,6 @@ Every AI signal is a property annotation on existing graph nodes (Endpoint, Tech
     aiSurfaceReconVectorDbReadEnabled: true,
     aiSurfaceReconJuliusProbePackEnabled: true,
     aiSurfaceReconLatencyBaselineEnabled: true,
-    aiSurfaceReconCacheEnabled: true,
     aiSurfaceReconProbePackVersion: 'latest',
   },
 }

@@ -175,7 +175,6 @@ export const reconPresetSchema = z.object({
   aiSurfaceReconVectorDbReadEnabled: bool,
   aiSurfaceReconJuliusProbePackEnabled: bool,
   aiSurfaceReconLatencyBaselineEnabled: bool,
-  aiSurfaceReconCacheEnabled: bool,
   aiSurfaceReconProbePackVersion: str,
 
   // -- Web Crawling: Katana --
@@ -187,7 +186,6 @@ export const reconPresetSchema = z.object({
   katanaJsCrawl: bool,
   katanaParamsOnly: bool,
   katanaExcludePatterns: strArr,
-  katanaScope: str,
   katanaCustomHeaders: strArr,
   katanaParallelism: int,
   katanaConcurrency: int,
@@ -288,7 +286,6 @@ export const reconPresetSchema = z.object({
   jsReconIncludeFrameworkJs: bool,
   jsReconIncludeArchivedJs: bool,
   jsReconMinConfidence: str,
-  jsReconStandaloneCrawlDepth: int,
   jsReconAiSdkDetectionEnabled: bool,
 
   // -- GraphQL Security Scanner --
@@ -791,7 +788,6 @@ export const RECON_PARAMETER_CATALOG = `
 - aiSurfaceReconVectorDbReadEnabled: boolean - One benign read to candidate vector-DB ports (Chroma/Qdrant/Weaviate/Milvus) to confirm Technology(category=ai-vector-db). Off in stealth.
 - aiSurfaceReconJuliusProbePackEnabled: boolean - Run the vendored Julius HTTP fingerprint packs to identify AI service software and promote a Technology node.
 - aiSurfaceReconLatencyBaselineEnabled: boolean - Record p50 latency of the chat ping on each LLM endpoint (Endpoint.ai_latency_p50_ms).
-- aiSurfaceReconCacheEnabled: boolean - Cache probe responses on disk so repeat scans skip already-tested payloads.
 - aiSurfaceReconProbePackVersion: string - Pinned probe-pack identifier recorded on every annotation (default "latest").
 
 ## Web Crawling - Katana
@@ -803,7 +799,6 @@ export const RECON_PARAMETER_CATALOG = `
 - katanaJsCrawl: boolean - Crawl JS files
 - katanaParamsOnly: boolean - Only extract parameterized URLs
 - katanaExcludePatterns: string[] - Regex patterns to exclude from crawling
-- katanaScope: string - Scope filter: "dn" (domain), "rdn" (root domain), etc.
 - katanaCustomHeaders: string[] - Custom HTTP headers for crawler
 - katanaParallelism: integer - Targets crawled simultaneously
 - katanaConcurrency: integer - Concurrent fetchers per target
@@ -897,7 +892,6 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - jsReconIncludeFrameworkJs: boolean
 - jsReconIncludeArchivedJs: boolean
 - jsReconMinConfidence: string - "low", "medium", "high"
-- jsReconStandaloneCrawlDepth: integer
 - jsReconAiSdkDetectionEnabled: boolean - Adversarial AI Phase 6. Scan every harvested JS bundle for AI/LLM SDK imports (OpenAI, Anthropic, Gemini, LangChain, LlamaIndex, Vercel AI SDK, MCP, vector DBs), hard-coded provider keys (sk-, sk-ant-, hf_, lsv2_, gsk_, r8_, …), dangerouslyAllowBrowser opt-in, and AI-frontend product markers in async-loaded chunks the http_probe Wappalyzer pass cannot see. Writes JsReconFinding nodes with finding_type ai-sdk-client / ai-sdk-key-literal / ai-sdk-browser-allowed / ai-frontend-detected / ai-provider-url and enriches matching Secret nodes with ai_provider. Default true.
 
 ## GraphQL Security Scanner (Group 6 - active, sends introspection probes)

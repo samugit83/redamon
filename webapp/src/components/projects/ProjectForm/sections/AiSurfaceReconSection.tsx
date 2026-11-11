@@ -195,15 +195,6 @@ export function AiSurfaceReconSection({ data, updateField, onRun }: AiSurfaceRec
                   <Toggle checked={data.aiSurfaceReconLatencyBaselineEnabled ?? true}
                     onChange={(c) => updateField('aiSurfaceReconLatencyBaselineEnabled', c)} />
                 </div>
-
-                <div className={styles.toggleRow}>
-                  <div>
-                    <span className={styles.toggleLabel}>Probe Cache</span>
-                    <p className={styles.toggleDescription}>Caches probe responses on disk so repeat scans skip already-tested payloads when content hashes match.</p>
-                  </div>
-                  <Toggle checked={data.aiSurfaceReconCacheEnabled ?? true}
-                    onChange={(c) => updateField('aiSurfaceReconCacheEnabled', c)} />
-                </div>
               </div>
             </>
           )}

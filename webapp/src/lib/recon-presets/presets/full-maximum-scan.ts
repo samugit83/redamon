@@ -239,7 +239,6 @@ Pentesters running a final comprehensive sweep on a target they have full author
     jsReconIncludeFrameworkJs: true,
     jsReconIncludeArchivedJs: true,
     jsReconMinConfidence: 'low',
-    jsReconStandaloneCrawlDepth: 5,
 
     // --- ffuf: recursion, high threads ---
     ffufEnabled: true,

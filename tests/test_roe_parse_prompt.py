@@ -379,7 +379,7 @@ def test_prompts_callbacks_and_the_model_are_denied():
     for key in [
         "agentInformationalSystemPrompt", "agentExplSystemPrompt", "agentPostExplSystemPrompt",
         "agentLhost", "agentLport", "agentOpenaiModel", "agentToolPhaseMap", "attackSkillConfig",
-        "ssrfOobProvider", "ssrfCustomInternalTargets", "katanaScope",
+        "ssrfOobProvider", "ssrfCustomInternalTargets",
     ]:
         assert fields()[key].get("roe_parse") == "deny", key
 

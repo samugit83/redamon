@@ -42,7 +42,7 @@ const UNCLASSIFIED = ['name', 'description', 'vhostSniCustomWordlist', 'supplyCh
  * so these are the columns a preset used to lose.
  */
 const ABSENT_FROM_BACKEND_DEFAULTS = [
-  'katanaScope', 'sqliLevel', 'sqliRisk', 'sqliTamperScripts', 'ssrfCloudProviders',
+  'sqliLevel', 'sqliRisk', 'sqliTamperScripts', 'ssrfCloudProviders',
   'rceAggressivePayloads', 'pathTraversalRequestTimeout', 'trufflehogEnabled',
   'trufflehogConcurrency', 'cypherfixDefaultBranch', 'cypherfixRequireApproval',
   'supplyChainEcosystems', 'supplyChainOrgMaxRepos', 'triageReviewBudget',
@@ -218,7 +218,6 @@ describe('extractPresetSettings', () => {
     // The create form only holds what /defaults returned.
     const result = extractPresetSettings({ naabuEnabled: false })
     expect(result.naabuEnabled).toBe(false)
-    expect(result.katanaScope).toBe('dn')
     expect(result.sqliLevel).toBe(1)
     expect(result.triageReviewBudget).toBe(150)
     expect(result.agentLport).toBeNull()
