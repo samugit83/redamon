@@ -26,6 +26,7 @@ import atexit
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Set, List, Dict, Tuple
 
+from _auth_middleware import BearerAuthHTTPHandlerMixin
 from _safe_env import safe_env
 
 # Server configuration
@@ -95,6 +96,8 @@ class PersistentMsfConsole:
 
         try:
             print("[MSF] Starting msfconsole process...")
+            # A fresh process numbers its sessions from 1 again.
+            self._forget_chat_links()
             self.process = subprocess.Popen(
                 ["msfconsole", "-q", "-x", ""],
                 stdin=subprocess.PIPE,
@@ -163,6 +166,8 @@ class PersistentMsfConsole:
                 if parts and parts[0].isdigit():
                     session_id = int(parts[0])
                     self.session_ids.add(session_id)
+                    # A close line that was missed must not hand this id the old chat.
+                    self._unlink_chat_session(session_id)
                     print(f"[MSF] Session {session_id} opened")
             except (ValueError, IndexError):
                 pass
@@ -176,6 +181,7 @@ class PersistentMsfConsole:
                 if parts and parts[0].isdigit():
                     session_id = int(parts[0])
                     self.session_ids.discard(session_id)
+                    self._unlink_chat_session(session_id)
                     print(f"[MSF] Session {session_id} closed")
             except (ValueError, IndexError):
                 pass
@@ -324,6 +330,20 @@ class PersistentMsfConsole:
         self.process = None
         self._initialized = False
         self.session_ids.clear()
+        self._forget_chat_links()
+
+    def link_chat_session(self, msf_session_id: int, chat_session_id: str) -> None:
+        """Record the chat whose run opened this session (the sessions panel's project)."""
+        with self._detail_lock:
+            self._chat_session_map[msf_session_id] = chat_session_id
+
+    def _unlink_chat_session(self, msf_session_id: int) -> None:
+        with self._detail_lock:
+            self._chat_session_map.pop(msf_session_id, None)
+
+    def _forget_chat_links(self) -> None:
+        with self._detail_lock:
+            self._chat_session_map.clear()
 
     def restart(self):
         """Restart msfconsole for a completely clean state."""
@@ -817,6 +837,7 @@ class PersistentMsfConsole:
         try:
             output = self._quick_execute(f"sessions -k {session_id}")
             self.session_ids.discard(session_id)
+            self._unlink_chat_session(session_id)
             return {"busy": False, "output": _clean_ansi_output(output)}
         finally:
             self.lock.release()
@@ -1078,8 +1099,13 @@ def msf_restart() -> str:
 PROGRESS_PORT = int(os.getenv("MSF_PROGRESS_PORT", "8013"))
 
 
-class SessionProgressHandler(BaseHTTPRequestHandler):
-    """HTTP handler for progress + session management endpoints."""
+class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler):
+    """HTTP handler for progress + session management endpoints.
+
+    Every route needs the agent's ``MCP_AUTH_TOKEN`` bearer (the mixin): the port is
+    reachable from every container on the Docker networks, the guinea-pig targets on
+    pentest-net included, and ``/session-chat-map`` decides which project a session
+    shows under."""
 
     def _parse_route(self) -> Tuple[str, Optional[int], Optional[str]]:
         """Parse URL path into (resource, id, action).
@@ -1202,7 +1228,7 @@ class SessionProgressHandler(BaseHTTPRequestHandler):
                 msf_sid = body.get("msf_session_id")
                 chat_sid = body.get("chat_session_id")
                 if msf_sid is not None and chat_sid:
-                    msf._chat_session_map[int(msf_sid)] = str(chat_sid)
+                    msf.link_chat_session(int(msf_sid), str(chat_sid))
                     self._send_json(200, {"ok": True})
                 else:
                     self._send_json(400, {"error": "Missing msf_session_id or chat_session_id"})

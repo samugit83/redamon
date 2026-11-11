@@ -823,10 +823,12 @@ services:
       NUCLEI_AUTO_UPDATE: "${NUCLEI_AUTO_UPDATE:-true}"
       TERMINAL_WS_PORT: "8016"
       TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}
-      # INBOUND auth token the MCP servers validate on every SSE request (STRIDE
-      # S10). This is NOT an outbound secret — it is the credential the worker
-      # CHECKS, so holding it does not violate the "worker holds no secrets" rule.
-      # When empty (dev / not generated) the servers fail-open with a warning.
+      # INBOUND auth token every Kali server validates (STRIDE S10): the MCP SSE
+      # ports, the Metasploit session manager (:8013), the Hydra progress stream
+      # (:8014) and the terminal (:8016). This is NOT an outbound secret — it is
+      # the credential the worker CHECKS, so holding it does not violate the
+      # "worker holds no secrets" rule. When empty the servers refuse every
+      # request (fail-closed, with a warning); redamon.sh generates it.
       MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       # INBOUND token the tunnel-manager (:8015) validates on config pushes
       # (STRIDE I19/S14). Same inbound-validation category as MCP_AUTH_TOKEN, so
@@ -928,9 +930,10 @@ services:
       MCP_METASPLOIT_PROGRESS_URL: http://kali-sandbox:8013/progress
       MCP_HYDRA_PROGRESS_URL: http://kali-sandbox:8014/progress
       KALI_TERMINAL_WS_URL: ws://kali-sandbox:8016
-      # Bearer token sent as `Authorization: Bearer` on every MCP SSE request so
-      # the Kali servers can authenticate the agent (STRIDE S10). Must match the
-      # kali-sandbox MCP_AUTH_TOKEN. Empty in dev → no header, servers fail-open.
+      # Bearer token sent as `Authorization: Bearer` on every request to the Kali
+      # servers (MCP SSE, :8013 sessions, :8014 progress, :8016 terminal) so they
+      # can authenticate the agent (STRIDE S10). Must match the kali-sandbox
+      # MCP_AUTH_TOKEN. Empty → no header, and the servers refuse the agent.
       MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       # Secret used to verify short-lived agent-WebSocket tickets on the /ws/agent
       # init frame (STRIDE S6). Must match the webapp's AGENT_WS_TICKET_SECRET.

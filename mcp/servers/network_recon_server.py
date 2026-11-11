@@ -34,6 +34,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from _auth_middleware import BearerAuthHTTPHandlerMixin
 from _safe_env import safe_env
 
 # Strip ANSI escape codes (terminal colors) from output
@@ -1542,8 +1543,11 @@ def cve_intel(args: str, api_key: str = "") -> str:
         return f"[ERROR] {str(e)}"
 
 
-class HydraProgressHandler(BaseHTTPRequestHandler):
-    """HTTP handler for Hydra progress endpoint."""
+class HydraProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler):
+    """HTTP handler for Hydra progress endpoint.
+
+    Every route needs the agent's ``MCP_AUTH_TOKEN`` bearer (the mixin): the stream
+    carries cracked credentials and the port is reachable from pentest-net."""
 
     def do_GET(self):
         if self.path == '/progress':

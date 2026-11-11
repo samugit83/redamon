@@ -20,11 +20,16 @@ Behaviour:
 Implemented as a pure-ASGI wrapper (no Starlette/FastMCP-version coupling) so it
 composes with whatever SSE app the installed FastMCP builds. ``lifespan`` and any
 non-http/websocket scope pass straight through untouched.
+
+``BearerAuthHTTPHandlerMixin`` applies the same rule to the stdlib
+``http.server`` progress/session servers (:8013, :8014).
 """
 
 import hmac
 import logging
 import os
+import threading
+import time
 
 logger = logging.getLogger("mcp-auth")
 
@@ -37,6 +42,13 @@ def configured_token() -> str:
     return os.environ.get("MCP_AUTH_TOKEN", "") or ""
 
 
+def _bearer_from_value(text) -> str:
+    """The token of an ``Authorization: Bearer <token>`` value, or ""."""
+    if isinstance(text, str) and text[:7].lower() == "bearer ":
+        return text[7:].strip()
+    return ""
+
+
 def _extract_bearer(headers) -> str:
     """Pull the bearer token out of raw ASGI headers (list[(bytes, bytes)])."""
     for key, value in headers or []:
@@ -45,10 +57,83 @@ def _extract_bearer(headers) -> str:
                 text = value.decode("latin-1")
             except Exception:
                 return ""
-            if text[:7].lower() == "bearer ":
-                return text[7:].strip()
-            return ""
+            return _bearer_from_value(text)
     return ""
+
+
+def _warn_unset_token_once() -> None:
+    global _warned_failopen
+    if not _warned_failopen:
+        logger.warning(
+            "MCP_AUTH_TOKEN is not set - MCP servers are REJECTING all "
+            "requests (fail-closed). Set MCP_AUTH_TOKEN (redamon.sh does "
+            "this automatically) to enable tool serving."
+        )
+        _warned_failopen = True
+
+
+_UNAUTHORIZED_BODY = b'{"error":"unauthorized","detail":"missing or invalid bearer token"}'
+
+# Probers on pentest-net can send requests in a loop: one log line per minute
+# with a count, never the presented value.
+_REFUSAL_LOG_INTERVAL_S = 60.0
+_refusal_lock = threading.Lock()
+_refusals_since_log = 0
+_last_refusal_log = 0.0
+
+
+def _reset_http_refusal_log_for_tests() -> None:
+    global _refusals_since_log, _last_refusal_log
+    with _refusal_lock:
+        _refusals_since_log = 0
+        _last_refusal_log = 0.0
+
+
+def _note_http_refusal(server_name: str) -> None:
+    global _refusals_since_log, _last_refusal_log
+    with _refusal_lock:
+        _refusals_since_log += 1
+        now = time.monotonic()
+        if _last_refusal_log and now - _last_refusal_log < _REFUSAL_LOG_INTERVAL_S:
+            return
+        count, _refusals_since_log, _last_refusal_log = _refusals_since_log, 0, now
+    logger.warning("[rbac] %s refused %d request(s) without the agent's bearer", server_name, count)
+
+
+class BearerAuthHTTPHandlerMixin:
+    """The bearer rule of BearerAuthASGI for a stdlib ``BaseHTTPRequestHandler``.
+
+    The Kali progress/session servers (:8013 Metasploit, :8014 Hydra) are
+    ``http.server`` servers, which an ASGI wrapper cannot wrap. The check runs in
+    ``parse_request``, before ``handle_one_request`` picks a ``do_*`` method, so
+    every method and path (unknown ones included) answers 401 without the token,
+    and an unset token refuses everything. List it before BaseHTTPRequestHandler.
+    """
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        expected = configured_token()
+        if not expected:
+            _warn_unset_token_once()
+        else:
+            presented = _bearer_from_value(self.headers.get("Authorization"))
+            if presented and hmac.compare_digest(presented.encode(), expected.encode()):
+                return True
+        _note_http_refusal(type(self).__name__)
+        # The request body is never read: close rather than parse it as a next request.
+        self.close_connection = True
+        try:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_UNAUTHORIZED_BODY)))
+            self.send_header("WWW-Authenticate", "Bearer")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(_UNAUTHORIZED_BODY)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        return False
 
 
 class BearerAuthASGI:
@@ -59,8 +144,6 @@ class BearerAuthASGI:
         self._token_getter = token_getter
 
     async def __call__(self, scope, receive, send):
-        global _warned_failopen
-
         if scope.get("type") not in ("http", "websocket"):
             # lifespan / other — never gate these, so the ASGI server can boot.
             await self.app(scope, receive, send)
@@ -71,13 +154,7 @@ class BearerAuthASGI:
             # Fail CLOSED (STRIDE S9): an unset/empty MCP_AUTH_TOKEN means refuse,
             # never serve-everyone. Log a one-time warning so the operator sees
             # WHY every request is being rejected, then reject.
-            if not _warned_failopen:
-                logger.warning(
-                    "MCP_AUTH_TOKEN is not set - MCP servers are REJECTING all "
-                    "requests (fail-closed). Set MCP_AUTH_TOKEN (redamon.sh does "
-                    "this automatically) to enable tool serving."
-                )
-                _warned_failopen = True
+            _warn_unset_token_once()
             await self._reject(scope, send)
             return
 
