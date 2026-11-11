@@ -48,6 +48,7 @@ from recon.helpers import (
     resolve_cname_target,
     score_finding,
 )
+from recon.helpers import request_pacer
 from recon.helpers.takeover_helpers import is_placeholder_provider, same_provider_family
 
 _FINDING_SOURCE = "takeover_scan"
@@ -1093,6 +1094,8 @@ def _probe_for_ai_disambiguation(hostname: str, timeout: int = 10):
     schemes = ("https", "http")
     headers_base = {"User-Agent": "Mozilla/5.0 (compatible; RedAmon/4.7)"}
     for scheme in schemes:
+        # The HTTP fallback is a request of its own: it takes its own RoE slot.
+        request_pacer.acquire()
         try:
             r = requests.get(
                 f"{scheme}://{hostname}/",
