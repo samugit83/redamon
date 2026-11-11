@@ -892,7 +892,8 @@ def _http_lines(container, since):
 
 def _tool_lifetimes(prefix, since):
     """(name, seconds from start to die) of each container named `prefix`* that
-    started since `since`, from the Docker event log."""
+    started since `since`, from the Docker event log. The daemon keeps only its
+    last events, so run this right after the run."""
     import subprocess
     import datetime as dt
     out = subprocess.run(["docker", "events", "--since", since, "--until", "0s", "--filter", "type=container",
@@ -1079,11 +1080,38 @@ def r14_checks(since, log_path=None):
         check("R14-06", hit and int(hit.group(1)) >= 1, f"hop-guard summary line: {hit.group(0) if hit else None}")
 
 
+def _timed_http_lines(container, since):
+    """(epoch seconds, line) of a lab host's request lines since `since`."""
+    import subprocess
+    import datetime as dt
+    out = subprocess.run(["docker", "logs", "--timestamps", "--since", since, container],
+                         capture_output=True, text=True)
+    rows = []
+    for ln in (out.stdout + out.stderr).splitlines():
+        stamp, _, rest = ln.partition(" ")
+        if not any(f"] {m} " in rest for m in ("GET", "POST", "HEAD")):
+            continue
+        t = dt.datetime.fromisoformat(stamp[:26].rstrip("Z") + "+00:00").timestamp()
+        rows.append((t, rest))
+    return rows
+
+
 def r14js_checks(since, log_path):
     """R-14 (downloads): a .20 bundle redirecting to the RoE-excluded .21 is not
-    followed; one moving to another .20 path is analysed."""
-    vendor = _http_lines("redamon-fp-vendor", since)
-    check("R14J-01", not vendor, f"requests on .21 (RoE-excluded): {vendor[:3]} (expect none)")
+    followed by JS Recon; one moving to another .20 path is analysed. The crawl
+    (GROUP 5) fetches the bundle before JS Recon (GROUP 5b) does, so a .21
+    request right after .20's LAST answer for the bundle would be JS Recon's
+    (R14J-01); any .21 request at all breaks the RoE (R14J-05)."""
+    bundle = "GET /static/js/r14js.offhost.7a8b.js"
+    asked = [t for t, ln in _timed_http_lines("redamon-fp-spa", since) if bundle in ln]
+    vendor = [(t, ln) for t, ln in _timed_http_lines("redamon-fp-vendor", since) if "GET /loader.js" in ln]
+    last = max(asked) if asked else None
+    js_recon = [ln for t, ln in vendor if last is not None and last <= t <= last + 2]
+    check("R14J-01", asked and not js_recon,
+          f".20 served the redirecting bundle {len(asked)}x; .21 requests right after the last (JS Recon's): "
+          f"{js_recon} (expect none)")
+    check("R14J-05", not vendor, f"requests on .21 (RoE-excluded) during the run: {[ln for _, ln in vendor][:3]} "
+                                 f"(expect none: an excluded host gets no request)")
     log = _log_text(log_path)
     check("R14J-02", "blocked (RoE exclusion)" in log and "[-][RoE] js_recon: not sent to" in log,
           "recon log: 'blocked (RoE exclusion)' and '[-][RoE] js_recon: not sent to ...'")
