@@ -144,7 +144,7 @@ def run_vhost_sni_enrichment(
     # --------------------------------------------------------------
     # 1. Build IP -> ports map from prior pipeline data
     # --------------------------------------------------------------
-    ip_port_map = _collect_ip_targets(combined_result)
+    ip_port_map = _collect_ip_targets(combined_result, settings)
     if not ip_port_map:
         print("[-][VhostSni] No IP targets available -- skipping")
         combined_result["vhost_sni"] = _empty_result(reason="no_ip_targets")
@@ -1318,7 +1318,7 @@ def _collect_graph_candidates(combined_result: dict, ip: str) -> list[str]:
 # =============================================================================
 # IP / port / wordlist / apex helpers
 # =============================================================================
-def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
+def _collect_ip_targets(combined_result: dict, settings: Optional[dict] = None) -> dict[str, list[dict]]:
     """
     Build {ip: [{port, protocol, scheme}, ...]} by MERGING every available source
     (no fallback / either-or). Sources walked in order:
@@ -1331,6 +1331,9 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
     Merging (rather than the previous fallback-on-empty behaviour) ensures that
     a partial-recon run with both a custom IP AND a graph-known IP probes BOTH
     instead of silently dropping the graph IPs.
+
+    Every address then passes the RoE admission gate (``settings``, else the
+    RoE a partial builder stamped in ``metadata.roe``).
     """
     ip_to_ports: dict[str, list[dict]] = {}
 
@@ -1393,6 +1396,14 @@ def _collect_ip_targets(combined_result: dict) -> dict[str, list[dict]]:
     from recon.helpers.target_admission import clamp_to_targets
     kept = set(clamp_to_targets(combined_result, list(ip_to_ports)))
     ip_to_ports = {ip: plist for ip, plist in ip_to_ports.items() if ip in kept}
+
+    # ---- RoE: an excluded address is never probed ------------------------
+    # Every source can bring one: a name resolving into an excluded range, a
+    # graph row, a partial run's typed IP. Inert with no exclusion in force.
+    from recon.helpers.target_admission import admit_targets
+    admitted = set(admit_targets(settings, combined_result, ips=list(ip_to_ports),
+                                 module="vhost_sni").ips)
+    ip_to_ports = {ip: plist for ip, plist in ip_to_ports.items() if ip in admitted}
 
     # ---- Dedupe ports per IP (port + scheme key, preserves first occurrence) ---
     for ip, plist in ip_to_ports.items():
