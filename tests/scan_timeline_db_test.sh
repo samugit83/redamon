@@ -47,8 +47,9 @@ P="proj_$SUF"
 
 q "insert into users (id, name, email, password, role, created_at, updated_at)
    values ('$U', 'timeline test', '$U@example.invalid', '', 'standard', now(), now())" >/dev/null
-q "insert into projects (id, user_id, name, created_at, updated_at)
-   values ('$P', '$U', 'timeline test', now(), now())" >/dev/null
+# ownership_token is NOT NULL and only Prisma fills it, so a raw insert brings its own.
+q "insert into projects (id, user_id, name, ownership_token, created_at, updated_at)
+   values ('$P', '$U', 'timeline test', gen_random_uuid()::text, now(), now())" >/dev/null
 
 cleanup() {
   q "delete from projects where id = '$P'" >/dev/null 2>&1
@@ -183,8 +184,8 @@ U2="user_$SUF2"
 P2="proj_$SUF2"
 q "insert into users (id, name, email, password, role, created_at, updated_at)
    values ('$U2', 'rb test', '$U2@test.local', 'x', 'standard', now(), now())" >/dev/null
-q "insert into projects (id, user_id, name, target_domain, created_at, updated_at)
-   values ('$P2', '$U2', 'rb', 'rb.test', now(), now())" >/dev/null
+q "insert into projects (id, user_id, name, target_domain, ownership_token, created_at, updated_at)
+   values ('$P2', '$U2', 'rb', 'rb.test', gen_random_uuid()::text, now(), now())" >/dev/null
 
 # The pre-start state: v1 current, carrying a snapshot and a run history row.
 q "insert into scan_versions (id, project_id, seq, label, is_current, pinned, node_count, link_count, snapshot, created_at, updated_at)

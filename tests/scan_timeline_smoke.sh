@@ -73,10 +73,11 @@ HASH=$(docker compose exec -T webapp node -e "console.log(require('bcryptjs').ha
 
 q "insert into users (id, name, email, password, role, created_at, updated_at)
    values ('$U','smoke','$EMAIL','$HASH','standard',now(),now())" >/dev/null
-q "insert into projects (id, user_id, name, target_domain, created_at, updated_at)
-   values ('$P','$U','smoke','smoke.tld',now(),now())" >/dev/null
-q "insert into projects (id, user_id, name, target_domain, created_at, updated_at)
-   values ('$P2','$U','smoke other','other.tld',now(),now())" >/dev/null
+# ownership_token is NOT NULL and only Prisma fills it, so a raw insert brings its own.
+q "insert into projects (id, user_id, name, target_domain, ownership_token, created_at, updated_at)
+   values ('$P','$U','smoke','smoke.tld',gen_random_uuid()::text,now(),now())" >/dev/null
+q "insert into projects (id, user_id, name, target_domain, ownership_token, created_at, updated_at)
+   values ('$P2','$U','smoke other','other.tld',gen_random_uuid()::text,now(),now())" >/dev/null
 
 cleanup() {
   cypher "MATCH (n) WHERE n.project_id IN ['$P','$P2'] DETACH DELETE n" >/dev/null 2>&1

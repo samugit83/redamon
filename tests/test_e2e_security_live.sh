@@ -37,8 +37,9 @@ seed_user() { # $1=email  $2=role(default standard) -> prints the new user id
 }
 seed_project() { # $1=user_id -> prints the new project id (owned by that user)
   local uid="$1" pid="p_e2e_$(openssl rand -hex 8)"
+  # ownership_token is NOT NULL and only Prisma fills it, so a raw insert brings its own.
   docker compose exec -T postgres psql -U redamon -d redamon -tA \
-    -c "INSERT INTO projects (id,user_id,name,updated_at) VALUES ('$pid','$uid','e2e',CURRENT_TIMESTAMP);" >/dev/null
+    -c "INSERT INTO projects (id,user_id,name,ownership_token,updated_at) VALUES ('$pid','$uid','e2e',gen_random_uuid()::text,CURRENT_TIMESTAMP);" >/dev/null
   echo "$pid"
 }
 # Deleting the user cascades to its projects (projects_user_id_fkey ON DELETE CASCADE).

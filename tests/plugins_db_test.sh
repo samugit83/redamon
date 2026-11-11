@@ -84,7 +84,9 @@ SELECT 'checks:' || coalesce(string_agg(conname, ',' ORDER BY conname), '') FROM
 INSERT INTO users (id, name, email, updated_at) VALUES
   ('pdbt-user', 'plugins db test', 'pdbt-user@example.invalid', now()),
   ('pdbt-other', 'plugins db test', 'pdbt-other@example.invalid', now());
-INSERT INTO projects (id, user_id, name, updated_at) VALUES ('pdbt-project', 'pdbt-user', 'pdbt', now());
+-- ownership_token is NOT NULL and only Prisma fills it, so a raw insert brings its own.
+INSERT INTO projects (id, user_id, name, ownership_token, updated_at)
+  VALUES ('pdbt-project', 'pdbt-user', 'pdbt', gen_random_uuid()::text, now());
 INSERT INTO plugin_installs (plugin_id, updated_at) VALUES ('pdbt-a', now()), ('pdbt-b', now());
 
 -- One active override per point, scope and target, whatever plugin proposed it.
