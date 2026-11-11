@@ -1097,7 +1097,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 
 ## Route Exposure (active, GET/HEAD only)
 - routeExposureEnabled: boolean - Request the routes recon found plus generated ones (internal/admin/debug seed paths, .git/.env/web.config, backup copies, older API versions) without credentials, and logged in where the authentication profile covers the host. Writes info-severity leads the agent's access_control skill confirms (a route answering anonymously where auth was expected, or returning sensitive fields / other people's personal data) and signature findings with real severity (exposed .git, .env, backups, debug consoles, actuator env, debug pages). Never requests logout/delete/reset paths. Runs in GROUP 6 whenever active scanning runs. Good fit for API, web-app and bug-bounty presets. Default false.
-- routeExposureMaxRps: number - Requests per second across all hosts (1-50), capped to the RoE ceiling. Adds to the other Phase A scanners' load. Default 5.
+- routeExposureMaxRps: number - Requests per second across all hosts (1-50), capped to the RoE ceiling. With no ceiling it runs alongside the other Phase A scanners and adds to their load; under a ceiling Phase A runs one scanner at a time. Default 5.
 - routeExposureWorkers: integer - Routes requested at once (1-16). Default 4.
 - routeExposureTimeout: integer - Seconds to wait for one answer (2-60). Default 10.
 - routeExposureMaxRoutesPerHost: integer - Route budget per host (10-5000); OpenAPI-secured, seen-denied and .git/.env routes go first. Default 300.

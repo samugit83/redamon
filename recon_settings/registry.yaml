@@ -3528,9 +3528,11 @@ fields:
     mcp: settable
     bounds: { min: 10, max: 600 }
     meaning: >-
-      How long GraphQL Cop may spend before it is abandoned, in seconds. A run
-      that hits it contributes whatever it found so far rather than failing the
-      scan.
+      How long one GraphQL Cop run against one endpoint may take, in seconds. A
+      run that hits it is stopped, its container included. GraphQL Cop prints its
+      report only after its last test, so a cut run adds no new findings: the
+      host's earlier GraphQL Cop findings are kept rather than pruned, and the scan
+      goes on.
   graphqlDepthLimit:
     tool: graphql
     runtime_key: "GRAPHQL_DEPTH_LIMIT"
@@ -3797,7 +3799,12 @@ fields:
     mcp: settable
     group: not-tuning
     meaning: >-
-      Follows links onto subdomains of the target rather than staying on one host.
+      Follows links onto subdomains of each seed's host (hakrawler -subs), every
+      sibling subdomain when the scan root is itself a seed, rather than staying on
+      one host. Forced off on an EXACT scope group, which scans only its listed
+      hosts: per group in the full pipeline, and for the whole partial run when any
+      of its roots is in an EXACT group, since one flag serves every seed. ENUMERATE
+      groups keep this setting.
   hakrawlerInsecure:
     tool: hakrawler
     runtime_key: "HAKRAWLER_INSECURE"
@@ -5479,8 +5486,13 @@ fields:
     bounds: { min: 1, max: 100000 }
     group: unbounded
     meaning: >-
-      Requests per second kiterunner sends. Capped to the engagement ceiling at
-      scan start, so a value above the ceiling is rewritten rather than refused.
+      Meant as the requests per second kiterunner sends, but it limits nothing:
+      RedAmon passes it as kr's --delay, which kr v1.0.2 (the release RedAmon runs)
+      parses and never applies, so with no RoE rate ceiling kiterunner sends as fast
+      as kiterunnerConnections and kiterunnerThreads let it. Under an RoE rate
+      ceiling (a non-zero roeGlobalMaxRps) kiterunner does not run at all, in full
+      and partial recon: it returns no endpoints and the run records a coverage gap,
+      because nothing can hold kr to the ceiling.
   kiterunnerScanTimeout:
     tool: kiterunner
     runtime_key: "KITERUNNER_SCAN_TIMEOUT"
@@ -7862,9 +7874,12 @@ fields:
     meaning: >-
       Requests per second the route exposure scan sends across all hosts, shared by
       every worker and counting control requests, logged-in comparisons and backup
-      reads. It runs at the same time as the other Phase A scanners (nuclei, cache
-      poisoning, GraphQL), so the load on a target is the sum of their rates. One
-      clock serves the whole run, so a Domain batch's groups never reset it.
+      reads. Under an RoE rate ceiling every request also takes a slot on the
+      ceiling's own clock, which every in-process requester shares, and Phase A runs
+      its scanners one at a time; with no ceiling it runs at the same time as the
+      other Phase A scanners (nuclei, cache poisoning, GraphQL), so the load on a
+      target is the sum of their rates. The scan's own clock serves the whole run,
+      so a Domain batch's groups never reset it.
   routeExposurePiiDetection:
     tool: route_exposure
     runtime_key: "ROUTE_EXPOSURE_PII_DETECTION"
@@ -8425,7 +8440,10 @@ fields:
     meaning: >-
       Whether this individual check runs during the security-check pass. Each
       check is one condition tested against what the earlier phases already found;
-      turning it off removes that finding class without affecting the rest.
+      turning it off removes that finding class without affecting the rest. Under
+      an RoE rate ceiling it does not run whatever this says, in full and partial
+      recon: its burst of login attempts would break the ceiling, so the run records
+      it as not checked and keeps its earlier findings.
   securityCheckOpenConsoles:
     tool: security_check
     runtime_key: "SECURITY_CHECK_OPEN_CONSOLES"

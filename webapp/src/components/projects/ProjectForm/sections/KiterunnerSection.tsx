@@ -86,7 +86,7 @@ export function KiterunnerSection({ data, updateField, onRun }: KiterunnerSectio
                     onChange={(e) => updateField('kiterunnerRateLimit', parseInt(e.target.value) || 100)}
                     min={1}
                   />
-                  <span className={styles.fieldHint}>Requests/sec. Lower is stealthier</span>
+                  <span className={styles.fieldHint}>Not applied: kr v1.0.2 ignores its delay flag. Under an RoE rate ceiling Kiterunner does not run</span>
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Connections</label>
