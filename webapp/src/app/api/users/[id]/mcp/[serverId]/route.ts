@@ -11,6 +11,7 @@ import prisma from '@/lib/prisma'
 import { mcpServerSchema, validateMcpServers, type MCPServer } from '@/lib/mcp/schema'
 import { maskMcpServersForApi, restoreMaskedToken } from '../route'
 import { internalError } from '@/lib/routeErrors'
+import { mcpServerSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 import { reloadAgentMcp } from '../reload'
 
 interface RouteParams {
@@ -34,6 +35,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     })
     const current = (Array.isArray(existing?.mcpServers) ? existing!.mcpServers : []) as MCPServer[]
     const existingServer = current.find(s => s.id === serverId)
+
+    // A new URL must come with the token and header values typed again (HD-24):
+    // the masked ones restored below would otherwise follow the server there.
+    if (existingServer) {
+      const reentry = mcpServerSecretReentry(existingServer, body)
+      if (reentry) return secretReentryResponse(reentry)
+    }
 
     // Restore masked token (••••...) from the existing DB record.
     const restored = existingServer

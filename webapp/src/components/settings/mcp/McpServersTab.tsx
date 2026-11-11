@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, Server, Terminal, Globe, Zap, Eye, EyeOff } from 'lucide-react'
 import {
   mcpServerSchema,
@@ -15,11 +15,20 @@ import {
 } from '@/lib/mcp/schema'
 import { MCP_PRESETS, PRESET_CATEGORY_LABELS, type McpPreset } from '@/lib/mcp/presets'
 import { useAlertModal, useToast } from '@/components/ui'
-import { readApiError, toApiError } from '@/lib/apiError'
+import { readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import { actionFailedText, failureText, saveWarningLines } from '../failureText'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import styles from './McpServersTab.module.css'
+
+/**
+ * The secret a save or test was refused for because the URL changed (HD-24):
+ * `auth.token` or `headers.<name>`, with the server's sentence.
+ */
+function reentryOf(err: ApiError): { field: string; message: string } | null {
+  const field = err.body?.field
+  return err.code === 'secret_reentry_required' && typeof field === 'string' ? { field, message: err.reason } : null
+}
 
 interface Props {
   userId: string
@@ -189,6 +198,15 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
   const [saving, setSaving] = useState(false)
   const [topLevelError, setTopLevelError] = useState<string | null>(null)
   const [tokenVisible, setTokenVisible] = useState(false)
+  // Focus target after a re-entry refusal: the token input or the headers box.
+  const tokenInput = useRef<HTMLInputElement | null>(null)
+  const headersInput = useRef<HTMLTextAreaElement | null>(null)
+  const [reentryFocus, setReentryFocus] = useState<{ field: string } | null>(null)
+  useEffect(() => {
+    if (!reentryFocus) return
+    const target = reentryFocus.field === 'auth.token' ? tokenInput.current : headersInput.current
+    target?.focus()
+  }, [reentryFocus])
   const { dangerConfirm, alertError } = useAlertModal()
   const toast = useToast()
 
@@ -310,7 +328,15 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ server: draft, userId }),
       })
-      if (!r.ok) throw await readApiError(r, 'The MCP test failed')
+      if (!r.ok) {
+        const err = await readApiError(r, 'The MCP test failed')
+        const reentry = reentryOf(err)
+        if (reentry) {
+          setErrors({ [reentry.field]: reentry.message })
+          setReentryFocus({ field: reentry.field })
+        }
+        throw err
+      }
       const data = await r.json() as Partial<TestResult>
       setTestResult({
         ok: data.ok === true,
@@ -360,6 +386,11 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
             issueMap[(i.path || []).join('.')] = i.message
           }
           setErrors(issueMap)
+        }
+        const reentry = reentryOf(err)
+        if (reentry) {
+          setErrors({ [reentry.field]: reentry.message })
+          setReentryFocus({ field: reentry.field })
         }
         return
       }
@@ -826,6 +857,8 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
               <span>auth (bearer token, optional)</span>
               <div className={styles.tokenInputRow}>
                 <input
+                  ref={tokenInput}
+                  aria-label="bearer token"
                   type={tokenVisible ? 'text' : 'password'}
                   value={editing.auth?.token || ''}
                   onChange={e => updateField('auth', e.target.value
@@ -847,10 +880,12 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
               <span className={styles.muted} style={{ fontSize: '11px' }}>
                 Sent as <code>Authorization: Bearer …</code> on every MCP request.
               </span>
+              {errOf('auth.token') && <span className={styles.fieldErr} role="alert">{errOf('auth.token')}</span>}
             </div>
             <label className={`${styles.field} ${styles.fieldWide}`}>
               <span>custom headers (one per line, <code>Header-Name: value</code>)</span>
               <textarea
+                ref={headersInput}
                 rows={3}
                 value={Object.entries(editing.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n')}
                 onChange={e => {
@@ -871,6 +906,9 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
               <span className={styles.muted} style={{ fontSize: '11px' }}>
                 Sent verbatim on every MCP request alongside the bearer token. Used by multi-tenant APIs (e.g. Censys requires <code>X-Organization-ID</code>).
               </span>
+              {Object.keys(errors).filter(k => k.startsWith('headers.')).map(k => (
+                <span key={k} className={styles.fieldErr} role="alert">{errors[k]}</span>
+              ))}
             </label>
           </>
         )}

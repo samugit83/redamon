@@ -4,6 +4,7 @@ import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { internalError } from '@/lib/routeErrors'
+import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -94,6 +95,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { error: 'The backend of a Jev provider cannot be changed' },
         { status: 400 },
       )
+    }
+
+    // A new base URL or type must come with the key typed again (HD-24): the
+    // masked key below would otherwise follow the row to the new endpoint. A Jev
+    // row's transport is pinned, so it never re-points.
+    if (!isJevProvider(existing)) {
+      const reentry = llmProviderSecretReentry(existing, body)
+      if (reentry) return secretReentryResponse(reentry)
     }
 
     // Preserve masked secrets

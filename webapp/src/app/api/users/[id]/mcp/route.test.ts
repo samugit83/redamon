@@ -180,3 +180,46 @@ describe('DELETE never returns a stored token', () => {
     expect(JSON.stringify(mockUpdate.mock.calls[0][0])).toContain(TOKEN)
   })
 })
+
+describe('PUT /api/users/[id]/mcp/[serverId]: a new URL needs its secrets typed again (HD-24)', () => {
+  const TOKEN = 'mcp-STORED-bearer-1234'
+  const STORED = {
+    id: 'probe', name: 'Probe', transport: 'streamable_http', url: 'https://mcp.example.com/mcp',
+    enabled: true, tools: [], auth: { type: 'bearer', token: TOKEN }, headers: { 'X-Api-Key': 'hdr-STORED-9999' },
+  }
+  const put = (body: unknown) => PUT(json('PUT', 'http://x/api/users/u1/mcp/probe', body), oneParams)
+
+  beforeEach(() => mockFindUnique.mockResolvedValue({ mcpServers: [STORED] }))
+
+  test('a new URL with the masked token is 400 naming auth.token; nothing is written or reloaded', async () => {
+    const res = await put({ ...STORED, url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: '••••••••1234' }, headers: {} })
+    expect(res.status).toBe(400)
+    const text = await res.text()
+    expect(JSON.parse(text)).toMatchObject({ code: 'secret_reentry_required', field: 'auth.token', endpoint: 'url' })
+    expect(text).not.toContain(TOKEN)
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('a masked header value counts as a stored secret', async () => {
+    const res = await put({ ...STORED, url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: 'typed-again' }, headers: { 'X-Api-Key': '••••••••9999' } })
+    expect(res.status).toBe(400)
+    expect((await res.json()).field).toBe('headers.X-Api-Key')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a new URL with the token and header typed again is saved as typed', async () => {
+    const res = await put({ ...STORED, url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: 'typed-again' }, headers: { 'X-Api-Key': 'hdr-new' } })
+    expect(res.status).toBe(200)
+    const saved = mockUpdate.mock.calls[0][0].data.mcpServers[0]
+    expect(saved).toMatchObject({ url: 'https://elsewhere.example.net/mcp', auth: { token: 'typed-again' }, headers: { 'X-Api-Key': 'hdr-new' } })
+  })
+
+  test('the same URL keeps the masked token and header (every save from the form)', async () => {
+    const res = await put({ ...STORED, enabled: false, auth: { type: 'bearer', token: '••••••••1234' }, headers: { 'X-Api-Key': '••••••••9999' } })
+    expect(res.status).toBe(200)
+    const saved = mockUpdate.mock.calls[0][0].data.mcpServers[0]
+    expect(saved.auth.token).toBe(TOKEN)
+    expect(saved.headers['X-Api-Key']).toBe('hdr-STORED-9999')
+  })
+})

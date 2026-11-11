@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Loader2, CheckCircle, XCircle, Plus, Trash2, Eye, EyeOff, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/ui'
 import { useAgentHealth } from '@/hooks/useAgentHealth'
@@ -9,7 +9,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { PROVIDER_TYPES, OPENAI_COMPAT_PRESETS, NON_CHAT_PROVIDER_TYPES, JEV_MODEL, JEV_BACKENDS, isJevProvider } from '@/lib/llmProviderPresets'
 import type { ProviderType } from '@/lib/llmProviderPresets'
 import { REASONING_EFFORTS } from '@/lib/llmReasoning'
-import { fetchJson, readApiError, toApiError } from '@/lib/apiError'
+import { fetchJson, readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import type { ReasoningEffort } from '@/lib/llmReasoning'
 import styles from './Settings.module.css'
 
@@ -55,6 +55,14 @@ export interface ProviderData {
 }
 
 type BedrockAuthMethod = 'iam' | 'bearer'
+
+/** The secret field a save or test was refused for: its endpoint changed (HD-24). */
+interface Reentry { field: string; message: string }
+
+function reentryOf(err: ApiError): Reentry | null {
+  const field = err.body?.field
+  return err.code === 'secret_reentry_required' && typeof field === 'string' ? { field, message: err.reason } : null
+}
 
 const EMPTY_PROVIDER: ProviderData = {
   providerType: '',
@@ -116,10 +124,22 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
   const [bedrockAuth, setBedrockAuth] = useState<BedrockAuthMethod>(
     () => (form.awsBearerToken ? 'bearer' : 'iam'),
   )
+  // A changed base URL or type with a kept (masked) key is refused by the server:
+  // the message goes under that key's input, which takes the focus.
+  const [reentry, setReentry] = useState<Reentry | null>(null)
+  const secretInputs = useRef<Record<string, HTMLInputElement | null>>({})
+  const secretRef = (field: string) => (el: HTMLInputElement | null) => { secretInputs.current[field] = el }
+  useEffect(() => {
+    if (reentry) secretInputs.current[reentry.field]?.focus()
+  }, [reentry])
+  const reentryHint = (field: string) => reentry?.field === field && (
+    <span className="formHint" role="alert" style={{ color: 'var(--text-error)' }}>{reentry.message}</span>
+  )
 
   const updateForm = useCallback(<K extends keyof ProviderData>(field: K, value: ProviderData[K]) => {
     setForm(prev => ({ ...prev, [field]: value }))
     setTestResult(null)
+    setReentry(prev => (prev?.field === field ? null : prev))
   }, [])
 
   const selectType = useCallback((type: ProviderType) => {
@@ -182,7 +202,9 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
         error: result.error || (result.success === true ? undefined : 'The provider test failed'),
       })
     } catch (err) {
-      setTestResult({ success: false, error: toApiError(err, 'The provider test failed').message })
+      const apiErr = toApiError(err, 'The provider test failed')
+      setTestResult({ success: false, error: apiErr.message })
+      setReentry(reentryOf(apiErr))
     } finally {
       setTesting(false)
     }
@@ -212,7 +234,9 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
       // Show what the server actually said. The blanket message hid the real
       // cause of issue #173 (a write against a user id that no longer exists)
       // behind an unactionable "Failed to save provider".
-      toast.error(toApiError(err, 'Failed to save provider').message)
+      const apiErr = toApiError(err, 'Failed to save provider')
+      toast.error(apiErr.message)
+      setReentry(reentryOf(apiErr))
     } finally {
       setSaving(false)
     }
@@ -341,6 +365,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
           <label className="formLabel formLabelRequired">API Key</label>
           <div className={styles.secretInputWrapper}>
             <input
+              ref={secretRef('apiKey')}
               className="textInput"
               type={showApiKey ? 'text' : 'password'}
               value={form.apiKey}
@@ -358,6 +383,7 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
               {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
+          {reentryHint('apiKey')}
         </div>
       )}
 
@@ -423,20 +449,24 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
               <div className="formGroup">
                 <label className="formLabel formLabelRequired">AWS Access Key ID</label>
                 <input
+                  ref={secretRef('awsAccessKeyId')}
                   className="textInput"
                   type="password"
                   value={form.awsAccessKeyId}
                   onChange={e => updateForm('awsAccessKeyId', e.target.value)}
                 />
+                {reentryHint('awsAccessKeyId')}
               </div>
               <div className="formGroup">
                 <label className="formLabel formLabelRequired">AWS Secret Access Key</label>
                 <input
+                  ref={secretRef('awsSecretKey')}
                   className="textInput"
                   type="password"
                   value={form.awsSecretKey}
                   onChange={e => updateForm('awsSecretKey', e.target.value)}
                 />
+                {reentryHint('awsSecretKey')}
               </div>
             </>
           )}
@@ -444,12 +474,14 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
             <div className="formGroup">
               <label className="formLabel formLabelRequired">Bedrock API Key</label>
               <input
+                ref={secretRef('awsBearerToken')}
                 className="textInput"
                 type="password"
                 value={form.awsBearerToken}
                 onChange={e => updateForm('awsBearerToken', e.target.value)}
                 placeholder="bedrock-api-key-..."
               />
+              {reentryHint('awsBearerToken')}
               <span className="formHint">Generate in AWS Bedrock console: API keys -&gt; Long-term API keys.</span>
             </div>
           )}
@@ -500,13 +532,17 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
           <div className="formGroup">
             <label className="formLabel">API Key</label>
             <input
+              ref={secretRef('apiKey')}
               className="textInput"
               type="password"
               value={form.apiKey}
               onChange={e => updateForm('apiKey', e.target.value)}
               placeholder="Optional (leave empty for Ollama)"
+              aria-label="API key"
             />
-            <span className="formHint">Leave empty for local servers that don&apos;t require auth</span>
+            {reentryHint('apiKey') || (
+              <span className="formHint">Leave empty for local servers that don&apos;t require auth</span>
+            )}
           </div>
 
           <div className={styles.reasoningControl}>

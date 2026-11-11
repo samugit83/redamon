@@ -12,6 +12,7 @@ import { requireUserAccess } from '@/lib/session'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { MASK_PREFIX, type MCPServer } from '@/lib/mcp/schema'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
+import { mcpServerSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 
 /** Every answer keeps the panel's shape: McpServersTab renders these fields unconditionally. */
 const EMPTY_RESULT = { discovered_tools: [], warnings: [], elapsed_ms: 0 }
@@ -54,6 +55,10 @@ export async function POST(request: NextRequest) {
       })
       const saved = (Array.isArray(settings?.mcpServers) ? settings!.mcpServers : []) as MCPServer[]
       const existing = saved.find(s => s.id === body.id)
+      // Only to the URL it was saved for (HD-24): a draft pointing elsewhere
+      // needs the token pasted again. This route restores the token alone.
+      const reentry = existing && mcpServerSecretReentry(existing, body as unknown as Record<string, unknown>, { headers: false })
+      if (reentry) return secretReentryResponse(reentry, { ok: false, ...EMPTY_RESULT })
       if (existing?.auth?.token && !existing.auth.token.startsWith(MASK_PREFIX)) {
         body.auth = { ...body.auth, token: existing.auth.token }
       } else {

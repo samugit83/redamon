@@ -10,6 +10,7 @@ import { writeAudit } from '@/lib/audit'
 import { featureModelsMap, parseFeatureModelsPatch, type FeatureModelsPatch } from '@/lib/featureModels'
 import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
 import { internalError } from '@/lib/routeErrors'
+import { normalizeGithubHost, secretReentryResponse, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { followUpWarning, type SaveWarning } from './saveWarnings'
 
 interface RouteParams {
@@ -300,8 +301,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // each use: a pasted URL becomes a bare hostname, and anything that is not a
     // dotted DNS name (IP literal, localhost, host:port) is refused outright.
     if ('githubEnterpriseHost' in body) {
-      const raw = String(body.githubEnterpriseHost ?? '').trim()
-      const stripped = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+      const stripped = normalizeGithubHost(body.githubEnterpriseHost)
       if (stripped && !isValidGithubHost(stripped)) {
         return NextResponse.json(
           { error: 'GitHub Enterprise Host must be a hostname such as ghe.example.com (no scheme, port or path)' },
@@ -310,6 +310,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
       body.githubEnterpriseHost = stripped
     }
+
+    // A new GitHub Enterprise host or chisel URL must come with its secret typed
+    // again (HD-24): a kept, masked secret would follow the endpoint to the new
+    // address. Before anything in this PUT is written.
+    const reentry = settingsSecretReentry(existing as Record<string, unknown> | null, body)
+    if (reentry) return secretReentryResponse(reentry)
 
     const data: Record<string, string> = {}
     const fields = ['githubAccessToken', 'supplyChainGithubToken', 'githubEnterpriseHost', 'githubEnterpriseToken', 'tavilyApiKey', 'shodanApiKey', 'serpApiKey', 'nvdApiKey', 'vulnersApiKey', 'urlscanApiKey', 'censysApiToken', 'censysOrgId', 'fofaApiKey', 'otxApiKey', 'netlasApiKey', 'virusTotalApiKey', 'zoomEyeApiKey', 'criminalIpApiKey', 'securitytrailsApiKey', 'viewdnsApiKey', 'quakeApiKey', 'hunterApiKey', 'publicWwwApiKey', 'hunterHowApiKey', 'googleApiKey', 'googleApiCx', 'onypheApiKey', 'driftnetApiKey', 'wpscanApiToken', 'pdcpApiKey', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth',

@@ -271,3 +271,25 @@ describe('Tradecraft (U-13, U-61, U-62)', () => {
     expect(await screen.findByText('Delete failed: Failed to delete tradecraft resource (P2024 · HTTP 500)')).toBeInTheDocument()
   })
 })
+
+describe('HD-24: a new chisel URL with the masked auth asks for it again', () => {
+  test('the refusal is shown with its code and the chisel auth field takes the focus', async () => {
+    routes[`GET ${BASE}/settings`] = {
+      status: 200,
+      body: { chiselServerUrl: 'http://vps.example:9090', chiselAuth: '••••••••pass', rotationConfigs: {} },
+    }
+    routes[`PUT ${BASE}/settings`] = {
+      status: 400,
+      body: {
+        error: 'The chisel server URL changed: type the chisel auth again, or clear it. A stored secret is never sent to a new address unless it is entered again.',
+        code: 'secret_reentry_required', field: 'chiselAuth', fields: ['chiselAuth'], endpoint: 'chiselServerUrl',
+      },
+    }
+    renderPage()
+    fireEvent.change(await screen.findByPlaceholderText('e.g. http://your-vps.com:9090'), { target: { value: 'http://elsewhere.example:9090' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
+
+    expect(await screen.findByText(/type the chisel auth again, or clear it\..*\(secret_reentry_required · HTTP 400\)/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByPlaceholderText('Enter chisel auth')).toHaveFocus())
+  })
+})

@@ -704,7 +704,13 @@ export default function SettingsPage() {
         if (warnings.length) toast.warning(warnings.join('\n'), 'Saved, but not applied')
         return true
       }
-      toast.error((await readApiError(resp, 'Failed to save settings')).message)
+      const err = await readApiError(resp, 'Failed to save settings')
+      toast.error(err.message)
+      // A new GitHub Enterprise host or chisel URL needs its secret typed again
+      // (HD-24): take the person to the field the answer names.
+      if (err.code === 'secret_reentry_required' && typeof err.body?.field === 'string') {
+        focusSecretField(err.body.field)
+      }
       return false
     } catch (err) {
       console.error('Failed to save settings:', err)
@@ -1751,6 +1757,7 @@ export default function SettingsPage() {
             </div>
             <SecretField
               label="Chisel Auth"
+              inputId={secretFieldId('chiselAuth')}
               hint="user:pass for chisel server authentication (optional - only if your chisel server requires auth)"
               value={settings.chiselAuth}
               visible={!!visibleFields.chiselAuth}
@@ -2204,9 +2211,21 @@ const BADGE_STYLES: Record<string, React.CSSProperties> = {
   // every badge you add.
   }
 
+/** The id of a SecretField input; CredentialDrawer rows use `credential-key-<name>`. */
+const secretFieldId = (name: string) => `settings-secret-${name}`
+
+/** Scroll to the input of a stored secret and focus it, wherever the page renders it. */
+function focusSecretField(name: string) {
+  const input = document.getElementById(`credential-key-${name}`) ?? document.getElementById(secretFieldId(name))
+  if (!(input instanceof HTMLInputElement)) return
+  input.scrollIntoView?.({ block: 'center' })
+  input.focus()
+}
+
 // Reusable secret field component
 function SecretField({
   label,
+  inputId,
   hint,
   signupUrl,
   badges,
@@ -2218,6 +2237,7 @@ function SecretField({
   rotationInfo,
 }: {
   label: string
+  inputId?: string
   hint: string
   signupUrl?: string
   badges?: string[]
@@ -2244,6 +2264,7 @@ function SecretField({
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <div className={styles.secretInputWrapper} style={{ flex: 1 }}>
           <input
+            id={inputId}
             className="textInput"
             type={visible ? 'text' : 'password'}
             value={value ?? ''}

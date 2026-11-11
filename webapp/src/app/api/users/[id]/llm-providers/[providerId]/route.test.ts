@@ -33,7 +33,12 @@ vi.mock('@/lib/session', () => ({
 import { GET, PUT, DELETE } from './route'
 
 const SECRET = 'sk-PROVIDERSECRET1234'
-const PROVIDER = { id: 'p1', userId: 'victim', apiKey: SECRET, awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '' }
+// A stored row always has a type (and a base URL for openai_compatible): the re-entry
+// rule (HD-24) compares the body's against them.
+const PROVIDER = {
+  id: 'p1', userId: 'victim', providerType: 'openai_compatible', baseUrl: 'https://llm.example.com/v1',
+  apiKey: SECRET, awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '',
+}
 const FORBIDDEN = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 function get(url: string): NextRequest { return new NextRequest(url) }
 function del(): NextRequest { return new NextRequest('http://x/api/users/victim/llm-providers/p1', { method: 'DELETE' }) }
@@ -237,3 +242,40 @@ describe('the access mode by method (HD-23)', () => {
     expect(mockDelete).not.toHaveBeenCalled()
   })
 })
+
+describe('PUT provider - a new endpoint needs the key typed again (HD-24)', () => {
+  beforeEach(() => mockRequireUserAccess.mockResolvedValue(null))
+
+  test.each([
+    ['omitted', {}],
+    ['sent back masked', { apiKey: '••••••••1234' }],
+  ])('a new base URL with the key %s is 400 secret_reentry_required naming apiKey; nothing is written', async (_l, key) => {
+    const res = await PUT(put({ ...PROVIDER, baseUrl: 'https://elsewhere.example.net/v1', ...key, apiKey: (key as { apiKey?: string }).apiKey }), params('victim', 'p1'))
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body).toMatchObject({ code: 'secret_reentry_required', field: 'apiKey', endpoint: 'baseUrl' })
+    expect(JSON.stringify(body)).not.toContain(SECRET)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a new base URL with the key typed again is saved with that key', async () => {
+    const res = await PUT(put({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again' }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data).toMatchObject({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again' })
+  })
+
+  test('a new type is an endpoint change too', async () => {
+    mockFindFirst.mockResolvedValue({ ...PROVIDER, providerType: 'openai', baseUrl: '' })
+    const res = await PUT(put({ providerType: 'openai_compatible', baseUrl: 'https://elsewhere.example.net/v1', apiKey: '••••••••1234' }), params('victim', 'p1'))
+    expect(res.status).toBe(400)
+    expect((await res.json()).endpoint).toBe('providerType')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('the same endpoint keeps the masked key (the account itself, every save)', async () => {
+    const res = await PUT(put({ ...PROVIDER, apiKey: '••••••••1234', temperature: 0.2 }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.apiKey).toBe(SECRET)
+  })
+})
+

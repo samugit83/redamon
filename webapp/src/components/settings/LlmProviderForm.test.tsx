@@ -516,3 +516,53 @@ describe('Jev named OpenRouter forms', () => {
     expect(screen.getByText(/does not prove billed Jev decision access/)).toBeInTheDocument()
   })
 })
+
+describe('HD-24: a new base URL with the masked key asks for the key again', () => {
+  const SAVED = { ...PROVIDER, id: 'compat-1', apiKey: '••••••••1234', baseUrl: 'https://llm.example.com/v1' }
+  const REFUSAL = {
+    ok: false,
+    status: 400,
+    json: async () => ({
+      error: 'The base URL changed: type the API key again, or clear it. A stored secret is never sent to a new address unless it is entered again.',
+      code: 'secret_reentry_required', field: 'apiKey', fields: ['apiKey'], endpoint: 'baseUrl',
+    }),
+  }
+
+  beforeEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    toastSuccess.mockReset()
+    toastError.mockReset()
+  })
+  afterEach(cleanup)
+
+  test('Save: the message shows under the API key, which takes the focus; typing clears it', async () => {
+    mockFetch({ provider: REFUSAL })
+    const onSave = vi.fn()
+    render(<LlmProviderForm userId="user-1" provider={SAVED} onSave={onSave} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('http://host.docker.internal:11434/v1'), { target: { value: 'https://elsewhere.example.net/v1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }))
+
+    const hint = await screen.findByRole('alert')
+    expect(hint).toHaveTextContent('type the API key again')
+    const key = screen.getByLabelText('API key')
+    await waitFor(() => expect(key).toHaveFocus())
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('secret_reentry_required · HTTP 400'))
+    expect(onSave).not.toHaveBeenCalled()
+
+    fireEvent.change(key, { target: { value: 'sk-typed-again' } })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  test('Test Connection: the same refusal focuses the key and names the cause', async () => {
+    mockFetch({ provider: REFUSAL })
+    render(<LlmProviderForm userId="user-1" provider={SAVED} onSave={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('http://host.docker.internal:11434/v1'), { target: { value: 'https://elsewhere.example.net/v1' } })
+    const button = screen.getByRole('button', { name: 'Test Connection' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+
+    await waitFor(() => expect(screen.getByLabelText('API key')).toHaveFocus())
+    expect(screen.getAllByText(/type the API key again/).length).toBeGreaterThan(0)
+  })
+})

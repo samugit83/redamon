@@ -89,3 +89,36 @@ describe('POST /api/mcp/test — ownership + secret echo', () => {
     expect(mockFetch).not.toHaveBeenCalled()
   })
 })
+
+describe('POST /api/mcp/test — a masked token goes only to the URL it was saved for (HD-24)', () => {
+  const SAVED = { id: 's1', transport: 'streamable_http', url: 'https://mcp.example.com/mcp', auth: { type: 'bearer', token: 'REALTOKEN' } }
+
+  beforeEach(() => {
+    mockRequireUserAccess.mockResolvedValue(null)
+    mockUserSettingsFindUnique.mockResolvedValue({ mcpServers: [SAVED] })
+  })
+
+  test('mcp test does not restore a token for a changed URL', async () => {
+    const draft = { ...SAVED, name: 's1', url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: `${MASK}OKEN` } }
+    const res = await POST(req(draft, 'u1'))
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body).toMatchObject({ ok: false, code: 'secret_reentry_required', field: 'auth.token', discovered_tools: [] })
+    expect(JSON.stringify(body)).not.toContain('REALTOKEN')
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  test('the saved URL restores the token', async () => {
+    const draft = { ...SAVED, name: 's1', auth: { type: 'bearer', token: `${MASK}OKEN` } }
+    const res = await POST(req(draft, 'u1'))
+    expect(res.status).toBe(200)
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).auth.token).toBe('REALTOKEN')
+  })
+
+  test('a changed URL with a token pasted again is tested as typed', async () => {
+    const draft = { ...SAVED, name: 's1', url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: 'typed-again' } }
+    const res = await POST(req(draft, 'u1'))
+    expect(res.status).toBe(200)
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).auth.token).toBe('typed-again')
+  })
+})

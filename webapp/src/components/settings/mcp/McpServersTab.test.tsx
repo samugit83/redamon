@@ -146,3 +146,46 @@ describe('Test (Discover)', () => {
     expect(await screen.findByText(/server is disabled/)).toBeInTheDocument()
   })
 })
+
+describe('HD-24: a new URL with the masked token or header asks for it again', () => {
+  const HTTP_SERVER = {
+    ...SERVER, transport: 'streamable_http', command: '', url: 'https://mcp.example.com/mcp',
+    auth: { type: 'bearer', token: '••••••••1234' }, headers: { 'X-Api-Key': '••••••••9999' },
+  }
+  const refusal = (field: string) => json(400, {
+    error: 'The server URL changed: type the bearer token again, or clear it. A stored secret is never sent to a new address unless it is entered again.',
+    code: 'secret_reentry_required', field, fields: [field], endpoint: 'url',
+  })
+
+  async function changeUrl() {
+    answers.list = json(200, { servers: [HTTP_SERVER] })
+    await openEdit()
+    fireEvent.change(screen.getByPlaceholderText(/my-mcp:8080/), { target: { value: 'https://elsewhere.example.net/mcp' } })
+  }
+
+  test('Save: the token field shows the message and takes the focus', async () => {
+    answers.put = refusal('auth.token')
+    await changeUrl()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('type the bearer token again')
+    await waitFor(() => expect(screen.getByLabelText('bearer token')).toHaveFocus())
+    expect(screen.getByText(/\(secret_reentry_required · HTTP 400\)/)).toBeInTheDocument()
+  })
+
+  test('Save: a header value named by the refusal focuses the headers box', async () => {
+    answers.put = refusal('headers.X-Api-Key')
+    await changeUrl()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByRole('alert')
+    await waitFor(() => expect(screen.getByPlaceholderText(/X-Organization-ID/)).toHaveFocus())
+  })
+
+  test('Test (Discover): the same refusal focuses the token field', async () => {
+    answers.test = refusal('auth.token')
+    await changeUrl()
+    fireEvent.click(screen.getByRole('button', { name: /Discover and add new tools/ }))
+    await waitFor(() => expect(screen.getByLabelText('bearer token')).toHaveFocus())
+    expect(screen.getByRole('alert')).toHaveTextContent('type the bearer token again')
+  })
+})

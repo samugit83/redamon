@@ -4,6 +4,7 @@ import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
 import { isJevProvider, jevPinnedConfig, type JevProviderType } from '@/lib/llmProviderKinds'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
+import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -72,6 +73,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       if (body.providerType !== undefined && body.providerType !== provider.providerType
         && (storedIsJev || isJevProvider({ providerType: body.providerType }))) {
         return NextResponse.json({ success: false, error: 'The backend of a Jev provider cannot be changed' }, { status: 400 })
+      }
+      // The stored key is tested against the stored endpoint only: an edited base
+      // URL or type needs the key typed again (HD-24), or a test would deliver it
+      // to the new address.
+      if (!storedIsJev) {
+        const reentry = llmProviderSecretReentry(provider, body)
+        if (reentry) return secretReentryResponse(reentry, { success: false })
       }
       config = { ...(provider as unknown as Record<string, unknown>) }
       for (const [key, value] of Object.entries(body)) {
