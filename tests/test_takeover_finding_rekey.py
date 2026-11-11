@@ -1,12 +1,14 @@
-"""tooling/scripts/takeover_finding_rekey.py (recon audit S-23, S-24).
+"""tooling/scripts/takeover_finding_rekey.py (recon audit S-23, S-24, S-27).
 
-A takeover finding's id hashes its provider. An Amazon-issued certificate no
-longer names `aws-s3` (it names `aws`), and the generic DNS detections
-`dangling-cname` / `dns-saas` now take the provider the CNAME or the
-certificate names. The script moves each old node to the id today's writer
-derives from what the node stores, with the mute, the Priority Board layers (a
-person's DECISION included), the agent's CONFIRMS proof edges, the un-mute
-exemptions, the fix items and the captured transactions. Fake Neo4j and
+A takeover finding's id hashes its provider. A certificate's issuer alone no
+longer names the provider (an Amazon-issued certificate made it `aws-s3`, and
+in the S-23 builds `aws`; a Google Trust Services one `google`): the finding
+keeps the tool's placeholder. The generic DNS detections `dangling-cname` /
+`dns-saas` now take the provider the CNAME or a certificate SAN on the
+provider's edge domain names. The script moves each old node to the id today's
+writer derives from what the node stores, with the mute, the Priority Board
+layers (a person's DECISION included), the agent's CONFIRMS proof edges, the
+un-mute exemptions, the fix items and the captured transactions. Fake Neo4j and
 Postgres sessions.
 """
 import json
@@ -24,9 +26,14 @@ from tooling.scripts import takeover_finding_rekey as rk  # noqa: E402
 UID, PID = "u-takeover", "p-takeover"
 HOST = "portal.example.test"
 ACM_ISSUER = "CN=Amazon RSA 2048 M02,O=Amazon,C=US"
+GTS_ISSUER = "CN=WE1,O=Google Trust Services,C=US"
+CLOUDFLARE_ISSUER = "CN=Cloudflare Inc ECC CA-3,O=Cloudflare\\, Inc.,C=US"
 
 OLD = rk.th.finding_id(HOST, "aws-s3", "cname")
-NEW = rk.th.finding_id(HOST, "aws", "cname")
+NEW = rk.th.finding_id(HOST, "unknown", "cname")
+# Where the S-23 builds wrote an ACM-only finding, and the S-23/S-24 run of
+# this script renamed one (the id only).
+AWS_ID = rk.th.finding_id(HOST, "aws", "cname")
 OLD_DANGLING = rk.th.finding_id(HOST, "dangling-cname", "dns")
 NEW_DANGLING = rk.th.finding_id(HOST, "heroku", "dns")
 
@@ -132,8 +139,41 @@ def _plan(*rows):
 
 
 class TestDerivation(unittest.TestCase):
-    def test_an_amazon_issuer_alone_moves_to_the_aws_family(self):
-        self.assertEqual(rk.new_provider(_acm_row()), ("aws", None))
+    def test_an_amazon_issuer_alone_moves_to_the_tools_placeholder(self):
+        self.assertIsNone(rk.san_provider(_acm_row()))
+        self.assertEqual(rk.new_provider(_acm_row()), ("unknown", None))
+
+    def test_any_issuer_alone_moves_to_the_tools_placeholder(self):
+        for provider, issuer in (("aws", ACM_ISSUER), ("google", GTS_ISSUER),
+                                 ("cloudflare", CLOUDFLARE_ISSUER)):
+            row = _acm_row(provider=provider, cert_provider=provider, cert_issuer=issuer,
+                           cname_target="portal.example.test.cdn.cloudflare.net")
+            with self.subTest(provider=provider):
+                self.assertEqual(rk.new_provider(row), ("unknown", None))
+
+    def test_a_provider_the_issuer_could_not_name_was_a_tools(self):
+        # Heroku's own edge certificate is Amazon-issued: the issuer names AWS,
+        # so `heroku` came from a tool; tool_raw need not even be readable.
+        row = _acm_row(provider="heroku", cert_provider="aws", cname_target=None,
+                       tool_raw="{")
+        self.assertEqual(rk.new_provider(row), ("heroku", None))
+
+    def test_a_cname_provider_beside_an_issuer_only_certificate_stays(self):
+        row = _acm_row(provider="heroku", cert_provider="google", cert_issuer=GTS_ISSUER,
+                       cname_target="example-app.herokudns.com", tool_raw="{")
+        self.assertEqual(rk.new_provider(row), ("heroku", None))
+
+    def test_tools_with_different_placeholders_leave_the_node_alone(self):
+        raw = json.dumps({
+            "subjack": {"subdomain": HOST, "vulnerable": True, "service": "none"},
+            "baddns": {"target": HOST, "module": "", "signature": "", "indicator": ""}})
+        provider, reason = rk.new_provider(_acm_row(tool_raw=raw))
+        self.assertIsNone(provider)
+        self.assertIn("different placeholders", reason)
+
+    def test_the_script_reads_every_provider_an_issuer_has_named(self):
+        self.assertEqual(set(rk.ISSUER_PROVIDERS),
+                         set(rk.th._ISSUER_PROVIDER_MARKERS.values()) | {"aws-s3"})
 
     def test_an_s3_cname_keeps_s3(self):
         row = _acm_row(cname_target="assets.example.test.s3.amazonaws.com")
@@ -141,7 +181,7 @@ class TestDerivation(unittest.TestCase):
 
     def test_a_certificate_whose_subject_is_s3_keeps_s3(self):
         row = _acm_row(cert_subject_cn="*.s3.amazonaws.com")
-        self.assertEqual(rk.new_cert_provider(row), "aws-s3")
+        self.assertEqual(rk.san_provider(row), "aws-s3")
         self.assertEqual(rk.new_provider(row), ("aws-s3", None))
 
     def test_a_tool_that_named_s3_keeps_s3(self):
@@ -163,17 +203,26 @@ class TestDerivation(unittest.TestCase):
         self.assertIn("another provider", reason)
 
     def test_another_issuers_certificate_is_not_amazons(self):
+        # Only a SAN, which the node does not store, can have named S3 here.
         row = _acm_row(cert_issuer="Example Edge CA")
-        self.assertEqual(rk.new_cert_provider(row), "aws-s3")
+        self.assertEqual(rk.san_provider(row), "aws-s3")
         self.assertEqual(rk.new_provider(row), ("aws-s3", None))
 
     def test_a_dangling_cname_takes_the_cname_provider(self):
         self.assertEqual(rk.new_provider(_dangling_row()), ("heroku", None))
 
-    def test_a_dangling_cname_takes_the_certificate_provider_when_the_cname_names_none(self):
-        row = _dangling_row(cname_target="orphan.deadcdn.example", cert_provider="aws-s3",
-                            cert_issuer=ACM_ISSUER, cert_subject_cn="www.example.test")
-        self.assertEqual(rk.new_provider(row), ("aws", None))
+    def test_a_dangling_cname_takes_a_san_provider_when_the_cname_names_none(self):
+        row = _dangling_row(cname_target="orphan.deadcdn.example", cert_provider="heroku",
+                            cert_issuer=ACM_ISSUER, cert_subject_cn="*.herokuapp.com")
+        self.assertEqual(rk.new_provider(row), ("heroku", None))
+
+    def test_a_dangling_cname_keeps_its_placeholder_beside_an_issuer_only_certificate(self):
+        for cert_provider in ("aws-s3", "aws"):
+            row = _dangling_row(cname_target="orphan.deadcdn.example",
+                                cert_provider=cert_provider, cert_issuer=ACM_ISSUER,
+                                cert_subject_cn="www.example.test")
+            with self.subTest(cert_provider=cert_provider):
+                self.assertEqual(rk.new_provider(row), ("dangling-cname", None))
 
     def test_a_dangling_cname_with_nothing_observed_stays(self):
         row = _dangling_row(cname_target="orphan.deadcdn.example")
@@ -181,12 +230,49 @@ class TestDerivation(unittest.TestCase):
 
 
 class TestPlan(unittest.TestCase):
-    def test_an_acm_only_s3_finding_moves_to_aws(self):
+    def test_an_acm_only_s3_finding_moves_to_the_placeholder(self):
         plan = _plan(_acm_row())
         self.assertEqual(plan["rekeys"], [{
             "old_id": OLD, "new_id": NEW, "hostname": HOST, "method": "cname",
-            "old_provider": "aws-s3", "new_provider": "aws"}])
+            "old_provider": "aws-s3", "new_provider": "unknown"}])
         self.assertEqual(plan["unmapped"], [])
+
+    def test_an_issuer_only_google_finding_moves_to_the_placeholder(self):
+        row = _acm_row(id=rk.th.finding_id(HOST, "google", "cname"), provider="google",
+                       cert_provider="google", cert_issuer=GTS_ISSUER,
+                       cname_target="portal.example.test.cdn.cloudflare.net")
+        (r,) = _plan(row)["rekeys"]
+        self.assertEqual((r["new_id"], r["new_provider"]), (NEW, "unknown"))
+
+    def test_a_node_the_s23_builds_wrote_as_aws_moves_on(self):
+        (r,) = _plan(_acm_row(id=AWS_ID, provider="aws", cert_provider="aws"))["rekeys"]
+        self.assertEqual((r["old_id"], r["new_id"]), (AWS_ID, NEW))
+
+    def test_a_node_the_s23_run_renamed_to_aws_moves_on(self):
+        # That run renamed the id only: the node still stores aws-s3.
+        (r,) = _plan(_acm_row(id=AWS_ID))["rekeys"]
+        self.assertEqual((r["old_id"], r["new_id"], r["old_provider"]),
+                         (AWS_ID, NEW, "aws-s3"))
+
+    def test_a_dangling_cname_the_s24_run_renamed_to_aws_moves_back(self):
+        renamed = rk.th.finding_id(HOST, "aws", "dns")
+        row = _dangling_row(id=renamed, cname_target="orphan.deadcdn.example",
+                            cert_provider="aws-s3", cert_issuer=ACM_ISSUER,
+                            cert_subject_cn="www.example.test")
+        (r,) = _plan(row)["rekeys"]
+        self.assertEqual((r["old_id"], r["new_id"], r["new_provider"]),
+                         (renamed, OLD_DANGLING, "dangling-cname"))
+
+    def test_findings_a_tool_cname_or_san_named_are_not_listed(self):
+        rows = (_acm_row(id=rk.th.finding_id(HOST, "heroku", "cname"), provider="heroku",
+                         cert_provider="aws", cname_target=None, tool_raw=_tool_raw("heroku")),
+                _acm_row(id=rk.th.finding_id(HOST, "github-pages", "cname"),
+                         provider="github-pages", cert_provider="google",
+                         cert_issuer=GTS_ISSUER, tool_raw=_tool_raw("github")),
+                _acm_row(id=rk.th.finding_id(HOST, "heroku", "dns"), provider="heroku",
+                         method="dns", cert_provider="heroku", cert_subject_cn="*.herokuapp.com",
+                         cname_target=None))
+        self.assertEqual(_plan(*rows), {"rekeys": [], "unmapped": []})
 
     def test_a_dangling_cname_finding_moves_to_its_cname_provider(self):
         (r,) = _plan(_dangling_row())["rekeys"]
@@ -218,7 +304,9 @@ class TestPlan(unittest.TestCase):
         rk.plan_project(session, PROJECT)
         (_, params), = session.calls
         self.assertEqual((params["uid"], params["pid"]), (UID, PID))
-        self.assertEqual(sorted(params["providers"]), ["aws-s3", "dangling-cname", "dns-saas"])
+        self.assertEqual(sorted(params["providers"]), [
+            "aws", "aws-s3", "cloudflare", "dangling-cname", "dns-saas", "fastly",
+            "github-pages", "google", "heroku", "netlify", "shopify", "zendesk"])
         self.assertIn("v.source = 'takeover_scan'", rk.OLD_FINDINGS)
 
     def test_every_query_is_scoped_to_one_project_and_leaves_updated_at_alone(self):
@@ -234,7 +322,7 @@ class TestPlan(unittest.TestCase):
 
 class TestRekeyGraph(unittest.TestCase):
     REKEY = {"old_id": OLD, "new_id": NEW, "hostname": HOST, "method": "cname",
-             "old_provider": "aws-s3", "new_provider": "aws"}
+             "old_provider": "aws-s3", "new_provider": "unknown"}
 
     def test_no_new_node_yet_renames_in_place(self):
         s = FakeSession(nodes={OLD: {"muted": True, "props": dict(DECIDED)}})
@@ -293,7 +381,7 @@ class TestRun(unittest.TestCase):
         self.assertEqual([e for e in conn.log if e[0] == "commit"], [])
         self.assertEqual(len([e for e in conn.log if e[0] == "sql"]), 1, "only the project list")
         text = "\n".join(lines)
-        self.assertIn(f"aws-s3 -> aws  {OLD} -> {NEW} (dry run)", text)
+        self.assertIn(f"aws-s3 -> unknown  {OLD} -> {NEW} (dry run)", text)
         self.assertIn(f"dangling-cname -> heroku  {OLD_DANGLING} -> {NEW_DANGLING} (dry run)", text)
         self.assertIn("takeover_0: its tool_raw cannot be read", text)
         self.assertIn(f"{PID}: 2 to re-key, 1 left alone", text)

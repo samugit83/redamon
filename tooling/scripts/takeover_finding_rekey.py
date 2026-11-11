@@ -5,15 +5,18 @@ WHY
 
 A takeover finding is keyed `takeover_<sha1(hostname|provider|method)>`
 (recon/helpers/takeover_helpers.py `finding_id`), so a change in how the
-provider is derived moves the id. Two did (recon audit S-23, S-24):
+provider is derived moves the id. Three did (recon audit S-23, S-24, S-27):
 
-  - an Amazon-issued certificate (ACM: every AWS service and every customer's
-    own name) named the provider `aws-s3` when nothing else named one. It now
-    names the family, `aws`;
+  - a certificate's issuer alone named the provider when no tool, CNAME or
+    certificate SAN did: an Amazon-issued (ACM) certificate made the finding
+    `aws-s3`, a Google Trust Services one `google` (GTS also signs
+    Cloudflare's certificates), a Cloudflare one `cloudflare`, and so on. An
+    issuer names who signed the certificate, not the edge serving the host,
+    so the finding now keeps the tool's placeholder (`unknown`);
   - the generic Nuclei DNS detections `detect-dangling-cname` and
     `dns-saas-service-detection` kept their template's name (`dangling-cname`,
-    `dns-saas`) as the provider even when the CNAME or the certificate named
-    the real one. That one now replaces it.
+    `dns-saas`) as the provider even when the CNAME or a certificate SAN on
+    the provider's edge domain named the real one. That one now replaces it.
 
 The next full scan writes the new ids and prunes an old node nobody touched; a
 muted or human-judged one is kept as stale, and everything that names its old
@@ -27,21 +30,24 @@ id would be left behind:
 
 WHAT IT DOES
 
-For every takeover_scan finding keyed on `aws-s3`, `dangling-cname` or
+For every takeover_scan finding keyed on a provider an issuer could name
+(`aws-s3`, `aws`, `cloudflare`, `google`, ...) or on `dangling-cname` /
 `dns-saas`, the provider today's writer derives is recomputed from what the
-node stores, with the writer's own tables (takeover_helpers.py):
+node stores, with the writer's own tables and order (takeover_helpers.py,
+run_subdomain_takeover): a tool's provider (from `tool_raw`), else the stored
+`cname_target`'s, else a certificate SAN's on the provider's edge domain,
+else the tool's placeholder. The node stores the certificate's subject CN, not
+its SANs: a stored `cert_provider` the issuer explains and the CN does not is
+the issuer's alone. A provider the issuer could not have named was a tool's
+and stays.
 
-  - `dangling-cname` / `dns-saas`: the provider of the stored `cname_target`,
-    else the certificate's (`cert_provider`, an Amazon issuer read as `aws`);
-  - `aws-s3`: moves to `aws` only when the certificate's issuer alone named S3:
-    the stored CNAME and the certificate's subject name no S3 endpoint, and no
-    tool in `tool_raw` named S3 (a tool that did still writes the old id).
-    A node whose `tool_raw` cannot be read (cut at 50 KB) is left alone and
-    listed; a full scan that no longer writes its id prunes it.
-
-A node whose stored hostname, provider and method do not reproduce its id is
-left alone and listed. The fields the next scan rewrites (`takeover_provider`,
-`cert_provider`, `name`) are not touched.
+A node whose `tool_raw` cannot be read (cut at 50 KB) when it matters, or
+whose tools named another provider or different placeholders, is left alone
+and listed; a full scan that no longer writes its id prunes it. A node whose
+id neither its stored hostname, provider and method nor the S-23/S-24 run of
+this script (which renamed only the id) explains is left alone and listed. The
+fields the next scan rewrites (`takeover_provider`, `cert_provider`, `name`)
+are not touched.
 
 A re-key renames the node's id in place when no node holds the new id yet (the
 upgrade order: run this before the first scan on the new release), so every
@@ -71,7 +77,9 @@ it, or `--apply` cannot see them running:
     --entrypoint python redamon-agent tooling/scripts/takeover_finding_rekey.py --all
 
 Idempotent: a second run finds nothing to re-key. Run it again after a project
-import or a scan-version restore brings the old ids back.
+import or a scan-version restore brings the old ids back. A stack that already
+ran the S-23/S-24 version of this script runs this one too: it moves the nodes
+that version sent to `aws` (or to an issuer's provider) on to today's id.
 """
 from __future__ import annotations
 
@@ -108,6 +116,11 @@ th = _load_takeover_helpers()
 S3 = "aws-s3"
 AWS = "aws"
 GENERIC_DETECTIONS = ("dangling-cname", "dns-saas")
+#: Every provider an issuer marker alone has named
+#: (takeover_helpers._ISSUER_PROVIDER_MARKERS); v7.5.1 read Amazon as aws-s3,
+#: the S-23 builds as aws.
+ISSUER_PROVIDERS = ("aws", "aws-s3", "cloudflare", "fastly", "github-pages", "google",
+                    "heroku", "netlify", "shopify", "zendesk")
 
 PROJECTS = """
     SELECT id, user_id
@@ -133,14 +146,25 @@ _NORMALIZERS = {
 }
 
 
-def new_cert_provider(row) -> str | None:
-    """The certificate's provider as the writer names it now. Only the Amazon
-    issuer changed (`aws-s3` -> `aws`); a certificate whose subject names an
-    S3 endpoint is S3's own and was named by it, not by the issuer."""
+def issuer_names(issuer) -> set[str]:
+    """What a certificate's issuer alone named, in any release."""
+    named = th.provider_from_cert(issuer, [])
+    if not named:
+        return set()
+    return {AWS, S3} if named == AWS else {named}
+
+
+def san_provider(row) -> str | None:
+    """The provider a certificate SAN on its edge domain named: the only
+    certificate evidence the writer takes. The node keeps the subject CN, not
+    the SANs, so a stored cert_provider the CN does not name and the issuer
+    explains is the issuer's alone."""
     stored = row.get("cert_provider")
-    if stored != S3 or th.provider_from_cname(row.get("cert_subject_cn")):
+    if not stored:
+        return None
+    if th.provider_from_sans([row.get("cert_subject_cn")]):
         return stored
-    return AWS if th.provider_from_cert(row.get("cert_issuer"), []) == AWS else stored
+    return None if stored in issuer_names(row.get("cert_issuer")) else stored
 
 
 def tool_providers(tool_raw) -> list[str] | None:
@@ -165,36 +189,51 @@ def tool_providers(tool_raw) -> list[str] | None:
     return out
 
 
-def derive_provider(placeholder: str, row) -> str:
-    """What the writer makes of a placeholder: the CNAME's provider, else the
-    certificate's (run_subdomain_takeover, steps 3 and 3a2)."""
-    return (th.provider_from_cname(row.get("cname_target"))
-            or new_cert_provider(row) or placeholder)
-
-
 def new_provider(row) -> tuple[str | None, str | None]:
-    """(the provider today's writer derives, why the node is left alone)."""
+    """(the provider today's writer derives, why the node is left alone).
+
+    The writer's order (run_subdomain_takeover, steps 3 and 3a2): a tool's
+    provider, else the CNAME's, else a certificate SAN's, else the tool's
+    placeholder. The issuer is none of them."""
     provider = row["provider"]
+    observed = th.provider_from_cname(row.get("cname_target")) or san_provider(row)
+    if observed == provider:
+        return provider, None
     if provider in GENERIC_DETECTIONS:
-        return derive_provider(provider, row), None
-    # aws-s3: a CNAME or a certificate that names S3 still names it.
-    if th.provider_from_cname(row.get("cname_target")) == S3 or new_cert_provider(row) != AWS:
+        # The tool's own placeholder: no tool named a provider.
+        return observed or provider, None
+    if provider not in issuer_names(row.get("cert_issuer")):
+        # Neither the CNAME, a SAN nor the issuer named it: a tool did.
         return provider, None
     tools = tool_providers(row.get("tool_raw"))
     if tools is None:
-        return None, "its tool_raw cannot be read, so whether a tool named S3 is unknown"
-    if S3 in tools:
+        return None, ("its tool_raw cannot be read, so whether a tool or the certificate's "
+                      "issuer named its provider is unknown")
+    named = {p for p in tools if not th.is_placeholder_provider(p)}
+    if provider in named:
         return provider, None
-    if not all(th.is_placeholder_provider(p) for p in tools):
+    if named:
         return None, "a tool named another provider, which its stored provider does not show"
-    return derive_provider("unknown", row), None
+    placeholders = set(tools)
+    if len(placeholders) > 1:
+        return None, "its tools gave different placeholders, which a scan now writes apart"
+    return observed or placeholders.pop() or "unknown", None
+
+
+def explains_id(row, hostname: str, method: str) -> bool:
+    """The id was written for the stored provider, or the S-23/S-24 run of this
+    script moved it (the id only) to `aws`, the CNAME's or the certificate's."""
+    candidates = {row["provider"], AWS, th.provider_from_cname(row.get("cname_target")),
+                  row.get("cert_provider")}
+    return any(th.finding_id(hostname, c, method) == row["id"] for c in candidates if c)
 
 
 def plan_project(session, project: dict) -> dict:
     """The re-keys one project needs. Reads the graph; writes nothing."""
     uid, pid = project["user_id"], project["id"]
     rekeys, unmapped = [], []
-    for row in session.run(OLD_FINDINGS, uid=uid, pid=pid, providers=[S3, *GENERIC_DETECTIONS]):
+    for row in session.run(OLD_FINDINGS, uid=uid, pid=pid,
+                           providers=[*ISSUER_PROVIDERS, *GENERIC_DETECTIONS]):
         row = dict(row)
         hostname, method = row.get("hostname"), row.get("method") or "cname"
         if not hostname:
@@ -207,7 +246,7 @@ def plan_project(session, project: dict) -> dict:
         new_id = th.finding_id(hostname, provider, method)
         if new_id == row["id"]:
             continue
-        if th.finding_id(hostname, row["provider"], method) != row["id"]:
+        if not explains_id(row, hostname, method):
             unmapped.append({"old_id": row["id"],
                              "reason": "its stored hostname, provider and method do not explain its id"})
             continue
