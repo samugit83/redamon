@@ -419,6 +419,39 @@ def grab_banner_for_target(target: tuple, timeout: float = 5, max_length: int = 
     }
 
 
+def _admit_banner_targets(targets: List[tuple], recon_data: dict, settings: dict) -> List[tuple]:
+    """The ``(address, port, host)`` targets the RoE lets the banner grab reach.
+
+    It connects to each address itself, and by_host can hold one a passive
+    source or a partial run's graph rows added, so the RoE IP and CIDR
+    exclusions apply here as they do at httpx. Inert with no exclusion.
+    """
+    from recon.helpers.target_admission import admission_context, admit_targets
+    if not admission_context(settings, recon_data).active:
+        return targets
+    names: Dict[str, List[str]] = {}
+    ips: List[str] = []
+    for address, _port, host in targets:
+        if is_ip(host):
+            ips.append(address)
+        else:
+            known = names.setdefault(host, [])
+            if address != host and address not in known:
+                known.append(address)
+    adm = admit_targets(settings, recon_data, names=names, ips=ips, module="banner_grab")
+    reachable = {**adm.names, **adm.split}
+
+    def admitted(address: str, host: str) -> bool:
+        if is_ip(host):
+            return address in adm.ips
+        if address == host:
+            # No address known: the connect resolves the name itself.
+            return host in adm.names
+        return address in reachable.get(host, ())
+
+    return [t for t in targets if admitted(t[0], t[2])]
+
+
 def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
     """
     Run banner grabbing on non-HTTP ports from naabu results.
@@ -462,6 +495,7 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
                 continue
             targets.append((ip, port, hostname))
 
+    targets = _admit_banner_targets(targets, recon_data, settings)
     if not targets:
         return {}
 

@@ -329,3 +329,50 @@ def test_httpx_targets_are_unchanged_without_an_exclusion(settings, recon):
     baseline = _httpx_targets({}, recon())
     assert baseline[0] is not None
     assert _httpx_targets(settings, recon()) == baseline
+
+
+# --------------------------------------------------------------------------
+# banner grab (connects to each by_host address itself)
+# --------------------------------------------------------------------------
+
+NOADDR = "noaddr.example.com"
+
+
+def _banner_targets(settings):
+    recon = _recon()
+    recon["port_scan"] = {"by_host": {
+        LEGACY: {"host": LEGACY, "ip": LEGACY_IP, "ports": [22]},
+        MIXED: {"host": MIXED, "ip": MIXED_OK, "ports": [22]},
+        MIXED_BAD: {"host": MIXED_BAD, "ip": MIXED_BAD, "ports": [22]},
+        WWW: {"host": WWW, "ip": WWW_IP, "ports": [22, 443]},
+        "198.51.100.30": {"host": "198.51.100.30", "ip": "198.51.100.30", "ports": [21]},
+        NOADDR: {"host": NOADDR, "ports": [25]},
+    }}
+    seen = []
+
+    def _grab(target, *_a, **_kw):
+        seen.append(target)
+        return {"host": target[2], "ip": target[0], "port": target[1], "banner": None,
+                "service": "unknown", "version": None, "confidence": "none"}
+
+    with mock.patch.object(hp, "grab_banner_for_target", side_effect=_grab):
+        hp.run_banner_grab(recon, {"BANNER_GRAB_ENABLED": True, **settings})
+    return sorted(seen)
+
+
+def test_banner_grab_never_connects_to_an_excluded_address():
+    assert _banner_targets(_roe(EXCLUDED_RANGE)) == sorted([(MIXED_OK, 22, MIXED), (WWW_IP, 22, WWW)])
+    assert "banner_grab" in _gap_modules()
+
+
+def test_banner_grab_with_host_entries_only_drops_the_excluded_name():
+    targets = _banner_targets(_roe(LEGACY))
+    assert (LEGACY_IP, 22, LEGACY) not in targets
+    assert (MIXED_BAD, 22, MIXED_BAD) in targets and (NOADDR, 25, NOADDR) in targets
+
+
+@pytest.mark.parametrize("settings", NO_ROE, ids=["no_keys", "empty", "off"])
+def test_banner_grab_targets_are_unchanged_without_an_exclusion(settings):
+    baseline = _banner_targets({})
+    assert len(baseline) == 6
+    assert _banner_targets(settings) == baseline
