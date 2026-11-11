@@ -475,7 +475,7 @@ docker run --rm --net=host \
 
 ## Architecture & Flow
 
-> **Pipeline context:** Vulnerability scanning runs in **GROUP 6 Phase A** of the recon pipeline (`recon/main.py`). In domain mode, `run_vuln_scan_isolated()` runs in one `ThreadPoolExecutor` with the other active scanners the project enabled (the GraphQL scanner `recon/graphql_scan/`, subdomain takeover, VHost/SNI, web cache poisoning, origin discovery); each `_isolated` wrapper deep-copies `combined_result` so there is no shared-dict race, and only its own key is merged back. In IP mode `run_vuln_scan()` runs first on its own, then the others fan out. Phase B (MITRE CWE/CAPEC enrichment) runs after Phase A — it depends on Nuclei's CVEs. Both phases depend on resource enumeration (GROUP 5) output, and the whole group is skipped when http_probe found no live URL (then only the certificate-hygiene checks run, from stored certificate data). Graph DB updates happen in a background thread.
+> **Pipeline context:** Vulnerability scanning runs in **GROUP 6 Phase A** of the recon pipeline (`recon/main.py`). In domain mode, `run_vuln_scan_isolated()` runs in one `ThreadPoolExecutor` with the other active scanners the project enabled (the GraphQL scanner `recon/graphql_scan/`, subdomain takeover, VHost/SNI, web cache poisoning, origin discovery, route exposure); every worker is handed one `_fan_out_snapshot` (a deep copy of `combined_result` taken before the first submit), its `_isolated` wrapper deep-copies that again, and only its own key is merged back into the live dict, so no worker copies a dict mid-merge. In IP mode `run_vuln_scan()` runs first on its own, then the others fan out. Phase B (MITRE CWE/CAPEC enrichment) runs after Phase A — it depends on Nuclei's CVEs. Both phases depend on resource enumeration (GROUP 5) output, and the whole group is skipped when http_probe found no live URL: then the certificate-hygiene checks run from stored certificate data, the port and service checks and the org DNS checks run on their own (`_maybe_run_port_checks`, `_maybe_run_dns_checks` in `recon/main.py`), Subdomain Takeover still runs, and the skipped sources keep their findings on the group's hosts. Graph DB updates happen in a background thread.
 
 ### Execution Flow (`run_vuln_scan`)
 
@@ -1431,14 +1431,16 @@ In addition to Nuclei templates, RedAmon includes custom Python-based security c
 | **Rate Limiting** | No | Brute-force protection detection |
 | **Service Exposure** | Partial | Redis no-auth, K8s API, SMTP relay |
 
+The header, cookie, CSP and form checks (and `no_rate_limiting`) follow a redirect only while it stays on the probed host (`_get_on_host`; http to https on the same name is followed). A page another host serves after a redirect is not judged as this host's, and that host gets no request, so an apex that only redirects to `www` gets no header findings of its own.
+
 ### Check Categories
 
 #### Authentication Security
 | Check | Severity | Description |
 |-------|----------|-------------|
-| `login_no_https` | High | Login form served over HTTP |
+| `login_no_https` | High | Login form served over HTTP: only a page with a password input, and only when a made-up path next to it answers differently (the catch-all control, recorded as `control_check`) |
 | `session_no_secure` | Medium | Session cookie missing Secure flag |
-| `session_no_httponly` | Medium | Session cookie missing HttpOnly flag |
+| `session_no_httponly` | Medium | Session cookie missing HttpOnly flag (never on an anti-CSRF cookie such as `csrftoken` or `XSRF-TOKEN`, which the page's JavaScript must read) |
 | `basic_auth_no_tls` | High | Basic Auth over unencrypted HTTP |
 
 #### TLS / Certificates
@@ -1488,7 +1490,7 @@ The hygiene checks (all but `tls_expiring_soon`) read stored certificate data an
 #### Rate Limiting
 | Check | Severity | Description |
 |-------|----------|-------------|
-| `no_rate_limiting` | Medium | No rate limit on login endpoints |
+| `no_rate_limiting` | Medium | No rate limit on login endpoints: one GET, then 10 login POSTs all processed (2xx, 3xx or 401) with no throttling status, header or text; redirects followed only on the same host |
 
 #### Direct IP Access
 | Check | Severity | Description |

@@ -87,10 +87,10 @@ other three, `JS_RECON_ENDPOINT_ACCEPT_STATUS`, `FOFA_MAX_RESULTS` and
 `UNCOVER_MAX_RESULTS`, replace a falsy stored value with the default: semantics
 a naive generator would erase.
 
-**`zero_means: unlimited`.** Five rate fields treat `0` as unlimited, which is
+**`zero_means: unlimited`.** Six rate fields treat `0` as unlimited, which is
 the FASTEST value available rather than the slowest: `ffufRate`,
-`arjunRateLimit`, `purednsRateLimit`, `webCachePoisonMaxRpsPerHost` and the
-column-less `ORIGIN_DISCOVERY_RATE`. Two failures follow from missing it.
+`arjunRateLimit`, `purednsRateLimit`, `webCachePoisonMaxRpsPerHost`,
+`graphqlRateLimit` and the column-less `ORIGIN_DISCOVERY_RATE`. Two failures follow from missing it.
 Writing `bounds: {min: 1}` makes the shipped default unrepresentable, so a
 caller cannot restore it. And an agent reading `unit: rps` with no further hint
 will reasonably conclude 0 is the gentlest setting, then write it onto a 3 rps
@@ -194,7 +194,14 @@ zero-handling set, so a token holding only `recon:settings` could run 500 and
 the cap list, which made it look covered: its default is 0, 0 means unlimited,
 and `0 > 3` is False. `webCachePoisonMaxRpsPerHost` has the same default and was
 in neither. Both lists are registry queries now, and an `rps` field with
-`traffic: active` and no `roe_capped` fails the build.
+`traffic: active` and no `roe_capped` fails the build. Under a ceiling,
+`apply_roe_rate_cap` raises ANY capped value at or below 0 to the ceiling, not
+only the `zero_means: unlimited` ones: the readers decide what a 0 does
+(graphql waits 0 s, a nuclei or httpx command built from 0 carries no rate flag
+and runs at the tool's own default), and a REST save or import that writes 0
+must not unthrottle the engagement. The REST create and save routes and the
+project import also apply the registry's bounds with the MCP validator, so a
+value MCP refuses is refused there in the same words (400, `setting_rejected`).
 
 **A project had no rate ceiling unless someone switched one on.** `roeEnabled`
 defaults false and `roeGlobalMaxRps` defaults 0. Survivable while three of

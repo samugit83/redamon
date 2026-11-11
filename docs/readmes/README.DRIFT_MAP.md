@@ -500,7 +500,7 @@ relationships) and `graph_db/schema_keys.py` (uniqueness keys, 45 labels).
 | Wiki | `redamon.wiki/Attack-Surface-Graph.md` | node-type counts: TEST (`tests/test_docs_not_stale.py` P21) | |
 | Graph export / import / restore | `graphSerialize.ts`, `graphRestore.ts`, `projectExport/`, `api/projects/import/route.ts` | integration tests | a new label must be exported and restored |
 | Mixin split snapshot | `tests/fixtures/recon_mixin_snapshot.json` (2026-04-18) | `tests/test_recon_mixin_split.py` | a one-time refactor guard that ages with the mixins |
-| One-shot graph migrations | `tooling/scripts/{triage_graph_migrate,dns_finding_rekey,js_secret_rekey,netlas_finding_rekey,cache_deception_rekey,aisr_finding_rekey,mute_provenance_cleanup,node_filters_rollback}.py` | NONE | written against the schema of their day |
+| One-shot graph migrations | `tooling/scripts/{triage_graph_migrate,dns_finding_rekey,js_secret_rekey,netlas_finding_rekey,cache_deception_rekey,aisr_finding_rekey,vhost_finding_rekey,mute_provenance_cleanup,node_filters_rollback}.py` | NONE | written against the schema of their day |
 
 ### 4.8 Inbound MCP server and API docs
 

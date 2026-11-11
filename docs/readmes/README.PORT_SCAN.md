@@ -400,7 +400,7 @@ Three scanners can say an IP is a CDN edge, and all three reach the graph:
 
 | Source | When | Graph write |
 |---|---|---|
-| naabu `-cdn` | GROUP 3, port scan | `update_graph_from_port_scan` sets `is_cdn` / `cdn_name` from `port_scan.by_ip` and `port_scan.by_host` (no `cdn_source`) |
+| naabu `-cdn` | GROUP 3, port scan | `update_graph_from_port_scan` raises `is_cdn` from `port_scan.by_ip` and `port_scan.by_host` and fills a blank `cdn_name` (no `cdn_source`). It never lowers `is_cdn` and keeps the first `cdn_name`, so a later port write (masscan, late names, a second batch group, a partial run) cannot untag an edge |
 | httpx `-cdn` | GROUP 4, per URL | on the `Endpoint` (`is_cdn`, `cdn`); readers that need an IP's tag also read `http_probe.by_url` |
 | tlsx certificate issuer | GROUP 3.6 | `_attribute_cdn` (`recon/main_recon_modules/tls_scan.py`) fills a **blank** tag on `port_scan.by_ip` from the issuer (Cloudflare, Akamai, Fastly, Sucuri, Incapsula/Imperva; never Amazon, since ACM certificates sit on real origins, and never a Cloudflare Origin CA issuer, whose certificate only an origin presents; `cdn_from_certificate` in `recon/helpers/cdn_ranges.py`) and lists those IPs in the tlsx payload as `cdn_by_ip` |
 
@@ -411,8 +411,13 @@ unless another tool tagged the IP first. It MATCHes the tenant-scoped IP (never
 creates one) and never writes `is_cdn = false`.
 
 Partial runs rebuild `port_scan` from the graph (`_build_port_scan_data_from_graph`)
-and carry each IP's existing `is_cdn` / `cdn_name`, so the port write a partial
-tlsx, httpx or nmap run makes does not reset a tagged IP to false.
+and carry each IP's existing `is_cdn` / `cdn_name`. Every port detail the builder
+makes names its own IP and carries the graph's `passive_only` mark, so a
+hostname's second address keeps its own ports. Partial Nmap, httpx and tlsx then
+write back only what they measured (`measured_port_data`): Nmap the custom ports
+still open, httpx the typed targets' ports that answered, tlsx none of the
+graph's own ports. The writer lowers `Port.passive_only` only for a port its
+caller saw, so a Shodan-only port does not turn into an actively found one.
 
 **One CDN list.** `recon/helpers/cdn_ranges.py` is the single source every module
 reads for "is this a CDN edge?": edge prefixes for Cloudflare, Fastly, CloudFront,
@@ -430,7 +435,7 @@ prefix cannot tell an Akamai edge from a customer's server.
 
 ## Architecture & Flow
 
-> **Pipeline context:** Port scanning runs in **GROUP 3** of the recon pipeline (`recon/main.py`), in one `ThreadPoolExecutor` with Shodan enrichment: `run_port_scan_isolated()` and `run_masscan_scan_isolated()` each run on a shallow copy of the combined result and return only their own payload (`port_scan`, `masscan_scan`). After the fan-in, `merge_port_scan_results()` folds `masscan_scan` into `port_scan`, the results are saved, and `update_graph_from_port_scan` writes them to the graph in the background. Nmap (GROUP 3.5) and tlsx (GROUP 3.6) then read the merged `port_scan`.
+> **Pipeline context:** Port scanning runs in **GROUP 3** of the recon pipeline (`recon/main.py`), in one `ThreadPoolExecutor` with Shodan enrichment: `run_port_scan_isolated()` and `run_masscan_scan_isolated()` are handed the fan-out's shared snapshot (`_fan_out_snapshot`, a deep copy taken before the first submit), deep-copy it again, and return only their own payload (`port_scan`, `masscan_scan`). After the fan-in, `merge_port_scan_results()` folds `masscan_scan` into `port_scan`, the results are saved, and `update_graph_from_port_scan` writes them to the graph in the background. Nmap (GROUP 3.5) and tlsx (GROUP 3.6) then read the merged `port_scan`.
 
 ### Execution Flow (`run_port_scan`)
 
@@ -628,7 +633,7 @@ The port-scan phase runs when the project's scan modules include `port_scan` (th
 
 ### Partial Recon
 
-`recon/partial_recon_modules/port_scanning.py` runs one scanner on demand (`run_naabu`, `run_masscan`) against the graph's IPs and subdomains and any targets the user typed in, and writes the result with `update_graph_from_port_scan`.
+`recon/partial_recon_modules/port_scanning.py` runs one scanner on demand (`run_naabu`, `run_masscan`) against the graph's IPs and subdomains and any targets the user typed in, and writes only its own scan output with `update_graph_from_port_scan`.
 
 ### Standalone Enrichment
 

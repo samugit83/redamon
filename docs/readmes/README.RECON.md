@@ -229,7 +229,7 @@ sequenceDiagram
     and
         Recon->>Recon: URLScan.io enrichment
     end
-    Note over Recon: Fan-In — merge results + Puredns wildcard filtering + DNS (20 parallel workers)
+    Note over Recon: Fan-In — merge results + Puredns wildcard filtering + DNS (DNS_MAX_WORKERS, default 80)
     Recon->>GraphBG: Background: domain discovery graph update
 
     Note over Recon,Naabu: GROUP 3 — Fan-Out (parallel)
@@ -341,11 +341,14 @@ flowchart LR
         RE[Resource Enum<br/>Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider ∥ Kiterunner<br/>then jsluice → FFuf → Arjun → OpenAPI]
     end
 
-    subgraph G6["GROUP 6 Phase A — parallel (4-way fan-out)"]
+    subgraph G6["GROUP 6 Phase A — parallel (up to 7-way fan-out, enabled tools only)"]
         VS[Vuln Scan — Nuclei]
         GQL[GraphQL Security<br/>Introspection + graphql-cop]
         TKO[Subdomain Takeover<br/>Subjack + Nuclei + BadDNS]
         VHOST[VHost & SNI Enum<br/>L7 Host header + L4 SNI probing]
+        WCP[Web Cache Poisoning<br/>WCVS + native confirmer]
+        ORIG[Origin Discovery]
+        REXP[Route Exposure]
     end
 
     subgraph G6B["GROUP 6 Phase B — sequential"]
@@ -405,7 +408,7 @@ flowchart TB
         Knock --> Merge
 
         Merge --> Puredns[Puredns Wildcard Filter<br/>Validates against public resolvers<br/>Removes wildcards & poisoned entries]
-        Puredns --> DNS[DNS Resolution<br/>20 parallel workers<br/>A, AAAA, MX, NS, TXT, CNAME]
+        Puredns --> DNS[DNS Resolution<br/>DNS_MAX_WORKERS parallel workers, default 80<br/>A, AAAA, MX, NS, TXT, CNAME]
         DNS --> Out1[(Subdomains + IPs)]
     end
 
@@ -494,16 +497,19 @@ flowchart TB
         FwSink --> Out4b
     end
 
-    subgraph Phase5["GROUP 6 Phase A — Fan-Out: Nuclei ∥ GraphQL ∥ Takeover ∥ VHost/SNI (parallel)"]
+    subgraph Phase5["GROUP 6 Phase A — Fan-Out: Nuclei ∥ GraphQL ∥ Takeover ∥ VHost/SNI ∥ Cache ∥ Origin ∥ Route Exposure (parallel)"]
         direction TB
         Out4b --> FanOut6
 
-        subgraph FanOut6["ThreadPoolExecutor — 4 parallel tasks (_isolated wrappers, deep-copy snapshots)"]
+        subgraph FanOut6["ThreadPoolExecutor — up to 7 parallel tasks (one shared deep-copy snapshot; _isolated wrappers copy again)"]
             direction LR
             Nuclei[Nuclei Scanner]
             GraphQL[GraphQL Security Scanner]
             Takeover[Subdomain Takeover Scanner]
             VhostSni[VHost & SNI Enum]
+            CachePoison[Web Cache Poisoning]
+            OriginDisc[Origin Discovery]
+            RouteExp[Route Exposure]
         end
 
         subgraph NucleiFeatures["Nuclei Scan Types"]
@@ -561,10 +567,13 @@ flowchart TB
         L7 --> FanIn6
         L4 --> FanIn6
         Anomaly --> FanIn6
+        CachePoison --> FanIn6
+        OriginDisc --> FanIn6
+        RouteExp --> FanIn6
     end
 
     subgraph Phase5b["GROUP 6 Phase B — MITRE Enrichment (sequential, depends on Nuclei CVEs)"]
-        FanIn6[Fan-In: Merge Nuclei + GraphQL + Takeover + VHost/SNI findings] --> MITRE[MITRE Enrichment<br/>CWE + CAPEC]
+        FanIn6[Fan-In: merge each Phase A tool's findings as it lands] --> MITRE[MITRE Enrichment<br/>CWE + CAPEC]
         MITRE --> Out5[(Vulnerabilities + Attack Patterns)]
     end
 
@@ -637,10 +646,10 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 1** | WHOIS + Subdomain Discovery + URLScan | 3 parallel tasks | Only needs `root_domain`. URLScan's recent host names join the merged host list (`merge_group_hosts`, `extra_hosts`) through the late-name gates; its findings are written right after discovery |
 | *Discovery* | crt.sh + HackerTarget + Subfinder + Amass + Knockpy | 5 parallel tools | Part of GROUP 1 |
 | *Puredns* | Wildcard filtering (validates against public resolvers) | Sequential | After discovery fan-in, before DNS |
-| *DNS* | DNS resolution for all subdomains | 20 parallel workers | After puredns filtering |
+| *DNS* | DNS resolution for all subdomains | `DNS_MAX_WORKERS` parallel workers (default 80) | After puredns filtering |
 | **GROUP 2b** | Uncover Target Expansion (13 search engines) | Sequential | Needs domain from GROUP 1; runs before GROUP 3 |
-| **GROUP 3** | Shodan Enrichment + Port Scan (Naabu) | 2 parallel tasks | Needs IPs from GROUP 1 + GROUP 2b |
-| **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | 7 parallel tasks | Needs IPs/domains from GROUP 1; runs concurrently with GROUP 3 |
+| **GROUP 3** | Shodan Enrichment + Port Scan (Naabu, Masscan) | Up to 3 parallel tasks, each enabled tool only | Needs IPs from GROUP 1 + GROUP 2b; then Nmap (3.5) and tlsx (3.6) run in sequence |
+| **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | Up to 7 tasks on 5 workers, each enabled tool only | Needs IPs/domains from GROUP 1; runs after GROUPs 3, 3.5 and 3.6 |
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
 | *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`) | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
 | *Takeover verdict* | Which deleted-service pages urlscan recorded still describe their host, from this scan's DNS and live pages (`main_recon_modules/urlscan_takeover.py`) | Sequential; DNS only, through the `dns:takeover-verdict` breaker | After GROUP 4, outside the httpx step; before Phase A, whose Subdomain Takeover reads `urlscan.takeover_hosts` |
@@ -696,7 +705,7 @@ All log messages use a consistent `[level][Module]` prefix format (e.g., `[+][cr
 
 Each parallelized tool function is thread-safe:
 - Discovery tools (`query_crtsh`, `query_hackertarget`, etc.) create their own `requests.Session` instances
-- Module `_isolated` variants (e.g., `run_port_scan_isolated`, `run_shodan_enrichment_isolated`) accept a read-only snapshot of `combined_result` and return only their data section
+- Module `_isolated` variants (e.g., `run_port_scan_isolated`, `run_shodan_enrichment_isolated`) accept a read-only snapshot of `combined_result`, deep-copy it, and return only their data section. Every fan-out (GROUP 3, the GROUP 3b OSINT pool, GROUP 6 Phase A) takes one `_fan_out_snapshot` (a deep copy) before its first submit and hands every worker that copy, never the live `combined_result` the main thread merges answers into: a wrapper copying the live dict mid-merge raised "dictionary changed size during iteration" and lost its tool. A failed GROUP 3 or OSINT worker is recorded in `metadata.phase_errors`, as a Phase A one is
 - The main thread handles all merging — no shared mutable state between workers
 
 ---
@@ -709,6 +718,12 @@ three places, all in `recon/main.py`:
 1. **Clear, at the start** (`_clear_recon_graph`). It removes the project's
    previous recon *assets* and records the run's start time. Findings are NOT
    cleared up front: the operator's mutes, verdicts and fix items hang off them.
+   It runs only after `_refuse_before_clear` let at least one scan root through
+   the same Rules of Engagement and ownership checks `run_domain_group` makes
+   (ownership answers cached for the run): when every root is refused the run
+   returns 1 with the graph as it was ("Nothing was cleared"), and a batch with
+   one eligible root clears once while its refused groups still refuse in the
+   loop. IP mode has no root check and clears directly.
 2. **Prune, after a successful run** (`_prune_recon_findings`, which calls
    `prune_unseen_findings`). It deletes the findings from recon's own sources
    (`RECON_FINDING_SOURCES` in `recon/helpers/finding_sources.py`) that this run
@@ -753,6 +768,31 @@ What follows from that:
   provider never degrades the whole source, or its stale findings would never
   be pruned. The provider names one coverage gap: `note_degraded(aliases=...)`
   cuts its other source values with it.
+- **A failed graph write keeps its findings.** `_WRITER_SOURCES` maps each
+  background writer of findings to the `_PHASE_FINDING_SOURCES` phase whose
+  sources it writes. A writer that raises, reports an item error on a finding,
+  finds Neo4j unreachable, or is never queued because the writer was already
+  closed notes those sources degraded (`graph write failed (<writer>)`), which
+  wins over any `note_checked`. Writers of assets only, and errors that cost no
+  finding, degrade nothing. A new writer of findings needs its row (a test
+  enforces it).
+- **A failed layer or input phase keeps what it did not re-check.** Subdomain
+  Takeover notes each failed layer's targets by host for `takeover_scan` alone
+  (Subjack or BadDNS: every subdomain; Nuclei: the hosts of its live URLs; a
+  BadDNS per-target timeout: that name); a Subjack timeout still keeps the rows
+  it wrote. The cache scan does the same for `cache_poisoning` (and its `wcvs`
+  alias) on the hosts past the 200-URL cap, of a URL whose confirmation raised
+  or that never answered the oracle, and on every target of an unfinished WCVS
+  run. The serialized scan degrades its whole source on an error, or when
+  `http_probe` or `resource_enum` is in `metadata.phase_errors`.
+- **Skipped for no live URL.** When `should_skip_active_scans` fires, Subdomain
+  Takeover still runs, and so do the port and service checks
+  (`_maybe_run_port_checks`), the org DNS checks (`_maybe_run_dns_checks`) and
+  certificate hygiene. `_note_gate_skipped` keeps, by host on the group's hosts,
+  the findings of every enabled source the skip stopped (resource_enum, nuclei,
+  the Phase A tools in `_LIVE_URL_PHASE_A`); `security_check` is kept except on
+  the addresses the port checks read and the orgs the DNS checks asked. A tool
+  switched off prunes as before.
 - **A source can prune only the hosts it re-checked (positive coverage).** A
   module that calls `circuit_breaker.note_checked(source, hosts=..., checks=...,
   module=...)` records the hosts it reached a verdict on, and
@@ -776,6 +816,17 @@ What follows from that:
   before they stored `domain` get the org of the Domain they hang off first
   (`backfill_security_check_domains`); if that fails, the DNS types prune
   nothing that run.
+- **Passive CVE lookups record positive coverage.** Shodan (with InternetDB),
+  Netlas and CriminalIP pass `note_cve_coverage` the IPs they started from
+  (`considered=`), the ones they asked about and the ones whose whole answer
+  they saw ("no data" included). It notes as checked, for every source value of
+  the provider, the IPs answered whole plus the IPs the CDN or private-address
+  filter dropped before asking (decided, not skipped: an edge's CVEs describe
+  the provider). The prune then deletes a stale passive CVE only on those IPs.
+  An IP no longer in the run (DNS stopped pointing at it, it left the target
+  list) keeps its CVEs until a run asks about it again; the asset clear removed
+  its IP node, so the Priority Board reads their reach as unknown
+  (`target_ip_in_graph` in `agentic/cypherfix_triage/fact_queries.py`).
 - **Restored findings prune like any others.** The export and the Scan Timeline
   snapshot flatten Neo4j DateTimes to ISO strings. A restore writes RedAmon's
   own timestamps (`updated_at`, `stale_since`, `created_at`, the triage and
@@ -788,7 +839,9 @@ What follows from that:
   on rows written before the writers stored it, so the by-host keep can match
   them. If it fails, passive sources are left out of that run's prune.
 - **Passive CVEs are checked against the port scan.** `_reachcheck_shodan_cves`
-  runs after the CDN drop in both pipelines and sets `port_confirmed` from
+  runs after the nmap merge (which adds the open ports nmap confirmed and the
+  port scan missed), right before `_write_shodan_cves`, in both pipelines, and
+  sets `port_confirmed` from
   `recon/helpers/port_coverage.py`: open, looked at and not open, or unknown.
   What a scan looked at comes from its recorded `ports_config`: a custom list
   or `top-full` is known; naabu's and masscan's top-100/1000 lists are not
@@ -808,6 +861,12 @@ What follows from that:
   (dry run by default; `--apply` with the services stopped, before the first
   scan on the new release) moves each to the id of the rule its stored `name`
   gives, and the other rules come back as new findings.
+- **A VHost/SNI finding id is a hash of hostname, IP, port and layer**
+  (`finding_id` in `recon/main_recon_modules/vhost_sni_enum.py`,
+  `vhost_sni_<20 hex>`, the IP canonicalised). The earlier id folded
+  punctuation to `_`, so `dev-api` and `dev.api` on one IP and port were one
+  node. `tooling/scripts/vhost_finding_rekey.py` (same usage) moves rows from
+  earlier releases; a node two names collided on moves to the name it stores.
 - **A web-cache-deception finding is keyed on the page, not the plant URL.**
   `cache_param` holds the leaked shape (`static-suffix:/.css`) and the random
   plant URL stays in `poc_link`. `tooling/scripts/cache_deception_rekey.py`
@@ -1180,7 +1239,7 @@ SCAN_MODULES="domain_discovery,port_scan,http_probe"
 
 ### Module 1: `domain_discovery`
 
-All 5 subdomain discovery tools run **concurrently** via `ThreadPoolExecutor(max_workers=5)`. Each tool is a thread-safe function with its own HTTP session. After merging, **Puredns** validates the combined list against public DNS resolvers to remove wildcard and DNS-poisoned entries. DNS resolution is then parallelized with **20 concurrent workers**. WHOIS and URLScan run in a separate parallel group alongside discovery.
+All 5 subdomain discovery tools run **concurrently** via `ThreadPoolExecutor(max_workers=5)`. Each tool is a thread-safe function with its own HTTP session. After merging, **Puredns** validates the combined list against public DNS resolvers to remove wildcard and DNS-poisoned entries. DNS resolution is then parallelized with **`DNS_MAX_WORKERS` concurrent workers** (default 80). WHOIS and URLScan run in a separate parallel group alongside discovery.
 
 ```mermaid
 flowchart LR
@@ -1200,7 +1259,7 @@ flowchart LR
         MergeDedupe[Merge & Dedupe]
     end
 
-    subgraph DNSPhase["DNS Resolution (20 parallel workers)"]
+    subgraph DNSPhase["DNS Resolution (DNS_MAX_WORKERS workers, default 80)"]
         DNS[DNS Resolver<br/>A, AAAA, MX, NS, TXT, CNAME]
     end
 
@@ -1236,7 +1295,7 @@ flowchart LR
 | **WHOIS lookup** | Registrar, creation date, owner info |
 | **Subdomain discovery** | Finds subdomains via 5 parallel sources (crt.sh, HackerTarget, Subfinder, Amass, Knockpy) |
 | **Wildcard filtering** | Puredns validates subdomains against public DNS resolvers, removes wildcards and DNS-poisoned entries |
-| **DNS enumeration** | A, AAAA, MX, NS, TXT, CNAME records (20 parallel workers) |
+| **DNS enumeration** | A, AAAA, MX, NS, TXT, CNAME records (`DNS_MAX_WORKERS` parallel workers, default 80) |
 | **Wildcard control** | RedAmon's own check after DNS: drops names that answer only through their zone's wildcard DNS, and stamps the zone |
 | **IP resolution** | Maps all discovered hostnames to IPs |
 
@@ -1490,7 +1549,7 @@ Seven workloads run per host (hosts in parallel, workloads sequential within a h
 |---|----------|---------------------|
 | 1 | Chat-shape probe | LLM chat endpoint, dialect, streaming, p50 latency |
 | 2 | MCP handshake + `tools/list` + YARA | MCP server, tools, capabilities, tool-poisoning findings |
-| 3 | OpenAPI / manifest / model listing | tool/vision/streaming support, model ids + family, cached spec |
+| 3 | OpenAPI / manifest / model listing | tool/vision/streaming support, model ids + family, cached spec (only in-document `#/` refs inlined, no I/O) |
 | 4 | Julius probe pack (YAML) | confirmed AI `Technology` (vLLM, Ollama, …) |
 | 5 | Vector-DB confirmation reads | qdrant / chroma / weaviate / milvus, unauthenticated read exposure |
 | 6 / 7 | latency baseline + summary glue | counters, merged model family |
@@ -1499,7 +1558,7 @@ Seven workloads run per host (hosts in parallel, workloads sequential within a h
 (AI flags), `port_scan.by_host` (AI + vector-DB ports).
 **Output:** `combined_result["ai_surface_recon"]` → graph via
 `update_graph_from_ai_surface_recon` (enriches `Endpoint` / `Parameter` /
-`Technology`, adds `Vulnerability` nodes). Heavy deps (`mcp`, `yara`, `prance`,
+`Technology`, adds `Vulnerability` nodes). Heavy deps (`mcp`, `yara`,
 `jq`, `PyYAML`) are lazy-imported, so a missing dep degrades one workload, not the job.
 
 📖 **Detailed documentation:** [docs/readmes/AI_SURFACE_RECON_MODULE.md](AI_SURFACE_RECON_MODULE.md)
@@ -1579,7 +1638,7 @@ flowchart TB
 
 ### Module 5b: `graphql_scan`
 
-Dedicated GraphQL security scanner -- runs as **GROUP 6 Phase A in parallel with Nuclei, Subdomain Takeover, and VHost & SNI Enumeration** because all four scanners consume `BaseURL` / `Endpoint` / `Technology` / `Subdomain` / `IP` and emit `Vulnerability` nodes but have zero data dependency on each other. Each phase-A tool is wrapped in an `_isolated` variant that deep-copies `combined_result` so the four threads never race on the shared dict.
+Dedicated GraphQL security scanner -- runs as **GROUP 6 Phase A in parallel with Nuclei, Subdomain Takeover, and VHost & SNI Enumeration** because all four scanners consume `BaseURL` / `Endpoint` / `Technology` / `Subdomain` / `IP` and emit `Vulnerability` nodes but have zero data dependency on each other. Every Phase A tool is handed one `_fan_out_snapshot` of `combined_result`, taken before the first submit, and its `_isolated` variant deep-copies that again, so no thread reads the dict the main thread merges finished answers into.
 
 Toggle: `GRAPHQL_SECURITY_ENABLED` (default: `false`, opt-in).
 
@@ -1667,12 +1726,12 @@ flowchart TB
 | **Endpoint discovery** | Merges user-specified URLs, HTTP probe matches (`Content-Type: application/graphql`), resource-enum endpoints (paths containing `graphql`/`gql`/`query` via POST, or with `query`/`mutation`/`variables`/`operationName` parameters), JS Recon findings (`graphql` / `graphql_introspection` types), and pattern probes (primary `/graphql`, `/api/graphql`, `/v1/graphql`, `/v2/graphql`; secondary `/query`, `/gql`, `/graphiql`, `/playground` only on bases with prior evidence). |
 | **RoE filtering** | Drops endpoints matching `ROE_EXCLUDED_HOSTS` (wildcards supported). Skipped count exposed in `summary.endpoints_skipped`. |
 | **Native introspection test** | 3-step probe per endpoint: `POST { __typename }` reachability, simple introspection, full introspection at configurable TypeRef depth (1-20, default 10). Extracts schema hash (16-char SHA256), query/mutation/subscription counts, and sensitive-field list (`password`, `secret`, `token`, `key`, `api`, `private`, `credential`, `auth`, `ssn`, `credit`, `card`, `payment`, `bank`, `account`, `pin`, `cvv`, `salary`, `medical`). Response larger than 10 MB falls back to simple result. |
-| **graphql-cop (opt-in)** | Docker-in-Docker wrapper around `dolevf/graphql-cop:1.14`. Runs 12 checks per endpoint: field suggestions, GraphiQL/Playground detection, trace mode, GET-method queries/mutations, POST url-encoded CSRF, alias overloading (DoS), batch query (DoS), directive overloading (DoS), circular introspection (DoS), unhandled errors. Per-test toggles are applied post-execution because the `1.14` image does not honor the `-e` flag. |
+| **graphql-cop (opt-in)** | Docker-in-Docker wrapper around `dolevf/graphql-cop:1.14`. Runs 12 checks per endpoint: field suggestions, GraphiQL/Playground detection, trace mode, GET-method queries/mutations, POST url-encoded CSRF, alias overloading (DoS), batch query (DoS), directive overloading (DoS), circular introspection (DoS), unhandled errors. The `1.14` image does not honor the `-e` flag, so `run_graphql_cop` builds no command while any DoS test is excluded (logged; no `graphql_cop_ran`, earlier findings prune like a switched-off source's); excluding only non-DoS tests runs it and filters their results post-execution. |
 | **Authentication** | 5 modes: `bearer`, `cookie`, `header` (custom name), `basic` (base64), `apikey`. Values masked in logs. Same headers propagate to graphql-cop via `-H '{"K":"V"}'` JSON args. |
-| **Rate limiting + retries** | Global RPS cap (`GRAPHQL_RATE_LIMIT`, 0-100), retry on `429`/`5xx` with exponential backoff (`GRAPHQL_RETRY_COUNT`, `GRAPHQL_RETRY_BACKOFF`), concurrency clamp (1-20). Sequential mode at `concurrency=1`. |
+| **Rate limiting + retries** | Global RPS cap (`GRAPHQL_RATE_LIMIT`, 0-100; `zero_means: unlimited`, and under an RoE ceiling `apply_roe_rate_cap` raises 0 to the ceiling), retry on `429`/`5xx` with exponential backoff (`GRAPHQL_RETRY_COUNT`, `GRAPHQL_RETRY_BACKOFF`), concurrency clamp (1-20). Sequential mode at `concurrency=1`. |
 | **Endpoint enrichment** | Updates existing `Endpoint` nodes with capability flags (`graphql_graphiql_exposed`, `graphql_tracing_enabled`, `graphql_get_allowed`, `graphql_field_suggestions_enabled`, `graphql_batching_enabled`, `graphql_cop_ran`) — recorded even on negative results so the graph captures server state explicitly. |
 
-**Stealth overrides:** `GRAPHQL_RATE_LIMIT=2`, `GRAPHQL_CONCURRENCY=1`, `GRAPHQL_TIMEOUT=60`, and the four DoS-class graphql-cop tests (alias / batch / directive / circular) forced off.
+**Stealth overrides:** `GRAPHQL_RATE_LIMIT=2`, `GRAPHQL_CONCURRENCY=1`, `GRAPHQL_TIMEOUT=60`, the four DoS-class graphql-cop tests (alias / batch / directive / circular) forced off, and `GRAPHQL_COP_ENABLED=false` (full pipeline and partial recon).
 
 **Schema contract:** `KNOWN_VULN_KEYS` + `KNOWN_ENDPOINT_INFO_KEYS` in [graph_db/mixins/graphql_mixin.py](../../graph_db/mixins/graphql_mixin.py) pin every field the scanner may emit. Adding a new key without updating the mixin triggers a warning at graph-ingest time — no silent drops.
 

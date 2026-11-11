@@ -842,7 +842,7 @@ Wappalyzer-detected technologies are automatically included in CVE lookup, becau
 
 ## Architecture & Flow
 
-> **Pipeline context:** HTTP probing runs in **GROUP 4** of the recon pipeline (`recon/main.py`), after GROUP 3 (Shodan + port scan), GROUP 3.5 (Nmap) and GROUP 3.6 (tlsx), when `http_probe` is in the scan modules and `HTTPX_ENABLED` is on. It depends on the merged `port_scan` to build probe targets. The module runs sequentially in the pipeline; httpx uses parallel threads internally. After it, `update_graph_from_http_probe` writes the graph in the background, certificate SANs are offered back as hostnames, and when no live URL was found the active scans (resource enumeration, vulnerability scanning) are skipped.
+> **Pipeline context:** HTTP probing runs in **GROUP 4** of the recon pipeline (`recon/main.py`), after GROUP 3 (Shodan + port scan), GROUP 3.5 (Nmap) and GROUP 3.6 (tlsx), when `http_probe` is in the scan modules and `HTTPX_ENABLED` is on. It depends on the merged `port_scan` to build probe targets. The module runs sequentially in the pipeline; httpx uses parallel threads internally. After it, `update_graph_from_http_probe` writes the graph in the background, certificate SANs are offered back as hostnames, and when no live URL was found the active scans that need one (resource enumeration, Nuclei and the web checks, the URL-reading Phase A tools) are skipped. Subdomain Takeover, the port and service checks, the org DNS checks and certificate hygiene still run, and each skipped source that was switched on keeps its earlier findings on the group's hosts (`_note_gate_skipped`).
 
 ### Execution Flow (`run_http_probe`)
 
@@ -1170,7 +1170,7 @@ HTTPX_TIMEOUT = 20
 HTTPX_RETRIES = 3
 ```
 
-With no live URL, the pipeline skips resource enumeration and vulnerability scanning (`metadata.active_scans_skipped`).
+With no live URL, the pipeline skips resource enumeration, Nuclei and the web checks, and the Phase A tools that read URLs (`metadata.active_scans_skipped`). Subdomain Takeover (Subjack and BadDNS read names, not URLs), the port and service checks (admin and database ports, Redis, SMTP relay, Kubernetes API), the org DNS checks and certificate hygiene still run. A skipped source that was switched on is noted degraded ("not run: no live HTTP URL") by host on the group's hosts, so its earlier findings are kept there and it shows as a coverage gap; one switched off prunes as usual.
 
 #### "Probe hit its ...s budget"
 

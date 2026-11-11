@@ -83,7 +83,7 @@ Three ideas explain almost every design decision in the module:
    prior values (write-once-keep).
 
 **Failure-soft everywhere.** The heavy third-party libraries (`mcp`, `yara`,
-`prance`, `jq`, `PyYAML`) are imported *lazily inside the function that needs
+`jq`, `PyYAML`) are imported *lazily inside the function that needs
 them*. If one is missing (e.g. the image wasn't rebuilt yet), only that one
 workload degrades — the rest of the module, and the whole recon job, keep going.
 A per-host exception is caught and logged; one bad host never aborts the others.
@@ -314,9 +314,9 @@ inject tool arguments.
 - **Originating graph nodes (input nodes):** `BaseURL` / its AI `Technology` signal.
 
 #### How it works
-1. **Model-listing paths** → [`_extract_model_ids`](../../recon/main_recon_modules/ai_surface_recon.py#L425): jq `.data[].id` / `.models[].name` / `.models[].details.family`, with a plain-Python fallback when `jq` is unavailable.
-2. **Spec paths** → [`_parse_spec`](../../recon/main_recon_modules/ai_surface_recon.py#L448): `ai-plugin.json` ⇒ `supports_tools`; OpenAPI ⇒ optionally `$ref`-resolved with **prance**, then a lowercased blob scan sets `supports_tools` (`"tools"`/`"function"`/`"input_schema"`), `supports_vision` (`"image_url"`/`"image"`), `supports_streaming` (`"stream"`/`text/event-stream`).
-3. The resolved spec is cached to `/tmp/redamon/ai_surface_recon/<project>/specs/<hash>.json`; the path becomes `tool_schema_ref`.
+1. **Model-listing paths** → [`_extract_model_ids`](../../recon/main_recon_modules/ai_surface_recon.py#L468): jq `.data[].id` / `.models[].name` / `.models[].details.family`, with a plain-Python fallback when `jq` is unavailable.
+2. **Spec paths** → [`_parse_spec`](../../recon/main_recon_modules/ai_surface_recon.py#L579) (JSON only): `ai-plugin.json` ⇒ `supports_tools`; OpenAPI ⇒ `_resolve_local_refs` inlines only in-document `"#/..."` JSON pointers, with no I/O and node, character and depth budgets (over a budget the document is cached unresolved). Every other `$ref` (absolute, scheme-relative, relative, `file:`) and every cyclic or dangling one stays as data: the target's document never makes the recon container fetch a URL or read a file. A lowercased blob scan of the served document sets `supports_tools` (`"tools"`/`"function"`/`"input_schema"`), `supports_vision` (`"image_url"`/`"image"`), `supports_streaming` (`"stream"`/`text/event-stream`).
+3. The spec (local refs inlined) is cached to `/tmp/redamon/ai_surface_recon/<project>/specs/<hash>.json`; the path becomes `tool_schema_ref`.
 4. `guess_model_family(model_ids)` → a family token (`gpt`/`claude`/`llama`/…; longest token wins so `codellama` beats `llama`).
 
 #### Output (JSON)
@@ -523,7 +523,7 @@ Add a YARA rule under `ai_surface_probes/yara_rules/` with `meta.threat_type` +
 (kind, OWASP-LLM id, ATLAS technique).
 
 ### Testing
-Tests run **inside the recon image** (they need `mcp`/`yara`/`prance`/`jq`/`yaml`):
+Tests run **inside the recon image** (they need `mcp`/`yara`/`jq`/`yaml`):
 ```bash
 docker run --rm --entrypoint python3 \
   -v "$PWD/recon:/app/recon:ro" -v "$PWD/graph_db:/app/graph_db:ro" \

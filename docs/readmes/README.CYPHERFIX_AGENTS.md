@@ -420,7 +420,14 @@ v3.0.0 on a graph nobody has clicked. Tests:
   group; a secret's key is a hash of its value, never the value. The `secrets`
   fact query returns `s.matched_text` for that, and names the detector by the
   pattern (`coalesce(s.secret_type, s.key_type)`): js_recon's `key_type` is only
-  the pattern's category. When a run produces a group key no `Remediation` row
+  the pattern's category. The `vulnerabilities` query projects the fields the
+  scanner-specific keys read, so web cache poisoning groups by technique and
+  unkeyed header or parameter (`cache:<technique>:<vector>`), subdomain takeover
+  by provider and method (`takeover:<provider>:<method>`), GraphQL by check type
+  (`graphql:<vulnerability_type>`) and AI findings by OWASP LLM class and
+  payload class (`ai:<owasp>:<payload>`). A node that stores none of those
+  fields (an older or imported one) is its own group, never one key for the
+  whole source. When a run produces a group key no `Remediation` row
   carries, the fix-list route re-points the orphaned row that shares at least
   half of the group's findings (largest overlap, then protected, then newest;
   once per run) instead of creating a duplicate, and reports it as `repointed`.

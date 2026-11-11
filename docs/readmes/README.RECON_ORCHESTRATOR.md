@@ -430,6 +430,23 @@ When starting a recon, the orchestrator:
      accepted by the webapp on GET settings + GET projects and by the agent on
      `/llm/*`; it cannot mint admins or read llm-provider keys.
 
+### Partial Recon Typed Input
+
+Before it starts a partial-recon container, `POST /recon/{project_id}/partial`
+filters the typed `user_inputs` / `user_targets` with `filter_partial_user_input`
+(`recon_orchestrator/batch_scope.py`): a host must pass the run's scope groups,
+an IP or CIDR may be no wider than /24 (IPv4) or /120 (IPv6), and an entry the
+project's Rules of Engagement exclude is dropped (a typed CIDR holding an
+excluded address becomes its other hosts). Each dropped entry is logged; a run
+that typed targets, kept none and reads no graph targets is refused with 400.
+The recon container runs its own copy of the filter again on its own settings.
+
+The orchestrator image carries no `recon/`, so `batch_scope.py` keeps a copy
+(`is_roe_excluded`) of the `roe_scope` matcher `_is_roe_excluded`. Both copies run
+`recon/tests/fixtures/roe_exclusion_vectors.json`, and both filters run
+`recon/tests/fixtures/partial_typed_input_roe_vectors.json`: change the matcher
+in both places or neither.
+
 ### Log Streaming Implementation
 
 Every SSE log stream (full and partial recon, AI attack surface, GVM, GitHub

@@ -112,7 +112,7 @@ Integrate **[TOOL_NAME]** into the RedAmon recon pipeline.
    | **GROUP 2b** | Sequential, conditional | Uncover Target Expansion | DNS results; requires `OSINT_ENRICHMENT_ENABLED` + `UNCOVER_ENABLED` |
    | **GROUP 3** | Parallel (`max_workers=3`) | Shodan, Naabu, Masscan | DNS-resolved IPs/hostnames |
    | **GROUP 3.5** | Sequential | Nmap (-sV, --script vuln) | GROUP 3 merged port_scan data |
-   | **GROUP 3b** | Parallel (`max_workers=5`), independent of GROUP 3/3.5 | Censys, FOFA, OTX, Netlas, VirusTotal, ZoomEye, CriminalIP | DNS results only (passive OSINT, no port data needed) |
+   | **GROUP 3b** | Parallel (`max_workers=5`), after GROUP 3/3.5/3.6 | Censys, FOFA, OTX, Netlas, VirusTotal, ZoomEye, CriminalIP | DNS results only (passive OSINT, no port data needed) |
    | **GROUP 4** | Sequential (httpx internally parallel) | httpx HTTP probe + Wappalyzer | GROUP 3 open ports + hostnames |
    | **GROUP 5** | Mixed -- 4 parallel then 4 sequential | **Parallel**: Katana, Hakrawler, GAU, ParamSpider (`max_workers=4`). **Then sequential**: Kiterunner, jsluice (post-crawl), FFuf (post-jsluice), Arjun (post-FFuf). Then GAU results merged last. | GROUP 4 live URLs |
    | **GROUP 5b** | Sequential (runs even if active scans skipped) | JS Recon | Resource enum output + uploaded JS files |
@@ -124,7 +124,8 @@ Integrate **[TOOL_NAME]** into the RedAmon recon pipeline.
    - If it's a new port scanner or active host enrichment: add to **GROUP 3**.
    - If it's a new URL discovery / crawling tool: add to the parallel phase of **GROUP 5** (the `ThreadPoolExecutor(max_workers=4)` block).
    - If it's a new post-crawl analysis tool (needs crawled URLs): add to the sequential phase of **GROUP 5** after the parallel block.
-   - Any tool added to a parallel fan-out group **must** use the `_isolated` wrapper pattern: `run_X_isolated(combined_result, settings)` that deep-copies the input, runs the tool on the copy, and returns only the tool's result dict. See `recon/main_recon_modules/censys_enrich.py` or `recon/main_recon_modules/shodan_enrich.py` for the pattern.
+   - Any tool added to a parallel fan-out group **must** use the `_isolated` wrapper pattern: `run_X_isolated(combined_result, settings)` that deep-copies the input (`copy.deepcopy`, never a shallow copy: every worker shares the input), runs the tool on the copy, and returns only the tool's result dict. See `recon/main_recon_modules/censys_enrich.py` or `recon/main_recon_modules/shodan_enrich.py` for the pattern.
+   - **Never hand a pool worker the live `combined_result`.** A fan-out takes one `_fan_out_snapshot(combined_result)` (`recon/main.py`) before its first `submit` and hands every worker that copy: the main thread merges finished answers into `combined_result` while other workers are still copying their input, and a copy of the live dict raises "dictionary changed size during iteration" and loses that tool. Record a failed worker in `metadata.phase_errors` and with `_note_phase_error`. A test fails any `submit(...)` in `main.py` handed `combined_result` itself.
    - **Never parallelize across dependency boundaries** -- if the tool needs port scan results, it cannot run in GROUP 3; if it needs live URLs, it cannot run before GROUP 4.
 
 ### Phase 2: Implementation checklist
@@ -132,7 +133,7 @@ Integrate **[TOOL_NAME]** into the RedAmon recon pipeline.
 - [ ] Tool runner function in the appropriate `recon/main_recon_modules/*.py` file following the **enrichment module contract**:
   - Main function `run_X_enrichment(combined_result: dict, settings: dict) -> dict` — mutates `combined_result` in place by writing to `combined_result["toolname"]` and returns it
   - The top-level key **must match** the tool identifier used everywhere else in the pipeline (e.g. `combined_result["virustotal"]`, `combined_result["censys"]`) — never abbreviate or vary the name
-  - Isolated wrapper `run_X_enrichment_isolated(combined_result: dict, settings: dict) -> dict` — shallow-copies `combined_result`, calls the main runner on the copy, returns only the tool's payload dict (e.g. `snapshot.get("toolname", {})`). This is the **actual call path** used by GROUP 3b fan-out in `recon/main.py` and by all unit tests — it must be present
+  - Isolated wrapper `run_X_enrichment_isolated(combined_result: dict, settings: dict) -> dict` — deep-copies the snapshot it is handed, calls the main runner on the copy, returns only the tool's payload dict (e.g. `snapshot.get("toolname", {})`). This is the **actual call path** used by GROUP 3b fan-out in `recon/main.py` and by all unit tests — it must be present
   - If the tool uses API keys: follow the `_effective_key(api_key, key_rotator)` pattern. Copy this helper verbatim from an existing module (e.g. `virustotal_enrich.py`). Add a `TOOL_KEY_ROTATOR` settings key alongside `TOOL_API_KEY` so key rotation is supported from day one
 - [ ] Settings keys in `recon/project_settings.py` (`DEFAULT_SETTINGS` + `fetch_project_settings()` mapping)
 - [ ] Prisma schema fields in `webapp/prisma/schema.prisma`

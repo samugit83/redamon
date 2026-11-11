@@ -566,7 +566,7 @@ is a MERGE, so the second pass creates no duplicate edge.
 ```python
 # Parallelized pipeline groups:
 # GROUP 1: domain_discovery + WHOIS + URLScan (parallel fan-out)
-#   └── 5 discovery tools run concurrently, DNS with 20 parallel workers
+#   └── 5 discovery tools run concurrently, DNS with DNS_MAX_WORKERS workers (default 80)
 # GROUP 3: port_scan + Shodan enrichment (parallel fan-out)
 # GROUP 4: http_probe (sequential, internally parallel)
 # GROUP 5: resource_enum (Katana ∥ GAU ∥ Kiterunner — internally parallel)

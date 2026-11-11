@@ -86,7 +86,7 @@ The `resource_enum.py` module provides comprehensive endpoint discovery and clas
 | **Hakrawler Crawling** | DOM-aware web crawling via Docker (active) |
 | **jsluice JS Analysis** | JavaScript analysis to extract URLs, endpoints, and secrets (downloads JS files from target) |
 | **FFuf Directory Fuzzing** | Brute-force directory/endpoint discovery using wordlists (built-in SecLists + custom uploads) |
-| **ParamSpider Parameter Mining** | Passive Wayback Machine CDX query for parameterized URLs — returns only URLs with query parameters, values replaced by placeholder (FUZZ). `paramspider -d` answers for every archived host under the domain, so only URLs on a host the run targets (`target_domains`, as for GAU) and not RoE-excluded reach the merge, `discovered_urls` (Nuclei DAST) and `archived_urls`; the rest count as `paramspider_out_of_scope` |
+| **ParamSpider Parameter Mining** | Passive Wayback Machine CDX query for parameterized URLs — returns only URLs with query parameters, values replaced by placeholder (FUZZ). `paramspider -d` answers for every archived host under the domain, so only URLs on a host the run targets (`target_domains`, as for GAU) and not RoE-excluded reach the merge, `discovered_urls` (Nuclei DAST) and `archived_urls`; the rest count as `paramspider_out_of_scope`. Partial ParamSpider applies the same filter (`paramspider_urls_in_scope` in `paramspider_helpers`) before its merge |
 | **Arjun Parameter Discovery** | Discovers hidden HTTP query/body parameters on discovered endpoints using ~25,000 parameter names. Multi-method parallel execution (GET/POST/JSON/XML) |
 | **Parallel Execution** | Katana, Hakrawler, GAU, ParamSpider, and Kiterunner run simultaneously, then jsluice → FFuf → Arjun sequential (Arjun methods run in parallel internally) |
 | **URL Verification** | Verifies GAU URLs are live before adding to results |
@@ -170,15 +170,12 @@ All parameters are configured via the webapp project settings (stored in Postgre
 |-----------|------|---------|-------------|
 | `KATANA_JS_CRAWL` | `bool` | `True` | Parse JavaScript files for endpoints |
 | `KATANA_PARAMS_ONLY` | `bool` | `False` | Only keep URLs with query parameters |
-| `KATANA_SCOPE` | `str` | `"rdn"` | Scope: `rdn` (root domain), `dn` (domain), `fqdn` (full) |
 
-**Scope Options:**
-
-| Scope | Description | Example |
-|-------|-------------|---------|
-| `rdn` | Root domain and all subdomains | `*.example.com` |
-| `dn` | Exact domain only | `www.example.com` |
-| `fqdn` | Exact FQDN only | `www.example.com` (no subdomains) |
+**Field scope:** Katana always runs with `-fs fqdn` (the seed's exact host); there
+is no setting for it. `run_katana_crawler` keeps only URLs on `allowed_hosts`, built
+from the seed URLs' hosts, so a wider field scope would only send requests to hosts
+no scan admitted and then discard what they return. The retired `katanaScope`
+column is kept in Prisma and read by nothing.
 
 ---
 
@@ -543,7 +540,7 @@ Hakrawler scope filtering works at two levels:
 
 | Level | Mechanism | Description |
 |-------|-----------|-------------|
-| **Crawl scope** | `-subs` flag | If `INCLUDE_SUBS=True`, Hakrawler follows links to subdomains of the target |
+| **Crawl scope** | `-subs` flag | If `INCLUDE_SUBS=True`, Hakrawler follows links to subdomains of the target. Forced off on an EXACT (listed-hosts) group, in full and partial runs; a partial run passes one flag for every seed, so one EXACT group in it turns it off for the whole run |
 | **Output scope** | Hostname exact match | After crawling, results are filtered against `target_domains` set (from http_probe). URLs with hostnames not in scope are captured as `ExternalDomain` nodes instead of `Endpoint` nodes |
 
 ### 3. What Hakrawler Finds
