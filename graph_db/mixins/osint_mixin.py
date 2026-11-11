@@ -2739,14 +2739,18 @@ class OsintMixin:
                                 app_name = pentry.get("app_name")
                                 if app_name:
                                     svc_name = app_name.lower()
+                                    # CriminalIP lists many ports with no version or
+                                    # banner, and SETting a null deletes the property:
+                                    # what nmap measured or Censys / ZoomEye stored on
+                                    # this Service must survive a bare listing.
                                     session.run(
                                         """
                                         MERGE (svc:Service {name: $svc_name, port_number: $port,
                                                             ip_address: $ip, user_id: $user_id,
                                                             project_id: $project_id})
                                         ON CREATE SET svc.source = 'criminalip'
-                                        SET svc.version = $version,
-                                            svc.banner  = $banner,
+                                        SET svc.version = coalesce($version, svc.version),
+                                            svc.banner  = coalesce($banner, svc.banner),
                                             svc.updated_at = datetime()
                                         WITH svc
                                         MATCH (p:Port {number: $port, protocol: $protocol, ip_address: $ip,
@@ -2754,7 +2758,7 @@ class OsintMixin:
                                         MERGE (p)-[:RUNS_SERVICE]->(svc)
                                         """,
                                         svc_name=svc_name, port=pnum, protocol=proto, ip=ip,
-                                        version=pentry.get("app_version"),
+                                        version=str(pentry.get("app_version") or "").strip() or None,
                                         banner=(pentry.get("banner") or "")[:500] or None,
                                         user_id=user_id, project_id=project_id,
                                     )
