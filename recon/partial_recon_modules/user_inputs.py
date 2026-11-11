@@ -58,8 +58,9 @@ def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, pro
                 print(f"[+][Partial Recon] Created/merged {len(subdomains)} user subdomain nodes in graph")
 
 
-# Set by update_user_input_status after the run wrote the node's edges, so a
-# node in one of these states will get no further edge.
+# Set by update_user_input_status after the run wrote the node's edges, or by
+# _close_own_user_inputs once the run's tool returned, so a node in one of these
+# states will get no further edge.
 _FINISHED_STATUSES = ("completed", "error")
 
 
@@ -71,6 +72,33 @@ def _orphans_no_run_will_link(orphans, own_ids) -> list:
     so neither is this run's to judge."""
     return sorted(row["id"] for row in orphans
                   if row["id"] in own_ids or row.get("status") in _FINISHED_STATUSES)
+
+
+def _close_own_user_inputs(session, user_id: str, project_id: str, own_ids) -> int:
+    """Mark this run's own UserInputs still 'running' as completed.
+
+    Only the module that made a node sets its final status, and not every
+    module or path does (cache, GraphQL, serialized and tlsx set none), so a
+    node kept for its results could read 'running' forever. Called once the
+    tool returned, when nothing in this process will link them any more. A
+    status the module set ('error' included) is kept, and another run's node is
+    never in own_ids: it may still be scanning.
+    """
+    if not own_ids:
+        return 0
+    record = session.run(
+        """
+        MATCH (ui:UserInput {user_id: $uid, project_id: $pid})
+        WHERE ui.id IN $ids AND ui.status = 'running'
+        SET ui.status = 'completed', ui.updated_at = datetime(), ui.completed_at = datetime()
+        RETURN count(ui) AS closed
+        """,
+        uid=user_id, pid=project_id, ids=sorted(own_ids),
+    ).single()
+    closed = record["closed"] if record else 0
+    if closed:
+        print(f"[+][Partial Recon] Marked {closed} UserInput node(s) of this run completed")
+    return closed
 
 
 def _cleanup_orphan_user_inputs(user_id: str, project_id: str) -> int:
@@ -90,7 +118,8 @@ def _cleanup_orphan_user_inputs(user_id: str, project_id: str) -> int:
 
     Up to twelve partial runs of a project run at once, so only the orphans
     _orphans_no_run_will_link names are deleted, and the delete re-checks the
-    missing edge in case a run linked its node since the read.
+    missing edge in case a run linked its node since the read. The run's own
+    surviving nodes are then closed (_close_own_user_inputs).
 
     Returns:
         Number of orphan UserInput nodes deleted.
@@ -110,23 +139,25 @@ def _cleanup_orphan_user_inputs(user_id: str, project_id: str) -> int:
                     """,
                     uid=user_id, pid=project_id,
                 )]
-                ids = _orphans_no_run_will_link(orphans, user_inputs_created_this_run())
-                if not ids:
-                    return 0
-                result = session.run(
-                    """
-                    MATCH (ui:UserInput {user_id: $uid, project_id: $pid})
-                    WHERE ui.id IN $ids AND NOT (ui)-->()
-                    WITH ui, ui.id AS uid_id
-                    DETACH DELETE ui
-                    RETURN count(uid_id) AS deleted
-                    """,
-                    uid=user_id, pid=project_id, ids=ids,
-                )
-                record = result.single()
-                deleted = record["deleted"] if record else 0
-                if deleted:
-                    print(f"[+][Partial Recon] Cleaned up {deleted} orphan UserInput node(s) (no outgoing relationships)")
+                own_ids = user_inputs_created_this_run()
+                ids = _orphans_no_run_will_link(orphans, own_ids)
+                deleted = 0
+                if ids:
+                    result = session.run(
+                        """
+                        MATCH (ui:UserInput {user_id: $uid, project_id: $pid})
+                        WHERE ui.id IN $ids AND NOT (ui)-->()
+                        WITH ui, ui.id AS uid_id
+                        DETACH DELETE ui
+                        RETURN count(uid_id) AS deleted
+                        """,
+                        uid=user_id, pid=project_id, ids=ids,
+                    )
+                    record = result.single()
+                    deleted = record["deleted"] if record else 0
+                    if deleted:
+                        print(f"[+][Partial Recon] Cleaned up {deleted} orphan UserInput node(s) (no outgoing relationships)")
+                _close_own_user_inputs(session, user_id, project_id, own_ids)
                 return deleted
     except Exception as e:
         print(f"[!][Partial Recon] UserInput cleanup failed: {e}")
