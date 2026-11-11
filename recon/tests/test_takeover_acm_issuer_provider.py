@@ -77,9 +77,9 @@ def test_an_acm_certificate_does_not_make_an_unknown_finding_an_s3_one(monkeypat
         "an ACM certificate made the finding an S3 one (+20 auto-exploitable)"
     assert f["takeover_provider"] not in th.AUTO_EXPLOITABLE_PROVIDERS
     assert f["cert_provider"] == "aws"
-    # Subjack +25, CNAME +10, live CNAME -30 (no auto-exploitable exemption),
-    # the edge's certificate does not name the host +20.
-    assert f["confidence"] == 25
+    # Subjack +25, CNAME +10, live CNAME -30 (no auto-exploitable exemption);
+    # no default-cert bonus: an issuer-only ACM certificate is a customer's (S-25).
+    assert f["confidence"] == 5
     assert f["verdict"] == "manual_review"
     assert f["id"] == th.finding_id(HOST, "aws", "cname")
 

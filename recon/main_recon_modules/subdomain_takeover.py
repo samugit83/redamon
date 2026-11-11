@@ -392,9 +392,12 @@ def run_subdomain_takeover(
                         # certificate (*.azurewebsites.net) corroborates a
                         # generic `azure` template, it does not contradict it.
                         n["cert_provider_mismatch"] = True
-                    # The edge presents its own default cert (identifies a
-                    # provider) but does NOT name this host -> claimable.
-                    if not n["cert_name_match"]:
+                    # The edge presents its own default cert (a SAN on the
+                    # provider's edge domain) and does NOT name this host ->
+                    # claimable. An issuer alone (ACM, Cloudflare, Google Trust
+                    # Services) also signs customers' certificates: one naming
+                    # other names is a customer's, not the edge's default.
+                    if not n["cert_name_match"] and provider_from_cert(None, sans):
                         n["cert_provider_default"] = True
 
         # --------------------------------------------------------------
