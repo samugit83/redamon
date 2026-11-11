@@ -7,6 +7,7 @@
  * domainBatchGroups record.
  */
 import { type ScopeGroup, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
+import { ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 
 export interface ProjectSummary {
   id: string
@@ -15,6 +16,12 @@ export interface ProjectSummary {
   ipMode?: boolean
   targetIps?: string[]
   domainBatchMode?: boolean
+  /** IP mode: the hostname policy, absent when the read did not carry it (absent
+   *  is unknown, never "IP only"). */
+  ipHostnameMode?: string
+  ipHostnameInclude?: string[]
+  ipHostnameExclude?: string[]
+  ipHostnameScanAllConfirmed?: boolean
   /** Empty in IP mode, and when the read carried no scope fields. */
   scopeGroups?: ScopeGroup[]
   /** One line naming the target, for cards and headers. */
@@ -41,6 +48,7 @@ export interface ScopeLabelFields {
   domainBatchMode?: boolean | null
   domainBatchHosts?: readonly string[] | null
   subdomainList?: readonly string[] | null
+  ipHostnameMode?: string | null
   /** As GET /api/projects/[id] returns them. */
   scopeGroups?: unknown
 }
@@ -55,11 +63,14 @@ export function summaryScopeGroups(p: ScopeLabelFields): ScopeGroup[] {
 }
 
 /** The typed target for a single domain, the scope summary for a batch, the
- *  address count in IP mode; '' when the read does not say. */
+ *  address count in IP mode (with the hostname mode when the read carries it);
+ *  '' when the read does not say. */
 export function projectTargetLabel(p: ScopeLabelFields): string {
   if (p.ipMode) {
     const n = (p.targetIps ?? []).length
-    return n ? `${n} IP target${n === 1 ? '' : 's'}` : ''
+    if (!n) return ''
+    const count = `${n} IP target${n === 1 ? '' : 's'}`
+    return typeof p.ipHostnameMode === 'string' ? `${count} · ${ipHostnameModeLabel(p.ipHostnameMode)}` : count
   }
   if (p.domainBatchMode) return scopeSummary(summaryScopeGroups(p)) || 'Domain batch'
   return String(p.targetDomain ?? '').trim()
@@ -76,6 +87,9 @@ type ProjectRead = ScopeLabelFields & {
   roeGlobalMaxRps?: number
   roeExcludedHosts?: string[]
   roeTimeWindowEnabled?: boolean
+  ipHostnameInclude?: readonly string[] | null
+  ipHostnameExclude?: readonly string[] | null
+  ipHostnameScanAllConfirmed?: boolean | null
   createdAt?: string | Date | null
   updatedAt?: string | Date | null
 }
@@ -103,6 +117,11 @@ export function toProjectSummary(project: ProjectRead): ProjectSummary {
     ipMode: project.ipMode ?? undefined,
     targetIps: project.targetIps ? [...project.targetIps] : undefined,
     domainBatchMode: project.domainBatchMode ?? undefined,
+    ...(typeof project.ipHostnameMode === 'string' ? { ipHostnameMode: project.ipHostnameMode } : {}),
+    ...(project.ipHostnameInclude ? { ipHostnameInclude: [...project.ipHostnameInclude] } : {}),
+    ...(project.ipHostnameExclude ? { ipHostnameExclude: [...project.ipHostnameExclude] } : {}),
+    ...(typeof project.ipHostnameScanAllConfirmed === 'boolean'
+      ? { ipHostnameScanAllConfirmed: project.ipHostnameScanAllConfirmed } : {}),
     scopeGroups: groups,
     targetLabel: projectTargetLabel(project),
     subdomainList: project.subdomainList ? [...project.subdomainList] : undefined,

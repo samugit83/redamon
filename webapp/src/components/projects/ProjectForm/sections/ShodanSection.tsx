@@ -5,8 +5,10 @@ import { ChevronDown, Radar, AlertTriangle, Info, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
+import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '../ipHostnameModes'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -36,6 +38,10 @@ export function ShodanSection({ data, updateField, onRun }: ShodanSectionProps) 
   useEffect(() => { checkApiKey() }, [checkApiKey])
 
   const noKey = hasApiKey === false || hasApiKey === null
+  // An IP-mode project's hostname mode can force Reverse DNS off at scan start
+  // (apply_ip_hostname_overrides); the stored value is kept but never used, so
+  // the toggle shows the forced value and cannot be flipped.
+  const reverseDnsForced = ipHostnameOverrides(data).find(o => o.key === 'shodanReverseDns')
 
   return (
     <div className={`${styles.section} ${styles.formSkin}`}>
@@ -128,11 +134,16 @@ export function ShodanSection({ data, updateField, onRun }: ShodanSectionProps) 
                 <p className={styles.toggleDescription}>
                   Discover hostnames that resolve to known IPs. Can reveal additional subdomains not found by standard enumeration.
                   {noKey && <em> (InternetDB fallback)</em>}
+                  {reverseDnsForced && (
+                    <> Off: forced by {IP_HOSTNAME_SECTION_LABEL} ({ipHostnameModeLabel(data.ipHostnameMode)}).</>
+                  )}
                 </p>
               </div>
               <Toggle
-                checked={data.shodanReverseDns}
+                checked={reverseDnsForced ? reverseDnsForced.value : data.shodanReverseDns}
                 onChange={(checked) => updateField('shodanReverseDns', checked)}
+                disabled={!!reverseDnsForced}
+                aria-label="Reverse DNS"
               />
             </div>
 

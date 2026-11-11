@@ -96,3 +96,37 @@ describe('ReconConfirmModal — a Domain batch names its scope groups', () => {
     expect(document.body.textContent).not.toContain('may take hours')
   })
 })
+
+describe('ReconConfirmModal — Hostnames on target IPs (04_ui_spec.md §5)', () => {
+  const ip = { ...baseProps, targetDomain: '', ipMode: true, targetIps: ['203.0.113.10'], stats: null }
+
+  test('one line naming the mode', () => {
+    render(<ReconConfirmModal {...ip} hostnamePolicy={{ ipHostnameMode: 'record_only' }} />)
+    expect(screen.getByTestId('recon-confirm-hostname-mode').textContent)
+      .toBe('Hostnames on target IPs: Record hostnames')
+    expect(screen.queryByTestId('recon-confirm-scan-all')).toBeNull()
+  })
+
+  test('Record + scan matching lists its include and exclude counts', () => {
+    render(<ReconConfirmModal {...ip} hostnamePolicy={{
+      ipHostnameMode: 'record_filter', ipHostnameInclude: ['*.example.com', '*.example.de'],
+      ipHostnameExclude: ['old.example.com'],
+    }} />)
+    expect(screen.getByTestId('recon-confirm-hostname-mode').textContent)
+      .toBe('Hostnames on target IPs: Record + scan matching (include 2, exclude 1)')
+  })
+
+  test('Record + scan all repeats the red warning', () => {
+    render(<ReconConfirmModal {...ip} hostnamePolicy={{ ipHostnameMode: 'scan_all' }} />)
+    expect(screen.getByTestId('recon-confirm-scan-all').textContent)
+      .toMatch(/Every hostname found on these IPs will be scanned.*CDN edge addresses are always skipped/)
+  })
+
+  test('a domain project, or a read without the mode, shows no line', () => {
+    render(<ReconConfirmModal {...baseProps} stats={null} hostnamePolicy={{ ipHostnameMode: 'scan_all' }} />)
+    expect(screen.queryByTestId('recon-confirm-hostname-mode')).toBeNull()
+    cleanup()
+    render(<ReconConfirmModal {...ip} />)
+    expect(screen.queryByTestId('recon-confirm-hostname-mode')).toBeNull()
+  })
+})

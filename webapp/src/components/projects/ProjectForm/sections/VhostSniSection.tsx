@@ -4,8 +4,10 @@ import { useState } from 'react'
 import { ChevronDown, Network, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
+import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '../ipHostnameModes'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -17,6 +19,9 @@ interface VhostSniSectionProps {
 
 export function VhostSniSection({ data, updateField, onRun }: VhostSniSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
+  // "IP only" sends no discovered name anywhere, so recon turns graph candidates
+  // off whatever is stored (D-09: the custom wordlist is the only source then).
+  const graphCandidatesForced = ipHostnameOverrides(data).find(o => o.key === 'vhostSniUseGraphCandidates')
 
   const customWordlistLines = (data.vhostSniCustomWordlist || '')
     .split('\n')
@@ -110,11 +115,16 @@ export function VhostSniSection({ data, updateField, onRun }: VhostSniSectionPro
                     <div className={styles.toggleLabel}>Use graph candidates (recommended)</div>
                     <div className={styles.toggleDescription}>
                       Pulls hostnames from existing Subdomain, ExternalDomain, TLS SAN list, CNAME targets and reverse-DNS PTR records resolving to each target IP. Highest signal source.
+                      {graphCandidatesForced && (
+                        <> Off: forced by {IP_HOSTNAME_SECTION_LABEL} ({ipHostnameModeLabel(data.ipHostnameMode)}).</>
+                      )}
                     </div>
                   </div>
                   <Toggle
-                    checked={data.vhostSniUseGraphCandidates}
+                    checked={graphCandidatesForced ? graphCandidatesForced.value : data.vhostSniUseGraphCandidates}
                     onChange={(checked) => updateField('vhostSniUseGraphCandidates', checked)}
+                    disabled={!!graphCandidatesForced}
+                    aria-label="Use graph candidates"
                   />
                 </div>
 

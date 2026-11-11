@@ -9,7 +9,8 @@ import { Modal } from '@/components/ui/Modal/Modal'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { fetchJson, readApiError, toApiError } from '@/lib/apiError'
 import { RECON_PRESETS, type ReconPreset } from '@/lib/recon-presets'
-import { matchesTargetFilter, type TargetFilter } from '@/lib/recon-presets/targeting'
+import { IP_PRESETS_RELYING_ON_HOSTNAMES, matchesTargetFilter, type TargetFilter } from '@/lib/recon-presets/targeting'
+import { ipHostnameModeOf } from '@/lib/scopeGroups'
 import { GeneratePresetModal } from './GeneratePresetModal'
 import styles from './ReconPresetModal.module.css'
 import provenanceStyles from './presetProvenance.module.css'
@@ -35,6 +36,31 @@ interface ReconPresetDrawerProps {
   onLoadUserPreset: (preset: { id: string; name: string }) => Promise<void>
   currentPresetId?: string
   userId: string | null | undefined
+  /** The form's own target mode and hostname mode (create mode included). */
+  hostnamePolicy?: { ipMode?: boolean | null; ipHostnameMode?: string | null }
+}
+
+/**
+ * D-17: a preset never sets "Hostnames on target IPs", so a built-in IP preset
+ * designed around the names found on the target IPs finds none on an IP-only
+ * project. Said where the preset is picked; MCP apply_recon_preset says the same.
+ */
+export function presetHostnameNote(
+  presetId: string, policy: ReconPresetDrawerProps['hostnamePolicy'],
+): string | null {
+  if (policy?.ipMode !== true || ipHostnameModeOf(policy.ipHostnameMode) !== 'ip_only') return null
+  if (!IP_PRESETS_RELYING_ON_HOSTNAMES.has(presetId)) return null
+  return 'This preset expects hostnames found on the target IPs, but this project\'s Hostnames on target IPs ' +
+    'is "IP only", so none is looked up. A preset never changes that mode: set it on the Target tab.'
+}
+
+function HostnameNote({ text }: { text: string }) {
+  return (
+    <p role="note" data-testid="preset-hostname-note"
+       style={{ margin: '6px 0 0', fontSize: 'var(--text-xs)', lineHeight: 1.5, color: 'var(--form-warning)' }}>
+      {text}
+    </p>
+  )
 }
 
 const TARGET_FILTERS: Array<{ id: TargetFilter; label: string; hint: string }> = [
@@ -135,6 +161,7 @@ export function ReconPresetModal({
   onLoadUserPreset,
   currentPresetId,
   userId,
+  hostnamePolicy,
 }: ReconPresetDrawerProps) {
   const toast = useToast()
   const { dangerConfirm } = useAlertModal()
@@ -341,6 +368,10 @@ export function ReconPresetModal({
                   <PresetChips preset={preset} />
 
                   <p className={styles.cardDescription}>{preset.shortDescription}</p>
+                  {(() => {
+                    const note = presetHostnameNote(preset.id, hostnamePolicy)
+                    return note && <HostnameNote text={note} />
+                  })()}
 
                   <div className={styles.cardActions}>
                     <button
@@ -475,6 +506,10 @@ export function ReconPresetModal({
           closeOnEscape={false}
         >
           <div className={styles.detailBody}>
+            {(() => {
+              const note = presetHostnameNote(detailPreset.id, hostnamePolicy)
+              return note && <HostnameNote text={note} />
+            })()}
             {renderDescription(detailPreset.fullDescription)}
           </div>
         </Modal>

@@ -4,9 +4,11 @@ import { useState } from 'react'
 import { ChevronDown, Lock, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
+import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { RegistryFields } from '../RegistryFields'
+import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '../ipHostnameModes'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -18,6 +20,9 @@ interface TlsxSectionProps {
 
 export function TlsxSection({ data, updateField, onRun }: TlsxSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
+  // Every hostname mode forces reverse-PTR SNI off in an IP-mode project (a PTR
+  // name is a candidate there, never an SNI); recon ignores the stored value.
+  const revPtrForced = ipHostnameOverrides(data).find(o => o.key === 'tlsxRevPtrSni')
 
   return (
     <div className={`${styles.section} ${styles.formSkin}`}>
@@ -197,11 +202,16 @@ export function TlsxSection({ data, updateField, onRun }: TlsxSectionProps) {
                     <div className={styles.toggleLabel}>Reverse-PTR SNI for bare IPs</div>
                     <div className={styles.toggleDescription}>
                       Derive an SNI from a reverse-DNS lookup when no hostname is known (extra DNS per bare IP).
+                      {revPtrForced && (
+                        <> Off: forced by {IP_HOSTNAME_SECTION_LABEL} ({ipHostnameModeLabel(data.ipHostnameMode)}).</>
+                      )}
                     </div>
                   </div>
                   <Toggle
-                    checked={data.tlsxRevPtrSni}
+                    checked={revPtrForced ? revPtrForced.value : data.tlsxRevPtrSni}
                     onChange={(checked) => updateField('tlsxRevPtrSni', checked)}
+                    disabled={!!revPtrForced}
+                    aria-label="Reverse-PTR SNI for bare IPs"
                   />
                 </div>
               </div>

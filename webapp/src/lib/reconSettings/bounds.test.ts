@@ -153,14 +153,64 @@ const FORM_DIR = fileURLToPath(
  * never seen. That false negative is how a free-text control over a closed value
  * set sat here unnoticed while a scan reported every such field as a select.
  */
-function controlFor(text: string, index: number): string | null {
+function controlFor(text: string, index: number, file?: string): string | null {
   const before = text.slice(0, index)
   let best: { tag: string; at: number } | null = null
   for (const tag of ['input', 'select', 'textarea', 'Toggle']) {
     const at = before.lastIndexOf(`<${tag}`)
     if (at >= 0 && (!best || at > best.at)) best = { tag, at }
   }
+  // A component nearer than any control is the control when the write sits in
+  // its callback (`<IpHostnameModeCards onModeChange={m => updateField(...)}`):
+  // the cards hand the pick back so the updateField call stays in the section
+  // file (parity.test.ts), while the radios live in the component's own file.
+  const component = [...before.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)].at(-1)
+  if (component && file && (!best || component.index! > best.at) && component[1] !== 'Toggle') {
+    return rendersRadioGroup(componentSource(text, component[1], file)) ? 'radiogroup' : component[1]
+  }
+  if (best?.tag === 'input' && isRadioInGroup(text, best.at)) return 'radiogroup'
   return best ? best.tag : null
+}
+
+/** The source of a component a form file imports by a relative path, or ''. */
+function componentSource(text: string, name: string, file: string): string {
+  for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*'(\.{1,2}\/[^']+)'/g)) {
+    if (!m[1].split(',').some(s => s.trim() === name)) continue
+    try {
+      return readFileSync(path.resolve(path.dirname(file), `${m[2]}.tsx`), 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  return ''
+}
+
+/** A native radio group: every value offered is a fixed choice, as in a select. */
+function rendersRadioGroup(source: string): boolean {
+  const group = source.indexOf('role="radiogroup"')
+  return group >= 0 && isRadioInGroup(source, source.indexOf('type="radio"', group))
+}
+
+/**
+ * Whether the `<input` at `at` is a radio inside an open element carrying
+ * `role="radiogroup"` (precedent: plugins/UninstallDialog.tsx).
+ */
+function isRadioInGroup(text: string, at: number): boolean {
+  if (at < 0) return false
+  const element = text.slice(at, text.indexOf('>', text.indexOf('type=', at) + 1) + 1)
+  if (!/type="radio"/.test(element)) return false
+  const marker = text.lastIndexOf('role="radiogroup"', at)
+  if (marker < 0) return false
+  const open = /<([a-z][a-z0-9]*)\b[^<]*$/.exec(text.slice(0, marker))
+  if (!open) return false
+  // Walk the group element's own tag from its opening: once it closes, a later
+  // radio is outside it, whatever opens after.
+  let depth = 1
+  for (const t of text.slice(marker, at).matchAll(new RegExp(`<(/?)${open[1]}\\b`, 'g'))) {
+    depth += t[1] ? -1 : 1
+    if (depth === 0) return false
+  }
+  return true
 }
 
 function formFiles(dir: string, out: string[] = []): string[] {
@@ -185,9 +235,10 @@ describe('P6: the form cannot offer a value the write will refuse', () => {
       for (const m of text.matchAll(/updateField\(\s*'([A-Za-z0-9_]+)'/g)) {
         const spec = field(m[1])
         if (!spec?.values || spec.type !== 'string') continue
-        const tag = controlFor(text, m.index!)
-        if (tag !== 'select') {
-          problems.push(`${path.basename(full)}: ${m[1]} is a <${tag}>, not a <select>`)
+        const tag = controlFor(text, m.index!, full)
+        // A radio group offers exactly the listed choices too (04_ui_spec.md §2).
+        if (tag !== 'select' && tag !== 'radiogroup') {
+          problems.push(`${path.basename(full)}: ${m[1]} is a <${tag}>, not a <select> or a radio group`)
         }
       }
     }
@@ -224,5 +275,30 @@ describe('P6: the form cannot offer a value the write will refuse', () => {
     const m = /updateField\(\s*'zapAjaxSpiderSeedMode'/.exec(text)
     expect(m).not.toBeNull()
     expect(controlFor(text, m!.index)).toBe('select')
+  })
+
+  test('the hostname mode cards are read as the radio group they render', () => {
+    // The write sits in TargetSection, the radios in IpHostnameModeCards: the
+    // parser has to follow the import to see them.
+    const file = path.join(SECTIONS_DIR, 'TargetSection.tsx')
+    const text = readFileSync(file, 'utf8')
+    const m = /updateField\(\s*'ipHostnameMode'/.exec(text)
+    expect(m).not.toBeNull()
+    expect(controlFor(text, m!.index, file)).toBe('radiogroup')
+  })
+
+  test('a radio counts only inside a radiogroup, and a component only if it renders one', () => {
+    const file = path.join(SECTIONS_DIR, 'Synthetic.tsx')
+    const inGroup = `<div role="radiogroup" aria-label="x"><label><input type="radio" name="m" `
+      + `onChange={() => updateField('someMode', 'a')} /></label></div>`
+    expect(controlFor(inGroup, inGroup.indexOf('updateField'), file)).toBe('radiogroup')
+    const loose = `<div><label><input type="radio" name="m" onChange={() => updateField('someMode', 'a')} /></label></div>`
+    expect(controlFor(loose, loose.indexOf('updateField'), file)).toBe('input')
+    const closed = `<div role="radiogroup"><input type="radio" /></div><div><input type="radio" `
+      + `onChange={() => updateField('someMode', 'a')} /></div>`
+    expect(controlFor(closed, closed.indexOf('updateField'), file)).toBe('input')
+    const viaComponent = `import { FileImportButton } from '../FileImportButton'\n`
+      + `<FileImportButton onImport={(v) => updateField('someMode', v[0])} />`
+    expect(controlFor(viaComponent, viaComponent.indexOf('updateField'), file)).toBe('FileImportButton')
   })
 })

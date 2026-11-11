@@ -182,6 +182,7 @@
   {"path":"/api/projects/[id]/authorizations","guard":"project","methods":["GET"]},
   {"path":"/api/projects/[id]/delta","guard":"project","methods":["GET"]},
   {"path":"/api/projects/[id]/export","guard":"project","methods":["GET"]},
+  {"path":"/api/projects/[id]/ip-hostnames","guard":"project","methods":["GET"]},
   {"path":"/api/projects/[id]/node-filters","guard":"project","methods":["GET","PUT"]},
   {"path":"/api/projects/[id]/node-filters/apply","guard":"project","methods":["GET","POST"]},
   {"path":"/api/projects/[id]/node-filters/disarm","guard":"project","methods":["POST"]},

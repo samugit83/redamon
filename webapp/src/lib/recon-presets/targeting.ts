@@ -9,6 +9,15 @@ import type { PresetTargetProfile, ReconPreset } from './types'
 
 export type TargetFilter = 'all' | 'domain' | 'ip' | 'internal'
 
+/**
+ * The built-in IP presets whose design counts on hostnames found on the target
+ * IPs (reverse DNS, internal names). Presets never set the hostname mode (it is
+ * scope, decision D-17), so on an ip_only project such a preset finds none and
+ * the caller is told why: MCP apply_recon_preset and the preset drawer. Here,
+ * not in the MCP module, because the drawer is client code.
+ */
+export const IP_PRESETS_RELYING_ON_HOSTNAMES: ReadonlySet<string> = new Set(['internal-network', 'large-network'])
+
 /** Does a preset belong in a given target-type filter tab? */
 export function matchesTargetFilter(preset: ReconPreset, filter: TargetFilter): boolean {
   switch (filter) {

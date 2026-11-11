@@ -29,6 +29,25 @@
   color: var(--text-secondary);
 }
 
+.hostnameMode {
+  padding: 1px var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+/* Read by screen readers, so the chip is not a bare "IP only" out of context. */
+.hiddenLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .projectName {
   font-weight: var(--font-medium);
   color: var(--text-primary);

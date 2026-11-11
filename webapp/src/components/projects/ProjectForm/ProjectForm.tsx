@@ -8,7 +8,7 @@ import type { Project } from '@prisma/client'
 import { validateProjectForm } from '@/lib/validation'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { validateDomainBatch } from '@/lib/domainBatch'
-import { scopeGuardrailNames } from '@/lib/scopeGroups'
+import { type ScopeFields, ipHostnamePolicyProblem, scopeGuardrailNames } from '@/lib/scopeGroups'
 import { ipModeRoot, resolveProjectRoots } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
@@ -1209,7 +1209,14 @@ export function ProjectForm({
   }, [projectId, alertError])
 
   // Determine if form can be submitted
-  const canSubmit = !isSubmitting && !isLoadingDefaults
+  // Record + scan all is saved only once confirmed (04_ui_spec.md §8). The
+  // reason is the save routes' and MCP's own sentence (the cross-field rule), so
+  // the form and the API refuse in the same words; this only says it before the
+  // round trip.
+  const saveBlockedReason = formData.ipMode && formData.ipHostnameMode === 'scan_all' && !formData.ipHostnameScanAllConfirmed
+    ? ipHostnamePolicyProblem(formData as unknown as ScopeFields)
+    : null
+  const canSubmit = !isSubmitting && !isLoadingDefaults && saveBlockedReason === null
 
   // Create mode: resolve the LLM-provider gate BEFORE rendering the project form.
   // While the check is in flight, show a brief loader (not the form); if no
@@ -1323,7 +1330,8 @@ export function ProjectForm({
             type="submit"
             className="primaryButton"
             disabled={!canSubmit || !isDirty}
-            title={mode === 'create' ? 'Create the project with the current settings and start working' : !isDirty ? 'No unsaved changes' : 'Save all changes to the project settings'}
+            aria-describedby={saveBlockedReason ? 'project-save-blocked' : undefined}
+            title={saveBlockedReason ?? (mode === 'create' ? 'Create the project with the current settings and start working' : !isDirty ? 'No unsaved changes' : 'Save all changes to the project settings')}
           >
             {isLoadingDefaults ? (
               <>
@@ -1339,6 +1347,9 @@ export function ProjectForm({
           </button>
         </div>
       </div>
+      {saveBlockedReason && (
+        <p id="project-save-blocked" className={styles.saveBlockedReason} role="status">{saveBlockedReason}</p>
+      )}
 
       {defaultsWarning && (
         <div className={`${styles.callout} ${styles.calloutWarning}`} role="alert" data-testid="defaults-warning">
@@ -1622,6 +1633,7 @@ export function ProjectForm({
         onLoadUserPreset={(preset) => loadPreset({ kind: 'user', ...preset })}
         currentPresetId={appliedPreset?.id}
         userId={userId}
+        hostnamePolicy={{ ipMode: formData.ipMode, ipHostnameMode: formData.ipHostnameMode }}
       />
 
       {/* User Preset: Save modal */}

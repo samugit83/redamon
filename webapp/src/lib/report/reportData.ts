@@ -19,6 +19,8 @@ import { corroborateAttackFindings } from './aiAttackFindings'
 import type { AiAttackFindingRecord, RawAttackRow } from './aiAttackFindings'
 import { currentDns } from '@/lib/graph/forwardDns'
 import { secretTail } from '@/lib/secrets/secretTail'
+import type { IpHostnamePolicyFields } from '@/lib/scopeGroups'
+import { admittedByCurrentPolicy } from '@/lib/ipHostnamePreview'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -293,9 +295,25 @@ export interface IpMapping {
   asn: string | null
   /** IP attribution tag: shared_edge | dedicated | unknown; null when no run attributed it. */
   ownership: string | null
+  /** Hostnames scanned on this IP that the project's current policy still
+   *  admits; never a placeholder label. */
   hostnames: string[]
+  /** Hostnames recorded as seen on this IP (ExternalDomain SEEN_ON), not scanned. */
+  recordedCount: number
+  /** The first five of them, by name. */
+  recordedSample: string[]
   openPorts: number
 }
+
+/** The policy fields the IP Target Map reads from the project row. */
+export type HostnamePolicyRow = IpHostnamePolicyFields & { ipMode?: boolean | null }
+
+// One implementation of the design §6.3 filter, shared with the preview route.
+export { admittedByCurrentPolicy }
+
+/** A placeholder label (`203-0-113-10`) has no dot; every scanned hostname has
+ *  a registrable domain, so it has one. */
+const isHostname = (name: unknown): name is string => typeof name === 'string' && name.includes('.')
 
 export interface ReportData {
   project: Project
@@ -354,6 +372,9 @@ export interface ReportData {
     }
     subdomainMappings: SubdomainMapping[]
     ipMappings: IpMapping[]
+    /** Hostnames on target IPs, distinct across IPs: recorded (not scanned) and
+     *  scanned under the current policy. Absent from data built before it. */
+    ipHostnames?: { recorded: number; scanned: number }
   }
 
   // Attack Surface
@@ -712,7 +733,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     aiSurfaceData,
     otxData,
   ] = await Promise.all([
-    withSession(s => queryGraphOverview(s, projectId)),
+    withSession(s => queryGraphOverview(s, projectId, project)),
     withSession(s => queryAttackSurface(s, projectId)),
     withSession(s => queryVulnerabilities(s, projectId)),
     withSession(s => queryCveIntelligence(s, projectId)),
@@ -1022,7 +1043,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
 
 // Exported for reportData.integration.test.ts, which runs it on a real Neo4j.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryGraphOverview(session: any, pid: string) {
+export async function queryGraphOverview(session: any, pid: string, hostnamePolicy?: HostnamePolicyRow | null) {
   const nodeRes = await session.run(
     `MATCH (n {project_id: $pid}) WHERE ${notMuted('n')}
      RETURN labels(n)[0] AS label, count(n) AS count ORDER BY count DESC`,
@@ -1092,16 +1113,33 @@ export async function queryGraphOverview(session: any, pid: string) {
      ORDER BY subdomain`,
     { pid }
   )
-  // IP → hostname detail mapping
+  // IP → hostname detail mapping (the IP Target Map, IP mode only). A hostname
+  // of an IP is a name the hostname selection scanned there: the dashed
+  // placeholder Subdomain every target carries is not one, and a name only
+  // recorded on the IP is counted apart. The selection stamps its own source on
+  // the RESOLVES_TO it pins (it has just resolved it), so that edge is current
+  // DNS here too.
   const ipDetailRes = await session.run(
     `MATCH (ip:IP {project_id: $pid})
-     OPTIONAL MATCH (s:Subdomain {project_id: $pid})-[dnsr:RESOLVES_TO]->(ip) WHERE ${currentDns('dnsr')}
+     OPTIONAL MATCH (s:Subdomain {project_id: $pid, source: 'ip_hostname_selection'})-[dnsr:RESOLVES_TO]->(ip)
+       WHERE s.ip_hostname_reason = 'scanned'
+         AND (${currentDns('dnsr')} OR dnsr.source = 'ip_hostname_selection')
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
+     WITH ip, collect(DISTINCT s.name) AS hostnames, count(DISTINCT port) AS openPorts
+     OPTIONAL MATCH (ed:ExternalDomain {project_id: $pid})-[:SEEN_ON]->(ip)
+     WITH ip, hostnames, openPorts, ed ORDER BY ed.domain
      RETURN ip.address AS ip, ip.version AS version, ip.is_cdn AS isCdn,
             ip.cdn_name AS cdnName, ip.asn AS asn, ip.ownership AS ownership,
-            collect(DISTINCT s.name) AS hostnames,
-            count(DISTINCT port) AS openPorts
+            hostnames, openPorts,
+            count(DISTINCT ed) AS recordedCount,
+            collect(DISTINCT ed.domain)[0..5] AS recordedSample
      ORDER BY ip`,
+    { pid }
+  )
+  // Distinct across IPs: one name seen on three targets is one recorded name.
+  const recordedRes = await session.run(
+    `MATCH (ed:ExternalDomain {project_id: $pid})-[:SEEN_ON]->(:IP {project_id: $pid})
+     RETURN count(DISTINCT ed) AS recordedHostnames`,
     { pid }
   )
 
@@ -1134,9 +1172,16 @@ export async function queryGraphOverview(session: any, pid: string) {
     cdnName: r.get('cdnName') as string | null,
     asn: r.get('asn') as string | null,
     ownership: (r.get('ownership') as string | null) ?? null,
-    hostnames: (r.get('hostnames') as any[]).filter((h: any) => h != null),
+    hostnames: admittedByCurrentPolicy(((r.get('hostnames') as unknown[]) ?? []).filter(isHostname), hostnamePolicy),
+    recordedCount: toNum(r.get('recordedCount')),
+    recordedSample: ((r.get('recordedSample') as unknown[] | undefined) ?? [])
+      .filter((h): h is string => typeof h === 'string'),
     openPorts: toNum(r.get('openPorts')),
   }))
+  const ipHostnames = {
+    recorded: toNum(recordedRes.records[0]?.get('recordedHostnames')),
+    scanned: new Set(ipMappings.flatMap(m => m.hostnames)).size,
+  }
 
   // How much noise was suppressed. Reports EXCLUDE muted findings entirely -- a
   // client deliverable should not carry findings the operator judged noise -- but
@@ -1219,6 +1264,7 @@ export async function queryGraphOverview(session: any, pid: string) {
       : { totalIps: 0, ipv4: 0, ipv6: 0, cdnCount: 0, uniqueAsns: 0, uniqueCdns: 0 },
     subdomainMappings,
     ipMappings,
+    ipHostnames,
   }
 }
 

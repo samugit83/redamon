@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useId } from 'react'
 import { ChevronDown, Target, ShieldAlert, AlertTriangle, Info, Globe, Network, Layers, Check, Lock, Plus, Minus, Gauge } from 'lucide-react'
 import { AiToggleLabel } from '../AiToggleLabel'
 import { JevEngineControl } from '../JevEngineControl'
@@ -22,6 +22,9 @@ import { deriveRoeEnabled } from '@/lib/engagement'
 import { isValidDomain } from '@/lib/validation'
 import { isUnsetOwnershipToken } from '@/lib/ownershipToken'
 import { FileImportButton } from '../FileImportButton'
+import { IpHostnameModeCards } from '../IpHostnameModeCards'
+import { IpHostnameFilterEditor } from '../IpHostnameFilterEditor'
+import { IpHostnamePreview } from '../IpHostnamePreview'
 import { ModelPicker } from '@/components/shared/ModelPicker'
 import { excludeLoop } from '@/lib/agentInTheLoop'
 import { useProject } from '@/providers/ProjectProvider'
@@ -209,6 +212,8 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
   // In IP mode the targets are locked; what can widen is the hostname policy
   // (D-24: the form warns, update_project_scope pauses).
   const hostnameMode = ipHostnameModeOf(data.ipHostnameMode)
+  const scanAllConfirmed = data.ipHostnameScanAllConfirmed === true
+  const hostnameLabelId = useId()
   const hostnameWidenings = useMemo(
     () => (ipMode && savedScope ? ipHostnameWidenings(savedScope, data) : []),
     [ipMode, savedScope, data]
@@ -434,7 +439,8 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
               ) : ipMode ? (
                 <>
                   Targets are IP addresses or CIDR ranges, <strong>public or private</strong>.
-                  The pipeline runs reverse DNS to recover hostnames. For a private/internal
+                  What happens to the hostnames found on these IPs is set below, in{' '}
+                  <strong>Hostnames on target IPs</strong> (by default none is looked up). For a private/internal
                   range or Active Directory, pick the{' '}
                   <strong>Internal Network &amp; Active Directory</strong> recon preset, which
                   turns off the public-only tools (OSINT, subdomain enumeration, WHOIS) that
@@ -721,103 +727,82 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
                   </span>
                 </div>
               )}
-
-              {/* Always-on note for IP mode: the domain-only phases don't apply. */}
-              <div className={`${styles.callout} ${styles.calloutInfo}`}>
-                <Info size={16} />
-                <span>
-                  <strong>IP mode:</strong> domain-only steps are skipped. Subdomain
-                  discovery, WHOIS, DNS/email security and subdomain-takeover checks need a
-                  registered domain and do not run against bare IPs. Port scanning, service
-                  and version detection, HTTP probing, CVE lookup and the security checks
-                  work normally.
-                </span>
-              </div>
             </div>
           )}
 
           {/* Hostnames on target IPs. Unlike the IP list it stays editable after
               creation: a change is a rescope, which the save judges like a target
-              change (refused while a scan runs, include entries hard-guardrailed). */}
+              change (refused while a scan runs, include entries hard-guardrailed).
+              The cards, the editor and the inputs below hand every value back
+              here, so each updateField call of the section stays in this file. */}
           {ipMode && (
-            <div className={styles.fieldGroup}>
-              <label className={styles.fieldLabel} htmlFor="ipHostnameMode">Hostnames on target IPs</label>
-              <select
-                id="ipHostnameMode"
-                className="select"
+            <div className={`${styles.fieldGroup} ${styles.ipHostnameBlock}`} data-testid="ip-hostname-policy">
+              <span className={styles.fieldLabel} id={hostnameLabelId}>Hostnames on target IPs</span>
+              <IpHostnameModeCards
                 value={hostnameMode}
-                onChange={(e) => {
-                  updateField('ipHostnameMode', e.target.value || 'ip_only')
-                  if (e.target.value !== 'scan_all') updateField('ipHostnameScanAllConfirmed', false)
+                labelledBy={hostnameLabelId}
+                thirdParty={data.engagementKind === 'third_party'}
+                onModeChange={(next) => {
+                  updateField('ipHostnameMode', next)
+                  if (next !== 'scan_all') updateField('ipHostnameScanAllConfirmed', false)
                 }}
-              >
-                <option value="ip_only">IP only: look up no hostname</option>
-                <option value="record_only">Record hostnames: scan the IPs only</option>
-                <option value="record_filter">Record + scan matching names</option>
-                <option value="scan_all" disabled={data.engagementKind === 'third_party'}>
-                  Record + scan all names{data.engagementKind === 'third_party' ? ' (not on a third-party engagement)' : ''}
-                </option>
-              </select>
+              />
               <span className={styles.fieldHint}>
-                A hostname is scanned only when every address it resolves to is one of the target IPs.
+                Every name not scanned is saved with the reason (see the graph and the log). A hostname
+                is scanned only when every address it resolves to is one of the target IPs.
               </span>
 
               {hostnameMode === 'record_filter' && (
                 <>
-                  <label className={styles.fieldLabel} htmlFor="ipHostnameInclude">Scan names matching (one per line)</label>
-                  <textarea
-                    id="ipHostnameInclude"
-                    className="textarea"
-                    rows={3}
-                    placeholder={'*.example.com\napp.example.org'}
-                    value={(data.ipHostnameInclude ?? []).join('\n')}
-                    onChange={(e) => updateField('ipHostnameInclude', e.target.value === '' ? [] : e.target.value.split('\n'))}
+                  <IpHostnameFilterEditor
+                    include={data.ipHostnameInclude ?? []}
+                    exclude={data.ipHostnameExclude ?? []}
+                    passiveExpand={data.ipHostnamePassiveExpand ?? true}
+                    onIncludeChange={(entries) => updateField('ipHostnameInclude', entries)}
+                    onExcludeChange={(entries) => updateField('ipHostnameExclude', entries)}
+                    onPassiveExpandChange={(on) => updateField('ipHostnamePassiveExpand', on)}
                   />
-                  <label className={styles.fieldLabel} htmlFor="ipHostnameExclude">Never scan (one per line)</label>
-                  <textarea
-                    id="ipHostnameExclude"
-                    className="textarea"
-                    rows={2}
-                    placeholder="old.example.com"
-                    value={(data.ipHostnameExclude ?? []).join('\n')}
-                    onChange={(e) => updateField('ipHostnameExclude', e.target.value === '' ? [] : e.target.value.split('\n'))}
-                  />
-                  <label className="checkboxLabel">
-                    <input
-                      type="checkbox"
-                      className="checkbox"
-                      checked={data.ipHostnamePassiveExpand ?? true}
-                      onChange={(e) => updateField('ipHostnamePassiveExpand', e.target.checked)}
-                    />
-                    Also search subdomains of the *.domains above (passive)
-                  </label>
-                  <label className={styles.fieldLabel} htmlFor="ipHostnamePassiveMaxNames">Passive search: most names kept per run</label>
-                  <input
-                    id="ipHostnamePassiveMaxNames"
-                    type="number"
-                    className="textInput"
-                    min={1}
-                    max={10000}
-                    value={data.ipHostnamePassiveMaxNames ?? 500}
-                    onChange={(e) => updateField('ipHostnamePassiveMaxNames', parseInt(e.target.value) || 500)}
+                  <IpHostnamePreview
+                    projectId={mode === 'edit' ? projectId : undefined}
+                    mode={hostnameMode}
+                    include={data.ipHostnameInclude ?? []}
+                    exclude={data.ipHostnameExclude ?? []}
+                    maxScanned={data.ipHostnameMaxScanned ?? 100}
                   />
                 </>
               )}
 
               {hostnameMode === 'scan_all' && (
-                <label className="checkboxLabel">
-                  <input
-                    type="checkbox"
-                    className="checkbox"
-                    checked={data.ipHostnameScanAllConfirmed ?? false}
-                    onChange={(e) => updateField('ipHostnameScanAllConfirmed', e.target.checked)}
-                  />
-                  I confirm every hostname found on these IPs may be scanned (never on shared CDN edges)
-                </label>
+                <>
+                  <div className={`${styles.callout} ${styles.calloutDanger}`} role="note">
+                    <ShieldAlert size={16} />
+                    <span>
+                      <strong>Every hostname found on your IPs will be scanned</strong>, including sites
+                      you may not own (shared hosting). CDN edge addresses are always skipped. Use this
+                      only for servers that are entirely yours. Not available for third-party engagements.
+                    </span>
+                  </div>
+                  <label className="checkboxLabel">
+                    <input
+                      type="checkbox"
+                      className="checkbox"
+                      checked={data.ipHostnameScanAllConfirmed ?? false}
+                      aria-describedby={scanAllConfirmed ? undefined : `${hostnameLabelId}-confirm`}
+                      onChange={(e) => updateField('ipHostnameScanAllConfirmed', e.target.checked)}
+                    />
+                    I confirm every site hosted on these IPs is in scope.
+                  </label>
+                  {!scanAllConfirmed && (
+                    <span className={styles.fieldHintWarning} id={`${hostnameLabelId}-confirm`}>
+                      Required to save: Record + scan all needs this confirmation.
+                    </span>
+                  )}
+                </>
               )}
 
               {(hostnameMode === 'record_filter' || hostnameMode === 'scan_all') && (
-                <>
+                <details className={styles.ipHostnameAdvanced}>
+                  <summary>Advanced: per-run limits</summary>
                   <label className={styles.fieldLabel} htmlFor="ipHostnameMaxScanned">Most hostnames scanned per run</label>
                   <input
                     id="ipHostnameMaxScanned"
@@ -828,7 +813,21 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
                     value={data.ipHostnameMaxScanned ?? 100}
                     onChange={(e) => updateField('ipHostnameMaxScanned', parseInt(e.target.value) || 100)}
                   />
-                </>
+                  {hostnameMode === 'record_filter' && (
+                    <>
+                      <label className={styles.fieldLabel} htmlFor="ipHostnamePassiveMaxNames">Passive search: most names kept per run</label>
+                      <input
+                        id="ipHostnamePassiveMaxNames"
+                        type="number"
+                        className="textInput"
+                        min={1}
+                        max={10000}
+                        value={data.ipHostnamePassiveMaxNames ?? 500}
+                        onChange={(e) => updateField('ipHostnamePassiveMaxNames', parseInt(e.target.value) || 500)}
+                      />
+                    </>
+                  )}
+                </details>
               )}
             </div>
           )}

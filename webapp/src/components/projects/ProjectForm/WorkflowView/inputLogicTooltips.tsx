@@ -175,6 +175,7 @@ const Shodan = (
       <li>For each open port reported by Shodan, a <strong>Port</strong> node is created and linked to the IP via <span style={codeStyle}>HAS_PORT</span>.</li>
       <li>If a banner reveals a service, a <strong>Service</strong> node is created (with product, version, banner, module name) and linked via <span style={codeStyle}>RUNS_SERVICE</span>.</li>
       <li>Reverse-DNS hits that fall in scope create new <strong>Subdomain</strong> nodes; out-of-scope hits become <strong>ExternalDomain</strong> nodes for context.</li>
+      <li>In an IP-mode project, reverse DNS follows <strong>Hostnames on target IPs</strong> instead: it is off in IP only; in the recording modes every name is saved as a grey <strong>ExternalDomain</strong> linked to the IP it was seen on via <span style={codeStyle}>SEEN_ON</span> (sources, dates), and becomes a <strong>Subdomain</strong> only when Record + scan matching or Record + scan all selects it for scanning.</li>
       <li>Passive CVEs known to Shodan become <strong>Vulnerability</strong> + <strong>CVE</strong> nodes linked to the IP via <span style={codeStyle}>HAS_VULNERABILITY</span>.</li>
       <li>The IP node itself is enriched with OS, ISP, organization, country, city, and is marked as enriched by Shodan.</li>
     </ul>
@@ -204,6 +205,7 @@ const OsintEnrichment = (
       <li>Passive <strong>Vulnerability</strong> + <strong>CVE</strong> nodes for known CVEs the source has indexed against the IP.</li>
       <li>New <strong>Subdomain</strong> or <strong>DNSRecord</strong> nodes from passive DNS data.</li>
       <li><strong>ExternalDomain</strong> nodes for out-of-scope reverse-DNS hits, tagged with which source returned them.</li>
+      <li>In an IP-mode project the names from passive and reverse DNS follow <strong>Hostnames on target IPs</strong>: none is collected in IP only; otherwise each is saved as an <strong>ExternalDomain</strong> with <span style={codeStyle}>SEEN_ON</span> evidence on its IP, and only a name the mode selects for scanning becomes a <strong>Subdomain</strong>.</li>
       <li>Each IP is enriched with source-specific properties (Censys ASN data, NetLAS network info, OTX threat tags, etc.) and tagged as enriched by each source that touched it.</li>
     </ul>
     <p style={{ ...paraStyle, margin: 0 }}>
@@ -412,7 +414,7 @@ const IpAttribution = (
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
     <ul style={listStyle}>
-      <li>Each <strong>IP</strong> node gets an ownership tag: shared edge (a CDN edge serving many companies), dedicated (its default certificate covers a target domain) or unknown, with the reasons, the default certificate&apos;s names and how many names resolve to it.</li>
+      <li>Each <strong>IP</strong> node gets an ownership tag: shared edge (a CDN edge serving many companies), dedicated (its default certificate covers a target domain) or unknown, with the reasons, the default certificate&apos;s names and how many names resolve to it. In an IP-mode project that count is the hostnames seen on the IP: none in IP only, the names <strong>Hostnames on target IPs</strong> recorded in the other modes.</li>
       <li>A shared edge is also marked as a CDN on the IP node, without clearing a tag another scanner set.</li>
       <li>No node is created: an IP not already in the graph is not tagged.</li>
     </ul>

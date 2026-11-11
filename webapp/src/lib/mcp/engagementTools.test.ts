@@ -31,6 +31,9 @@ const h = vi.hoisted(() => ({
   busy: vi.fn(),
   audit: vi.fn(),
   fetch: vi.fn(),
+  // Hostnames on target IPs: the names the graph holds for preflight's last-run counts.
+  graphNames: [] as Record<string, unknown>[],
+  graphRuns: [] as Record<string, unknown>[],
 }))
 
 vi.mock('@/lib/prisma', () => {
@@ -56,6 +59,18 @@ vi.mock('@/lib/prisma', () => {
 })
 vi.mock('@/lib/graphWriters', () => ({ describeScanWriters: (...a: unknown[]) => h.busy(...a) }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+vi.mock('@/app/api/graph/neo4j', () => ({
+  getGraphSession: () => ({
+    run: async (q: string, p: Record<string, unknown>) => {
+      h.graphRuns.push(p)
+      const rows = q.includes('UNION ALL')
+        ? h.graphNames
+        : [{ ipCount: 1, sharedEdge: [], attributionFailed: [], attributed: 1, legacyNames: 0, seenEdges: 1 }]
+      return { records: rows.map(r => ({ get: (k: string) => r[k] })) }
+    },
+    close: async () => {},
+  }),
+}))
 
 import { McpScopeError, __resetRateLimiter } from '@/lib/mcpAuth'
 import {
@@ -1104,6 +1119,20 @@ describe('preflight_scope_check shows an IP project\'s hostname policy', () => {
     })
     expect(r.startable).toBe(true)
     expect(r.notes.join(' ')).toMatch(/scope\.hostnamePolicy/)
+  })
+
+  test('the last-run counts: every name found, and how many the saved policy would scan', async () => {
+    h.graphNames = [
+      { name: 'app.example.com', kind: 'recorded', reason: 'record_only', org: 'example.com', ips: ['203.0.113.1'], sources: ['ptr'] },
+      { name: 'old.example.com', kind: 'recorded', reason: 'record_only', org: 'example.com', ips: ['203.0.113.1'], sources: ['ptr'] },
+      { name: 'blog.other.test', kind: 'recorded', reason: 'record_only', org: 'other.test', ips: ['203.0.113.2'], sources: ['otx_passive_dns'] },
+    ]
+    h.findProject.mockResolvedValue(ipRow())
+    const r = await preflightScopeCheck(ctx(), 'p1')
+    expect(r.scope.hostnamePolicy).toMatchObject({ recordedLastRun: 3, wouldScanLastRun: 1 })
+    // The graph is read as the project's owner, for this project only.
+    expect(h.graphRuns.every(p => p.pid === 'p1' && typeof p.uid === 'string' && p.uid !== '')).toBe(true)
+    h.graphNames = []
   })
 
   test('an unconfirmed scan_all makes the project unstartable, with the reason', async () => {

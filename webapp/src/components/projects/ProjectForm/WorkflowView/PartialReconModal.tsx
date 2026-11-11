@@ -5,6 +5,7 @@ import { Play, Loader2, ArrowRight, Upload, FileText, Trash2, Info } from 'lucid
 import { Modal, Tooltip, WikiInfoButton } from '@/components/ui'
 import { type IpTargetMatcher, type ProjectRoots, admitsPartialHost, ipModeRefusal, ipTargetMatcher } from '@/lib/partialReconScope'
 import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
+import { ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 import { isValidDomain } from '@/lib/validation'
 import { announceProjectWrite } from '@/lib/projectVersion'
 import { errorMessage, fetchJson, formatApiError, readApiError, toApiError } from '@/lib/apiError'
@@ -429,6 +430,7 @@ export function PartialReconModal({
   const [graphReadError, setGraphReadError] = useState<string | null>(null)
   const [userSettings, setUserSettings] = useState<Record<string, string> | null>(null)
   const [customSubdomains, setCustomSubdomains] = useState('')
+  const [ipHostnames, setIpHostnames] = useState<{ mode: string; recorded: number | null } | null>(null)
   const [customIps, setCustomIps] = useState('')
   const [ipAttachTo, setIpAttachTo] = useState<string | null>(null)
   const [customPorts, setCustomPorts] = useState('')
@@ -456,6 +458,29 @@ export function PartialReconModal({
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const jsFileInputRef = useRef<HTMLInputElement>(null)
+
+  // IP mode: the saved hostname mode and how many names the last run recorded.
+  const isIpProject = ipTargets != null
+  useEffect(() => {
+    if (!isOpen || !projectId || !isIpProject) {
+      setIpHostnames(null)
+      return
+    }
+    let alive = true
+    setIpHostnames(null)
+    fetchJson<{ mode?: unknown; totals?: { recorded?: unknown } }>(
+      `/api/projects/${encodeURIComponent(projectId)}/ip-hostnames?limit=1`, undefined,
+      "Couldn't read the project's hostname mode",
+    )
+      .then(body => {
+        if (!alive) return
+        setIpHostnames(typeof body?.mode === 'string'
+          ? { mode: body.mode, recorded: typeof body.totals?.recorded === 'number' ? body.totals.recorded : null }
+          : null)
+      })
+      .catch(() => { if (alive) setIpHostnames(null) })
+    return () => { alive = false }
+  }, [isOpen, projectId, isIpProject])
 
   // A string, so a fresh projectRoots array on every parent render does not refetch.
   const formRootsKey = (projectRoots?.length ? projectRoots : (targetDomain ? [targetDomain] : [])).join(',')
@@ -627,7 +652,12 @@ export function PartialReconModal({
   const isOriginDiscovery = toolId === 'OriginDiscovery'
   const hasUserInputs = isPortScanner || isNmap || isTlsx || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isSerializedScan || isRouteExposure || isOriginDiscovery
   const hasIpInput = isPortScanner || isNmap || isTlsx || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
-  const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
+  const toolTakesSubdomains = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
+  // No typed hostname in an IP project, in any mode: the orchestrator refuses
+  // every one there today (batch_scope.filter_partial_user_input), and the check
+  // that will admit a name the hostname policy scans is P6's. A box whose every
+  // line is refused would only disable Run.
+  const hasSubdomainInput = toolTakesSubdomains && ipTargets == null
   const hasPortInput = isNmap || isTlsx || isHttpx
   // GraphqlScan / WebCachePoison SECTION_INPUT_MAP = [BaseURL, Endpoint]. Per
   // PROMPT.ADD_PARTIAL_RECON.md, BaseURL-accepting tools get a URL textarea;
@@ -1163,6 +1193,19 @@ export function PartialReconModal({
             backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
           }}>
             Origin Discovery needs CDN-fronted hosts from a prior HTTP-probe scan, or a fronted subdomain entered below. This project has no fronted hosts in the graph yet.
+          </div>
+        )}
+
+        {ipTargets != null && ipHostnames?.mode === 'record_only' && ipHostnames.recorded !== null && (
+          <div style={noteStyle} data-testid="partial-recon-ip-recorded">
+            {ipHostnames.recorded} name{ipHostnames.recorded === 1 ? '' : 's'} recorded, not scanned
+            (Hostnames on target IPs: {ipHostnameModeLabel('record_only')}).
+          </div>
+        )}
+        {toolTakesSubdomains && ipTargets != null && (
+          <div style={noteStyle} data-testid="partial-recon-ip-names-off">
+            Typed hostnames are not taken in an IP-mode project: its hostnames come only from
+            Hostnames on target IPs{ipHostnames ? ` (${ipHostnameModeLabel(ipHostnames.mode)})` : ''}.
           </div>
         )}
 

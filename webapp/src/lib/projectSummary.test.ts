@@ -53,3 +53,34 @@ describe('toProjectSummary', () => {
     expect(s.scopeGroups?.map(g => g.scanRoot)).toEqual(['example.com'])
   })
 })
+
+describe('IP mode: the hostname mode joins the target label (04_ui_spec.md §5)', () => {
+  test('"N IP targets · <mode label>" when the read carries the mode', () => {
+    expect(projectTargetLabel({ ipMode: true, targetIps: ['203.0.113.10'], ipHostnameMode: 'record_only' }))
+      .toBe('1 IP target · Record hostnames')
+    expect(projectTargetLabel({ ipMode: true, targetIps: ['203.0.113.10', '198.51.100.0/30'], ipHostnameMode: 'ip_only' }))
+      .toBe('2 IP targets · IP only')
+  })
+
+  test('a read without the mode keeps the count alone: absent is not "IP only"', () => {
+    expect(projectTargetLabel({ ipMode: true, targetIps: ['203.0.113.10'] })).toBe('1 IP target')
+    expect(projectTargetLabel({ ipMode: true, targetIps: ['203.0.113.10'], ipHostnameMode: null })).toBe('1 IP target')
+  })
+
+  test('an unknown stored mode reads as ip_only, as recon reads it', () => {
+    expect(projectTargetLabel({ ipMode: true, targetIps: ['203.0.113.10'], ipHostnameMode: 'everything' }))
+      .toBe('1 IP target · IP only')
+  })
+
+  test('the summary carries the policy only when the read did', () => {
+    const s = toProjectSummary({
+      ...READ, targetDomain: '', ipMode: true, targetIps: ['203.0.113.10'], ipHostnameMode: 'record_filter',
+      ipHostnameInclude: ['*.example.com'], ipHostnameExclude: ['old.example.com'], ipHostnameScanAllConfirmed: false,
+    })
+    expect([s.ipHostnameMode, s.ipHostnameInclude, s.ipHostnameExclude, s.ipHostnameScanAllConfirmed])
+      .toEqual(['record_filter', ['*.example.com'], ['old.example.com'], false])
+    expect(s.targetLabel).toBe('1 IP target · Record + scan matching')
+    const bare = toProjectSummary({ ...READ, targetDomain: '', ipMode: true, targetIps: ['203.0.113.10'] })
+    expect('ipHostnameMode' in bare || 'ipHostnameInclude' in bare || 'ipHostnameScanAllConfirmed' in bare).toBe(false)
+  })
+})

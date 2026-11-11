@@ -26,6 +26,15 @@ describe('the scan roots under a Domain (§4.11.7)', () => {
     expect(domainScopeRoots(d, undefined)).toEqual({ current: ['api.example.com'], removed: [] })
   })
 
+  test('an IP-mode project\'s org Domain lists no scan roots (design §6.1, unchanged)', () => {
+    // It carries ip_hostname_org, no ip_mode and no recon_coverage_roots (the IP
+    // path writes its coverage record on the mock root), and an IP-mode project
+    // has no scope groups: the drawer counts its scanned hostnames instead.
+    const org = node('Domain', 'example.com', { ip_hostname_org: true })
+    expect(domainScopeRoots(org, [])).toBeNull()
+    expect(domainScopeRoots(org, undefined)).toBeNull()
+  })
+
   test('an old graph with nothing to say shows nothing', () => {
     expect(domainScopeRoots(node('Domain', 'unrelated.test'), groups)).toBeNull()
     expect(domainScopeRoots(node('Domain', 'ip-targets.p1', { ip_mode: true }), groups)).toBeNull()

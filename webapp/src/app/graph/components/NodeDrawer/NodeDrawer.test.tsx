@@ -352,3 +352,158 @@ describe('NodeDrawer route exposure block', () => {
     expect(screen.queryByTestId('route-exposure-section')).toBeNull()
   })
 })
+
+describe('NodeDrawer hostnames on target IPs (04_ui_spec §5)', () => {
+  const ipA: GraphNode = { id: 'ip1', type: 'IP', name: '203.0.113.10', properties: { address: '203.0.113.10' } }
+  const ipB: GraphNode = { id: 'ip2', type: 'IP', name: '203.0.113.11', properties: { address: '203.0.113.11' } }
+  const recorded = (properties: Record<string, unknown>): GraphNode =>
+    ({ id: 'ed1', type: 'ExternalDomain', name: 'old.example.com', properties })
+
+  it('a recorded name lists the IPs of its SEEN_ON links, its sources and the reason in words', () => {
+    const ed = recorded({
+      ip_hostname_reason: 'resolves_outside_targets', sources: ['tlsx_san', 'ptr'], ips_seen: ['198.51.100.99'],
+    })
+    renderDrawer({ node: ed, graphData: { projectId: 'p', nodes: [ed, ipA, ipB], links: [
+      { source: 'ed1', target: 'ip1', type: 'SEEN_ON' },
+      { source: 'ed1', target: 'ip2', type: 'SEEN_ON' },
+      { source: 'ed1', target: 'ip2', type: 'HAS_EXTERNAL_DOMAIN' },
+    ] } })
+    const block = screen.getByTestId('ip-hostname-seen-on')
+    expect(within(block).getByRole('heading', { name: 'Seen on target IPs' })).toBeInTheDocument()
+    expect(block).toHaveTextContent('points outside your IPs')
+    expect(block).not.toHaveTextContent('resolves_outside_targets')
+    expect(within(block).getAllByRole('listitem').map(li => li.textContent)).toEqual(['203.0.113.10', '203.0.113.11'])
+    expect(block).toHaveTextContent('tlsx_san, ptr')
+  })
+
+  it('a link whose ends were resolved to node objects counts the same', () => {
+    const ed = recorded({ ip_hostname_reason: 'record_only' })
+    renderDrawer({ node: ed, graphData: { projectId: 'p', nodes: [ed, ipA], links: [
+      { source: ed, target: ipA, type: 'SEEN_ON' },
+    ] } })
+    const block = screen.getByTestId('ip-hostname-seen-on')
+    expect(block).toHaveTextContent('recorded only: this mode scans the IPs, not the names')
+    expect(within(block).getByRole('listitem')).toHaveTextContent('203.0.113.10')
+  })
+
+  it('without the IP nodes at hand the node\'s own ips_seen is listed', () => {
+    const ed = recorded({ ip_hostname_reason: 'filter_no_match', ips_seen: ['203.0.113.12'] })
+    renderDrawer({ node: ed, graphData: { projectId: 'p', nodes: [ed], links: [] } })
+    expect(within(screen.getByTestId('ip-hostname-seen-on')).getByRole('listitem')).toHaveTextContent('203.0.113.12')
+  })
+
+  it('the per-IP SEEN_ON evidence is read from the preview route by the name', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ recorded: [{
+        name: 'old.example.com', seen: [
+          { ip: '203.0.113.10', sources: ['tlsx_san'], first_seen: '2026-01-02T00:00:00Z', last_seen: '2026-10-30',
+            resolves_here: false, cert_covers: true },
+          { ip: '203.0.113.11', sources: ['otx_passive_dns'], first_seen: null, last_seen: null,
+            resolves_here: null, cert_covers: false },
+        ],
+      }] }), { status: 200 })
+    }))
+    try {
+      const ed = recorded({ ip_hostname_reason: 'resolves_outside_targets', domain: 'old.example.com', project_id: 'p9' })
+      renderDrawer({ node: ed, graphData: { projectId: 'p9', nodes: [ed, ipA], links: [
+        { source: 'ed1', target: 'ip1', type: 'SEEN_ON' },
+      ] } })
+      const edges = await screen.findByTestId('ip-hostname-seen-on-edges')
+      expect(within(edges).getAllByRole('listitem').map(li => li.textContent)).toEqual([
+        '203.0.113.10 · tlsx_san · seen 2026-01-02 to 2026-10-30 · resolves here now: no · certificate covers it: yes',
+        '203.0.113.11 · otx_passive_dns · resolves here now: unknown · certificate covers it: no',
+      ])
+      expect(urls).toEqual(['/api/projects/p9/ip-hostnames?limit=1&name=old.example.com'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('when the route cannot answer, the IPs the drawer knows stay listed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 500 })))
+    try {
+      const ed = recorded({ ip_hostname_reason: 'record_only', project_id: 'p9' })
+      renderDrawer({ node: ed, graphData: { projectId: 'p9', nodes: [ed, ipA], links: [
+        { source: 'ed1', target: 'ip1', type: 'SEEN_ON' },
+      ] } })
+      await waitFor(() => expect(fetch).toHaveBeenCalled())
+      expect(screen.queryByTestId('ip-hostname-seen-on-edges')).toBeNull()
+      expect(within(screen.getByTestId('ip-hostname-seen-on')).getByRole('listitem')).toHaveTextContent('203.0.113.10')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('an unknown reason code is never shown raw', () => {
+    renderDrawer({ node: recorded({ ip_hostname_reason: 'some_future_code' }) })
+    const block = screen.getByTestId('ip-hostname-seen-on')
+    expect(block).toHaveTextContent('recorded, not scanned')
+    expect(screen.queryByText(/some_future_code/)).toBeNull()
+  })
+
+  it('the raw codes leave the property list; the other properties stay', () => {
+    renderDrawer({ node: recorded({
+      ip_hostname_reason: 'filter_excluded', sources: ['ptr'], ips_seen: ['203.0.113.10'], ip_hostname_org: 'example.com',
+    }) })
+    const props = screen.getByRole('heading', { name: 'Properties' }).parentElement!
+    for (const key of ['ip_hostname_reason', 'sources', 'ips_seen']) expect(within(props).queryByText(key)).toBeNull()
+    expect(within(props).getByText('ip_hostname_org')).toBeInTheDocument()
+  })
+
+  it('an ExternalDomain without a hostname reason (a redirect host) has no block', () => {
+    renderDrawer({ node: recorded({ redirect_from_urls: ['https://example.com/'] }) })
+    expect(screen.queryByTestId('ip-hostname-seen-on')).toBeNull()
+  })
+
+  it('an org Domain says it is on target IPs and counts its scanned hostnames', () => {
+    const org: GraphNode = { id: 'd1', type: 'Domain', name: 'example.com', properties: { ip_hostname_org: true } }
+    const sub = (id: string, reason: string): GraphNode =>
+      ({ id, type: 'Subdomain', name: `${id}.example.com`, properties: { ip_hostname_reason: reason } })
+    const [a, b, c] = [sub('app', 'scanned'), sub('shop', 'scanned'), sub('old', 'out_of_policy')]
+    renderDrawer({ node: org, graphData: { projectId: 'p', nodes: [org, a, b, c], links: [
+      { source: 'd1', target: 'app', type: 'HAS_SUBDOMAIN' },
+      { source: 'shop', target: 'd1', type: 'BELONGS_TO' },
+      { source: 'd1', target: 'shop', type: 'HAS_SUBDOMAIN' },
+      { source: 'd1', target: 'old', type: 'HAS_SUBDOMAIN' },
+    ] } })
+    expect(screen.getByText('Domain (organisation · on target IPs)')).toBeInTheDocument()
+    expect(screen.getByTestId('ip-hostname-org')).toHaveTextContent('2 hostnames scanned on target IPs')
+  })
+
+  it('the IP-mode root keeps "Domain", an ordinary org Domain keeps its badge', () => {
+    renderDrawer({ node: { id: 'r', type: 'Domain', name: 'ip-targets.p1', properties: { ip_mode: true, is_mock: true } } })
+    expect(screen.getByText('Domain')).toBeInTheDocument()
+    expect(screen.queryByTestId('ip-hostname-org')).toBeNull()
+    cleanup()
+    renderDrawer({ node: { id: 'd', type: 'Domain', name: 'example.com', properties: {} } })
+    expect(screen.getByText('Domain (organisation)')).toBeInTheDocument()
+  })
+
+  it('a scanned Subdomain shows the sources that found it', () => {
+    renderDrawer({ node: { id: 's', type: 'Subdomain', name: 'app.example.com', properties: {
+      source: 'ip_hostname_selection', ip_hostname_reason: 'scanned', ip_hostname_sources: ['ptr', 'tlsx_san'],
+    } } })
+    const block = screen.getByTestId('ip-hostname-subdomain')
+    expect(block).toHaveTextContent('Found on target IPs by')
+    expect(block).toHaveTextContent('ptr, tlsx_san')
+    expect(block).not.toHaveTextContent('No longer in the hostname policy')
+  })
+
+  it('an out_of_policy Subdomain says since when it left the policy', () => {
+    renderDrawer({ node: { id: 's', type: 'Subdomain', name: 'old.example.com', properties: {
+      source: 'ip_hostname_selection', ip_hostname_reason: 'out_of_policy',
+      ip_hostname_evaluated_at: { year: 2026, month: 11, day: 10, hour: 9, minute: 5, second: 0 },
+    } } })
+    expect(screen.getByTestId('ip-hostname-subdomain'))
+      .toHaveTextContent('No longer in the hostname policy (since 2026-11-10)')
+    const props = screen.getByRole('heading', { name: 'Properties' }).parentElement!
+    expect(within(props).queryByText('out_of_policy')).toBeNull()
+  })
+
+  it('a domain-mode Subdomain has no hostname block', () => {
+    renderDrawer({ node: { id: 's', type: 'Subdomain', name: 'www.example.com', properties: {} } })
+    expect(screen.queryByTestId('ip-hostname-subdomain')).toBeNull()
+  })
+})

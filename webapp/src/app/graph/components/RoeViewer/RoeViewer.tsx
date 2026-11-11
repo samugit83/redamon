@@ -16,6 +16,7 @@ import { clearRoeEntry, setRoeEntry, useRoeEntry, useRoeMounted } from '@/compon
 import { roeAppliedSummary } from '@/components/roe/roeAppliedSummary'
 import styles from './RoeViewer.module.css'
 import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '@/components/projects/ProjectForm/ipHostnameModes'
 
 /**
  * The read-only engagement panel, split the way the model is.
@@ -73,6 +74,10 @@ interface RoeViewerProps {
     targetDomain?: string
     targetIps?: string[]
     scopeGroups?: ScopeGroup[]
+    ipMode?: boolean
+    ipHostnameMode?: string
+    ipHostnameInclude?: string[]
+    ipHostnameExclude?: string[]
     [key: string]: unknown
   }
 }
@@ -365,6 +370,18 @@ export function RoeViewer({ projectId, project }: RoeViewerProps) {
           )}
           {project.targetIps && project.targetIps.length > 0 && (
             <div className={styles.row}><span>IP Ranges</span><strong>{project.targetIps.join(', ')}</strong></div>
+          )}
+          {/* A read without the column says nothing about the policy, and
+              guessing "IP only" would misstate what the scan reaches. */}
+          {project.ipMode === true && typeof project.ipHostnameMode === 'string' && (
+            <div className={styles.row} data-testid="roe-ip-hostname-mode">
+              <span>{IP_HOSTNAME_SECTION_LABEL}</span>
+              <strong>
+                {ipHostnameModeLabel(project.ipHostnameMode)}
+                {project.ipHostnameMode === 'record_filter' &&
+                  ` · include ${(project.ipHostnameInclude ?? []).length}, exclude ${(project.ipHostnameExclude ?? []).length}`}
+              </strong>
+            </div>
           )}
           {excludedHosts.length > 0 && (
             <div className={styles.row}><span>Exclusions</span><strong>{excludedHosts.length} hosts</strong></div>

@@ -1,0 +1,121 @@
+.modal {
+  color: var(--form-ink);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--form-ink);
+}
+
+.sentence {
+  margin: 0;
+}
+
+.list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.traffic {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px var(--space-3);
+  margin: 0;
+}
+
+.traffic dt {
+  font-weight: var(--font-semibold);
+  color: var(--form-ink-muted);
+}
+
+.traffic dd {
+  margin: 0;
+}
+
+.danger {
+  margin: 0;
+  padding: 8px 10px;
+  font-weight: var(--font-semibold);
+  color: var(--form-danger);
+  background: color-mix(in srgb, var(--form-danger) 10%, transparent);
+  border-left: 3px solid var(--form-danger);
+  border-radius: var(--radius-default);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+/* The comparison scrolls inside its own box on a phone, never the dialog. */
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--form-field-border);
+  border-radius: var(--radius-default);
+}
+
+.table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--table-row-border);
+}
+
+.table thead th {
+  background: var(--table-header-bg);
+  color: var(--table-header-fg);
+  white-space: nowrap;
+}
+
+.table thead th[aria-current="true"] {
+  color: var(--accent-primary);
+}
+
+.table tbody th {
+  font-weight: var(--font-semibold);
+  color: var(--form-ink-muted);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.footerSpacer {
+  flex: 1;
+}
+
+@media (max-width: 639px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}

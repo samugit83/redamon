@@ -40,6 +40,8 @@ import {
 } from '@/lib/scopeGroups'
 import { validateCrossFieldRules } from '@/lib/reconSettings/crossField'
 import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
+import { lastRunCounts } from '@/lib/ipHostnamePreview'
+import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import {
   currentAuthorization,
@@ -890,8 +892,7 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       hostnamePolicy: row.ipMode === true
         ? {
             ...ipHostnamePolicySummary(row as ScopeFields),
-            recordedLastRun: null,
-            wouldScanLastRun: null,
+            ...(await lastRunCounts(getGraphSession, { ...(row as ScopeFields), id: projectId, userId: ctx.token.userId })),
             problem: hostnameProblem,
           }
         : null,

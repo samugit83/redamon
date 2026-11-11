@@ -1,0 +1,173 @@
+/* The list is its own container, so the narrow layout follows the width the
+   cards get: a phone, or the workflow node modal on a wide screen. */
+.cards {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--form-field-border);
+  border-radius: 10px;
+}
+
+.card {
+  --mode-accent: var(--color-violet-400);
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  background: var(--form-field-bg);
+  transition: background 0.15s ease;
+}
+
+:global([data-theme="light"]) .card {
+  --mode-accent: var(--color-violet-700);
+}
+
+.card + .card {
+  border-top: 1px solid var(--form-field-border);
+}
+
+.card:hover:not(.cardDisabled) {
+  background: color-mix(in srgb, var(--form-ink) 4%, var(--form-field-bg));
+}
+
+/* An inset ring marks the pick without shifting the layout. */
+.cardChecked,
+.cardChecked:hover:not(.cardDisabled) {
+  background: color-mix(in srgb, var(--mode-accent) 11%, var(--form-field-bg));
+  box-shadow: inset 3px 0 0 var(--mode-accent);
+}
+
+.cardDisabled .cardLabel {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cardLabel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.radio {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: var(--mode-accent);
+}
+
+.radio:focus-visible {
+  outline: 2px solid var(--form-focus);
+  outline-offset: 2px;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--form-ink);
+}
+
+.cardChecked .title {
+  color: var(--mode-accent);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  color: var(--form-ink-muted);
+  border: 1px solid var(--form-field-border);
+  border-radius: 999px;
+}
+
+.badgeWarn {
+  color: var(--form-warning);
+  border-color: var(--form-warning);
+}
+
+.summary {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--form-ink-muted);
+}
+
+.reason {
+  color: var(--form-danger);
+}
+
+.helpButton {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 32px;
+  margin: 8px 10px 0 0;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--form-ink-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-default);
+  cursor: pointer;
+}
+
+.helpButton:hover {
+  color: var(--form-ink);
+  border-color: var(--form-field-border);
+}
+
+.helpButton:focus-visible {
+  outline: 2px solid var(--form-focus);
+  outline-offset: 2px;
+}
+
+/* 799, not the spec's 640: the workflow node modal (768 px wide) gives the
+   cards about 740 px, and inside it they must take the narrow layout too. */
+@container (max-width: 799px) {
+  /* The badge wraps under the label; the info button keeps the top-right
+     corner with a 44 px target. */
+  .head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .cardLabel {
+    padding-right: 52px;
+  }
+
+  .helpButton {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+  }
+
+  .helpText {
+    display: none;
+  }
+}

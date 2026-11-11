@@ -8,7 +8,8 @@
  */
 
 import type { ReportData, VulnFinding, CveChain, ExploitRecord, JsReconCoverage } from './reportData'
-import { type ScopeGroup, groupLabel, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
+import { type ScopeGroup, groupLabel, ipHostnameModeOf, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import { validationLabel } from '@/lib/secrets/validationStatus'
 import { ownershipLabel } from '@/lib/ipOwnership'
@@ -708,11 +709,27 @@ function renderExecutiveSummary(data: ReportData, narrative?: string): string {
 </div>`
 }
 
+/** The empty Scanned-hostnames cell, which must not read as "nothing exists":
+ *  IP only never looks a name up, and the other modes record what they find in
+ *  the Recorded column. */
+function scannedEmptyText(mode: string, recordedCount: number): string {
+  if (mode === 'ip_only') return 'IP only: hostnames not looked up'
+  return recordedCount > 0 ? 'None scanned' : 'No hostname found'
+}
+
+/** The hostname mode in the client's words, with what the graph holds. */
+function hostnamePolicyLine(mode: string, totals: { recorded: number; scanned: number } | undefined): string {
+  const label = esc(ipHostnameModeLabel(mode))
+  if (mode === 'ip_only') return `${label} (hostnames not looked up)`
+  return totals ? `${label} · ${totals.recorded} recorded, ${totals.scanned} scanned` : label
+}
+
 export function renderScope(data: ReportData, narrative?: string): string {
   const { project, graphOverview } = data
   const p = project as any
   const isIpMode = p.ipMode === true
   const isBatchMode = p.domainBatchMode === true
+  const hostnameMode = ipHostnameModeOf(p.ipHostnameMode)
 
   // Rules of Engagement
   let roeTable = ''
@@ -769,22 +786,30 @@ export function renderScope(data: ReportData, narrative?: string): string {
       mappingTable = `<h3>Subdomain Resolution Map</h3><p style="color:#6b7280;font-style:italic">No subdomains discovered.</p>`
     }
   } else {
-    // IP Target Map (IP mode)
+    // IP Target Map (IP mode). Hostnames are the names scanned on the IP under
+    // the current policy (reportData drops placeholders and out-of-policy names);
+    // names only recorded there are a count and a sample, never a target.
     const mappings = graphOverview.ipMappings || []
     if (mappings.length > 0) {
       const rows = mappings.map(m => {
+        const recordedCount = m.recordedCount ?? 0
+        const recordedSample = m.recordedSample ?? []
         const hostnames = m.hostnames.length > 0
           ? m.hostnames.map(h => esc(h)).join('<br/>')
-          : '<span style="color:#9ca3af;font-style:italic">No reverse DNS</span>'
+          : `<span style="color:#9ca3af;font-style:italic">${scannedEmptyText(hostnameMode, recordedCount)}</span>`
+        const recorded = recordedCount > 0
+          ? `${recordedCount}: ${recordedSample.map(h => esc(h)).join(', ')}`
+            + (recordedCount > recordedSample.length ? ` and ${recordedCount - recordedSample.length} more` : '')
+          : '<span style="color:#9ca3af">-</span>'
         const cdn = m.isCdn && m.cdnName
           ? `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:#dbeafe;color:#1d4ed8">${esc(m.cdnName)}</span>`
           : '<span style="color:#9ca3af">-</span>'
-        return `<tr><td>${esc(m.ip)}</td><td>${esc(m.version || '')}</td><td>${hostnames}</td><td>${cdn}</td><td>${esc(ownershipLabel(m.ownership))}</td><td>${m.openPorts}</td></tr>`
+        return `<tr><td>${esc(m.ip)}</td><td>${esc(m.version || '')}</td><td>${hostnames}</td><td>${recorded}</td><td>${cdn}</td><td>${esc(ownershipLabel(m.ownership))}</td><td>${m.openPorts}</td></tr>`
       }).join('')
       mappingTable = `
   <h3>IP Target Map</h3>
   <table class="data-table">
-    <thead><tr><th>IP Address</th><th>Version</th><th>Hostnames</th><th>CDN</th><th>Ownership</th><th>Open Ports</th></tr></thead>
+    <thead><tr><th>IP Address</th><th>Version</th><th>Scanned hostnames</th><th>Recorded hostnames</th><th>CDN</th><th>Ownership</th><th>Open Ports</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`
     } else {
@@ -802,6 +827,7 @@ export function renderScope(data: ReportData, narrative?: string): string {
 
   const targetRow = isIpMode
     ? `<tr><td>Target IPs / CIDRs</td><td>${esc((project.targetIps || []).join(', ') || 'N/A')}</td></tr>`
+      + `<tr><td>${IP_HOSTNAME_SECTION_LABEL}</td><td>${hostnamePolicyLine(hostnameMode, graphOverview.ipHostnames)}</td></tr>`
     : isBatchMode
       ? `<tr><td>Target scope (batch)</td><td>${esc(scopeSummary(groups) || 'N/A')}</td></tr>${groupRows}`
       : `<tr><td>Target Domain</td><td>${esc(project.targetDomain || 'N/A')}</td></tr>`
