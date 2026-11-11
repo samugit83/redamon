@@ -85,6 +85,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'NAABU_THREADS': 25,
     'NAABU_TIMEOUT': 10000,
     'NAABU_RETRIES': 1,
+    'NAABU_RUN_TIMEOUT': 1800,
     'NAABU_SCAN_TYPE': 's',
     'NAABU_EXCLUDE_CDN': False,
     'NAABU_DISPLAY_CDN': True,
@@ -1540,6 +1541,7 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['NAABU_THREADS'] = project.get('naabuThreads', DEFAULT_SETTINGS['NAABU_THREADS'])
     settings['NAABU_TIMEOUT'] = project.get('naabuTimeout', DEFAULT_SETTINGS['NAABU_TIMEOUT'])
     settings['NAABU_RETRIES'] = project.get('naabuRetries', DEFAULT_SETTINGS['NAABU_RETRIES'])
+    settings['NAABU_RUN_TIMEOUT'] = project.get('naabuRunTimeout', DEFAULT_SETTINGS['NAABU_RUN_TIMEOUT'])
     settings['NAABU_SCAN_TYPE'] = project.get('naabuScanType', DEFAULT_SETTINGS['NAABU_SCAN_TYPE'])
     settings['NAABU_EXCLUDE_CDN'] = project.get('naabuExcludeCdn', DEFAULT_SETTINGS['NAABU_EXCLUDE_CDN'])
     settings['NAABU_DISPLAY_CDN'] = project.get('naabuDisplayCdn', DEFAULT_SETTINGS['NAABU_DISPLAY_CDN'])

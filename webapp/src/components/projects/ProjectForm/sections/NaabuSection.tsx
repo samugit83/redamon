@@ -154,6 +154,21 @@ export function NaabuSection({ data, updateField, onRun }: NaabuSectionProps) {
               </div>
 
               <div className={styles.fieldGroup}>
+                <label className={styles.fieldLabel}>Run Timeout (s)</label>
+                <input
+                  type="number"
+                  className="textInput"
+                  value={data.naabuRunTimeout ?? 1800}
+                  onChange={(e) => updateField('naabuRunTimeout', parseInt(e.target.value) || 1800)}
+                  min={1}
+                  max={86400}
+                />
+                <span className={styles.fieldHint}>
+                  Cap on the whole naabu run, in seconds. When it is reached the container is stopped and the scan goes on: the open ports found so far are kept, and the targets naabu had not finished are recorded as not checked, never as having no open port. A low rate limit (or the engagement ceiling) slows the run, so a long target list may need more.
+                </span>
+              </div>
+
+              <div className={styles.fieldGroup}>
                 <label className={styles.fieldLabel}>Scan Type</label>
                 <select
                   className="select"

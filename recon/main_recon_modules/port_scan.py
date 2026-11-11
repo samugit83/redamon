@@ -594,6 +594,7 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             ("NAABU_THREADS", "Performance"),
             ("NAABU_TIMEOUT", "Performance"),
             ("NAABU_RETRIES", "Performance"),
+            ("NAABU_RUN_TIMEOUT", "Performance"),
             ("NAABU_SCAN_TYPE", "Behavior"),
             ("NAABU_EXCLUDE_CDN", "Behavior"),
             ("NAABU_DISPLAY_CDN", "Behavior"),
@@ -681,7 +682,7 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         from recon.helpers.docker_helpers import kill_container, tool_container_name
         scan_succeeded = False
         timed_out = False
-        run_timeout = 1800  # 30 min
+        run_timeout = int(settings.get('NAABU_RUN_TIMEOUT', 1800))
         actual_scan_type = NAABU_SCAN_TYPE
 
         for attempt, scan_type in enumerate([NAABU_SCAN_TYPE, 'c'] if NAABU_SCAN_TYPE == 's' else [NAABU_SCAN_TYPE]):

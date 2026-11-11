@@ -566,6 +566,7 @@ model Project {
   naabuThreads                Int      @default(25) @map("naabu_threads")
   naabuTimeout                Int      @default(10000) @map("naabu_timeout")
   naabuRetries                Int      @default(1) @map("naabu_retries")
+  naabuRunTimeout             Int      @default(1800) @map("naabu_run_timeout")
   naabuScanType               String   @default("s") @map("naabu_scan_type")
   naabuExcludeCdn             Boolean  @default(false) @map("naabu_exclude_cdn")
   naabuDisplayCdn             Boolean  @default(true) @map("naabu_display_cdn")

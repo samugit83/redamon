@@ -7953,6 +7953,27 @@
    "type": "int",
    "unit": "count"
   },
+  "naabuRunTimeout": {
+   "bounds": {
+    "min": 1,
+    "max": 86400
+   },
+   "default": 1800,
+   "form_section": "NaabuSection",
+   "group": "unbounded",
+   "has_default": true,
+   "mcp": "settable",
+   "meaning": "Wall-clock cap, in seconds, on one naabu run over every port-scan target (the CONNECT scan naabu falls back to after a failed SYN scan gets its own). A run that hits it is stopped with its container (not just the docker client) and is not retried: the open ports naabu had written by then are kept, and every target it wrote none for is recorded as not checked, so its earlier findings are kept rather than pruned and none of its ports is read as closed. A run cut before it wrote any port leaves no port data, as a failed scan does. The scan goes on. A low naabuRateLimit, or the engagement ceiling that caps it, makes the run slower, so a long target list may need more than the default.",
+   "optional": false,
+   "phase": "port_scan",
+   "prisma_type": "Int",
+   "roe_capped": false,
+   "runtime_key": "NAABU_RUN_TIMEOUT",
+   "tool": "naabu",
+   "traffic": "active",
+   "type": "int",
+   "unit": "seconds"
+  },
   "naabuScanType": {
    "default": "s",
    "form_section": "NaabuSection",
@@ -8032,7 +8053,7 @@
    "group": "unbounded",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "How long naabu waits for a port to answer, in MILLISECONDS. At the default of 10000 a full sweep of an unresponsive host is slow; below about 1000 a distant host starts reading as closed.",
+   "meaning": "How long naabu waits for a port to answer, in MILLISECONDS. At the default of 10000 a full sweep of an unresponsive host is slow; below about 1000 a distant host starts reading as closed. NOT a cap on the whole run: that is naabuRunTimeout.",
    "optional": false,
    "phase": "port_scan",
    "prisma_type": "Int",

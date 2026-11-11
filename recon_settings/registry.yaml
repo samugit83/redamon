@@ -5954,6 +5954,27 @@ fields:
     bounds: { min: 0, max: 10 }
     meaning: >-
       How many times naabu retries a failed request before giving up on it.
+  naabuRunTimeout:
+    tool: naabu
+    runtime_key: "NAABU_RUN_TIMEOUT"
+    unit: seconds
+    phase: port_scan
+    traffic: active
+    roe_capped: false
+    mcp: settable
+    bounds: { min: 1, max: 86400 }
+    group: unbounded
+    meaning: >-
+      Wall-clock cap, in seconds, on one naabu run over every port-scan target
+      (the CONNECT scan naabu falls back to after a failed SYN scan gets its own).
+      A run that hits it is stopped with its container (not just the docker
+      client) and is not retried: the open ports naabu had written by then are
+      kept, and every target it wrote none for is recorded as not checked, so its
+      earlier findings are kept rather than pruned and none of its ports is read
+      as closed. A run cut before it wrote any port leaves no port data, as a
+      failed scan does. The scan goes on. A low naabuRateLimit, or the engagement
+      ceiling that caps it, makes the run slower, so a long target list may need
+      more than the default.
   naabuScanType:
     tool: naabu
     runtime_key: "NAABU_SCAN_TYPE"
@@ -6009,7 +6030,8 @@ fields:
     meaning: >-
       How long naabu waits for a port to answer, in MILLISECONDS. At the default
       of 10000 a full sweep of an unresponsive host is slow; below about 1000 a
-      distant host starts reading as closed.
+      distant host starts reading as closed. NOT a cap on the whole run: that is
+      naabuRunTimeout.
   naabuTopPorts:
     tool: naabu
     runtime_key: "NAABU_TOP_PORTS"
