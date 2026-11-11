@@ -33,6 +33,7 @@ import workspace_fs
 import job_runner
 import output_offload
 from neo4j_read_pool import run_neo4j_read
+from kali_auth import kali_auth_headers, note_kali_refusal
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -2906,6 +2907,7 @@ class PhaseAwareToolExecutor:
             'MCP_METASPLOIT_PROGRESS_URL',
             'http://host.docker.internal:8013/progress'
         )
+        refusal_logged = False
 
         async with httpx.AsyncClient(timeout=2.0) as client:
             while not execution_task.done():
@@ -2915,7 +2917,9 @@ class PhaseAwareToolExecutor:
                     break
 
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(url, headers=kali_auth_headers())
+                    if resp.status_code == 401 and not refusal_logged:
+                        refusal_logged = note_kali_refusal(resp.status_code, url)
                     if resp.status_code == 200:
                         progress = resp.json()
 

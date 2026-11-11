@@ -36,6 +36,7 @@ from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
                        require_master_internal_auth, require_master_or_run_credential,
                        run_credential_claims, set_run_liveness)
+from kali_auth import kali_auth_headers
 from logging_config import setup_logging
 from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
 from agent_in_the_loop.broker import get_broker
@@ -3220,6 +3221,19 @@ _SESSION_BASE = os.environ.get(
 ).rsplit("/progress", 1)[0]
 
 
+def _session_manager_reply(resp) -> JSONResponse:
+    """The session manager's answer, except its 401: passed on as a 401 it would read as
+    the webapp's key being refused, so it becomes a 502 that names the agent's bearer."""
+    if resp.status_code == 401:
+        logger.error("[rbac] session manager refused the agent's bearer: MCP_AUTH_TOKEN is "
+                     "unset in the agent or differs from kali-sandbox's")
+        return JSONResponse(
+            content={"error": "Session manager refused the agent's credential",
+                     "code": "session_manager_unauthorized"},
+            status_code=502)
+    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
 @app.get("/tunnel-status", tags=["System"])
 async def get_tunnel_status():
     """Return live status of ngrok and chisel tunnels."""
@@ -3241,8 +3255,8 @@ async def get_sessions():
     """List all active Metasploit sessions, background jobs, and non-MSF sessions."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{_SESSION_BASE}/sessions")
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.get(f"{_SESSION_BASE}/sessions", headers=kali_auth_headers())
+            return _session_manager_reply(resp)
     except httpx.TimeoutException:
         return JSONResponse(content={"error": "Session manager timeout"}, status_code=504)
     except Exception as e:
@@ -3257,9 +3271,10 @@ async def interact_session(session_id: int, body: dict):
     try:
         async with httpx.AsyncClient(timeout=40.0) as client:
             resp = await client.post(
-                f"{_SESSION_BASE}/sessions/{session_id}/interact", json=body
+                f"{_SESSION_BASE}/sessions/{session_id}/interact", json=body,
+                headers=kali_auth_headers(),
             )
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            return _session_manager_reply(resp)
     except httpx.TimeoutException:
         return JSONResponse(content={"error": "Session interaction timeout"}, status_code=504)
     except Exception as e:
@@ -3273,8 +3288,9 @@ async def kill_session(session_id: int):
     """Kill a specific Metasploit session."""
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/sessions/{session_id}/kill")
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.post(f"{_SESSION_BASE}/sessions/{session_id}/kill",
+                                     headers=kali_auth_headers())
+            return _session_manager_reply(resp)
     except Exception as e:
         logger.error(f"Session kill proxy error: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=502)
@@ -3286,8 +3302,9 @@ async def kill_job(job_id: int):
     """Kill a background Metasploit job."""
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/jobs/{job_id}/kill")
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.post(f"{_SESSION_BASE}/jobs/{job_id}/kill",
+                                     headers=kali_auth_headers())
+            return _session_manager_reply(resp)
     except Exception as e:
         logger.error(f"Job kill proxy error: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=502)
@@ -3299,8 +3316,9 @@ async def session_chat_map(body: dict):
     """Register a mapping between a Metasploit session ID and agent chat session ID."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/session-chat-map", json=body)
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.post(f"{_SESSION_BASE}/session-chat-map", json=body,
+                                     headers=kali_auth_headers())
+            return _session_manager_reply(resp)
     except Exception as e:
         logger.error(f"Session chat map proxy error: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=502)
@@ -3312,8 +3330,9 @@ async def register_non_msf_session(body: dict):
     """Register a non-Metasploit session (netcat, socat, etc.)."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/non-msf-sessions", json=body)
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.post(f"{_SESSION_BASE}/non-msf-sessions", json=body,
+                                     headers=kali_auth_headers())
+            return _session_manager_reply(resp)
     except Exception as e:
         logger.error(f"Non-MSF session register proxy error: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=502)

@@ -17,6 +17,7 @@ from state import AgentState
 from orchestrator_helpers import roe_gate
 from orchestrator_helpers.config import get_identifiers
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
+from kali_auth import kali_auth_headers, note_kali_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -258,10 +259,12 @@ async def _execute_single_step(
             msf_session_id = int(match.group(1))
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(
+                    resp = await client.post(
                         f"{session_manager_base}/session-chat-map",
-                        json={"msf_session_id": msf_session_id, "chat_session_id": session_id}
+                        json={"msf_session_id": msf_session_id, "chat_session_id": session_id},
+                        headers=kali_auth_headers(),
                     )
+                    note_kali_refusal(resp.status_code, "/session-chat-map")
             except Exception:
                 pass
 
@@ -271,11 +274,13 @@ async def _execute_single_step(
         if re.search(r'(nc|ncat)\s+.*-l', cmd) or 'socat' in cmd:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(
+                    resp = await client.post(
                         f"{session_manager_base}/non-msf-sessions",
                         json={"type": "listener", "tool": "netcat", "command": cmd,
-                              "chat_session_id": session_id}
+                              "chat_session_id": session_id},
+                        headers=kali_auth_headers(),
                     )
+                    note_kali_refusal(resp.status_code, "/non-msf-sessions")
             except Exception:
                 pass
 
