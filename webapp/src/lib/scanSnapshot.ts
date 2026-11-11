@@ -162,9 +162,11 @@ export async function tryWithSnapshotSlot<T>(fn: () => Promise<T>): Promise<TryS
  * An edge to a global CVE / MitreData / Capec node is kept as a link record
  * (graphReferenceLinks.ts); the node itself never is.
  *
- * The caller must guarantee no scan / partial recon / activation is writing the
- * graph (Sections 3.3 and 4A.3 enforce this via the activation lock), otherwise
- * the capture may be of a mid-write graph.
+ * Nothing here stops a writer, so a caller that stores the capture as a version
+ * must first check the writers (graphWriters.ts) while holding the project graph
+ * lock (projectGraphLock.ts) through its last write, as the scan start, the
+ * version save and the activation do; otherwise the capture may be of a
+ * mid-write graph.
  */
 export async function captureGraphSnapshot(projectId: string): Promise<CapturedSnapshot> {
   return withSnapshotSlot(async () => {

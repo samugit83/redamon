@@ -11,6 +11,12 @@
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { isActivationInProgress } from '@/lib/activationLock'
+import {
+  GRAPH_LOCK_HOLDER_PHRASE,
+  CurrentVersionMovedError,
+  withGraphStartLock,
+  type GraphLockHolder,
+} from '@/lib/projectGraphLock'
 import { describeScanWriters } from '@/lib/graphWriters'
 import { currentAuthorization, loadEngagement } from '@/lib/engagement'
 import { settingsFingerprint } from '@/lib/jobQueue'
@@ -32,38 +38,6 @@ import {
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
-
-// Serialises the check-freeze-start sequence per project. In-memory, per-process
-// (webapp is single-replica, so a shared lock is not required; if ever scaled
-// out, move to a Postgres advisory lock). Every start path - the manual button,
-// the scheduler, the queue dispatcher and MCP - goes through startFullScan, so
-// one map closes the window between describeScanWriters and the orchestrator
-// call in which two starts can both snapshot a mid-write graph.
-const globalForScanLock = globalThis as unknown as {
-  __fullScanLocks?: Map<string, Promise<unknown>>
-}
-const scanLocks: Map<string, Promise<unknown>> =
-  globalForScanLock.__fullScanLocks ?? new Map()
-globalForScanLock.__fullScanLocks = scanLocks
-
-function withProjectStartLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-  const prior = scanLocks.get(projectId) ?? Promise.resolve()
-  // Run whether the previous holder resolved or rejected: a failed start must
-  // not wedge the project's queue.
-  const run = prior.then(fn, fn)
-  // The stored link never rejects, so a caller's error cannot become an
-  // unhandled rejection via the chain. The map stays bounded by deleting the
-  // entry once this is the last holder.
-  const link = run.then(
-    () => undefined,
-    () => undefined
-  )
-  scanLocks.set(projectId, link)
-  void link.then(() => {
-    if (scanLocks.get(projectId) === link) scanLocks.delete(projectId)
-  })
-  return run
-}
 
 export interface StartFullScanInput {
   projectId: string
@@ -238,23 +212,40 @@ async function refuseStart(
   }
 }
 
-export function startFullScan(input: StartFullScanInput): Promise<StartFullScanResult> {
-  return withProjectStartLock(input.projectId, () => startFullScanLocked(input))
+function activationRefusal(): StartFullScanFailure {
+  return {
+    ok: false,
+    status: 409,
+    activationInProgress: true,
+    error: 'A version activation is in progress for this project - the graph is being swapped. ' +
+      'Try again once it finishes.',
+  }
+}
+
+/** A start refused because a version save or an activation holds the project's graph lock. */
+export function graphLockedStartRefusal(holder: GraphLockHolder): StartFullScanFailure {
+  if (holder === 'activation') return activationRefusal()
+  const busy = GRAPH_LOCK_HOLDER_PHRASE[holder]
+  return { ok: false, status: 409, busy, error: `Cannot start a scan while ${busy} for this project. Try again once it finishes.` }
+}
+
+/**
+ * Every start path (the button, the scheduler, the queue dispatcher, MCP) comes
+ * through here, holding the project's graph lock from the activation check to
+ * the orchestrator's answer (projectGraphLock.ts).
+ */
+export async function startFullScan(input: StartFullScanInput): Promise<StartFullScanResult> {
+  const held = await withGraphStartLock(input.projectId, () => startFullScanLocked(input))
+  return held.acquired ? held.value : graphLockedStartRefusal(held.heldBy)
 }
 
 async function startFullScanLocked(input: StartFullScanInput): Promise<StartFullScanResult> {
   const { projectId, mode, trigger } = input
 
-  // 4A.3: never start a scan into an in-flight graph swap.
-  if (await isActivationInProgress(projectId)) {
-    return {
-      ok: false,
-      status: 409,
-      activationInProgress: true,
-      error: 'A version activation is in progress for this project - the graph is being swapped. ' +
-        'Try again once it finishes.',
-    }
-  }
+  // 4A.3: never start a scan into an in-flight graph swap. The graph lock keeps
+  // out an activation in this process; the row still answers for one that a
+  // crashed webapp left mid-swap, until its TTL.
+  if (await isActivationInProgress(projectId)) return activationRefusal()
 
   // Risk 1 + Section 3.3: reject a start while a scan or partial recon is already
   // rewriting the graph, BEFORE we freeze it. The orchestrator refuses the
@@ -331,6 +322,9 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
     if (err instanceof SnapshotFreezeError) {
       console.error('[scanTimeline] aborting scan start:', err.message)
       return { ok: false, status: 500, error: err.message, snapshotFailed: true }
+    }
+    if (err instanceof CurrentVersionMovedError) {
+      return { ok: false, status: 409, busy: 'the current version changed', error: err.message }
     }
     throw err
   }

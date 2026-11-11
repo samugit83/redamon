@@ -21,7 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
-import { requireVersionInProject } from '@/lib/scanVersionAccess'
+import { requireVersionInProject, type OwnedVersion } from '@/lib/scanVersionAccess'
 import { writeAudit } from '@/lib/audit'
 import {
   captureGraphSnapshot,
@@ -35,6 +35,7 @@ import { clearProjectGraph, restoreGraph, sweepOrphanReferenceNodes } from '@/li
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { invalidateCache } from '@/app/api/graph/cache'
 import { acquireActivationLock, releaseActivationLock } from '@/lib/activationLock'
+import { GRAPH_LOCK_HOLDER_PHRASE, tryWithGraphLock } from '@/lib/projectGraphLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
@@ -72,6 +73,24 @@ export const POST = withRouteErrors('Activation failed', async (_request: NextRe
     )
   }
 
+  // S-4: held from the writer check through the pointer move. A scan start that
+  // passed its own activation check, or a version save, would otherwise freeze
+  // the half-restored graph, and the start would spawn a scan into the swap.
+  const held = await tryWithGraphLock(id, 'activation', () => activateUnderLock(id, versionId, target, eff.userId))
+  if (held.acquired) return held.value
+  const holder = GRAPH_LOCK_HOLDER_PHRASE[held.heldBy]
+  return NextResponse.json(
+    { error: `Cannot activate a version while ${holder} for this project. Try again once it finishes.`, busy: holder },
+    { status: 409 }
+  )
+})
+
+async function activateUnderLock(
+  id: string,
+  versionId: string,
+  target: OwnedVersion,
+  actorId: string,
+): Promise<NextResponse> {
   // 4A.3: mutually exclusive with anything else that touches the live graph.
   const busy = await describeLiveGraphWriters(id)
   if (busy) {
@@ -187,7 +206,7 @@ export const POST = withRouteErrors('Activation failed', async (_request: NextRe
     invalidateCache(id)
 
     await writeAudit({
-      actorId: eff.userId,
+      actorId,
       action: 'scan-version.activate',
       targetType: 'scanVersion',
       targetId: versionId,
@@ -214,4 +233,4 @@ export const POST = withRouteErrors('Activation failed', async (_request: NextRe
   } finally {
     await releaseActivationLock(id)
   }
-})
+}

@@ -1,24 +1,24 @@
 /**
- * S-4: a full-scan start, "save current as a version" and a version activation
- * share no lock.
+ * S-4: a full-scan start, a partial-recon start, "save current as a version" and
+ * a version activation hold one per-project lock (projectGraphLock.ts).
  *
- * Each path checks the others before it acts and none holds anything while it
- * acts: the start checks the activation row, then freezes, rotates and calls the
- * orchestrator; activation asks the orchestrator whether a scan runs, then takes
- * its row lock; save-version checks both, then freezes and rotates. The start's
- * in-process lock (withProjectStartLock) only serialises starts with each other.
+ * Each path checks the others before it acts: the start checks the activation
+ * row, then freezes, rotates and calls the orchestrator; activation asks the
+ * orchestrator whether a scan runs, then takes its row lock; save-version checks
+ * both, then freezes and rotates. A check holds only until the next await, so
+ * each path holds the lock from its check through its last write.
  *
  * The real startFullScan, prepareVersionsForFullScan / rotateToNextVersion, the
- * activation route, the save-version route, the activation lock and the writer
- * checks run here. Only I/O is faked: Postgres (an in-memory row store), Neo4j
- * (one array of nodes) and the orchestrator (an idle project until a start is
- * posted). Gates hold one path between its check and its act while the other
- * runs, which is the window a real freeze of a large graph (seconds) leaves open.
+ * activation route, the save-version route, the partial-recon route and the
+ * queue's dispatchStart, the activation lock and the writer checks run here.
+ * Only I/O is faked: Postgres (an in-memory row store), Neo4j (one array of
+ * nodes) and the orchestrator (an idle project until a start is posted). Gates
+ * hold one path between its check and its act while the other runs, which is
+ * the window a real freeze of a large graph (seconds) leaves open.
  *
- * The `test.fails` cases are the open bug: each turns into a plain `test` once
- * the three paths share one per-project lock. The control cases pin that the
- * harness drives the real guards: run one after the other, a pair either
- * refuses or leaves the timeline consistent.
+ * The control cases pin that the harness drives the real guards: run one after
+ * the other, a pair either refuses or leaves the timeline consistent. The S-4
+ * cases interleave them; they failed before the paths shared the lock.
  *
  * @vitest-environment node
  */
@@ -37,6 +37,7 @@ const w = vi.hoisted(() => ({
   versions: [] as Version[],
   graph: [] as Node[],
   scanRunning: false,
+  partialRunning: false,
   startsWhileActivating: 0,
   restoring: false,
   engagementHold: Promise.resolve() as Promise<unknown>,
@@ -126,7 +127,15 @@ vi.mock('@/lib/orchestrator', () => ({
       w.scanRunning = true
       return reply({ project_id: 'p1', status: 'starting' })
     }
+    if (init?.method === 'POST' && url.endsWith('/recon/p1/partial')) {
+      if (w.project.activationState === 'activating') w.startsWhileActivating += 1
+      w.partialRunning = true
+      return reply({ run_id: 'r1', status: 'starting', roots: ['example.com'] })
+    }
     if (url.endsWith('/recon/p1/status')) return reply({ status: w.scanRunning ? 'running' : 'idle' })
+    if (url.endsWith('/recon/p1/partial/all')) {
+      return reply({ runs: w.partialRunning ? [{ run_id: 'r1', status: 'running' }] : [] })
+    }
     if (url.endsWith('/all')) return reply({ runs: [] })
     return reply({ status: 'idle' })
   },
@@ -135,7 +144,9 @@ vi.mock('@/lib/orchestrator', () => ({
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'owner' }),
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),
+  guardProject: async () => null,
 }))
+vi.mock('@/lib/session', () => ({ getEffectiveUser: async () => ({ userId: 'owner' }) }))
 vi.mock('@/lib/scanVersionAccess', () => ({
   requireVersionInProject: async (_projectId: string, versionId: string) => {
     const row = w.versions.find(v => v.id === versionId)!
@@ -150,8 +161,9 @@ vi.mock('@/lib/agentSessions', () => ({
   checkAgentSessions: async () => 'idle',
   describeAgentSessionState: () => null,
 }))
-// The start reads the engagement after its activation and writer checks and
-// before it freezes: holding it here parks the start inside its window.
+// Every start reads the engagement after its activation and writer checks and
+// before it freezes or calls the orchestrator: holding it here parks the start
+// inside its window.
 vi.mock('@/lib/engagement', async orig => ({
   ...(await orig<typeof import('@/lib/engagement')>()),
   loadEngagement: async () => {
@@ -198,6 +210,8 @@ import { startFullScan } from './startFullScan'
 import { serializeSnapshot, deserializeSnapshot } from './scanSnapshot'
 import { POST as activateRoute } from '@/app/api/projects/[id]/versions/[versionId]/activate/route'
 import { POST as saveVersionRoute } from '@/app/api/projects/[id]/versions/route'
+import { POST as partialRoute } from '@/app/api/recon/[projectId]/partial/route'
+import { dispatchStart } from './startScan'
 
 const graphOf = (prefix: string, n: number): Node[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -237,6 +251,14 @@ const saveVersion = (body: Promise<unknown> = Promise.resolve()) => saveVersionR
   { json: async () => { w.saveBodyReached = true; await body; return {} } } as unknown as NextRequest,
   { params: Promise.resolve({ id: 'p1' }) })
 const start = () => startFullScan({ projectId: 'p1', mode: 'new', trigger: 'manual' })
+const PARTIAL_BODY = { tool_id: 'Naabu', graph_inputs: {}, user_inputs: [] }
+/** The partial-recon start's two entry points, answering whether it was accepted. */
+const partialStarts: Array<[string, () => Promise<boolean>]> = [
+  ['the button', async () => (await partialRoute(
+    { json: async () => PARTIAL_BODY } as unknown as NextRequest,
+    { params: Promise.resolve({ projectId: 'p1' }) })).status === 200],
+  ['the queue', async () => (await dispatchStart('partial_recon', 'p1', { payload: PARTIAL_BODY })).ok],
+]
 
 beforeEach(() => {
   w.project = {
@@ -254,6 +276,7 @@ beforeEach(() => {
   ]
   w.graph = V2_GRAPH.map(n => ({ ...n }))
   w.scanRunning = false
+  w.partialRunning = false
   w.startsWhileActivating = 0
   w.restoring = false
   w.engagementHold = Promise.resolve()
@@ -309,15 +332,22 @@ describe('control: one after the other, every pair refuses (the real guards, the
     expect((await start()).ok).toBe(true)
     expect(currentVersions()).toHaveLength(1)
   })
+
+  test.each(partialStarts)('an activation after a partial recon %s started is refused', async (_via, startPartial) => {
+    expect(await startPartial()).toBe(true)
+    const res = await activate()
+    expect(res.status).toBe(409)
+    expect((await res.json()).busy).toBe('a partial recon run is active')
+  })
 })
 
-describe('S-4: the start, save-version and activation interleave (open bug)', () => {
-  // A start that passed its activation check before the lock was taken goes on
-  // to freeze a half-restored graph into the outgoing version, rotate, and ask
-  // the orchestrator for a scan that wipes the graph the activation is
-  // restoring. The activation then makes v1 current and drops its stored bytes
-  // (the live graph IS v1 now), so the scan destroys v1 as well.
-  test.fails('a start never reaches the orchestrator while an activation swaps the graph', async () => {
+describe('S-4: interleaved, the start, save-version and activation hold one project lock', () => {
+  // Without the lock, a start that passed its activation check goes on to
+  // freeze a half-restored graph into the outgoing version, rotate, and ask the
+  // orchestrator for a scan that wipes the graph the activation is restoring;
+  // the activation then makes v1 current and drops its stored bytes, so the
+  // scan destroys v1 as well. With it, the activation is refused.
+  test('a start never reaches the orchestrator while an activation swaps the graph', async () => {
     const engagement = deferred()
     const swap = deferred()
     w.engagementHold = engagement.promise
@@ -336,10 +366,10 @@ describe('S-4: the start, save-version and activation interleave (open bug)', ()
     expect(storedNames('v2')).toEqual(names(V2_GRAPH))
   })
 
-  // Save-version checked the lock before the activation took it, then captures
-  // mid-swap and stores that half-restored graph over the bytes the activation
-  // had just frozen for the outgoing version.
-  test.fails('a save-version never overwrites the outgoing version with a half-swapped graph', async () => {
+  // Without the lock, save-version checked the activation row before the
+  // activation took it, then captured mid-swap and stored that half-restored
+  // graph over the bytes the activation had just frozen for the outgoing version.
+  test('a save-version never overwrites the outgoing version with a half-swapped graph', async () => {
     const body = deferred()
     const swap = deferred()
     w.swapHold = swap.promise
@@ -356,10 +386,10 @@ describe('S-4: the start, save-version and activation interleave (open bug)', ()
     expect(storedNames('v2')).toEqual(names(V2_GRAPH))
   })
 
-  // Both read v2 as current, both demote it, and each mints its own current
-  // version: the "exactly one current per project" invariant breaks, and the
-  // version the scan reports populating is not the one the live graph is.
-  test.fails('a save-version racing a start leaves exactly one current version', async () => {
+  // Without the lock, both read v2 as current, both demote it, and each mints
+  // its own current version: the "exactly one current per project" invariant
+  // breaks, and the version the scan reports populating is not the live graph.
+  test('a save-version racing a start leaves exactly one current version', async () => {
     const body = deferred()
     const startCapture = deferred()
     w.captureHolds = [startCapture.promise]
@@ -374,5 +404,42 @@ describe('S-4: the start, save-version and activation interleave (open bug)', ()
     await Promise.all([save.promise, scan.promise])
 
     expect(currentVersions()).toHaveLength(1)
+  })
+
+  // Without the lock, a partial recon that passed its activation check went on
+  // to ask the orchestrator for a run that writes into the graph the activation
+  // is half-way through restoring.
+  test.each(partialStarts)('a partial recon from %s never reaches the orchestrator while an activation swaps the graph', async (_via, startPartial) => {
+    const engagement = deferred()
+    const swap = deferred()
+    w.engagementHold = engagement.promise
+    w.swapHold = swap.promise
+
+    const partial = track(startPartial())
+    await until(() => w.engagementReached || partial.done)
+    const act = track(activate())
+    await until(() => w.restoring || act.done)
+    engagement.resolve()
+    await until(() => partial.done)
+    swap.resolve()
+    await Promise.all([partial.promise, act.promise])
+
+    expect(w.startsWhileActivating).toBe(0)
+    expect(await partial.promise).toBe(true)
+    expect((await act.promise).status).toBe(409)
+  })
+
+  test('a start that arrives while a save-version holds the lock is refused as busy, before any freeze', async () => {
+    const body = deferred()
+    const save = track(saveVersion(body.promise))
+    await until(() => w.saveBodyReached || save.done)
+
+    const res = await start()
+    expect(res).toMatchObject({ ok: false, status: 409, busy: 'the current graph is being saved as a version' })
+    expect(w.scanRunning).toBe(false)
+
+    body.resolve()
+    expect((await save.promise).status).toBe(200)
+    expect(currentVersions()).toEqual(['v3'])
   })
 })

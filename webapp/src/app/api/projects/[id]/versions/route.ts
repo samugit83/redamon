@@ -16,6 +16,7 @@ import {
 } from '@/lib/scanSnapshot'
 import { rotateToNextVersion } from '@/lib/scanTimeline'
 import { isActivationInProgress } from '@/lib/activationLock'
+import { CurrentVersionMovedError, GRAPH_LOCK_HOLDER_PHRASE, tryWithGraphLock } from '@/lib/projectGraphLock'
 import { describeScanWriters, describeSecondaryScanWriters } from '@/lib/graphWriters'
 import { applyRetentionSafe } from '@/lib/scanRetention'
 import { sanitizeVersionLabel } from '@/lib/scanVersionLabel'
@@ -94,6 +95,18 @@ export const POST = withRouteErrors('Failed to save the current graph as a versi
   const access = await requireProjectAccess(eff, id)
   if (access instanceof NextResponse) return access
 
+  // S-4: held from the checks through the rotate, so neither a scan start nor an
+  // activation can change the graph or the current version in between.
+  const held = await tryWithGraphLock(id, 'version-save', () => saveCurrentAsVersion(request, id, eff.userId))
+  if (held.acquired) return held.value
+  const busy = GRAPH_LOCK_HOLDER_PHRASE[held.heldBy]
+  return NextResponse.json(
+    { error: `Cannot save a version while ${busy} for this project. Try again once it finishes.`, busy },
+    { status: 409 }
+  )
+})
+
+async function saveCurrentAsVersion(request: NextRequest, id: string, actorId: string): Promise<NextResponse> {
   // Freezing reads the whole live graph, so it must not run while anything is
   // rewriting it: an activation swap, or a scan/partial recon mid-write (Risk 1 -
   // a snapshot of a half-built graph is worse than no snapshot).
@@ -150,7 +163,7 @@ export const POST = withRouteErrors('Failed to save the current graph as a versi
     await applyRetentionSafe(id)
 
     await writeAudit({
-      actorId: eff.userId,
+      actorId,
       action: 'scan-version.save-current',
       targetType: 'scanVersion',
       targetId: current.id,
@@ -162,6 +175,9 @@ export const POST = withRouteErrors('Failed to save the current graph as a versi
       currentVersion: created,
     })
   } catch (error) {
+    if (error instanceof CurrentVersionMovedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 })
+    }
     return internalError(error, 'Failed to save the current graph as a version', { log: '[scanTimeline] save-current failed' })
   }
-})
+}

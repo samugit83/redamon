@@ -18,7 +18,8 @@ import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { resolveTrufflehogStart } from '@/lib/trufflehogStart'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
-import { classifyOrchestratorThrow, startFullScan } from '@/lib/startFullScan'
+import { classifyOrchestratorThrow, graphLockedStartRefusal, startFullScan } from '@/lib/startFullScan'
+import { withGraphStartLock } from '@/lib/projectGraphLock'
 import { parseScanMode, recordScanStart, type ScanTrigger } from '@/lib/scanTimeline'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
@@ -184,6 +185,31 @@ export async function dispatchStart(
       ...(r.cause ? { cause: r.cause } : {}),
     }
   }
+
+  // S-4: a partial recon writes the live graph, so like its button it holds the
+  // project's graph lock from its activation check through the orchestrator's
+  // answer (projectGraphLock.ts).
+  if (kind === 'partial_recon') {
+    const held = await withGraphStartLock(projectId, () => dispatchOtherStart(kind, projectId, opts))
+    if (held.acquired) return held.value
+    const refused = graphLockedStartRefusal(held.heldBy)
+    return {
+      ok: false,
+      status: refused.status,
+      error: refused.error,
+      ...(refused.activationInProgress ? { activationInProgress: true } : {}),
+      ...(refused.busy ? { busy: refused.busy } : {}),
+    }
+  }
+  return dispatchOtherStart(kind, projectId, opts)
+}
+
+async function dispatchOtherStart(
+  kind: string,
+  projectId: string,
+  opts: { actorUserId?: string | null; payload?: StartScanPayload },
+): Promise<DispatchStartResult> {
+  const payload = opts.payload ?? {}
 
   const graphBusy = await graphBusyRefusal(kind, projectId)
   if (graphBusy) return graphBusy

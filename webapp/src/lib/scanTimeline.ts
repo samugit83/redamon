@@ -25,6 +25,7 @@ import {
   defaultVersionLabel,
   type ScanVersionRow,
 } from '@/lib/scanSnapshot'
+import { CurrentVersionMovedError } from '@/lib/projectGraphLock'
 
 export type ScanMode = 'new' | 'overwrite'
 export type ScanTrigger = 'manual' | 'scheduled'
@@ -178,11 +179,14 @@ const ROTATE_ATTEMPTS = 4
 /**
  * Demote `demoteVersionId` and open the next version, atomically.
  *
- * Two writers can read the same max(seq) and both try to create seq+1 (a
- * double-clicked Start, or a scan racing "save current as a version"). The
- * `@@unique([projectId, seq])` constraint is what keeps version numbering from
- * forking - but the loser used to surface as a 500 AFTER its snapshot had already
- * been frozen. Retrying with a recomputed seq turns that race into a queue.
+ * The scan start and "save current as a version" both read the current version,
+ * freeze it, then rotate; the project graph lock (projectGraphLock.ts) keeps them
+ * from interleaving in this process. Two guards stay for a writer the lock does
+ * not see. The demote matches only a version that is still current: a writer
+ * that read the same current and lost the race gets CurrentVersionMovedError
+ * rather than minting a second current version. And a seq taken under
+ * `@@unique([projectId, seq])` is retried with a recomputed seq, rather than
+ * failing after the snapshot was already frozen.
  */
 export async function rotateToNextVersion(
   projectId: string,
@@ -193,7 +197,11 @@ export async function rotateToNextVersion(
     const nextSeq = await nextVersionSeq(projectId)
     try {
       return await prisma.$transaction(async tx => {
-        await tx.scanVersion.update({ where: { id: demoteVersionId }, data: { isCurrent: false } })
+        const demoted = await tx.scanVersion.updateMany({
+          where: { id: demoteVersionId, isCurrent: true },
+          data: { isCurrent: false },
+        })
+        if (demoted.count === 0) throw new CurrentVersionMovedError(demoteVersionId)
         return tx.scanVersion.create({
           data: {
             projectId,
