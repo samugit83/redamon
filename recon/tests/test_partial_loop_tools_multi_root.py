@@ -171,8 +171,27 @@ class TestUrlscanPerRoot:
 
 
 class TestUncoverPerRoot:
+    @pytest.fixture(autouse=True)
+    def _dns(self, monkeypatch):
+        """run_uncover passes each name through merge_uncover_into_pipeline's
+        gates, which resolve it and probe its zone for wildcard DNS. Answered
+        here as a public resolver answers a .test name (RFC 6761): no such
+        name. With no resolver at all the wildcard probe fails, its coverage
+        note marks the root degraded, and the run depends on the machine."""
+        import socket
+        from recon.helpers import circuit_breaker, wildcard_control
+
+        def getaddrinfo(host, *_a, **_k):
+            raise socket.gaierror(socket.EAI_NONAME, "unknown name")
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(wildcard_control, "_query", lambda name, rtype: ("nx", []))
+        circuit_breaker.reset_registry()
+        yield
+        circuit_breaker.reset_registry()
+
     def test_each_root_is_expanded_and_empty_is_no_results(self, monkeypatch):
-        _graph(monkeypatch, lambda c, p: [])
+        client = _graph(monkeypatch, lambda c, p: [])
         seen = []
 
         def fake(combined, settings):
@@ -183,6 +202,9 @@ class TestUncoverPerRoot:
             statuses = osint_enrichment.run_uncover(dict(BASE))
         assert seen == ROOTS
         assert statuses == {"alpha.test": "no_results", "beta.test": "ok", "gamma.test": "no_results"}
+        # The name passed the gates and reached the writer.
+        written = client.update_graph_from_uncover.call_args.kwargs["recon_data"]
+        assert written["uncover"]["hosts"] == ["h.beta.test"]
 
 
 def _resource_rows(cypher, params):
