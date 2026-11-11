@@ -12,7 +12,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [recon]
   auto_invoke:
     - "Adding a new tool to the recon pipeline"
@@ -101,6 +101,16 @@ For the graph write, use `graph-db-writes`. For the settings, use
   and the run shows `partial — N sources skipped`. `host_source` must equal the
   `source` value the tool writes to the graph. A tool whose findings carry no host
   field passes `host_field=False` (the skip is reported at the source level).
+- **NEVER start a `docker run` its timeout cannot stop.** A timeout on
+  `subprocess.run`, or a killed `Popen`, ends only the docker CLI: the container
+  goes on scanning the target after the run moved on. Every `docker run` under
+  `recon/` goes through `run_tool_container`
+  ([docker_helpers.py](../../recon/helpers/docker_helpers.py)), which names the
+  container (`tool_container_name`) and kills it by that name on timeout. A tool
+  whose output is streamed or read by a `Popen` puts a `--name` in its argv and
+  calls `kill_container` on every path that stops the CLI.
+  [test_docker_run_through_helper.py](../../recon/tests/test_docker_run_through_helper.py)
+  fails on any other `docker run`.
 - **A new tool setting FAILS THE BUILD until it is in the registry.** Every
   parameter is described once in
   [recon_settings/registry.yaml](../../recon_settings/registry.yaml),
