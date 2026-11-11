@@ -5,11 +5,13 @@ Utilities for Docker container operations, image management, and file permission
 """
 
 import os
+import re
 import shutil
 import subprocess
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 # Volume name for persistent nuclei templates
 NUCLEI_TEMPLATES_VOLUME = "nuclei-templates"
@@ -86,6 +88,88 @@ def kill_container(name: str) -> None:
                        capture_output=True, text=True, timeout=15, check=False)
     except Exception as e:  # noqa: BLE001
         print(f"[!][Docker] failed to kill {name}: {type(e).__name__}")
+
+
+@dataclass(frozen=True)
+class ToolContainerRun:
+    """What a `run_tool_container` call produced.
+
+    ``returncode`` is None when the timeout cut the run; ``stdout`` and
+    ``stderr`` then hold what the tool printed before it was killed.
+    """
+    name: str
+    returncode: Optional[int]
+    stdout: str
+    stderr: str
+    timed_out: bool
+
+
+def _name_part(value: str, limit: int) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "-", value.lower()).strip("-_")[:limit]
+
+
+def tool_container_name(tool: str) -> str:
+    """`<tool>-<run id>-<8 hex>`: unique, and readable as this run's in `docker ps`.
+
+    The run id is the one recon/entrypoint.sh names to the broker (a partial
+    run's first), so the name and the broker's `redamon.run_id` label agree.
+    Outside a run a random id stands in.
+    """
+    run = os.environ.get("PARTIAL_RECON_RUN_ID") or os.environ.get("RECON_RUN_ID") or ""
+    return (f"{_name_part(tool, 24) or 'tool'}-{_name_part(run, 64) or uuid.uuid4().hex[:8]}"
+            f"-{uuid.uuid4().hex[:8]}")
+
+
+def _with_name(cmd: list, name: str) -> list:
+    if any(cmd[i:i + 2] == ["--name", name] for i in range(2, len(cmd) - 1)) \
+            or f"--name={name}" in cmd:
+        return cmd
+    # After the argv's opening self-contained flags (`--rm`, `--net=host`), so
+    # the familiar head of each tool's command stays put and the name can never
+    # land between an option and its value.
+    i = 2
+    while i < len(cmd) and (cmd[i] == "--rm" or (cmd[i].startswith("--") and "=" in cmd[i])):
+        i += 1
+    return [*cmd[:i], "--name", name, *cmd[i:]]
+
+
+def _text(data) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", errors="replace")
+    return data.replace("\r\n", "\n")
+
+
+def run_tool_container(cmd: Sequence[str], *, tool: str, timeout: float,
+                       input: Optional[str] = None,
+                       name: Optional[str] = None) -> ToolContainerRun:
+    """Run a `docker run` argv to completion or `timeout`, never leaving its container behind.
+
+    A timeout on `subprocess.run` kills only the docker CLI: the daemon-owned
+    container goes on scanning the target after the run has moved on. So the
+    container gets a name (``name``, else ``tool_container_name(tool)``; an
+    argv that already carries ``--name <name>`` is left as it is) and, on
+    timeout, is killed by it once the CLI has exited. The run labels come from
+    the broker, which stamps every container this process creates
+    (recon/entrypoint.sh).
+
+    Returns the exit code and output; on timeout, ``timed_out`` and the output
+    read so far, for the caller to parse and to record what went unchecked.
+    A failure to start (no docker binary) raises as `subprocess.run` does.
+    """
+    cmd = list(cmd)
+    if len(cmd) < 2 or cmd[0] != "docker" or cmd[1] != "run":
+        raise ValueError("run_tool_container takes a `docker run` argv")
+    name = name or tool_container_name(tool)
+    argv = _with_name(cmd, name)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                              input=input, check=False)
+    except subprocess.TimeoutExpired as expired:
+        kill_container(name)
+        return ToolContainerRun(name, None, _text(expired.stdout), _text(expired.stderr), True)
+    return ToolContainerRun(name, done.returncode, done.stdout or "", done.stderr or "", False)
 
 
 def get_real_user_ids() -> tuple:

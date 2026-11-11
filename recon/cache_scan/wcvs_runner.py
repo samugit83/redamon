@@ -20,7 +20,7 @@ Report file is written as `WCVS_<date>_<rand>_Report.json` in the generate path.
 
 import glob
 import json
-import subprocess
+import subprocess  # noqa: F401 - the tool tests fake docker through wcvs_runner.subprocess
 import uuid
 from pathlib import Path
 
@@ -134,11 +134,11 @@ def run_wcvs(target_urls: list[str], settings: dict, work_dir: str = "/tmp/redam
 
         print(f"[*][CachePoison] WCVS scanning {len(target_urls)} URL(s) "
               f"(threads={threads}, skip={skip_tests or 'none'})")
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
+        from recon.helpers.docker_helpers import run_tool_container
+        if run_tool_container(cmd, tool="wcvs", timeout=timeout).timed_out:
             # Which URLs a cut-short run finished is not known: none counts as swept.
-            print(f"[!][CachePoison] WCVS timed out after {timeout}s — parsing partial report")
+            print(f"[!][CachePoison] WCVS timed out after {timeout}s — stopped it, "
+                  f"parsing partial report")
             outcome["incomplete"] = f"timed out after {timeout}s"
 
         # WCVS writes WCVS_<date>_<rand>_Report.json into out_dir.
