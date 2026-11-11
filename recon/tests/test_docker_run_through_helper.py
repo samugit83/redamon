@@ -35,7 +35,6 @@ NOT_YET_MIGRATED = {
     # Streaming loops: tool_container_name + kill_container on every stop.
     ("helpers/resource_enum/hakrawler_helpers.py", "_crawl_single_url"): 1,
     ("helpers/resource_enum/katana_helpers.py", "run_katana_crawler"): 1,
-    ("helpers/takeover_helpers.py", "build_baddns_command"): 1,  # subdomain_takeover kills it
     # The `nuclei -ut` updater (named, killed) and the alpine template count (30 s, unnamed).
     ("helpers/docker_helpers.py", "ensure_templates_volume"): 2,
 

@@ -49,6 +49,7 @@ from recon.helpers import (
     score_finding,
 )
 from recon.helpers import request_pacer
+from recon.helpers.docker_helpers import run_tool_container, tool_container_name
 from recon.helpers.takeover_helpers import is_placeholder_provider, same_provider_family
 
 _FINDING_SOURCE = "takeover_scan"
@@ -834,11 +835,8 @@ def _run_baddns(
     if isinstance(nameservers, str):
         nameservers = [n.strip() for n in nameservers.split(",") if n.strip()]
 
-    # Unique container name so we can reliably `docker kill` on Python
-    # timeout. Without --name, a TimeoutExpired leaves an orphan container
-    # running on the host because subprocess.run kills the docker CLI but
-    # the daemon-owned container keeps going.
-    container_name = f"redamon-baddns-{os.getpid()}-{int(time.time())}"
+    # Named here (not by run_tool_container) so the printed command shows it.
+    container_name = tool_container_name("baddns")
     cmd = build_baddns_command(
         work_dir_host=work_dir_host,
         targets_filename=targets_filename,
@@ -851,32 +849,20 @@ def _run_baddns(
 
     run_timeout = max(120, int(settings.get("BADDNS_RUN_TIMEOUT", 1800)))
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=run_timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"[!][Takeover][BadDNS] run timed out after {run_timeout}s -- killing container")
-        # Reap the orphan so the host doesn't accumulate zombies
-        try:
-            subprocess.run(
-                ["docker", "kill", container_name],
-                capture_output=True, text=True, timeout=15, check=False,
-            )
-        except Exception as e:
-            print(f"[!][Takeover][BadDNS] failed to kill orphan container: {e}")
-        _note_layer_unchecked("BadDNS", subdomains, f"timed out after {run_timeout}s")
-        return []
+        proc = run_tool_container(cmd, tool="baddns", timeout=run_timeout, name=container_name)
     except FileNotFoundError:
         print("[!][Takeover][BadDNS] docker binary missing")
         _note_layer_unchecked("BadDNS", subdomains, "docker binary missing")
         return []
 
-    if proc.returncode not in (0, None):
-        stderr = (proc.stderr or "").strip()
+    findings = _parse_baddns_stdout(proc.stdout)
+    if proc.timed_out:
+        print(f"[!][Takeover][BadDNS] run timed out after {run_timeout}s -- stopped it, "
+              f"keeping the {len(findings)} finding(s) it printed")
+        _note_layer_unchecked("BadDNS", _baddns_unfinished_targets(subdomains, findings),
+                              f"timed out after {run_timeout}s")
+    elif proc.returncode != 0:
+        stderr = proc.stderr.strip()
         if stderr:
             print(f"[!][Takeover][BadDNS] stderr: {stderr[:400]}")
         # The batch entrypoint ends 0 however its targets went: anything else is
@@ -885,7 +871,7 @@ def _run_baddns(
 
     # Surface the entrypoint's summary line on stderr so orchestrator logs
     # show scanned/skipped/findings totals even on successful runs.
-    stderr = (proc.stderr or "").strip()
+    stderr = proc.stderr.strip()
     if stderr:
         for summary_line in stderr.splitlines():
             if ("baddns-batch] summary:" in summary_line
@@ -895,7 +881,23 @@ def _run_baddns(
     if timed_out:
         _note_layer_unchecked("BadDNS", timed_out, "per-target timeout")
 
-    return _parse_baddns_stdout(proc.stdout or "")
+    return findings
+
+
+def _baddns_unfinished_targets(subdomains: list[str], findings: list[dict]) -> list[str]:
+    """The names a BadDNS run cut by its deadline may not have finished.
+
+    The batch entrypoint checks the targets file (``subdomains``, in order) one
+    name at a time and prints a name's findings only once it is done with it,
+    and stdout arrives in order. So every name before the last one with a
+    printed finding was finished. That one may have lost lines to the cut, and
+    the names after it may never have been reached; with nothing printed, none
+    is known finished. Only stdout counts: stderr may arrive out of step with it.
+    """
+    printed = {str(f.get("target") or "").strip().lower() for f in findings}
+    frontier = max((i for i, name in enumerate(subdomains) if name.lower() in printed),
+                   default=0)
+    return list(subdomains[frontier:])
 
 
 _BADDNS_TARGET_TIMEOUT = re.compile(r"\[baddns-batch\] timeout after \d+s on (\S+)\s*$")
