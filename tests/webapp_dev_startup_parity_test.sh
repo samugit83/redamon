@@ -63,8 +63,10 @@ prod_n=$(printf '%s\n' "$PROD" | grep -c .)
 # A broken parser must fail here, not compare two empty lists as equal.
 [[ $prod_n -ge 5 ]] && pass "Dockerfile entrypoint: $prod_n steps" \
     || fail "Dockerfile entrypoint parsed to $prod_n steps (expected the printf at '> /app/entrypoint.sh')"
-printf '%s\n' "$PROD" | grep -qx 'db-push!' && pass "Dockerfile entrypoint has a fatal db push" \
-    || fail "no fatal db push in the Dockerfile entrypoint"
+# The push runs through scripts/db-push-locked.mjs (an advisory lock, so copies booting
+# together push one at a time), which the parser names db-push-locked.
+printf '%s\n' "$PROD" | grep -qx 'db-push-locked!' && pass "Dockerfile entrypoint has a fatal db push (db-push-locked)" \
+    || fail "no fatal db push in the Dockerfile entrypoint (expected db-push-locked!)"
 
 # The comparison itself must catch an omission and a reorder.
 FIXTURE_DOCKERFILE="RUN printf '#!/bin/sh\nnode scripts/a.mjs 2>&1 || exit 1\nnpx prisma db push 2>&1 || exit 1\nnode scripts/b.mjs\nexec node server.js\n' > /app/entrypoint.sh"

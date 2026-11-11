@@ -28,7 +28,7 @@ services:
         npm install || exit 1
         node scripts/migrate-trufflehog-profiles.mjs || exit 1
         node scripts/add-js-recon-trufflehog-column.mjs || exit 1
-        npx prisma db push --accept-data-loss || exit 1
+        node scripts/db-push-locked.mjs db push --accept-data-loss || exit 1
         node scripts/apply-ingest-role.mjs
         node scripts/apply-traffic-fts.mjs
         node scripts/apply-engagement-immutability.mjs
