@@ -1,0 +1,27 @@
+# Live RBAC route matrix: Phase 1 (hardening). Each step adds the rows of the behaviour it
+# changes; a baseline row whose answer a step changes is tagged superseded-by:p1 there.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- step 1.1: role and existence come from the database, not the 7-day login JWT ----
+# rbac-admin-b signs in (and acts as member_a) while an admin and keeps those cookies; the
+# runner demotes it to standard by SQL just before each *_demoted row and restores it right
+# after. Each control sends the same request as the admin. POST /api/users gets a body it
+# refuses after its admin check (400), so no account is ever created.
+p1-demoted-admin-users-create-control	1.1	admin_b	POST	/api/users	{}	400	req:HD-10
+p1-demoted-admin-users-create	1.1	admin_b_demoted	POST	/api/users	{}	403	req:HD-10
+p1-demoted-admin-users-list	1.1	admin_b_demoted	GET	/api/users	-	200;has=rbac-admin-b@e2e.local;lacks=rbac-member-a@e2e.local	req:HD-10
+p1-demoted-admin-settings-control	1.1	admin_b	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=••••••••0001;lacks=${A_TAVILY_SECRET}	req:HD-10
+p1-demoted-admin-settings	1.1	admin_b_demoted	GET	/api/users/${MEMBER_A_ID}/settings	-	403	req:HD-10
+p1-demoted-admin-actas-start	1.1	admin_b_demoted	POST	/api/auth/act-as	{"targetUserId":"${MEMBER_A_ID}"}	403	req:HD-10
+# the act-as cookie minted while an admin stops counting once the account is demoted
+p1-demoted-admin-actas-control	1.1	admin_b_as_member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	req:HD-10
+p1-demoted-admin-actas-ignored	1.1	admin_b_as_member_a_demoted	GET	/api/projects/${PA_ID}	-	404	req:HD-10
+# rbac-deleted signs in, is deleted by SQL, and its still-valid cookie is replayed: three
+# former login-only routes, the current-account route, then a sign-in proving it is gone.
+p1-deleted-user-agent-health	1.1	deleted	GET	/api/agent/health	-	401	req:HD-10
+p1-deleted-user-skills	1.1	deleted	GET	/api/skills	-	401	req:HD-10
+p1-deleted-user-system-stats	1.1	deleted	GET	/api/system/stats	-	401	req:HD-10
+p1-deleted-user-me	1.1	deleted	GET	/api/auth/me	-	401	req:HD-10
+p1-deleted-user-login	1.1	anon	POST	/api/auth/login	{"email":"${DELETED_EMAIL}","password":"${RBAC_PASSWORD}"}	401	req:HD-10

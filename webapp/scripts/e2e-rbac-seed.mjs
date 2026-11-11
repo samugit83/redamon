@@ -31,6 +31,8 @@ const USERS = [
   { key: 'MEMBER_C', email: 'rbac-member-c@e2e.local', name: 'RBAC Member C', role: 'standard', login: true },
   // Passwordless managed account: an admin runs it through act-as; it cannot sign in.
   { key: 'MANAGED', email: 'rbac-managed@e2e.local', name: 'RBAC Managed', role: 'standard', login: false },
+  // Owns nothing: the matrix signs it in, deletes it by SQL and replays its cookie.
+  { key: 'DELETED', email: 'rbac-deleted@e2e.local', name: 'RBAC Deleted', role: 'standard', login: true },
 ]
 
 // The two throwaway projects exist to be deleted by the matrix: one by the owner,

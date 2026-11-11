@@ -181,7 +181,11 @@ It needs a stack on `:3000` (`BASE_URL` overrides it) and prints `SKIP` otherwis
 (`webapp/scripts/e2e-rbac-seed.mjs`: `rbac-*@e2e.local`, `rbac.test`) and always removes them
 (`e2e-rbac-cleanup.mjs`, Ctrl-C included); both are fed to the webapp container on stdin, so no
 image rebuild is needed. Rows never start a scan or an agent run. Response bodies are never
-printed, and the internal and scanner keys are read from `.env` only for their rows. The
+printed, and the internal and scanner keys are read from `.env` only for their rows. Two actors
+of `p1.tsv` change the users table through `psql` in the `postgres` container: `admin_b_demoted`
+(and `admin_b_as_<user>_demoted`) keeps the cookies `rbac-admin-b` got as an admin, is demoted
+to `standard` just before its row and restored right after; `deleted` signs in as the
+throwaway `rbac-deleted` account, which is then deleted, and replays its still-valid cookie. The
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
 real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
 

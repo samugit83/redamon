@@ -12,7 +12,12 @@
 #   actor   anon | internal | scanner | admin_a | admin_b | member_a | member_b |
 #           member_c (owner_a / owner_b are aliases of member_a / member_b) |
 #           <actor>_as_<user> (signed in as <actor>, then POST /api/auth/act-as <user>,
-#           e.g. admin_a_as_member_a; <user> may also be "managed")
+#           e.g. admin_a_as_member_a; <user> may also be "managed") |
+#           <admin>_demoted, <admin>_as_<user>_demoted (admin_a or admin_b signed in, and
+#           acting as <user>, while an admin; the account is demoted to standard by SQL
+#           just before the row's request and restored right after it, the cookies kept) |
+#           deleted (the seed's throwaway account, signed in, then deleted by SQL; its
+#           still-valid cookie is kept)
 #   body    '-' for none, else sent as application/json
 #   expect  status codes joined by '|', then optional ';has=<text>' / ';lacks=<text>'
 #           checks on the response body (literal text)
@@ -30,7 +35,10 @@
 # against an image built before they existed. Response bodies are never printed:
 # some rows read secrets on purpose. INTERNAL_API_KEY and SCANNER_API_KEY are read
 # from .env for the internal and scanner rows only, straight into curl's header
-# config on stdin, never echoed and never on a command line.
+# config on stdin, never echoed and never on a command line. The demoted and deleted
+# actors change the users table through psql in the postgres container (SQL on stdin);
+# an interrupted run leaves nothing behind, because the cleanup deletes every fixture
+# account and the next seed resets each one's role.
 #
 # Needs the stack up (webapp on :3000); prints SKIP and exits 0 when it is not, so
 # it never fails a gate. Live suites (*_live.sh) are not part of the gate.
@@ -153,7 +161,7 @@ declare -A ACTOR_ERR=()
 user_key() { # actor name -> seed key prefix (MEMBER_A, ...)
   case "$1" in
     owner_a) echo MEMBER_A ;; owner_b) echo MEMBER_B ;;
-    admin_a|admin_b|member_a|member_b|member_c|managed) echo "${1^^}" ;;
+    admin_a|admin_b|member_a|member_b|member_c|managed|deleted) echo "${1^^}" ;;
     *) return 1 ;;
   esac
 }
@@ -163,24 +171,51 @@ login_into() { # user-key jar -> http code
   curl -s -m 30 -o /dev/null -w '%{http_code}' -c "$2" -X POST "$BASE/api/auth/login" \
     -H 'Content-Type: application/json' --data-binary @"$TMP/login.json"
 }
-actor_jar() { # actor -> sets JAR[actor] or ACTOR_ERR[actor]
-  local actor="$1" who target key tkey code jar
-  [ -n "${JAR[$actor]:-}" ] || [ -n "${ACTOR_ERR[$actor]:-}" ] && return
-  jar="$TMP/jar.$actor"
+sign_in() { # actor jar -> fills the jar; prints why and returns 1 when it cannot
+  local actor="$1" jar="$2" who target key tkey code
   if [[ "$actor" == *_as_* ]]; then
     who="${actor%%_as_*}"; target="${actor#*_as_}"
-    key="$(user_key "$who")" && tkey="$(user_key "$target")" \
-      || { ACTOR_ERR[$actor]="unknown actor"; return; }
+    key="$(user_key "$who")" && tkey="$(user_key "$target")" || { echo "unknown actor"; return 1; }
     code="$(login_into "$key" "$jar")"
-    [ "$code" = 200 ] || { ACTOR_ERR[$actor]="login as $who answered $code"; return; }
+    [ "$code" = 200 ] || { echo "login as $who answered $code"; return 1; }
     code="$(curl -s -m 30 -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" -X POST "$BASE/api/auth/act-as" \
       -H 'Content-Type: application/json' -H "Origin: $BASE" \
       --data-binary "{\"targetUserId\":\"${SEED[${tkey}_ID]}\"}")"
-    [ "$code" = 200 ] || { ACTOR_ERR[$actor]="act-as $target answered $code"; return; }
+    [ "$code" = 200 ] || { echo "act-as $target answered $code"; return 1; }
   else
-    key="$(user_key "$actor")" || { ACTOR_ERR[$actor]="unknown actor"; return; }
+    key="$(user_key "$actor")" || { echo "unknown actor"; return 1; }
     code="$(login_into "$key" "$jar")"
-    [ "$code" = 200 ] || { ACTOR_ERR[$actor]="login answered $code"; return; }
+    [ "$code" = 200 ] || { echo "login answered $code"; return 1; }
+  fi
+}
+demoted_user_id() { # <admin>[_as_<user>]_demoted -> the seeded id of <admin>
+  local who="${1%_demoted}"; who="${who%%_as_*}"
+  case "$who" in admin_a|admin_b) printf '%s' "${SEED[$(user_key "$who")_ID]:-}" ;; *) return 1 ;; esac
+}
+db_sql() { # SQL on stdin -> psql in the postgres container; prints only the returned values
+  (cd "$ROOT" && docker compose exec -T postgres \
+    sh -c 'psql -X -q -t -A -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"') 2>/dev/null
+}
+safe_id() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
+set_role() { # user-id role -> 0 when exactly that account now has the role
+  safe_id "$1" || return 1
+  [ "$(printf "update users set role = '%s' where id = '%s' returning id;\n" "$2" "$1" | db_sql)" = "$1" ]
+}
+delete_account() { # user-id -> 0 when exactly that account was deleted
+  safe_id "$1" || return 1
+  [ "$(printf "delete from users where id = '%s' returning id;\n" "$1" | db_sql)" = "$1" ]
+}
+actor_jar() { # actor -> sets JAR[actor] or ACTOR_ERR[actor]
+  local actor="$1" base="$1" jar err
+  [ -n "${JAR[$actor]:-}" ] || [ -n "${ACTOR_ERR[$actor]:-}" ] && return
+  jar="$TMP/jar.$actor"
+  if [[ "$actor" == *_demoted ]]; then
+    demoted_user_id "$actor" >/dev/null || { ACTOR_ERR[$actor]="only admin_a or admin_b can be demoted"; return; }
+    base="${actor%_demoted}"
+  fi
+  err="$(sign_in "$base" "$jar")" || { ACTOR_ERR[$actor]="$err"; return; }
+  if [ "$actor" = deleted ] && ! delete_account "${SEED[DELETED_ID]:-}"; then
+    ACTOR_ERR[$actor]="could not delete the throwaway account by SQL"; return
   fi
   JAR[$actor]="$jar"
 }
@@ -227,8 +262,19 @@ for line in "${ROWS[@]}"; do
       if [ -n "${ACTOR_ERR[$actor]:-}" ]; then
         echo "FAIL  $label  actor not ready: ${ACTOR_ERR[$actor]}  [$tags]"; FAIL=$((FAIL + 1)); continue
       fi
+      demoted=""
+      if [[ "$actor" == *_demoted ]]; then
+        demoted="$(demoted_user_id "$actor")"
+        if ! set_role "$demoted" standard; then
+          echo "FAIL  $label  could not demote the account by SQL  [$tags]"; FAIL=$((FAIL + 1)); continue
+        fi
+      fi
       # Read-only jar: a row's Set-Cookie never changes the actor for the next row.
-      code="$(curl "${args[@]}" -b "${JAR[$actor]}" "$BASE$url_path")" ;;
+      code="$(curl "${args[@]}" -b "${JAR[$actor]}" "$BASE$url_path")"
+      if [ -n "$demoted" ] && ! set_role "$demoted" admin; then
+        echo "FAIL  $label  could not restore the demoted account to admin: later rows are unreliable  [$tags]"
+        FAIL=$((FAIL + 1)); continue
+      fi ;;
   esac
 
   codes="${expect_s%%;*}"
