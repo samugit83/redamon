@@ -351,9 +351,9 @@ Additional properties present on this node type, not yet described:
 - name (string): "nginx", "WordPress", "jQuery", "vsftpd/2.3.4", "Apache Tomcat/8.5.19"
 - version (string): version if detected
 - category (string): "web-server", "cms", "javascript-framework"
-- source (string): "nmap" for Nmap-detected, null for httpx-detected
+- source (string): the last of Nmap ("nmap"), the AI port catalog ("ai-port-catalog") or the AI surface checks ("ai-surface-recon") to see it; null on a node only httpx, Wappalyzer or GVM saw
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:apache:tomcat:8.5.19")
-- detected_by (string): every detector that saw it, comma-joined (e.g. "httpx,wappalyzer"), with "gvm" kept last ("httpx,gvm"). Match one with CONTAINS, not equality
+- detected_by (string): the detectors that saw it, comma-joined, each added without removing the others: "httpx" and "wappalyzer" (the HTTP probe) and "gvm", kept last (e.g. "httpx,wappalyzer", "httpx,gvm"). Nmap and the AI checks never write it. Match one with CONTAINS, not equality
 Additional properties present on this node type, not yet described:
 - cpe_product
 - cpe_vendor
@@ -611,7 +611,7 @@ Subdomain-takeover properties (source="takeover_scan"):
 - type (string): always "subdomain_takeover"
 - hostname (string): the subdomain flagged (e.g. "promo.acme.com")
 - cname_target (string, nullable): CNAME destination for cname-method findings (e.g. "acme-spring.herokuapp.com")
-- takeover_provider (string): canonical provider slug — "github-pages", "heroku", "aws-s3", "fastly", "azure-app-service", "shopify", "ghost", "zendesk", "readthedocs", "netlify", "vercel", etc., or "unknown"
+- takeover_provider (string): canonical provider slug — "github-pages", "heroku", "aws-s3", "fastly", "azure-app-service", "shopify", "ghost", "zendesk", "readthedocs", "netlify", "vercel", etc.; "aws" when only an Amazon-issued certificate names the provider (ACM certifies every AWS service, so it names the family: it matches any "aws-*" slug and is not auto-exploitable, unlike "aws-s3"). A provider the CNAME or the certificate names replaces a tool's placeholder, so "dangling-cname" (Nuclei's generic dangling-CNAME detection) or "unknown" is kept only when neither names one
 - takeover_method (string): "cname" | "dns" | "ns" | "mx" | "stale_a"
 - confidence (integer): 0..100 score from the layered scanner
 - sources (string[]): tools that confirmed the finding — subset of ["subjack", "nuclei_takeover"]
@@ -649,7 +649,7 @@ VHost & SNI properties (source="vhost_sni_enum"):
 Web cache poisoning properties (source="cache_poisoning"):
 - vulnerability_type (string): always "web_cache_poisoning"
 - cache_header (string): the unkeyed request header used as the poisoning vector (e.g. "X-Forwarded-Host"), empty if the vector was a parameter
-- cache_param (string): the unkeyed query parameter vector, empty if the vector was a header; on a web cache deception finding, the URL shape that leaked, "static-suffix:<delimiter><suffix>" (e.g. "static-suffix:/.css")
+- cache_param (string): the unkeyed parameter vector (cache_vector_type "param", "fat_get" or "path_param"), empty for a header or path vector; on a web cache deception finding (detection_mode "deception"), the URL shape that leaked, "static-suffix:<delimiter><suffix>" (e.g. "static-suffix:/.css")
 - cache_vector_type (string): "header" | "param" | "fat_get" (param in the GET body) | "path_param" (a ;matrix param) | "path" (path confusion or web cache deception)
 - cache_impact (string): decided from what the confirmation observed, "stored_xss" (the canary is the host of a cached <script src>) | "reflected_script" (canary cached inside an executable script context, XSS breakout unverified) | "open_redirect" (a cached Location points at the canary host) | "deception" | "dos" (a cached error status) | "reflected" | "response_change" (a cached behaviour change carrying no attacker-chosen content)
 - cache_technique (string): e.g. "unkeyed_header", "unkeyed_param", "cache_deception", "framework_next", "framework_remix"
@@ -661,7 +661,7 @@ Web cache poisoning properties (source="cache_poisoning"):
 - cross_vantage (boolean): the scan ran with the second-vantage re-confirmation option on (webCachePoisonCrossVantage)
 - vulnerability_id (string): the same value as `id`
 - poc_link (string), curl_verify (string): reproduction; evidence (string): JSON blob with baseline/poisoned/clean hashes, clean_cache_state ("hit"/"unknown" of the victim read), baseline_stable, control_check ("passed": a never-poisoned slot did not show the effect) and xss_context ("proven"/"unverified"/"")
-- id pattern: `cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}` — deterministic, MERGE-safe
+- id pattern: `cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}` with ":", "/", "." and " " turned into "_", where vector is cache_header, else cache_param — deterministic, MERGE-safe. A web cache deception finding is keyed on the page that leaked (its endpoint and matched_at, without a trailing slash) and the leaked shape; the URL it planted, which carries a random per-run marker (".../rdmn<6 hex>.css"), is only in poc_link and curl_verify, so the id holds across runs
 - Typical query: "list confirmed cache poisoning findings" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'cache_poisoning'}) WHERE v.confidence_tier = 'Confirmed' RETURN e.url, v.cache_header, v.cache_impact, v.confidence, v.poc_link`
 
 Security-check properties (source="security_check"):
@@ -1035,7 +1035,7 @@ Package properties on dependency and framework findings:
 Source-map properties (finding_type source_map_exposure or source_map_reference):
 - map_url (string): the source map URL the script references or the probe found
 - accessible (boolean): the map was served and parsed as a v3 source map
-- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access
+- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access; for a map referenced on another host that was not or may not be fetched, unreachable (no answer, or a redirect loop), unsafe (the SSRF guard refused the URL or a redirect hop: an internal or non-http(s) address) or out_of_scope (the URL or a redirect hop is neither on a host the scripts came from nor in the run's scope). A refused hop is never requested, and a map on a host the Rules of Engagement exclude is not reported
 - control_check (string): on an http_403 reference, the missing-key control: passed (a made-up sibling was not refused alike, so the map likely exists) or failed (the control got no answer, so the refusal is unconfirmed); absent otherwise. A 403 that object storage gives for any missing key is not reported at all
 - discovery_method (string): comment, header or probe
 - files_count (integer): sources listed in the map

@@ -462,9 +462,9 @@ Additional properties present on this node type, not yet described:
 - name (string): "nginx", "WordPress", "jQuery", "vsftpd/2.3.4", "Apache Tomcat/8.5.19"
 - version (string): version if detected
 - category (string): "web-server", "cms", "javascript-framework"
-- source (string): "nmap" for Nmap-detected, null for httpx-detected
+- source (string): the last of Nmap ("nmap"), the AI port catalog ("ai-port-catalog") or the AI surface checks ("ai-surface-recon") to see it; null on a node only httpx, Wappalyzer or GVM saw
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:apache:tomcat:8.5.19")
-- detected_by (string): every detector that saw it, comma-joined (e.g. "httpx,wappalyzer"), with "gvm" kept last ("httpx,gvm"). Match one with CONTAINS, not equality
+- detected_by (string): the detectors that saw it, comma-joined, each added without removing the others: "httpx" and "wappalyzer" (the HTTP probe) and "gvm", kept last (e.g. "httpx,wappalyzer", "httpx,gvm"). Nmap and the AI checks never write it. Match one with CONTAINS, not equality
 
 Additional properties present on this node type, not yet described:
 
@@ -739,7 +739,7 @@ Subdomain-takeover properties (source="takeover_scan"):
 - type (string): always "subdomain_takeover"
 - hostname (string): the subdomain flagged (e.g. "promo.acme.com")
 - cname_target (string, nullable): CNAME destination for cname-method findings (e.g. "acme-spring.herokuapp.com")
-- takeover_provider (string): canonical provider slug — "github-pages", "heroku", "aws-s3", "fastly", "azure-app-service", "shopify", "ghost", "zendesk", "readthedocs", "netlify", "vercel", etc., or "unknown"
+- takeover_provider (string): canonical provider slug — "github-pages", "heroku", "aws-s3", "fastly", "azure-app-service", "shopify", "ghost", "zendesk", "readthedocs", "netlify", "vercel", etc.; "aws" when only an Amazon-issued certificate names the provider (ACM certifies every AWS service, so it names the family: it matches any "aws-*" slug and is not auto-exploitable, unlike "aws-s3"). A provider the CNAME or the certificate names replaces a tool's placeholder, so "dangling-cname" (Nuclei's generic dangling-CNAME detection) or "unknown" is kept only when neither names one
 - takeover_method (string): "cname" | "dns" | "ns" | "mx" | "stale_a"
 - confidence (integer): 0..100 score from the layered scanner
 - sources (string[]): tools that confirmed the finding — subset of ["subjack", "nuclei_takeover"]
@@ -768,7 +768,7 @@ VHost & SNI properties (source="vhost_sni_enum"):
 Web cache poisoning properties (source="cache_poisoning"):
 - vulnerability_type (string): always "web_cache_poisoning"
 - cache_header (string): the unkeyed request header used as the poisoning vector (e.g. "X-Forwarded-Host"), empty if the vector was a parameter
-- cache_param (string): the unkeyed query parameter vector, empty if the vector was a header; on a web cache deception finding, the URL shape that leaked, "static-suffix:<delimiter><suffix>" (e.g. "static-suffix:/.css")
+- cache_param (string): the unkeyed parameter vector (cache_vector_type "param", "fat_get" or "path_param"), empty for a header or path vector; on a web cache deception finding (detection_mode "deception"), the URL shape that leaked, "static-suffix:<delimiter><suffix>" (e.g. "static-suffix:/.css")
 - cache_vector_type (string): "header" | "param" | "fat_get" (param in the GET body) | "path_param" (a ;matrix param) | "path" (path confusion or web cache deception)
 - cache_impact (string): decided from what the confirmation observed, "stored_xss" (the canary is the host of a cached <script src>) | "reflected_script" (canary cached inside an executable script context, XSS breakout unverified) | "open_redirect" (a cached Location points at the canary host) | "deception" | "dos" (a cached error status) | "reflected" | "response_change" (a cached behaviour change carrying no attacker-chosen content)
 - cache_technique (string): e.g. "unkeyed_header", "unkeyed_param", "cache_deception", "framework_next", "framework_remix"
@@ -858,7 +858,7 @@ graphql-cop properties (source="graphql_cop" -- external Docker scanner, Phase 2
 - Noise bookkeeping (same (:IP) nodes): is_permissive_frontend (bool — a port answered every candidate alike, so its anomalies were discarded as noise), vhost_sni_suppressed_by_control (int — candidates dropped for matching a random-hostname control probe), vhost_sni_suppressed_dns_known (int — names DNS points at this IP that served their own site and so were not reported as hidden), vhost_sni_suppressed_as_noise (int — anomalies discarded on permissive-frontend ports; none of them became a finding), vhost_sni_suppressed_sample (list of "hostname:port" strings, sorted, at most 20 — which names those were)
 - Typical query: "list hidden admin panels uncovered by vhost enumeration" → `MATCH (s:Subdomain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'vhost_sni_enum'}) WHERE v.internal_pattern_match IS NOT NULL RETURN s.name AS hostname, v.ip, v.port, v.layer, v.severity, v.internal_pattern_match` (that traversal covers in-scope names; a co-hosted one is reached as `MATCH (i:IP)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'vhost_sni_enum'})`)
 - confidence (float 0–1) and confidence_tier (string): "Confirmed" (canary persisted on a clean request that was a cache hit), "Strong", "Tentative"
-- id pattern: `cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}` — deterministic, MERGE-safe
+- id pattern: `cache_{user_id}_{project_id}_{technique}_{baseurl}_{path}_{vector}` with ":", "/", "." and " " turned into "_", where vector is cache_header, else cache_param — deterministic, MERGE-safe. A web cache deception finding is keyed on the page that leaked (its endpoint and matched_at, without a trailing slash) and the leaked shape; the URL it planted, which carries a random per-run marker (".../rdmn<6 hex>.css"), is only in poc_link and curl_verify, so the id holds across runs
 - Typical query: "list confirmed cache poisoning findings" → `MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v:Vulnerability {source: 'cache_poisoning'}) WHERE v.confidence_tier = 'Confirmed' RETURN e.url, v.cache_header, v.cache_impact, v.confidence, v.poc_link`
 - A port/service check that reports no URL (admin_port_exposed, database_exposed, redis_no_auth, smtp_open_relay) carries matched_ip and port, and matched_at "<ip>:<port>" (an IPv6 address in brackets, e.g. "[2001:db8::1]:6379"), one finding per IP and port, linked from its IP via HAS_VULNERABILITY
 GLOBAL reference nodes: one node per CVE for the whole database, shared by every
@@ -1225,7 +1225,7 @@ Package properties on dependency and framework findings:
 Source-map properties (finding_type source_map_exposure or source_map_reference):
 - map_url (string): the source map URL the script references or the probe found
 - accessible (boolean): the map was served and parsed as a v3 source map
-- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access
+- fetch_result (string): ok for a served map; http_401 or http_403 for a referenced map that refused access; for a map referenced on another host that was not or may not be fetched, unreachable (no answer, or a redirect loop), unsafe (the SSRF guard refused the URL or a redirect hop: an internal or non-http(s) address) or out_of_scope (the URL or a redirect hop is neither on a host the scripts came from nor in the run's scope). A refused hop is never requested, and a map on a host the Rules of Engagement exclude is not reported
 - control_check (string): on an http_403 reference, the missing-key control: passed (a made-up sibling was not refused alike, so the map likely exists) or failed (the control got no answer, so the refusal is unconfirmed); absent otherwise. A 403 that object storage gives for any missing key is not reported at all
 - discovery_method (string): comment, header or probe
 - files_count (integer): sources listed in the map
@@ -1986,7 +1986,7 @@ LIMIT 500
 6. **Use property filters** in WHERE clauses, not relationship traversals for filtering
 7. **Check vulnerability source** when querying Vulnerability nodes:
    - source="nuclei" -> web/DAST vulnerabilities (FOUND_AT, AFFECTS_PARAMETER)
-   - source="nmap_nse" -> Nmap NSE script findings (AFFECTS Port, FOUND_ON Technology, HAS_CVE CVE)
+   - source="nmap_nse" -> Nmap NSE script findings (AFFECTS Port, FOUND_ON Technology, HAS_CVE CVE); a host-script finding (host_level=true, port_number 0, e.g. smb-vuln-ms17-010) has no Port or Technology: HAS_VULNERABILITY from IP
    - source="gvm" -> network vulnerabilities (HAS_VULNERABILITY from IP/Subdomain)
    - source="security_check" -> DNS/email security checks (SPF, DMARC)
    - source="netlas" -> passive CVE detection via NVD (HAS_VULNERABILITY from Service)
