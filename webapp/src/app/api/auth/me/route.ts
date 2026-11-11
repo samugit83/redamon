@@ -1,7 +1,23 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getSession } from '@/lib/session'
-import { internalError } from '@/lib/routeErrors'
+import { internalError, safeErrorCode } from '@/lib/routeErrors'
+import { rbacFlags } from '@/lib/authz/flags'
+import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
+
+/**
+ * What the header's admin banners show (step 1.18). Never fails the session, which the
+ * whole app reads: a failed count is `null`, and the banner that needs it stays hidden.
+ */
+async function adminNotices(): Promise<{ compat: boolean; legacyGrantsPending: number | null }> {
+  let legacyGrantsPending: number | null = null
+  try {
+    legacyGrantsPending = await pendingLegacyGrantCount()
+  } catch (err) {
+    console.error(`[rbac] could not read the legacy grant review: ${safeErrorCode(err)}`)
+  }
+  return { compat: rbacFlags().sharedToolsCompat, legacyGrantsPending }
+}
 
 export async function GET() {
   try {
@@ -19,7 +35,9 @@ export async function GET() {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    return NextResponse.json(user)
+    // The real signed-in account's role, read from the database: only admins see the switch.
+    if (session.role !== 'admin') return NextResponse.json(user)
+    return NextResponse.json({ ...user, rbac: await adminNotices() })
   } catch (error) {
     return internalError(error, 'Internal server error', { log: 'Auth me error' })
   }

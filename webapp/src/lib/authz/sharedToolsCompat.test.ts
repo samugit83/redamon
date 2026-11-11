@@ -172,7 +172,7 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  test('only flags.ts and sharedTools.ts read the switch in the webapp source', () => {
+  test('only flags.ts, sharedTools.ts and the admin banner read the switch in the webapp source', () => {
     const src = path.resolve(__dirname, '..', '..')
     const readers: string[] = []
     const walk = (dir: string) => {
@@ -185,7 +185,7 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
       }
     }
     walk(src)
-    // A later reader that only shows the admin banner (step 1.18) is added here by name.
-    expect(readers.sort()).toEqual(['lib/authz/flags.ts', 'lib/authz/sharedTools.ts'])
+    // Step 1.18's admin banner: /api/auth/me tells admins whether the switch is on; it opens no tool.
+    expect(readers.sort()).toEqual(['app/api/auth/me/route.ts', 'lib/authz/flags.ts', 'lib/authz/sharedTools.ts'])
   })
 })
