@@ -317,6 +317,97 @@ class FixedArgvWrappers(unittest.TestCase):
                           ).assert_clean(self, "chisel")
 
 
+class SecretsOffCommandLinesAndSharedFiles(unittest.TestCase):
+    """A user's tool key reaches only the child that needs it: not its command line, which
+    `ps` shows every process in the container and on the host, nor a file left in the
+    shared home directory."""
+
+    def _run(self, module, call, home):
+        calls = []
+
+        def run(argv, **kwargs):
+            config = None
+            if "--config" in argv and Path(argv[argv.index("--config") + 1]).exists():
+                path = Path(argv[argv.index("--config") + 1])
+                config = (path, path.read_text(encoding="utf-8"), path.stat().st_mode & 0o777)
+            calls.append({"argv": list(argv), "env": kwargs.get("env"), "config": config})
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with _server_env(HOME=home), mock.patch.object(module.subprocess, "run", side_effect=run):
+            call()
+        return calls
+
+    def test_gau_reads_the_urlscan_key_from_a_private_file_removed_after_the_call(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            [c] = self._run(nrs, lambda: nrs.execute_gau("--subs rbac.invalid", urlscan_api_key="rbac-urlscan-key"),
+                            home)
+            self.assertFalse((Path(home) / ".gau.toml").exists())
+        path, text, mode = c["config"]
+        self.assertIn('apikey = "rbac-urlscan-key"', text)
+        self.assertEqual(mode, 0o600)
+        self.assertFalse(path.exists(), "the per-call config outlives the call")
+        self.assertEqual(c["argv"][0], "gau")
+        self.assertEqual(c["argv"][-2:], ["--subs", "rbac.invalid"])
+        self.assertNotIn("rbac-urlscan-key", " ".join(c["argv"]))
+        self.assertNotIn("rbac-urlscan-key", json.dumps(c["env"]))
+
+    def test_gau_without_a_key_or_with_its_own_config_is_unchanged(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            [plain] = self._run(nrs, lambda: nrs.execute_gau("rbac.invalid"), home)
+            [own] = self._run(nrs, lambda: nrs.execute_gau("--config /tmp/mine.toml rbac.invalid",
+                                                           urlscan_api_key="rbac-urlscan-key"), home)
+            self.assertFalse((Path(home) / ".gau.toml").exists())
+        self.assertEqual(plain["argv"], ["gau", "rbac.invalid"])
+        self.assertEqual(own["argv"], ["gau", "--config", "/tmp/mine.toml", "rbac.invalid"])
+
+    def test_gau_removes_the_file_when_the_tool_fails(self):
+        import tempfile
+        seen = []
+
+        def boom(argv, **kwargs):
+            seen.append(Path(argv[argv.index("--config") + 1]))
+            raise subprocess.TimeoutExpired(argv, 300)
+
+        with tempfile.TemporaryDirectory() as home, _server_env(HOME=home), \
+                mock.patch.object(nrs.subprocess, "run", side_effect=boom):
+            out = nrs.execute_gau("rbac.invalid", urlscan_api_key="rbac-urlscan-key")
+        self.assertIn("timed out", out)
+        self.assertFalse(seen[0].exists())
+
+    def test_wpscan_token_reaches_wpscan_in_its_environment_not_its_argv(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            [c] = self._run(nrs, lambda: nrs.execute_wpscan("--url http://rbac.invalid", api_token="rbac-wpscan"),
+                            home)
+            [none] = self._run(nrs, lambda: nrs.execute_wpscan("--url http://rbac.invalid"), home)
+        self.assertEqual(c["env"]["WPSCAN_API_TOKEN"], "rbac-wpscan")
+        self.assertNotIn("rbac-wpscan", " ".join(c["argv"]))
+        self.assertNotIn("--api-token", c["argv"])
+        self.assertEqual(sorted(set(SECRETS) & set(c["env"])), [])
+        self.assertNotIn("WPSCAN_API_TOKEN", none["env"])
+
+    def test_chisel_auth_reaches_chisel_in_its_environment_not_its_argv(self):
+        cap = _Captured()
+        argvs = []
+
+        def popen(argv, **kwargs):
+            argvs.append(list(argv))
+            return cap.popen(argv, **kwargs)
+
+        with _server_env(), mock.patch("builtins.open", mock.mock_open()), \
+                mock.patch.object(tunnel_manager.subprocess, "Popen", side_effect=popen):
+            tunnel_manager._start_chisel("http://rbac.invalid:8080", "rbac-user:rbac-pass")
+            tunnel_manager._start_chisel("http://rbac.invalid:8080", "")
+        with_auth, without = cap.envs
+        self.assertEqual(argvs[0], ["chisel", "client", "http://rbac.invalid:8080", "R:4444:localhost:4444"])
+        self.assertEqual(with_auth["AUTH"], "rbac-user:rbac-pass")
+        self.assertEqual(argvs[1], argvs[0])
+        self.assertNotIn("AUTH", without)
+        cap.assert_clean(self, "chisel")
+
+
 # --- the guard: every spawn in mcp/servers/*.py passes env built by safe_env ---
 
 _SPAWN_MODULES = ("subprocess", "os", "asyncio", "pty")

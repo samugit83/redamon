@@ -215,22 +215,23 @@ The tool **only appears** when the user has configured the API key. No key = too
 
 **Pattern 2: Optional enrichment / silent injection (Type B MCP tools with optional API keys -- WPScan)**
 
-The tool **always works** without the key, but the key enriches results (e.g., vulnerability database access). The key is silently injected into CLI args at execution time -- the LLM never sees the key.
+The tool **always works** without the key, but the key enriches results (e.g., vulnerability database access). The key is silently passed beside the args at execution time, and the sandbox hands it to that one child process through its environment (or a private per-call file), never its command line, which `ps` shows to every process in the shared sandbox and on the host -- the LLM never sees the key.
 
-**When to use:** The tool is a CLI binary in kali-sandbox (Type B/C MCP tool) that optionally accepts an API key as a CLI flag but functions without it.
+**When to use:** The tool is a CLI binary in kali-sandbox (Type B/C MCP tool) that optionally accepts an API key (as a flag, an environment variable or a config file) but functions without it.
 
 **How it works:**
 1. Tool is always registered (MCP auto-discovery) -- availability does NOT depend on the key
 2. Key stored on `PhaseAwareToolExecutor` via a setter method (e.g., `set_wpscan_api_token()`)
-3. An `elif tool_name == "execute_[tool]"` branch in `PhaseAwareToolExecutor.execute()` checks for the key and prepends the CLI flag (e.g., `--api-token KEY`) to args before forwarding to MCP
+3. An `elif tool_name == "execute_[tool]"` branch in `PhaseAwareToolExecutor.execute()` checks for the key and adds it as its own MCP argument (e.g., `api_token`) beside `args`. The MCP tool takes that parameter and gives it to the child as the environment variable the binary reads (`env=safe_env({"WPSCAN_API_TOKEN": api_token})`), or, for a binary that reads keys only from a config file, a `tempfile.mkstemp` file it passes with the binary's config flag and removes in `finally` (`execute_gau`). Never a CLI flag, never a file in the shared home directory
 4. The injection is silent -- the LLM's original args are shown in the UI, the key is never exposed in prompts or logs
 5. If the user manually passes the flag in their args, injection is skipped (no double-injection)
 
 **Backend files:**
 - `agentic/tools.py` -- Add `set_[tool]_api_token()` method on `PhaseAwareToolExecutor` + add `elif` dispatch branch in `execute()` with injection logic
+- `mcp/servers/<server>.py` -- The tool's extra key parameter, handed to the child's environment or a per-call file
 - `agentic/orchestrator.py` -- In `_apply_project_settings()`, read key from `user_settings.get('[tool]ApiToken', '')` and call `self.tool_executor.set_[tool]_api_token(token)`
 
-**Reference implementation:** Read the `execute_wpscan` block in `PhaseAwareToolExecutor.execute()` (~line 1167) and the WPScan block in `_apply_project_settings()` (~line 201-205).
+**Reference implementation:** Read the `execute_wpscan` block in `PhaseAwareToolExecutor.execute()`, `execute_wpscan` in `mcp/servers/network_recon_server.py`, and the WPScan block in `_apply_project_settings()` (~line 201-205).
 
 **Example:**
 ```python
@@ -240,11 +241,17 @@ def set_wpscan_api_token(self, token: str) -> None:
 
 # In execute():
 elif tool_name == "execute_wpscan":
-    args = tool_args.get("args", "")
-    if getattr(self, '_wpscan_api_token', '') and '--api-token' not in args:
-        args = f"--api-token {self._wpscan_api_token} {args}"
-        tool_args = {**tool_args, "args": args}
+    token = getattr(self, '_wpscan_api_token', '')
+    if token and '--api-token' not in tool_args.get("args", ""):
+        tool_args = {**tool_args, "api_token": token}
     output = await tool.ainvoke(tool_args)
+
+# In mcp/servers/network_recon_server.py: the child's environment, never its argv
+@mcp.tool()
+def execute_wpscan(args: str, _redamon_ctx: str = "", api_token: str = "") -> str:
+    ...
+    subprocess.run(["wpscan"] + cmd_args, capture_output=True, text=True, timeout=600,
+                   env=safe_env({"WPSCAN_API_TOKEN": api_token} if api_token else None))
 ```
 
 **Examples:** `execute_wpscan`
@@ -334,11 +341,13 @@ The exact set of files depends on the integration type chosen in Phase 1.
 
 #### MCP Tool with Optional API Key (Type B/C + Pattern 2 from Step 6)
 
-For MCP tools that accept an optional API key via CLI flag (tool works without it, key enriches results):
+For MCP tools that accept an optional API key (tool works without it, key enriches results):
 
 - [ ] **`agentic/tools.py`** -- Read `set_wpscan_api_token` and the `execute_wpscan` elif branch as reference. Add:
   1. `set_[tool]_api_token(self, token: str)` method on `PhaseAwareToolExecutor` -- stores token as `self._[tool]_api_token`
-  2. `elif tool_name == "execute_[tool]":` branch in `PhaseAwareToolExecutor.execute()` -- checks for stored token via `getattr(self, '_[tool]_api_token', '')`, skips injection if flag already in args, prepends `--api-token TOKEN` (or whatever the CLI flag is) to args, creates new `tool_args` dict (do NOT mutate original), then calls `tool.ainvoke(tool_args)`
+  2. `elif tool_name == "execute_[tool]":` branch in `PhaseAwareToolExecutor.execute()` -- checks for stored token via `getattr(self, '_[tool]_api_token', '')`, skips injection if the flag is already in args, adds the token as its own argument (`api_token`) beside `args`, never inside them, in a new `tool_args` dict (do NOT mutate original), then calls `tool.ainvoke(tool_args)`
+
+- [ ] **`mcp/servers/<server>.py`** -- Read `execute_wpscan` (environment) and `execute_gau` (per-call config file) as reference. Add the key parameter to the MCP tool and pass it as `env=safe_env({"<ENV_VAR>": key} if key else None)`, or in a `tempfile.mkstemp` file removed in `finally`; never on the command line, never in a file under the shared home directory
 
 - [ ] **`agentic/orchestrator.py`** -- Read the WPScan block (~line 201-205) as reference. Add to `_apply_project_settings()`:
   1. Read key: `token = user_settings.get('[tool]ApiToken', '')`

@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -454,14 +455,18 @@ def execute_gau(args: str, urlscan_api_key: str = "") -> str:
         Combine flags:
         - "--subs --json --blacklist png,jpg,gif,css --threads 5 example.com"
     """
+    config_path = None
     try:
-        # Write GAU config if URLScan API key provided
-        if urlscan_api_key:
-            config_path = os.path.expanduser("~/.gau.toml")
-            with open(config_path, "w") as f:
-                f.write(f'[urlscan]\napikey = "{urlscan_api_key}"\n')
-
         cmd_args = shlex.split(args)
+        # The URLScan key goes in a private per-call config, removed when the call ends:
+        # ~/.gau.toml is shared by every caller of this sandbox, so it handed one user's
+        # key to the next call and to every shell. A --config of the caller's own wins.
+        if urlscan_api_key and not any(a == "--config" or a.startswith("--config=") for a in cmd_args):
+            fd, config_path = tempfile.mkstemp(prefix="gau_", suffix=".toml")
+            with os.fdopen(fd, "w") as f:
+                f.write(f'[urlscan]\napikey = "{urlscan_api_key}"\n')
+            cmd_args = ["--config", config_path] + cmd_args
+
         result = subprocess.run(
             ["gau"] + cmd_args,
             capture_output=True,
@@ -485,6 +490,12 @@ def execute_gau(args: str, urlscan_api_key: str = "") -> str:
         return "[ERROR] gau not found. Ensure it is installed and in PATH."
     except Exception as e:
         return f"[ERROR] {str(e)}"
+    finally:
+        if config_path:
+            try:
+                os.remove(config_path)
+            except OSError:
+                pass
 
 
 @mcp.tool()
@@ -1018,7 +1029,7 @@ def execute_masscan(args: str) -> str:
 
 
 @mcp.tool()
-def execute_wpscan(args: str, _redamon_ctx: str = "") -> str:
+def execute_wpscan(args: str, _redamon_ctx: str = "", api_token: str = "") -> str:
     """
     Execute WPScan WordPress vulnerability scanner with any valid CLI arguments.
 
@@ -1080,12 +1091,14 @@ def execute_wpscan(args: str, _redamon_ctx: str = "") -> str:
                     break
             else:
                 cmd_args = cmd_args + ["--headers", _tag]
+        # The user's token rides in this child's environment, which wpscan reads as
+        # WPSCAN_API_TOKEN (an --api-token in args wins), never on its command line.
         result = subprocess.run(
             ["wpscan"] + cmd_args,
             capture_output=True,
             text=True,
             timeout=600,
-            env=safe_env()
+            env=safe_env({"WPSCAN_API_TOKEN": api_token} if api_token else None)
         )
         return _format_subprocess_result(
             result,

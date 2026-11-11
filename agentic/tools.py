@@ -2749,17 +2749,20 @@ class PhaseAwareToolExecutor:
                 # Inject WPScan API token if configured and not already in args.
                 # Read from the task-isolated settings at use-time (not a shared
                 # instance field) so concurrent sessions never cross-contaminate.
+                # It travels beside the args: the sandbox hands it to wpscan as
+                # WPSCAN_API_TOKEN, off the command line every process there can read.
                 args = tool_args.get("args", "")
                 wpscan_token = (get_setting('USER_SETTINGS', {}).get('wpscanApiToken', '')
                                 or getattr(self, '_wpscan_api_token', ''))
                 if wpscan_token and '--api-token' not in args:
-                    adjusted = {**tool_args, "args": f"--api-token {wpscan_token} {args}"}
+                    adjusted = {**tool_args, "api_token": wpscan_token}
                 else:
                     adjusted = tool_args
                 output = await active_tool.ainvoke(adjusted)
             elif tool_name == "execute_gau":
-                # Inject URLScan API key if configured (written to ~/.gau.toml by MCP
-                # server). Read at use-time from task-isolated settings (no shared field).
+                # Inject URLScan API key if configured (the MCP server writes it to a
+                # private per-call gau config). Read at use-time from task-isolated
+                # settings (no shared field).
                 urlscan_key = (get_setting('USER_SETTINGS', {}).get('urlscanApiKey', '')
                                or getattr(self, '_gau_urlscan_api_key', ''))
                 if urlscan_key:

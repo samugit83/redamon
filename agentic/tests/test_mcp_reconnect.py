@@ -634,9 +634,11 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
             phase="informational",
         )
         self.assertTrue(result["success"])
-        # The retry call must have the injected token, not the raw args.
+        # The retry call must have the injected token, beside the args rather than
+        # in them: the sandbox hands it to wpscan off the command line.
         self.assertEqual(len(captured), 1)
-        self.assertIn("--api-token TOKEN123", captured[0]["args"])
+        self.assertEqual(captured[0]["api_token"], "TOKEN123")
+        self.assertNotIn("TOKEN123", captured[0]["args"])
         self.assertIn("--url https://x", captured[0]["args"])
 
     @patch("tools.is_tool_allowed_in_phase", return_value=True)
