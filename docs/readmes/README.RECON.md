@@ -843,6 +843,16 @@ What follows from that:
   before they stored `domain` get the org of the Domain they hang off first
   (`backfill_security_check_domains`); if that fails, the DNS types prune
   nothing that run.
+- **The security checks keep the hosts they did not probe.** A domain run
+  probes a host only on a web port its port scan or httpx found live, and never
+  a host the Rules of Engagement refuse
+  ([README.VULN_SCAN.md](README.VULN_SCAN.md#which-hosts-the-checks-probe)).
+  A host with no live port in that data, one with an unproven web port while an
+  evidence source was cut, and an RoE-refused host are noted degraded for
+  `security_check` alone (`source_only_hosts`): the prune keeps their findings,
+  and none is marked unreachable, which would keep the host's findings for every
+  source. In a partial run, a typed host the graph has no live row for is probed
+  on both web ports.
 - **Passive CVE lookups record positive coverage.** Shodan (with InternetDB),
   Netlas and CriminalIP pass `note_cve_coverage` the IPs they started from
   (`considered=`), the ones they asked about and the ones whose whole answer

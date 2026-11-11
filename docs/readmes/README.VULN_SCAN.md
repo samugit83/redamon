@@ -1433,6 +1433,91 @@ In addition to Nuclei templates, RedAmon includes custom Python-based security c
 
 The header, cookie, CSP and form checks (and `no_rate_limiting`) follow a redirect only while it stays on the probed host (`_get_on_host`; http to https on the same name is followed). A page another host serves after a redirect is not judged as this host's, and that host gets no request, so an apex that only redirects to `www` gets no header findings of its own.
 
+### Which hosts the checks probe
+
+A domain run hands the checks its whole DNS block and port scan. Three gates in
+`recon/helpers/security_checks.py` decide which of those hosts get a request.
+IP mode keeps its own rules (a target's live ports, redirect hops onto targets).
+
+**Only a web port the run found live.** A host is probed on `:80` or `:443`
+only when this run has evidence that the port is live there
+(`_domain_live_ports`): the port scan lists it open on the address, or found it
+by name (live on the name and its address), or httpx reached a URL on it (by the
+URL's host and the address httpx used). A name has every port that is live on
+an address it resolves to (the run's DNS and the port scan's name maps), since
+it is the same TCP endpoint. So an HTTP-only host gets its `:80` checks and no
+`:443` connection, the WAF bypass pairs a name with an address only when both
+are live on `:443`, and the bare-origin comparison skips a name that is not live
+on the port. The log says `[*][SecurityCheck] A host is probed only on a web
+port this run found live (:80 on N, :443 on M of T host(s))`.
+
+A host left unprobed is never marked unreachable (`_keep_unproven_domain_hosts`):
+
+- A host with no live port at all in that data is not probed. The port scan and
+  httpx do not reach every name the checks read (a name found after them, a name
+  naabu never got), so their silence is no verdict.
+- When an evidence source was cut (naabu, masscan or httpx stopped early or
+  failed) and no finished port scan says a port is closed, a host with an
+  unproven web port is kept the same way.
+
+Both keep their `security_check` findings, for that source alone, through a
+`security_checks` coverage gap ("no live web port in this run's port or URL
+data"), and the log says `[!][SecurityCheck] N host(s) without live-port
+evidence for a web check: not probed there, earlier findings kept`. A run whose
+port and URL data show nothing live at all probes every host on both ports, as
+before the gate.
+
+**The Rules of Engagement.** The three target lists (the direct-IP checks'
+addresses, the WAF bypass's name-address pairs, the hostname checks' names) pass
+`target_admission.admit_host_targets` (`_domain_roe_hosts`):
+
+- an excluded address is never probed;
+- a name with any excluded address is neither probed by name (the HTTP stack
+  would resolve it onto any of its addresses) nor paired with an address, while
+  its allowed addresses are still checked as bare IPs;
+- a name an entry excludes by name takes the addresses only it holds with it.
+
+The port and service checks drop an excluded address and an address held only
+by excluded names, as nmap does (`admit_ip_map`, `_domain_roe_port_ips`). The
+RoE list comes from the caller, else from a partial builder's `metadata.roe`.
+Each refusal is logged once per run (`[-][RoE] security_checks: not sent to N
+target(s) the Rules of Engagement exclude: <address> (<name>), ...`) and noted
+under `roe_excluded`, and each refused host is kept as not checked for
+`security_check` alone (`[-][SecurityCheck] N host(s) the Rules of Engagement
+refuse: not checked, earlier findings kept`). With no exclusion the gate
+changes nothing.
+
+**Redirect chains.** `check_direct_ip_http` and `check_direct_ip_https` follow
+an address's redirects hop by hop (`_follow_admitted_redirects` with
+`_domain_redirect_admission`), not through requests' own following. A hop is
+sent only to one of the run's own hosts that the RoE admit: a name the run
+resolved (its DNS and the port scan's name maps) or an address they hold.
+`hop_guard.hop_refusal` asks the RoE again for each hop, on the name's current
+addresses. A third party, an address the run never resolved (cloud metadata, an
+internal service the target points at) and an excluded host get no request; no
+SSRF guard is added on top, so an internal project's own private addresses
+still pass. A refused hop counts no host failure: the chain ends there and is
+reported as where the target pointed (`final_url` is the refused `Location`).
+Each hop takes its own slot of the RoE rate ceiling.
+
+**Partial runs.** `run_security_checks_partial` reads the graph through
+`_build_vuln_scan_data_from_graph`, so its evidence is the graph's open `Port`
+nodes and `BaseURL`s, and a graph host follows the rule above. A subdomain or IP
+typed into the modal that the graph has no live row for is probed on both web
+ports, as before the gate: the run stamps the typed hosts and a typed name's
+resolved addresses in `metadata.typed_hosts` (not in IP mode). A typed host the
+graph has evidence for follows it, a name that only shares a typed address gains
+nothing, and the RoE gate still refuses an excluded typed host and a typed name
+with any excluded address.
+
+The builder keeps a graph name's RoE-excluded address in the `dns` block, which
+every reader's gate reads, and out of `port_scan.by_ip`, a `BaseURL`'s resolved
+address and the nmap services the CVE lookup reads. While the run has
+exclusions (outside IP mode) it stamps the run's RoE in `metadata.roe`. So the
+partial security checks, Nuclei and Subdomain Takeover refuse a graph name with
+one excluded and one allowed address by name, and a name whose only address is
+excluded as excluded, not as unresolved.
+
 ### Check Categories
 
 #### Authentication Security
