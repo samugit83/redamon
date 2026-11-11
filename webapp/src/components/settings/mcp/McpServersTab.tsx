@@ -22,8 +22,8 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import styles from './McpServersTab.module.css'
 
 /**
- * The secret a save or test was refused for because the URL changed (HD-24):
- * `auth.token` or `headers.<name>`, with the server's sentence.
+ * The secret a save or test was refused for because the URL, or a stdio server's command,
+ * changed (HD-24): `auth.token`, `headers.<name>` or `env.<name>`, with the server's sentence.
  */
 function reentryOf(err: ApiError): { field: string; message: string } | null {
   const field = err.body?.field
@@ -198,13 +198,16 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
   const [saving, setSaving] = useState(false)
   const [topLevelError, setTopLevelError] = useState<string | null>(null)
   const [tokenVisible, setTokenVisible] = useState(false)
-  // Focus target after a re-entry refusal: the token input or the headers box.
+  // Focus target after a re-entry refusal: the token input, the headers box or the env box.
   const tokenInput = useRef<HTMLInputElement | null>(null)
   const headersInput = useRef<HTMLTextAreaElement | null>(null)
+  const envInput = useRef<HTMLTextAreaElement | null>(null)
   const [reentryFocus, setReentryFocus] = useState<{ field: string } | null>(null)
   useEffect(() => {
     if (!reentryFocus) return
-    const target = reentryFocus.field === 'auth.token' ? tokenInput.current : headersInput.current
+    const { field } = reentryFocus
+    const target = field === 'auth.token' ? tokenInput.current
+      : field.startsWith('env.') ? envInput.current : headersInput.current
     target?.focus()
   }, [reentryFocus])
   const { dangerConfirm, alertError } = useAlertModal()
@@ -946,6 +949,7 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
             <label className={`${styles.field} ${styles.fieldWide}`}>
               <span>env vars (one per line, <code>KEY=VALUE</code>)</span>
               <textarea
+                ref={envInput}
                 rows={4}
                 value={Object.entries(editing.env || {}).map(([k, v]) => `${k}=${v}`).join('\n')}
                 onChange={e => {
@@ -968,6 +972,9 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
               <span className={styles.muted} style={{ fontSize: '11px' }}>
                 Passed to the spawned process as environment variables. Used by stdio MCPs that read API keys from env (Shodan, VirusTotal, Snyk, etc.). Stored as plaintext in the DB.
               </span>
+              {Object.keys(errors).filter(k => k.startsWith('env.')).map(k => (
+                <span key={k} className={styles.fieldErr} role="alert">{errors[k]}</span>
+              ))}
             </label>
           </>
         )}

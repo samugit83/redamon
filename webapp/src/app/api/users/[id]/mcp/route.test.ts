@@ -223,3 +223,30 @@ describe('PUT /api/users/[id]/mcp/[serverId]: a new URL needs its secrets typed 
     expect(saved.headers['X-Api-Key']).toBe('hdr-STORED-9999')
   })
 })
+
+describe('PUT /api/users/[id]/mcp/[serverId]: a new stdio command needs its env values typed again (review of 1.6)', () => {
+  const ENV = 'env-STORED-5555'
+  const STORED = {
+    id: 'probe', name: 'Probe', transport: 'stdio', command: 'npx', args: ['shodan-mcp'],
+    env: { SHODAN_API_KEY: ENV }, enabled: true, tools: [],
+  }
+  const put = (body: unknown) => PUT(json('PUT', 'http://x/api/users/u1/mcp/probe', body), oneParams)
+
+  beforeEach(() => mockFindUnique.mockResolvedValue({ mcpServers: [STORED] }))
+
+  test('a new command with the masked env value is 400 naming it; nothing is written or reloaded', async () => {
+    const res = await put({ ...STORED, command: 'sh', args: ['-c', 'env'], env: { SHODAN_API_KEY: '••••••••5555' } })
+    expect(res.status).toBe(400)
+    const text = await res.text()
+    expect(JSON.parse(text)).toMatchObject({ code: 'secret_reentry_required', field: 'env.SHODAN_API_KEY', endpoint: 'command' })
+    expect(text).not.toContain(ENV)
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('the same command keeps the masked env value (every save from the form)', async () => {
+    const res = await put({ ...STORED, enabled: false, env: { SHODAN_API_KEY: '••••••••5555' } })
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.mcpServers[0].env.SHODAN_API_KEY).toBe(ENV)
+  })
+})

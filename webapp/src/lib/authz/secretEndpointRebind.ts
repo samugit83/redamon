@@ -11,7 +11,9 @@
  * The endpoint -> secret pairs: an LLM provider's base URL or type -> its key fields;
  * the GitHub Enterprise host -> githubEnterpriseToken (only that token is ever sent to
  * it, scanners/supply_chain_scan/project_settings.py); the chisel server URL ->
- * chiselAuth; an outbound MCP server's URL -> its bearer token and header values.
+ * chiselAuth; an outbound MCP server's URL -> its bearer token and header values; a stdio
+ * MCP server's command, arguments and working directory (the process its env values are
+ * handed to) -> its env values; a change of transport re-points the server too.
  */
 import { NextResponse } from 'next/server'
 
@@ -50,10 +52,15 @@ const ENDPOINT_LABELS: Record<string, string> = {
   githubEnterpriseHost: 'GitHub Enterprise host',
   chiselServerUrl: 'chisel server URL',
   url: 'server URL',
+  transport: 'transport',
+  command: 'command',
+  args: 'arguments',
+  cwd: 'working directory',
 }
 
 function secretLabel(field: string): string {
   if (field.startsWith('headers.')) return `value of the header "${field.slice('headers.'.length)}"`
+  if (field.startsWith('env.')) return `value of the environment variable "${field.slice('env.'.length)}"`
   return SECRET_LABELS[field] ?? field
 }
 
@@ -121,32 +128,65 @@ export function settingsSecretReentry(
 }
 
 interface StoredMcpServer {
+  transport?: string | null
   url?: string | null
   auth?: { token?: string } | null
   headers?: Record<string, string> | null
+  command?: string | null
+  args?: string[] | null
+  cwd?: string | null
+  env?: Record<string, string> | null
+}
+
+const argList = (v: unknown): string => JSON.stringify(Array.isArray(v) ? v.map(String) : [])
+
+/**
+ * The field whose change sends a server's secrets somewhere else, or null. An HTTP server
+ * sends its token and headers to its URL (sse and streamable_http to the same URL are the
+ * same address); a stdio server hands its env values to the process its command, arguments
+ * and working directory start (a relative command resolves in that directory). Turning one
+ * kind into the other re-points it.
+ */
+export function mcpServerEndpointChange(stored: StoredMcpServer, incoming: Record<string, unknown>): string | null {
+  const wasStdio = text(stored.transport) === 'stdio'
+  const isStdio = text(incoming.transport) === 'stdio'
+  if (wasStdio !== isStdio && text(stored.transport) !== '') return 'transport'
+  if (!isStdio) return text(incoming.url) === text(stored.url) ? null : 'url'
+  if (text(incoming.command) !== text(stored.command)) return 'command'
+  if (argList(incoming.args) !== argList(stored.args)) return 'args'
+  if (text(incoming.cwd) !== text(stored.cwd)) return 'cwd'
+  return null
+}
+
+function maskedStoredValues(prefix: string, incoming: unknown, stored: Record<string, string> | null | undefined): string[] {
+  if (!incoming || typeof incoming !== 'object') return []
+  return Object.entries(incoming as Record<string, unknown>)
+    .filter(([name, value]) => isMaskedSecret(value) && hasStored(stored?.[name]))
+    .map(([name]) => `${prefix}${name}`)
 }
 
 /**
  * An MCP server save replaces the whole server and restores only the values sent back
- * masked (lib/mcp/mask.ts restoreMaskedToken): the bearer token and each header value.
- * `/api/mcp/test` restores the token alone, so it passes `headers: false`.
+ * masked (lib/mcp/mask.ts restoreMaskedToken): the bearer token, each header value and
+ * each env value. Only the secrets the new endpoint would receive are asked for: an HTTP
+ * server's token and headers, a stdio server's env. `/api/mcp/test` restores the token
+ * alone, so it passes `headers: false`, which skips the env values too.
  */
 export function mcpServerSecretReentry(
   stored: StoredMcpServer,
   incoming: Record<string, unknown>,
   { headers = true }: { headers?: boolean } = {},
 ): SecretReentry | null {
-  if (text(incoming.url) === text(stored.url)) return null
+  const endpoint = mcpServerEndpointChange(stored, incoming)
+  if (!endpoint) return null
+  if (text(incoming.transport) === 'stdio') {
+    return headers ? refusal(endpoint, maskedStoredValues('env.', incoming.env, stored.env)) : null
+  }
   const fields: string[] = []
   const auth = incoming.auth as { token?: unknown } | undefined
   if (hasStored(stored.auth?.token) && isMaskedSecret(auth?.token)) fields.push('auth.token')
-  const incomingHeaders = incoming.headers
-  if (headers && incomingHeaders && typeof incomingHeaders === 'object') {
-    for (const [name, value] of Object.entries(incomingHeaders as Record<string, unknown>)) {
-      if (isMaskedSecret(value) && hasStored(stored.headers?.[name])) fields.push(`headers.${name}`)
-    }
-  }
-  return refusal('url', fields)
+  if (headers) fields.push(...maskedStoredValues('headers.', incoming.headers, stored.headers))
+  return refusal(endpoint, fields)
 }
 
 /** The 400 every route answers; `extra` keeps a route's own answer shape (`success`, `ok`). */

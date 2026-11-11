@@ -189,3 +189,21 @@ describe('HD-24: a new URL with the masked token or header asks for it again', (
     expect(screen.getByRole('alert')).toHaveTextContent('type the bearer token again')
   })
 })
+
+describe('review of 1.6: a new stdio command with masked env values asks for them again', () => {
+  const STDIO = { ...SERVER, command: 'npx', env: { SHODAN_API_KEY: '••••••••5555' } }
+
+  test('Save: the env box shows the message and takes the focus', async () => {
+    answers.list = json(200, { servers: [STDIO] })
+    answers.put = json(400, {
+      error: 'The command changed: type the value of the environment variable "SHODAN_API_KEY" again, or clear it. A stored secret is never sent to a new address unless it is entered again.',
+      code: 'secret_reentry_required', field: 'env.SHODAN_API_KEY', fields: ['env.SHODAN_API_KEY'], endpoint: 'command',
+    })
+    await openEdit()
+    fireEvent.change(screen.getByPlaceholderText('uvx, npx, python, ...'), { target: { value: 'sh' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('environment variable "SHODAN_API_KEY"')
+    await waitFor(() => expect(screen.getByPlaceholderText(/SHODAN_API_KEY=/)).toHaveFocus())
+  })
+})
