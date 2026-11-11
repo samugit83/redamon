@@ -82,18 +82,39 @@ c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8015/tunnel/status);
 body=$(curl -s -X POST http://localhost:3000/api/global/tunnel-config/sync)
 if echo "$body" | grep -q '"configured":false'; then chk 1 1 "boot sync forces tunnels down"; else chk 0 1 "boot sync forces down [$body]"; fi
 
+# HD-06: only an admin, the member holding the `tunnels` legacy grant, or a pre-upgrade
+# account under the escape hatch changes the shared tunnel. The activation checks run as a
+# legacy holder (the grant set by SQL, as the upgrade backfill records it); a plain member
+# is refused before anything is written.
 EMAIL="e2e_i19_$(openssl rand -hex 4)@redamon.local"
 USERID="$(seed_user "$EMAIL" standard)"
+docker compose exec -T postgres psql -U redamon -d redamon -tA -c "UPDATE users SET legacy_grants = ARRAY['tunnels'] WHERE id='$USERID';" >/dev/null
 JAR=$(mktemp)
 curl -s -c "$JAR" -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}" >/dev/null
 curl -s -b "$JAR" -X PUT "http://localhost:3000/api/users/$USERID/settings" -H 'Content-Type: application/json' -d '{"tunnelsEnabled":true}' >/dev/null
 en=$(docker compose exec -T postgres psql -U redamon -d redamon -tA -c "SELECT tunnels_enabled FROM user_settings WHERE user_id='$USERID';" 2>/dev/null | tr -d '[:space:]')
-chk "$en" "t" "settings enable -> DB tunnels_enabled=true"
+chk "$en" "t" "settings enable (legacy tunnels holder) -> DB tunnels_enabled=true"
 curl -s -b "$JAR" -X PUT "http://localhost:3000/api/users/$USERID/settings" -H 'Content-Type: application/json' -d '{"tunnelsEnabled":false}' >/dev/null
 dis=$(docker compose exec -T postgres psql -U redamon -d redamon -tA -c "SELECT tunnels_enabled FROM user_settings WHERE user_id='$USERID';" 2>/dev/null | tr -d '[:space:]')
-chk "$dis" "f" "settings disable -> DB tunnels_enabled=false"
+chk "$dis" "f" "settings disable (legacy tunnels holder) -> DB tunnels_enabled=false"
 del_user "$USERID"
 rm -f "$JAR"
+
+M_EMAIL="e2e_i19m_$(openssl rand -hex 4)@redamon.local"
+M_USERID="$(seed_user "$M_EMAIL" standard)"
+M_JAR=$(mktemp)
+curl -s -c "$M_JAR" -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d "{\"email\":\"$M_EMAIL\",\"password\":\"$PW\"}" >/dev/null
+c=$(curl -s -o /dev/null -w '%{http_code}' -b "$M_JAR" -X PUT "http://localhost:3000/api/users/$M_USERID/settings" -H 'Content-Type: application/json' -d '{"tunnelsEnabled":true}')
+chk "$c" 403 "settings enable (member without the grant) -> 403 tunnels_admin_only"
+en=$(docker compose exec -T postgres psql -U redamon -d redamon -tA -c "SELECT count(*) FROM user_settings WHERE user_id='$M_USERID' AND tunnels_enabled;" 2>/dev/null | tr -d '[:space:]')
+chk "$en" "0" "refused enable wrote nothing"
+# HD-05: the unmasked tunnel credentials answer the internal key only (key read inline, never printed).
+c=$(curl -s -o /dev/null -w '%{http_code}' -b "$M_JAR" http://localhost:3000/api/global/tunnel-config)
+chk "$c" 404 "tunnel-config with a member's session -> 404"
+c=$(docker compose exec -T webapp printenv INTERNAL_API_KEY | tr -d '\r\n' | sed 's/^/header = "X-Internal-Key: /; s/$/"/' | curl -s -o /dev/null -w '%{http_code}' -K - http://localhost:3000/api/global/tunnel-config)
+chk "$c" 200 "tunnel-config with the internal key -> 200"
+del_user "$M_USERID"
+rm -f "$M_JAR"
 
 echo
 echo "I19 live: $pass/$total"

@@ -139,7 +139,7 @@ bl-loginonly-session-kill-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-
 bl-loginonly-tunnel-status-member	0.5	member_c	GET	/api/agent/tunnel-status	-	200	login-only
 bl-loginonly-community-skills-member	0.5	member_c	GET	/api/community-skills	-	200	login-only
 bl-loginonly-cypherfix-health-member	0.5	member_c	GET	/api/cypherfix/health	-	200	login-only
-bl-loginonly-tunnel-config-member	0.5	member_c	GET	/api/global/tunnel-config	-	200	login-only hole:F-04
+bl-loginonly-tunnel-config-member	0.5	member_c	GET	/api/global/tunnel-config	-	200	login-only hole:F-04 superseded-by:p1
 bl-loginonly-gvm-available-member	0.5	member_c	GET	/api/gvm/available	-	200	login-only
 bl-loginonly-trufflehog-available-member	0.5	member_c	GET	/api/js-recon/trufflehog/available	-	200	login-only
 bl-loginonly-mcp-manifest-member	0.5	member_c	GET	/api/mcp/manifest	-	200	login-only hole:F-14
