@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import graph_url_scope, url_host
-from recon.partial_recon_modules.helpers import partial_settings, scope_roots
+from recon.partial_recon_modules.helpers import ip_mode_recon, partial_settings, scope_roots
 
 
 def run_endpoint_ai_classifier(config: dict):
@@ -147,7 +147,7 @@ def run_endpoint_ai_classifier(config: dict):
 
     # Build a minimal recon_data so _build_parent_ai_map can read http_probe.by_url.
     # Pull existing AI tags from BaseURL→Endpoint paths to determine parent-AI.
-    recon_data: dict = {"http_probe": {"by_url": {}}}
+    recon_data: dict = ip_mode_recon({"http_probe": {"by_url": {}}}, settings)
     with client.driver.session() as session:
         ai_rows = session.run(
             """

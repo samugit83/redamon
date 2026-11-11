@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from recon.partial_recon_modules.graph_builders import _build_serialized_data_from_graph
 from recon.partial_recon_modules.helpers import (
     root_orgs,
+    ip_mode_recon,
     partial_settings,
     scope_roots,
 )
@@ -62,7 +63,7 @@ def run_serialized_scan_partial(config: dict) -> None:
                                                        domain_groups=config.get("domain_groups"))
     else:
         print("[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "http_probe": {"by_url": {}},
@@ -74,7 +75,7 @@ def run_serialized_scan_partial(config: dict) -> None:
                     "ROE_EXCLUDED_HOSTS": settings.get("ROE_EXCLUDED_HOSTS", []) or [],
                 }
             },
-        }
+        }, settings)
 
     by_base_url = recon_data.get("resource_enum", {}).get("by_base_url", {})
 

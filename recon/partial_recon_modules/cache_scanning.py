@@ -18,6 +18,7 @@ from recon.partial_recon_modules.helpers import (
     root_orgs,
     _should_include_root_domain,
     include_root_for,
+    ip_mode_recon,
     partial_settings,
     scope_roots,
 )
@@ -70,7 +71,7 @@ def run_webcachepoison(config: dict) -> None:
                                                     domain_groups=config.get("domain_groups"))
     else:
         print("[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "http_probe": {"by_url": {}},
@@ -81,7 +82,7 @@ def run_webcachepoison(config: dict) -> None:
                     "ROE_EXCLUDED_HOSTS": settings.get("ROE_EXCLUDED_HOSTS", []) or [],
                 }
             },
-        }
+        }, settings)
 
     # Honor the Include Root Domain scope toggle: drop the BaseURLs of every
     # apex whose scope excludes it (per root when the groups are known).

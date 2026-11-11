@@ -51,11 +51,13 @@ from recon.partial_recon_modules.helpers import (
     _is_valid_url,
     STATUS_OK,
     filter_partial_user_input,
+    ip_mode_refusal,
     partial_domain_groups,
     print_run_report,
     run_exit_code,
     scope_roots,
     set_project_scope,
+    set_run_ip_targets,
     set_run_roe,
     settings_project_roots,
     settings_scope_groups,
@@ -287,6 +289,8 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     # root rule and the writers' org attach (the graph names a Domain after the org).
     set_project_scope(settings_scope_groups(settings))
     set_run_roe(settings)
+    # Before the typed-input filter and every builder: both keep to this list.
+    set_run_ip_targets(settings)
     config["ip_mode"] = bool(settings.get("IP_MODE"))
     config["batch_mode"] = bool(settings.get("DOMAIN_BATCH_MODE"))
     config["settings_overrides"] = _allowlist_overrides(config.get("settings_overrides"))
@@ -417,6 +421,11 @@ def main():
         print(f"[!][Partial Recon] Refusing to run: {stealth}")
         print_run_report(tool_id, {}, {root: f"refused: {stealth}" for root in scope_roots(config)})
         sys.exit(1)
+    ip_refusal = ip_mode_refusal(tool_id, settings)
+    if ip_refusal:
+        print(f"[!][Partial Recon] Refusing to run {tool_id}: {ip_refusal}")
+        print_run_report(tool_id, {}, {root: ip_refusal for root in scope_roots(config)})
+        sys.exit(1)
 
     refused = _prepare_scope(config, settings, project_id)
     if not scope_roots(config):
@@ -479,6 +488,12 @@ def _apply_node_filters(started_at):
 
 def _dispatch(tool_id: str, config: dict):
     """Run one tool. Loop tools return {root: status}; the rest return None."""
+    # main() refuses these before the scope pass; this holds for any other
+    # caller that dispatches an IP-mode config.
+    ip_refusal = ip_mode_refusal(tool_id, {"IP_MODE": config.get("ip_mode")})
+    if ip_refusal:
+        print(f"[!][Partial Recon] Refusing to run {tool_id}: {ip_refusal}")
+        return {root: ip_refusal for root in scope_roots(config)}
     if tool_id == "SubdomainDiscovery":
         return run_subdomain_discovery(config)
     elif tool_id == "Naabu":

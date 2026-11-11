@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import declared_only, graph_url_scope, quarantined, url_host
-from recon.partial_recon_modules.helpers import partial_settings, scope_roots
+from recon.partial_recon_modules.helpers import ip_mode_recon, partial_settings, scope_roots
 
 
 def run_ai_surface_recon(config: dict) -> None:
@@ -46,14 +46,14 @@ def run_ai_surface_recon(config: dict) -> None:
 
     roots = scope_roots(config)
     client = Neo4jClient()
-    recon_data: dict = {
+    recon_data: dict = ip_mode_recon({
         "domain": roots[0] if roots else "",
         "domains": roots,
         "metadata": {"project_id": project_id},
         "resource_enum": {"by_base_url": {}},
         "http_probe": {"by_url": {}},
         "port_scan": {"by_host": {}},
-    }
+    }, settings)
     by_base = recon_data["resource_enum"]["by_base_url"]
 
     with client.driver.session() as session:
@@ -122,6 +122,10 @@ def run_ai_surface_recon(config: dict) -> None:
             u=user_id, p=project_id,
         )
         port_ips = sorted({row["ip"] for row in ip_rows if row["ip"] and keep(row["ip"])})
+    # IP mode: the vector-DB reads go to target addresses only. The graph can
+    # hold a port on an address no target list names (B-01's forward answer).
+    from recon.helpers.target_admission import clamp_to_targets
+    port_ips = clamp_to_targets(recon_data, port_ips)
 
     print(f"[*][AISurfaceRecon] Loaded {ep_total} AI-tagged endpoint(s) from graph")
     if ep_total == 0 and not recon_data["http_probe"]["by_url"]:

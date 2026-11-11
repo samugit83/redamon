@@ -16,7 +16,9 @@ from recon.partial_recon_modules.helpers import (
     _should_include_root_domain,
     host_in_roots,
     include_root_for,
+    ip_mode_recon,
     partial_settings,
+    run_is_ip_mode,
     scope_roots,
 )
 from recon.partial_recon_modules.graph_builders import (
@@ -102,14 +104,14 @@ def run_katana(config: dict) -> None:
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "subdomains": [],
             "http_probe": {
                 "by_url": {},
             },
-        }
+        }, settings)
 
     # Inject user-provided URLs into the target list
     if user_urls:
@@ -373,14 +375,14 @@ def run_hakrawler(config: dict) -> None:
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "subdomains": [],
             "http_probe": {
                 "by_url": {},
             },
-        }
+        }, settings)
 
     # Inject user-provided URLs into the target list
     if user_urls:
@@ -682,7 +684,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
         recon_data["http_probe"]["by_url"] = filtered_by_url
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "subdomains": [],
@@ -690,7 +692,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                 "by_url": {},
             },
             "metadata": {"include_root_domain": bool(roots) and roots[0] in included_roots},
-        }
+        }, settings)
 
     # Inject user-provided URLs into the target list
     if user_urls:
@@ -1000,14 +1002,14 @@ def run_ffuf(config: dict) -> None:
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "subdomains": [],
             "http_probe": {
                 "by_url": {},
             },
-        }
+        }, settings)
 
     # Inject user-provided URLs into the target list
     if user_urls:
@@ -1340,6 +1342,11 @@ def run_gau(config: dict) -> None:
         target_domains.add(sub)
 
     print(f"[+][Partial Recon] Total target domains for GAU: {len(target_domains)}")
+    if not target_domains and run_is_ip_mode():
+        # No name whose every address is a target: the archives index names,
+        # and the run's root is the project id (S-6).
+        print("[-][Gau] IP mode: no hostname resolving only to target IPs, nothing to look up")
+        return
 
     # Also get subdomains list for scope filtering later
     all_subdomains = list(target_domains)
@@ -1465,7 +1472,7 @@ def run_gau(config: dict) -> None:
         print(f"[+][Partial Recon]   Dead filtered: {gau_stats.get('gau_skipped_dead', 0)}")
 
     # Build resource_enum result structure (same shape as full pipeline)
-    recon_data = {
+    recon_data = ip_mode_recon({
         "domain": domain,
         "domains": roots,
         "subdomains": all_subdomains,
@@ -1488,7 +1495,7 @@ def run_gau(config: dict) -> None:
             },
             "external_domains": gau_external_domains,
         },
-    }
+    }, settings)
 
     # Update the graph database
     print(f"[*][Partial Recon] Updating graph database...")
@@ -1736,11 +1743,11 @@ def run_jsluice(config: dict) -> None:
         print(f"[+][Partial Recon] Organized {jsluice_stats['jsluice_new']} new endpoints across {len(by_base_url)} base URLs")
 
     # Build recon_data for graph update (needs domain + subdomains for scope)
-    recon_data = {
+    recon_data = ip_mode_recon({
         "domain": roots[0] if roots else "",
         "domains": roots,
         "subdomains": [],
-    }
+    }, settings)
 
     # Get subdomains for scope filtering
     if include_graph:

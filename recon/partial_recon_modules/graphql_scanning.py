@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import _build_graphql_data_from_graph
-from recon.partial_recon_modules.helpers import partial_settings, scope_roots, root_orgs
+from recon.partial_recon_modules.helpers import ip_mode_recon, partial_settings, scope_roots, root_orgs
 
 
 def run_graphqlscan(config: dict) -> None:
@@ -63,7 +63,7 @@ def run_graphqlscan(config: dict) -> None:
                                                     domain_groups=config.get("domain_groups"))
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "http_probe": {"by_url": {}},
@@ -75,7 +75,7 @@ def run_graphqlscan(config: dict) -> None:
                     "ROE_EXCLUDED_HOSTS": settings.get("ROE_EXCLUDED_HOSTS", []) or [],
                 }
             },
-        }
+        }, settings)
 
     # Inject user URLs via the GRAPHQL_ENDPOINTS setting -- discovery.py already
     # seeds these into its candidate list before pattern-expansion.

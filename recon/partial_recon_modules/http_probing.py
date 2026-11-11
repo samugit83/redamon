@@ -18,9 +18,11 @@ from recon.partial_recon_modules.helpers import (
     _resolve_hostname,
     _should_include_root_domain,
     host_in_roots,
+    ip_mode_recon,
     partial_settings,
     root_for_host,
     scope_roots,
+    typed_ip_attach_to,
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
 from recon.partial_recon_modules.port_scanning import measured_port_data
@@ -108,7 +110,7 @@ def run_httpx(config: dict) -> None:
             except (ValueError, TypeError):
                 print(f"[!][Partial Recon] Skipping invalid port: {entry}")
 
-        ip_attach_to = user_targets.get("ip_attach_to")
+        ip_attach_to = typed_ip_attach_to(user_targets)
 
     if user_hostnames:
         print(f"[+][Partial Recon] Validated {len(user_hostnames)} custom hostnames")
@@ -160,7 +162,7 @@ def run_httpx(config: dict) -> None:
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "port_scan": {
@@ -171,7 +173,7 @@ def run_httpx(config: dict) -> None:
                 "domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
                 "subdomains": {},
             },
-        }
+        }, settings)
 
     # STEP 1: Resolve user-provided hostnames and add to recon_data DNS section
     resolved_hostnames = {}

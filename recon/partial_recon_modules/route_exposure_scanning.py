@@ -20,6 +20,7 @@ from recon.partial_recon_modules.graph_builders import (
 )
 from recon.partial_recon_modules.helpers import (
     _scope_partial_urls,
+    ip_mode_recon,
     partial_settings,
     root_orgs,
     scope_roots,
@@ -27,7 +28,7 @@ from recon.partial_recon_modules.helpers import (
 
 
 def _empty_recon_data(roots: list, settings: dict) -> dict:
-    return {
+    return ip_mode_recon({
         "domain": roots[0] if roots else "",
         "domains": roots,
         "subdomains": [],
@@ -35,13 +36,15 @@ def _empty_recon_data(roots: list, settings: dict) -> dict:
         "resource_enum": {"by_base_url": {}},
         "metadata": {
             "include_root_domain": bool(settings.get("INCLUDE_ROOT_DOMAIN", False)),
-            "expanded_ips": list(settings.get("TARGET_IPS") or []) if settings.get("IP_MODE") else [],
+            # ip_mode_recon fills it in IP mode, with the expanded targets,
+            # never the raw CIDRs (B-23).
+            "expanded_ips": [],
             "roe": {
                 "ROE_ENABLED": settings.get("ROE_ENABLED", False),
                 "ROE_EXCLUDED_HOSTS": settings.get("ROE_EXCLUDED_HOSTS", []) or [],
             },
         },
-    }
+    }, settings)
 
 
 def _graph_subdomains(roots, user_id, project_id, domain_groups) -> list:

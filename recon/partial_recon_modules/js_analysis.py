@@ -8,7 +8,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import declared_only_unsafe, graph_scope_subdomains, quarantined
-from recon.partial_recon_modules.helpers import _is_valid_url, _scope_partial_urls, partial_settings, scope_roots, root_orgs
+from recon.partial_recon_modules.helpers import (
+    _is_valid_url, _scope_partial_urls, ip_mode_recon, partial_settings, scope_roots, root_orgs,
+)
 
 
 def run_jsrecon(config: dict) -> None:
@@ -164,7 +166,7 @@ def run_jsrecon(config: dict) -> None:
     # It reads from resource_enum.discovered_urls and http_probe.by_url
     # We populate discovered_urls with all our target URLs
     # and http_probe.by_url as an empty dict (no live probe data in partial mode)
-    combined_result = {
+    combined_result = ip_mode_recon({
         "domain": roots[0] if roots else "",
         "domains": roots,
         "subdomains": scope_hosts,
@@ -181,7 +183,7 @@ def run_jsrecon(config: dict) -> None:
         "metadata": {
             "project_id": project_id,
         },
-    }
+    }, settings)
 
     # Run JS Recon analysis (same function as the full pipeline)
     print(f"[*][Partial Recon] Running JS Recon analysis...")

@@ -15,10 +15,12 @@ from recon.partial_recon_modules.helpers import (
     _classify_ip,
     _is_ip_or_cidr,
     _should_include_root_domain,
+    ip_mode_recon,
     partial_settings,
     root_for_host,
     run_per_root,
     scope_roots,
+    typed_ip_attach_to,
 )
 from recon.partial_recon_modules.graph_builders import (
     _build_recon_data_from_graph,
@@ -42,13 +44,13 @@ def _root_recon_data(root: str, roots: list, config: dict, settings: dict,
             domain_groups=config.get("domain_groups"),
         )
     else:
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": root,
             "dns": {
                 "domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
                 "subdomains": {},
             },
-        }
+        }, settings)
     recon_data["domains"] = list(roots)
     # Shodan and Netlas write no CVE on an IP the graph's IP attribution tagged
     # shared_edge.
@@ -142,7 +144,7 @@ def run_shodan(config: dict) -> dict:
                 user_ips.append(entry)
             elif entry:
                 print(f"[!][Partial Recon] Skipping invalid IP: {entry}")
-        ip_attach_to = user_targets.get("ip_attach_to")
+        ip_attach_to = typed_ip_attach_to(user_targets)
 
     if user_ips:
         print(f"[+][Partial Recon] Validated {len(user_ips)} custom IPs/CIDRs")
@@ -400,11 +402,11 @@ def run_urlscan(config: dict) -> dict:
 
         # `domains` keeps every root of the run so the writers attach a host
         # found under another root to that root, not as an external domain.
-        combined_result = {
+        combined_result = ip_mode_recon({
             "domain": domain,
             "domains": list(roots),
             "urlscan": urlscan_data,
-        }
+        }, settings)
 
         # Update the graph database
         print(f"[*][Partial Recon] Updating graph database...")
@@ -455,11 +457,11 @@ def run_urlscan(config: dict) -> dict:
                     by_base, us_stats = merge_urlscan_into_by_base_url(rows, {}, bases)
                     print(f"[+][Partial Recon] urlscan addresses on live bases: {us_stats['urlscan_new']}")
                     if by_base:
-                        graph_client.update_graph_from_resource_enum({
+                        graph_client.update_graph_from_resource_enum(ip_mode_recon({
                             "domain": domain, "domains": list(roots),
                             "subdomains": sorted({urlparse(b).hostname for b in by_base}),
                             "resource_enum": {"by_base_url": by_base},
-                        }, user_id, project_id)
+                        }, settings), user_id, project_id)
 
                 # The full run's ExternalDomain shape (HAS_EXTERNAL_DOMAIN, the
                 # *_seen lists), written additively over what is there.
@@ -542,18 +544,19 @@ def run_uncover(config: dict) -> dict:
     def _one_root(domain: str) -> str:
         # `domains` keeps every root so the writer attaches a host under another
         # root to that root; a bare IP or URL falls back to the queried root.
-        combined_result = {"domain": domain, "domains": list(roots)}
+        # In IP mode Uncover skips itself on the metadata (recon_scope).
+        combined_result = ip_mode_recon({"domain": domain, "domains": list(roots)}, settings)
         # The group's scope, stamped as the full pipeline stamps it, so
         # merge_uncover_into_pipeline knows an EXACT group from an ENUMERATE one.
         groups = config.get("domain_groups") or []
         group = _group_for(domain, groups)
         if group is not None and "mode" in group:
-            combined_result["metadata"] = {
+            combined_result.setdefault("metadata", {}).update({
                 "org_domain": org_for_root(domain, groups),
                 "scope_mode": group["mode"],
                 "include_root_domain": include_root_for(domain, groups),
                 "subdomain_filter": list(group.get("exactHosts") or []),
-            }
+            })
 
         # Run Uncover expansion (same function as full pipeline)
         uncover_data = run_uncover_expansion(combined_result, settings)
@@ -634,7 +637,7 @@ def run_osint_enrichment(config: dict) -> dict:
                 user_ips.append(entry)
             elif entry:
                 print(f"[!][Partial Recon] Skipping invalid IP: {entry}")
-        ip_attach_to = user_targets.get("ip_attach_to")
+        ip_attach_to = typed_ip_attach_to(user_targets)
 
     if user_ips:
         print(f"[+][Partial Recon] Validated {len(user_ips)} custom IPs/CIDRs")

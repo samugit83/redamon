@@ -195,6 +195,131 @@ def roe_excluded(host_or_ip) -> bool:
     return _is_roe_excluded(str(host_or_ip), _RUN_ROE_EXCLUDED)
 
 
+# IP mode: the run's expanded target list, set once by partial_recon._prepare_scope
+# (None outside IP mode). The graph builders get no settings, and every recon
+# dict a partial run hands a scanner must declare the list.
+_RUN_IP_TARGETS = None
+_EXPANDED_TARGETS: dict = {}
+_EXPANDED_TARGETS_MAX = 4
+
+
+def ip_mode_target_list(settings: dict):
+    """IP mode: the project's targets as run_ip_recon expands them, or None.
+
+    A CIDR is its hosts (a /32 or /128 its address), an address is kept as
+    listed, duplicates go, then the RoE's excluded addresses. The same list
+    the full run writes to metadata.expanded_ips, so a partial dict never
+    declares raw CIDRs (B-23). Built once per list.
+    """
+    settings = settings or {}
+    if not settings.get("IP_MODE"):
+        return None
+    raw = tuple(str(e).strip() for e in settings.get("TARGET_IPS") or [] if str(e or "").strip())
+    excluded = tuple(e for e in (settings.get("ROE_EXCLUDED_HOSTS") or []) if isinstance(e, str) and e.strip()) \
+        if settings.get("ROE_ENABLED") else ()
+    key = (raw, excluded)
+    if key not in _EXPANDED_TARGETS:
+        import ipaddress as _ipaddress
+        expanded = []
+        for entry in raw:
+            if "/" not in entry:
+                expanded.append(entry)
+                continue
+            try:
+                network = _ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                continue
+            expanded.extend(str(host) for host in network.hosts())
+            if network.prefixlen in (32, 128):
+                expanded.append(str(network.network_address))
+        expanded = list(dict.fromkeys(expanded))
+        if excluded:
+            from recon.helpers.roe_scope import _is_roe_excluded
+            expanded = [ip for ip in expanded if not _is_roe_excluded(ip, list(excluded))]
+        while len(_EXPANDED_TARGETS) >= _EXPANDED_TARGETS_MAX:
+            _EXPANDED_TARGETS.pop(next(iter(_EXPANDED_TARGETS)))
+        _EXPANDED_TARGETS[key] = expanded
+    return list(_EXPANDED_TARGETS[key])
+
+
+def set_run_ip_targets(settings: dict) -> None:
+    global _RUN_IP_TARGETS
+    _RUN_IP_TARGETS = ip_mode_target_list(settings)
+
+
+def run_ip_targets():
+    """The run's expanded IP-mode targets, or None outside IP mode."""
+    return None if _RUN_IP_TARGETS is None else list(_RUN_IP_TARGETS)
+
+
+def run_is_ip_mode() -> bool:
+    """The run is an IP-mode one; no copy of the list, for a per-row check."""
+    return _RUN_IP_TARGETS is not None
+
+
+def ip_mode_recon(recon_data: dict, settings: dict = None) -> dict:
+    """Stamp a partial run's recon dict with its IP-mode facts, in place, and return it.
+
+    Every reader that keeps to the targets asks metadata.ip_mode and the
+    expanded metadata.expanded_ips: the admission gate, the OSINT IP lists,
+    the DNS-only security checks, Shodan's and urlscan's domain lookups,
+    build_target_urls' name source. A dict without them reads as a domain run
+    and hands the synthetic root, which is the project id, to third parties
+    (B-19). The list comes from ``settings`` when given, else from the run.
+    Outside IP mode the dict is left as it is.
+    test_partial_ip_mode_metadata_guard.py fails a recon dict built in a
+    partial module without it.
+    """
+    targets = ip_mode_target_list(settings) if settings is not None else _RUN_IP_TARGETS
+    if targets is None:
+        return recon_data
+    metadata = recon_data.setdefault("metadata", {})
+    metadata["ip_mode"] = True
+    metadata["expanded_ips"] = list(targets)
+    return recon_data
+
+
+def is_target_label(value, targets) -> bool:
+    """``value`` is the IP-mode label of one of ``targets`` (expanded addresses)."""
+    from recon.helpers.ip_placeholders import is_placeholder
+    return is_placeholder(value) and any(is_placeholder(value, ip) for ip in targets or ())
+
+
+def typed_ip_attach_to(user_targets):
+    """The Subdomain the operator's typed IPs hang off, or None (B-20).
+
+    Each module writes that link as a RESOLVES_TO with no source, which every
+    later partial run reads as forward DNS. In IP mode only a target's own
+    label may take one, so a PTR name never gains an address it does not
+    resolve to. Outside IP mode the value is the one filter_partial_user_input
+    left.
+    """
+    value = (user_targets or {}).get("ip_attach_to")
+    if not value or _RUN_IP_TARGETS is None or is_target_label(value, _RUN_IP_TARGETS):
+        return value
+    print(f"[!][Partial Recon] Not attaching typed IPs to {str(value)[:120]!r}: "
+          f"in IP mode only a target's own label takes them")
+    return None
+
+
+# The tools a partial run refuses in IP mode, and why: each looks up or
+# enumerates names, and an IP-mode run's one root is the synthetic
+# ip-targets.<project id>.
+IP_MODE_REFUSED_TOOLS = {
+    "SubdomainDiscovery": "subdomain enumeration of the synthetic root would send the project id out",
+    "Urlscan": "urlscan.io searches by domain, and the synthetic root is the project id (D-11)",
+    "OriginDiscovery": "it probes candidate origin addresses that are not targets (B-08)",
+}
+IP_MODE_REFUSAL = "refused: IP mode"
+
+
+def ip_mode_refusal(tool_id: str, settings: dict):
+    """The run-report reason an IP-mode project refuses ``tool_id`` with, or None."""
+    if not (settings or {}).get("IP_MODE") or tool_id not in IP_MODE_REFUSED_TOOLS:
+        return None
+    return f"{IP_MODE_REFUSAL} ({IP_MODE_REFUSED_TOOLS[tool_id]})"
+
+
 def root_orgs(roots) -> dict:
     """{scan root: org} for create_user_input_node, which attaches a UserInput
     to the org of the root its first host sits under."""
@@ -504,6 +629,10 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
     The hard guardrail is not repeated here: every pattern is a suffix match,
     so a host the scope rule admits is blocked only if its scan root is, and
     the roots were guardrailed by the orchestrator before this container ran.
+
+    IP mode (B-20, B-22): a typed address, URL host or CIDR host must be one of
+    the project's targets, by address (CIDR-aware, any IPv6 spelling); a typed
+    CIDR keeps only its target hosts. IPs attach only to a target's own label.
     """
     import ipaddress as _ipaddress
     from recon.helpers.roe_scope import _is_roe_excluded
@@ -511,15 +640,33 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
     refused: list = []
     groups = config.get("domain_groups") or []
     ip_mode = bool(settings.get("IP_MODE"))
-    target_ips = {str(i).strip().lower() for i in settings.get("TARGET_IPS") or []}
+    ip_targets = None
+    if ip_mode:
+        # The listed entries: the RoE half below refuses an excluded target
+        # as excluded, which is how the run report must name it.
+        from recon.helpers.target_admission import is_target, target_set
+        ip_targets = target_set(str(i).strip() for i in settings.get("TARGET_IPS") or [] if str(i or "").strip())
     excluded = [e for e in (settings.get("ROE_EXCLUDED_HOSTS") or []) if isinstance(e, str) and e.strip()] \
         if settings.get("ROE_ENABLED") else []
     roe_cut = 0
 
     def host_ok(host: str) -> bool:
         if ip_mode:
-            return _norm_host(host) in target_ips
+            return is_target(_norm_host(host), ip_targets)
         return admits_partial_host(groups, host)
+
+    def keep_targets(ip: str, hosts: list) -> list:
+        """IP mode: the target addresses among what ``ip`` stands for (itself,
+        or a typed CIDR's hosts), the rest refused."""
+        if not ip_mode:
+            return hosts
+        inside = [h for h in hosts if is_target(h, ip_targets)]
+        if len(inside) < len(hosts):
+            outside = [h for h in hosts if h not in inside]
+            shown = ", ".join(outside[:5]) + (", ..." if len(outside) > 5 else "")
+            refused.append(f"ip {shown}" + (f" in {ip!r}" if "/" in ip else "")
+                           + " (not one of the project's target IPs)")
+        return inside
 
     def roe_out(host_or_ip: str) -> bool:
         return bool(excluded) and _is_roe_excluded(host_or_ip, excluded)
@@ -542,24 +689,24 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
 
     if "user_inputs" in config:
         config["user_inputs"] = keep_hosts(config.get("user_inputs"), "subdomain")
-    targets = config.get("user_targets")
-    if isinstance(targets, dict):
-        targets = dict(targets)
-        if "subdomains" in targets:
-            targets["subdomains"] = keep_hosts(targets["subdomains"], "subdomain")
-        if "urls" in targets:
+    user_targets = config.get("user_targets")
+    if isinstance(user_targets, dict):
+        user_targets = dict(user_targets)
+        if "subdomains" in user_targets:
+            user_targets["subdomains"] = keep_hosts(user_targets["subdomains"], "subdomain")
+        if "urls" in user_targets:
             kept = []
-            for u in targets["urls"] if isinstance(targets["urls"], list) else []:
+            for u in user_targets["urls"] if isinstance(user_targets["urls"], list) else []:
                 if not (isinstance(u, str) and host_ok(_url_host(u))):
                     refused.append(f"url {str(u)[:120]!r}")
                 elif roe_out(_url_host(u)):
                     refuse_roe(f"url {str(u)[:120]!r}")
                 else:
                     kept.append(u.strip())
-            targets["urls"] = kept
-        if "ips" in targets:
+            user_targets["urls"] = kept
+        if "ips" in user_targets:
             kept = []
-            for ip in targets["ips"] if isinstance(targets["ips"], list) else []:
+            for ip in user_targets["ips"] if isinstance(user_targets["ips"], list) else []:
                 if not (isinstance(ip, str) and _valid_user_ip(ip.strip())):
                     refused.append(f"ip {str(ip)[:60]!r}")
                     continue
@@ -568,32 +715,43 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
                     if roe_out(ip):
                         refuse_roe(f"ip {ip!r}")
                     else:
-                        kept.append(ip)
+                        kept.extend(keep_targets(ip, [ip]))
                     continue
-                hosts = [str(h) for h in _ipaddress.ip_network(ip, strict=False).hosts()] if excluded else []
+                network = _ipaddress.ip_network(ip, strict=False)
+                hosts = [str(h) for h in network.hosts()] if excluded or ip_mode else []
                 cut = {h for h in hosts if roe_out(h)}
-                if not cut:
-                    kept.append(ip)
-                elif len(cut) == len(hosts):
+                if cut and len(cut) == len(hosts):
                     refuse_roe(f"ip {ip!r}")
-                else:
-                    kept.extend(h for h in hosts if h not in cut)
+                    continue
+                if cut:
                     shown = ", ".join(sorted(cut)[:5]) + (", ..." if len(cut) > 5 else "")
                     refuse_roe(f"ip {shown} in {ip!r}")
-            targets["ips"] = kept
+                left = [h for h in hosts if h not in cut]
+                inside = keep_targets(ip, left)
+                if not cut and len(inside) == len(left):
+                    kept.append(ip)
+                else:
+                    kept.extend(inside)
+            user_targets["ips"] = kept
         # ip_attach_to names a Subdomain, url_attach_to a BaseURL. In IP mode
-        # both are graph nodes the modules look up, so only domain mode checks
-        # the scope; an excluded one is dropped in either mode.
+        # url_attach_to is a graph node the modules look up, and ip_attach_to
+        # may only be a target's own label: every module writes it as a
+        # source-less RESOLVES_TO that later runs read as forward DNS (B-20).
+        # An excluded one is dropped in either mode.
         for key, host_of in (("ip_attach_to", str), ("url_attach_to", _url_host)):
-            value = targets.get(key)
-            if value and not ip_mode and not (isinstance(value, str) and host_ok(host_of(value))):
+            value = user_targets.get(key)
+            if value and ip_mode and key == "ip_attach_to" and not is_target_label(
+                    value, ip_mode_target_list(settings)):
+                refused.append(f"{key} {str(value)[:120]!r} (not a target's own label)")
+                user_targets[key] = None
+            elif value and not ip_mode and not (isinstance(value, str) and host_ok(host_of(value))):
                 refused.append(f"{key} {str(value)[:120]!r}")
-                targets[key] = None
+                user_targets[key] = None
             elif value and isinstance(value, str) and roe_out(host_of(value)):
                 refuse_roe(f"{key} {value[:120]!r}")
-                targets[key] = None
-        config["user_targets"] = targets
-    elif targets is not None:
+                user_targets[key] = None
+        config["user_targets"] = user_targets
+    elif user_targets is not None:
         config["user_targets"] = {}
     if roe_cut:
         # A partial run never prunes, so this only reaches the run's coverage

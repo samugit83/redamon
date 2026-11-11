@@ -1,21 +1,22 @@
-"""Characterisation tests: the scope leaks of an IP-mode partial recon run.
+"""Regression tests: the scope leaks of an IP-mode partial recon run.
 
 A partial run reads its targets back from the graph a full IP-mode run wrote.
-That graph holds, under the synthetic Domain ip-targets.<pid>, the placeholder
-Subdomain of each listed address AND the PTR name of a listed address with its
-forward A record (B-01 writes it with a source-less RESOLVES_TO, so partial
-recon reads it as current DNS). The fixture graph below is that state:
+That graph can hold, under the synthetic Domain ip-targets.<pid>, the
+placeholder Subdomain of each listed address AND the PTR name of a listed
+address with its forward A record (a run before B-01's fix wrote it with a
+source-less RESOLVES_TO, which partial recon reads as current DNS). The
+fixture graph below is that state:
 
     ip-targets.<pid>
       203-0-113-2      -> 203.0.113.2    placeholder of a target
       www.example.com  -> 198.51.100.7   PTR of 203.0.113.1, an address in no target list
     BaseURLs: http://203.0.113.2, https://www.example.com, https://198.51.100.7
 
-Each test states what IP-mode partial recon MUST do and is marked
-``xfail(strict=True)`` with the plan's bug id (B-19 .. B-23), so the fix must
-remove the marker. The one plain test pins B-19's DNS-only sub-item, already
-fixed on master. The name-only tools (SubdomainDiscovery, Urlscan,
-OriginDiscovery) must be refused with the run-report reason IP_MODE_REFUSAL.
+Each test states what IP-mode partial recon must do, with the plan's bug id
+(B-19 .. B-23). The DNS-only security-check test pins B-19's sub-item that
+was already fixed before the rest. The name-only tools (SubdomainDiscovery,
+Urlscan, OriginDiscovery) are refused with the run-report reason
+IP_MODE_REFUSAL.
 Everything runs the real code (_prepare_scope, the graph builders, the module
 entry points, partial_recon.main); Neo4j, HTTP, DNS and the tool runners are
 fakes.
@@ -309,7 +310,6 @@ SELF_BUILT = {
 }
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-19/B-23: no partial builder sets metadata.ip_mode, and expanded_ips holds raw CIDRs")
 def test_partial_builders_set_ip_mode_metadata(graph, monkeypatch):
     from recon.partial_recon_modules import graph_builders as gb
     wrong = {}
@@ -363,7 +363,6 @@ def test_partial_builders_set_ip_mode_metadata(graph, monkeypatch):
     assert wrong == {}, json.dumps(wrong, indent=1, sort_keys=True)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-19/B-23: partial Gau and ParamSpider search the archives for ip-targets.<pid> and write a recon dict without metadata.ip_mode")
 def test_partial_archive_tools_never_receive_placeholder_root(graph, monkeypatch):
     """Gau and ParamSpider build their recon dict only after the archive search,
     for the graph writer. In IP mode the synthetic root must never be searched
@@ -434,7 +433,6 @@ def _mentions_root(blob) -> bool:
     return False
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-19: partial OSINT/urlscan lookups send the synthetic root ip-targets.<pid> (the project id) to third parties")
 def test_partial_third_party_calls_never_receive_placeholder_root(graph, monkeypatch, doc_ranges_public):
     import requests
     sent = []
@@ -471,12 +469,10 @@ def test_partial_third_party_calls_never_receive_placeholder_root(graph, monkeyp
 
 
 def test_partial_dns_only_security_checks_skip_placeholder_root_already_fixed(graph, monkeypatch):
-    """B-19's DNS-only sub-item is already fixed on master and this pins it.
-
-    security_checks._dns_check_domains skips the synthetic root by its shape
-    (_SYNTHETIC_IP_ROOT), so SPF/DMARC/DNSSEC/zone transfer never look up
-    ip-targets.<pid> although partial recon sets no metadata.ip_mode. A plain
-    test, not an xfail: it must stay green through the IP-mode fixes.
+    """B-19's DNS-only sub-item: SPF/DMARC/DNSSEC/zone transfer never look up
+    ip-targets.<pid>. security_checks._dns_check_domains skips the synthetic
+    root by its shape (_SYNTHETIC_IP_ROOT) as well as on metadata.ip_mode,
+    which the builder declares.
     """
     from recon.helpers import security_checks as sc
     from recon.partial_recon_modules import graph_builders as gb
@@ -496,7 +492,6 @@ def test_partial_dns_only_security_checks_skip_placeholder_root_already_fixed(gr
 # B-20 / B-22: typed inputs
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-20/B-22: typed IPs are never checked against the targets, URL hosts not CIDR-aware, ip_attach_to unchecked")
 def test_partial_typed_ip_outside_targets_refused(graph):
     cfg = _prepared("Naabu", user_targets={
         "ips": ["203.0.113.1", FOREIGN, "198.51.100.0/30", TYPED],
@@ -517,7 +512,6 @@ def test_partial_typed_ip_outside_targets_refused(graph):
 # B-21: PTR names, their forward addresses and placeholders as partial targets
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-21: the partial graph builders read a PTR name's forward address as a target")
 def test_partial_graph_builder_drops_ptr_forward_ip(graph):
     from recon.partial_recon_modules import graph_builders as gb
     cfg = _prepared("Naabu")
@@ -548,7 +542,6 @@ def _crawl_seeds(monkeypatch, tool_id: str, runner: str) -> list:
     return seen["seeds"]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-21: graph_url_scope keeps hosts under no Domain and build_target_urls source 3 adds the PTR name")
 def test_partial_crawler_urls_have_no_ptr_name_or_placeholder(graph, monkeypatch):
     seeds = {"Katana": _crawl_seeds(monkeypatch, "Katana", "run_katana_crawler"),
              "ZapAjaxSpider": _crawl_seeds(monkeypatch, "ZapAjaxSpider", "run_zap_ajax_spider")}
@@ -558,7 +551,6 @@ def test_partial_crawler_urls_have_no_ptr_name_or_placeholder(graph, monkeypatch
     assert all("http://203.0.113.2" in urls for urls in seeds.values())
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-21: partial httpx probes the placeholder and the PTR name as hostnames")
 def test_partial_httpx_probes_ip_literal_not_placeholder(graph, monkeypatch):
     from recon.main_recon_modules import http_probe
     seen = {}
@@ -583,8 +575,8 @@ def test_partial_httpx_probes_ip_literal_not_placeholder(graph, monkeypatch):
 # ---------------------------------------------------------------------------
 
 # The reason the run report gives a root refused because the project is in IP
-# mode. Chosen here for P0c to implement: print_run_report prints
-# "<root>: refused: IP mode ..." (any detail may follow the token).
+# mode: print_run_report prints "<root>: refused: IP mode ..." (any detail may
+# follow the token; helpers.IP_MODE_REFUSAL is the same string).
 IP_MODE_REFUSAL = "refused: IP mode"
 
 
@@ -621,7 +613,6 @@ def _assert_refused(code, reason, scanner_calls):
         f"report reason for {ROOT}: {reason!r}")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-19: partial SubdomainDiscovery enumerates ip-targets.<pid> in IP mode")
 def test_partial_subdomain_discovery_refused_in_ip_mode(graph, monkeypatch, capsys):
     from recon.main_recon_modules import domain_recon
     enumerated = []
@@ -633,7 +624,6 @@ def test_partial_subdomain_discovery_refused_in_ip_mode(graph, monkeypatch, caps
     _assert_refused(code, reason, enumerated)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="B-19/D-11, B-08: partial Urlscan searches ip-targets.<pid> and OriginDiscovery probes non-target origins in IP mode")
 @pytest.mark.parametrize("tool_id, module, scanner", [
     ("Urlscan", "recon.main_recon_modules.urlscan_enrich", "run_urlscan_discovery_only"),
     ("OriginDiscovery", "recon.main_recon_modules.origin_discovery", "run_origin_discovery_enrichment"),

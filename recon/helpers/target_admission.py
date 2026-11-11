@@ -23,7 +23,9 @@ when it has a known address and every one is a target, and an IP-mode label
 (``ip_placeholders``) is never a name, only the address it stands for. Private
 targets pass: the rule is membership, never routability. Membership is
 ``recon_settings.ip_hostnames.TargetSet``, the one implementation every service
-shares, imported only on the IP-mode path.
+shares, imported only on the IP-mode path. A dict that says IP mode and
+declares no ``expanded_ips`` admits nothing (I-6): every builder, full and
+partial, declares the list, so a missing one is a bug, never a domain run.
 """
 
 import ipaddress
@@ -71,8 +73,8 @@ class AdmissionContext:
     expanded_ips: Tuple[str, ...]
     metadata: Mapping = field(default_factory=dict, compare=False, hash=False)
     # IP mode's target list as a recon_settings TargetSet; None outside IP
-    # mode, and for a dict that declares no ``expanded_ips`` at all (a
-    # declared empty list admits nothing).
+    # mode. Empty, so nothing is admitted, when the list is declared empty or
+    # not declared at all.
     targets: Optional[object] = field(default=None, compare=False, hash=False)
 
     @property
@@ -98,14 +100,30 @@ def admission_context(settings: Optional[Mapping], recon_data: Optional[Mapping]
     excluded = tuple(e for e in (entries or ()) if isinstance(e, str) and e.strip())
     ip_mode = bool(metadata.get("ip_mode"))
     expanded = tuple(str(ip) for ip in (metadata.get("expanded_ips") or ()) if ip)
+    if ip_mode and "expanded_ips" not in metadata:
+        _log_undeclared()
     return AdmissionContext(
         excluded=excluded,
         ip_rules=any(_is_ip_entry(e) for e in excluded),
         ip_mode=ip_mode,
         expanded_ips=expanded,
         metadata=metadata,
-        targets=target_set(expanded) if ip_mode and "expanded_ips" in metadata else None,
+        targets=target_set(expanded) if ip_mode else None,
     )
+
+
+def _log_undeclared() -> None:
+    """Say once per run why an IP-mode gate admits nothing. A failure here
+    loses the line, never the refusal."""
+    try:
+        from recon.helpers import circuit_breaker as cb
+        logged = cb.run_cache("target_admission_logged")
+        if not logged.get(("ip_mode_no_target_list",))[0]:
+            logged.put(("ip_mode_no_target_list",), True)
+            print("[!][IpMode] The recon data is IP mode but declares no target list "
+                  "(metadata.expanded_ips): nothing is sent")
+    except Exception:  # noqa: BLE001 - the refusal stands; only its log is lost
+        pass
 
 
 def target_set(entries: Iterable[str]):
@@ -137,7 +155,8 @@ def is_target(address, targets) -> bool:
 
 
 def ip_mode_targets(recon_data: Optional[Mapping]):
-    """The run's IP-mode TargetSet, or None when the gate has no target list."""
+    """The run's IP-mode TargetSet (empty when no list is declared), or None
+    outside IP mode."""
     return admission_context(None, recon_data).targets
 
 

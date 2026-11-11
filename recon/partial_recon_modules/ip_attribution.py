@@ -11,11 +11,11 @@ block. The one active check is the same capped, RoE-filtered handshake without
 SNI the full run makes, and stealth mode turns it off the same way.
 """
 
-import ipaddress
 import json
 import os
 import sys
 
+from recon.helpers.ip_placeholders import is_placeholder
 from recon.partial_recon_modules.helpers import (
     _should_include_root_domain,
     partial_settings,
@@ -23,17 +23,9 @@ from recon.partial_recon_modules.helpers import (
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
 
-
-def _is_placeholder(name: str) -> bool:
-    """An IP-mode target with no PTR is stored as a Subdomain named after its
-    address with dashes ("192-0-2-1"): a placeholder, not a DNS name."""
-    for candidate in (name.replace("-", "."), name.replace("-", ":")):
-        try:
-            ipaddress.ip_address(candidate)
-            return True
-        except ValueError:
-            continue
-    return False
+# An IP-mode target's Subdomain is its address with dashes ("192-0-2-1"): a
+# label, not a DNS name. Kept under its old name for the callers.
+_is_placeholder = is_placeholder
 
 
 def _mark_placeholders(recon_data: dict) -> None:

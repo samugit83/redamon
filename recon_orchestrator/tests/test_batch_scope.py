@@ -226,8 +226,15 @@ class TestPartialUserInput:
         _, targets, _ = self._filter(['example.com'], targets={'ips': ['192.0.2.1'], 'ip_attach_to': 'mail.example.com'})
         assert targets['ip_attach_to'] is None
 
-    def test_ip_mode_leaves_the_attach_targets_to_the_graph_lookup(self):
-        project = {'ipMode': True, 'targetIps': ['192.0.2.10']}
+    def test_ip_mode_attaches_typed_ips_to_a_targets_own_label_only(self):
+        # B-20: the attach is written as a source-less RESOLVES_TO that later
+        # partial runs read as forward DNS, so a name may never take one.
+        project = {'ipMode': True, 'targetIps': ['192.0.2.8/30']}
         _, targets, refused = self._filter(['ip-targets.p1'], project=project, targets={
-            'ips': ['192.0.2.10'], 'ip_attach_to': '192-0-2-10.ip-targets.p1'})
-        assert targets['ip_attach_to'] == '192-0-2-10.ip-targets.p1' and not refused
+            'ips': ['192.0.2.10'], 'ip_attach_to': '192-0-2-9'})
+        assert targets['ip_attach_to'] == '192-0-2-9' and not refused
+        for name in ('192-0-2-10.ip-targets.p1', 'www.example.com', '198-51-100-7', '192-0-2-8'):
+            _, targets, refused = self._filter(['ip-targets.p1'], project=project, targets={
+                'ips': ['192.0.2.10'], 'ip_attach_to': name})
+            assert targets['ip_attach_to'] is None, name
+            assert refused == [f"ip_attach_to {name!r} (not a target's own label)"]

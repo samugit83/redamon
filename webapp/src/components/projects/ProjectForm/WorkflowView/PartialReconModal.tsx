@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Play, Loader2, ArrowRight, Upload, FileText, Trash2, Info } from 'lucide-react'
 import { Modal, Tooltip, WikiInfoButton } from '@/components/ui'
-import { type ProjectRoots, admitsPartialHost } from '@/lib/partialReconScope'
+import { type IpTargetMatcher, type ProjectRoots, admitsPartialHost, ipModeRefusal, ipTargetMatcher } from '@/lib/partialReconScope'
 import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
 import { isValidDomain } from '@/lib/validation'
 import { announceProjectWrite } from '@/lib/projectVersion'
@@ -311,8 +311,8 @@ function describeScope(scope: ProjectRoots): string {
 // apply (§4.6): strictly under an enumerated scan root, one of a listed group's
 // hosts, or a scan root itself only when Root is on. In IP mode the run's root is
 // the `ip-targets.<id>` placeholder, so the rule is theirs for IP mode instead:
-// the host is one of the project's addresses (filter_partial_user_input).
-function validateUrl(value: string, scope: ProjectRoots, ipTargets: ReadonlySet<string> | null): string | null {
+// the host is one of the project's addresses, CIDR-aware (filter_partial_user_input).
+function validateUrl(value: string, scope: ProjectRoots, ipTargets: IpTargetMatcher | null): string | null {
   try {
     const url = new URL(value)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return `URL must use http or https: ${value}`
@@ -640,10 +640,18 @@ export function PartialReconModal({
     [customSubdomains, partialScope],
   )
 
+  // The project's addresses in IP mode, CIDR-aware: the only hosts a typed IP,
+  // CIDR or URL may name (B-20, B-22).
+  const ipTargetSet = useMemo(
+    () => ipTargets ? ipTargetMatcher(ipTargets) : null,
+    [ipTargets],
+  )
+  const ipModeRefused = ipModeRefusal(toolId, ipTargets != null)
+
   // IP validation
   const ipValidation = useMemo(
-    () => validateLines(customIps, validateIp),
-    [customIps],
+    () => validateLines(customIps, v => validateIp(v) ?? (ipTargetSet ? ipTargetSet.outside(v) : null)),
+    [customIps, ipTargetSet],
   )
 
   // Port validation (Nmap only)
@@ -653,10 +661,6 @@ export function PartialReconModal({
   )
 
   // URL validation (resource enum tools: Katana, Hakrawler) -- must be in project scope
-  const ipTargetSet = useMemo(
-    () => ipTargets ? new Set(ipTargets.map(ip => ip.trim().toLowerCase())) : null,
-    [ipTargets],
-  )
   const urlValidation = useMemo(
     () => validateLines(customUrls, v => validateUrl(v, partialScope, ipTargetSet)),
     [customUrls, partialScope, ipTargetSet],
@@ -673,13 +677,16 @@ export function PartialReconModal({
     return TOOL_API_KEYS[toolId].filter(req => !userSettings[req.key])
   }, [toolId, userSettings])
 
-  // Build dropdown options: graph subdomains + custom subdomains (live)
+  // Build dropdown options: graph subdomains + custom subdomains (live). In IP
+  // mode only a target's own label: the link is written as a RESOLVES_TO that
+  // later runs read as forward DNS, so a name may never take typed IPs (B-20).
   const attachToOptions = useMemo(() => {
-    const graphSubs = graphInputs?.existing_subdomains || []
+    const graphSubs = (graphInputs?.existing_subdomains || [])
+      .filter(s => !ipTargetSet || ipTargetSet.isLabel(s))
     const customSubs = customSubdomains
       .split('\n')
       .map(s => s.trim().toLowerCase())
-      .filter(s => s && isValidDomain(s) && admitsPartialHost(partialScope, s))
+      .filter(s => s && isValidDomain(s) && admitsPartialHost(partialScope, s) && !ipTargetSet)
     // Deduplicate, graph first
     const seen = new Set<string>()
     const options: { value: string; label: string; source: string }[] = []
@@ -690,7 +697,7 @@ export function PartialReconModal({
       if (!seen.has(s)) { seen.add(s); options.push({ value: s, label: s, source: 'custom' }) }
     }
     return options
-  }, [graphInputs?.existing_subdomains, customSubdomains, partialScope])
+  }, [graphInputs?.existing_subdomains, customSubdomains, partialScope, ipTargetSet])
 
   // Build dropdown options for URL attachment: existing BaseURLs from graph
   const urlAttachToOptions = useMemo(() => {
@@ -712,7 +719,7 @@ export function PartialReconModal({
   }, [urlAttachToOptions, urlAttachTo])
 
   const handleRun = useCallback(() => {
-    if (!runDomains.length || hasValidationErrors) return
+    if (!runDomains.length || hasValidationErrors || ipModeRefused) return
 
     if (hasUserInputs) {
       const subdomains = hasSubdomainInput ? customSubdomains.split('\n').map(s => s.trim()).filter(Boolean) : []
@@ -766,7 +773,7 @@ export function PartialReconModal({
         ...nucleiOverrides,
       })
     }
-  }, [runDomains, hasValidationErrors, hasUserInputs, hasSubdomainInput, hasIpInput, hasPortInput, hasUrlInput, isNmap, toolId, onConfirm, customSubdomains, customIps, ipAttachTo, customPorts, customUrls, urlAttachTo, includeGraphTargets, isNuclei, nucleiCveLookup, nucleiMitre, nucleiSecurityChecks])
+  }, [runDomains, hasValidationErrors, ipModeRefused, hasUserInputs, hasSubdomainInput, hasIpInput, hasPortInput, hasUrlInput, isNmap, toolId, onConfirm, customSubdomains, customIps, ipAttachTo, customPorts, customUrls, urlAttachTo, includeGraphTargets, isNuclei, nucleiCveLookup, nucleiMitre, nucleiSecurityChecks])
 
   if (!isOpen || !toolId) return null
 
@@ -929,6 +936,11 @@ export function PartialReconModal({
           </div>
         </div>
 
+        {ipModeRefused && (
+          <div style={legacyGraphStyle} role="alert" data-testid="partial-recon-ip-mode-refused">
+            Not available for an IP-mode project. {ipModeRefused}
+          </div>
+        )}
         {oldModelGraph && (
           <div style={legacyGraphStyle} role="alert" data-testid="partial-recon-legacy-graph">
             This project&apos;s graph was built before the current scope model
@@ -1416,7 +1428,7 @@ export function PartialReconModal({
         )}
 
         {/* SubdomainDiscovery: which roots to enumerate */}
-        {isSubdomainDiscovery && !loadingInputs && (domains.length > 1 || (domains.length === 1 && enumerableDomains.length === 0)) && (
+        {isSubdomainDiscovery && !loadingInputs && !ipModeRefused && (domains.length > 1 || (domains.length === 1 && enumerableDomains.length === 0)) && (
           <div>
             <div style={labelStyle}>Scan roots to enumerate</div>
             <div
@@ -1454,7 +1466,7 @@ export function PartialReconModal({
             <div style={hintStyle}>Only an enumerated scope group (a *.name entry) runs subdomain discovery; a listed group scans exactly its hosts.</div>
           </div>
         )}
-        {isSubdomainDiscovery && !loadingInputs && domains.length > 0 && runDomains.length === 0 && (
+        {isSubdomainDiscovery && !loadingInputs && !ipModeRefused && domains.length > 0 && runDomains.length === 0 && (
           <div style={errorBoxStyle}>
             {enumerableDomains.length === 0
               ? 'No scan root in this project may be enumerated: only an enumerated scope group (a *.name entry) runs subdomain discovery.'
@@ -1510,7 +1522,7 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || ipAttributionNoIps || originDiscoveryNoFronted || oldModelGraph}
+            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || ipAttributionNoIps || originDiscoveryNoFronted || oldModelGraph || !!ipModeRefused}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',

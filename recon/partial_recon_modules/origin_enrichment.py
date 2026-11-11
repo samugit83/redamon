@@ -16,6 +16,7 @@ from recon.partial_recon_modules.helpers import (
     _resolve_hostname,
     _should_include_root_domain,
     host_in_roots,
+    ip_mode_recon,
     partial_settings,
     root_for_host,
     scope_roots,
@@ -186,7 +187,7 @@ def run_origin_discovery(config: dict) -> None:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
         # Stamp the apex-scope flag identically to the full pipeline even on the
         # graph-off branch, so a manually-entered apex is scoped correctly.
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "subdomains": [],
@@ -194,7 +195,7 @@ def run_origin_discovery(config: dict) -> None:
             "metadata": {"include_root_domain": _should_include_root_domain(settings)},
             "http_probe": {"by_url": {}},
             "port_scan": {"by_ip": {}},
-        }
+        }, settings)
 
     recon_data.setdefault("http_probe", {}).setdefault("by_url", {})
     # A candidate the graph's IP attribution tagged shared_edge is never an origin.

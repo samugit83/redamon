@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest'
 import {
-  admitsPartialHost, discoveryDomains, graphDomainOf, graphHostInScope, graphScopeParams, partialScopeFields,
-  resolveProjectRoots,
+  admitsPartialHost, discoveryDomains, graphDomainOf, graphHostInScope, graphScopeParams, ipModeRefusal,
+  ipTargetMatcher, partialScopeFields, resolveProjectRoots,
 } from './partialReconScope'
 
 const PID = 'p1'
@@ -119,5 +119,60 @@ describe('the graph scope test (§4.6 partial-recon graph targets)', () => {
     expect(graphHostInScope(params, 'www.example.com')).toBe(true)
     expect(graphHostInScope(params, 'old.example.com')).toBe(false)
     expect(discoveryDomains(scope, ['example.com'])).toEqual([])
+  })
+})
+
+describe('IP mode (B-19..B-22)', () => {
+  const ipScope = resolveProjectRoots({ ipMode: true }, PID)
+
+  test('SubdomainDiscovery is offered no root: the synthetic root is the project id', () => {
+    expect(discoveryDomains(ipScope, ['ip-targets.p1'])).toEqual([])
+  })
+
+  test('the name-only tools are refused in IP mode only', () => {
+    for (const tool of ['SubdomainDiscovery', 'Urlscan', 'OriginDiscovery']) {
+      expect(ipModeRefusal(tool, true)).toMatch(/./)
+      expect(ipModeRefusal(tool, false)).toBeNull()
+    }
+    expect(ipModeRefusal('Httpx', true)).toBeNull()
+    expect(ipModeRefusal(null, true)).toBeNull()
+  })
+
+  const targets = ipTargetMatcher(['203.0.113.0/30', '203.0.113.9', '2001:db8::1', '2001:db8:1::/127',
+    '198.51.100.5/31', '192.0.2.0/24/7', 'not-an-ip', '203.0.113.300'])
+
+  test.each([
+    ['203.0.113.1', true], ['203.0.113.2', true], ['203.0.113.9', true],
+    // network and broadcast addresses of a /30 are no hosts, as in Python's hosts()
+    ['203.0.113.0', false], ['203.0.113.3', false],
+    ['198.51.100.4', true], ['198.51.100.5', true],
+    ['2001:DB8:0:0:0:0:0:1', true], ['[2001:db8::1]', true], ['2001:db8:1::', true], ['2001:db8:1::1', true],
+    ['2001:db8::2', false], ['::ffff:203.0.113.1', false], ['198.51.100.7', false],
+    ['203.0.113.01', false], ['www.example.com', false], ['', false], ['1:2:3:4:5:6:7:8:9', false],
+  ])('%s is a target: %s', (address, expected) => {
+    expect(targets.has(address)).toBe(expected)
+  })
+
+  test('a label stands for its own target address only', () => {
+    expect(targets.isLabel('203-0-113-2')).toBe(true)
+    expect(targets.isLabel('2001-db8--1')).toBe(true)
+    expect(targets.isLabel('203-0-113-3')).toBe(false)
+    expect(targets.isLabel('198-51-100-7')).toBe(false)
+    expect(targets.isLabel('www.example.com')).toBe(false)
+    expect(targets.isLabel('203-0-113-2.ip-targets.p1')).toBe(false)
+    expect(targets.isLabel('mail01')).toBe(false)
+  })
+
+  test('a typed address or CIDR must lie wholly inside the targets', () => {
+    expect(targets.outside('203.0.113.9')).toBeNull()
+    expect(targets.outside('203.0.113.9/32')).toBeNull()
+    expect(targets.outside('198.51.100.4/31')).toBeNull()
+    expect(targets.outside('2001:db8:1::/127')).toBeNull()
+    expect(targets.outside('203.0.113.0/30')).toBeNull()
+    expect(targets.outside('198.51.100.7')).toMatch(/not one of this project's target IPs/)
+    expect(targets.outside('203.0.113.0/29')).toMatch(/4 of the 6 addresses in 203\.0\.113\.0\/29/)
+    expect(targets.outside('2001:db8::/126')).toMatch(/2 of the 3 addresses/)
+    expect(targets.outside('nonsense')).toMatch(/not an address or CIDR/)
+    expect(targets.outside('203.0.113.0/40')).toMatch(/not an address or CIDR/)
   })
 })

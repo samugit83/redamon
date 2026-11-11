@@ -17,8 +17,10 @@ from recon.partial_recon_modules.helpers import (
     root_orgs,
     _is_ip_or_cidr,
     _should_include_root_domain,
+    ip_mode_recon,
     partial_settings,
     scope_roots,
+    typed_ip_attach_to,
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
 from recon.partial_recon_modules.port_scanning import measured_port_data
@@ -58,7 +60,7 @@ def run_tlsx(config: dict) -> None:
                     user_ports.append(port)
             except (ValueError, TypeError):
                 print(f"[!][Partial Recon] Skipping invalid port: {entry}")
-        ip_attach_to = user_targets.get("ip_attach_to")
+        ip_attach_to = typed_ip_attach_to(user_targets)
     elif config.get("user_inputs"):
         for entry in config["user_inputs"]:
             entry = (entry or "").strip()
@@ -74,14 +76,14 @@ def run_tlsx(config: dict) -> None:
             domain_groups=config.get("domain_groups"),
         )
     else:
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "port_scan": {"by_ip": {}, "by_host": {}, "ip_to_hostnames": {},
                           "all_ports": [], "scan_metadata": {}, "summary": {}},
             "dns": {"domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
                     "subdomains": {}},
-        }
+        }, settings)
 
     # Inject user IPs.
     user_ip_addrs = []

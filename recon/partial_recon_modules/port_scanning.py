@@ -17,9 +17,11 @@ from recon.partial_recon_modules.helpers import (
     _resolve_hostname,
     _should_include_root_domain,
     host_in_roots,
+    ip_mode_recon,
     partial_settings,
     root_for_host,
     scope_roots,
+    typed_ip_attach_to,
 )
 from recon.partial_recon_modules.graph_builders import (
     _build_recon_data_from_graph,
@@ -84,7 +86,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
             elif entry:
                 print(f"[!][Partial Recon] Skipping invalid IP: {entry}")
 
-        ip_attach_to = user_targets.get("ip_attach_to")  # subdomain name or None
+        ip_attach_to = typed_ip_attach_to(user_targets)  # subdomain name or None
 
     elif user_inputs:
         # Legacy flat list fallback: classify each entry
@@ -122,14 +124,14 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "dns": {
                 "domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
                 "subdomains": {},
             },
-        }
+        }, settings)
 
     # STEP 1: Resolve user-provided hostnames FIRST (before IP injection)
     resolved_hostnames = {}
@@ -525,7 +527,7 @@ def run_nmap(config: dict) -> None:
             except (ValueError, TypeError):
                 print(f"[!][Partial Recon] Skipping invalid port: {entry}")
 
-        ip_attach_to = user_targets.get("ip_attach_to")  # subdomain name or None
+        ip_attach_to = typed_ip_attach_to(user_targets)  # subdomain name or None
 
     elif user_inputs:
         # Legacy flat list fallback: only accept IPs
@@ -561,7 +563,7 @@ def run_nmap(config: dict) -> None:
         )
     else:
         print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
-        recon_data = {
+        recon_data = ip_mode_recon({
             "domain": roots[0] if roots else "",
             "domains": roots,
             "port_scan": {
@@ -572,7 +574,7 @@ def run_nmap(config: dict) -> None:
                 "domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
                 "subdomains": {},
             },
-        }
+        }, settings)
 
     # Inject user-provided IPs/CIDRs into port_scan structure
     # Safety: if ip_attach_to points to a subdomain that failed resolution, fall back to generic

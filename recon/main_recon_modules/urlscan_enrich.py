@@ -1329,11 +1329,13 @@ def run_urlscan_discovery_only(domain: str, settings: dict[str, Any], org_domain
     if not domain:
         return {}
 
-    # Build a minimal combined_result just for the enrichment function
+    # Build a minimal combined_result just for the enrichment function. An
+    # IP-mode project's root is ip-targets.<project id>: the enrichment skips
+    # IP mode, so the project id is never searched for (B-19, D-11).
     fake_combined = {
         "domain": domain,
         "org_domain": org_domain or domain,
-        "metadata": {"ip_mode": False},
+        "metadata": {"ip_mode": bool(settings.get("IP_MODE"))},
     }
     run_urlscan_enrichment(fake_combined, settings)
     return fake_combined.get("urlscan", {})

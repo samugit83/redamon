@@ -18,7 +18,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from recon.partial_recon_modules.graph_builders import declared_only_unsafe, quarantined
-from recon.partial_recon_modules.helpers import _is_valid_url, _scope_partial_urls, partial_settings, scope_roots
+from recon.partial_recon_modules.helpers import (
+    _is_valid_url, _scope_partial_urls, ip_mode_recon, partial_settings, scope_roots,
+)
 
 
 def run_supply_chain(config: dict) -> None:
@@ -89,14 +91,14 @@ def run_supply_chain(config: dict) -> None:
               "provide URLs, or upload JS files.")
         sys.exit(1)
 
-    combined_result = {
+    combined_result = ip_mode_recon({
         "domain": roots[0] if roots else "",
         "domains": roots,
         "subdomains": scope_hosts,
         "resource_enum": {"discovered_urls": target_urls},
         "http_probe": {"by_url": {}},
         "metadata": {"project_id": project_id, "modules_executed": []},
-    }
+    }, settings)
 
     # 1) JS Recon: fetch JS + parse source maps into combined_result.
     combined_result = run_js_recon(combined_result, settings=settings)

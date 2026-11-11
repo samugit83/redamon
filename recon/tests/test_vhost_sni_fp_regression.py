@@ -611,7 +611,8 @@ class TestCandidateScope:
     def test_ip_mode_keeps_ptr_names(self):
         recon = self._graph_recon()
         recon["domain"] = "ip-targets.proj1"
-        recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True}
+        # An IP-mode run always declares its targets; without them nothing is admitted.
+        recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True, "expanded_ips": [IP]}
         out, fake = _run(self.responder, words=[], recon=recon, VHOST_SNI_USE_GRAPH_CANDIDATES=True)
         assert "edge-203-0-113-10.cdn-provider.test" in fake.probed_hosts()
         assert out["by_ip"][IP]["out_of_scope_skipped"] == 0
@@ -897,7 +898,8 @@ def test_ip_mode_ptr_name_serving_its_site_is_not_hidden():
     ptr = "web-7.hosting-provider.test"
     recon = _recon(dns={"subdomains": {ptr: {"ips": {"ipv4": [IP], "ipv6": []}}}})
     recon["domain"] = "ip-targets.proj1"
-    recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True}
+    # An IP-mode run always declares its targets; without them nothing is admitted.
+    recon["metadata"] = {"target": "ip-targets.proj1", "ip_mode": True, "expanded_ips": [IP]}
     out, fake = _run_https(_shared_ip_responder({ptr: _same_page(ptr)}), [], recon,
                            VHOST_SNI_USE_GRAPH_CANDIDATES=True)
     assert ptr in fake.probed_hosts()

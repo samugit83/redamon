@@ -69,7 +69,7 @@ def run_openapi_partial(config: dict):
     from recon.helpers.openapi.fetch import public_url
     from recon.helpers.resource_enum import build_openapi_inventory, merge_openapi_into_by_base_url
     from recon.partial_recon_modules.helpers import (
-        _is_valid_url, _should_include_root_domain, partial_settings, run_per_root,
+        _is_valid_url, _should_include_root_domain, ip_mode_recon, partial_settings, run_per_root,
         scope_roots, typed_host_ok,
     )
     from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
@@ -114,12 +114,12 @@ def run_openapi_partial(config: dict):
                 root, user_id, project_id, include_root_domain=include_root,
                 domain_groups=config.get("domain_groups"))
         else:
-            recon_data = {
+            recon_data = ip_mode_recon({
                 "domain": root, "domains": [root], "subdomains": [],
                 "dns": {"domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False}, "subdomains": {}},
                 "http_probe": {"by_url": {}},
                 "metadata": {"include_root_domain": include_root},
-            }
+            }, settings)
         seeds = list((recon_data.get("http_probe") or {}).get("by_url") or {})
         if include_graph and settings.get("OPENAPI_AUTO_DISCOVER"):
             seeds += _spec_like_graph_urls(root, user_id, project_id, config.get("domain_groups"))

@@ -62,13 +62,30 @@ def test_ip_mode_with_a_target_list_is_never_inert():
     assert ctx.active and ctx.targets is not None and not ctx.excluded
 
 
-def test_domain_mode_and_a_dict_with_no_declared_list_stay_inert():
+def test_domain_mode_stays_inert():
     assert not admission_context(None, {"metadata": {"ip_mode": False, "expanded_ips": [T1]}}).active
-    # An IP-mode dict that declares no list at all (an older file) has nothing
-    # to clamp to; the full pipeline and partial builders always declare it.
-    assert admission_context(None, {"metadata": {"ip_mode": True}}).targets is None
-    assert ip_mode_targets({"metadata": {"ip_mode": True}}) is None
+    assert ip_mode_targets({"metadata": {"ip_mode": False}}) is None
     assert ip_mode_targets(None) is None
+
+
+def test_an_ip_mode_dict_with_no_declared_list_admits_nothing(capsys):
+    # I-6: every full and partial builder declares the list
+    # (test_partial_ip_mode_metadata_guard.py), so a dict without one is a
+    # bug to fail closed on, never a domain run.
+    undeclared = {"metadata": {"ip_mode": True}}
+    ctx = admission_context(None, undeclared)
+    assert ctx.active and ctx.targets is not None and T1 not in ctx.targets
+    adm = admit_targets(None, undeclared, ips=[T1], names={"www.example.com": [T1]},
+                        module="naabu", record=False)
+    assert adm.ips == [] and adm.names == {}
+    assert {r.reason for r in adm.refusals} == {REASON_OUTSIDE_TARGETS}
+    assert clamp_to_targets(undeclared, [T1, T2]) == []
+    assert admit_host_targets(None, undeclared, {T1}, {"www.example.com"},
+                              {T1: ["www.example.com"]}, module="naabu", record=False) == (set(), set(), {})
+    admit = ip_mode_url_admission(undeclared, resolve=lambda _host: [T1])
+    assert admit is not None and not admit(f"http://{T1}/") and not admit("http://www.example.com/")
+    out = capsys.readouterr().out
+    assert out.count("declares no target list") == 1
 
 
 def test_a_declared_empty_list_admits_nothing():
@@ -242,9 +259,14 @@ def test_forward_verdict_is_the_selection_rule(answer, verdict):
     assert forward_verdict(answer, target_set([T1, T2, V6])) == verdict
 
 
+def test_an_undeclared_list_still_admits_nothing_when_its_log_fails(monkeypatch):
+    monkeypatch.setattr(circuit_breaker, "run_cache", lambda *_a: 1 / 0)
+    assert clamp_to_targets({"metadata": {"ip_mode": True}}, [T1]) == []
+
+
 def test_url_admission_is_none_outside_ip_mode():
     assert ip_mode_url_admission({"metadata": {"ip_mode": False}}) is None
-    assert ip_mode_url_admission({"metadata": {"ip_mode": True}}) is None
+    assert ip_mode_url_admission(None) is None
 
 
 def test_url_admission_admits_targets_and_scope_names_that_resolve_to_them():
