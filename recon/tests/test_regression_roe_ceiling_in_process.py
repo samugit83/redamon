@@ -399,3 +399,117 @@ class TestNmapMaxRate:
         assert "--max-rate" not in cmd
         assert cmd == ["nmap", "-sV", "--script", "vuln", "-oX", "/tmp/o.xml", "-p", "22,443",
                        "-T3", "--host-timeout", "300s", "192.0.2.10"]
+
+
+# ---------------------------------------------------------------------------
+# GROUP 5's crawlers: one at a time under a ceiling
+# ---------------------------------------------------------------------------
+
+CRAWL_SETTINGS = {
+    "KATANA_ENABLED": True, "KATANA_TIMEOUT": 30,
+    "HAKRAWLER_ENABLED": True, "HAKRAWLER_TIMEOUT": 30, "HAKRAWLER_PARALLELISM": 1,
+    "GAU_ENABLED": False, "PARAMSPIDER_ENABLED": False, "KITERUNNER_ENABLED": False,
+    "JSLUICE_ENABLED": False, "FFUF_ENABLED": False, "ARJUN_ENABLED": False,
+    "ZAP_AJAX_SPIDER_ENABLED": False, "RESOURCE_ENUM_AI_CLASSIFIER_ENABLED": False,
+}
+
+
+def _crawl(settings, crawlers):
+    import recon.main_recon_modules.resource_enum as re_mod
+    pools = []
+
+    class Recording(ThreadPoolExecutor):
+        def __init__(self, max_workers=None, *a, **k):
+            super().__init__(max_workers, *a, **k)
+            self.submitted = []
+            pools.append(self)
+
+        def submit(self, fn, *args, **kwargs):
+            self.submitted.append(fn)
+            return super().submit(fn, *args, **kwargs)
+
+    seeds = ["https://app.example.test"]
+    with mock.patch.object(re_mod, "ThreadPoolExecutor", Recording), \
+         mock.patch.object(re_mod, "run_katana_crawler", crawlers.tool("katana")), \
+         mock.patch.object(re_mod, "run_hakrawler_crawler", crawlers.tool("hakrawler")), \
+         mock.patch.object(re_mod, "pull_katana_docker_image", return_value=True), \
+         mock.patch.object(re_mod, "pull_hakrawler_docker_image", return_value=True), \
+         mock.patch.object(re_mod, "is_docker_installed", return_value=True), \
+         mock.patch.object(re_mod, "is_docker_running", return_value=True), \
+         mock.patch.object(re_mod, "extract_targets_from_recon",
+                           return_value=(set(), {"app.example.test"}, {})), \
+         mock.patch.object(re_mod, "build_target_urls", return_value=seeds):
+        re_mod.run_resource_enum({"domain": "example.test"}, settings={**CRAWL_SETTINGS, **settings})
+    (pool,) = [p for p in pools if crawlers.katana in p.submitted]
+    return pool
+
+
+class _Crawlers(_Tools):
+    def tool(self, name):
+        def run(*_a, **_k):
+            with self.lock:
+                self.running += 1
+                self.peak = max(self.peak, self.running)
+                self.events.append(f"{name}:start")
+            if self.barrier is not None:
+                self.barrier.wait(timeout=5)
+            else:
+                time.sleep(0.02)
+            with self.lock:
+                self.running -= 1
+                self.events.append(f"{name}:end")
+            return [], {"external_domains": []}
+        setattr(self, name, run)
+        return run
+
+
+class TestCrawlers:
+    def test_a_ceiling_runs_the_crawlers_one_after_another(self):
+        crawlers = _Crawlers(["katana", "hakrawler"])
+        pool = _crawl(CEILING_2, crawlers)
+        assert pool._max_workers == 1
+        assert crawlers.peak == 1
+        assert crawlers.events == ["katana:start", "katana:end", "hakrawler:start", "hakrawler:end"]
+
+    @pytest.mark.parametrize("settings", NO_CEILING, ids=["no_keys", "roe_off", "zero"])
+    def test_no_ceiling_keeps_the_pool_of_four(self, settings):
+        # Both crawlers wait for each other: only the parallel pool gets past it.
+        crawlers = _Crawlers(["katana", "hakrawler"], barrier=threading.Barrier(2))
+        pool = _crawl(settings, crawlers)
+        assert pool._max_workers == 4
+        assert crawlers.peak == 2
+
+
+# ---------------------------------------------------------------------------
+# Partial recon configures the pacer from the settings it loads
+# ---------------------------------------------------------------------------
+
+class TestPartialRecon:
+    @pytest.mark.parametrize("settings, ceiling", [
+        (CEILING_2, 2.0),
+        ({"ROE_ENABLED": False, "ROE_GLOBAL_MAX_RPS": 2}, 0.0),
+    ], ids=["ceiling", "roe_off"])
+    def test_main_configures_the_pacer_before_any_tool(self, monkeypatch, tmp_path, settings, ceiling):
+        import json
+
+        import recon.partial_recon as pr
+        config = tmp_path / "partial.json"
+        config.write_text(json.dumps({"tool_id": "SecurityChecks", "domains": ["example.test"],
+                                      "include_graph_targets": False}))
+        monkeypatch.setenv("PARTIAL_RECON_CONFIG", str(config))
+        monkeypatch.setenv("USER_ID", "u1")
+        monkeypatch.setenv("PROJECT_ID", "p1")
+        monkeypatch.setattr("recon.graph_db_preflight.require_graph_db", lambda *_: None)
+        monkeypatch.setattr(pr, "get_settings",
+                            lambda: {"TARGET_DOMAIN": "example.test", "SUBDOMAIN_LIST": [], **settings})
+        seen = []
+
+        def stop_here(tool_id, s):
+            # The first step after the settings load: the pacer is set by now.
+            seen.append(request_pacer.ceiling())
+            return "stopped by the test"
+
+        monkeypatch.setattr(pr, "_stealth_refusal", stop_here)
+        with pytest.raises(SystemExit):
+            pr.main()
+        assert seen == [ceiling]

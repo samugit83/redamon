@@ -942,7 +942,12 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     # requested, reported as archive leaks below.
     archive_quarantined: list = []
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # Under an RoE ceiling each crawler is held to the whole ceiling, so they run
+    # one at a time (D3). The results below are read in submission order, so each
+    # tool's wait still starts about when the tool does.
+    from recon.helpers import request_pacer
+    crawler_workers = 1 if request_pacer.ceiling_rps(settings) else 4
+    with ThreadPoolExecutor(max_workers=crawler_workers) as executor:
         futures = {}
 
         # Submit Katana crawler if enabled

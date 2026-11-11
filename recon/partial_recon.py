@@ -41,6 +41,7 @@ if __name__ == "__main__":
     shutdown.install()
 
 from recon.project_settings import get_settings
+from recon.helpers import request_pacer
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.partial_recon_modules.helpers import (
     _classify_ip,
@@ -405,6 +406,9 @@ def main():
         print(f"[!][Partial Recon] Cannot load the project settings ({type(e).__name__}). "
               f"Refusing to scan.")
         sys.exit(1)
+    # The RoE ceiling for the requests the tool sends in-process (security
+    # checks, OpenAPI...), before any of them runs.
+    request_pacer.configure(settings)
 
     # Before the scope pass: a refused tool should not even make its ownership
     # TXT lookups or graph reads.
