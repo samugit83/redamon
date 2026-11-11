@@ -155,13 +155,26 @@ class TestPartialSecurityChecks:
         seen, _ = self._run(monkeypatch, {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": ["10.0.0.9"]}, {})
         assert seen["roe_excluded_hosts"] == ["10.0.0.9"]
 
-    def test_no_port_query_when_every_port_check_is_off(self, monkeypatch):
-        off = {k: False for k in ("SECURITY_CHECK_ADMIN_PORT_EXPOSED",
-                                  "SECURITY_CHECK_DATABASE_EXPOSED",
-                                  "SECURITY_CHECK_REDIS_NO_AUTH",
-                                  "SECURITY_CHECK_KUBERNETES_API_EXPOSED",
-                                  "SECURITY_CHECK_SMTP_OPEN_RELAY")}
+    @pytest.mark.parametrize("ip_mode", [pytest.param(False, id="domain"), pytest.param(True, id="ip-mode")])
+    def test_with_every_port_check_off_only_a_domain_run_loads_the_ports_as_web_evidence(
+            self, monkeypatch, ip_mode):
+        """A domain run's web checks probe only the web ports its data shows
+        live (S-28), so the graph's open ports are loaded with every port
+        check off too, and those checks stay off. IP mode loads them for the
+        port checks alone."""
+        if ip_mode:
+            dict_ = _partial_recon()
+            dict_["metadata"].update(ip_mode=True, expanded_ips=["10.0.0.1"])
+            monkeypatch.setattr(sys.modules[__name__], "_partial_recon", lambda: dict_)
+        port_checks = ("admin_port_exposed", "database_exposed", "redis_no_auth",
+                       "kubernetes_api_exposed", "smtp_open_relay")
+        off = {f"SECURITY_CHECK_{c.upper()}": False for c in port_checks}
         seen, loader = self._run(monkeypatch, off, {"10.0.0.1": [6379]})
-        loader.assert_not_called()
-        assert seen["ports"] == {"10.0.0.1": []}
+        if ip_mode:
+            loader.assert_not_called()
+            assert seen["ports"] == {"10.0.0.1": []}
+        else:
+            assert loader.call_args.args[0] == ["10.0.0.1"]
+            assert seen["ports"] == {"10.0.0.1": [6379]}
+        assert not any(seen["enabled_checks"][c] for c in port_checks)
         assert seen["roe_excluded_hosts"] is None
