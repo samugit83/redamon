@@ -172,6 +172,15 @@ Workloads 1→2→3→4 run **sequentially** on one shared `requests.Session`.
 Workload 5 (vector DBs) runs **after** the pool drains, single-threaded, because
 it iterates ports, not crawl candidates.
 
+**RoE ceiling:** every probe first takes a slot of recon's process-wide request
+clock (`recon/helpers/request_pacer.py`, inert with no ceiling), so the host pool
+shares the ceiling with every other in-process requester. That covers every
+workload's requests (each sent with `allow_redirects=False`, so one call is one
+request), the probe-pack engine's, and every request the MCP SDK sends while it
+lists a server, through httpx event hooks (handshake, listings, event stream,
+closing DELETE, each redirect hop). A target's `429` pushes every requester's next
+slot back by its `Retry-After` (1 s floor, 30 s cap).
+
 ---
 
 ## 6. The workloads
@@ -215,7 +224,7 @@ proves the protocol without a successful completion.
 3. Classify via [`classify_ai_chat_response`](../../recon/helpers/ai_signal_catalog.py#L1537): match the JSON's top-level keys (OpenAI→`choices`, Anthropic→`content`+`stop_reason`, Ollama→`response`, Gemini→`candidates`, LangServe→`output`).
 4. Edge case: `401`/`422` + `{"error":…}` body ⇒ still `llm-chat`.
 5. `Content-Type: text/event-stream` ⇒ `supports_streaming = True`.
-6. Record each response's latency; emit the **median (p50)**. First classified path wins (`break`).
+6. Record each response's latency, timed after the request's RoE slot so a ceiling wait never counts; emit the **median (p50)**. First classified path wins (`break`).
 
 #### Output (JSON)
 ```python
@@ -263,7 +272,7 @@ tools can't be called.
 
 #### How it works
 1. **Detect** ([`_mcp_detect`](../../recon/main_recon_modules/ai_surface_recon.py#L178)) — a **raw** `POST initialize` (JSON-RPC 2.0). Raw, not the SDK, so it can read headers/status the SDK hides. Four outcomes: `401 + WWW-Authenticate` (MCP, `auth_required=True`); a valid `result` (confirmed, captures `serverInfo`/caps/instructions); an SSE-wrapped result (parsed via `_first_sse_json`); or a version-mismatch error that *leaks supported protocol versions*.
-2. **Enumerate** ([`_mcp_enumerate`](../../recon/main_recon_modules/ai_surface_recon.py#L223)) — only if listing is on **and** not auth-gated. Uses the real **MCP SDK** to call `tools/list` + `resources/list` + `prompts/list`, returning structured tool schemas.
+2. **Enumerate** ([`_mcp_enumerate`](../../recon/main_recon_modules/ai_surface_recon.py#L223)) — only if listing is on **and** not auth-gated. Uses the real **MCP SDK** to call `tools/list` + `resources/list` + `prompts/list`, returning structured tool schemas. The listing's deadline (`timeout * 4`) moves by each RoE slot wait, since that queue is the ceiling's, not a slow server's.
 3. **Statically analyze each tool:**
    - **hash** each tool (`{name, description, inputSchema}`) + an aggregate `tools_hash` + `instructions_hash` — **rug-pull pins**: a silent later swap changes the hash.
    - **annotation mismatch** — a tool declaring `readOnlyHint:true` but whose name implies mutation (`delete`/`write`/`exec`…) → finding.

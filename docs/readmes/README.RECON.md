@@ -648,7 +648,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | *Puredns* | Wildcard filtering (validates against public resolvers) | Sequential | After discovery fan-in, before DNS |
 | *DNS* | DNS resolution for all subdomains | `DNS_MAX_WORKERS` parallel workers (default 80) | After puredns filtering |
 | **GROUP 2b** | Uncover Target Expansion (13 search engines) | Sequential | Needs domain from GROUP 1; runs before GROUP 3 |
-| **GROUP 3** | Shodan Enrichment + Port Scan (Naabu, Masscan) | Up to 3 parallel tasks, each enabled tool only | Needs IPs from GROUP 1 + GROUP 2b; then Nmap (3.5) and tlsx (3.6) run in sequence |
+| **GROUP 3** | Shodan Enrichment + Port Scan (Naabu, Masscan) | Up to 3 parallel tasks, each enabled tool only | Needs IPs from GROUP 1 + GROUP 2b; then Nmap (3.5; `NMAP_PARALLELISM` IPs at a time, one under an RoE ceiling) and tlsx (3.6) run in sequence |
 | **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | Up to 7 tasks on 5 workers, each enabled tool only | Needs IPs/domains from GROUP 1; runs after GROUPs 3, 3.5 and 3.6 |
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
 | *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`) | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
@@ -808,7 +808,9 @@ What follows from that:
   host, the port- and DNS-check ones included, and JS Recon and AI Surface
   Recon, which still run without httpx's pages, keep their findings by host
   too. A tlsx run cut short (timeout, exit, missing runner) keeps the rows it
-  printed and notes `security_check` by host on every target it did not answer,
+  printed (on `TLSX_RUN_TIMEOUT` its container is first killed by its name,
+  `tlsx-<run id>-<8 hex>`, so no handshake goes out after the cut)
+  and notes `security_check` by host on every target it did not answer,
   under module `tlsx`; one that answered nothing records a phase error.
 - **A finding is matched on every host it names.** The keep regexes and the
   `only_hosts` lookup read the scalar host fields (`_KEEP_HOST_FIELDS` in

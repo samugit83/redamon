@@ -591,13 +591,14 @@ banner-grabbed.
 
 ### Skipped Ports (Handled by httpx)
 
-Ports in `HTTP_PORTS` are skipped:
+Ports in `BANNER_GRAB_SKIP_PORTS` (`http_probe.py`) are skipped, because httpx
+already probes them:
 
 ```
-80, 8080, 8000, 8888, 8008, 3000, 5000, 9000
+80, 8080, 8000, 8888, 8008, 3000, 5000, 9000   HTTP_PORTS
+443, 8443, 4443, 9443, 8843                    HTTPS_PORTS
+9090, 8800
 ```
-
-`http_probe.py` assigns `HTTP_PORTS` twice; the second assignment, shared with the URL builders, is the one in effect, so 443 and 8443 are banner-grabbed as well.
 
 ### Output Structure
 

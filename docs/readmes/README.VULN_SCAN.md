@@ -238,7 +238,7 @@ For a host whose responses name nginx 1.19.0 and PHP 5.6.40:
 }
 ```
 
-The graph writer (`update_graph_from_vuln_scan`) and MITRE enrichment (`recon/main_recon_modules/add_mitre.py`) read `technology_cves.by_technology`. The writer also reads `vuln_scan.all_cves`, which MITRE enrichment fills with CWE and CAPEC, to link each nuclei finding to the CVEs its template cites: `(v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)-[:HAS_CWE]->(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)`. In the domain pipeline's GROUP 6 fan-out, `run_vuln_scan_isolated()` returns only the `vuln_scan` key, so a `technology_cves` computed there stays on the wrapper's copy.
+The graph writer (`update_graph_from_vuln_scan`) and MITRE enrichment (`recon/main_recon_modules/add_mitre.py`) read `technology_cves.by_technology`. The writer also reads `vuln_scan.all_cves`, which MITRE enrichment fills with CWE and CAPEC, to link each nuclei finding to the CVEs its template cites: `(v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)-[:HAS_CWE]->(m:MitreData)-[:HAS_CAPEC]->(cap:Capec)`. A finding's `INCLUDES_CVE` edges are exactly the CVEs it cites on the latest write: a CVE its template dropped loses the edge, even when none is left, while the shared CVE node and its chain stay. In the domain pipeline's GROUP 6 fan-out, `run_vuln_scan_isolated()` returns a `TopLevelKeys` holding `vuln_scan` and, when the CVE lookup ran, `technology_cves`, and the fan-out merges both.
 
 ### Nuclei Template CVEs vs Technology CVE Lookup
 

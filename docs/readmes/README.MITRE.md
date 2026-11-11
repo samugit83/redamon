@@ -554,6 +554,14 @@ have some, so a CVE whose hierarchy holds no `ALLOWED` CWE with CAPEC patterns (
 DISCOURAGED or ALLOWED-WITH-REVIEW ones) has no `HAS_CWE` edge at all. Technology
 CVEs get their chain the same way.
 
+A finding's `INCLUDES_CVE` edges are exactly the CVEs its template cites on the
+latest write: a CVE the template no longer cites loses its edge, even when the
+template cites none any more. The CVE, MitreData and Capec nodes are shared
+reference nodes, so they and their `HAS_CWE` / `HAS_CAPEC` chain stay. The graph
+screen shows a finding's chain like a Technology's, Vulnerability → CVE → CWE →
+CAPEC, through `INCLUDES_CVE` (nuclei and the passive CVE sources) or `HAS_CVE`
+(nmap NSE); a muted finding's chain is hidden with it.
+
 ### Pipeline Order (Parallelized)
 
 MITRE enrichment runs automatically after Nuclei scanning as part of **GROUP 6** in the parallelized recon pipeline. Graph DB updates happen in a background thread so the main pipeline is not blocked.

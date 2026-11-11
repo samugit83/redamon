@@ -186,6 +186,7 @@ With `"s"`, a run that crashes (SIGSEGV), fails with an error, or finds no open 
 | `NAABU_THREADS` | `int` | `25` | Concurrent threads |
 | `NAABU_TIMEOUT` | `int` | `10000` | Timeout per port (ms) |
 | `NAABU_RETRIES` | `int` | `1` | Retries for failed probes |
+| `NAABU_RUN_TIMEOUT` | `int` | `1800` | Cap on the whole naabu run (s); a cut run keeps the ports it wrote |
 
 **Recommended Settings:**
 
@@ -459,9 +460,14 @@ prefix cannot tell an Akamai edge from a customer's server.
    └── Write targets.txt in a per-run dir /tmp/redamon/.naabu_temp_<id>
        (/tmp/redamon is the same path on the host, so no translation;
         get_host_path() maps /app/recon/output via HOST_RECON_OUTPUT_PATH)
-   └── build_naabu_command() → docker run ... -json
-   └── Run with a 30-minute timeout
+   └── build_naabu_command() → docker run --name naabu-<run id>-<8 hex> ... -json
+   └── Run with NAABU_RUN_TIMEOUT (1800 s by default)
    └── SYN run crashed, failed or found nothing → retry once as CONNECT
+   └── Timeout → kill the container by its name, no CONNECT retry; keep the
+       ports it wrote, list the targets it wrote none for in
+       scan_metadata.unchecked_targets (timed_out set) and note them as not
+       checked (module port_scan, source naabu); nothing written → no
+       port_scan, plus a naabu coverage gap
 
 4. RESULT PROCESSING  (parse_naabu_output)
    └── Parse the JSON Lines output line by line
@@ -738,7 +744,10 @@ NAABU_PASSIVE_MODE = True
 
 #### Scan too slow
 
-A Naabu or Masscan run is stopped after 30 minutes.
+A Naabu run is stopped at `NAABU_RUN_TIMEOUT` (30 minutes by default), a Masscan
+run after 30 minutes. A cut naabu run keeps the ports it wrote, and the targets it
+wrote none for are recorded as not checked: their earlier findings are kept and
+none of their ports reads as closed.
 
 ```python
 # Increase performance

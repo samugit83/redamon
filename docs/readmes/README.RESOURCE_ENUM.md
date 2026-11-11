@@ -1335,10 +1335,20 @@ Resource enumeration data is stored in Neo4j:
 
 | Node | Properties |
 |------|------------|
-| **Endpoint** | path, method, category, has_parameters, query_param_count, body_param_count |
+| **Endpoint** | path, method, category, has_parameters, query_param_count, body_param_count, path_param_count |
 | **Parameter** | name, position (query/body), type, category, sample_values |
 | **Secret** | secret_type, severity, source, source_url, base_url, sample |
 | **ExternalDomain** | domain, source (katana, hakrawler, jsluice, gau), url |
+
+Every crawler and most partial tools write through `update_graph_from_resource_enum`
+(`graph_db/mixins/recon/resource_mixin.py`), so a later tool must not undo what an
+earlier one observed. A fact the caller did not observe keeps the stored value:
+`has_parameters` only goes from false to true; each `*_param_count` keeps the stored
+count when the caller counted none there (a partial FFuf or Kiterunner run counts
+none), and a count it measured replaces it; a body Parameter's `input_type` and
+`required`, and a path Parameter's `required`, keep the stored value when the caller
+states none (the defaults apply only when nothing is stored). `Parameter.source` is the first
+writer's, like `Endpoint.source`.
 
 ### Relationships
 
