@@ -250,6 +250,17 @@ class _Rows(list):
 #: Every Cypher query the fake graph answered, in order.
 QUERIES: list = []
 
+#: Ports the graph holds per address; 8443 is open on the excluded one only.
+GRAPH_PORTS = {LEGACY_IP: [443, 8443]}
+
+
+def _address_row(address):
+    """One IP row, in the column names every builder's query returns."""
+    ports = [{"number": n, "protocol": "tcp", "passive_only": False}
+             for n in GRAPH_PORTS.get(address, [443])]
+    return {"address": address, "ip": address, "version": "IPv4", "is_cdn": False,
+            "cdn_name": None, "ports": ports}
+
 
 class _Session:
     def __init__(self, baseurls):
@@ -269,10 +280,9 @@ class _Session:
         elif "collect(DISTINCT s.name)" in cypher:
             rows.append({"subdomains": sorted({s for s, _ in GRAPH_DNS})})
         elif "$apex_roots" in cypher:
-            rows.append({"root": APEX, "address": APEX_IP, "version": "IPv4"})
+            rows.append({"root": APEX, **_address_row(APEX_IP)})
         elif "HAS_SUBDOMAIN" in cypher and "RESOLVES_TO" in cypher:
-            rows.extend({"root": APEX, "subdomain": s, "address": a, "version": "IPv4"}
-                        for s, a in GRAPH_DNS)
+            rows.extend({"root": APEX, "subdomain": s, **_address_row(a)} for s, a in GRAPH_DNS)
         elif "MATCH (b:BaseURL" in cypher:
             rows.extend({"url": u, "host": urlparse(u).hostname, "status_code": 200,
                          "content_type": "text/html"} for u in self.baseurls)
@@ -426,3 +436,73 @@ def test_the_crawler_builder_keeps_the_excluded_address_for_the_gate(monkeypatch
     assert {LEGACY, MIXED}.isdisjoint(names)
     assert {LEGACY_IP, MIXED_BAD}.isdisjoint(ips)
     assert MIXED_OK in ips
+
+
+# --------------------------------------------------------------------------
+# Partial recon: the port-scan builder (nmap, httpx, tlsx, IP attribution)
+# --------------------------------------------------------------------------
+
+def _port_scan_graph_data(settings, monkeypatch):
+    from recon.partial_recon_modules import helpers as partial_helpers
+    from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
+    monkeypatch.setattr("graph_db.Neo4jClient", _graph_client(GRAPH_BASEURLS))
+    partial_helpers.set_run_roe(settings)
+    try:
+        return _build_port_scan_data_from_graph([APEX], "u1", "p1", include_root_domain=True)
+    finally:
+        partial_helpers.set_run_roe({})
+
+
+def test_the_port_scan_builder_keeps_an_excluded_address_out_of_the_port_maps(monkeypatch):
+    recon = _port_scan_graph_data(_roe(EXCLUDED_RANGE), monkeypatch)
+    port_scan = recon["port_scan"]
+    excluded = {LEGACY_IP, MIXED_BAD}
+    assert excluded.isdisjoint(port_scan["by_ip"])
+    assert excluded.isdisjoint(port_scan["ip_to_hostnames"])
+    assert LEGACY not in port_scan["by_host"]
+    assert port_scan["by_host"][MIXED]["ip"] == MIXED_OK
+    assert {d["ip"] for d in port_scan["by_host"][MIXED]["port_details"]} == {MIXED_OK}
+    assert 8443 not in port_scan["all_ports"]
+    # The gate still sees every address the name resolved to.
+    assert MIXED_BAD in recon["dns"]["subdomains"][MIXED]["ips"]["ipv4"]
+    assert LEGACY_IP in recon["dns"]["subdomains"][LEGACY]["ips"]["ipv4"]
+
+    from recon.main_recon_modules.nmap_scan import build_nmap_targets
+    ips, _ports, _map = build_nmap_targets(recon, _roe(EXCLUDED_RANGE))
+    assert excluded.isdisjoint(ips)
+    assert {APEX_IP, MIXED_OK, WWW_IP} <= set(ips)
+
+
+class _StopProbe(BaseException):
+    """Stops run_http_probe once its target file is written."""
+
+
+def _partial_httpx_hosts(settings, monkeypatch) -> set:
+    from recon.main_recon_modules import http_probe as hp
+    recon = _port_scan_graph_data(settings, monkeypatch)
+    seen = {}
+
+    def build(targets_file, *_a, **_k):
+        seen["targets"] = Path(targets_file).read_text().split()
+        raise _StopProbe
+
+    with mock.patch.object(hp, "is_docker_installed", return_value=True), \
+         mock.patch.object(hp, "is_docker_running", return_value=True), \
+         mock.patch.object(hp, "pull_httpx_docker_image", return_value=True), \
+         mock.patch.object(hp, "build_httpx_command", side_effect=build):
+        with pytest.raises(_StopProbe):
+            hp.run_http_probe(recon, None, {"SUBDOMAIN_LIST": ["."], **settings})
+    return _hosts(seen["targets"])
+
+
+def test_partial_httpx_never_probes_a_name_with_one_excluded_address(monkeypatch):
+    hosts = _partial_httpx_hosts(_roe(EXCLUDED_RANGE), monkeypatch)
+    assert {LEGACY, MIXED}.isdisjoint(hosts)
+    assert WWW in hosts
+
+
+@pytest.mark.parametrize("settings", NO_ROE)
+def test_the_port_scan_builder_is_unchanged_without_an_exclusion(settings, monkeypatch):
+    baseline = _port_scan_graph_data({}, monkeypatch)
+    assert _port_scan_graph_data(settings, monkeypatch) == baseline
+    assert {LEGACY_IP, MIXED_BAD} <= set(baseline["port_scan"]["by_ip"])

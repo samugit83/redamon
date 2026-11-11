@@ -749,6 +749,13 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
     fills dns.domain; another root's apex is recorded as a host under
     dns.subdomains, the one place extract_targets_from_recon reads a second
     apex from. metadata.include_root_domain describes the first root.
+
+    An RoE-excluded address is in dns only, never in the port maps: the
+    admission gate reads dns (known_addresses, extract_targets_from_recon) and
+    needs it to see that a name with one excluded address is no by-name target,
+    while nmap, tlsx and the banner grab connect to what the maps hold.
+    metadata.roe carries the run's RoE, while it has exclusions, for a reader
+    that gets no settings.
     """
     from graph_db import Neo4jClient
 
@@ -774,6 +781,9 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
         },
         "metadata": {"include_root_domain": primary in apex_roots},
     }
+    roe = _run_roe()
+    if roe["ROE_ENABLED"]:
+        recon_data["metadata"]["roe"] = roe
 
     all_ports_set = set()
 
@@ -875,8 +885,6 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
             for record in apex_records:
                 root = record["root"]
                 ip_addr = record["ip"]
-                if roe_excluded(ip_addr):
-                    continue
                 bucket = _classify_ip(ip_addr, record["version"])
                 if root == primary:
                     if ip_addr not in recon_data["dns"]["domain"]["ips"][bucket]:
@@ -886,6 +894,8 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                     ips = _dns_entry(root)["ips"][bucket]
                     if ip_addr not in ips:
                         ips.append(ip_addr)
+                if roe_excluded(ip_addr):
+                    continue
                 port_numbers, port_details = _ports(record["ports"])
                 _add_host(root, ip_addr, port_numbers, port_details, record)
 
@@ -908,12 +918,12 @@ def _build_port_scan_data_from_graph(domains, user_id: str, project_id: str,
                 if not scope.keeps(subdomain, record["root"]):
                     continue
                 ip_addr = record["ip"]
-                if roe_excluded(ip_addr):
-                    continue
                 bucket = _classify_ip(ip_addr, record["version"])
                 sub_ips = _dns_entry(subdomain)["ips"]
                 if ip_addr not in sub_ips[bucket]:
                     sub_ips[bucket].append(ip_addr)
+                if roe_excluded(ip_addr):
+                    continue
                 port_numbers, port_details = _ports(record["ports"])
                 _add_host(subdomain, ip_addr, port_numbers, port_details, record)
 
