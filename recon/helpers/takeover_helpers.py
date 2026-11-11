@@ -140,6 +140,20 @@ PROVIDER_FROM_SIGNAL: dict[str, str] = {
 }
 
 
+#: Provider values that name no service: the normalizers' fallbacks, and the
+#: generic Nuclei DNS detections above, whose template id says what they
+#: detect (a CNAME to a dead name, a CNAME to some SaaS), not whose CNAME it
+#: is. The CNAME and certificate checks give these the provider they observe
+#: and never count them as disagreeing with it.
+PLACEHOLDER_PROVIDERS: frozenset[str] = frozenset({
+    "", "unknown", "none", "dangling-cname", "dns-saas",
+})
+
+
+def is_placeholder_provider(provider: Optional[str]) -> bool:
+    return (provider or "").strip().lower() in PLACEHOLDER_PROVIDERS
+
+
 def same_provider_family(a: Optional[str], b: Optional[str]) -> bool:
     """`azure` (a generic nuclei template) and `azure-app-service` (the CNAME)
     are one provider; `aws-s3` and `aws-cloudfront` are not."""

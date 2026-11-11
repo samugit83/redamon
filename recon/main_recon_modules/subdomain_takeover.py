@@ -48,7 +48,7 @@ from recon.helpers import (
     resolve_cname_target,
     score_finding,
 )
-from recon.helpers.takeover_helpers import same_provider_family
+from recon.helpers.takeover_helpers import is_placeholder_provider, same_provider_family
 
 _FINDING_SOURCE = "takeover_scan"
 
@@ -325,7 +325,7 @@ def run_subdomain_takeover(
             n["cname_target"] = cname
             cname_provider = provider_from_cname(cname)
             current_provider = (n.get("takeover_provider") or "").lower()
-            if current_provider in ("", "unknown", "none"):
+            if is_placeholder_provider(current_provider):
                 if cname_provider:
                     n["takeover_provider"] = cname_provider
             elif cname_provider and not same_provider_family(cname_provider, current_provider):
@@ -384,7 +384,7 @@ def run_subdomain_takeover(
                 if cert_prov:
                     n["cert_provider"] = cert_prov
                     current = (n.get("takeover_provider") or "").lower()
-                    if current in ("", "unknown", "none"):
+                    if is_placeholder_provider(current):
                         n["takeover_provider"] = cert_prov
                     elif not same_provider_family(cert_prov, current):
                         # Same rule as the CNAME check: the edge's default
