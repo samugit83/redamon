@@ -17,6 +17,13 @@ export async function hashPassword(plain: string): Promise<string> {
   return bcrypt.hash(plain, BCRYPT_ROUNDS)
 }
 
+/**
+ * A cost-12 bcrypt hash of 32 random bytes that were thrown away, so no input
+ * matches it. Sign-in compares against it when there is no account, or one
+ * without a password, so those answers take as long as a wrong password.
+ */
+export const UNMATCHABLE_PASSWORD_HASH = '$2a$12$xYkdNROTApiw1WKvtx5wPOVpWYwmqFB1MZwWZbpNAiUIhZSfbAZbG'
+
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   if (!hash) return false
   return bcrypt.compare(plain, hash)

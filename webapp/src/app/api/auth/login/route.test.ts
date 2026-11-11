@@ -12,9 +12,16 @@ import { NextRequest } from 'next/server'
 
 vi.stubEnv('AUTH_SECRET', 'c'.repeat(64))
 
+// The sign-in lookup is one raw query (lib/authz/accountEmail.ts). The tests
+// below predate it and set the one account they expect with
+// mockUserFindUnique, which the query mock serves as its single row.
 const mockUserFindUnique = vi.fn()
+const mockQueryRaw = vi.fn(async () => {
+  const row = await mockUserFindUnique()
+  return row ? [row] : []
+})
 vi.mock('@/lib/prisma', () => ({
-  default: { user: { findUnique: (a: unknown) => mockUserFindUnique(a) } },
+  default: { $queryRaw: (...a: unknown[]) => (mockQueryRaw as (...x: unknown[]) => unknown)(...a) },
 }))
 
 const mockVerifyPassword = vi.fn()
@@ -159,5 +166,72 @@ describe('POST /api/auth/login — the database is down', () => {
     const res = await POST(req({ email: 'a@b.c', password: 'pw' }))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Internal server error', code: 'P1001' })
+  })
+})
+
+describe('POST /api/auth/login — email case (NF-09)', () => {
+  const alice = (over: Record<string, unknown> = {}) => ({
+    id: 'u-alice', name: 'Alice', email: 'alice@x.test', password: '$2b$10$alice', role: 'standard', ...over,
+  })
+
+  test('Alice@x finds alice@x and signs in', async () => {
+    mockQueryRaw.mockResolvedValueOnce([alice()])
+    mockVerifyPassword.mockResolvedValue(true)
+    const res = await POST(req({ email: 'Alice@X.test', password: 'right' }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).id).toBe('u-alice')
+    expect(mockVerifyPassword).toHaveBeenCalledWith('right', '$2b$10$alice')
+  })
+
+  test('two accounts differing in case: the exact match signs in, never the other', async () => {
+    mockQueryRaw.mockResolvedValueOnce([
+      alice({ id: 'u-upper', email: 'Alice@x.test', password: '$2b$10$upper' }),
+      alice({ id: 'u-lower', email: 'alice@x.test', password: '$2b$10$lower' }),
+    ])
+    mockVerifyPassword.mockResolvedValue(true)
+    const res = await POST(req({ email: 'alice@x.test', password: 'right' }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).id).toBe('u-lower')
+    expect(mockVerifyPassword).toHaveBeenCalledWith('right', '$2b$10$lower')
+  })
+
+  test('two accounts differing in case and no exact match: refused as invalid credentials', async () => {
+    mockQueryRaw.mockResolvedValueOnce([
+      alice({ id: 'u-upper', email: 'Alice@x.test', password: '$2b$10$upper' }),
+      alice({ id: 'u-lower', email: 'alice@x.test', password: '$2b$10$lower' }),
+    ])
+    mockVerifyPassword.mockResolvedValue(true)
+    const res = await POST(req({ email: 'ALICE@x.test', password: 'right' }))
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'Invalid email or password' })
+    // Neither account's hash was even tried.
+    const hashes = mockVerifyPassword.mock.calls.map(c => c[1])
+    expect(hashes).not.toContain('$2b$10$upper')
+    expect(hashes).not.toContain('$2b$10$lower')
+  })
+
+  test('the lookup binds the email: a LIKE wildcard matches nothing by itself', async () => {
+    await POST(req({ email: 'a_ice@x.test', password: 'whatever' }))
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1)
+    const [strings, ...values] = mockQueryRaw.mock.calls[0] as unknown as [string[], ...unknown[]]
+    expect(strings.join('$')).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
+    expect(strings.join('$')).not.toMatch(/like/i)
+    expect(values).toEqual(['a_ice@x.test'])
+  })
+
+  test('case variants of one email share one lockout key', async () => {
+    mockUserFindUnique.mockResolvedValue(alice())
+    mockVerifyPassword.mockResolvedValue(false)
+    await POST(req({ email: 'alice@x.test', password: 'bad' }))
+    await POST(req({ email: 'Alice@x.test', password: 'bad' }))
+    await POST(req({ email: 'ALICE@X.TEST', password: 'bad' }))
+    const res = await POST(req({ email: 'aLiCe@x.test', password: 'bad' }))
+    expect(res.status).toBe(429)
+  })
+
+  test('an email or password that is not a string -> 400, nothing read', async () => {
+    expect((await POST(req({ email: ['a@x.test'], password: 'pw' }))).status).toBe(400)
+    expect((await POST(req({ email: 'a@x.test', password: { $ne: '' } }))).status).toBe(400)
+    expect(mockQueryRaw).not.toHaveBeenCalled()
   })
 })

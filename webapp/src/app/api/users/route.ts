@@ -4,6 +4,9 @@ import { hashPassword } from '@/lib/auth'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
+
+const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
 
 // GET /api/users - List users (admin: all, standard: self only, internal: all)
 export async function GET(request: NextRequest) {
@@ -67,7 +70,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { name, email, password, role } = body
 
-    if (!name || !email) {
+    if (!name || !email || typeof email !== 'string') {
       return NextResponse.json(
         { error: 'Name and email are required' },
         { status: 400 }
@@ -82,10 +85,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Stored lowercase; an account made before that may hold the same address
+    // in other capitals, which the unique index cannot see.
+    const storedEmail = normalizeEmail(email)
+    if (await emailTakenByAnother(storedEmail)) {
+      return NextResponse.json(EMAIL_TAKEN, { status: 409 })
+    }
+
     const user = await prisma.user.create({
       data: {
         name,
-        email,
+        email: storedEmail,
         ...(password ? { password: await hashPassword(password) } : {}),
         ...((role === 'admin' || role === 'standard') ? { role } : {}),
       }
@@ -102,10 +112,7 @@ export async function POST(request: NextRequest) {
     }, { status: 201 })
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
-      return NextResponse.json(
-        { error: 'A user with this email already exists' },
-        { status: 409 }
-      )
+      return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
     return internalError(error, 'Failed to create user')

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
-import { verifyPassword, createToken, AUTH_COOKIE_NAME } from '@/lib/auth'
+import { verifyPassword, createToken, AUTH_COOKIE_NAME, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
+import { findSignInAccount } from '@/lib/authz/accountEmail'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
     const { email, password } = await request.json()
     const meta = getClientMeta(request)
 
-    if (!email || !password) {
+    if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
       return NextResponse.json(
         { error: 'Email and password are required' },
         { status: 400 }
@@ -26,11 +26,11 @@ export async function POST(request: NextRequest) {
     // would let one client lock out others and let an attacker rotate XFF to
     // evade. Per-account lockout still protects every account either way.
     const lockIp = meta.ipTrusted ? meta.ip : null
-    const lock = checkLockout(String(email), lockIp)
+    const lock = checkLockout(email, lockIp)
     if (lock.locked) {
       await writeAudit({
         action: 'auth.login.lockout', targetType: 'user',
-        after: { email: String(email), ip: meta.ip, ipTrusted: meta.ipTrusted, retryAfter: lock.retryAfterSeconds },
+        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, retryAfter: lock.retryAfterSeconds },
       })
       return NextResponse.json(
         { error: 'Too many failed attempts. Try again later.' },
@@ -38,31 +38,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email },
-      select: { id: true, name: true, email: true, password: true, role: true },
-    })
+    const user = await findSignInAccount(email)
 
-    if (!user || !user.password) {
+    // One bcrypt compare on every path: with no account, or one without a
+    // password, the compare runs against a hash nothing matches, so the answer
+    // takes as long as a wrong password and its latency names no account.
+    const valid = await verifyPassword(password, user?.password || UNMATCHABLE_PASSWORD_HASH)
+    if (!user || !user.password || !valid) {
       // R5: log the failure. Record ONLY the attempted email + source IP; never
       // the password or hash. S11: increment the lockout counter.
-      recordFailure(String(email), lockIp)
+      recordFailure(email, lockIp)
       await writeAudit({
         action: 'auth.login.failure', targetType: 'user',
-        after: { email: String(email), ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
-      })
-      return NextResponse.json(
-        { error: 'Invalid email or password' },
-        { status: 401 }
-      )
-    }
-
-    const valid = await verifyPassword(password, user.password)
-    if (!valid) {
-      recordFailure(String(email), lockIp)
-      await writeAudit({
-        action: 'auth.login.failure', targetType: 'user', targetId: user.id,
-        after: { email: String(email), ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
+        ...(user?.password ? { targetId: user.id } : {}),
+        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
       })
       return NextResponse.json(
         { error: 'Invalid email or password' },
@@ -71,7 +60,7 @@ export async function POST(request: NextRequest) {
     }
 
     // S11: successful login clears the failure counters for this email + IP.
-    clearAttempts(String(email), lockIp)
+    clearAttempts(email, lockIp)
     await writeAudit({
       actorId: user.id, action: 'auth.login.success', targetType: 'user', targetId: user.id,
       after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },

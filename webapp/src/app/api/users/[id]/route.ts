@@ -5,10 +5,13 @@ import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { isLoopModel } from '@/lib/agentInTheLoop'
+import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
+
+const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
 
 // GET /api/users/[id] - Get user by ID
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -103,7 +106,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const data: Record<string, string> = {}
     if (name) data.name = name
-    if (email) data.email = email
+    if (typeof email === 'string' && email) data.email = normalizeEmail(email)
     if (role === 'admin' || role === 'standard') data.role = role
     // Remembered model choices, used to pre-fill the next new project.
     if (isLoopModel(defaultAgentModel) || isLoopModel(defaultAiPipelineModel)) {
@@ -114,6 +117,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
     if (typeof defaultAgentModel === 'string') data.defaultAgentModel = defaultAgentModel
     if (typeof defaultAiPipelineModel === 'string') data.defaultAiPipelineModel = defaultAiPipelineModel
+
+    // Another account may hold the address in other capitals (stored before
+    // emails were lowercased), which the unique index cannot see.
+    if (data.email && await emailTakenByAnother(data.email, id)) {
+      return NextResponse.json(EMAIL_TAKEN, { status: 409 })
+    }
 
     const user = await prisma.user.update({
       where: { id },
@@ -137,6 +146,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { error: 'User not found' },
         { status: 404 }
       )
+    }
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+      return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
     return internalError(error, 'Failed to update user')

@@ -21,6 +21,7 @@ const mockGetSession = vi.fn()
 const mockIsInternal = vi.fn()
 const mockProjectFindMany = vi.fn()
 const mockPurge = vi.fn()
+const mockQueryRaw = vi.fn()
 
 vi.mock('@/lib/prisma', () => ({
   default: {
@@ -31,6 +32,7 @@ vi.mock('@/lib/prisma', () => ({
     },
     capturedHttpTransaction: { findMany: vi.fn().mockResolvedValue([]) },
     project: { findMany: (...args: unknown[]) => mockProjectFindMany(...args) },
+    $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
   },
 }))
 
@@ -79,6 +81,8 @@ beforeEach(() => {
   mockProjectFindMany.mockResolvedValue([])
   mockPurge.mockReset()
   mockPurge.mockResolvedValue(undefined)
+  mockQueryRaw.mockReset()
+  mockQueryRaw.mockResolvedValue([])
 })
 
 // ---------------------------------------------------------------------------
@@ -333,5 +337,66 @@ describe('PUT /api/users/[id]: Agent in the Loop is never a default model', () =
       code: 'loop_model_not_allowed',
     })
     expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('PUT /api/users/[id]: email edit lowercased and collision 409 (NF-09)', () => {
+  beforeEach(() => {
+    mockUpdate.mockImplementation(({ data }: { data: Record<string, unknown> }) => ({ id: 'user-1', ...data }))
+  })
+
+  test('the new email is stored lowercased', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    const res = await PUT(putReq({ email: 'Sam.New@Example.TEST' }), makeParams('user-1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.email).toBe('sam.new@example.test')
+  })
+
+  test('an email another account holds in any case -> 409 email_taken, nothing written', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    mockQueryRaw.mockResolvedValue([{ id: 'user-2' }])
+    const res = await PUT(putReq({ email: 'Admin@x.test' }), makeParams('user-1'))
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'A user with this email already exists', code: 'email_taken' })
+    expect(mockUpdate).not.toHaveBeenCalled()
+    const [strings, ...values] = mockQueryRaw.mock.calls[0] as [string[], ...unknown[]]
+    expect(strings.join('$')).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
+    expect(values).toEqual(['admin@x.test'])
+  })
+
+  test('the account recasing its own email is not a collision', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    mockQueryRaw.mockResolvedValue([{ id: 'user-1' }])
+    const res = await PUT(putReq({ email: 'SAM@x.test' }), makeParams('user-1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.email).toBe('sam@x.test')
+  })
+
+  test('an admin editing another account checks against everyone but that account', async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockQueryRaw.mockResolvedValue([{ id: 'user-2' }])
+    const res = await PUT(putReq({ email: 'member@x.test' }), makeParams('user-2'))
+    expect(res.status).toBe(200)
+  })
+
+  test('the unique index still answers a race with 409 email_taken', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    mockUpdate.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }))
+    const res = await PUT(putReq({ email: 'x@x.test' }), makeParams('user-1'))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('email_taken')
+  })
+
+  test('no email in the body: no lookup', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    await PUT(putReq({ name: 'Only Name' }), makeParams('user-1'))
+    expect(mockQueryRaw).not.toHaveBeenCalled()
+  })
+
+  test('a refused caller reads nothing', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1', 'standard'))
+    const res = await PUT(putReq({ email: 'x@x.test' }), makeParams('user-2'))
+    expect(res.status).toBe(403)
+    expect(mockQueryRaw).not.toHaveBeenCalled()
   })
 })

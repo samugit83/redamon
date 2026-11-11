@@ -14,9 +14,13 @@ import { NextRequest } from 'next/server'
 const mockCreate = vi.fn()
 const mockGetSession = vi.fn()
 const mockIsInternal = vi.fn()
+const mockQueryRaw = vi.fn()
 
 vi.mock('@/lib/prisma', () => ({
-  default: { user: { findMany: vi.fn(), create: (...a: unknown[]) => mockCreate(...a) } },
+  default: {
+    user: { findMany: vi.fn(), create: (...a: unknown[]) => mockCreate(...a) },
+    $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
+  },
 }))
 vi.mock('@/lib/session', () => ({
   getSession: (...a: unknown[]) => mockGetSession(...a),
@@ -39,6 +43,8 @@ beforeEach(() => {
   mockCreate.mockResolvedValue({ id: 'u1', name: 'x', email: 'x@y.z', role: 'admin' })
   mockGetSession.mockReset()
   mockIsInternal.mockReset()
+  mockQueryRaw.mockReset()
+  mockQueryRaw.mockResolvedValue([])
 })
 
 const NEW_ADMIN = { name: 'evil', email: 'evil@x.z', password: 'twelve-chars', role: 'admin' }
@@ -135,6 +141,44 @@ describe('POST /api/users — password floor (HD-12)', () => {
     const res = await POST(postReq({ name: 'M', email: 'm@x.z', password: 1234567890123 }))
     expect(res.status).toBe(400)
     expect((await res.json()).code).toBe('password_too_short')
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/users — one account per email whatever its case (NF-09)', () => {
+  beforeEach(() => {
+    mockIsInternal.mockReturnValue(false)
+    mockGetSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+  })
+
+  test('a new account is stored with its email lowercased', async () => {
+    const res = await POST(postReq({ name: 'M', email: 'New.Member@Example.TEST' }))
+    expect(res.status).toBe(201)
+    expect(mockCreate.mock.calls[0][0].data.email).toBe('new.member@example.test')
+  })
+
+  test('an email another account holds in another case -> 409 email_taken, nothing created', async () => {
+    mockQueryRaw.mockResolvedValue([{ id: 'legacy-upper' }])
+    const res = await POST(postReq({ name: 'M', email: 'alice@x.test' }))
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'A user with this email already exists', code: 'email_taken' })
+    expect(mockCreate).not.toHaveBeenCalled()
+    const [strings, ...values] = mockQueryRaw.mock.calls[0] as [string[], ...unknown[]]
+    expect(strings.join('$')).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
+    expect(values).toEqual(['alice@x.test'])
+  })
+
+  test('the unique index still answers a race with 409 email_taken', async () => {
+    mockCreate.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }))
+    const res = await POST(postReq({ name: 'M', email: 'alice@x.test' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('email_taken')
+  })
+
+  test('an email that is not a string -> 400, nothing read or created', async () => {
+    const res = await POST(postReq({ name: 'M', email: ['a@x.test'] }))
+    expect(res.status).toBe(400)
+    expect(mockQueryRaw).not.toHaveBeenCalled()
     expect(mockCreate).not.toHaveBeenCalled()
   })
 })
