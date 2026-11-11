@@ -869,7 +869,11 @@ def run_cache(name: str) -> RunCache:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443, "ftp": 21}
-_HOST_CHARS = re.compile(r"^[a-z0-9.\-]+$|^[0-9a-f:]+$")
+# A hostname the prune may build a keep regex or lookup from: the graph's
+# _KEEP_HOST_CHARS (graph_db/mixins/base_mixin.py). Underscores are legal in
+# DNS names (`_dmarc.`, `dev_api.`), and a host dropped here loses its notes:
+# the prune would delete findings the run never re-checked.
+_HOST_CHARS = re.compile(r"^[a-z0-9._\-]+$|^[0-9a-f:]+$")
 
 
 def host_key(target: Any) -> str:
@@ -1486,7 +1490,7 @@ def _norm_host(value: Any) -> str:
     text = str(value or "").strip().lower()
     if not text or len(text) > 300:
         return ""
-    return text if re.fullmatch(r"[a-z0-9.:\-\[\]]+", text) else ""
+    return text if re.fullmatch(r"[a-z0-9._:\-\[\]]+", text) else ""
 
 
 def note_degraded(module: str, *, sources: Iterable[str] = (), hosts: Iterable[str] = (),
