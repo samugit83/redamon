@@ -75,11 +75,11 @@ tool_count=$(echo "$manifest_after_add" | python3 -c 'import json,sys; d=json.lo
 [ "$tool_count" = "1" ] || fail "expected 1 tool in e2e_test_srv, got $tool_count"
 ok "manifest: e2e_check_tool registered"
 
-# 5) Verify ToolMatrixSection's view: webapp /api/mcp/manifest exposes it.
-webapp_manifest=$(curl -s -H "x-internal-key: $KEY" "$WEBAPP/api/mcp/manifest")
-echo "$webapp_manifest" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert any(s["id"]=="e2e_test_srv" for s in d["servers"])' \
-  || fail "webapp manifest proxy missing e2e_test_srv"
-ok "webapp proxy: /api/mcp/manifest returns e2e_test_srv"
+# 5) The webapp /api/mcp/manifest is a signed-in account's own servers (step 1.9):
+#    it no longer proxies the agent, and the internal key alone is no account.
+webapp_manifest_status=$(curl -s -o /dev/null -w '%{http_code}' -H "x-internal-key: $KEY" "$WEBAPP/api/mcp/manifest")
+[ "$webapp_manifest_status" = "401" ] || fail "webapp manifest answered $webapp_manifest_status without a session"
+ok "webapp manifest: needs a signed-in account (401 for the internal key alone)"
 
 # 6) Update: enable=false, expect manifest to still list it but with enabled=false.
 upd_resp=$(curl -s -X PUT -H "x-internal-key: $KEY" -H 'Content-Type: application/json' \

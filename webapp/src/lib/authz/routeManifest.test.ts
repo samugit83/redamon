@@ -57,8 +57,6 @@ const FORMER_LOGIN_ONLY = [
   '/api/cypherfix/health',
   '/api/gvm/available',
   '/api/js-recon/trufflehog/available',
-  '/api/mcp/manifest',
-  '/api/mcp/reload',
   '/api/nuclei-templates',
   '/api/projects/defaults',
   '/api/skills',
@@ -70,6 +68,9 @@ const FORMER_LOGIN_ONLY = [
 const STRONGER_THAN_SESSION: Record<string, string> = {
   // Unmasked tunnel credentials: the agent's internal-key lookup only (HD-05, step 1.10).
   '/api/global/tunnel-config': 'internal',
+  // The shared agent's MCP reload is an admin's; the manifest is your own servers (HD-03, HD-15, step 1.9).
+  '/api/mcp/reload': 'admin-jwt',
+  '/api/mcp/manifest': 'effective-user',
 }
 
 describe('the manifest and the route tree', () => {
