@@ -1,0 +1,149 @@
+{
+  "_doc": "admit_targets (recon/helpers/target_admission.py, design decision D2): one row per rule. 'roe' is ROE_EXCLUDED_HOSTS with ROE_ENABLED on (off when 'enabled' is false); 'names' maps each name to the addresses the run resolved it to; 'expect.refused' lists [target, reason] in refusal order. Reserved names and documentation ranges only.",
+  "vectors": [
+    {
+      "id": "no_exclusion_is_inert",
+      "roe": [],
+      "names": {"www.example.com": ["192.0.2.6"], "new.example.com": []},
+      "ips": ["192.0.2.9"],
+      "expect": {"names": {"www.example.com": ["192.0.2.6"], "new.example.com": []}, "split": {},
+                 "ips": ["192.0.2.9"], "refused": []}
+    },
+    {
+      "id": "roe_switched_off_is_inert",
+      "enabled": false,
+      "roe": ["198.51.100.0/24", "www.example.com"],
+      "names": {"www.example.com": ["198.51.100.20"]},
+      "ips": ["198.51.100.21"],
+      "expect": {"names": {"www.example.com": ["198.51.100.20"]}, "split": {},
+                 "ips": ["198.51.100.21"], "refused": []}
+    },
+    {
+      "id": "host_entry_refuses_the_name",
+      "roe": ["pay.example.com"],
+      "names": {"pay.example.com": ["192.0.2.5"], "www.example.com": ["192.0.2.6"]},
+      "expect": {"names": {"www.example.com": ["192.0.2.6"]}, "split": {}, "ips": [],
+                 "refused": [["pay.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "wildcard_entry_refuses_subdomains_only",
+      "roe": ["*.legacy.example.com"],
+      "names": {"a.legacy.example.com": ["192.0.2.5"], "legacy.example.com": ["192.0.2.6"]},
+      "expect": {"names": {"legacy.example.com": ["192.0.2.6"]}, "split": {}, "ips": [],
+                 "refused": [["a.legacy.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "cidr_refuses_a_name_left_with_no_address",
+      "roe": ["198.51.100.0/24"],
+      "names": {"legacy.example.com": ["198.51.100.20"], "www.example.com": ["192.0.2.6"]},
+      "expect": {"names": {"www.example.com": ["192.0.2.6"]}, "split": {}, "ips": [],
+                 "refused": [["198.51.100.20", "roe_excluded"], ["legacy.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_tool_keeps_the_allowed_address_of_a_mixed_name",
+      "roe": ["198.51.100.0/24"],
+      "names": {"mixed.example.com": ["198.51.100.20", "192.0.2.7"]},
+      "expect": {"names": {}, "split": {"mixed.example.com": ["192.0.2.7"]}, "ips": [],
+                 "refused": [["198.51.100.20", "roe_excluded"]]}
+    },
+    {
+      "id": "name_resolving_tool_refuses_a_mixed_name_whole",
+      "roe": ["198.51.100.0/24"],
+      "resolves_names": true,
+      "names": {"mixed.example.com": ["198.51.100.20", "192.0.2.7"]},
+      "expect": {"names": {}, "split": {}, "ips": [],
+                 "refused": [["198.51.100.20", "roe_excluded"], ["mixed.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "unresolved_name_refused_while_ip_entries_exist",
+      "roe": ["198.51.100.0/24"],
+      "names": {"new.example.com": [], "www.example.com": ["192.0.2.6"]},
+      "expect": {"names": {"www.example.com": ["192.0.2.6"]}, "split": {}, "ips": [],
+                 "refused": [["new.example.com", "roe_unresolved"]]}
+    },
+    {
+      "id": "unresolved_name_kept_with_host_entries_only",
+      "roe": ["pay.example.com"],
+      "names": {"new.example.com": []},
+      "expect": {"names": {"new.example.com": []}, "split": {}, "ips": [], "refused": []}
+    },
+    {
+      "id": "bare_ip_entry",
+      "roe": ["192.0.2.10"],
+      "ips": ["192.0.2.10", "192.0.2.11"],
+      "expect": {"names": {}, "split": {}, "ips": ["192.0.2.11"],
+                 "refused": [["192.0.2.10", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_entry_written_with_a_path",
+      "roe": ["198.51.100.20/"],
+      "names": {"legacy.example.com": ["198.51.100.20", "192.0.2.8"]},
+      "expect": {"names": {}, "split": {"legacy.example.com": ["192.0.2.8"]}, "ips": [],
+                 "refused": [["198.51.100.20", "roe_excluded"]]}
+    },
+    {
+      "id": "ipv4_mask_entry",
+      "roe": ["198.51.100.0/255.255.255.0"],
+      "ips": ["198.51.100.30", "192.0.2.30"],
+      "expect": {"names": {}, "split": {}, "ips": ["192.0.2.30"],
+                 "refused": [["198.51.100.30", "roe_excluded"]]}
+    },
+    {
+      "id": "ipv6_cidr",
+      "roe": ["2001:db8:1::/48"],
+      "names": {"v6.example.com": ["2001:db8:1::5", "2001:db8:2::5"]},
+      "expect": {"names": {}, "split": {"v6.example.com": ["2001:db8:2::5"]}, "ips": [],
+                 "refused": [["2001:db8:1::5", "roe_excluded"]]}
+    },
+    {
+      "id": "a_string_suffix_is_never_an_ip_rule",
+      "roe": ["0.5"],
+      "names": {"www.example.com": ["10.0.0.5"], "new.example.com": []},
+      "expect": {"names": {"www.example.com": ["10.0.0.5"], "new.example.com": []}, "split": {},
+                 "ips": [], "refused": []}
+    },
+    {
+      "id": "ip_literal_name_is_its_own_address",
+      "roe": ["192.0.2.10"],
+      "names": {"192.0.2.10": [], "192.0.2.11": ["192.0.2.11"]},
+      "expect": {"names": {"192.0.2.11": ["192.0.2.11"]}, "split": {}, "ips": [],
+                 "refused": [["192.0.2.10", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_mode_authorized_address_passes_unchanged",
+      "roe": ["192.0.2.0/24"],
+      "ip_mode": true,
+      "expanded_ips": ["192.0.2.10"],
+      "ips": ["192.0.2.10", "192.0.2.11"],
+      "expect": {"names": {}, "split": {}, "ips": ["192.0.2.10"],
+                 "refused": [["192.0.2.11", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_mode_excluded_ptr_name_keeps_its_authorized_ip",
+      "roe": ["ptr.example.com"],
+      "ip_mode": true,
+      "expanded_ips": ["192.0.2.10"],
+      "names": {"ptr.example.com": ["192.0.2.10"]},
+      "expect": {"names": {}, "split": {}, "ips": ["192.0.2.10"],
+                 "refused": [["ptr.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_mode_ptr_forward_address_still_checked",
+      "roe": ["203.0.113.0/24"],
+      "ip_mode": true,
+      "expanded_ips": ["192.0.2.10"],
+      "names": {"ptr.example.com": ["203.0.113.50"]},
+      "expect": {"names": {}, "split": {}, "ips": [],
+                 "refused": [["203.0.113.50", "roe_excluded"], ["ptr.example.com", "roe_excluded"]]}
+    },
+    {
+      "id": "ip_mode_authorized_cidr",
+      "roe": ["192.0.2.0/24"],
+      "ip_mode": true,
+      "expanded_ips": ["192.0.2.0/28"],
+      "ips": ["192.0.2.3", "192.0.2.200"],
+      "expect": {"names": {}, "split": {}, "ips": ["192.0.2.3"],
+                 "refused": [["192.0.2.200", "roe_excluded"]]}
+    }
+  ]
+}
