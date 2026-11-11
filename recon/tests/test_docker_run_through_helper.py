@@ -31,19 +31,15 @@ NOT_YET_MIGRATED = {
     # Named already, and killed by that name on their own deadline.
     ("main_recon_modules/http_probe.py", "build_httpx_command"): 1,  # _stop_httpx_at_budget
     ("helpers/nuclei_helpers.py", "build_nuclei_command"): 1,  # vuln_scan._nuclei_kill_container
-    ("helpers/resource_enum/zap_ajax_spider_helpers.py", "crawl_seed"): 1,
     ("helpers/js_recon/trufflehog_bridge.py", "build_argv"): 1,
+    # Streaming loops: tool_container_name + kill_container on every stop.
+    ("helpers/resource_enum/hakrawler_helpers.py", "_crawl_single_url"): 1,
+    ("helpers/resource_enum/katana_helpers.py", "run_katana_crawler"): 1,
     ("helpers/takeover_helpers.py", "build_baddns_command"): 1,  # subdomain_takeover kills it
     # The `nuclei -ut` updater (named, killed) and the alpine template count (30 s, unnamed).
     ("helpers/docker_helpers.py", "ensure_templates_volume"): 2,
 
-    # Unnamed: a timeout or a streaming loop's deadline kills only the docker CLI.
-    ("helpers/resource_enum/gau_helpers.py", "_run_gau_docker"): 1,
-    ("helpers/resource_enum/gau_helpers.py", "verify_gau_urls"): 1,
-    ("helpers/resource_enum/gau_helpers.py", "detect_gau_methods"): 2,
-    ("helpers/resource_enum/hakrawler_helpers.py", "_crawl_single_url"): 1,
-    ("helpers/resource_enum/jsluice_helpers.py", "verify_jsluice_urls"): 1,
-    ("helpers/resource_enum/katana_helpers.py", "run_katana_crawler"): 1,
+    # Unnamed: a timeout kills only the docker CLI.
     ("helpers/resource_enum/kiterunner_helpers.py", "detect_kiterunner_methods"): 2,
     ("main_recon_modules/uncover_enrich.py", "_run_uncover_docker"): 1,
     ("main_recon_modules/domain_recon.py", "run_subfinder"): 1,

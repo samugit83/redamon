@@ -12,14 +12,14 @@ import os
 import re
 import shutil
 import socket
-import subprocess
+import subprocess  # noqa: F401 - the tool tests fake docker through zap.subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Iterable, List
 from urllib.parse import parse_qs, urlparse
 
-from recon.helpers.docker_helpers import kill_container, pull_image_or_use_local
+from recon.helpers.docker_helpers import pull_image_or_use_local, run_tool_container
 
 
 SOURCE_NAME = "zap_ajax_spider"
@@ -607,9 +607,9 @@ def run_zap_ajax_spider(
         _chmod_best_effort(plan_path, 0o600)
 
         proxy_port = _allocate_zap_proxy_port()
-        # Named so a timed-out seed can be killed: the timeout below stops only
-        # the docker CLI, and the container would otherwise keep crawling while
-        # the next seed starts.
+        # Named so a timed-out seed can be killed (run_tool_container does it):
+        # the timeout stops only the docker CLI, and the container would
+        # otherwise keep crawling while the next seed starts.
         container_name = f"redamon-zap-ajax-{uuid.uuid4().hex[:12]}"
         cmd = [
             "docker", "run", "--rm", "--net=host", "--name", container_name,
@@ -626,14 +626,16 @@ def run_zap_ajax_spider(
         ]
         failed = False
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_zap_seed_timeout(max_duration),
-            )
-            failed = result.returncode != 0
-            if failed:
+            result = run_tool_container(cmd, tool="zap-ajax", name=container_name,
+                                        timeout=_zap_seed_timeout(max_duration))
+            failed = result.timed_out or result.returncode != 0
+            if result.timed_out:
+                print(f"[!][ZAP Ajax] Seed timed out (stopped it): {_safe_url_detail(seed_url)}")
+                error = {
+                    "type": "timeout",
+                    "seed_url": _safe_url_detail(seed_url),
+                }
+            elif failed:
                 print(f"[!][ZAP Ajax] Seed failed with exit code {result.returncode}: {_safe_url_detail(seed_url)}")
                 stdout_tail = _redact_sensitive_output(_tail_text(result.stdout), headers)
                 stderr_tail = _redact_sensitive_output(_tail_text(result.stderr), headers)
@@ -654,14 +656,6 @@ def run_zap_ajax_spider(
                 }
             else:
                 error = None
-        except subprocess.TimeoutExpired:
-            failed = True
-            kill_container(container_name)
-            print(f"[!][ZAP Ajax] Seed timed out: {_safe_url_detail(seed_url)}")
-            error = {
-                "type": "timeout",
-                "seed_url": _safe_url_detail(seed_url),
-            }
         except Exception as exc:
             failed = True
             print(f"[!][ZAP Ajax] Seed error for {_safe_url_detail(seed_url)}: {exc}")

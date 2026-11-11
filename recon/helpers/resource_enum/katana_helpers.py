@@ -14,7 +14,7 @@ import uuid
 from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
-from recon.helpers.docker_helpers import pull_image_or_use_local
+from recon.helpers.docker_helpers import kill_container, pull_image_or_use_local, tool_container_name
 from recon.helpers.system_resolvers import resolver_args
 from recon.helpers.js_recon.urls import is_js_url
 from .form_helpers import parse_forms_from_html
@@ -121,7 +121,11 @@ def run_katana_crawler(
         # the full crawl-duration window. For non-loopback targets host
         # networking is equivalent to bridge — both have internet egress —
         # so the flag is strictly an upgrade.
-        cmd = ["docker", "run", "--rm", "--net=host"]
+        #
+        # Named because every stop below kills only the docker CLI: the
+        # container is then killed by this name, or it would go on crawling.
+        container_name = tool_container_name("katana")
+        cmd = ["docker", "run", "--rm", "--net=host", "--name", container_name]
 
         cmd.extend(["-v", "/tmp/redamon:/tmp/redamon"])
 
@@ -173,6 +177,7 @@ def run_katana_crawler(
                 text=True,
             )
 
+            cut = False
             try:
                 start_time = time.time()
                 deadline = start_time + timeout + 60
@@ -185,12 +190,14 @@ def run_katana_crawler(
                     if time.time() > deadline:
                         print(f"[!][Katana] Overall timeout reached")
                         process.kill()
+                        cut = True
                         break
 
                     # Check idle timeout (no output for too long)
                     if time.time() - last_output_time > idle_timeout:
                         print(f"[!][Katana] Idle timeout ({idle_timeout}s with no output)")
                         process.kill()
+                        cut = True
                         break
 
                     # Poll stdout with 10s timeout so we can re-check deadlines
@@ -247,13 +254,17 @@ def run_katana_crawler(
                     if len(discovered_urls) >= max_urls:
                         print(f"[+][Katana] Reached max URL limit ({max_urls}), stopping Katana")
                         process.kill()
+                        cut = True
                         break
 
             finally:
                 # Ensure process is cleaned up
                 if process.poll() is None:
                     process.kill()
+                    cut = True
                 process.wait()
+                if cut:
+                    kill_container(container_name)
 
                 # Surface stderr WHENEVER the crawl found nothing.
                 #

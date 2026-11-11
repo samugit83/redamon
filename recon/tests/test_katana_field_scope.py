@@ -56,6 +56,10 @@ def test_the_whole_command_is_unchanged_by_the_retired_setting():
     with patch.object(katana_helpers, "resolver_args", return_value=["-r", "192.0.2.53"]), \
          patch.object(katana_helpers.uuid, "uuid4", return_value=MagicMock(hex="deadbeefcafe")):
         cmd, _, _ = _run([])
+    # The name a stop kills the container by (R-9) differs per run; the rest is flag for flag.
+    i = cmd.index("--name")
+    assert cmd[i + 1].startswith("katana-")
+    del cmd[i:i + 2]
     assert cmd == [
         "docker", "run", "--rm", "--net=host", "-v", "/tmp/redamon:/tmp/redamon",
         "projectdiscovery/katana:latest",

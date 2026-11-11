@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from recon.helpers.docker_helpers import pull_image_or_use_local
+from recon.helpers.docker_helpers import kill_container, pull_image_or_use_local, tool_container_name
 from recon.helpers.js_recon.urls import is_js_url
 from recon.helpers.resource_enum import tool_health
 
@@ -92,7 +92,11 @@ def _crawl_single_url(
     # --net=host is ALWAYS passed so Hakrawler can reach loopback / local-lab
     # targets. See recon/helpers/resource_enum/katana_helpers.py for the long
     # comment on why sibling docker containers can't see 127.0.0.1 otherwise.
-    cmd = ["docker", "run", "--rm", "--net=host", "-i"]
+    #
+    # Named because the watchdog and the URL cap kill only the docker CLI: the
+    # container is then killed by this name, or it would go on crawling.
+    container_name = tool_container_name("hakrawler")
+    cmd = ["docker", "run", "--rm", "--net=host", "-i", "--name", container_name]
 
     cmd.append(docker_image)
 
@@ -220,9 +224,13 @@ def _crawl_single_url(
         finally:
             watchdog.cancel()
             heartbeat_stop.set()
+            stopped = capped or overran.is_set()
             if process.poll() is None:
                 process.kill()
+                stopped = True
             process.wait()
+            if stopped:
+                kill_container(container_name)
             heartbeat_thread.join(timeout=1)
             return_code = process.returncode if isinstance(process.returncode, int) else None
 

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from recon.helpers.docker_helpers import run_tool_container
 from recon.helpers.js_recon.urls import accept_js_response, is_js_url
 
 
@@ -255,19 +256,14 @@ def verify_jsluice_urls(
         ]
 
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            print("[!][jsluice] URL verification timeout; dropping unverified jsluice URLs")
-            stats["jsluice_skipped_unverified"] = len(candidates)
-            _note_verification_failed(len(candidates), "timed out")
-            return set(), stats
+            proc = run_tool_container(cmd, tool="jsluice-verify", timeout=300)
         except Exception as e:
             print(f"[!][jsluice] URL verification error: {e}; dropping unverified jsluice URLs")
             stats["jsluice_skipped_unverified"] = len(candidates)
             _note_verification_failed(len(candidates), type(e).__name__)
             return set(), stats
 
-        if proc.returncode != 0:
+        if not proc.timed_out and proc.returncode != 0:
             stderr_tail = (proc.stderr or "").strip().splitlines()[-3:]
             print(
                 f"[!][jsluice] httpx exited with code {proc.returncode}; "
@@ -300,6 +296,13 @@ def verify_jsluice_urls(
 
         stats["jsluice_verified"] = len(verified)
         stats["jsluice_skipped_unverified"] = len(candidates) - len(verified)
+        if proc.timed_out:
+            # httpx writes each answer as it gets it: those are verified, the
+            # rest were never probed and stay unpublished.
+            print(f"[!][jsluice] URL verification timeout: stopped httpx, keeping the "
+                  f"{len(verified)} URL(s) it verified, dropping the unverified rest")
+            if stats["jsluice_skipped_unverified"]:
+                _note_verification_failed(stats["jsluice_skipped_unverified"], "timed out")
         print(f"[+][jsluice] Verified: {len(verified)}/{len(candidates)} URLs are live")
         return verified, stats
     finally:
