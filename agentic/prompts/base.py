@@ -2242,7 +2242,7 @@ LIMIT 500
 6. **Use property filters** in WHERE clauses, not relationship traversals for filtering
 7. **Check vulnerability source** when querying Vulnerability nodes:
    - source="nuclei" -> web/DAST vulnerabilities (FOUND_AT, AFFECTS_PARAMETER)
-   - source="nmap_nse" -> Nmap NSE script findings (AFFECTS Port, FOUND_ON Technology, HAS_CVE CVE)
+   - source="nmap_nse" -> Nmap NSE script findings (AFFECTS Port, FOUND_ON Technology, HAS_CVE CVE); a host-script finding (host_level=true, port_number 0, e.g. smb-vuln-ms17-010) has no Port or Technology: HAS_VULNERABILITY from IP
    - source="gvm" -> network vulnerabilities (HAS_VULNERABILITY from IP/Subdomain)
    - source="security_check" -> DNS/email security checks (SPF, DMARC)
    - source="netlas" -> passive CVE detection via NVD (HAS_VULNERABILITY from Service)
