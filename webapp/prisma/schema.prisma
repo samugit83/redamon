@@ -455,7 +455,7 @@ model Project {
   /// domainBatchGroups grep test allows.
   domainBatchGroups           Json?    @map("domain_batch_groups")
   verifyDomainOwnership       Boolean  @default(false) @map("verify_domain_ownership")
-  ownershipToken              String   @default("your-secret-token-here") @map("ownership_token")
+  ownershipToken              String   @default(uuid()) @map("ownership_token")
   ownershipTxtPrefix          String   @default("_redamon-verify") @map("ownership_txt_prefix")
   stealthMode                 Boolean  @default(false) @map("stealth_mode")
   targetGuardrailEnabled      Boolean  @default(true) @map("target_guardrail_enabled")

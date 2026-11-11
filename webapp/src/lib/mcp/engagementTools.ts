@@ -64,6 +64,7 @@ import { checkHeader, isInsideProjectFileRoot } from '@/lib/reconSettings/valida
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { JEV_PROVIDER_TYPES } from '@/lib/llmProviderKinds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
+import { ownershipTokenForCreate } from '@/lib/ownershipToken'
 
 // --- create_project -----------------------------------------------------------------
 
@@ -371,6 +372,7 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
   }
 
   if (args.settings) Object.assign(data, filterSettingsAtCreate(args.settings))
+  data.ownershipToken = ownershipTokenForCreate(data.ownershipToken)
 
   // The user-skill toggles may name only the creator's own skills, at most 20 of them on.
   if ('attackSkillConfig' in data) {

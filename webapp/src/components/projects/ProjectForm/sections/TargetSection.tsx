@@ -19,6 +19,7 @@ import {
 } from '@/lib/scopeGroups'
 import { deriveRoeEnabled } from '@/lib/engagement'
 import { isValidDomain } from '@/lib/validation'
+import { isUnsetOwnershipToken } from '@/lib/ownershipToken'
 import { FileImportButton } from '../FileImportButton'
 import { ModelPicker } from '@/components/shared/ModelPicker'
 import { excludeLoop } from '@/lib/agentInTheLoop'
@@ -1104,13 +1105,28 @@ export function TargetSection({ data, updateField, mode = 'create', savedScope, 
               {data.verifyDomainOwnership && (
                 <div className={styles.fieldRow}>
                   <div className={styles.fieldGroup}>
-                    <label className={styles.fieldLabel}>Ownership Token</label>
+                    <label className={styles.fieldLabel} htmlFor="ownership-token">Ownership Token</label>
                     <input
+                      id="ownership-token"
                       type="text"
                       className="textInput"
-                      value={data.ownershipToken}
+                      value={data.ownershipToken ?? ''}
+                      placeholder={mode === 'create' ? 'Generated when the project is created' : undefined}
                       onChange={(e) => updateField('ownershipToken', e.target.value)}
                     />
+                    {mode === 'create' && (
+                      <span className={styles.fieldHint}>
+                        Leave it empty and the project gets its own random token on save.
+                      </span>
+                    )}
+                    {mode !== 'create' && isUnsetOwnershipToken(data.ownershipToken) && (
+                      <span className={styles.fieldHintWarning} role="status">
+                        {(data.ownershipToken ?? '').trim()
+                          ? <>This is the placeholder every RedAmon install shipped, so anyone can publish it. </>
+                          : <>This project has no token. </>}
+                        Enter a value of your own and publish that one.
+                      </span>
+                    )}
                   </div>
                   <div className={styles.fieldGroup}>
                     <label className={styles.fieldLabel}>TXT Record Prefix</label>

@@ -36,6 +36,7 @@ import { declaredBodyTooLarge } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 import { DEFAULT_IMPORT_MAX_UPLOAD_BYTES } from './limits'
 import { SCHEMA_DEFAULT_AGENT_MODEL, isLoopModel } from '@/lib/agentInTheLoop'
+import { ownershipTokenForCreate } from '@/lib/ownershipToken'
 
 const MUTEABLE_LABELS = new Set<string>(MUTEABLE_FINDING_LABELS)
 
@@ -265,6 +266,10 @@ export async function POST(request: NextRequest) {
     const projectFields = pickProjectColumns(bundleFields)
     // Provider ids are account-scoped, even when the importing account owns one.
     delete projectFields.jevProviderId
+    // A bundle exported before tokens were generated per project carries the
+    // placeholder every install shipped; a record published with it would
+    // verify this project too.
+    projectFields.ownershipToken = ownershipTokenForCreate(projectFields.ownershipToken)
 
     // The scope columns get the create routes' rules: groups re-derived from the
     // hosts, one targeting mode, and the hard guardrail in every mode.

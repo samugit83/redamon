@@ -9285,12 +9285,12 @@
    "unit": "threads"
   },
   "ownershipToken": {
-   "default": "your-secret-token-here",
+   "default": null,
    "form_section": "TargetSection",
    "group": "scope",
    "has_default": true,
    "mcp": "create_only",
-   "meaning": "The secret published in the ownership TXT record. Compared against what DNS returns, so it proves the scope rather than configuring a tool.",
+   "meaning": "The secret published in the ownership TXT record. Compared against what DNS returns, so it proves the scope rather than configuring a tool. Each project gets its own random token when it is created: a create that sends none, an empty one or the old shared placeholder gets a fresh one, and nothing serves a default.",
    "optional": false,
    "phase": "standalone",
    "prisma_type": "String",

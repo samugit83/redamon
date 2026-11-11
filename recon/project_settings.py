@@ -52,7 +52,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'DOMAIN_BATCH_GROUPS': [],
     'SCOPE_GROUPS': [],
     'VERIFY_DOMAIN_OWNERSHIP': False,
-    'OWNERSHIP_TOKEN': 'your-secret-token-here',
+    # No shared default: each project gets its own random token when it is
+    # created (Prisma @default(uuid())). A default printed here would be a value
+    # anyone can publish to pass every project that kept it.
+    'OWNERSHIP_TOKEN': '',
     'OWNERSHIP_TXT_PREFIX': '_redamon-verify',
 
     # Scan Modules

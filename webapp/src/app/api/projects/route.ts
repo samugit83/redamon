@@ -20,6 +20,7 @@ import { contentLengthProblem } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { projectModelProblem } from '@/lib/agentInTheLoop'
+import { ownershipTokenForCreate } from '@/lib/ownershipToken'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
@@ -402,6 +403,8 @@ export async function POST(request: NextRequest) {
     if (jevError) {
       return NextResponse.json({ error: jevError }, { status: 400 })
     }
+
+    sanitizedParams.ownershipToken = ownershipTokenForCreate(sanitizedParams.ownershipToken)
 
     // Create project with required fields and valid optional params.
     // If the frontend provided a pre-generated ID (for uploads during creation), use it.

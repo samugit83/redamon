@@ -87,10 +87,12 @@ describe('importing node filters', () => {
     }))
     const data = mockProjectCreate.mock.calls[0][0].data
     // The two batch columns are the import's own scope normalisation: a
-    // non-batch project keeps no batch scope. No relation key gets through.
+    // non-batch project keeps no batch scope, and a bundle with no ownership
+    // token gets its own. No relation key gets through.
     expect(data).toEqual({
       name: 'Imported', targetDomain: 'example.com', userId: 'new-owner',
       domainBatchGroups: Prisma.DbNull, domainBatchHosts: [],
+      ownershipToken: expect.stringMatching(/^[0-9a-f-]{36}$/),
     })
   })
 

@@ -6646,7 +6646,10 @@ fields:
     group: scope
     meaning: >-
       The secret published in the ownership TXT record. Compared against what DNS
-      returns, so it proves the scope rather than configuring a tool.
+      returns, so it proves the scope rather than configuring a tool. Each project
+      gets its own random token when it is created: a create that sends none, an
+      empty one or the old shared placeholder gets a fresh one, and nothing serves
+      a default.
   ownershipTxtPrefix:
     tool: targeting
     runtime_key: "OWNERSHIP_TXT_PREFIX"

@@ -56,6 +56,7 @@ def derived_exclusions() -> set[str]:
     """The same query `/defaults` runs, so the two cannot disagree."""
     return set(reg.runtime_only()) | {
         "USER_ID", "TARGET_DOMAIN", "DOMAIN_BATCH_MODE", "DOMAIN_BATCH_GROUPS",
+        "OWNERSHIP_TOKEN",
     }
 
 

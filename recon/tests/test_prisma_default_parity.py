@@ -23,6 +23,7 @@ _REGISTRY = os.path.join(os.path.dirname(_RECON), "recon_settings", "registry.js
 _KNOWN_DIFFERENCES: dict[str, str] = {
     "userId": "no @default: every creating path sets the owner",
     "domainBatchGroups": "no @default: every creating path sets the scope",
+    "ownershipToken": "@default(uuid()): a random token per project; Python has no default to share",
 }
 
 

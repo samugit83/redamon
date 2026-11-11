@@ -731,7 +731,7 @@
  "OTX_ENABLED": true,
  "OTX_KEY_ROTATOR": "<KeyRotator>",
  "OTX_WORKERS": 1,
- "OWNERSHIP_TOKEN": "your-secret-token-here",
+ "OWNERSHIP_TOKEN": "",
  "OWNERSHIP_TXT_PREFIX": "_redamon-verify",
  "PARAMSPIDER_ENABLED": true,
  "PARAMSPIDER_PLACEHOLDER": "FUZZ",

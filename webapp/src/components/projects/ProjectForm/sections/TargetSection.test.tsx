@@ -504,6 +504,45 @@ describe('ownership: the record names recon accepts (§4.8)', () => {
   })
 })
 
+describe('ownership: the token (L-16)', () => {
+  const renderEdit = (ownershipToken: unknown) => render(
+    <TargetSection data={{ ...BASE, domainBatchMode: false, targetDomain: 'example.com',
+      verifyDomainOwnership: true, ownershipToken } as never} updateField={vi.fn() as never} mode="edit" />)
+
+  test('a new project shows no token and says one is generated on save', () => {
+    // /defaults no longer serves one, so the form starts without the column.
+    renderSection({ domainBatchMode: false, targetDomain: 'example.com',
+      verifyDomainOwnership: true, ownershipToken: undefined })
+    const input = screen.getByLabelText('Ownership Token') as HTMLInputElement
+    expect(input.value).toBe('')
+    expect(input.placeholder).toBe('Generated when the project is created')
+    expect(screen.getByText(/gets its own random token on save/)).toBeInTheDocument()
+  })
+
+  test('a token typed at creation is what the form saves', () => {
+    const s = renderSection({ domainBatchMode: false, targetDomain: 'example.com', verifyDomainOwnership: true })
+    fireEvent.change(screen.getByLabelText('Ownership Token'), { target: { value: 'k7-mine' } })
+    expect(s.data.ownershipToken).toBe('k7-mine')
+  })
+
+  test('a saved project still on the shipped placeholder is warned about', () => {
+    renderEdit('your-secret-token-here')
+    expect(screen.getByRole('status')).toHaveTextContent(/placeholder every RedAmon install shipped/)
+  })
+
+  test('a saved project with no token is warned about', () => {
+    renderEdit('')
+    expect(screen.getByRole('status')).toHaveTextContent(/has no token/)
+  })
+
+  test('a project with its own token shows it and no warning', () => {
+    renderEdit('0b8f6c1e-3d2a-4c55-9a77-1f0e2d3c4b5a')
+    expect((screen.getByLabelText('Ownership Token') as HTMLInputElement).value)
+      .toBe('0b8f6c1e-3d2a-4c55-9a77-1f0e2d3c4b5a')
+    expect(screen.queryByText(/placeholder every RedAmon install shipped|has no token/)).not.toBeInTheDocument()
+  })
+})
+
 describe('a widening save warns about enabled schedules (WEB-35, D-21)', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch })

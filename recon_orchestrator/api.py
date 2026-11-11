@@ -1066,7 +1066,7 @@ async def get_defaults():
             from recon.settings_registry import runtime_only as _registry_runtime_only
 
         RUNTIME_ONLY_KEYS = set(_registry_runtime_only())
-        # Plus the four the registry cannot infer. Each is a Project COLUMN, so
+        # Plus the five the registry cannot infer. Each is a Project COLUMN, so
         # it is not runtime-only in the registry's sense; it is simply not a
         # global default. The rest of the targeting block legitimately has one:
         # an empty subdomain list, and the shipped `_redamon-verify` TXT prefix.
@@ -1075,6 +1075,9 @@ async def get_defaults():
             "TARGET_DOMAIN",    # per-project, provided by the operator
             "DOMAIN_BATCH_MODE",
             "DOMAIN_BATCH_GROUPS",
+            # Generated per project at creation. The form POSTs back what this
+            # payload seeds, so a value here became every new project's token.
+            "OWNERSHIP_TOKEN",
         })
 
 
