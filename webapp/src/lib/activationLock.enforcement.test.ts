@@ -98,7 +98,7 @@ function scanReq() {
 }
 function partialReq() {
   return new NextRequest('http://x/api/recon/p1/partial', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"tool_id":"katana"}',
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"tool_id":"katana","graph_inputs":{"domains":["alpha.test"]}}',
   })
 }
 function ticketReq() {

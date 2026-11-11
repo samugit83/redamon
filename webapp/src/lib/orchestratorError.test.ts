@@ -110,3 +110,38 @@ describe('the orchestrator reason code (plan 12.6, 12.9)', () => {
     expect(normalizeOrchestratorStartError({ detail: { detail: 'x', code: 7 } }, 'f').code).toBeUndefined()
   })
 })
+
+describe('a refused start never echoes the request back (step 1.16 review)', () => {
+  // FastAPI answers a body it cannot validate with 422 and an ARRAY detail whose
+  // items carry `input`: for a missing field, the whole request body, job
+  // credential included. None of it may reach the browser.
+  const CREDENTIAL = 'eyJhdWQiOiJzY2FuIn0.SECRET-SIGNATURE'
+  const echoed = {
+    detail: [
+      {
+        type: 'missing', loc: ['body', 'tool_id'], msg: 'Field required',
+        input: { project_id: 'p1', user_id: 'u1', job_credential: CREDENTIAL },
+      },
+    ],
+  }
+
+  test('a validation error array becomes the fallback, with no limit and no echo', () => {
+    const n = normalizeOrchestratorStartError(echoed, 'Failed to start partial recon')
+    expect(n).toEqual({ error: 'Failed to start partial recon' })
+    expect(JSON.stringify(n)).not.toContain(CREDENTIAL)
+  })
+
+  test('an unknown detail object keeps its message and code, never the object itself', () => {
+    const n = normalizeOrchestratorStartError(
+      { detail: { detail: 'Refused', code: 'job_credential_missing', input: { job_credential: CREDENTIAL } } },
+      'fallback',
+    )
+    expect(n).toEqual({ error: 'Refused', code: 'job_credential_missing' })
+    expect(JSON.stringify(n)).not.toContain(CREDENTIAL)
+  })
+
+  test('only a governor refusal (limitType) is passed on as the limit', () => {
+    const limit = { admitted: false, limitType: 'hard', detail: 'Maximum concurrent scans reached' }
+    expect(normalizeOrchestratorStartError({ detail: limit }, 'f').limit).toEqual(limit)
+  })
+})

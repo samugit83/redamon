@@ -220,3 +220,44 @@ describe('the job credential (step 1.16)', () => {
     }
   })
 })
+
+describe('the start body (step 1.16 review)', () => {
+  test('a body without tool_id or graph_inputs is refused 400 before the orchestrator', async () => {
+    for (const body of [
+      { graph_inputs: { domains: ['alpha.test'] } },
+      { tool_id: 'Tlsx' },
+      { tool_id: '', graph_inputs: { domains: ['alpha.test'] } },
+      { tool_id: 'Tlsx', graph_inputs: ['alpha.test'] },
+      { tool_id: 7, graph_inputs: {} },
+    ]) {
+      const res = await post(body)
+      expect(res.status, JSON.stringify(body)).toBe(400)
+      expect(await res.json()).toMatchObject({ code: 'invalid_request' })
+    }
+    expect(h.orchestratorFetch).not.toHaveBeenCalled()
+    expect(h.recordScanStart).not.toHaveBeenCalled()
+  })
+
+  test('an orchestrator 422 never echoes the request, its job credential included, to the browser', async () => {
+    const saved = process.env.INTERNAL_API_KEY
+    process.env.INTERNAL_API_KEY = 'start-path-test-master'
+    try {
+      h.orchestratorFetch.mockImplementation(async (_url: string, init: { body: string }) => {
+        const sent = JSON.parse(init.body)
+        expect(sent.job_credential).toBeTruthy()
+        return {
+          ok: false, status: 422,
+          json: async () => ({ detail: [{ type: 'missing', loc: ['body', 'x'], msg: 'Field required', input: sent }] }),
+        }
+      })
+      const res = await post({ tool_id: 'Tlsx', graph_inputs: { domains: ['alpha.test'] } })
+      expect(res.status).toBe(422)
+      const text = await res.text()
+      expect(text).not.toContain('job_credential')
+      expect(JSON.parse(text)).toEqual({ error: 'Failed to start partial recon', upstreamStatus: 422 })
+    } finally {
+      if (saved === undefined) delete process.env.INTERNAL_API_KEY
+      else process.env.INTERNAL_API_KEY = saved
+    }
+  })
+})

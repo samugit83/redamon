@@ -77,6 +77,17 @@ async function startPartialRecon(request: NextRequest, projectId: string): Promi
     return NextResponse.json(legacyGraphRefusal(legacy), { status: 409 })
   }
 
+  // The orchestrator requires both; refused here so its 422, which echoes the
+  // whole request body (job credential included), is never provoked.
+  const graphInputs = body?.graph_inputs
+  if (typeof body?.tool_id !== 'string' || !body.tool_id
+    || !graphInputs || typeof graphInputs !== 'object' || Array.isArray(graphInputs)) {
+    return NextResponse.json(
+      { error: 'tool_id (a tool name) and graph_inputs (an object) are required', code: 'invalid_request' },
+      { status: 400 },
+    )
+  }
+
   // Forward to orchestrator
   // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
   const roeTextSha256 = await currentRoeTextSha256(projectId)

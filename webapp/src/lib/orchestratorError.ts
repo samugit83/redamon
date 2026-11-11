@@ -11,8 +11,9 @@
  * generic "Application error: a client-side exception" and takes the page down.
  *
  * This helper guarantees `error` is ALWAYS a string (never an object), and puts
- * the structured payload in `limit` for the tailored limit modal. Every start
- * route must run its error body through here so the class of bug can't recur.
+ * a governor refusal's payload in `limit` for the tailored limit modal; no other
+ * part of the body is passed on. Every start route must run its error body
+ * through here so the class of bug can't recur.
  */
 
 export interface OrchestratorLimit {
@@ -58,11 +59,12 @@ export function normalizeOrchestratorStartError(
       return { error: msg, limit: d }
     }
     // Unknown object shape: prefer its own `detail` string, else the fallback.
-    // Critically, NEVER return the object itself as `error`.
+    // Critically, NEVER return the object itself, as `error` or as `limit`: a
+    // FastAPI 422 is an array whose items echo the request in `input`, the scan's
+    // job credential included, and this result goes to the browser.
     const code = (detail as { code?: unknown }).code
     return {
       error: (typeof d.detail === 'string' ? d.detail : null) || fallback,
-      limit: d,
       ...(typeof code === 'string' ? { code } : {}),
     }
   }
