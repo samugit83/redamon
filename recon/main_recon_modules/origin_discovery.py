@@ -51,6 +51,7 @@ from recon.helpers.peer_cert import (
     tls_handshake_cert as _tls_handshake_cert,
 )
 from recon.helpers.public_suffix import org_domain
+from recon.helpers import request_pacer
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -133,6 +134,24 @@ class _RateLimiter:
             time.sleep(delay)
 
 
+#: Retry-After is the target's to set: one answer holds every in-process
+#: requester back this long at most.
+_BACK_OFF_MAX_S = 30.0
+
+
+def _back_off_if_throttled(resp) -> None:
+    """A 429 from a target pushes the next slot of every in-process requester
+    back (the RoE clock; inert with no ceiling): Retry-After seconds, else 1 s,
+    capped."""
+    if getattr(resp, "status_code", None) != 429:
+        return
+    try:
+        seconds = float(resp.headers.get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        seconds = 1.0
+    request_pacer.pacer().back_off(min(_BACK_OFF_MAX_S, max(1.0, seconds)))
+
+
 class _SearchBudget:
     """Per-scan ceiling on genuine (non-cached) keyed search calls (G3).
 
@@ -207,6 +226,14 @@ class _RunCtx:
             if key not in self._ref_certs:
                 self._ref_certs[key] = dial()
             return self._ref_certs[key]
+
+    def pace(self) -> None:
+        """Before every packet to a target (a connect, a handshake, a GET, a
+        redirect hop): the module's own rate, then a slot of the RoE clock
+        every in-process requester shares (inert with no ceiling). A search
+        API is not the target's traffic: it waits on ``rate`` alone."""
+        self.rate.wait()
+        request_pacer.acquire()
 
     def note_miss(self) -> None:
         """A candidate source gave no answer for the host being processed."""
@@ -313,9 +340,10 @@ def _favicon_hash_for_host(host: str, existing: Any, ctx: _RunCtx) -> Optional[i
         if not is_url_safe_to_probe(url):
             continue
         try:
-            ctx.rate.wait()
+            ctx.pace()
             resp = requests.get(url, timeout=ctx.timeout, verify=False,
                                 headers={"User-Agent": _UA}, stream=True)
+            _back_off_if_throttled(resp)
             if resp.status_code != 200:
                 resp.close()
                 continue
@@ -927,6 +955,15 @@ def _extract_text(body: bytes) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+def _pace_each_hop(ctx: _RunCtx):
+    """A response hook: requests follows a redirect itself, and the hop it is
+    about to send is one more request to the target, so it waits like the first."""
+    def hook(response, *_args, **_kwargs):
+        if response.is_redirect:
+            ctx.pace()
+    return hook
+
+
 def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = False) -> Optional[dict]:
     """GET url (optionally with a forged Host), returning text/headers/status.
 
@@ -944,10 +981,12 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
     headers = {"User-Agent": _UA}
     if host_header:
         headers["Host"] = host_header
+    extra = {"hooks": {"response": _pace_each_hop(ctx)}} if allow_redirects else {}
     try:
-        ctx.rate.wait()
+        ctx.pace()
         resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=allow_redirects,
-                            headers=headers, stream=True)
+                            headers=headers, stream=True, **extra)
+        _back_off_if_throttled(resp)
         body = resp.raw.read(_MAX_HTML_BYTES, decode_content=True) or b""
         status = resp.status_code
         hdrs = {k.lower(): v for k, v in resp.headers.items()}
@@ -1026,9 +1065,10 @@ def _file_sha256(url: str, host_header: str, ctx: _RunCtx, from_edge_ok: bool = 
     if host_header:
         headers["Host"] = host_header
     try:
-        ctx.rate.wait()
+        ctx.pace()
         resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=False,
                             headers=headers, stream=True)
+        _back_off_if_throttled(resp)
         try:
             if resp.status_code != 200 or (not from_edge_ok and edge_from_headers(
                     {k.lower(): v for k, v in resp.headers.items()}) is not None):
@@ -1117,7 +1157,7 @@ def _fetch_peer_cert(host_or_ip: str, sni: str, port: int, timeout: int) -> Opti
 
 def _compare_certs(host: str, ip: str, port: int, ctx: _RunCtx) -> float:
     def dial(target: str) -> Optional[dict]:
-        ctx.rate.wait()
+        ctx.pace()
         return _fetch_peer_cert(target, host, port, timeout=min(ctx.timeout, 5))
 
     ref = ctx.reference_cert(host, port, lambda: dial(host))
@@ -1154,7 +1194,8 @@ def _default_cert_check(host: str, ip: str, port: int, ctx: _RunCtx) -> Tuple[st
 
     The candidate came from passive sources and is untrusted: the routability
     guard is applied again right before the dial, nothing it returns is
-    followed, and the dial obeys the RoE, the module's rate limit and host health.
+    followed, and the dial obeys the RoE, the module's rate limit, the RoE
+    ceiling and host health.
     """
     from recon.helpers import circuit_breaker as cb
     if is_non_routable_ip(ip):
@@ -1164,7 +1205,7 @@ def _default_cert_check(host: str, ip: str, port: int, ctx: _RunCtx) -> Tuple[st
     target = f"https://{_url_host(ip)}:{port}"
     if not cb.host_health.allow(target):
         return "not_checked", "host marked unreachable"
-    ctx.rate.wait()
+    ctx.pace()
     try:
         cert = _tls_handshake_cert(ip, None, port, min(ctx.timeout, 5))
     except (OSError, ssl.SSLError, ValueError) as e:
@@ -1212,8 +1253,8 @@ def _score_candidate(host: str, reference: dict, ip: str, ctx: _RunCtx,
     best_attempt: Optional[dict] = None
     port_timeout = max(2.0, min(ctx.timeout / 5.0, 5.0))  # unwaf: timeout/5, floor 2s
     for port in WEB_PORTS:
-        # A connect is a packet to the candidate like any fetch: same rate limit.
-        ctx.rate.wait()
+        # A connect is a packet to the candidate like any fetch: same rate limits.
+        ctx.pace()
         if not _port_open(ip, port, port_timeout):
             continue  # closed/filtered — don't spend HTTP + TLS timeouts on it
         scheme = "https" if port in _TLS_PORTS else "http"
