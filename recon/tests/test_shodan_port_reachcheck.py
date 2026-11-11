@@ -135,13 +135,14 @@ class TestReachCheck:
 
 
 class TestThePipelineHook:
-    def test_both_pipelines_run_it_after_the_cdn_drop(self):
+    def test_both_pipelines_run_it_after_the_cdn_drop_and_before_the_cve_write(self):
+        # After the nmap merge too (R-39): test_regression_shodan_reachcheck_after_nmap.
         import recon.main as rm
         for fn in (rm.run_ip_recon, rm.run_domain_recon):
             body = inspect.getsource(fn)
             drop = body.index("_drop_shodan_cdn_ips(combined_result)")
             hook = body.index("_reachcheck_shodan_cves(combined_result,")
-            write = body.index('"update_graph_from_shodan"')
+            write = body.index("_write_shodan_cves(combined_result)")
             assert drop < hook < write, fn.__name__
 
     def test_it_never_raises(self, monkeypatch):

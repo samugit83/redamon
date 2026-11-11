@@ -1013,10 +1013,11 @@ def _drop_shodan_cdn_ips(combined_result: dict) -> None:
 def _reachcheck_shodan_cves(combined_result: dict, settings: dict) -> None:
     """Mark each Shodan CVE with whether this run's port scan found its port open.
 
-    Shodan runs beside the port scan, so this is the first point where both
-    are known; nmap re-probes only what the port scan found, so nothing else
-    looks at a port only Shodan reported. No traffic. Never raises: a CVE left
-    unmarked keeps whatever it had.
+    Called just before _write_shodan_cves, after the nmap merge: nmap probes
+    every IP with the union of all IPs' ports, so it can confirm open a port
+    naabu missed on one of them, and a check made at GROUP 3 would call that
+    CVE's port closed (R-39). No traffic. Never raises: a CVE left unmarked
+    keeps whatever it had.
     """
     shodan_data = combined_result.get("shodan")
     if not shodan_data or not shodan_data.get("cves"):
@@ -1482,7 +1483,6 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
             merge_port_scan_results(combined_result)
 
         _drop_shodan_cdn_ips(combined_result)
-        _reachcheck_shodan_cves(combined_result, settings)
 
         save_recon_file(combined_result, output_file)
 
@@ -1618,6 +1618,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
                 save_recon_file(combined_result, output_file)
 
     _run_ip_attribution(combined_result, settings, output_file)
+    _reachcheck_shodan_cves(combined_result, settings)
     _write_shodan_cves(combined_result)
     _write_netlas(combined_result)
 
@@ -2162,7 +2163,6 @@ def run_domain_recon(target: str, bruteforce: bool = False,
             merge_port_scan_results(combined_result)
 
         _drop_shodan_cdn_ips(combined_result)
-        _reachcheck_shodan_cves(combined_result, _settings)
 
         save_recon_file(combined_result, output_file)
 
@@ -2358,6 +2358,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
     # After the SAN feedback: a name it resolved counts as a current DNS name.
     _run_ip_attribution(combined_result, _settings, output_file)
+    _reachcheck_shodan_cves(combined_result, _settings)
     _write_shodan_cves(combined_result)
     _write_netlas(combined_result)
 
