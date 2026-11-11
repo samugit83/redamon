@@ -118,15 +118,29 @@ def http_layer_checks():
                       e.status_code AS last, e.redirect_chain_codes AS chain,
                       e.redirected_off_host AS off, e.final_url AS final, collect(t.name) AS techs""")
     r = ep[0] if ep else None
-    check("R-01", r and not r["title"] and not r["server"] and not [t for t in r["techs"] if "SAP" in (t or "")],
-          f".23's root Endpoint keeps nothing from the third-party IdP page: {r}")
-    check("R-02", r and r["first"] == 302 and r["off"] is True and (r["chain"] or [None])[0] == 302
-          and (r["final"] or "").endswith("/saml/login"), f".23's redirect chain: {r}")
     ext = q(f"""MATCH (d:ExternalDomain) WHERE d.domain = '{NET}.21'
                 RETURN d.sources AS src, d.redirect_from_urls AS frm, d.titles_seen AS titles""")
-    r = ext[0] if ext else None
-    check("R-03", r and "http_probe_redirect" in (r["src"] or [])
-          and any(f"{NET}.23" in u for u in (r["frm"] or [])), f"the IdP host is an external domain: {r}")
+    x = ext[0] if ext else None
+    ip_mode = any(d.get("ip") for d in q("MATCH (d:Domain) RETURN d.ip_mode AS ip"))
+    if ip_mode:
+        # IP mode follows same-host redirects only (httpx -fhr, I-1): .23's own
+        # 302 is the answer, .21 is never requested, so nothing of its page and
+        # no redirect record of it reach the graph.
+        check("R-01", r and not r["title"] and "SAP" not in str(r["server"] or "")
+              and not [t for t in r["techs"] if "SAP" in (t or "")],
+              f".23's root Endpoint keeps nothing from the third-party IdP page: {r}")
+        check("R-02", r and r["first"] == 302 and r["last"] == 302 and (r["chain"] or [None]) == [302]
+              and not r["off"] and not (r["final"] or "").endswith("/saml/login"),
+              f".23's off-host redirect is not followed in IP mode: {r}")
+        check("R-03", not (x and "http_probe_redirect" in (x["src"] or [])),
+              f"no redirect record of the IdP host, which httpx never asked: {x}")
+    else:
+        check("R-01", r and not r["title"] and not r["server"] and not [t for t in r["techs"] if "SAP" in (t or "")],
+              f".23's root Endpoint keeps nothing from the third-party IdP page: {r}")
+        check("R-02", r and r["first"] == 302 and r["off"] is True and (r["chain"] or [None])[0] == 302
+              and (r["final"] or "").endswith("/saml/login"), f".23's redirect chain: {r}")
+        check("R-03", x and "http_probe_redirect" in (x["src"] or [])
+              and any(f"{NET}.23" in u for u in (x["frm"] or [])), f"the IdP host is an external domain: {x}")
 
     js = q(f"""MATCH (e:Endpoint) WHERE (e.source = 'js_recon' OR e.js_recon_source = true)
                AND e.baseurl IN ['http://{NET}.20', 'http://{NET}.22']
