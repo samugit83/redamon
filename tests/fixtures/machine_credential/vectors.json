@@ -1,0 +1,56 @@
+{
+  "_about": "Machine-credential vectors shared by webapp/src/lib/authz/machineCredential.test.ts (the TypeScript minter must produce each token byte for byte), agentic/tests/test_machine_credential_interop.py (the agent verifies them) and recon_orchestrator/tests/test_job_credential_admission.py (the orchestrator verifies them). A fake master key: never a real one.",
+  "master": "vector-master-key-for-interop-tests-0001",
+  "job_key_hex": "e32ddb218c770626b5efae08875907245d99da9241cc429735e1d10cf13d283b",
+  "run_key_hex": "a8830e669ce8864fb751f417fa35182b4bb8dbdb33f6f58e83a8727588d09e80",
+  "vectors": [
+    {
+      "name": "job credential",
+      "label": "job",
+      "claims": {
+        "aud": "scan",
+        "ten": "user-vec-1",
+        "pid": "proj-vec-1",
+        "job": "job-vec-1",
+        "exp": 1893456000
+      },
+      "token": "eyJhdWQiOiJzY2FuIiwiZXhwIjoxODkzNDU2MDAwLCJqb2IiOiJqb2ItdmVjLTEiLCJwaWQiOiJwcm9qLXZlYy0xIiwidGVuIjoidXNlci12ZWMtMSJ9.6h5oY7o0JR3aG_ww29BlzrxJux1ZffOaEIv841EEJBw"
+    },
+    {
+      "name": "job credential, non-ASCII ids",
+      "label": "job",
+      "claims": {
+        "aud": "scan",
+        "ten": "utilisateur-\u00e9\u00fc",
+        "pid": "proj-\u00fc\u2028\u007f",
+        "job": "j-\ud83d\ude00",
+        "exp": 1893456000
+      },
+      "token": "eyJhdWQiOiJzY2FuIiwiZXhwIjoxODkzNDU2MDAwLCJqb2IiOiJqLVx1ZDgzZFx1ZGUwMCIsInBpZCI6InByb2otXHUwMGZjXHUyMDI4XHUwMDdmIiwidGVuIjoidXRpbGlzYXRldXItXHUwMGU5XHUwMGZjIn0.OHFzH_Ui9dIqIh1kvwnlA9OL2CdGeibkaAF8VrQlYjE"
+    },
+    {
+      "name": "job credential, escaped characters",
+      "label": "job",
+      "claims": {
+        "aud": "scan",
+        "ten": "quote\"back\\slash",
+        "pid": "tab\tnl\nctl\u0001",
+        "job": "slash/plus+",
+        "exp": 1893456000
+      },
+      "token": "eyJhdWQiOiJzY2FuIiwiZXhwIjoxODkzNDU2MDAwLCJqb2IiOiJzbGFzaC9wbHVzKyIsInBpZCI6InRhYlx0bmxcbmN0bFx1MDAwMSIsInRlbiI6InF1b3RlXCJiYWNrXFxzbGFzaCJ9.E_w3bKxOQVy8OlCIdyzhXkx47wT_fW3XILB_lQMl2Z0"
+    },
+    {
+      "name": "run credential",
+      "label": "run",
+      "claims": {
+        "aud": "graph",
+        "ten": "user-vec-1",
+        "pid": "proj-vec-1",
+        "run": "run-vec-1",
+        "exp": 1893456000
+      },
+      "token": "eyJhdWQiOiJncmFwaCIsImV4cCI6MTg5MzQ1NjAwMCwicGlkIjoicHJvai12ZWMtMSIsInJ1biI6InJ1bi12ZWMtMSIsInRlbiI6InVzZXItdmVjLTEifQ.TvQf4D8PD-luTT_tN7mrff4SwoIkQ2ewELge0LOK63I"
+    }
+  ]
+}

@@ -7,8 +7,10 @@ run or a job (RBAC T15).
   the Kali terminal's redagraph (aud "graph", 12 hours, one per connection). They
   present it as X-Redamon-Run in place of the scanner key, which the sandbox no
   longer holds; the agent's graph and traffic routes take the tenant from it.
-- job credential (aud "scan"): minted by the webapp for a scan container. Only
-  its key label lives here until step 1.16 verifies it.
+- job credential (aud "scan", 7 days): minted by the webapp at every scan start
+  (webapp/src/lib/authz/machineCredential.ts), carried by the orchestrator into the
+  scan container as REDAMON_JOB_CREDENTIAL and sent back as X-Redamon-Job beside
+  the scanner key. The agent's /llm/* and /jev/* take the user from it.
 
 Format: b64url(canonical JSON).b64url(HMAC-SHA256), the REDAMON_CTX tag's shape
 and its base64url helpers. Claims: aud, ten, pid, run or job, exp (seconds). The
@@ -35,6 +37,7 @@ RUN_CREDENTIAL_LABEL = "redamon-run-credential-v1"
 JOB_CREDENTIAL_LABEL = "redamon-job-credential-v1"
 
 RUN_AUDIENCES = frozenset({"traffic", "graph"})
+JOB_AUDIENCE = "scan"
 TRAFFIC_TTL_SECONDS = 15 * 60
 # PLACEHOLDER(OQ-38): a terminal connection's graph credential lasts as long as a
 # working session; the owner may shorten it.
@@ -105,12 +108,16 @@ def verify(token: Any, key: bytes, aud: str, now: Optional[float] = None) -> Dic
     return claims
 
 
-def _run_key() -> bytes:
+def _master_derived_key(label: str) -> bytes:
     from llm_guard import master_key_is_weak
 
     if master_key_is_weak():
         raise CredentialRefused("weak_master_key")
-    return derive_key(os.environ["INTERNAL_API_KEY"], RUN_CREDENTIAL_LABEL)
+    return derive_key(os.environ["INTERNAL_API_KEY"], label)
+
+
+def _run_key() -> bytes:
+    return _master_derived_key(RUN_CREDENTIAL_LABEL)
 
 
 def mint_run_credential(aud: str, tenant: str, project_id: str, run_id: str, ttl_seconds: int,
@@ -128,5 +135,13 @@ def mint_run_credential(aud: str, tenant: str, project_id: str, run_id: str, ttl
 def verify_run_credential(token: Any, aud: str, now: Optional[float] = None) -> Dict[str, Any]:
     claims = verify(token, _run_key(), aud, now)
     if not isinstance(claims.get("run"), str) or not claims["run"] or "job" in claims:
+        raise CredentialRefused("missing_claims")
+    return claims
+
+
+def verify_job_credential(token: Any, now: Optional[float] = None) -> Dict[str, Any]:
+    """The claims of a valid job credential (the webapp mints them; nothing here does)."""
+    claims = verify(token, _master_derived_key(JOB_CREDENTIAL_LABEL), JOB_AUDIENCE, now)
+    if not isinstance(claims.get("job"), str) or not claims["job"] or "run" in claims:
         raise CredentialRefused("missing_claims")
     return claims
