@@ -12,7 +12,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, Iterable, List, Optional, Any, Callable
 from enum import Enum
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -288,6 +288,11 @@ class WebSocketConnection:
         return None
 
 
+#: What an emergency stop tells the open socket of each run it stops.
+EMERGENCY_STOP_ALL_MESSAGE = "Emergency stop — all agents halted"
+EMERGENCY_STOP_OWN_MESSAGE = "Emergency stop — your agent runs were halted"
+
+
 class WebSocketManager:
     """Manages active WebSocket connections"""
 
@@ -540,37 +545,46 @@ class WebSocketManager:
         return len(self.active_connections)
 
     async def stop_all(self) -> int:
-        """Emergency stop: cancel every running agent task and notify clients.
+        """Emergency stop: stop every running agent run, of every user.
 
-        Returns the number of tasks that were cancelled.
+        Returns the number of runs that were cancelled.
         """
+        return await self._emergency_stop(list(self._active_tasks), EMERGENCY_STOP_ALL_MESSAGE)
+
+    async def stop_for_user(self, user_id: str, project_ids: Optional[Iterable[str]] = None) -> int:
+        """Emergency stop for one user: stop the runs registered under `user_id`.
+
+        A run's key names the ticket's subject, the effective user, so a run an
+        admin started acting as the member is the member's and stops here too.
+        `project_ids`, when given, limits it to those projects. Returns the number
+        of runs that were cancelled; an unknown user stops nothing.
+        """
+        if not user_id:
+            return 0
+        projects = None if project_ids is None else set(project_ids)
+        keys = []
+        # Parsed as live_session_ids does: the user is everything before the first ':'.
+        for key in list(self._active_tasks):
+            key_user, _, rest = key.partition(":")
+            key_project, _, _session = rest.partition(":")
+            if key_user == user_id and (projects is None or key_project in projects):
+                keys.append(key)
+        return await self._emergency_stop(keys, EMERGENCY_STOP_OWN_MESSAGE)
+
+    async def _emergency_stop(self, keys, message: str) -> int:
+        """stop_session for each key with a live run (its tool tasks too)."""
         stopped = 0
-        for session_key, task in list(self._active_tasks.items()):
-            if task and not task.done():
-                task.cancel()
-                stopped += 1
-                self._active_tasks.pop(session_key, None)
-
-                # Notify the connected client and mark as stopped
-                conn = self.active_connections.get(session_key)
-                if conn:
-                    conn._is_stopped = True
-                    try:
-                        await conn.send_message(MessageType.STOPPED, {
-                            "message": "Emergency stop — all agents halted",
-                            "iteration": 0,
-                            "phase": "informational",
-                        })
-                    except Exception:
-                        pass
-
-                    # Mark conversation as not running in DB
-                    if conn and conn.session_id:
-                        try:
-                            await update_conversation(conn.session_id, {"agentRunning": False})
-                        except Exception:
-                            pass
-
+        for key in keys:
+            if self.get_task(key) is None:
+                continue
+            if not await self.stop_session(key, message=message):
+                continue
+            stopped += 1
+            # The run's own `finally` clears the flag as well, but a run cancelled
+            # before its first step never executes it.
+            session_id = key.split(":", 2)[2] if key.count(":") >= 2 else ""
+            if session_id:
+                asyncio.create_task(update_conversation(session_id, {"agentRunning": False}))
         return stopped
 
     async def stop_session(self, session_key: str,

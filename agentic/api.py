@@ -20,7 +20,7 @@ import re
 import shlex
 import time
 from contextlib import asynccontextmanager
-from typing import Any, List, Literal, Optional
+from typing import Annotated, Any, List, Literal, Optional
 
 import httpx
 import websockets
@@ -1634,6 +1634,32 @@ class SessionStopRequest(BaseModel):
     user_id: str
     project_id: str
     session_id: str
+
+
+class StopForRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    # None is every project; an empty list is refused, so a caller's bug never
+    # reads as either.
+    project_ids: Optional[List[Annotated[str, Field(min_length=1)]]] = Field(None, min_length=1)
+
+
+@app.post("/agent-sessions/stop-for", tags=["Sessions"],
+          dependencies=[Depends(require_configured_master_auth)])
+async def stop_agent_sessions_for(body: StopForRequest):
+    """Stop the running agent runs of ONE user (optionally only in `project_ids`).
+
+    A member's emergency stop: the webapp calls it with the signed-in member, so
+    the shared instance's other runs keep going. A run is the user's when its
+    session key names them (the effective user: an admin's act-as run is the
+    member's). Each run's in-flight tool tasks are cancelled with it. CypherFix
+    triage and CodeFix runs are not agent runs and are not reached.
+    """
+    if not ws_manager:
+        return JSONResponse(content={"stopped": 0}, status_code=503)
+    stopped = await ws_manager.stop_for_user(body.user_id, body.project_ids)
+    logger.warning("[rbac] stop-for user=%s projects=%s stopped=%d", body.user_id,
+                   "all" if body.project_ids is None else len(body.project_ids), stopped)
+    return {"stopped": stopped}
 
 
 class WsCloseRequest(BaseModel):
