@@ -23,6 +23,8 @@ import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings
 import { internalError } from '@/lib/routeErrors'
 import { projectModelProblem } from '@/lib/agentInTheLoop'
 import { templateSelectionRefusal, withoutUnselectableTemplates } from '@/lib/nucleiTemplateOwnership'
+import { isStdioServer } from '@/lib/mcp/schema'
+import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -147,7 +149,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     // Approved plugin overrides of built-in skill text go to the agent's own settings
     // fetch only: its separate flag on the MASTER key. includeSkillContent alone is also
-    // sent by text-to-cypher and accepted from the scanner key, which must not get them.
+    // sent by text-to-cypher, which must not get them.
     // Kept out of projectWithoutBinary, and a failure leaves the payload as it was.
     let skillOverridesField: { skillTextOverrides?: Record<string, ResolvedPart> } = {}
     if (request.nextUrl.searchParams.get('includeSkillOverrides') === 'true' && isInternalRequest(request)) {
@@ -161,8 +163,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     // If ?includeSkillContent=true, the enabled user skills' texts for agent consumption:
     // only those set to true (a missing toggle is OFF, as the form shows it), at most 20,
-    // never a quarantined one (lib/userSkillAgentPayload.ts).
+    // never a quarantined one (lib/userSkillAgentPayload.ts). The master key only (NF-15):
+    // the MCP servers below carry the owner's literal bearer tokens, header and env values.
     const includeSkillContent = request.nextUrl.searchParams.get('includeSkillContent') === 'true'
+      && isInternalRequest(request)
     if (includeSkillContent && project.userId) {
       const skills = await userSkillsForAgent(prisma, project.userId, project.attackSkillConfig)
 
@@ -173,7 +177,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         where: { userId: project.userId },
         select: { mcpServers: true },
       })
-      const userMcpServers = (userSettings?.mcpServers as Prisma.JsonValue) ?? []
+      const saved = (userSettings?.mcpServers as Prisma.JsonValue) ?? []
+      // A non-admin owner's stdio servers never run in the shared agent (NF-14).
+      const runsStdio = !Array.isArray(saved) || !saved.some(isStdioServer) || await ownerRunsStdio(project.userId)
+      const userMcpServers = serversForAgent(project.userId, saved, runsStdio)
 
       return NextResponse.json({
         ...projectForCaller,

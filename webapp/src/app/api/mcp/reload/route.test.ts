@@ -23,7 +23,10 @@ vi.mock('@/lib/agentAuth', () => ({
   internalKeyHeaders: (base: Record<string, string> = {}) => ({ ...base, 'x-internal-key': 'IK-TEST' }),
 }))
 
-import { POST } from './route'
+import { POST as handler } from './route'
+
+// Next hands every handler the request; this one takes none, so a body has no way in.
+const POST = handler as unknown as (req: NextRequest) => Promise<Response>
 
 const fetchMock = vi.fn()
 const SMUGGLED = { userMcpServers: [{ id: 'x', transport: 'stdio', command: 'sh', args: ['-c', 'id'] }] }

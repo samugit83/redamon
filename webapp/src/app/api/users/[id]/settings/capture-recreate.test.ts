@@ -36,11 +36,15 @@ vi.mock('@/lib/prisma', () => ({
     },
   },
 }))
+// The internal key by default; the NF-02 case is a member's cookie with the scanner key.
+const caller = vi.hoisted(() => ({
+  internal: true, scanner: false, session: { userId: 'admin-1', role: 'admin' } as { userId: string; role: string },
+}))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => mockRequireUserAccess(...a),
-  isInternalRequest: () => true,
-  isScannerRequest: () => false,
-  getSession: () => Promise.resolve({ userId: 'admin-1', role: 'admin' }),
+  isInternalRequest: () => caller.internal,
+  isScannerRequest: () => caller.scanner,
+  getSession: () => Promise.resolve(caller.session),
 }))
 vi.mock('@/lib/orchestrator', () => ({
   orchestratorFetch: (...a: unknown[]) => mockOrchestratorFetch(...a),
@@ -72,6 +76,7 @@ function startStopUrls() {
 }
 
 beforeEach(() => {
+  Object.assign(caller, { internal: true, scanner: false, session: { userId: 'admin-1', role: 'admin' } })
   mockRequireUserAccess.mockReset().mockResolvedValue(null) // allow
   mockFindUnique.mockReset().mockResolvedValue({ ...EXISTING })
   // upsert echoes the resulting enabled state (default: stays enabled).
@@ -120,5 +125,25 @@ describe('capture-proxy recreate gating', () => {
   test('disabling capture stops the proxy', async () => {
     await post({ captureProxyEnabled: false })
     expect(startStopUrls().some((u) => u.endsWith('/capture-proxy/stop'))).toBe(true)
+  })
+})
+
+describe('the scanner key grants nothing on a write (NF-02, step 1.9)', () => {
+  test('scanner key with a member cookie is refused the capture settings: ignored, named, nothing restarted', async () => {
+    Object.assign(caller, { internal: false, scanner: true, session: { userId: 'member-1', role: 'standard' } })
+    const res = await post({ captureProxyEnabled: false, captureEgressBlockPrivate: false })
+    expect(res.status).toBe(200)
+    const update = mockUpsert.mock.calls[0][0].update as Record<string, unknown>
+    expect(update).not.toHaveProperty('captureProxyEnabled')
+    expect(update).not.toHaveProperty('captureEgressBlockPrivate')
+    expect((await res.json()).ignoredFields).toEqual(['captureProxyEnabled', 'captureEgressBlockPrivate'])
+    expect(mockOrchestratorFetch).not.toHaveBeenCalled()
+  })
+
+  test('the same member without the scanner key gets the same answer', async () => {
+    Object.assign(caller, { internal: false, scanner: false, session: { userId: 'member-1', role: 'standard' } })
+    const res = await post({ captureProxyEnabled: false })
+    expect((await res.json()).ignoredFields).toEqual(['captureProxyEnabled'])
+    expect(mockOrchestratorFetch).not.toHaveBeenCalled()
   })
 })

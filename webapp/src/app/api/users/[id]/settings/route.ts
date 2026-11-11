@@ -341,11 +341,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // project, so these settings propagate to all of them. The UI hides the card
     // from non-admins; enforce it server-side too (defense in depth) by stripping
     // every capture*/captureEgress* field from a write that is neither an admin
-    // (UI) nor a trusted service (internal/scanner) request. A non-admin can still
-    // save their own non-capture settings; the capture fields are simply ignored,
-    // so the shared guard cannot be changed by a direct API call.
-    const isServiceReq = isInternalRequest(request) || isScannerRequest(request)
-    const captureAdminOK = isServiceReq || (await getSession())?.role === 'admin'
+    // (UI) nor the internal key. A non-admin can still save their own non-capture
+    // settings; the capture fields are simply ignored, so the shared guard cannot be
+    // changed by a direct API call. The scanner key grants nothing on a write: sent
+    // beside a member's cookie it made that member a capture admin (NF-02).
+    const captureAdminOK = isInternalRequest(request) || (await getSession())?.role === 'admin'
     // Named in the answer, so a non-admin's TrafficMind save does not read as applied.
     const ignoredFields: string[] = []
     if (!captureAdminOK) {
