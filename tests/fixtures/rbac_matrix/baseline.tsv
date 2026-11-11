@@ -132,10 +132,10 @@ bl-actas-by-anon	0.5	anon	POST	/api/auth/act-as	{"targetUserId":"${MEMBER_B_ID}"
 bl-loginonly-estop-member	0.5	member_c	GET	/api/agent/emergency-stop-all	-	405	login-only hole:F-06 probe:method superseded-by:p1
 bl-loginonly-agent-health-member	0.5	member_c	GET	/api/agent/health	-	200	login-only
 bl-loginonly-host-ip-member	0.5	member_c	GET	/api/agent/host-ip	-	200	login-only
-bl-loginonly-job-kill-member	0.5	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	422	login-only hole:F-01 probe:invalid-id
+bl-loginonly-job-kill-member	0.5	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
 bl-loginonly-sessions-member	0.5	member_c	GET	/api/agent/sessions	-	200	login-only hole:F-01
-bl-loginonly-session-interact-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	422	login-only hole:F-01 probe:invalid-id
-bl-loginonly-session-kill-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	422	login-only hole:F-01 probe:invalid-id
+bl-loginonly-session-interact-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
+bl-loginonly-session-kill-member	0.5	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	422	login-only hole:F-01 probe:invalid-id superseded-by:p1
 bl-loginonly-tunnel-status-member	0.5	member_c	GET	/api/agent/tunnel-status	-	200	login-only
 bl-loginonly-community-skills-member	0.5	member_c	GET	/api/community-skills	-	200	login-only
 bl-loginonly-cypherfix-health-member	0.5	member_c	GET	/api/cypherfix/health	-	200	login-only

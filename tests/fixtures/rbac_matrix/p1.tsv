@@ -171,3 +171,18 @@ p1-mcp-save-admin-stdio-gate	1.9	admin_a	POST	/api/users/${ADMIN_A_ID}/mcp	{"id"
 p1-mcp-save-token-env-var	1.9	member_c	POST	/api/users/${MEMBER_C_ID}/mcp	{"id":"rbac-envvar","name":"rbac envvar","transport":"streamable_http","url":"http://127.0.0.1:9/","auth":{"type":"bearer","token_env_var":"INTERNAL_API_KEY"}}	422;has=token_env_var_refused	req:NF-17
 p1-skillcontent-owner	1.9	member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;lacks=userMcpServers;lacks=${A_MCP_BEARER}	req:NF-15
 p1-skillcontent-actas	1.9	admin_a_as_member_a	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	200;lacks=userMcpServers;lacks=${A_MCP_BEARER}	req:NF-15
+#
+# ---- step 1.13: shell sessions per project ----
+# The live stack holds no Metasploit session to show (a real one is manual checkpoint M4;
+# run_artifacts/step113/drive.mjs proves the per-project view with a tagged listener), so
+# these rows prove the gate on ids outside the caller's view: such an id is 404 before any
+# command reaches the console (the baseline's 422 was the agent refusing a non-numeric id).
+# member_c owns nothing and holds no grant, so its list never carries a job. A 502
+# session_manager_unauthorized means the agent's MCP_AUTH_TOKEN differs from kali-sandbox's.
+p1-sessions-list-member	1.13	member_c	GET	/api/agent/sessions	-	200;has="jobs":[];lacks=session_manager_unauthorized	req:HD-01
+p1-sessions-list-admin	1.13	admin_a	GET	/api/agent/sessions	-	200;has="sessions":	req:HD-02
+p1-session-interact-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	404	req:HD-01
+p1-session-interact-hidden-numeric	1.13	member_c	POST	/api/agent/sessions/999999/interact	{"command":"id"}	404	req:HD-01
+p1-session-kill-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	404	req:HD-01
+p1-job-kill-hidden	1.13	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	404	req:HD-02
+p1-session-kill-unknown-admin	1.13	admin_a	POST	/api/agent/sessions/999999/kill	-	404	req:HD-02
