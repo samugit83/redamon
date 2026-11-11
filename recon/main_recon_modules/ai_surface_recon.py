@@ -22,7 +22,7 @@ Seven workloads (each independently toggled in settings):
   6. Latency p50 baseline     -> ai_latency_p50_ms (piggybacks on #1)
   7. Cross-reference / glue    -> merged interface type, summary counters
 
-All heavy third-party deps (mcp, yara, prance, jq) are imported lazily inside
+All heavy third-party deps (mcp, yara, jq) are imported lazily inside
 functions so a not-yet-rebuilt image degrades this module instead of crashing
 the whole recon job.
 """
@@ -34,7 +34,7 @@ import time
 import hashlib
 import asyncio
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -501,24 +501,95 @@ def _extract_model_ids(resp) -> list:
     return [x for x in ids if isinstance(x, str)]
 
 
+_SPEC_REF_MAX_DEPTH = 128
+_SPEC_REF_MAX_NODES = 100_000
+_SPEC_REF_MAX_CHARS = 16 * 1024 * 1024
+
+
+class _SpecLimit(Exception):
+    pass
+
+
+def _resolve_local_refs(doc):
+    """Inline the ``#/...`` JSON-pointer ``$ref``s of a target's spec, with no I/O.
+
+    The document is target-controlled: following a remote or ``file:`` ``$ref``
+    would make the recon container fetch any URL from its network position
+    (no RoE, no rate ceiling, no SSRF guard) and copy its own files into the
+    cached spec. Any ``$ref`` that is not a pointer into this document, or that
+    points nowhere, stays as data; so does a cyclic one. The node and character
+    budgets bound alias fan-out (one large subtree referenced many times): over
+    a budget the document is returned unresolved.
+    """
+    nodes = [_SPEC_REF_MAX_NODES]
+    chars = [_SPEC_REF_MAX_CHARS]
+
+    def spend(n_chars):
+        nodes[0] -= 1
+        chars[0] -= n_chars
+        if nodes[0] < 0 or chars[0] < 0:
+            raise _SpecLimit()
+
+    def pointer_tokens(ref):
+        # RFC 6901 section 6: a URI fragment is percent-decoded, then read as a pointer.
+        return tuple(t.replace("~1", "/").replace("~0", "~")
+                     for t in unquote(ref[1:]).split("/")[1:])
+
+    def target_of(tokens):
+        target = doc
+        for token in tokens:
+            if isinstance(target, list):
+                if not token.isdigit():
+                    raise KeyError(token)
+                target = target[int(token)]
+            else:
+                target = target[token]
+        return target
+
+    def expand(value, stack, depth):
+        if depth > _SPEC_REF_MAX_DEPTH:
+            raise _SpecLimit()
+        spend(len(value) if isinstance(value, str) else 0)
+        if isinstance(value, list):
+            return [expand(v, stack, depth + 1) for v in value]
+        if not isinstance(value, dict):
+            return value
+        ref = value.get("$ref")
+        if isinstance(ref, str) and (ref == "#" or ref.startswith("#/")):
+            tokens = pointer_tokens(ref)
+            if tokens not in stack:
+                try:
+                    target = target_of(tokens)
+                except (KeyError, IndexError, TypeError, ValueError):
+                    pass
+                else:
+                    return expand(target, stack | {tokens}, depth + 1)
+        out = {}
+        for key, child in value.items():
+            spend(len(key))
+            out[key] = expand(child, stack, depth + 1)
+        return out
+
+    try:
+        return expand(doc, frozenset(), 0)
+    except (_SpecLimit, RecursionError):
+        return doc
+
+
 def _parse_spec(text: str) -> dict | None:
     try:
         doc = json.loads(text)
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, RecursionError):
         return None
     # ai-plugin.json manifest
     if isinstance(doc, dict) and doc.get("schema_version") and doc.get("api"):
         return {"supports_tools": True, "_spec": doc,
                 "manifest_name": doc.get("name_for_model")}
-    # OpenAPI: resolve with prance if available
-    spec = doc
-    try:
-        from prance import ResolvingParser
-        spec = ResolvingParser(spec_string=text, backend="openapi-spec-validator").specification
-    except Exception:
-        spec = doc
+    spec = _resolve_local_refs(doc)
     info = {"_spec": spec}
-    blob = json.dumps(spec).lower()
+    # The flags read what the target served: inlining local refs only copies
+    # subtrees of it, and the served text is the smaller of the two to scan.
+    blob = json.dumps(doc).lower()
     if '"tools"' in blob or '"function"' in blob or '"input_schema"' in blob:
         info["supports_tools"] = True
     if '"image_url"' in blob or '"image"' in blob:
