@@ -65,6 +65,7 @@ export const reconPresetSchema = z.object({
   naabuThreads: int,
   naabuTimeout: int,
   naabuRetries: int,
+  naabuRunTimeout: int,
   naabuScanType: str,
   naabuExcludeCdn: bool,
   naabuDisplayCdn: bool,
@@ -682,6 +683,7 @@ export const RECON_PARAMETER_CATALOG = `
 - naabuThreads: integer
 - naabuTimeout: integer - Timeout in milliseconds
 - naabuRetries: integer
+- naabuRunTimeout: integer - Wall-clock cap on the whole naabu run in seconds. Default 1800.
 - naabuScanType: string - "s" (SYN) or "c" (connect)
 - naabuExcludeCdn: boolean - Skip CDN IPs
 - naabuDisplayCdn: boolean - Show CDN info
