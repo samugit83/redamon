@@ -208,6 +208,10 @@ class TestTlsxFailure:
         _tlsx(monkeypatch, popen)
         (cmd,), _ = popen.call_args
         targets_file = cmd[cmd.index("-l") + 1]
+        # The name a timeout kills the container by (R-9) differs per run.
+        i = cmd.index("--name")
+        assert cmd[i + 1].startswith("tlsx-")
+        cmd = cmd[:i] + cmd[i + 2:]
         assert cmd == tls_scan.build_tlsx_command(targets_file, str(Path(targets_file).parent), {})
 
 

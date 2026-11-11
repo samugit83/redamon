@@ -231,3 +231,52 @@ class TestNaabu:
         assert not cb.coverage_report().degraded
         meta = recon["port_scan"]["scan_metadata"]
         assert "timed_out" not in meta and meta["ports_config"] == "top-1000"
+
+
+# ---------------------------------------------------------------------------
+# tlsx (tls_scan.run_tlsx_enrichment)
+# ---------------------------------------------------------------------------
+
+TLS_LINES = [f"{A_IP}:993", f"{B_IP}:636"]
+TLS_META = {f"{A_IP}:993": A_IP, f"{B_IP}:636": B_IP}
+TLS_ROW = {"host": A_IP, "ip": A_IP, "port": "993", "probe_status": True, "tls_version": "tls12",
+           "subject_cn": A, "subject_an": [A], "not_after": "2099-01-01T00:00:00Z",
+           "fingerprint_hash": {"sha256": "ab" * 32}}
+
+
+def _tlsx(monkeypatch, *steps, settings=None):
+    started = []
+
+    def popen(cmd, **_kw):
+        started.append(CliProc(cmd, *steps))
+        return started[-1]
+
+    monkeypatch.setattr(tls_scan, "_build_tlsx_targets",
+                        lambda combined, s: (list(TLS_LINES), dict(TLS_META)))
+    fake = FakeDocker()
+    with mock.patch.object(subprocess, "Popen", side_effect=popen), _docker(fake):
+        out = tls_scan.run_tlsx_enrichment({"metadata": {}, "port_scan": {"by_ip": {}, "by_host": {}}},
+                                           settings or {})
+    return out, started, fake
+
+
+class TestTlsx:
+    def test_regression_a_tlsx_timeout_stops_its_container(self, monkeypatch):
+        out, (proc,), fake = _tlsx(monkeypatch, subprocess.TimeoutExpired("docker", 5),
+                                   (_jsonl(TLS_ROW), ""), settings={"TLSX_RUN_TIMEOUT": 5})
+        name = _name_of(proc.cmd)
+        assert name.startswith(f"tlsx-{RUN_ID}-")
+        assert fake.kills == [["docker", "kill", name]]
+        # R-21 unchanged: the row printed before the cut is kept, the other
+        # target is kept "not checked".
+        assert f"{A_IP}:993" in out["tlsx"]["by_target"]
+        meta = out["tlsx"]["scan_metadata"]
+        assert meta["timed_out"] is True and meta["unchecked_targets"] == 1
+
+    def test_a_finished_tlsx_run_is_the_same_command_plus_its_name(self, monkeypatch):
+        out, (proc,), fake = _tlsx(monkeypatch, (_jsonl(TLS_ROW), ""))
+        targets_file = proc.cmd[proc.cmd.index("-l") + 1]
+        assert _without_name(proc.cmd) == tls_scan.build_tlsx_command(
+            targets_file, str(Path(targets_file).parent), {})
+        assert fake.kills == []
+        assert "timed_out" not in out["tlsx"]["scan_metadata"]

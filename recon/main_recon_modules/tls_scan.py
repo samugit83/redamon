@@ -115,13 +115,16 @@ def _siblings_the_cert_names(submitted: str, cert_names: list, siblings) -> list
                   if name and name != submitted and _host_matches_cert(name, cert_names))
 
 
-def build_tlsx_command(targets_file: str, targets_dir: str, settings: dict) -> list:
+def build_tlsx_command(targets_file: str, targets_dir: str, settings: dict,
+                       container_name: str = None) -> list:
     """Build the ``docker run`` argv for tlsx.
 
     Only the base grab (``-json -silent -duc -tps -se -hash sha256``) is
     unconditional. The loud probes (JARM/JA3, version/cipher enum) are flag
     gated. The output *filters* (-ex/-ss/-mm/-re/-un) are NEVER passed: they
     would silently drop every healthy host from the scan.
+
+    ``container_name``: the name the run timeout kills the container by.
     """
     settings = settings or {}
     image = settings.get("TLSX_DOCKER_IMAGE", "projectdiscovery/tlsx:latest")
@@ -129,8 +132,10 @@ def build_tlsx_command(targets_file: str, targets_dir: str, settings: dict) -> l
     timeout = int(settings.get("TLSX_TIMEOUT", 5))
     retries = int(settings.get("TLSX_RETRIES", 1))
 
-    cmd = [
-        "docker", "run", "--rm", "--net=host",
+    cmd = ["docker", "run", "--rm", "--net=host"]
+    if container_name:
+        cmd += ["--name", container_name]
+    cmd += [
         "-v", f"{targets_dir}:{targets_dir}:ro",
         image,
         "-l", targets_file,
@@ -545,7 +550,10 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
         targets_file = str(scan_temp_dir / "tlsx_targets.txt")
         Path(targets_file).write_text("\n".join(lines) + "\n")
 
-        cmd = build_tlsx_command(targets_file, str(scan_temp_dir), settings)
+        from recon.helpers.docker_helpers import kill_container, tool_container_name
+        container_name = tool_container_name("tlsx")
+        cmd = build_tlsx_command(targets_file, str(scan_temp_dir), settings,
+                                 container_name=container_name)
         run_timeout = int(settings.get("TLSX_RUN_TIMEOUT", 900))
         _print("*", f"scanning {len(lines)} TLS target(s), timeout {run_timeout}s")
 
@@ -564,6 +572,8 @@ def run_tlsx_enrichment(combined_result: dict, settings: dict) -> dict:
             _print("!", f"tlsx timed out after {run_timeout}s -- killing")
             timed_out = True
             failure = f"tlsx timed out after {run_timeout}s"
+            # Killing the docker CLI alone leaves the container handshaking.
+            kill_container(container_name)
             # The rows tlsx printed before the kill are real answers;
             # communicate() after kill() hands them back.
             try:
