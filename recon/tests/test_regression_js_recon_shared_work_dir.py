@@ -47,7 +47,7 @@ def scans(monkeypatch):
 
     monkeypatch.setattr(os, "getpid", lambda: 1)
     monkeypatch.setattr(js_recon, "_download_js_files", fake_download)
-    monkeypatch.setattr(js_recon, "_run_analysis", lambda files, s: {"secrets": [], "endpoints": []})
+    monkeypatch.setattr(js_recon, "_run_analysis", lambda files, s, **_kw: {"secrets": [], "endpoints": []})
     monkeypatch.setattr(js_recon, "_extract_subdomains", lambda *a, **k: ([], []))
     monkeypatch.setattr(js_recon, "_build_summary", lambda results: {})
 

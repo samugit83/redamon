@@ -84,7 +84,7 @@ def _import_js_recon():
     # non-AI analysis pass OFF in the settings so these stubs never execute.
     for name in (
         "patterns", "validators", "sourcemap", "dependency",
-        "endpoints", "framework", "trufflehog_bridge",
+        "endpoints", "framework", "trufflehog_bridge", "hop_guard",
     ):
         mod = types.ModuleType(f"recon.helpers.js_recon.{name}")
         sys.modules[f"recon.helpers.js_recon.{name}"] = mod
@@ -110,6 +110,10 @@ def _import_js_recon():
     sys.modules["recon.helpers.js_recon.patterns"].scan_dev_comments = lambda *a, **kw: []
     sys.modules["recon.helpers.js_recon.patterns"].load_custom_patterns = lambda *a, **kw: None
     sys.modules["recon.helpers.js_recon.validators"].validate_secret = lambda *a, **kw: {}
+    hop_guard = sys.modules["recon.helpers.js_recon.hop_guard"]
+    hop_guard.UNSAFE, hop_guard.ROE_EXCLUDED, hop_guard.TOO_MANY_REDIRECTS = "unsafe", "roe_excluded", "too_many_redirects"
+    hop_guard.REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+    hop_guard.fetch_hop_by_hop = lambda *a, **kw: None
     sys.modules["recon.helpers.js_recon.sourcemap"].discover_and_analyze_sourcemaps = lambda *a, **kw: []
     sys.modules["recon.helpers.js_recon.sourcemap"].pseudo_file_base = lambda map_url, js_url: js_url or map_url
     sys.modules["recon.helpers.js_recon.dependency"].detect_dependency_confusion = lambda *a, **kw: []

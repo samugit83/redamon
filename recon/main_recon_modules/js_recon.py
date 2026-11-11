@@ -36,6 +36,9 @@ from recon.helpers.js_recon.patterns import (
 )
 from recon.helpers.js_recon.validators import validate_secret
 from recon.helpers.js_recon import trufflehog_bridge
+from recon.helpers.js_recon.hop_guard import (
+    REDIRECT_STATUSES, ROE_EXCLUDED, TOO_MANY_REDIRECTS, UNSAFE, fetch_hop_by_hop,
+)
 from recon.helpers.js_recon.sourcemap import discover_and_analyze_sourcemaps, pseudo_file_base
 from recon.helpers.js_recon.dependency import detect_dependency_confusion
 from recon.helpers.js_recon.endpoints import extract_endpoints
@@ -96,33 +99,41 @@ def _js_failed(url, exc) -> None:
         pass
 
 
-def _safe_redirect_get(url, *, timeout, headers, max_redirects=5):
-    """GET that validates the SSRF guard on every hop (STRIDE I14).
+_HOP_REFUSAL_LOG = {
+    UNSAFE: 'blocked (SSRF guard)',
+    ROE_EXCLUDED: 'blocked (RoE exclusion)',
+}
 
-    Follows redirects manually (allow_redirects=False) so a target-hosted JS URL
-    that 3xx-redirects into cloud metadata / an internal host is refused, while
-    legitimate CDN redirects to public hosts still resolve. Returns the final
-    ``requests.Response`` or ``None`` if a hop is unsafe / exceeds the hop cap.
+
+def _safe_redirect_get(url, *, timeout, headers, max_redirects=5, settings=None):
+    """GET a target-derived JS URL, following its redirects hop by hop
+    (STRIDE I14, R-14).
+
+    Every hop, the first URL included, is checked before it is sent: the RoE
+    of ``settings`` and the address rule ``_download_allowed``. A bundle that
+    3xx-redirects into cloud metadata, an internal host or an excluded host is
+    refused, while legitimate CDN redirects to public hosts still resolve.
+    Returns the final ``requests.Response``, or ``None`` when a hop is
+    refused, a redirect has no Location, or more than ``max_redirects``
+    redirects come.
     """
-    current = url
-    for _hop in range(max_redirects + 1):
-        if not _download_allowed(current):
-            print(f"[!][JsRecon] {current} -- blocked (SSRF guard)")
-            return None
-        # The target's own files: its certificate may be self-signed or from an
-        # internal CA, as httpx and katana already accepted. Never the key
-        # validators, which send a secret to a third party.
-        resp = requests.get(current, timeout=timeout, headers=headers, allow_redirects=False,
-                            verify=False)
-        if resp.status_code in (301, 302, 303, 307, 308):
-            loc = resp.headers.get('Location') or resp.headers.get('location')
-            if not loc:
-                return None
-            current = urljoin(current, loc)
-            continue
-        return resp
-    print(f"[!][JsRecon] {url} -- too many redirects")
-    return None
+    refusal: dict = {}
+    # The target's own files: its certificate may be self-signed or from an
+    # internal CA, as httpx and katana already accepted. Never the key
+    # validators, which send a secret to a third party.
+    resp = fetch_hop_by_hop('GET', url, timeout=timeout, headers=headers, settings=settings,
+                            url_guard=_download_allowed, max_redirects=max_redirects,
+                            refusal=refusal, verify=False)
+    if resp is None:
+        reason = refusal.get('reason')
+        if reason == TOO_MANY_REDIRECTS:
+            print(f"[!][JsRecon] {url} -- too many redirects")
+        else:
+            print(f"[!][JsRecon] {refusal.get('url', url)} -- {_HOP_REFUSAL_LOG.get(reason, f'blocked ({reason})')}")
+        return None
+    if resp.status_code in REDIRECT_STATUSES:
+        return None
+    return resp
 
 
 # The run's own hosts for a JS download; set for the duration of run_js_recon
@@ -668,13 +679,15 @@ def _download_js_files(
     concurrency: int,
     timeout: int,
     unreachable: Optional[list] = None,
+    settings: Optional[dict] = None,
 ) -> list:
     """
     Download JS files to local temp directory.
 
     Returns list of dicts with: url, filepath, content, headers, size.
     `unreachable` collects the URLs never fetched: a host already known down,
-    or a request that raised.
+    or a request that raised. The RoE of `settings` is checked on every
+    redirect hop (`_safe_redirect_get`).
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     downloaded = []
@@ -696,6 +709,7 @@ def _download_js_files(
                 url,
                 timeout=min(timeout // 10, 30),
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; RedAmon/1.0)'},
+                settings=settings,
             )
             if resp is None:
                 return None
@@ -749,9 +763,12 @@ def _download_js_files(
     return downloaded
 
 
-def _run_analysis(js_files: list, settings: dict) -> dict:
+def _run_analysis(js_files: list, settings: dict, map_scope: Optional[_ProbeScope] = None) -> dict:
     """
     Run all enabled analysis modules in parallel.
+
+    ``map_scope`` (``_endpoint_probe_scope``) admits a source map, and each of
+    its redirect hops, on a host of the run beyond those its JS came from.
 
     Returns dict with all finding categories.
     """
@@ -809,6 +826,7 @@ def _run_analysis(js_files: list, settings: dict) -> dict:
                 discover_and_analyze_sourcemaps, served_files, settings,
                 pseudo_files=recovered, skipped=not_checked,
                 deadline=started + analysis_budget * _SOURCE_MAP_BUDGET_SHARE,
+                in_scope=(lambda url: _in_probe_scope(url, map_scope)) if map_scope is not None else None,
             )
             try:
                 results['source_maps'] = future.result(timeout=max(1.0, deadline - time.monotonic()))
@@ -1878,6 +1896,7 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
                 concurrency=settings.get('JS_RECON_CONCURRENCY', 10),
                 timeout=settings.get('JS_RECON_TIMEOUT', 900),
                 unreachable=unreachable,
+                settings=settings,
             )
         downloaded = list(js_files)
         if file_budget['cut']:
@@ -1907,8 +1926,9 @@ def run_js_recon(combined_result: dict, settings: dict) -> dict:
         print(f"[*][JsRecon] Running analysis on {len(js_files)} JS files "
               f"({len(js_files) - len(uploaded_files)} from pipeline, {len(uploaded_files)} uploaded)...")
 
-        # 3. Run all analysis modules
-        results = _run_analysis(js_files, settings)
+        # 3. Run all analysis modules. A map on a host of the run that served
+        # no JS is fetched, as an endpoint there is probed.
+        results = _run_analysis(js_files, settings, map_scope=_endpoint_probe_scope(combined_result, js_files, settings))
         trufflehog = results.pop('_trufflehog', None)
         trufflehog_urls = trufflehog.pop('_input_urls', []) if trufflehog else []
         trufflehog_reason = (f"trufflehog {trufflehog['status']}: {trufflehog['reason']}"
