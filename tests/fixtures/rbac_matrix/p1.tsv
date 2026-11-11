@@ -123,3 +123,31 @@ p1-admin-reads-other-settings-masked	1.6	admin_a	GET	/api/users/${MEMBER_A_ID}/s
 # signed-in user's password (ID-25): refused before anything is written, the stored bearer never
 # answered. (A wrong password would count toward member_a's step-up lockout, so no row sends one.)
 p1-stepup-repoint-mcp-server	1.6	member_a	PUT	/api/users/${MEMBER_A_ID}/mcp/rbac-fake-server	{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"rbac-typed-never-stored"}}	403;has=step_up_required;lacks=${A_MCP_BEARER}	req:ID-25
+#
+# ---- step 1.12: Nuclei templates have owners ----
+# Refusals only, so nothing is written: the allowed selection row is refused afterwards by
+# the numeric bounds (nucleiRateLimit 0), which run after the template check. The uploads,
+# the overwrite, the promotion, a scan's filtered read and the user-delete handover need
+# multipart bodies and SQL: tests/rbac_nuclei_templates_live.sh. aem-json-exposure.yaml
+# ships in mcp/nuclei-templates, so it is an instance template (the upgrade backfill).
+p1-nuclei-list-member	1.12	member_c	GET	/api/nuclei-templates	-	200;has="canManageAll":false;has="ownership":"instance"	req:HD-08
+p1-nuclei-list-admin	1.12	admin_a	GET	/api/nuclei-templates	-	200;has="canManageAll":true	req:HD-08
+p1-nuclei-delete-instance-member	1.12	member_c	DELETE	/api/nuclei-templates?path=aem-json-exposure.yaml	-	403;has=platform:nuclei_templates_all	req:HD-08
+p1-nuclei-promote-member	1.12	member_a	PATCH	/api/nuclei-templates	{"path":"rbac-e2e-none.yaml","promote":true}	403;has=platform:nuclei_templates_all	req:HD-08
+p1-nuclei-promote-admin-missing	1.12	admin_a	PATCH	/api/nuclei-templates	{"path":"rbac-e2e-none.yaml","promote":true}	404;has=template_not_found	req:HD-08
+p1-nuclei-select-mount-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiTemplates":["/custom-templates/"]}	400;has=template_not_selectable	req:HD-08
+p1-nuclei-select-root-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiCustomTemplates":["."]}	400;has=template_not_selectable	req:HD-08
+p1-nuclei-select-glob-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiSelectedCustomTemplates":["*"]}	400;has=template_not_selectable	req:HD-08
+p1-nuclei-select-instance-allowed	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiSelectedCustomTemplates":["aem-json-exposure.yaml"],"nucleiRateLimit":0}	400;has=setting_rejected;lacks=template_not_selectable	req:HD-08
+#
+# ---- step 1.11: emergency stop ----
+# GET tells the toolbar whose agent runs a press stops (HD-07): every user's for an admin
+# (also while acting as a member), the member's own otherwise. A member's POST stops only
+# that member's runs: member_c has none, so it stops nothing and no one else's. No row POSTs
+# as an admin, the instance-wide stop, which would end other people's runs on a shared stack;
+# the stop itself is checked live with two members' stub-model runs, one stopped, one not.
+p1-estop-scope-member	1.11	member_c	GET	/api/agent/emergency-stop-all	-	200;has="scope":"own"	req:HD-07
+p1-estop-scope-admin	1.11	admin_a	GET	/api/agent/emergency-stop-all	-	200;has="scope":"all"	req:HD-07
+p1-estop-scope-admin-acting	1.11	admin_a_as_member_a	GET	/api/agent/emergency-stop-all	-	200;has="scope":"all"	req:HD-07
+p1-estop-member-own	1.11	member_c	POST	/api/agent/emergency-stop-all	-	200;has="scope":"own";has="stopped":0	req:HD-07
+p1-estop-deleted	1.11	deleted	POST	/api/agent/emergency-stop-all	-	401	req:HD-07
