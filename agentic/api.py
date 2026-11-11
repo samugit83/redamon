@@ -1966,7 +1966,7 @@ async def reload_mcp_manifest(payload: dict = None):
         return JSONResponse({"error": "orchestrator not ready"}, status_code=503)
 
     from mcp_toolset_guard import (
-        MCP_RELOAD_DEFERRED_MESSAGE, MCP_TOOLSET_BUSY, toolset_guard,
+        MCP_RELOAD_DEFERRED_MESSAGE, MCP_TOOLSET_BUSY, McpToolsetBusy, toolset_guard,
     )
 
     user_servers_raw = None
@@ -1976,17 +1976,24 @@ async def reload_mcp_manifest(payload: dict = None):
         owner = payload.get("ownerId")
         owner_id = owner if isinstance(owner, str) and owner else None
 
+    deferred = JSONResponse(
+        {"deferred": True, "code": MCP_TOOLSET_BUSY, "message": MCP_RELOAD_DEFERRED_MESSAGE},
+        status_code=202,
+    )
     guard = toolset_guard()
     wanted = user_servers_raw if user_servers_raw is not None else (guard.loaded_servers or [])
     if not guard.admit_reload(owner_id, wanted):
-        return JSONResponse(
-            {"deferred": True, "code": MCP_TOOLSET_BUSY, "message": MCP_RELOAD_DEFERRED_MESSAGE},
-            status_code=202,
-        )
+        return deferred
 
     try:
-        result = await orchestrator.reload_mcp_manifests(user_servers_raw)
+        # Asked again when its turn comes: a run admitted meanwhile holds its own set.
+        result = await orchestrator.reload_mcp_manifests(user_servers_raw, owner_id)
+        if isinstance(result, dict) and result.get("loaded") is False:
+            # The save stands; the person learns no user MCP tool is loaded now.
+            return JSONResponse({**result, "code": "mcp_toolset_load_failed"}, status_code=502)
         return result
+    except McpToolsetBusy:
+        return deferred
     except Exception as exc:
         logger.exception(f"/mcp/reload failed: {exc}")
         return JSONResponse({"error": str(exc)}, status_code=500)

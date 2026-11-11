@@ -8,7 +8,7 @@ Supports phase tracking, LLM-managed todo lists, and checkpoint-based approval.
 import asyncio
 import os
 import logging
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -22,7 +22,7 @@ from state import (
     summarize_trace_for_response,
 )
 from project_settings import get_setting
-from mcp_toolset_guard import McpToolsetBusy, toolset_guard
+from mcp_toolset_guard import McpToolsetBusy, server_set_hash, toolset_guard
 from tools import (
     MCPToolsManager,
     Neo4jToolManager,
@@ -364,35 +364,67 @@ class AgentOrchestrator:
 
         logger.info(f"Tools initialized: {len(self.tool_executor.get_all_tools())} available")
 
-    async def reload_mcp_manifests(self, user_servers_raw=None) -> dict:
+    async def reload_mcp_manifests(self, user_servers_raw=None, owner_id=None) -> dict:
         """Re-merge system + user MCP servers, refresh registry, reconnect MCP client.
 
-        Called from:
-        - Webapp's POST /mcp/reload after a user adds/edits/deletes an MCP server,
-          once mcp_toolset_guard admitted it.
-        - The run-start admission (_mcp_toolset_lease) when the run's owner's set
-          is not the loaded one (so per-user MCPs activate without a manual reload).
-
-        Reloads run one at a time, in the order they were asked for, and each
-        records the set it loads as the loaded set.
+        Called by the webapp's POST /mcp/reload after a user adds/edits/deletes an
+        MCP server, once mcp_toolset_guard admitted it. Always reloads, even the set
+        already loaded. A run loads its owner's set through _ensure_mcp_toolset.
 
         Args:
             user_servers_raw: list of dicts from UserSettings.mcpServers. None
                 reloads the set already loaded, never the last-loaded project's
                 settings (another owner's, possibly).
+            owner_id: whose set it is (None: an administrator's reload).
+
+        Raises McpToolsetBusy when, by the time its turn comes, another owner's run
+        on a different set is live.
 
         Returns:
             dict with the new manifest snapshot (servers, errors, warnings,
-            declared_tool_names) — same shape as GET /mcp/manifest body.
+            declared_tool_names) — same shape as GET /mcp/manifest body — and
+            `loaded`, False when the set could not be loaded.
         """
-        guard = toolset_guard()
-        if user_servers_raw is None:
-            user_servers_raw = guard.loaded_servers or []
-        async with self.__dict__.setdefault("_mcp_reload_lock", asyncio.Lock()):
-            guard.record_loaded(user_servers_raw)
-            return await self._load_user_mcp_servers(user_servers_raw)
+        return await self._load_mcp_toolset(user_servers_raw, owner_id, force=True)
 
-    async def _load_user_mcp_servers(self, user_servers_raw: list) -> dict:
+    async def _ensure_mcp_toolset(self, servers: list, owner_id) -> None:
+        """Load the run's owner's set unless it is the loaded one. Awaited before the
+        run streams, so its first tool call reaches its own owner's servers."""
+        await self._load_mcp_toolset(servers, owner_id, force=False)
+
+    async def _load_mcp_toolset(self, user_servers_raw, owner_id, *, force: bool):
+        """One load at a time, in the order asked. The guard is asked again under the
+        lock, because a run admitted while this load waited is live on its own set.
+        A set is recorded as loaded only once it loaded."""
+        guard = toolset_guard()
+        async with self.__dict__.setdefault("_mcp_reload_lock", asyncio.Lock()):
+            if user_servers_raw is None:
+                user_servers_raw = guard.loaded_servers or []
+            if not force and guard.loaded_hash == server_set_hash(user_servers_raw):
+                return None
+            if not guard.admit_reload(owner_id, user_servers_raw, via="reload" if force else "run"):
+                raise McpToolsetBusy()
+            try:
+                result, loaded = await self._load_user_mcp_servers(user_servers_raw)
+            except BaseException:
+                # Cut short (a stopped run, a crash): the client may already hold the
+                # new configs, so the previous record no longer describes it.
+                guard.clear_loaded()
+                raise
+            if loaded:
+                guard.record_loaded(user_servers_raw, owner_id)
+            else:
+                guard.clear_loaded()
+            return {**result, "loaded": loaded}
+
+    async def _load_user_mcp_servers(self, user_servers_raw: list) -> tuple:
+        """Load system + user servers. Returns (manifest snapshot, loaded).
+
+        A load that fails keeps no user MCP tool: the client answers all-or-nothing,
+        and keeping the previous tools would route a call to the previous owner's
+        server (and token) under a name this set declared. The system servers are
+        loaded alone instead, so the Kali tools stay.
+        """
         from tools import _build_system_mcp_servers
         from prompts.tool_registry import apply_mcp_manifests_to_registry
         import mcp_registry
@@ -405,14 +437,15 @@ class AgentOrchestrator:
         mcp_registry.set_current(all_servers, errors=parse_errors, warnings=env_warnings)
 
         declared_user_tools = apply_mcp_manifests_to_registry(user_servers)
+        loaded = True
 
         # Swap the manager's config and force a reconnect to bind a fresh
-        # MultiServerMCPClient that includes any new user-MCP URLs.
+        # MultiServerMCPClient that includes any new user-MCP URLs. Forced: a
+        # transport-error rebuild that finished meanwhile used the previous configs.
         if hasattr(self, '_mcp_manager') and self._mcp_manager is not None:
             self._mcp_manager.replace_server_configs(server_configs)
-            seen_gen = self._mcp_manager.generation
             new_gen, new_tools = await self._mcp_manager.reconnect(
-                seen_gen, reason="mcp_manifest_reload",
+                self._mcp_manager.generation, reason="mcp_manifest_reload", force=True,
             )
             if new_tools:
                 self.tool_executor.register_mcp_tools(
@@ -425,9 +458,20 @@ class AgentOrchestrator:
                     f"{len(new_tools)} live tool(s) registered."
                 )
             else:
+                loaded = False
+                system_tools = []
+                if user_servers:
+                    system_configs, _ = mcp_registry.to_mcp_servers_dict(system_servers)
+                    self._mcp_manager.replace_server_configs(system_configs)
+                    _, system_tools = await self._mcp_manager.reconnect(
+                        self._mcp_manager.generation, reason="mcp_manifest_reload_system_only",
+                        force=True,
+                    )
+                self.tool_executor.register_mcp_tools(system_tools or [], declared_tool_names=set())
                 logger.warning(
-                    "MCP manifest reload: reconnect returned no tools; "
-                    "system tools may be temporarily unavailable."
+                    f"MCP manifest reload failed: {len(user_servers)} user server(s) not loaded; "
+                    f"no user MCP tool is registered, {len(system_tools or [])} system tool(s). "
+                    "The next run loads the set again."
                 )
 
         return {
@@ -435,7 +479,7 @@ class AgentOrchestrator:
             "errors": [e.model_dump() for e in parse_errors],
             "warnings": [w.model_dump() for w in env_warnings],
             "declared_user_tool_names": sorted(declared_user_tools),
-        }
+        }, loaded
 
     def _setup_knowledge_base(self):
         """
@@ -889,7 +933,7 @@ class AgentOrchestrator:
                 "messages": [HumanMessage(content=fence_node_context(question))]
             }
 
-            with self._mcp_toolset_lease(user_id):
+            async with self._mcp_toolset_lease(user_id):
                 final_state = await self.graph.ainvoke(input_data, config)
 
             return self._build_response(final_state)
@@ -979,24 +1023,20 @@ class AgentOrchestrator:
     # STREAMING PUBLIC API
     # =========================================================================
 
-    @contextmanager
-    def _mcp_toolset_lease(self, user_id: str):
+    @asynccontextmanager
+    async def _mcp_toolset_lease(self, user_id: str):
         """Hold the agent's user MCP toolset for this run (RBAC OQ-41, NF-06).
 
         Raises McpToolsetBusy when the run's owner's server set is not the loaded
-        one and another owner's run on a different set is live; otherwise loads the
-        owner's set when it is not the loaded one, as before. Synchronous up to the
-        yield, so admission and registration are one step for the event loop.
+        one and another owner's run on a different set is live. Admission and the
+        lease are one synchronous step; then the owner's set is loaded (after any
+        load already queued) and only then does the run go on, so it never sees or
+        calls a tool of a set it was not admitted on.
         """
         servers = get_setting('USER_MCP_SERVERS', []) or []
-        lease, must_load = toolset_guard().admit_run(user_id, servers)
+        lease = toolset_guard().admit_run(user_id, servers)
         try:
-            if must_load:
-                try:
-                    asyncio.get_running_loop().create_task(self.reload_mcp_manifests(servers))
-                    logger.info("User MCP server set changed; reload scheduled.")
-                except Exception as e:                            # noqa: BLE001
-                    logger.warning(f"User MCP reload could not be scheduled: {e.__class__.__name__}")
+            await self._ensure_mcp_toolset(servers, user_id)
             yield
         finally:
             toolset_guard().release_run(lease)
@@ -1008,11 +1048,12 @@ class AgentOrchestrator:
         The scope lets an Agent in the Loop model open steps for this session
         (and only while it runs), and reports the run's end state to its driver.
         For a provider model it only registers the run. The run holds the user MCP
-        toolset for as long as it streams (_mcp_toolset_lease).
+        toolset for as long as it streams, and streams only once its owner's set is
+        loaded (_mcp_toolset_lease).
         """
         uses_loop = is_loop_llm(self.llm)
         final_state = None
-        with self._mcp_toolset_lease(user_id):
+        async with self._mcp_toolset_lease(user_id):
             # Every node and Fireteam member runs in a task created inside astream,
             # so it inherits this listener and a rate-limit wait reaches the drawer.
             listener = current_llm_wait_listener.set(

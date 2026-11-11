@@ -8,10 +8,12 @@ loaded as before. Without the guard the second owner's run swapped the toolset u
 the first owner's live run, and a member with no servers ran on another owner's
 servers and their tokens.
 
-Every admission and every reload request is synchronous up to the point where it
-records the set, so two runs cannot both pass on different sets. The refusal reads
-the live runs' sets, not the recorded one, because queued reloads apply in order
-and the recorded set can lag them for a moment.
+Admission is synchronous (the check and the lease are one step for the event loop),
+so two runs cannot both pass on different sets. The load itself is the
+orchestrator's, serialised, and a run streams only after its owner's set loaded.
+A set is recorded as loaded only once it loaded; a failed load records nothing, so
+the next admission loads again. The refusal reads the live runs' sets, not the
+recorded one: a run admitted but still waiting for its load is already live.
 """
 import hashlib
 import json
@@ -61,6 +63,7 @@ class McpToolsetGuard:
         logger.warning(f"[rbac] mcp toolset busy owner={owner} via={via} live_runs_of_others={holders}")
 
     def record_loaded(self, servers, owner: Optional[str] = None) -> None:
+        """Called once `servers` really loaded, never before."""
         self.loaded_servers = list(servers or [])
         self.loaded_hash = server_set_hash(self.loaded_servers)
         if owner is not None:
@@ -69,31 +72,32 @@ class McpToolsetGuard:
                 if o == owner:
                     self._live[lease] = (o, self.loaded_hash)
 
-    def admit_run(self, owner: Optional[str], servers) -> tuple[str, bool]:
-        """Register a run as live on its owner's set. Returns (lease, whether that set
-        must be loaded now); raises McpToolsetBusy instead of swapping the set under
-        another owner's live run."""
+    def clear_loaded(self) -> None:
+        """A load failed: no set is known to be loaded, so the next admission loads."""
+        self.loaded_servers = None
+        self.loaded_hash = None
+
+    def admit_run(self, owner: Optional[str], servers) -> str:
+        """Register a run as live on its owner's set and return its lease; raises
+        McpToolsetBusy instead of swapping the set under another owner's live run.
+        Records nothing: the run loads its set before it streams."""
         digest = server_set_hash(servers)
         if self._held_by_another(owner, digest):
             self._refuse(owner, "run")
             raise McpToolsetBusy()
-        must_load = digest != self.loaded_hash
-        if must_load:
-            self.record_loaded(servers, owner)
         lease = uuid.uuid4().hex
         self._live[lease] = (owner, digest)
-        return lease, must_load
+        return lease
 
     def release_run(self, lease: str) -> None:
         self._live.pop(lease, None)
 
-    def admit_reload(self, owner: Optional[str], servers) -> bool:
-        """False when the reload must wait (the saved set loads at the owner's next
-        run start); True after recording `servers` as the loaded set."""
+    def admit_reload(self, owner: Optional[str], servers, via: str = "reload") -> bool:
+        """False when loading `servers` now would swap the set under another owner's
+        live run (a saved set then loads at the owner's next run). Records nothing."""
         if self._held_by_another(owner, server_set_hash(servers)):
-            self._refuse(owner, "reload")
+            self._refuse(owner, via)
             return False
-        self.record_loaded(servers, owner)
         return True
 
 

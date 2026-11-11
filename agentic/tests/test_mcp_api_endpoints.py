@@ -37,7 +37,8 @@ class FakeOrchestrator:
     def __init__(self):
         self.reload_calls = []
 
-    async def reload_mcp_manifests(self, user_servers_raw=None):
+    async def reload_mcp_manifests(self, user_servers_raw=None, owner_id=None):
+        # The route also names whose set it is (RBAC OQ-41): absent here.
         self.reload_calls.append(user_servers_raw)
         return {
             "servers": [{"id": "system_a"}, {"id": "user_a"}],

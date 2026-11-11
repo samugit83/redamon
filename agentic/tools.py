@@ -455,7 +455,7 @@ class MCPToolsManager:
         """Snapshot of currently cached MCP tools (empty if disconnected)."""
         return list(self._tools_cache.values())
 
-    async def reconnect(self, seen_generation: int, reason: str = "") -> tuple:
+    async def reconnect(self, seen_generation: int, reason: str = "", force: bool = False) -> tuple:
         """
         Rebuild the MCP client after a dead-session failure.
 
@@ -475,9 +475,12 @@ class MCPToolsManager:
         Returns (current_generation, current_tools). On successful rebuild
         current_generation == seen_generation + 1. On failure current_generation
         is unchanged and the tools list is empty.
+
+        `force` rebuilds even when another caller already did: a manifest reload
+        has just replaced the server configs, and that other rebuild used the old ones.
         """
         async with self._reconnect_lock:
-            if self._generation > seen_generation:
+            if not force and self._generation > seen_generation:
                 logger.info(
                     f"MCP reconnect skipped: already rebuilt to gen {self._generation} "
                     f"(caller saw gen {seen_generation})"
