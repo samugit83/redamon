@@ -280,3 +280,199 @@ class TestTlsx:
             targets_file, str(Path(targets_file).parent), {})
         assert fake.kills == []
         assert "timed_out" not in out["tlsx"]["scan_metadata"]
+
+
+# ---------------------------------------------------------------------------
+# Nuclei
+# ---------------------------------------------------------------------------
+
+NUCLEI_ROW = {"template-id": "github-takeover", "matched-at": f"https://{A}/",
+              "info": {"name": "github-takeover", "severity": "high", "tags": ["takeover"]}}
+
+
+class TestNucleiTakeover:
+    def _run(self, tmp_path, answer):
+        fake = FakeDocker(answer)
+        with mock.patch.object(st, "is_docker_installed", return_value=True), \
+             mock.patch.object(st, "is_docker_running", return_value=True), \
+             mock.patch.object(st, "pull_nuclei_docker_image", return_value=True), \
+             mock.patch.object(st, "ensure_templates_volume", return_value=True), \
+             mock.patch.object(st, "fix_file_ownership"), _docker(fake):
+            rows = st._run_nuclei_takeover([f"https://{A}"], tmp_path,
+                                           {"NUCLEI_TAKEOVER_RUN_TIMEOUT": 300})
+        return rows, fake
+
+    def test_a_takeover_timeout_kills_the_container_it_named_and_keeps_its_rows(self, tmp_path):
+        def answer(cmd, kw):
+            (_mount(cmd, "/output") / "nuclei_takeover_output.jsonl").write_text(_jsonl(NUCLEI_ROW))
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        rows, fake = self._run(tmp_path, answer)
+        ((cmd, kw),) = fake.runs("http/takeovers/")
+        assert kw["timeout"] == 300
+        assert fake.kills == [["docker", "kill", _name_of(cmd)]]
+        assert _name_of(cmd).startswith("redamon-nuclei-takeover-")
+        assert [r["template-id"] for r in rows] == ["github-takeover"]
+        assert A in cb.coverage_report().keep_hostnames("takeover_scan")
+
+    def test_a_finished_takeover_run_kills_nothing(self, tmp_path):
+        rows, fake = self._run(tmp_path, lambda cmd, kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+        assert rows == [] and fake.kills == []
+        assert not cb.coverage_report().degraded
+
+
+class TestNucleiVulnScanPass:
+    def test_the_runtime_cap_kills_the_container_by_the_name_in_its_command(self, tmp_path):
+        killed = threading.Event()
+        fake = FakeDocker()
+        fake_kill = fake.__call__
+
+        def run(cmd, **kw):
+            result = fake_kill(cmd, **kw)
+            if list(cmd)[:2] == ["docker", "kill"]:
+                killed.set()
+            return result
+
+        class _Streaming:
+            returncode = None
+
+            def __init__(self, cmd, **_kw):
+                self.cmd = list(cmd)
+
+            @property
+            def stdout(self):
+                yield "[INF] running"
+                killed.wait(timeout=5)
+                self.returncode = 137
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        started = []
+        out = tmp_path / "nuclei_detection.jsonl"
+        out.write_text(_jsonl({"template-id": "x", "matched-at": f"https://{A}",
+                               "info": {"severity": "low"}}))
+        name = "redamon-nuclei-detection-abc123"
+        cmd = ["docker", "run", "--rm", "--net=host", "--name", name, "projectdiscovery/nuclei:latest"]
+        with mock.patch.object(subprocess, "Popen",
+                               side_effect=lambda c, **k: started.append(_Streaming(c)) or started[-1]), \
+                mock.patch.object(subprocess, "run", side_effect=run):
+            findings, _, _, _ = vs._execute_nuclei_pass(cmd, str(out), label="DETECTION",
+                                                        runtime_cap=0.2, container_name=name)
+        assert fake.kills == [["docker", "kill", name]]
+        assert len(findings) == 1
+        assert cb.coverage_report().nuclei_truncated is True
+
+
+class TestNucleiCleanup:
+    def test_regression_the_root_owned_file_cleanup_is_named_bounded_and_stopped(self, monkeypatch):
+        real_unlink = Path.unlink
+
+        def unlink(self, *a, **k):
+            if ".nuclei_temp_" in str(self):
+                raise PermissionError(13, "root-owned")
+            return real_unlink(self, *a, **k)
+
+        def answer(cmd, kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        fake = FakeDocker(answer)
+        recon = {"domain": "example.test", "metadata": {"include_root_domain": True},
+                 "dns": {"domain": {"ips": {"ipv4": [A_IP], "ipv6": []}, "has_records": True},
+                         "subdomains": {}},
+                 "http_probe": {"by_url": {f"https://{A}": {"url": f"https://{A}", "status_code": 200}}}}
+        monkeypatch.setattr(Path, "unlink", unlink)
+        with mock.patch.object(vs, "is_docker_installed", return_value=True), \
+             mock.patch.object(vs, "is_docker_running", return_value=True), \
+             mock.patch.object(vs, "pull_nuclei_docker_image", return_value=True), \
+             mock.patch.object(vs, "ensure_templates_volume", return_value=True), \
+             mock.patch.object(vs, "_execute_nuclei_pass", return_value=([], [], 1.0, 0)), \
+             _docker(fake):
+            out = vs.run_vuln_scan(recon, settings={
+                "NUCLEI_ENABLED": True, "NUCLEI_TAGS": ["cve"], "NUCLEI_MAX_RUNTIME": 0,
+                "CVE_LOOKUP_ENABLED": False, "SECURITY_CHECK_ENABLED": False})
+        cleanups = fake.runs("alpine")
+        assert cleanups, "no root-owned file was cleaned up"
+        for cmd, kw in cleanups:
+            assert kw.get("timeout"), f"the cleanup has no timeout: {cmd}"
+        assert fake.kills == [["docker", "kill", _name_of(c)] for c, _ in cleanups]
+        assert "vuln_scan" in out
+
+
+# ---------------------------------------------------------------------------
+# The nuclei-templates volume (docker_helpers.ensure_templates_volume)
+# ---------------------------------------------------------------------------
+
+class TestTemplatesVolume:
+    def _ensure(self, answer, auto_update=False):
+        def run(cmd, kw):
+            if cmd[:3] == ["docker", "volume", "inspect"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return answer(cmd, kw)
+
+        fake = FakeDocker(run)
+        with _docker(fake):
+            ok = docker_helpers.ensure_templates_volume("projectdiscovery/nuclei:latest", auto_update)
+        return ok, fake
+
+    def test_regression_a_template_count_timeout_stops_its_container(self):
+        def answer(cmd, kw):
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        ok, fake = self._ensure(answer)
+        assert ok is False
+        ((cmd, kw),) = fake.runs("alpine")
+        assert kw["timeout"] == 30
+        assert fake.kills == [["docker", "kill", _name_of(cmd)]]
+
+    def test_an_update_timeout_still_kills_the_updater_by_its_name(self):
+        def answer(cmd, kw):
+            if "-ut" in cmd:
+                raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+            return subprocess.CompletedProcess(cmd, 0, "5\n", "")
+
+        ok, fake = self._ensure(answer, auto_update=True)
+        assert ok is False
+        ((cmd, kw),) = fake.runs("-ut")
+        assert kw["timeout"] == 600
+        assert _name_of(cmd).startswith("redamon-nuclei-update-")
+        assert fake.kills == [["docker", "kill", _name_of(cmd)]]
+
+    def test_a_healthy_volume_kills_nothing(self):
+        ok, fake = self._ensure(lambda cmd, kw: subprocess.CompletedProcess(cmd, 0, "5\n", ""))
+        assert ok is True and fake.kills == []
+
+
+# ---------------------------------------------------------------------------
+# httpx (http_probe.run_http_probe): named and killed already; pinned
+# ---------------------------------------------------------------------------
+
+class TestHttpx:
+    def test_the_budget_kills_the_container_by_the_name_in_its_command(self):
+        started = []
+
+        def popen(cmd, **_kw):
+            cmd = list(cmd)
+            (_mount(cmd, "/output") / "httpx_output.json").write_text(
+                _jsonl({"url": f"https://{A}", "input": f"https://{A}", "status_code": 200,
+                        "host": A_IP}))
+            started.append(CliProc(cmd, subprocess.TimeoutExpired(cmd, 60), ("", ""),
+                                   returncode=None))
+            return started[-1]
+
+        fake = FakeDocker()
+        recon = {"domain": "example.test", "metadata": {"include_root_domain": True},
+                 "dns": {"domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
+                         "subdomains": {}},
+                 "port_scan": {"by_host": {A: {"host": A, "ip": A_IP, "ports": [443],
+                                               "port_details": [{"port": 443, "service": "https"}]}},
+                               "by_ip": {}}}
+        with mock.patch.object(hp, "is_docker_installed", return_value=True), \
+             mock.patch.object(hp, "is_docker_running", return_value=True), \
+             mock.patch.object(hp, "pull_httpx_docker_image", return_value=True), \
+             mock.patch.object(subprocess, "Popen", side_effect=popen), _docker(fake):
+            hp.run_http_probe(recon, output_file=None, settings={"BANNER_GRAB_ENABLED": False,
+                                                                 "WAPPALYZER_ENABLED": False})
+        (proc,) = started
+        assert fake.kills == [["docker", "kill", _name_of(proc.cmd)]]
+        assert "http_probe" in cb.coverage_report().degraded_sources

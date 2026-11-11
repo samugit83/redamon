@@ -737,35 +737,19 @@ def _run_nuclei_takeover(urls: list[str], work_dir: Path, settings: dict) -> lis
 
     run_timeout = max(120, int(settings.get("NUCLEI_TAKEOVER_RUN_TIMEOUT", 1800)))
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=run_timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        # The docker CLI is killed by subprocess, but the daemon-owned container
-        # keeps running; kill it by name (mirror _run_baddns) and keep the
-        # partial JSONL that is already on disk.
-        print(f"[!][Takeover][Nuclei] run timed out after {run_timeout}s -- killing container")
-        try:
-            subprocess.run(["docker", "kill", container_name],
-                           capture_output=True, text=True, timeout=15, check=False)
-        except Exception as e:  # noqa: BLE001
-            print(f"[!][Takeover][Nuclei] failed to kill orphan container: {type(e).__name__}")
-        try:
-            fix_file_ownership(output_file)
-        except Exception:
-            pass
-        _note_layer_unchecked("Nuclei", urls, f"timed out after {run_timeout}s")
-        return _load_nuclei_jsonl(output_file)
+        proc = run_tool_container(cmd, tool="nuclei-takeover", timeout=run_timeout,
+                                  name=container_name)
     except FileNotFoundError:
         print("[!][Takeover][Nuclei] docker binary missing")
         _note_layer_unchecked("Nuclei", urls, "docker binary missing")
         return []
 
-    if proc.returncode not in (0, None):
+    if proc.timed_out:
+        # Stopped by its name; the JSONL it wrote before the cut is read below.
+        print(f"[!][Takeover][Nuclei] run timed out after {run_timeout}s -- container stopped, "
+              f"keeping its partial results")
+        _note_layer_unchecked("Nuclei", urls, f"timed out after {run_timeout}s")
+    elif proc.returncode not in (0, None):
         stderr = (proc.stderr or "").strip()
         if stderr:
             print(f"[!][Takeover][Nuclei] stderr: {stderr[:300]}")

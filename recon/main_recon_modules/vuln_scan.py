@@ -188,12 +188,9 @@ def _live_web_urls(recon_data: dict) -> list:
 
 def _nuclei_kill_container(container_name: str) -> None:
     """`docker kill` a named nuclei container. The daemon owns it, so killing the
-    docker CLI (process.terminate) would leave it running; mirror _run_baddns."""
-    try:
-        subprocess.run(["docker", "kill", container_name],
-                       capture_output=True, text=True, timeout=15, check=False)
-    except Exception as e:  # noqa: BLE001
-        print(f"[!][Nuclei] failed to kill {container_name}: {type(e).__name__}")
+    docker CLI (process.terminate) would leave it running. Never raises."""
+    from recon.helpers.docker_helpers import kill_container
+    kill_container(container_name)
 
 
 def _execute_nuclei_pass(cmd: list, output_file: str, label: str,
@@ -1091,11 +1088,11 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 try:
                     Path(path_str).unlink(missing_ok=True)
                 except PermissionError:
-                    subprocess.run(
+                    from recon.helpers.docker_helpers import run_tool_container
+                    run_tool_container(
                         ["docker", "run", "--rm", "-v", f"{nuclei_temp_dir}:/cleanup",
                          "alpine", "rm", "-f", f"/cleanup/{Path(path_str).name}"],
-                        capture_output=True,
-                    )
+                        tool="nuclei-cleanup", timeout=60)
 
             # The directory is this run's alone, so whatever is left in it can go.
             shutil.rmtree(nuclei_temp_dir, ignore_errors=True)

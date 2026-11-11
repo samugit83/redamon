@@ -263,16 +263,16 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
             needs_download = True  # New volume, definitely needs templates
         else:
             # Volume exists - check if it has templates by counting .yaml files
-            check_result = subprocess.run(
-                ["docker", "run", "--rm", 
+            check_result = run_tool_container(
+                ["docker", "run", "--rm",
                  "-v", f"{NUCLEI_TEMPLATES_VOLUME}:/root/nuclei-templates",
-                 "alpine", 
+                 "alpine",
                  "sh", "-c", "find /root/nuclei-templates -name '*.yaml' 2>/dev/null | head -5 | wc -l"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            
+                tool="nuclei-templates-count", timeout=30)
+            if check_result.timed_out:
+                print("[!][Docker] Timeout while counting the nuclei templates")
+                return False
+
             template_count = int(check_result.stdout.strip()) if check_result.stdout.strip().isdigit() else 0
             needs_download = template_count == 0
         
@@ -283,22 +283,16 @@ def ensure_templates_volume(docker_image: str, auto_update: bool = False) -> boo
             print(f"[*][Docker] Checking for template updates...")
         
         if needs_download or auto_update:
-            # Named so a timed-out update can be stopped: the timeout kills only
-            # the docker CLI, and the container would go on rewriting the volume
-            # the scan is about to read.
-            updater = f"redamon-nuclei-update-{uuid.uuid4().hex[:12]}"
-            try:
-                update_result = subprocess.run(
-                    ["docker", "run", "--rm", "--name", updater,
-                     "-v", f"{NUCLEI_TEMPLATES_VOLUME}:/root/nuclei-templates",
-                     docker_image,
-                     "-ut"],  # Update templates
-                    capture_output=True,
-                    text=True,
-                    timeout=600  # 10 minutes for initial download
-                )
-            except subprocess.TimeoutExpired:
-                kill_container(updater)
+            # Stopped on a timeout: the container would go on rewriting the
+            # volume the scan is about to read.
+            update_result = run_tool_container(
+                ["docker", "run", "--rm",
+                 "-v", f"{NUCLEI_TEMPLATES_VOLUME}:/root/nuclei-templates",
+                 docker_image,
+                 "-ut"],  # Update templates
+                tool="nuclei-update", timeout=600,  # 10 minutes for initial download
+                name=f"redamon-nuclei-update-{uuid.uuid4().hex[:12]}")
+            if update_result.timed_out:
                 # Stopped mid-write, the volume can hold half-updated templates
                 # that fail to load, so Nuclei is skipped (its findings kept)
                 # rather than run on them.
