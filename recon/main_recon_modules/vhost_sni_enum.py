@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, NamedTuple, Optional
 
+from recon.helpers import request_pacer
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.helpers.catchall import canonical_bytes, replace_hostnames as _replace_hostnames
 
@@ -720,6 +721,10 @@ def _curl_probe(
             cmd += ["-H", f"Host: {host_header}"]
         cmd.append(url)
 
+    # One curl is one request (no -L): its slot of the process-wide RoE pacer
+    # keeps the whole worker pool, with every other in-process requester,
+    # under the ceiling. Inert with no ceiling.
+    request_pacer.acquire()
     try:
         proc = subprocess.run(
             cmd,
