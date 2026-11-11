@@ -610,46 +610,36 @@ class _FakeWS:
 
 
 class TestReadInitFrame(unittest.TestCase):
+    """The init frame is consumed; its ids are ignored (NF-04): the shell's identity
+    comes from the agent proxy's query (tests/test_terminal_server_auth.py)."""
+
     def _run(self, ws, timeout=0.5):
         return asyncio.run(ts._read_init_frame(ws, timeout=timeout))
 
-    def test_init_frame_parsed(self):
+    def test_init_frame_is_consumed_and_its_ids_ignored(self):
         ws = _FakeWS([json.dumps({"type": "init", "user_id": "U", "project_id": "P"})])
-        env, replay = self._run(ws)
-        self.assertEqual(env, {"REDAMON_USER_ID": "U", "REDAMON_PROJECT_ID": "P"})
-        self.assertEqual(replay, b"")
+        self.assertEqual(self._run(ws), b"")
 
-    def test_init_with_blank_user_is_skipped(self):
+    def test_init_with_blank_user_is_consumed(self):
         ws = _FakeWS([json.dumps({"type": "init", "user_id": "", "project_id": "P"})])
-        env, replay = self._run(ws)
-        self.assertNotIn("REDAMON_USER_ID", env)
-        self.assertEqual(env.get("REDAMON_PROJECT_ID"), "P")
-        self.assertEqual(replay, b"")
+        self.assertEqual(self._run(ws), b"")
 
     def test_non_init_json_is_replayed(self):
         msg = json.dumps({"type": "resize", "rows": 24, "cols": 80})
         ws = _FakeWS([msg])
-        env, replay = self._run(ws)
-        self.assertEqual(env, {})
-        self.assertEqual(replay, msg.encode("utf-8"))
+        self.assertEqual(self._run(ws), msg.encode("utf-8"))
 
     def test_raw_keystroke_is_replayed(self):
         ws = _FakeWS([b"ls\n"])
-        env, replay = self._run(ws)
-        self.assertEqual(env, {})
-        self.assertEqual(replay, b"ls\n")
+        self.assertEqual(self._run(ws), b"ls\n")
 
     def test_invalid_json_is_replayed_as_bytes(self):
         ws = _FakeWS(["not json at all"])
-        env, replay = self._run(ws)
-        self.assertEqual(env, {})
-        self.assertEqual(replay, b"not json at all")
+        self.assertEqual(self._run(ws), b"not json at all")
 
     def test_timeout_returns_empty(self):
         ws = _FakeWS([], raise_timeout_after=True)
-        env, replay = self._run(ws, timeout=0.05)
-        self.assertEqual(env, {})
-        self.assertEqual(replay, b"")
+        self.assertEqual(self._run(ws, timeout=0.05), b"")
 
 
 class TestRedagraphSendsScannerKey(unittest.TestCase):
