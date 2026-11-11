@@ -151,6 +151,40 @@ def test_a_weak_master_key_cannot_verify_and_answers_503(spy, monkeypatch, endpo
 
 
 @pytest.mark.parametrize("endpoint,model,extra,calls_back", STARTS, ids=IDS)
+def test_a_weak_master_key_answers_503_with_its_remedy_when_no_credential_came(spy, monkeypatch, endpoint, model,
+                                                                               extra, calls_back):
+    # The real case: the webapp of a stack whose INTERNAL_API_KEY was never generated
+    # mints nothing, so its starts arrive with no credential at all.
+    for weak in ("", "changeme"):
+        monkeypatch.setenv("INTERNAL_API_KEY", weak)
+        err = _refusal(endpoint, model, extra)
+        assert err.status_code == 503
+        assert err.detail["code"] == "job_credential_unverifiable"
+        assert "./redamon.sh update" in err.detail["detail"]
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize("endpoint,model,extra,calls_back", STARTS, ids=IDS)
+def test_the_start_runs_under_the_tenant_job_tenant_returns_never_the_body_user(spy, monkeypatch, endpoint, model,
+                                                                                extra, calls_back):
+    # A body user other than `ten` is refused (above), so the two can only be told apart
+    # at _job_tenant's answer: whatever it returns is what admission and the container
+    # get, never request.user_id.
+    real = api._job_tenant
+    verified = []
+
+    def tenant_differs(project_id, request, *, calls_back):
+        verified.append(real(project_id, request, calls_back=calls_back))
+        return "tenant-from-the-credential"
+
+    monkeypatch.setattr(api, "_job_tenant", tenant_differs)
+    _start(endpoint, model, extra, job_credential=job_credential("p1", "u1"))
+    (name, kw), = spy.calls
+    assert verified == ["u1"]
+    assert _tenant_of(name, kw) == "tenant-from-the-credential"
+
+
+@pytest.mark.parametrize("endpoint,model,extra,calls_back", STARTS, ids=IDS)
 def test_no_scanner_key_means_a_503_for_the_scans_that_call_back(spy, monkeypatch, endpoint, model, extra,
                                                                  calls_back, caplog):
     for missing in ("", "changeme"):
@@ -279,15 +313,37 @@ def _run_env_sites():
     return sites
 
 
-def test_every_container_that_gets_the_scanner_key_gets_its_credential_except_the_ai_attack_run():
+def test_only_the_containers_that_call_back_get_the_scanner_key_and_each_its_credential():
     sites = [(fn, s) for fn, s in _run_env_sites() if "self._scanner_env()" in s]
     by_fn = {fn: s for fn, s in sites}
+    # The AI attack run calls nothing back, so it holds neither: the bare key would
+    # still sign a `source=recon` capture tag for any tenant.
     assert set(by_fn) == {"start_recon", "start_partial_recon", "start_gvm_scan", "start_github_hunt",
-                          "start_supply_chain", "start_ai_attack_surface"}
+                          "start_supply_chain"}
     for fn, splats in by_fn.items():
-        has = "self._job_env(job_credential)" in splats
-        # The AI attack run calls nothing back: it gets no credential to lose.
-        assert has == (fn != "start_ai_attack_surface"), fn
+        assert "self._job_env(job_credential)" in splats, fn
+
+
+def test_the_ai_attack_container_gets_no_scanner_key_and_no_credential(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
+    use_keys(monkeypatch)
+    with patch("container_manager.docker") as md:
+        md.from_env.return_value = MagicMock()
+        mgr = cm.ContainerManager()
+    mgr.client = MagicMock()
+    mgr.client.containers.run.return_value = types.SimpleNamespace(id="c0ffee")
+    mgr.local_llm_manager = None
+    state = asyncio.run(mgr.start_ai_attack_surface(
+        project_id="p1", user_id="u1", webapp_api_url="http://webapp:3000",
+        run_config={"tool": "skeleton", "targets": [], "bounds": {}, "roe_confirmed": True, "dry_run": True},
+        ai_attack_path="/host/ai_attack_surface_scan"))
+    assert state.error is None
+    env = mgr.client.containers.run.call_args.kwargs["environment"]
+    assert env["PROJECT_ID"] == "p1"
+    for absent in ("SCANNER_API_KEY", "INTERNAL_API_KEY", "REDAMON_JOB_CREDENTIAL"):
+        assert absent not in env
+    assert not {KEYS["SCANNER_API_KEY"], MASTER} & set(env.values())
 
 
 def test_no_spawn_hands_out_the_master_key_except_the_capture_proxy():

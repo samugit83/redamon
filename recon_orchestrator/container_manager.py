@@ -3090,7 +3090,8 @@ class ContainerManager:
                     "NEO4J_URI": os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
-                    **self._scanner_env(),  # S3/E6: scoped scanner token
+                    # No scanner key: this run calls nothing back, and the bare key
+                    # would still sign a `source=recon` capture tag for any tenant.
                 },
                 volumes={
                     "/tmp/redamon": {"bind": "/tmp/redamon", "mode": "rw"},

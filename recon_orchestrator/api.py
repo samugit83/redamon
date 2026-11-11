@@ -21,7 +21,7 @@ from sse_starlette.sse import EventSourceResponse
 from auth import is_orchestrator_request_authorized
 from recon_settings.engagement import derive_roe_enabled
 from container_manager import ContainerManager, scanner_key
-from job_credential import JobCredentialRefused, verify_job_credential
+from job_credential import JobCredentialRefused, master_key_is_weak, verify_job_credential
 from admission_ledger import AdmissionError
 
 
@@ -291,6 +291,10 @@ def _job_tenant(project_id: str, request, *, calls_back: bool) -> str:
             "detail": "SCANNER_API_KEY is not configured, so the scan could not read its settings. "
                       "Run ./redamon.sh update to generate it.",
             "code": "scanner_key_missing"})
+    # Before "missing": a webapp with a weak master key mints nothing, so its starts
+    # arrive bare, and the remedy (generate the key) is what the operator needs.
+    if master_key_is_weak():
+        raise _refuse_job_credential("weak_master_key", project_id)
     if not request.job_credential:
         raise _refuse_job_credential("missing", project_id)
     try:
