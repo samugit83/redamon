@@ -13,14 +13,20 @@ import time
 import uuid
 import requests
 import urllib3
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from urllib.parse import urljoin, urlparse
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     from recon.main_recon_modules.ip_filter import is_url_safe_to_probe
 except ImportError:  # spawned-container path where CWD is on sys.path
     from ip_filter import is_url_safe_to_probe
+from recon.helpers.js_recon.hop_guard import (
+    NOT_ADMITTED, OUT_OF_SCOPE, ROE_EXCLUDED, TOO_MANY_REDIRECTS, UNSAFE,
+    admit_any, fetch_hop_by_hop, url_host,
+)
 from recon.helpers.user_agent import DEFAULT_BROWSER_UA
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -40,7 +46,13 @@ DEFAULT_SOURCEMAP_PROBE_PATHS = [
 
 
 _REFERENCE_WORTH_REPORTING = frozenset({'http_401', 'http_403'})
-_REFERENCE_WORTH_REPORTING_ELSEWHERE = frozenset({'unsafe', 'unreachable'})
+_REFERENCE_WORTH_REPORTING_ELSEWHERE = frozenset({UNSAFE, 'unreachable', OUT_OF_SCOPE})
+_REFUSED_BY_HOP_GUARD = frozenset({UNSAFE, ROE_EXCLUDED, OUT_OF_SCOPE, NOT_ADMITTED})
+
+# The hop rules of one discover_and_analyze_sourcemaps call (RoE settings, the
+# map scope, the caller's admit) for every _fetch_sourcemap it makes, so that
+# fetch keeps its (url, timeout, outcome) call shape.
+_HOP_RULES: ContextVar[Optional[dict]] = ContextVar('sourcemap_hop_rules', default=None)
 
 # Object storage refuses a key it does not hold with 403 AccessDenied when the
 # caller may not list the bucket (S3, and CloudFront in front of it with OAC),
@@ -68,6 +80,17 @@ def _roe_excluded(url: str, settings: dict) -> bool:
         return False
     from recon.helpers.roe_scope import _is_roe_excluded
     return _is_roe_excluded(urlparse(url).hostname or '', excluded)
+
+
+def _send_map_hop(method: str, url: str, *, timeout, headers, allow_redirects):
+    """One hop of a map fetch (fetch_hop_by_hop's sender). The target's own
+    file: a self-signed or internal-CA certificate is accepted, as by the
+    bundle download."""
+    if method == 'HEAD':
+        return requests.head(url, timeout=timeout, headers=headers, allow_redirects=allow_redirects,
+                             verify=False)
+    return requests.get(url, timeout=timeout, headers=headers, allow_redirects=allow_redirects,
+                        verify=False)
 
 
 def _missing_key_control(map_url: str, timeout: int) -> str:
@@ -191,9 +214,14 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
 
     `outcome`, when given, receives `reason` (and `status` for an HTTP
     answer): ok, html, not_json, invalid_schema, not_found, unreachable,
-    unsafe or http_<status>. A single-page app answers every unknown path,
+    http_<status>, or the hop guard's refusal (unsafe, roe_excluded,
+    out_of_scope, not_admitted). A single-page app answers every unknown path,
     `.map` included, with its HTML shell and a 200, so a 200 alone proves
     nothing: the body must parse as a v3 source map.
+
+    The URL comes from target JS and may redirect anywhere, so HEAD and GET
+    each follow it hop by hop (STRIDE I14, R-14): every hop passes the SSRF
+    guard, and inside discovery the RoE, the map scope and the caller's admit.
     """
     outcome = outcome if outcome is not None else {}
     if url.startswith('data:'):
@@ -207,20 +235,23 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
             return None
         return _parse_sourcemap_body(content, outcome)
 
-    # STRIDE I14: source-map URLs are derived from target JS; refuse to fetch
-    # ones that resolve to cloud metadata / loopback / an internal host.
-    if not is_url_safe_to_probe(url):
-        outcome['reason'] = 'unsafe'
-        return None
-
     headers = {'User-Agent': DEFAULT_BROWSER_UA}
-    head_timeout = min(timeout, 5)
+    rules = _HOP_RULES.get() or {}
+
+    def fetch(method: str, wait: float):
+        refusal: dict = {}
+        resp = fetch_hop_by_hop(method, url, timeout=wait, headers=headers, url_guard=is_url_safe_to_probe,
+                                refusal=refusal, send=_send_map_hop, **rules)
+        if resp is None:
+            # A redirect loop reads as requests' own TooManyRedirects did.
+            reason = refusal.get('reason')
+            outcome['reason'] = 'unreachable' if reason == TOO_MANY_REDIRECTS else reason
+        return resp
 
     try:
-        # The target's own file: a self-signed or internal-CA certificate is
-        # accepted, as by the bundle download.
-        head = requests.head(url, timeout=head_timeout, allow_redirects=True, headers=headers,
-                             verify=False)
+        head = fetch('HEAD', min(timeout, 5))
+        if head is None:
+            return None
         # Skip definite misses without paying for a body download. Other statuses
         # (200, 403, 405, 5xx) fall through to GET — some servers misreport HEAD.
         if head.status_code in (404, 410):
@@ -232,7 +263,9 @@ def _fetch_sourcemap(url: str, timeout: int = 10, outcome: Optional[dict] = None
         return None
 
     try:
-        resp = requests.get(url, timeout=timeout, headers=headers, verify=False)
+        resp = fetch('GET', timeout)
+        if resp is None:
+            return None
     except requests.RequestException:
         outcome['reason'] = 'unreachable'
         return None
@@ -405,6 +438,8 @@ def discover_and_analyze_sourcemaps(
     pseudo_files: Optional[list] = None,
     deadline: Optional[float] = None,
     skipped: Optional[list] = None,
+    in_scope: Optional[Callable[[str], bool]] = None,
+    admit: Callable[[str], bool] = admit_any,
 ) -> list:
     """
     Discover and analyze source maps for a list of JS files.
@@ -416,12 +451,32 @@ def discover_and_analyze_sourcemaps(
             sources (sourcemap_pseudo_files) for the detectors to read
         deadline: a time.monotonic() value after which no further JS file is
             checked for a map; each one left out is appended to ``skipped``
+        in_scope: the run's scope, ``url -> bool``; a map URL (and each of
+            its redirect hops) is requested only on a host a JS file came
+            from or one this admits
+        admit: the caller's own rule for every hop (fetch_hop_by_hop)
 
     Returns:
         List of source map finding dicts
     """
     if not settings.get('JS_RECON_SOURCE_MAPS', True):
         return []
+
+    # A script names third-party hosts as freely as its own, so a map URL is
+    # in scope only on a host the run already fetched JS from, as for an
+    # extracted endpoint, or one the caller's scope admits. Any other host is
+    # never requested; a direct reference to it is reported, unfetched.
+    js_hosts = frozenset(
+        url_host(f['url']) for f in js_files
+        if isinstance(f, dict) and isinstance(f.get('url'), str)
+        and f['url'].lower().startswith(('http://', 'https://'))
+    ) - {''}
+
+    def map_in_scope(url: str) -> bool:
+        return url_host(url) in js_hosts or bool(in_scope is not None and in_scope(url))
+
+    hop_rules = {'settings': settings, 'in_scope': map_in_scope, 'admit': admit}
+    refused: Counter = Counter()
 
     # Load custom probe paths
     custom_paths = []
@@ -461,7 +516,15 @@ def discover_and_analyze_sourcemaps(
                 pseudo_files.extend(recovered)
         return [result]
 
+    def _fetch(url: str, outcome: dict) -> Optional[dict]:
+        map_data = _fetch_sourcemap(url, timeout=timeout, outcome=outcome)
+        if outcome.get('reason') in _REFUSED_BY_HOP_GUARD:
+            with checked_lock:
+                refused[outcome['reason']] += 1
+        return map_data
+
     def _process(js_file: dict) -> list:
+        token = _HOP_RULES.set(hop_rules)
         try:
             js_url = js_file.get('url', '')
             content = js_file.get('content', '')
@@ -514,7 +577,7 @@ def discover_and_analyze_sourcemaps(
                         return []
                     if not _claim(probe_url):
                         continue
-                    map_data = _fetch_sourcemap(probe_url, timeout=timeout)
+                    map_data = _fetch(probe_url, {})
                     if map_data:
                         return _served(map_data, probe_url, js_url, 'probe')
                 return []
@@ -524,14 +587,14 @@ def discover_and_analyze_sourcemaps(
             if _roe_excluded(map_url, settings) or not _claim(map_url):
                 return []
             outcome: dict = {}
-            map_data = _fetch_sourcemap(map_url, timeout=timeout, outcome=outcome)
+            map_data = _fetch(map_url, outcome)
             if map_data:
                 return _served(map_data, map_url, js_url, discovery_method)
             # Referenced but not served. An access refusal can mean the map
             # exists, and a reference to ANOTHER host we could not or may not
-            # reach leaks that host (an internal build server); a 404, an SPA's
-            # HTML shell or a JSON error page says nothing, and reporting those
-            # buried the board in rows.
+            # reach (unsafe, out of scope) leaks that host (an internal build
+            # server); a 404, an SPA's HTML shell or a JSON error page says
+            # nothing, and reporting those buried the board in rows.
             reason = outcome.get('reason')
             other_host = urlparse(map_url).hostname not in (None, urlparse(js_url).hostname)
             if reason not in _REFERENCE_WORTH_REPORTING and not (
@@ -566,6 +629,8 @@ def discover_and_analyze_sourcemaps(
         except Exception as e:
             print(f"[!][JsRecon] Error processing sourcemap for {js_file.get('url', '?')}: {e}")
             return []
+        finally:
+            _HOP_RULES.reset(token)
 
     workers = max(1, min(settings.get('JS_RECON_CONCURRENCY', 10), 20))
     findings = []
@@ -573,4 +638,7 @@ def discover_and_analyze_sourcemaps(
         for fut in as_completed(ex.submit(_process, jf) for jf in js_files):
             findings.extend(fut.result())
 
+    if refused:
+        print("[-][JsRecon] Source-map requests not sent (hop guard): "
+              + ", ".join(f"{reason} {n}" for reason, n in sorted(refused.items())))
     return findings
