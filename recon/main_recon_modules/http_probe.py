@@ -29,6 +29,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Set, Tuple, Optional
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
@@ -316,9 +317,8 @@ def grab_banner(host: str, port: int, timeout: float = 5.0, use_ssl: bool = Fals
     """
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((host, port))
+        # Picks the address family from the target, so an IPv6 address connects too.
+        sock = socket.create_connection((host, port), timeout=timeout)
 
         # Wrap with SSL if needed
         if use_ssl:
@@ -597,15 +597,16 @@ def url_port(url: str) -> int:
 
     Returns -1 when the URL can't be parsed.
     """
-    m = re.match(r"^(https?)://([^/:]+)(?::(\d+))?", url.strip(), re.IGNORECASE)
-    if not m:
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
         return -1
-    scheme, _host, port = m.group(1).lower(), m.group(2), m.group(3)
-    if port:
-        try:
-            return int(port)
-        except ValueError:
-            return -1
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https") or not parts.hostname:
+        return -1
+    if port is not None:
+        return port
     return 443 if scheme == "https" else 80
 
 
@@ -1394,16 +1395,14 @@ def parse_httpx_output(output_file: str, root_domain=None, allowed_hosts: list =
 
 
 def extract_host_from_url(url: str) -> str:
-    """Extract hostname from URL."""
+    """The URL's host as written, without port or userinfo. An IPv6 literal
+    comes back bare (``2001:db8::10``), the form the graph keys an IP by."""
     try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        host = parsed.netloc
-        # Remove port if present
-        if ':' in host:
-            host = host.split(':')[0]
-        return host
-    except Exception:
+        netloc = urlsplit(url).netloc.rpartition("@")[2]
+        if netloc.startswith("["):
+            return netloc[1:].partition("]")[0]
+        return netloc.partition(":")[0]
+    except Exception:  # noqa: BLE001 - httpx output is untrusted; no URL, no host
         return ""
 
 
