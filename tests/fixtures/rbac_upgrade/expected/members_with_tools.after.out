@@ -14,6 +14,7 @@ upg-PC|upg-member-c@e2e.local|upg-c.test
 == one-time markers (action, rows)
 system.jev_provider_selection_backfill|1
 system.jev_provider_selection_cutoff|1
+system.nuclei_template_owners_backfill|1
 system.rbac_legacy_grants_backfill|1
 system.rbac_legacy_grants_cutoff|1
 system.user_skill_toggles_backfill|1
@@ -28,3 +29,7 @@ upg-member-d@e2e.local|
 2|2|0
 == accounts created after the legacy grants cutoff
 0
+== nuclei template owners marker (files found, rows written), one line per marker row [step 1.12]
+0|0
+== nuclei templates (rows, instance rows)
+0|0

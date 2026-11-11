@@ -15,3 +15,12 @@ SELECT after->>'kali_terminal', after->>'shell_sessions', after->>'tunnels'
 \echo == accounts created after the legacy grants cutoff
 SELECT count(*) FROM users
  WHERE created_at > (SELECT min(created_at) FROM audit_log WHERE action = 'system.rbac_legacy_grants_cutoff');
+
+-- The harness mounts no templates folder and the image has no /data/nuclei-templates, so
+-- the backfill finds no file: one final marker that recorded 0 files, and no row.
+\echo == nuclei template owners marker (files found, rows written), one line per marker row [step 1.12]
+SELECT after->>'files', after->>'rowsCreated'
+  FROM audit_log WHERE action = 'system.nuclei_template_owners_backfill' ORDER BY created_at;
+
+\echo == nuclei templates (rows, instance rows)
+SELECT count(*), count(*) FILTER (WHERE owner_user_id IS NULL) FROM nuclei_templates;

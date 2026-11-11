@@ -15,9 +15,9 @@
 #     identical after it, audit_log counted without the rows of UPGRADE_AUDIT_ACTIONS; a
 #     table or users column the run added is printed as a NOTE;
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
-#     (what the upgrade adds: legacy grants, its marker rows), through psql, diffed
-#     against expected/<scenario>.after.out. The fixture itself is checked with checks.sql
-#     against expected/<scenario>.out before the run.
+#     (what the upgrade adds: legacy grants, Nuclei template owners, their marker rows),
+#     through psql, diffed against expected/<scenario>.after.out. The fixture itself is
+#     checked with checks.sql against expected/<scenario>.out before the run.
 #
 # Modes (several may be chained; each runs every scenario):
 #   all       the startup list once
@@ -89,7 +89,8 @@ FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
 
 # Audit rows the upgrade writes by design: left out of the row-count comparison and pinned
 # instead, by count, in checks.sql's markers and by checks_after.sql.
-UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill)
+UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill
+                       system.nuclei_template_owners_backfill)
 UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
 UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 
