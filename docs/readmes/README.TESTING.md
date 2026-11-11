@@ -212,6 +212,14 @@ bearer, the shell runs as the ticket's user and project whatever the init frame 
 `POST /ws/close` ends the open terminal with close 4403. It also needs the `agent` and
 `kali-sandbox` containers.
 
+`tests/rbac_legacy_review_live.sh` checks the admin review of legacy grants: a member is refused
+`/api/admin/legacy-grants` and gets no `rbac` block from `/api/auth/me`; no request adds a grant;
+an admin's Keep and Remove each write one audit row; removing the `kali_terminal` grant closes the
+holder's open terminal (watched inside the agent container by
+`tests/rbac_legacy_review_live_ws.py`) and refuses its next ticket; the "What changed" card's
+dismissal sticks. It decides only fixture accounts' grants, never `keep_all` or `remove_all`,
+which would decide the stack's real members' grants. It needs the same containers.
+
 ### The RBAC upgrade harness
 
 `tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`

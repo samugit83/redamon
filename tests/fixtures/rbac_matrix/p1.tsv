@@ -195,3 +195,18 @@ p1-scanner-settings-bare	1.16	scanner	GET	/api/users/${MEMBER_A_ID}/settings?int
 p1-scanner-project-bare	1.16	scanner	GET	/api/projects/${PA_ID}	-	403;has=job_credential_required;lacks=rbac-PA	req:HD-20
 p1-scanner-traffic-ingest-bare	1.16	scanner	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	403;has=job_credential_required	req:HD-20
 p1-internal-settings-unmasked	1.16	internal	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	req:HD-20
+#
+# ---- step 1.18: the legacy access review, the update notes and the admins' rbac block ----
+# Reads and refusals only: no row decides a grant, since that would decide this stack's real
+# members' grants; tests/rbac_legacy_review_live.sh makes fixture-only decisions.
+p1-legacy-grants-anon	1.18	anon	GET	/api/admin/legacy-grants	-	401	req:HD-29
+p1-legacy-grants-member	1.18	member_c	GET	/api/admin/legacy-grants	-	403;has="code":"forbidden"	req:HD-29
+p1-legacy-grants-member-decide	1.18	member_c	POST	/api/admin/legacy-grants	{"action":"remove_all"}	403;has="code":"forbidden"	req:HD-29
+p1-legacy-grants-admin	1.18	admin_a	GET	/api/admin/legacy-grants	-	200;has="holders"	req:HD-29
+p1-legacy-grants-admin-acting	1.18	admin_a_as_member_a	GET	/api/admin/legacy-grants	-	200;has="holders"	req:HD-29
+p1-legacy-grants-no-add	1.18	admin_a	POST	/api/admin/legacy-grants	{"action":"add","userId":"${MEMBER_A_ID}","grant":"kali_terminal"}	400;has=invalid_action	req:HD-29
+p1-legacy-grants-keep-not-held	1.18	admin_a	POST	/api/admin/legacy-grants	{"action":"keep","userId":"${MEMBER_A_ID}","grant":"kali_terminal"}	409;has=not_held	req:HD-29
+p1-whats-new-member	1.18	member_c	GET	/api/admin/whats-new	-	403;has="code":"forbidden"	req:HD-32
+p1-whats-new-admin	1.18	admin_a	GET	/api/admin/whats-new	-	200;has="dismissed"	req:HD-32
+p1-auth-me-member-no-rbac	1.18	member_c	GET	/api/auth/me	-	200;lacks="rbac"	req:HD-30
+p1-auth-me-admin-rbac	1.18	admin_a	GET	/api/auth/me	-	200;has="rbac":{"compat":	req:HD-30
