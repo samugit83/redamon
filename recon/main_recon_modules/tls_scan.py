@@ -183,8 +183,9 @@ def _build_tlsx_targets(combined_result: dict, settings: dict):
 
     meta maps ``"submitted:port" -> scanned_ip`` so the parser keys by_target on
     the IP the target line was BUILT from, never the ``ip`` tlsx returns (they
-    differ when a hostname has several A records). Sends a hostname whenever one
-    is known so tlsx presents SNI and grabs the right cert on a vhost frontend.
+    differ when a hostname has several A records). Sends a hostname whenever an
+    admitted one is known so tlsx presents SNI and grabs the right cert on a
+    vhost frontend.
     """
     # Lazy imports: recon.helpers.__init__ pulls heavy deps not needed here.
     from recon.main_recon_modules.ip_filter import is_non_routable_ip
@@ -208,17 +209,26 @@ def _build_tlsx_targets(combined_result: dict, settings: dict):
     by_ip = ((combined_result.get("port_scan") or {}).get("by_ip")) or {}
     # IP mode: an address is handshaken only when it is a target, and then even
     # when it is private (D-13: an internal engagement lists private targets).
-    from recon.helpers.target_admission import admit_targets, ip_mode_targets, is_target, known_addresses
+    from recon.helpers.target_admission import (admission_context, admit_targets, ip_mode_targets,
+                                                is_target, known_addresses)
     targets = ip_mode_targets(combined_result)
     sni_admitted = None
-    if targets is not None:
-        # tlsx resolves an SNI name itself: only a name whose every address is
-        # a target may be sent. Asked once for every name, not once per address.
+    # tlsx resolves an SNI name itself and may land on any address the name
+    # has, not the one the line was built from. So a name is sent only when
+    # every address it has may be reached: in IP mode every one a target;
+    # under RoE IP or CIDR entries none excluded (D2). A refused name's
+    # address is handshaken as a bare IP. Asked once for every name, not once
+    # per address.
+    if targets is not None or admission_context(settings, combined_result).ip_rules:
         known = known_addresses(combined_result)
         names = {h.strip().lower() for info in by_ip.values() if isinstance(info, dict)
                  for h in (info.get("hostnames") or []) if isinstance(h, str) and h.strip()}
-        sni_admitted = set(admit_targets(None, combined_result, names={h: known.get(h, []) for h in names},
-                                         module="tlsx", resolves_names=True, record=False).names)
+        # IP mode reads the target list from the recon dict, and its refusals
+        # are decisions, never coverage gaps; an RoE refusal is noted.
+        sni_admitted = set(admit_targets(None if targets is not None else settings, combined_result,
+                                         names={h: known.get(h, []) for h in names},
+                                         module="tlsx", resolves_names=True,
+                                         record=targets is None).names)
 
     lines = []
     meta = {}
