@@ -42,43 +42,60 @@ def _fake_tool(fn):
 
 sys.modules['langchain_core.tools'].tool = _fake_tool
 
+from types import SimpleNamespace
+
+import project_settings as _ps
+
+
+def _bind_run_key(test, key='test-key'):
+    """The Shodan key is the run's own, read per call (RBAC T17): no manager holds one.
+    The run's key pool is stubbed here, because its rotator module needs the langchain
+    this file stubs out; test_run_credentials_isolation.py proves the real per-run path."""
+    rotator = SimpleNamespace(current_key=key, tick=lambda: None)
+    patcher = patch('tools.run_key_rotator', return_value=rotator)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
+def _run_settings(test, **user_settings):
+    _ps._settings_ctx.set({**_ps.DEFAULT_AGENT_SETTINGS, "USER_SETTINGS": user_settings})
+    test.addCleanup(_ps._settings_ctx.set, None)
+
 
 class TestShodanToolManager(unittest.TestCase):
     """Tests for ShodanToolManager class."""
 
-    def test_no_api_key_returns_none(self):
-        """get_tools() returns None when no API key is configured."""
+    def test_no_run_key_answers_not_configured(self):
+        """Without a run key the tool still exists and says Shodan is not configured."""
         from tools import ShodanToolManager
-        manager = ShodanToolManager()
-        tool = manager.get_tool()
-        self.assertIsNone(tool)
+        _ps._settings_ctx.set(None)
+        tool = ShodanToolManager().get_tool()
+        result = asyncio.run(tool.ainvoke({"action": "host", "ip": "1.2.3.4"}))
+        self.assertIn("Shodan is not configured", result)
 
-    def test_no_api_key_empty_string_returns_none(self):
-        """get_tools() returns None when API key is empty string."""
+    def test_an_empty_run_key_answers_not_configured(self):
+        """An empty key in the run's settings means none."""
         from tools import ShodanToolManager
-        manager = ShodanToolManager(api_key='')
-        tool = manager.get_tool()
-        self.assertIsNone(tool)
+        _run_settings(self, shodanApiKey='')
+        tool = ShodanToolManager().get_tool()
+        result = asyncio.run(tool.ainvoke({"action": "host", "ip": "1.2.3.4"}))
+        self.assertIn("Shodan is not configured", result)
 
-    def test_with_api_key_returns_tool(self):
-        """get_tools() returns a callable tool when API key is set."""
+    def test_the_tool_is_always_registered(self):
+        """get_tool() returns the shodan tool with no key at hand: keys come per call."""
         from tools import ShodanToolManager
-        manager = ShodanToolManager(api_key='test-key-123')
-        tool = manager.get_tool()
+        tool = ShodanToolManager().get_tool()
         self.assertIsNotNone(tool)
         self.assertEqual(tool.name, 'shodan')
 
-    def test_api_key_update(self):
-        """Manager can have its key updated and return new tool."""
+    def test_the_key_comes_from_the_run(self):
+        """The same tool object spends whichever key the calling run holds."""
         from tools import ShodanToolManager
-        manager = ShodanToolManager()
-        self.assertEqual(manager.api_key, '')
-        tool = manager.get_tool()
-        self.assertIsNone(tool)
-
-        manager.api_key = 'new-key'
-        tool = manager.get_tool()
-        self.assertIsNotNone(tool)
+        tool = ShodanToolManager().get_tool()
+        _bind_run_key(self, 'new-key')
+        with patch('tools._action_host', new=AsyncMock(side_effect=lambda key, ip: f"via {key}")):
+            result = asyncio.run(tool.ainvoke({"action": "host", "ip": "1.2.3.4"}))
+        self.assertEqual(result, "via new-key")
 
 
 class TestShodanUnknownAction(unittest.TestCase):
@@ -86,7 +103,8 @@ class TestShodanUnknownAction(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.manager = ShodanToolManager(api_key='test-key')
+        _bind_run_key(self)
+        self.manager = ShodanToolManager()
         self.tool = self.manager.get_tool()
 
     def test_unknown_action(self):
@@ -150,7 +168,8 @@ class TestActionSearch(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.tool = ShodanToolManager(api_key='test-key').get_tool()
+        _bind_run_key(self)
+        self.tool = ShodanToolManager().get_tool()
 
     @patch('tools.httpx.AsyncClient')
     def test_search_success(self, mock_client_cls):
@@ -255,7 +274,8 @@ class TestActionHost(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.tool = ShodanToolManager(api_key='test-key').get_tool()
+        _bind_run_key(self)
+        self.tool = ShodanToolManager().get_tool()
 
     @patch('tools.httpx.AsyncClient')
     def test_host_info_success(self, mock_client_cls):
@@ -319,7 +339,8 @@ class TestActionDnsReverse(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.tool = ShodanToolManager(api_key='test-key').get_tool()
+        _bind_run_key(self)
+        self.tool = ShodanToolManager().get_tool()
 
     @patch('tools.httpx.AsyncClient')
     def test_dns_reverse_success(self, mock_client_cls):
@@ -356,7 +377,8 @@ class TestActionDnsDomain(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.tool = ShodanToolManager(api_key='test-key').get_tool()
+        _bind_run_key(self)
+        self.tool = ShodanToolManager().get_tool()
 
     @patch('tools.httpx.AsyncClient')
     def test_dns_domain_success(self, mock_client_cls):
@@ -419,7 +441,8 @@ class TestActionCount(unittest.TestCase):
 
     def setUp(self):
         from tools import ShodanToolManager
-        self.tool = ShodanToolManager(api_key='test-key').get_tool()
+        _bind_run_key(self)
+        self.tool = ShodanToolManager().get_tool()
 
     @patch('tools.httpx.AsyncClient')
     def test_count_success(self, mock_client_cls):
@@ -530,7 +553,7 @@ class TestPhaseAwareToolExecutor(unittest.TestCase):
         """PhaseAwareToolExecutor registers shodan tool in __init__."""
         from tools import ShodanToolManager, PhaseAwareToolExecutor, MCPToolsManager
 
-        shodan_mgr = ShodanToolManager(api_key='test')
+        shodan_mgr = ShodanToolManager()
         shodan_tool = shodan_mgr.get_tool()
 
         mcp_mgr = MagicMock(spec=MCPToolsManager)
@@ -555,7 +578,7 @@ class TestPhaseAwareToolExecutor(unittest.TestCase):
         executor = PhaseAwareToolExecutor(mcp_mgr, None, None)
         self.assertNotIn("shodan", executor._all_tools)
 
-        shodan_mgr = ShodanToolManager(api_key='test')
+        shodan_mgr = ShodanToolManager()
         shodan_tool = shodan_mgr.get_tool()
         executor.update_shodan_tool(shodan_tool)
 
@@ -565,7 +588,7 @@ class TestPhaseAwareToolExecutor(unittest.TestCase):
         """update_shodan_tool(None) removes tool from executor."""
         from tools import ShodanToolManager, PhaseAwareToolExecutor, MCPToolsManager
 
-        shodan_mgr = ShodanToolManager(api_key='test')
+        shodan_mgr = ShodanToolManager()
         shodan_tool = shodan_mgr.get_tool()
 
         mcp_mgr = MagicMock(spec=MCPToolsManager)
@@ -579,7 +602,7 @@ class TestPhaseAwareToolExecutor(unittest.TestCase):
         """execute() dispatches shodan tool with full tool_args dict."""
         from tools import ShodanToolManager, PhaseAwareToolExecutor, MCPToolsManager
 
-        shodan_mgr = ShodanToolManager(api_key='test')
+        shodan_mgr = ShodanToolManager()
         shodan_tool = shodan_mgr.get_tool()
 
         mcp_mgr = MagicMock(spec=MCPToolsManager)

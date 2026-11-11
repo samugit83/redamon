@@ -56,12 +56,16 @@ class _FakeTavily:
 
 
 class _Mgr:
-    key_rotator = None
-    api_key = "k"
     max_results = 3
 
 
 class TavilyPathFramed(unittest.TestCase):
+    def setUp(self):
+        # The Tavily key is the run's own (RBAC T17): no manager holds one.
+        import project_settings as ps
+        ps._settings_ctx.set({**ps.DEFAULT_AGENT_SETTINGS, "USER_SETTINGS": {"tavilyApiKey": "k"}})
+        self.addCleanup(ps._settings_ctx.set, None)
+
     def test_tavily_output_is_framed_and_forged_marker_removed(self):
         with patch("langchain_tavily.TavilySearch", _FakeTavily):
             out = asyncio.run(_tavily_search(_Mgr(), "q"))

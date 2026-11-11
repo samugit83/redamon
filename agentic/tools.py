@@ -1102,8 +1102,8 @@ Cypher Query:"""
 # PER-RUN SEARCH KEYS (RBAC T17)
 # =============================================================================
 # The agent's search managers are shared by every run, so a key written onto one
-# was spent by the next run of any owner. A manager built with keys_from_run holds
-# no key: each call reads the key pool of the run it serves.
+# was spent by the next run of any owner (F-16). No manager holds a key: each call
+# reads the key pool of the run it serves, and outside a run there is none.
 
 _SEARCH_KEY_FIELDS = {"tavily": "tavilyApiKey", "shodan": "shodanApiKey", "serp": "serpApiKey"}
 _RUN_ROTATORS: "OrderedDict[tuple, object]" = OrderedDict()
@@ -1125,11 +1125,11 @@ def run_key_rotator(tool_name: str):
     """The key pool this run spends on `tool_name` (its key plus the rotation extras),
     or None when the run's owner set no key. Keyed by the pool itself, so a rotation
     counter is shared only by runs that hold the very same keys."""
-    from orchestrator_helpers.key_rotation import KeyRotator
     settings = run_user_settings()
     main = settings.get(_SEARCH_KEY_FIELDS[tool_name]) or ''
     if not main:
         return None
+    from orchestrator_helpers.key_rotation import KeyRotator
     cfg = (settings.get('rotationConfigs') or {}).get(tool_name) or {}
     pool = [k for k in [main, *(cfg.get('extraKeys') or [])] if k]
     every = cfg.get('rotateEveryN', 10)
@@ -1144,14 +1144,10 @@ def run_key_rotator(tool_name: str):
     return rotator
 
 
-def _call_key(manager, tool_name: str):
-    """(key, rotator) for one call: the run's own pool for a keys_from_run manager,
-    else the key the manager was built with."""
-    if getattr(manager, 'keys_from_run', False):
-        rotator = run_key_rotator(tool_name)
-        return (rotator.current_key, rotator) if rotator else ('', None)
-    rotator = manager.key_rotator if manager.key_rotator and manager.key_rotator.has_keys else None
-    return (rotator.current_key, rotator) if rotator else (manager.api_key, None)
+def _call_key(tool_name: str):
+    """(key, rotator) for one call: the run's own pool, or ('', None)."""
+    rotator = run_key_rotator(tool_name)
+    return (rotator.current_key, rotator) if rotator else ('', None)
 
 
 # =============================================================================
@@ -1161,29 +1157,16 @@ def _call_key(manager, tool_name: str):
 class WebSearchToolManager:
     """Manages the web_search tool — checks local KB first, falls back to Tavily."""
 
-    def __init__(self, api_key: str = None, max_results: int = 5, knowledge_base=None,
-                 keys_from_run: bool = False):
-        self.api_key = api_key or ''
+    def __init__(self, max_results: int = 5, knowledge_base=None):
         self.max_results = max_results
-        self.key_rotator = None  # Optional[KeyRotator]
         self.knowledge_base = knowledge_base  # Optional[PentestKnowledgeBase]
         self.kb_enabled_sources = None  # None = all sources, list = filter
-        self.keys_from_run = keys_from_run
 
     def get_tool(self) -> Optional[callable]:
         """
-        Set up and return the web_search tool.
-
-        Returns:
-            The web_search tool function, or None if neither Tavily nor KB is configured.
+        Set up and return the web_search tool: always, since Tavily's key is the
+        run's own (read per call) and a run without one still has the KB.
         """
-        if not self.api_key and not self.knowledge_base and not self.keys_from_run:
-            logger.warning(
-                "Neither Tavily API key nor knowledge base configured — "
-                "web_search tool will not be available."
-            )
-            return None
-
         manager = self
 
         @tool
@@ -1337,7 +1320,7 @@ class WebSearchToolManager:
 
             # 2. Tavily fallback
             tavily_results_str = None
-            if _call_key(manager, 'tavily')[0]:
+            if _call_key('tavily')[0]:
                 try:
                     tavily_results_str = await _tavily_search(manager, query)
                 except Exception as e:
@@ -1357,14 +1340,9 @@ class WebSearchToolManager:
 
             return "No results found (KB returned no matches and Tavily is not configured)"
 
-        source_info = []
-        if manager.knowledge_base:
-            source_info.append("KB")
-        if manager.keys_from_run:
-            source_info.append("Tavily (each run's key)")
-        elif manager.api_key:
-            source_info.append("Tavily")
-        logger.info(f"web_search tool configured: {' + '.join(source_info) or 'none'}")
+        source_info = ["KB"] if manager.knowledge_base else []
+        source_info.append("Tavily (each run's key)")
+        logger.info(f"web_search tool configured: {' + '.join(source_info)}")
         return web_search
 
 
@@ -1662,7 +1640,7 @@ async def _tavily_search(manager, query: str) -> str:
     """Run a Tavily search and format the response. Raises on failure."""
     from langchain_tavily import TavilySearch
 
-    api_key, rotator = _call_key(manager, 'tavily')
+    api_key, rotator = _call_key('tavily')
     tavily_tool = TavilySearch(
         max_results=manager.max_results,
         topic="general",
@@ -1701,26 +1679,11 @@ SERPAPI_BASE = "https://serpapi.com/search"
 class GoogleDorkToolManager:
     """Manages Google dork search tool via SerpAPI for OSINT reconnaissance."""
 
-    def __init__(self, api_key: str = None, keys_from_run: bool = False):
-        self.api_key = api_key or ''
-        self.key_rotator = None  # Optional[KeyRotator]
-        self.keys_from_run = keys_from_run
-
     def get_tool(self) -> Optional[callable]:
         """
-        Set up and return the Google dork search tool.
-
-        Returns:
-            The google_dork tool function, or None if SerpAPI key is not configured.
+        Set up and return the Google dork search tool: always, since the SerpAPI key
+        is the run's own (read per call); a run without one gets "not configured".
         """
-        if not self.api_key and not self.keys_from_run:
-            logger.warning(
-                "SerpAPI key not configured - google_dork tool will not be available. "
-                "Set it in Global Settings (http://localhost:3000/settings)."
-            )
-            return None
-
-        manager = self
 
         @tool
         async def google_dork(query: str) -> str:
@@ -1741,7 +1704,7 @@ class GoogleDorkToolManager:
             Returns:
                 Search results with titles, URLs, and snippets
             """
-            api_key, rotator = _call_key(manager, 'serp')
+            api_key, rotator = _call_key('serp')
             if not api_key:
                 return "Google dork is not configured: add a SerpAPI key in Global Settings -> API Keys."
             try:
@@ -1819,26 +1782,12 @@ SHODAN_API_BASE = "https://api.shodan.io"
 class ShodanToolManager:
     """Manages unified Shodan OSINT tool for internet-wide reconnaissance."""
 
-    def __init__(self, api_key: str = None, keys_from_run: bool = False):
-        self.api_key = api_key or ''
-        self.key_rotator = None  # Optional[KeyRotator]
-        self.keys_from_run = keys_from_run
-
     def get_tool(self) -> Optional[callable]:
         """
-        Set up and return unified Shodan tool with 5 actions.
-
-        Returns:
-            The shodan tool, or None if Shodan API key is not configured.
+        Set up and return unified Shodan tool with 5 actions: always, since the
+        Shodan key is the run's own (read per call); a run without one gets
+        "not configured".
         """
-        if not self.api_key and not self.keys_from_run:
-            logger.warning(
-                "Shodan API key not configured - shodan tool will not be available. "
-                "Set it in Global Settings (http://localhost:3000/settings)."
-            )
-            return None
-
-        manager = self
 
         @tool
         async def shodan(action: str, query: str = "", ip: str = "", domain: str = "") -> str:
@@ -1861,7 +1810,7 @@ class ShodanToolManager:
             Returns:
                 Formatted results from the Shodan API
             """
-            api_key, rotator = _call_key(manager, 'shodan')
+            api_key, rotator = _call_key('shodan')
             if not api_key:
                 return "Shodan is not configured: add a Shodan API key in Global Settings -> API Keys."
             if action == "search":
@@ -2436,24 +2385,12 @@ class PhaseAwareToolExecutor:
                     f"Manifest declared tools that the live MCP servers did not expose: {missing}"
                 )
 
-    def update_web_search_tool(self, tool: callable) -> None:
-        """Replace the web search tool (e.g. when Tavily key changes)."""
-        self.web_search_tool = tool
-        self._all_tools["web_search"] = tool
-
     def update_shodan_tool(self, tool: Optional[callable]) -> None:
         """Replace or remove the Shodan tool (e.g. when API key changes)."""
         if tool:
             self._all_tools["shodan"] = tool
         else:
             self._all_tools.pop("shodan", None)
-
-    def update_google_dork_tool(self, tool: Optional[callable]) -> None:
-        """Replace or remove the Google dork tool (e.g. when SerpAPI key changes)."""
-        if tool:
-            self._all_tools["google_dork"] = tool
-        else:
-            self._all_tools.pop("google_dork", None)
 
     def update_tradecraft_tool(self, tool: Optional[callable]) -> None:
         """Replace or remove the Tradecraft Lookup tool.

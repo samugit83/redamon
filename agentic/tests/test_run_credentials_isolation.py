@@ -223,9 +223,9 @@ class SearchKeysPerRun(unittest.TestCase):
     def _tools(self):
         from tools import GoogleDorkToolManager, ShodanToolManager, WebSearchToolManager
         tools = {
-            "shodan": ShodanToolManager(keys_from_run=True).get_tool(),
-            "google_dork": GoogleDorkToolManager(keys_from_run=True).get_tool(),
-            "web_search": WebSearchToolManager(keys_from_run=True).get_tool(),
+            "shodan": ShodanToolManager().get_tool(),
+            "google_dork": GoogleDorkToolManager().get_tool(),
+            "web_search": WebSearchToolManager().get_tool(),
         }
         for name, t in tools.items():
             self.assertIsNotNone(t, f"{name} must exist with no key at start: keys come per run")
@@ -291,6 +291,28 @@ class SearchKeysPerRun(unittest.TestCase):
         self.assertIn("not configured", out)
         self.host.assert_not_awaited()
 
+    def test_a_key_written_onto_a_manager_is_never_spent(self):
+        # No manager may hold a key (F-16): whatever a later caller writes onto a
+        # shared manager, a call outside any run finds no key and spends none.
+        from tools import GoogleDorkToolManager, ShodanToolManager, WebSearchToolManager
+        ps._settings_ctx.set(None)
+        managers = (ShodanToolManager(), GoogleDorkToolManager(), WebSearchToolManager())
+        for manager in managers:
+            manager.api_key = "sk-shared"
+        shodan, dork, web = (m.get_tool() for m in managers)
+
+        async def use():
+            return (await shodan.ainvoke({"action": "host", "ip": "192.0.2.1"}),
+                    await dork.ainvoke({"query": "site:example.com"}),
+                    await web.ainvoke({"query": "CVE-2024-0001"}))
+
+        out = asyncio.run(use())
+        self.assertIn("not configured", out[0])
+        self.assertIn("not configured", out[1])
+        self.assertIn("Tavily is not configured", out[2])
+        self.host.assert_not_awaited()
+        self.assertEqual((_Http.keys, _Tavily.keys), ([], []))
+
     def test_rotation_stays_inside_each_owners_own_pool(self):
         tools = self._tools()
         seen = {"A": [], "B": []}
@@ -319,9 +341,9 @@ class SearchKeysPerRun(unittest.TestCase):
     def test_the_orchestrator_writes_no_key_onto_a_shared_manager(self):
         from tools import GoogleDorkToolManager, ShodanToolManager, WebSearchToolManager
         orch = _orchestrator()
-        orch._web_search_manager = WebSearchToolManager(keys_from_run=True)
-        orch._shodan_manager = ShodanToolManager(keys_from_run=True)
-        orch._google_dork_manager = GoogleDorkToolManager(keys_from_run=True)
+        orch._web_search_manager = WebSearchToolManager()
+        orch._shodan_manager = ShodanToolManager()
+        orch._google_dork_manager = GoogleDorkToolManager()
         orch._tradecraft_manager = None
         orch.tool_executor = None
         settings = _owner_settings("owner-a", "sk-A", tavilyApiKey="tvly-A", shodanApiKey="shodan-A",
@@ -330,8 +352,24 @@ class SearchKeysPerRun(unittest.TestCase):
                 mock.patch.object(llm_setup, "setup_llm", side_effect=_fake_setup_llm):
             orch._apply_project_settings("PA")
         for manager in (orch._web_search_manager, orch._shodan_manager, orch._google_dork_manager):
-            self.assertEqual((manager.api_key, manager.key_rotator), ("", None))
+            self.assertFalse(hasattr(manager, "api_key") or hasattr(manager, "key_rotator"))
         self.assertFalse(hasattr(orch, "_user_settings"))
+
+
+class NoSharedKeyPath(unittest.TestCase):
+    def test_no_manager_can_be_given_a_key_and_none_holds_one(self):
+        from tools import (GoogleDorkToolManager, PhaseAwareToolExecutor, ShodanToolManager,
+                           WebSearchToolManager)
+        for cls in (WebSearchToolManager, ShodanToolManager, GoogleDorkToolManager):
+            with self.subTest(manager=cls.__name__):
+                with self.assertRaises(TypeError):
+                    cls(api_key="sk-shared")
+                manager = cls()
+                self.assertFalse(hasattr(manager, "api_key"))
+                self.assertFalse(hasattr(manager, "key_rotator"))
+                self.assertIsNotNone(manager.get_tool(), "always registered: the key comes per call")
+        for name in ("update_web_search_tool", "update_google_dork_tool"):
+            self.assertFalse(hasattr(PhaseAwareToolExecutor, name), name)
 
 
 class GitHubTokenPerRun(unittest.TestCase):

@@ -325,16 +325,13 @@ class AgentOrchestrator:
             TOOL_REGISTRY["web_search"] = WEB_SEARCH_TAVILY_ONLY
 
         # The search tools are always registered and read each run's own key at
-        # call time (keys_from_run): a run without a key gets "not configured".
+        # call time: a run without a key gets "not configured".
         # KB is passed in so web_search can check it before falling back to Tavily
-        self._web_search_manager = WebSearchToolManager(
-            knowledge_base=self._knowledge_base,
-            keys_from_run=True,
-        )
+        self._web_search_manager = WebSearchToolManager(knowledge_base=self._knowledge_base)
         web_search_tool = self._web_search_manager.get_tool()
-        self._shodan_manager = ShodanToolManager(keys_from_run=True)
+        self._shodan_manager = ShodanToolManager()
         shodan_tool = self._shodan_manager.get_tool()
-        self._google_dork_manager = GoogleDorkToolManager(keys_from_run=True)
+        self._google_dork_manager = GoogleDorkToolManager()
         google_dork_tool = self._google_dork_manager.get_tool()
 
         # Setup Tradecraft Lookup tool (resources resolved later via _apply_project_settings).
