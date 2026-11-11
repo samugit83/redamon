@@ -30,9 +30,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id, providerId } = await params
 
     // Ownership + secret-unmask gate (STRIDE I1): browser callers must own the
-    // account (or be admin) and always get masked rows; unmasked rows require a
-    // valid X-Internal-Key header, never the ?internal=true query param.
-    const denied = await requireUserAccess(request, id)
+    // account (or be admin: the read rule) and always get masked rows; unmasked
+    // rows require a valid X-Internal-Key header, never the ?internal=true param.
+    const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
 
     const provider = await prisma.userLlmProvider.findFirst({
@@ -58,7 +58,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, providerId } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const body = await request.json()
@@ -158,7 +158,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, providerId } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const existing = await prisma.userLlmProvider.findFirst({

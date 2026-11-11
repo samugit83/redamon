@@ -14,7 +14,17 @@ const h = vi.hoisted(() => ({
   eff: { userId: 'alice' } as unknown,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', () => ({ requireUserAccess: async () => h.denied }))
+vi.mock('@/lib/session', async () => {
+  const { NextResponse } = await import('next/server')
+  return {
+    requireUserAccess: async () => h.denied,
+    // session.ts requireAccountWrite (the write rule), over the account the test lets this
+    // request write, h.eff: a response is that refusal, another account than the path's is 403.
+    requireAccountWrite: async (id: string) => h.eff instanceof NextResponse ? h.eff
+      : (h.eff as { userId: string }).userId === id ? null
+        : NextResponse.json({ error: 'Forbidden', code: 'own_account_only' }, { status: 403 }),
+  }
+})
 vi.mock('@/lib/access', async (orig) => ({
   ...(await orig<typeof import('@/lib/access')>()),
   requireEffectiveUser: async () => h.eff,

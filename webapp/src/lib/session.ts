@@ -2,7 +2,7 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
-import { loadPrincipal } from './authz/principal'
+import { loadPrincipal, type Principal } from './authz/principal'
 import { internalError } from './routeErrors'
 
 export interface Session {
@@ -52,18 +52,22 @@ export async function getSession(): Promise<Session | null> {
 export async function getEffectiveUser(): Promise<EffectiveUser | null> {
   const session = await getSession()
   if (!session) return null
-  if (session.role !== 'admin') {
-    return { userId: session.userId }
-  }
+  const target = await actAsTarget(session)
+  return { userId: target ? target.id : session.userId }
+}
+
+/**
+ * The account an admin session is acting as: the act-as cookie must have been minted
+ * by this admin and name an account that still exists. Null for anyone else.
+ */
+async function actAsTarget(session: Session): Promise<Principal | null> {
+  if (session.role !== 'admin') return null
   const cookieStore = await cookies()
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
-  if (actAsToken) {
-    const claims = await verifyActAsToken(actAsToken)
-    if (claims && claims.sub === session.userId && (await loadPrincipal(claims.act))) {
-      return { userId: claims.act }
-    }
-  }
-  return { userId: session.userId }
+  if (!actAsToken) return null
+  const claims = await verifyActAsToken(actAsToken)
+  if (!claims || claims.sub !== session.userId) return null
+  return loadPrincipal(claims.act)
 }
 
 /**
@@ -120,26 +124,56 @@ export function isScannerRequest(request: NextRequest): boolean {
   return constantTimeEqual(key, expected)
 }
 
+export type UserAccessMode = 'read' | 'write'
+
+const OWN_ACCOUNT_ONLY =
+  "Only the account itself can change this. An administrator can read another account's settings (secrets masked), but not change them."
+
+/**
+ * The write rule of an account's settings, LLM providers, skills, MCP servers and
+ * tradecraft (HD-23, F-19): the REAL signed-in user must be the account. An admin
+ * passes only while acting as a passwordless managed account, which has no session
+ * of its own, so act-as is how it is run (OQ-49). Acting as an account that has a
+ * password does not count: that account can sign in and write for itself.
+ *
+ * Session only: whether the internal key also writes is the caller's decision.
+ * Returns null when allowed, or a 401/403 NextResponse the caller must return.
+ */
+export async function requireAccountWrite(targetUserId: string): Promise<NextResponse | null> {
+  const session = await getSession()
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  if (session.userId === targetUserId) return null
+  if (session.role !== 'admin') {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+  const target = await actAsTarget(session)
+  if (target && target.id === targetUserId && !target.hasPassword) return null
+  return NextResponse.json({ error: OWN_ACCOUNT_ONLY, code: 'own_account_only' }, { status: 403 })
+}
+
 /**
  * Ownership gate for user-scoped secret/data routes (settings, llm-providers,
- * tradecraft). Internal-key callers (the agent + scanners) pass through; every
- * other caller must have a session and either own `targetUserId` or be an admin.
+ * tradecraft, skills, MCP servers and tokens). Internal-key callers (the agent +
+ * scanners) pass in both modes.
+ *  - `read`: the account itself or an admin. Every secret these routes return is
+ *    masked for a browser caller, so an admin's read never sees one.
+ *  - `write`: requireAccountWrite. The admin write bypass is gone: an admin cannot
+ *    change another account, through act-as or not, except a passwordless managed
+ *    account it is acting as.
  *
  * Enforcement is IMMEDIATE (not the log-only ACCESS_ENFORCE path) because these
- * routes expose or mutate a user's plaintext secrets - this is the closure of
- * STRIDE I1 for the single-item routes the list-route fix missed. Returns null
+ * routes expose or mutate a user's plaintext secrets (STRIDE I1). Returns null
  * when allowed, or a 401/403 NextResponse the caller must return.
- *
- * Note: the admin bypass here is a masked-read/write convenience preserved from
- * the shipped I1 model; the stricter effective-user scoping of admins (admin sees
- * a user's data only while explicitly simulating them) is applied to the data
- * routes in the BOLA rollout and may later subsume this bypass.
  */
 export async function requireUserAccess(
   request: NextRequest,
-  targetUserId: string
+  targetUserId: string,
+  { mode }: { mode: UserAccessMode },
 ): Promise<NextResponse | null> {
   if (isInternalRequest(request)) return null
+  if (mode === 'write') return requireAccountWrite(targetUserId)
   const session = await getSession()
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

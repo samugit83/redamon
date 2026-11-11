@@ -20,7 +20,7 @@ interface RouteParams {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, serverId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
     const body = await request.json()
 
@@ -85,7 +85,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, serverId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
 
     const existing = await prisma.userSettings.findUnique({

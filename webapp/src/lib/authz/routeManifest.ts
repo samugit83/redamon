@@ -27,7 +27,11 @@ export const GUARD_CLASSES = [
   'project',
   /** The caller must own the conversation (`requireConversationAccess`, `...BySession`). */
   'conversation',
-  /** The caller must be the user the path names, or an admin (`requireUserAccess`, `requireOwnBrowserRequest`). */
+  /**
+   * The user the path names. Reads: that user or an admin, secrets masked (`requireUserAccess` read).
+   * Writes: that user's own session, the internal key, or an admin acting as a passwordless managed
+   * account (`requireUserAccess` write, `requireAccountWrite`, `requireOwnBrowserRequest`).
+   */
   'user',
   /** Admin by the session's role, which getSession reads from the database (`requireAdmin`, inline `session.role` checks). */
   'admin-jwt',
@@ -343,12 +347,12 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/users/[id]/chat-skills', guard: 'user', methods: ['GET', 'POST'] },
   { path: '/api/users/[id]/chat-skills/[skillId]', guard: 'user', methods: ['GET', 'PUT', 'DELETE'] },
   { path: '/api/users/[id]/chat-skills/import-community', guard: 'user', methods: ['POST'] },
-  { path: '/api/users/[id]/llm-providers', guard: 'user', methods: ['GET', 'POST'], note: 'inline check: the session user or an admin; GET accepts the internal key' },
+  { path: '/api/users/[id]/llm-providers', guard: 'user', methods: ['GET', 'POST'], note: 'GET: inline read rule, the session user or an admin (masked), or the internal key; POST: requireAccountWrite, no internal key' },
   { path: '/api/users/[id]/llm-providers/[providerId]', guard: 'user', methods: ['GET', 'PUT', 'DELETE'] },
   { path: '/api/users/[id]/llm-providers/[providerId]/test', guard: 'user', methods: ['POST'] },
   { path: '/api/users/[id]/mcp', guard: 'user', methods: ['GET', 'POST'] },
   { path: '/api/users/[id]/mcp-tokens', guard: 'user', methods: ['GET', 'POST'] },
-  { path: '/api/users/[id]/mcp-tokens/[tokenId]', guard: 'user', methods: ['PATCH', 'DELETE'] },
+  { path: '/api/users/[id]/mcp-tokens/[tokenId]', guard: 'user', methods: ['PATCH', 'DELETE'], note: 'read rule: an admin may delete or narrow another account\'s token (audited); a rename or a profile-only change needs the write rule; widening is self-only with step-up' },
   { path: '/api/users/[id]/mcp/[serverId]', guard: 'user', methods: ['PUT', 'DELETE'] },
   { path: '/api/users/[id]/password', guard: 'user', methods: ['PUT'], note: 'inline check: the session user (with the current password) or an admin; resetting another admin needs step-up' },
   { path: '/api/users/[id]/settings', guard: 'user', methods: ['GET', 'PUT'] },

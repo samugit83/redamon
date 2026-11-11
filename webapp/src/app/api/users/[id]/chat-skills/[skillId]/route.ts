@@ -12,7 +12,7 @@ interface RouteParams {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, skillId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
 
     const skill = await prisma.userChatSkill.findFirst({
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, skillId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
     const body = await request.json()
 
@@ -98,7 +98,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, skillId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
 
     const existing = await prisma.userChatSkill.findFirst({

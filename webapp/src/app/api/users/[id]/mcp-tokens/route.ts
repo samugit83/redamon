@@ -44,7 +44,7 @@ const LIST_SELECT = {
 
 export const GET = withRouteErrors('Could not load tokens', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const denied = await requireUserAccess(request, id)
+  const denied = await requireUserAccess(request, id, { mode: 'read' })
   if (denied) return denied
 
   try {
@@ -67,8 +67,9 @@ export const POST = withRouteErrors('Could not create the token', async (request
   const session = await getSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  // Self-only, on the REAL identity. Not requireUserAccess: that carries the
-  // admin bypass, which must not extend to minting.
+  // Self-only, on the REAL identity. Not requireUserAccess: even its write rule
+  // admits the internal key and an admin acting as a managed account, and
+  // neither may mint.
   if (session.userId !== id) {
     return NextResponse.json(
       { error: 'A token can only be created by its own user, signed in as themselves.' },

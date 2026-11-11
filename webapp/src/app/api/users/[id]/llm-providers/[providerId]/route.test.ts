@@ -225,3 +225,15 @@ describe('Jev backend protection and deletion', () => {
     expect(mockDelete).not.toHaveBeenCalled()
   })
 })
+
+describe('the access mode by method (HD-23)', () => {
+  test('GET asks for the read rule; PUT and DELETE for the write rule', async () => {
+    mockRequireUserAccess.mockResolvedValue(FORBIDDEN)
+    await GET(get('http://x/api/users/victim/llm-providers/p1'), params('victim', 'p1'))
+    await PUT(put({ name: 'x' }), params('victim', 'p1'))
+    await DELETE(del(), params('victim', 'p1'))
+    expect(mockRequireUserAccess.mock.calls.map(c => c[2])).toEqual([{ mode: 'read' }, { mode: 'write' }, { mode: 'write' }])
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockDelete).not.toHaveBeenCalled()
+  })
+})

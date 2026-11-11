@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSession, isInternalRequest } from '@/lib/session'
+import { getSession, isInternalRequest, requireAccountWrite } from '@/lib/session'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { requireUserExists, isForeignKeyViolation } from '@/lib/userScopedWrite'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
@@ -39,8 +39,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const internalReq = isInternalRequest(request)
     const wantUnmasked = request.nextUrl.searchParams.get('internal') === 'true'
 
-    // Browser/JWT callers must own the account (or be admin); they never get
-    // unmasked secrets even if they pass ?internal=true.
+    // The read rule (requireUserAccess `read`): browser/JWT callers must own the
+    // account or be an admin, and they never get unmasked secrets, even with
+    // ?internal=true.
     if (!internalReq) {
       const session = await getSession()
       if (!session) {
@@ -72,22 +73,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Ownership: only the account owner (or admin) may create providers for
-    // this user id. S2/E2: the internal-key bypass is removed -- no production
-    // internal caller creates providers, and a leaked key must not be able to
-    // add a provider (and thus a harvestable secret) to an arbitrary account.
-    {
-      const session = await getSession()
-      if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      }
-      if (session.userId !== id && session.role !== 'admin') {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-      }
-    }
+    // The account's write rule (HD-23): its own session, or an admin acting as a
+    // passwordless managed account; an admin cannot add a provider to another
+    // account. S2/E2: no internal-key bypass either -- no production internal
+    // caller creates providers, and a leaked key must not be able to add a
+    // provider (and thus a harvestable secret) to an arbitrary account.
+    const denied = await requireAccountWrite(id)
+    if (denied) return denied
 
-    // The admin bypass above lets a caller name any user id; a ghost id must
-    // fail as a readable 404, not as a foreign-key 500 (issue #173).
+    // An account deleted after the session check must fail as a readable 404,
+    // not as a foreign-key 500 (issue #173).
     const missing = await requireUserExists(id)
     if (missing) return missing
 

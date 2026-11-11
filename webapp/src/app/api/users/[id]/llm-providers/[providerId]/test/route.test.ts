@@ -176,6 +176,12 @@ describe('POST llm-providers/[providerId]/test — agent reachable', () => {
     expect(sent.apiKey).toBe('sk-REAL')
     expect(sent.baseUrl).toBe(CONFIG.baseUrl)
   })
+
+  test('the test spends the account\'s key, so it asks for the write rule (HD-23)', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    await POST(post(CONFIG), params('u1', 'unsaved'))
+    expect(mockRequireUserAccess).toHaveBeenCalledWith(expect.anything(), 'u1', { mode: 'write' })
+  })
 })
 
 // ---------------------------------------------------------------------------

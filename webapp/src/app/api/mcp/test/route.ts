@@ -31,9 +31,10 @@ export async function POST(request: NextRequest) {
 
     // The caller may only act on their OWN saved MCP secrets. Without this the
     // body-supplied userId could restore another user's token from the DB and
-    // echo it to the agent test-spawn path (cross-tenant secret exposure).
+    // echo it to the agent test-spawn path (cross-tenant secret exposure). The
+    // write rule: an admin's read of another account never sends its token.
     if (userId) {
-      const denied = await requireUserAccess(request, userId)
+      const denied = await requireUserAccess(request, userId, { mode: 'write' })
       if (denied) return denied
     }
 

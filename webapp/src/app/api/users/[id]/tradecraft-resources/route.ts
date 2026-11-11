@@ -87,7 +87,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     // Ownership + secret-unmask gate (STRIDE I1): unmasked githubTokenOverride
     // requires a valid X-Internal-Key header (the agent), not ?internal=true.
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
     const internal = isInternalRequest(request) && request.nextUrl.searchParams.get('internal') === 'true'
 
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const body = await request.json()

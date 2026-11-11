@@ -25,7 +25,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
 
     const resource = await prisma.userTradecraftResource.findFirst({
@@ -49,7 +49,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const body = await request.json()
@@ -116,7 +116,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
 
-    const denied = await requireUserAccess(request, id)
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const existing = await prisma.userTradecraftResource.findFirst({

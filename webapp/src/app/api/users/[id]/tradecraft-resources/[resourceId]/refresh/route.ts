@@ -17,7 +17,7 @@ const REFRESH_TIMEOUT_MS = 240_000
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
 
     const existing = await prisma.userTradecraftResource.findFirst({

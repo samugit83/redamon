@@ -20,7 +20,7 @@ type SkipReason = 'duplicate' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid'
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
 
     let catalogRes: Response

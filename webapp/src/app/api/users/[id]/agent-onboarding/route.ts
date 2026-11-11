@@ -60,7 +60,7 @@ function resolveServerUrl(raw: unknown): { serverUrl: string | undefined } | { e
 
 export const POST = withRouteErrors('Could not generate the onboarding pack', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const denied = await requireUserAccess(request, id)
+  const denied = await requireUserAccess(request, id, { mode: 'write' })
   if (denied) return denied
 
   let body: Record<string, unknown>

@@ -40,7 +40,7 @@ function hopBudgetMs(configuredSeconds: unknown): number {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, providerId } = await params
-    const __denied = await requireUserAccess(request, id)
+    const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
     const body = await request.json()
 

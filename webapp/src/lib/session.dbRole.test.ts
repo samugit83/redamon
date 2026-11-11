@@ -56,15 +56,15 @@ describe('role and existence from the database', () => {
     expect(await getEffectiveUser()).toBeNull()
     expect(((await requireSession()) as NextResponse).status).toBe(401)
     expect(((await requireAdmin()) as NextResponse).status).toBe(401)
-    expect(((await requireUserAccess(req(), 'gone')) as NextResponse).status).toBe(401)
+    expect(((await requireUserAccess(req(), 'gone', { mode: 'read' })) as NextResponse).status).toBe(401)
   })
 
   test('a token claiming admin for a demoted user is not admin', async () => {
     dbRoles.set('demoted', 'standard')
     authCookie = await createToken('demoted', 'admin')
     expect(await getSession()).toEqual({ userId: 'demoted', role: 'standard' })
-    expect(((await requireUserAccess(req(), 'victim')) as NextResponse).status).toBe(403)
-    expect(await requireUserAccess(req(), 'demoted')).toBeNull()
+    expect(((await requireUserAccess(req(), 'victim', { mode: 'read' })) as NextResponse).status).toBe(403)
+    expect(await requireUserAccess(req(), 'demoted', { mode: 'read' })).toBeNull()
   })
 
   test('a token claiming standard for a promoted user is admin', async () => {
@@ -73,7 +73,7 @@ describe('role and existence from the database', () => {
     expect(await getSession()).toEqual({ userId: 'promoted', role: 'admin' })
     const admin = await requireAdmin()
     expect(admin).not.toBeInstanceOf(NextResponse)
-    expect(await requireUserAccess(req(), 'victim')).toBeNull()
+    expect(await requireUserAccess(req(), 'victim', { mode: 'read' })).toBeNull()
   })
 
   test('an act-as cookie minted by a demoted admin is ignored', async () => {
@@ -108,7 +108,7 @@ describe('role and existence from the database', () => {
   })
 
   test('the internal key needs no account read', async () => {
-    expect(await requireUserAccess(req({ 'x-internal-key': 'internal-key-dbrole' }), 'victim')).toBeNull()
+    expect(await requireUserAccess(req({ 'x-internal-key': 'internal-key-dbrole' }), 'victim', { mode: 'read' })).toBeNull()
     expect(findUnique).not.toHaveBeenCalled()
   })
 
@@ -120,7 +120,7 @@ describe('role and existence from the database', () => {
       ['getSession', () => getSession()],
       ['requireSession', () => requireSession()],
       ['requireAdmin', () => requireAdmin()],
-      ['requireUserAccess', () => requireUserAccess(req(), 'victim')],
+      ['requireUserAccess', () => requireUserAccess(req(), 'victim', { mode: 'read' })],
       ['getEffectiveUser', () => getEffectiveUser()],
     ]
     for (const [name, call] of calls) {

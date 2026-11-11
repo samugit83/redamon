@@ -50,7 +50,8 @@ describe('POST /api/mcp/test — ownership + secret echo', () => {
     const server = { id: 's1', name: 's1', transport: 'stdio', command: 'node', auth: { token: 'whatever' } }
     const res = await POST(req(server, 'victim'))
     expect(res.status).toBe(403)
-    expect(mockRequireUserAccess).toHaveBeenCalledWith(expect.anything(), 'victim')
+    // the write rule (HD-23): an admin, who may read the account, cannot send its token anywhere
+    expect(mockRequireUserAccess).toHaveBeenCalledWith(expect.anything(), 'victim', { mode: 'write' })
     expect(mockUserSettingsFindUnique).not.toHaveBeenCalled()
     expect(mockFetch).not.toHaveBeenCalled()
   })

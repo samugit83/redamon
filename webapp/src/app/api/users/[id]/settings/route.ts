@@ -133,7 +133,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // Shodan/URLScan keys). It is accepted like the internal principal on THIS
     // route only (middleware enforces the route scope) and gets unmasked values.
     const scanner = isScannerRequest(request)
-    const denied = scanner ? null : await requireUserAccess(request, id)
+    const denied = scanner ? null : await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
     const internal = (isInternalRequest(request) || scanner) && request.nextUrl.searchParams.get('internal') === 'true'
 
@@ -239,17 +239,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Only the account owner (or admin), or a trusted internal caller, may write
-    // another user's settings (which include tunnel credentials + OSINT keys).
-    const denied = await requireUserAccess(request, id)
+    // Settings hold tunnel credentials and OSINT keys: only the account's own
+    // session (or an admin acting as a passwordless managed account), or a trusted
+    // internal caller, may write them (HD-23).
+    const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
     const body = await request.json()
 
     // A feature's model decides whose provider keys that feature spends, so it
-    // is the person's own choice: neither the admin bypass of requireUserAccess
-    // nor a service key extends to it. Refused or invalid, the whole PUT stops
-    // here, before anything else in it is written.
+    // is the person's own choice: no service key extends to it. Refused or
+    // invalid, the whole PUT stops here, before anything else in it is written.
     let featureModelsPatch: FeatureModelsPatch | null = null
     let featureModelsActor: string | null = null
     if ('featureModels' in body) {
