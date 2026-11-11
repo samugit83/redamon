@@ -4038,6 +4038,11 @@ def _domain_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozens
     scan's name maps): it is the same TCP endpoint. None in IP mode, and when
     the run measured nothing live at all, so a run with no port scan and no
     httpx data is probed as before.
+
+    A host an operator typed into a partial run (metadata.typed_hosts) that
+    the graph has no live row for is probed on both web ports, as before this
+    gate: the graph is a partial run's only evidence, and it seldom holds
+    anything for a typed host. One the graph has evidence for follows it.
     """
     from recon.helpers.target_admission import ip_mode_targets, known_addresses
     if ip_mode_targets(recon_data) is not None:
@@ -4084,6 +4089,11 @@ def _domain_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozens
             ports = live.get(_live_key(address))
             if ports:
                 live.setdefault(_live_key(name), set()).update(ports)
+    # After the DNS step, so a name sharing a typed address gains nothing.
+    for host in (recon_data.get("metadata") or {}).get("typed_hosts") or ():
+        key = _live_key(host) if isinstance(host, str) else ""
+        if key and key not in live:
+            live[key] = set(_SCHEME_PORT.values())
     return {host: frozenset(ports) for host, ports in live.items()}
 
 
