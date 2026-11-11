@@ -155,6 +155,31 @@ class TestBuildQueries(unittest.TestCase):
 
 
 class TestMergeIntoPipeline(unittest.TestCase):
+    """Uncover's names pass merge_discovered_hostnames' gates (ad8dc605), which
+    resolve each one (socket.getaddrinfo) and probe its zone for wildcard DNS
+    (wildcard_control._query). Both are answered here: through the machine's
+    own resolver, a LAN resolver that answers "new.example.com.<search domain>"
+    with its private address made these tests drop every name. Every other
+    name is unresolvable, which the gate admits (it cannot be an internal pivot)."""
+
+    ADDRESSES = {"internal.example.com": "10.0.0.5"}
+
+    def setUp(self):
+        import socket
+        from recon.helpers import circuit_breaker, wildcard_control
+
+        def getaddrinfo(host, *_a, **_k):
+            if host in self.ADDRESSES:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.ADDRESSES[host], 0))]
+            raise socket.gaierror(socket.EAI_NONAME, "unknown name")
+
+        # The resolve and wildcard answers are cached per run.
+        circuit_breaker.reset_registry()
+        self.addCleanup(circuit_breaker.reset_registry)
+        for stub in (patch("socket.getaddrinfo", side_effect=getaddrinfo),
+                     patch.object(wildcard_control, "_query", return_value=("nx", []))):
+            stub.start()
+            self.addCleanup(stub.stop)
 
     def test_merge_new_subdomains(self):
         combined = {"dns": {"subdomains": {}}, "domain": "example.com"}
@@ -183,7 +208,17 @@ class TestMergeIntoPipeline(unittest.TestCase):
             "ip_ports": {},
         }
         count = merge_uncover_into_pipeline(combined, uncover_data, "example.com")
-        self.assertGreater(count, 0)
+        self.assertEqual(count, 1)
+        self.assertEqual(combined["dns"]["subdomains"]["existing.example.com"], {"ips": {"ipv4": []}})
+
+    def test_a_name_resolving_to_a_private_address_leaves_the_payload(self):
+        # update_graph_from_uncover writes every name in the payload as a Subdomain.
+        combined = {"dns": {"subdomains": {}}, "domain": "example.com"}
+        uncover_data = {"hosts": ["internal.example.com", "new.example.com"], "ips": [], "ip_ports": {}}
+        count = merge_uncover_into_pipeline(combined, uncover_data, "example.com")
+        self.assertEqual(count, 1)
+        self.assertEqual(sorted(combined["dns"]["subdomains"]), ["new.example.com"])
+        self.assertEqual(uncover_data["hosts"], ["new.example.com"])
 
     def test_empty_data(self):
         combined = {"dns": {"subdomains": {}}}
