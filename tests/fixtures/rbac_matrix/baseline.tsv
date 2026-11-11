@@ -177,9 +177,9 @@ bl-loginonly-ws-anon	0.5	anon	GET	/api/ws	-	401	login-only
 # ---- service keys ----
 # The scanner key reads any user's settings unmasked and any project, and ingests into any
 # project (F-18). PA keeps capture off, so the ingest answers 202 and stores nothing.
-bl-scanner-settings-unmasked	0.5	scanner	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	hole:F-18
-bl-scanner-project-read	0.5	scanner	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	hole:F-18
-bl-scanner-traffic-ingest	0.5	scanner	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	202;has=capture disabled	hole:F-18
+bl-scanner-settings-unmasked	0.5	scanner	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	hole:F-18 superseded-by:p1
+bl-scanner-project-read	0.5	scanner	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	hole:F-18 superseded-by:p1
+bl-scanner-traffic-ingest	0.5	scanner	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	202;has=capture disabled	hole:F-18 superseded-by:p1
 bl-scanner-off-allowlist	0.5	scanner	GET	/api/projects	-	401	-
 bl-internal-project-read	0.5	internal	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
 bl-member-traffic-ingest	0.5	member_a	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	401	-

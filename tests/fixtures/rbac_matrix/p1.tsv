@@ -186,3 +186,12 @@ p1-session-interact-hidden-numeric	1.13	member_c	POST	/api/agent/sessions/999999
 p1-session-kill-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	404	req:HD-01
 p1-job-kill-hidden	1.13	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	404	req:HD-02
 p1-session-kill-unknown-admin	1.13	admin_a	POST	/api/agent/sessions/999999/kill	-	404	req:HD-02
+#
+# ---- step 1.16: job credentials for scan containers ----
+# The bare scanner key reads and writes nothing (HD-20): each scanner route wants the scan's job
+# credential beside it, which the matrix cannot send (tests/rbac_job_credential_live.sh mints
+# one inside the agent container and proves the reads it opens). The master key is unchanged.
+p1-scanner-settings-bare	1.16	scanner	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	403;has=job_credential_required;lacks=${A_TAVILY_SECRET}	req:HD-20
+p1-scanner-project-bare	1.16	scanner	GET	/api/projects/${PA_ID}	-	403;has=job_credential_required;lacks=rbac-PA	req:HD-20
+p1-scanner-traffic-ingest-bare	1.16	scanner	POST	/api/traffic/${PA_ID}/ingest	{"source":"recon","transactions":[]}	403;has=job_credential_required	req:HD-20
+p1-internal-settings-unmasked	1.16	internal	GET	/api/users/${MEMBER_A_ID}/settings?internal=true	-	200;has=${A_TAVILY_SECRET}	req:HD-20
