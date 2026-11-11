@@ -20,6 +20,8 @@ vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
   requireConversationAccess: vi.fn(async () => ({ conversation: { id: 'c1', userId: 'u1', projectId: 'p1' } })),
 }))
+// The session, health and tunnel proxies read the session first (HD-10); these tests are about a signed-in account.
+vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: {

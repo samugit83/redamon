@@ -5,12 +5,15 @@
  * This avoids CORS issues by keeping the connection within the same origin.
  */
 
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { requireSession } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   const backendWsUrl = process.env.AGENT_WS_URL || 'ws://localhost:8090/ws/agent'
 
   // For Next.js, we can't directly proxy WebSocket in API routes

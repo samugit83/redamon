@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { upstreamFailure } from '@/lib/routeErrors'
+import { requireSession } from '@/lib/session'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
@@ -13,6 +14,8 @@ const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://loc
  * say nothing about TruffleHog, so the form keeps the toggle usable for them.
  */
 export async function GET() {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   let response: Response
   try {
     response = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/health`, {

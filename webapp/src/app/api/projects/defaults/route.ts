@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import { fetchAgentDefaults, fetchReconDefaults } from '@/lib/reconPresets/server'
+import { requireSession } from '@/lib/session'
 
 // GET /api/projects/defaults - Get default project settings from recon + agent backends
 export async function GET() {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   // Fetched in parallel. The recon half is required; the agent half is not: the
   // form falls back to the Prisma defaults for the agent settings. The MCP
   // preset apply calls the same fetchers and fails closed on either instead.

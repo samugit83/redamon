@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { withRouteErrors } from '@/lib/routeErrors'
+import { requireSession } from '@/lib/session'
 import { agentErrorResponse, callAgent } from '../../../agentProxy'
 
 const FAILED = 'Failed to interact with session'
@@ -8,6 +9,8 @@ export const POST = withRouteErrors(FAILED, async (
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) => {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   const { id } = await params
   const body = await request.json().catch(() => null)
   if (!body || typeof body !== 'object') {

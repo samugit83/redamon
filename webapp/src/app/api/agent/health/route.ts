@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, upstreamFailure } from '@/lib/routeErrors'
+import { requireSession } from '@/lib/session'
 
 export interface AgentHealthResponse {
   status: string
@@ -10,6 +11,8 @@ export interface AgentHealthResponse {
 }
 
 export async function GET() {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     // Short budget: this is the preflight the settings UI uses to decide
     // whether to offer a Test button, so it must fail fast rather than make

@@ -10,6 +10,8 @@ import { describe, test, expect, vi, beforeEach, afterAll } from 'vitest'
 import { NextRequest } from 'next/server'
 import { mkdir, rm, writeFile } from 'fs/promises'
 import path from 'path'
+// The route reads the session first (HD-10); these tests are about a signed-in account.
+vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
 
 const h = vi.hoisted(() => {
   const root = `${process.env.TMPDIR || '/tmp'}/redamon-nuclei-test-${process.pid}-${Date.now()}`

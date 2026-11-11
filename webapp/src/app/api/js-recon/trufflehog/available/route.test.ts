@@ -9,6 +9,8 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+// The route reads the session first (HD-10); these tests are about a signed-in account.
+vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
 
 const h = vi.hoisted(() => ({ orchestratorFetch: vi.fn() }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))

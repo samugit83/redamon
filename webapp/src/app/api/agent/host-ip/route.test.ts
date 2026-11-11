@@ -12,6 +12,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+// The route reads the session first (HD-10); these tests are about a signed-in account.
+vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
 import * as route from './route'
 
 function installFetch(body: unknown, ok = true): void {

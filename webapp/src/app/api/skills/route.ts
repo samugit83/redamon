@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server'
+import { requireSession } from '@/lib/session'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8090'
 
 // GET /api/skills - proxy to agentic service skill catalog
 export async function GET() {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     const res = await fetch(`${AGENT_API_URL}/skills`, {
       method: 'GET',

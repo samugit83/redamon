@@ -32,6 +32,8 @@ vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}) }))
 vi.mock('@/lib/session', () => ({
   getSession: vi.fn(async () => ({ userId: 'u1', role: 'user' })),
   getEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
+  // The Metasploit-session and job proxies read the session first (HD-10).
+  requireSession: vi.fn(async () => ({ userId: 'u1', role: 'user' })),
 }))
 vi.mock('../graph/neo4j', () => ({
   getGraphSession: () => ({ run: vi.fn(async () => ({ records: [] })), close: vi.fn(async () => {}) }),

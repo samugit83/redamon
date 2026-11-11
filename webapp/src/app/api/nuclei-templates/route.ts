@@ -4,6 +4,7 @@ import { existsSync } from 'fs'
 import path from 'path'
 import { declaredBodyTooLarge } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
+import { requireSession } from '@/lib/session'
 
 const TEMPLATES_PATH = process.env.NUCLEI_TEMPLATES_PATH || '/data/nuclei-templates'
 const MAX_FILE_SIZE = 1 * 1024 * 1024 // 1 MB
@@ -86,6 +87,8 @@ async function listTemplates() {
 // GET /api/nuclei-templates - list all custom templates
 // ---------------------------------------------------------------------------
 export async function GET() {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     const templates = await listTemplates()
     return NextResponse.json({ templates })
@@ -98,6 +101,8 @@ export async function GET() {
 // POST /api/nuclei-templates - upload a .yaml/.yml template
 // ---------------------------------------------------------------------------
 export async function POST(request: NextRequest) {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     const lengthProblem = declaredBodyTooLarge(request, MAX_FILE_SIZE)
     if (lengthProblem) return lengthProblem
@@ -182,6 +187,8 @@ export async function POST(request: NextRequest) {
 // DELETE /api/nuclei-templates?path=relative/path/to/template.yaml
 // ---------------------------------------------------------------------------
 export async function DELETE(request: NextRequest) {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     const rawPath = request.nextUrl.searchParams.get('path')
 

@@ -38,11 +38,12 @@ beforeAll(() => {
 })
 
 /**
- * The routes the middleware's login check is all that guards (01_current_state.md §1.2).
- * A change that guards one of them moves it out of `login-only` here in the same
- * commit; step 1.1 moves all twenty to `session`.
+ * The twenty routes the middleware's login check was all that guarded
+ * (01_current_state.md §1.2). Each now reads the session first, so a deleted
+ * account's still-valid cookie gets 401 (HD-10); a later step that gives one of
+ * them a stronger guard moves it out of `session` here in the same commit.
  */
-const LOGIN_ONLY = [
+const FORMER_LOGIN_ONLY = [
   '/api/agent/emergency-stop-all',
   '/api/agent/health',
   '/api/agent/host-ip',
@@ -87,9 +88,10 @@ describe('the manifest and the route tree', () => {
     expect(wrong, `methods out of date: ${FIX}`).toEqual([])
   })
 
-  test('the login-only class lists exactly the 20 known routes', () => {
+  test('no route is login-only: the 20 former login-only routes read the session', () => {
     const listed = ROUTE_MANIFEST.filter(e => e.guard === 'login-only').map(e => e.path)
-    expect(listed).toEqual(LOGIN_ONLY)
+    expect(listed, 'a route the middleware alone guards must read the session (HD-10)').toEqual([])
+    expect(FORMER_LOGIN_ONLY.filter(p => byPath.get(p)?.guard !== 'session')).toEqual([])
   })
 
   test('the JSON copy equals the manifest', () => {
@@ -118,9 +120,12 @@ describe('the manifest and the route tree', () => {
 
   test('a comment naming the internal key does not make a route internal', () => {
     // agent/emergency-stop-all's comment names INTERNAL_API_KEY, which a text grep counts as a guard.
-    const entry = byPath.get('/api/agent/emergency-stop-all')
-    expect(entry?.guard).toBe('login-only')
-    expect(scanned.find(r => r.path === '/api/agent/emergency-stop-all')?.auto).toBe('login-only')
+    const file = join(WEBAPP, 'src', 'app', 'api', 'agent', 'emergency-stop-all', 'route.ts')
+    const source = readFileSync(file, 'utf8')
+    expect(source).toContain('INTERNAL_API_KEY')
+    expect([...calledGuards(source)]).toEqual(['requireSession'])
+    expect(byPath.get('/api/agent/emergency-stop-all')?.guard).toBe('session')
+    expect(scanned.find(r => r.path === '/api/agent/emergency-stop-all')?.auto).toBe('session')
   })
 
   test('the generator would change nothing', () => {

@@ -1,10 +1,13 @@
 /** POST /api/mcp/reload - manual reload trigger; proxies to agent. */
 import { NextRequest, NextResponse } from 'next/server'
 import { internalKeyHeaders } from '@/lib/agentAuth'
+import { requireSession } from '@/lib/session'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://agent:8080'
 
 export async function POST(request: NextRequest) {
+  const session = await requireSession()
+  if (session instanceof NextResponse) return session
   try {
     const body = await request.json().catch(() => ({}))
     const upstream = await fetch(`${AGENT_API_URL}/mcp/reload`, {
