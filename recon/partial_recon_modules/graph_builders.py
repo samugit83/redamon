@@ -1240,6 +1240,14 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
     and BaseURLs/Endpoints filtered by graph_url_scope (a host under a Domain
     this run does not cover, or an excluded apex, is dropped). The first root's
     apex fills dns.domain; another root's apex is a dns.subdomains host.
+
+    An RoE-excluded address is in dns only, never in port_scan.by_ip or the
+    nmap services, as in the port-scan builder: every reader's admission gate
+    (partial Nuclei, takeover, security checks, vhost) reads dns and needs it
+    to see that a name with one excluded address is no by-name target, and
+    that a name whose only address is excluded is excluded rather than
+    unresolved. metadata.roe carries the run's RoE, while it has exclusions,
+    outside IP mode, whose targets the RoE already filtered.
     """
     from graph_db import Neo4jClient
 
@@ -1268,13 +1276,16 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
             "discovered_urls": [],
         },
     })
+    roe = _run_roe()
+    if roe["ROE_ENABLED"] and not run_is_ip_mode():
+        recon_data["metadata"]["roe"] = roe
     if not roots:
         return recon_data
 
     def _hydrate_ip_metadata(addr: str, is_cdn, cdn_name, asn) -> None:
         """Populate port_scan.by_ip with CDN/ASN metadata so collect_cdn_ips
         and collect_asn_cdn_ips can detect CDN IPs in partial-recon mode."""
-        if not addr:
+        if not addr or roe_excluded(addr):
             return
         entry = recon_data["port_scan"]["by_ip"].setdefault(addr, {
             "ip": addr,
@@ -1292,7 +1303,7 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
             entry["asn"] = asn
 
     def _add_ip(ips: dict, addr: str, version) -> None:
-        if roe_excluded(addr):
+        if run_is_ip_mode() and roe_excluded(addr):
             return
         bucket = _classify_ip(addr, version)
         if addr not in ips[bucket]:
@@ -1396,10 +1407,9 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                 sub_entry = recon_data["dns"]["subdomains"].get(host)
                 if sub_entry:
                     sub_ips = sub_entry.get("ips", {})
-                    resolved_ip = (
-                        (sub_ips.get("ipv4") or [None])[0]
-                        or (sub_ips.get("ipv6") or [None])[0]
-                    )
+                    resolved_ip = next(
+                        (a for a in (sub_ips.get("ipv4") or []) + (sub_ips.get("ipv6") or [])
+                         if not roe_excluded(a)), None)
                 # The real status (Tomcat's and Fastly's error pages are 500s,
                 # and an open console counts only at 200). An unprobed BaseURL
                 # still reads as live for the target builders, which skip >= 500
@@ -1441,6 +1451,8 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                     if is_reliable_edge_cdn_name(record["cdn"]):
                         sub_ips = sub_entry.get("ips", {})
                         for ip_addr in (sub_ips.get("ipv4") or []) + (sub_ips.get("ipv6") or []):
+                            if roe_excluded(ip_addr):
+                                continue
                             entry = recon_data["port_scan"]["by_ip"].setdefault(ip_addr, {
                                 "ip": ip_addr, "hostnames": [], "ports": [],
                                 "is_cdn": False, "cdn": None, "asn": None,
@@ -1462,6 +1474,7 @@ def _build_vuln_scan_data_from_graph(domains, user_id: str, project_id: str,
                 addr
                 for entry in [recon_data["dns"]["domain"], *recon_data["dns"]["subdomains"].values()]
                 for addr in (entry["ips"]["ipv4"] + entry["ips"]["ipv6"])
+                if not roe_excluded(addr)
             })
             services = _graph_nmap_services(session, user_id, project_id, scoped_ips)
             if services:

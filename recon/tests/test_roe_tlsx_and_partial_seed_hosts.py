@@ -496,8 +496,6 @@ def _partial_nuclei_targets(settings, monkeypatch) -> list:
     return seen["DETECTION"]
 
 
-@pytest.mark.xfail(strict=True, reason="R-2: the vuln-scan graph builder drops the excluded address "
-                   "the gate needs; keeping it waits on the security checks' RoE address gate")
 def test_partial_nuclei_never_gets_a_name_with_one_excluded_address(monkeypatch):
     hosts = _hosts(_partial_nuclei_targets(_roe(EXCLUDED_RANGE), monkeypatch))
     assert MIXED not in hosts

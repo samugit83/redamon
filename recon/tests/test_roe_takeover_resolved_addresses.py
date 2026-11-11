@@ -419,9 +419,6 @@ def test_partial_takeover_inputs_are_unchanged_without_an_exclusion(settings, mo
     assert {TYPED, LEGACY, MIXED, WWW} <= set(baseline["subjack"])
 
 
-@pytest.mark.xfail(strict=True, reason="R-2: _build_vuln_scan_data_from_graph drops a name's "
-                   "excluded address, so the gate sees a mixed name as allowed; keeping it waits "
-                   "on the security checks' RoE address gate")
 def test_partial_takeover_never_gets_a_graph_name_with_one_excluded_address(monkeypatch):
     seen = _partial_capture(_roe(EXCLUDED_RANGE), monkeypatch)
     assert MIXED not in seen["subjack"]
