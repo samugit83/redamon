@@ -382,14 +382,15 @@ export async function reconcileScanJobStatus(
 }
 
 /**
- * Close out the run-keyed kinds (partial_recon, ai_attack) from the one list poll
- * the UI already makes, instead of a status call per run.
+ * Close out the run-keyed kinds (partial_recon, ai_attack, trufflehog) from the
+ * one list poll the UI already makes, instead of a status call per run.
  *
  * Only an explicitly TERMINAL live status closes a row. A run that has simply
  * disappeared from the orchestrator's list is left alone: it also disappears when
  * the orchestrator restarts, and calling that "completed" would invent an outcome.
- * Such a row is closed by the stop route (recordRunStopped) or, for partial recon,
- * by the reaper's run-keyed sweep (api/internal/job-queue/reconcile).
+ * Such a row is closed by the partial_recon / ai_attack stop route
+ * (recordRunStopped) or, for every run-keyed kind, by the reaper's run-keyed
+ * sweep (api/internal/job-queue/reconcile).
  */
 export async function reconcileRunScanJobs(
   projectId: string,

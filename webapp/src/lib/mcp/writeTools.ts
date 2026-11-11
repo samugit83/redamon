@@ -146,12 +146,13 @@ export async function stopRecon(ctx: McpContext, projectId: string) {
   await assertMcpProjectAccess(ctx.token.userId, projectId)
   enforceRate(ctx, 'write')
 
-  // The orchestrator answers a stop with the POST-stop state, which is `idle`
-  // whether it just killed a scan or there was never one running. Returning
-  // that verbatim left an agent unable to report what it had done - and left a
-  // stray stop that really did kill a running scan looking like a no-op. So
-  // observe first, and say so. `null` where the observation failed: on this
-  // surface "I could not tell" is never reported as "nothing was running".
+  // The orchestrator answers a stop at once: `stopping` while the run drains
+  // (a repeated stop during that drain answers `stopping` too), or the state it
+  // already had (`idle`, `completed`, ...) when there was nothing to stop.
+  // Observe first and give the agent a plain `stopped` it can report instead
+  // of an orchestrator state to decode. `null` where the observation failed:
+  // on this surface "I could not tell" is never reported as "nothing was
+  // running".
   let wasRunning: boolean | null = null
   try {
     const pre = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/recon/${projectId}/status`)
