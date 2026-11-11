@@ -183,7 +183,10 @@ class TestNaabu:
         assert set(port_scan["by_host"]) == {A, A_IP}
         assert port_scan["by_host"][A]["ports"] == [443]
         meta = port_scan["scan_metadata"]
-        assert meta["timed_out"] is True and meta["unchecked_targets"] == 2
+        assert meta["timed_out"] is True
+        assert sorted(meta["unchecked_targets"]) == [B_IP, B]
+        # The port list it ran stays recorded (Domain.port_scan_ports_config).
+        assert meta["ports_config"] == "top-1000"
 
     def test_regression_the_targets_naabu_never_reached_are_not_read_as_no_open_ports(self):
         _naabu(_naabu_proc(rows=[{"ip": A_IP, "port": 443}], cut=True))
@@ -196,15 +199,41 @@ class TestNaabu:
         assert gap["module"] == "port_scan" and gap["hosts"] == 2
         assert "timed out" in gap["reason"]
 
-    def test_regression_a_cut_scan_calls_no_port_closed(self):
-        from recon.helpers.port_coverage import port_scan_coverage
+    def _cut_custom_ports(self):
         settings = {"NAABU_CUSTOM_PORTS": "443,8443"}
         recon, _, _ = _naabu(_naabu_proc(rows=[{"ip": A_IP, "port": 443}], cut=True),
                              settings=settings)
-        covers = port_scan_coverage(recon, {**NAABU, **settings})
+        return recon, {**NAABU, **settings}
+
+    def test_regression_a_cut_scan_never_calls_an_unreached_address_port_closed(self):
+        from recon.helpers.port_coverage import port_scan_coverage
+        recon, settings = self._cut_custom_ports()
+        assert recon["port_scan"]["scan_metadata"]["ports_config"] == "443,8443"
+        covers = port_scan_coverage(recon, settings)
         assert covers(A_IP, 443) is True
-        # Never looked at, or looked at and not open: a cut scan cannot tell.
-        assert covers(B_IP, 443) is None and covers(A_IP, 8443) is None
+        # naabu prints its results once its scan is done: an address it wrote
+        # was scanned, one it did not write was not reached.
+        assert covers(A_IP, 8443) is False
+        assert covers(B_IP, 443) is None and covers(B_IP, 8443) is None
+
+    def test_a_port_masscan_merged_in_does_not_make_naabu_count_the_address_scanned(self):
+        from recon.helpers.port_coverage import port_scan_coverage
+        recon, settings = self._cut_custom_ports()
+        # As main.merge_port_scan_results leaves it: masscan's row lands in by_ip.
+        recon["port_scan"]["by_ip"][B_IP] = {"ip": B_IP, "hostnames": [], "ports": [80]}
+        recon["masscan_scan"] = {"scan_metadata": {"scanner": "masscan", "ports_config": "80"},
+                                 "by_ip": {B_IP: {"ip": B_IP, "ports": [80]}}}
+        covers = port_scan_coverage(recon, settings)
+        assert covers(B_IP, 80) is True
+        assert covers(B_IP, 443) is None
+
+    def test_a_cut_run_with_no_target_list_calls_no_port_closed(self):
+        from recon.helpers.port_coverage import port_scan_coverage
+        recon, settings = self._cut_custom_ports()
+        recon["port_scan"]["scan_metadata"]["unchecked_targets"] = 1
+        covers = port_scan_coverage(recon, settings)
+        assert covers(A_IP, 443) is True
+        assert covers(A_IP, 8443) is None and covers(B_IP, 443) is None
 
     def test_a_timeout_with_nothing_written_is_no_port_data_and_a_coverage_gap(self):
         recon, (proc,), fake = _naabu(_naabu_proc(rows=None, cut=True))

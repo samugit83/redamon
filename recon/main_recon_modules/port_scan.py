@@ -799,11 +799,10 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             "summary": results["summary"]
         }
         if timed_out:
-            # What a cut scan looked at is unknown, so it records no port list:
-            # port_coverage then counts the ports it found as open and calls
-            # none closed.
-            naabu_results["scan_metadata"].update(
-                ports_config=None, timed_out=True, unchecked_targets=len(unscanned))
+            # port_coverage reads these: a port of a target the cut run never
+            # reached is unknown, never closed. Listed here, before masscan's
+            # rows are merged into by_ip and hide which ones naabu wrote.
+            naabu_results["scan_metadata"].update(timed_out=True, unchecked_targets=unscanned)
 
         # Print summary
         summary = results["summary"]
