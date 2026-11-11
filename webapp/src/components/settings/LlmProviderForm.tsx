@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Loader2, CheckCircle, XCircle, Plus, Trash2, Eye, EyeOff, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/ui'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 import { useAgentHealth } from '@/hooks/useAgentHealth'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
@@ -226,25 +227,36 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
     }
   }, [userId, provider?.id, requestBody, showReentry])
 
+  const [stepUpOpen, setStepUpOpen] = useState(false)
+  const sendSave = useCallback((stepUpPassword?: string) => fetch(
+    isEditing ? `/api/users/${userId}/llm-providers/${provider!.id}` : `/api/users/${userId}/llm-providers`,
+    {
+      method: isEditing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stepUpPassword ? { ...requestBody(), stepUpPassword } : requestBody()),
+    },
+  ), [isEditing, userId, provider, requestBody])
+  const saved = useCallback(() => {
+    toast.success(isEditing ? 'Provider updated' : 'Provider added')
+    setBaseline(form)
+    onSave()
+  }, [isEditing, form, onSave, setBaseline])
+
   const handleSave = useCallback(async () => {
     setSaving(true)
     try {
-      const url = isEditing
-        ? `/api/users/${userId}/llm-providers/${provider!.id}`
-        : `/api/users/${userId}/llm-providers`
-      const method = isEditing ? 'PUT' : 'POST'
-
-      const resp = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody()),
-      })
-
-      if (!resp.ok) throw await readApiError(resp, 'Failed to save provider')
-
-      toast.success(isEditing ? 'Provider updated' : 'Provider added')
-      setBaseline(form)
-      onSave()
+      const resp = await sendSave()
+      if (!resp.ok) {
+        const apiErr = await readApiError(resp, 'Failed to save provider')
+        // A new base URL or type asks for the signed-in person's password (ID-25): the
+        // dialog sends it with the same save.
+        if (apiErr.code === 'step_up_required') {
+          setStepUpOpen(true)
+          return
+        }
+        throw apiErr
+      }
+      saved()
     } catch (err) {
       console.error('Failed to save provider:', err)
       // Show what the server actually said. The blanket message hid the real
@@ -256,7 +268,14 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
     } finally {
       setSaving(false)
     }
-  }, [isEditing, userId, provider, form, requestBody, onSave, setBaseline, showReentry])
+  }, [sendSave, saved, showReentry])
+
+  const confirmStepUp = useCallback(async (password: string) => {
+    const resp = await sendSave(password)
+    // Thrown, the dialog stays open and shows why (a wrong password, a lockout).
+    if (!resp.ok) throw await readApiError(resp, 'Failed to save provider')
+    saved()
+  }, [sendSave, saved])
 
   // Step 1: Choose provider type
   if (step === 'type') {
@@ -711,6 +730,16 @@ export function LlmProviderForm({ userId, provider, existingProviderTypes = [], 
           </div>
         )}
       </div>
+      {stepUpOpen && (
+        <StepUpModal
+          isOpen
+          title="Confirm the new endpoint"
+          message="This provider's key, headers and your prompts will go to a new address. Enter your password to save the change."
+          confirmLabel="Save"
+          onConfirm={confirmStepUp}
+          onClose={() => setStepUpOpen(false)}
+        />
+      )}
     </div>
   )
 }

@@ -5,7 +5,8 @@ import { cleanupRbac, loginAs, seedRbac, type RbacSeed } from './rbacUsers'
  * Step 1.6 done-when (HD-24): an admin editing their OWN provider's base URL without
  * typing the key again sees the re-entry message under the API key field, which takes
  * the focus, and nothing is saved. The rule holds for the account itself: a stolen
- * session cannot re-point a stored key it never saw.
+ * session cannot re-point a stored key it never saw. With the key typed again the save
+ * asks for the admin's own password (ID-25), and only then re-points the provider.
  *
  * Seeds its own synthetic accounts and removes them afterwards (the provider goes with
  * its account). The key is a fake and both base URLs are closed local ports: nothing is
@@ -44,9 +45,15 @@ test('an admin re-pointing their own provider is asked for the key again', async
   const stored = await (await page.request.get(providers)).json() as { name: string; baseUrl: string }[]
   expect(stored.find(p => p.name === 'rbac-reentry')?.baseUrl).toBe('http://127.0.0.1:9/v1')
 
-  // Typed again, the same change is saved.
+  // Typed again, the same change asks for the password, and nothing moves before it.
   await page.getByLabel('API key').fill('rbac-fake-llm-key-0000000000000010')
   await page.getByRole('button', { name: 'Update Provider' }).click()
+  const stepUp = page.getByRole('dialog').filter({ hasText: 'new address' })
+  await expect(stepUp).toBeVisible()
+  const pending = await (await page.request.get(providers)).json() as { name: string; baseUrl: string }[]
+  expect(pending.find(p => p.name === 'rbac-reentry')?.baseUrl).toBe('http://127.0.0.1:9/v1')
+  await stepUp.getByLabel('Your password').fill(seed.RBAC_PASSWORD)
+  await stepUp.getByRole('button', { name: 'Save' }).click()
   await expect.poll(async () => {
     const rows = await (await page.request.get(providers)).json() as { name: string; baseUrl: string }[]
     return rows.find(p => p.name === 'rbac-reentry')?.baseUrl

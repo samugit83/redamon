@@ -9,6 +9,9 @@ const toastError = vi.fn()
 
 vi.mock('@/components/ui', () => ({
   useToast: () => ({ success: toastSuccess, error: toastError }),
+  // StepUpModal is built on Modal (ID-25: re-pointing asks for the password).
+  Modal: ({ isOpen, title, children }: { isOpen: boolean; title?: string; children: React.ReactNode }) =>
+    isOpen ? <div role="dialog" aria-label={title}>{children}</div> : null,
   // The form also reaches for the alert modal; mocking the module wholesale
   // means every hook it uses has to be listed here or the render throws.
   useAlertModal: () => ({
@@ -601,5 +604,68 @@ describe('review of 1.6: a new base URL with a masked Extra Headers value asks f
     fireEvent.click(screen.getByPlaceholderText('Value').parentElement!.querySelector('button')!)
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByText('Bearer typed')).toBeInTheDocument()
+  })
+})
+
+describe('ID-25: re-pointing a saved provider asks for the password (review of 1.6)', () => {
+  const SAVED = { ...PROVIDER, id: 'compat-3', apiKey: '••••••••1234', baseUrl: 'https://llm.example.com/v1' }
+  const STEP_UP = { ok: false, status: 403, json: async () => ({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }) }
+  const WRONG = { ok: false, status: 403, json: async () => ({ error: 'Password is incorrect', code: 'step_up_failed' }) }
+  const SAVED_OK = { ok: true, status: 200, json: async () => ({}) }
+
+  beforeEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    toastSuccess.mockReset()
+    toastError.mockReset()
+  })
+  afterEach(cleanup)
+
+  /** Answers the saves in order; the health probe always answers healthy. */
+  function sequence(...answers: unknown[]) {
+    const queue = [...answers]
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/agent/health') return { ok: true, status: 200, json: async () => ({ status: 'healthy' }) } as Response
+      return queue.shift() as Response
+    })
+  }
+  const saves = (fetchMock: ReturnType<typeof sequence>) =>
+    fetchMock.mock.calls.filter(([u]) => String(u) !== '/api/agent/health').map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+
+  async function rePoint() {
+    const onSave = vi.fn()
+    render(<LlmProviderForm userId="user-1" provider={SAVED} onSave={onSave} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('http://host.docker.internal:11434/v1'), { target: { value: 'https://elsewhere.example.net/v1' } })
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-typed-again' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }))
+    return onSave
+  }
+
+  test('the refused save opens the password dialog; the password goes with the same save, which then succeeds', async () => {
+    const fetchMock = sequence(STEP_UP, SAVED_OK)
+    const onSave = await rePoint()
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('new address')
+    expect(onSave).not.toHaveBeenCalled()
+    expect(toastError).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'my-password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    const [first, second] = saves(fetchMock)
+    expect(first.stepUpPassword).toBeUndefined()
+    expect(second).toMatchObject({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again', stepUpPassword: 'my-password' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  test('a wrong password keeps the dialog open with the reason, and nothing is saved', async () => {
+    sequence(STEP_UP, WRONG)
+    const onSave = await rePoint()
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'guess' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/Password is incorrect/)).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(onSave).not.toHaveBeenCalled()
   })
 })

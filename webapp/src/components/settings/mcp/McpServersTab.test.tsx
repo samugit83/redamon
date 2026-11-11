@@ -7,7 +7,7 @@
  * showed a SyntaxError on a proxy's HTML page.
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 
 const ui = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -22,6 +22,9 @@ const ui = vi.hoisted(() => ({
 vi.mock('@/components/ui', () => ({
   useToast: () => ui.toast,
   useAlertModal: () => ui.alerts,
+  // StepUpModal is built on Modal (ID-25: re-pointing asks for the password).
+  Modal: ({ isOpen, title, children }: { isOpen: boolean; title?: string; children: React.ReactNode }) =>
+    isOpen ? <div role="dialog" aria-label={title}>{children}</div> : null,
 }))
 
 import McpServersTab from './McpServersTab'
@@ -205,5 +208,42 @@ describe('review of 1.6: a new stdio command with masked env values asks for the
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('environment variable "SHODAN_API_KEY"')
     await waitFor(() => expect(screen.getByPlaceholderText(/SHODAN_API_KEY=/)).toHaveFocus())
+  })
+})
+
+describe('ID-25: re-pointing a saved server asks for the password (review of 1.6)', () => {
+  const HTTP_SERVER = {
+    ...SERVER, transport: 'streamable_http', command: '', url: 'https://mcp.example.com/mcp',
+    auth: { type: 'bearer', token: '••••••••1234' },
+  }
+
+  test('the refused save opens the password dialog; the password goes with the same save', async () => {
+    answers.list = json(200, { servers: [HTTP_SERVER] })
+    const puts: Record<string, unknown>[] = []
+    const queue = [
+      json(403, { error: 'Enter your password to confirm this action.', code: 'step_up_required' }),
+      json(200, { server: HTTP_SERVER, servers: [HTTP_SERVER] }),
+    ]
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'PUT') {
+        puts.push(JSON.parse(String(init!.body)))
+        return queue.shift()!
+      }
+      return resolve(answers.list).clone()
+    })
+    await openEdit()
+    fireEvent.change(screen.getByPlaceholderText(/my-mcp:8080/), { target: { value: 'https://elsewhere.example.net/mcp' } })
+    fireEvent.change(screen.getByLabelText('bearer token'), { target: { value: 'typed-token' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('new address')
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'my-password' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts[0].stepUpPassword).toBeUndefined()
+    expect(puts[1]).toMatchObject({ url: 'https://elsewhere.example.net/mcp', stepUpPassword: 'my-password' })
+    await waitFor(() => expect(screen.queryByText('Edit MCP Tool Plugin: probe')).toBeNull())
   })
 })

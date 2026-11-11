@@ -30,6 +30,17 @@ vi.mock('@/lib/session', () => ({
   isInternalRequest: (...a: unknown[]) => mockIsInternal(...a),
 }))
 
+// The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
+// requireStepUp does: no password 403 step_up_required, a wrong one 403 step_up_failed.
+const mockStepUp = vi.hoisted(() => vi.fn(async (_req: unknown, password: unknown) => {
+  const { NextResponse } = await import('next/server')
+  if (password === 'right-password') return null
+  return password
+    ? NextResponse.json({ error: 'Password is incorrect', code: 'step_up_failed' }, { status: 403 })
+    : NextResponse.json({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }, { status: 403 })
+}))
+vi.mock('@/lib/authz/stepUp', () => ({ requireStepUp: mockStepUp }))
+
 import { GET, PUT, DELETE } from './route'
 
 const SECRET = 'sk-PROVIDERSECRET1234'
@@ -259,7 +270,8 @@ describe('PUT provider - a new endpoint needs the key typed again (HD-24)', () =
   })
 
   test('a new base URL with the key typed again is saved with that key', async () => {
-    const res = await PUT(put({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again' }), params('victim', 'p1'))
+    // ID-25: re-pointing also takes the signed-in user's password (review of 1.6)
+    const res = await PUT(put({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again', stepUpPassword: 'right-password' }), params('victim', 'p1'))
     expect(res.status).toBe(200)
     expect(mockUpdate.mock.calls[0][0].data).toMatchObject({ baseUrl: 'https://elsewhere.example.net/v1', apiKey: 'sk-typed-again' })
   })
@@ -346,5 +358,54 @@ describe('Extra Headers values: masked on read, kept when sent back masked, re-e
     expect(JSON.parse(text)).toMatchObject({ code: 'secret_reentry_required', fields: ['apiKey', 'defaultHeaders.Authorization'] })
     expect(text).not.toContain(HEADER)
     expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('PUT provider - re-pointing a saved provider takes the password too (ID-25, review of 1.6)', () => {
+  beforeEach(() => {
+    mockRequireUserAccess.mockResolvedValue(null)
+    mockIsInternal.mockReturnValue(false)
+    mockStepUp.mockClear()
+  })
+
+  test('a new base URL with a new key and no password: 403 step_up_required, nothing written', async () => {
+    const res = await PUT(put({ baseUrl: 'https://collector.example.net/v1', apiKey: 'sk-junk' }), params('victim', 'p1'))
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_required')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a wrong password: 403 step_up_failed, nothing written', async () => {
+    const res = await PUT(put({ baseUrl: 'https://collector.example.net/v1', apiKey: 'sk-junk', stepUpPassword: 'guess' }), params('victim', 'p1'))
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_failed')
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('a new type is re-pointing too; the right password saves, and is never written', async () => {
+    mockFindFirst.mockResolvedValue({ ...PROVIDER, providerType: 'openai', baseUrl: '', apiKey: '' })
+    expect((await PUT(put({ providerType: 'openai_compatible', baseUrl: 'https://llm.example.net/v1' }), params('victim', 'p1'))).status).toBe(403)
+    const res = await PUT(put({ providerType: 'openai_compatible', baseUrl: 'https://llm.example.net/v1', stepUpPassword: 'right-password' }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect('stepUpPassword' in mockUpdate.mock.calls[0][0].data).toBe(false)
+  })
+
+  test('re-entry is asked first: a masked key with a new base URL is 400 before any password', async () => {
+    const res = await PUT(put({ baseUrl: 'https://collector.example.net/v1', apiKey: '••••••••1234' }), params('victim', 'p1'))
+    expect(res.status).toBe(400)
+    expect(mockStepUp).not.toHaveBeenCalled()
+  })
+
+  test('a save that keeps the endpoint asks for no password', async () => {
+    const res = await PUT(put({ ...PROVIDER, apiKey: '••••••••1234', name: 'renamed' }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockStepUp).not.toHaveBeenCalled()
+  })
+
+  test('the internal key has no password to give: it re-points without one', async () => {
+    mockIsInternal.mockReturnValue(true)
+    const res = await PUT(put({ baseUrl: 'https://llm.example.net/v1', apiKey: 'sk-new' }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockStepUp).not.toHaveBeenCalled()
   })
 })

@@ -4,7 +4,8 @@ import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { internalError } from '@/lib/routeErrors'
-import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { llmProviderEndpointChange, llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { requireStepUp } from '@/lib/authz/stepUp'
 import { maskProvider, restoreMaskedHeaders } from '@/lib/llmProviderMask'
 
 interface RouteParams {
@@ -103,6 +104,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!isJevProvider(existing)) {
       const reentry = llmProviderSecretReentry(existing, body)
       if (reentry) return secretReentryResponse(reentry)
+      // Re-pointing also takes the signed-in person's password (ID-25): with a key typed
+      // again the re-entry rule passes, yet the account's prompts follow the endpoint, so
+      // a stolen session could re-point a provider with a junk key and read every later
+      // run. The internal key has no password and is a machine's, not a session's.
+      if (!isInternalRequest(request) && llmProviderEndpointChange(existing, body)) {
+        const refused = await requireStepUp(request, body.stepUpPassword)
+        if (refused) return refused
+      }
     }
 
     // Preserve masked secrets

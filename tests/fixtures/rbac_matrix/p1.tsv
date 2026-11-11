@@ -119,3 +119,7 @@ p1-tunnel-hint-admin	1.10	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;ha
 # The settings row also carries the MCP servers JSON: the admin's masked read of /settings
 # returns the seeded server with its bearer masked (the /mcp read is p1-admin-reads-other-masked).
 p1-admin-reads-other-settings-masked	1.6	admin_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200;has=rbac-fake-server;has=••••••••0001;lacks=${A_MCP_BEARER};lacks=${A_TAVILY_SECRET}	req:HD-23
+# Re-pointing a saved MCP server with a NEW token typed passes the re-entry rule but asks for the
+# signed-in user's password (ID-25): refused before anything is written, the stored bearer never
+# answered. (A wrong password would count toward member_a's step-up lockout, so no row sends one.)
+p1-stepup-repoint-mcp-server	1.6	member_a	PUT	/api/users/${MEMBER_A_ID}/mcp/rbac-fake-server	{"id":"rbac-fake-server","name":"rbac fake server","transport":"streamable_http","url":"http://127.0.0.2:9/mcp","auth":{"type":"bearer","token":"rbac-typed-never-stored"}}	403;has=step_up_required;lacks=${A_MCP_BEARER}	req:ID-25

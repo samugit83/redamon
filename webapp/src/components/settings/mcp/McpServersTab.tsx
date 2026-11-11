@@ -15,6 +15,7 @@ import {
 } from '@/lib/mcp/schema'
 import { MCP_PRESETS, PRESET_CATEGORY_LABELS, type McpPreset } from '@/lib/mcp/presets'
 import { useAlertModal, useToast } from '@/components/ui'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 import { readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import { actionFailedText, failureText, saveWarningLines } from '../failureText'
 import { useDirtyState } from '@/hooks/useDirtyState'
@@ -361,6 +362,25 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
     }
   }
 
+  // A saved server re-pointed (a new URL, stdio command or transport) asks for the
+  // signed-in person's password (ID-25); the dialog sends it with the same save.
+  const [stepUpOpen, setStepUpOpen] = useState(false)
+  const sendSave = (srv: MCPServer, stepUpPassword?: string) => fetch(
+    isNew ? `/api/users/${userId}/mcp` : `/api/users/${userId}/mcp/${encodeURIComponent(srv.id)}`,
+    {
+      method: isNew ? 'POST' : 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stepUpPassword ? { ...srv, stepUpPassword } : srv),
+    },
+  )
+  const saved = async (r: Response) => {
+    warnIfNotReloaded(await r.json().catch(() => null))
+    await load()
+    setEditing(null)
+    setErrors({})
+    setTestResult(null)
+  }
+
   const onSave = async () => {
     if (!editing) return
     const localErrors = validate(editing)
@@ -371,16 +391,13 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
     setSaving(true)
     setTopLevelError(null)
     try {
-      const url = isNew
-        ? `/api/users/${userId}/mcp`
-        : `/api/users/${userId}/mcp/${encodeURIComponent(editing.id)}`
-      const r = await fetch(url, {
-        method: isNew ? 'POST' : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editing),
-      })
+      const r = await sendSave(editing)
       if (!r.ok) {
         const err = await readApiError(r, isNew ? 'Failed to add the MCP Tool Plugin' : 'Failed to update the MCP Tool Plugin')
+        if (err.code === 'step_up_required') {
+          setStepUpOpen(true)
+          return
+        }
         setTopLevelError(err.message)
         const issues = err.body?.issues
         if (Array.isArray(issues)) {
@@ -397,16 +414,20 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
         }
         return
       }
-      warnIfNotReloaded(await r.json().catch(() => null))
-      await load()
-      setEditing(null)
-      setErrors({})
-      setTestResult(null)
+      await saved(r)
     } catch (e) {
       setTopLevelError(toApiError(e, isNew ? 'Failed to add the MCP Tool Plugin' : 'Failed to update the MCP Tool Plugin').message)
     } finally {
       setSaving(false)
     }
+  }
+
+  const confirmStepUp = async (password: string) => {
+    if (!editing) return
+    const r = await sendSave(editing, password)
+    // Thrown, the dialog stays open and shows why (a wrong password, a lockout).
+    if (!r.ok) throw await readApiError(r, 'Failed to update the MCP Tool Plugin')
+    await saved(r)
   }
 
   const onDelete = async (serverId: string) => {
@@ -1106,6 +1127,16 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
           </div>
         </div>
       ))}
+      {stepUpOpen && (
+        <StepUpModal
+          isOpen
+          title="Confirm the new endpoint"
+          message="This MCP Tool Plugin's secrets and the agent's tool calls will go to a new address or process. Enter your password to save the change."
+          confirmLabel="Save"
+          onConfirm={confirmStepUp}
+          onClose={() => setStepUpOpen(false)}
+        />
+      )}
     </div>
   )
 }

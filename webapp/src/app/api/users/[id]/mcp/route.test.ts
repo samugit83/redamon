@@ -18,7 +18,18 @@ const mockUpsert = vi.fn()
 const mockUpdate = vi.fn()
 const fetchMock = vi.fn()
 
-vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn().mockResolvedValue(null) }))
+const mockIsInternal = vi.hoisted(() => vi.fn(() => false))
+vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn().mockResolvedValue(null), isInternalRequest: mockIsInternal }))
+// The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
+// requireStepUp does: no password 403 step_up_required, a wrong one 403 step_up_failed.
+const mockStepUp = vi.hoisted(() => vi.fn(async (_req: unknown, password: unknown) => {
+  const { NextResponse } = await import('next/server')
+  if (password === 'right-password') return null
+  return password
+    ? NextResponse.json({ error: 'Password is incorrect', code: 'step_up_failed' }, { status: 403 })
+    : NextResponse.json({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }, { status: 403 })
+}))
+vi.mock('@/lib/authz/stepUp', () => ({ requireStepUp: mockStepUp }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     userSettings: {
@@ -209,7 +220,8 @@ describe('PUT /api/users/[id]/mcp/[serverId]: a new URL needs its secrets typed 
   })
 
   test('a new URL with the token and header typed again is saved as typed', async () => {
-    const res = await put({ ...STORED, url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: 'typed-again' }, headers: { 'X-Api-Key': 'hdr-new' } })
+    // ID-25: re-pointing also takes the signed-in user's password (review of 1.6)
+    const res = await put({ ...STORED, url: 'https://elsewhere.example.net/mcp', auth: { type: 'bearer', token: 'typed-again' }, headers: { 'X-Api-Key': 'hdr-new' }, stepUpPassword: 'right-password' })
     expect(res.status).toBe(200)
     const saved = mockUpdate.mock.calls[0][0].data.mcpServers[0]
     expect(saved).toMatchObject({ url: 'https://elsewhere.example.net/mcp', auth: { token: 'typed-again' }, headers: { 'X-Api-Key': 'hdr-new' } })
@@ -248,5 +260,50 @@ describe('PUT /api/users/[id]/mcp/[serverId]: a new stdio command needs its env 
     const res = await put({ ...STORED, enabled: false, env: { SHODAN_API_KEY: '••••••••5555' } })
     expect(res.status).toBe(200)
     expect(mockUpdate.mock.calls[0][0].data.mcpServers[0].env.SHODAN_API_KEY).toBe(ENV)
+  })
+})
+
+describe('PUT /api/users/[id]/mcp/[serverId]: re-pointing a saved server takes the password too (ID-25, review of 1.6)', () => {
+  const STORED = {
+    id: 'probe', name: 'Probe', transport: 'streamable_http', url: 'https://mcp.example.com/mcp',
+    enabled: true, tools: [], auth: { type: 'bearer', token: 'mcp-STORED-bearer-1234' }, headers: {},
+  }
+  const put = (body: unknown) => PUT(json('PUT', 'http://x/api/users/u1/mcp/probe', body), oneParams)
+
+  beforeEach(() => {
+    mockFindUnique.mockResolvedValue({ mcpServers: [STORED] })
+    mockIsInternal.mockReturnValue(false)
+    mockStepUp.mockClear()
+  })
+
+  test('a new URL with a new token and no password: 403 step_up_required, nothing written or reloaded', async () => {
+    const res = await put({ ...STORED, url: 'https://collector.example.net/mcp', auth: { type: 'bearer', token: 'junk' } })
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('step_up_required')
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('a new stdio command with the right password is saved; the password is never stored', async () => {
+    mockFindUnique.mockResolvedValue({ mcpServers: [{ ...STORED, transport: 'stdio', command: 'npx', url: '' }] })
+    expect((await put({ ...STORED, transport: 'stdio', command: 'uvx', url: '' })).status).toBe(403)
+    const res = await put({ ...STORED, transport: 'stdio', command: 'uvx', url: '', stepUpPassword: 'right-password' })
+    expect(res.status).toBe(200)
+    const saved = mockUpdate.mock.calls[0][0].data.mcpServers[0]
+    expect(saved.command).toBe('uvx')
+    expect('stepUpPassword' in saved).toBe(false)
+  })
+
+  test('a save that keeps the endpoint asks for no password', async () => {
+    const res = await put({ ...STORED, enabled: false, auth: { type: 'bearer', token: '••••••••1234' } })
+    expect(res.status).toBe(200)
+    expect(mockStepUp).not.toHaveBeenCalled()
+  })
+
+  test('the internal key re-points without one', async () => {
+    mockIsInternal.mockReturnValue(true)
+    const res = await put({ ...STORED, url: 'https://mcp2.example.com/mcp', auth: { type: 'bearer', token: 'new' } })
+    expect(res.status).toBe(200)
+    expect(mockStepUp).not.toHaveBeenCalled()
   })
 })
