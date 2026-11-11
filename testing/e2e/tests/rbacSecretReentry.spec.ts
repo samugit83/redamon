@@ -39,7 +39,8 @@ test('an admin re-pointing their own provider is asked for the key again', async
   await page.getByPlaceholder('http://host.docker.internal:11434/v1').fill('http://127.0.0.2:9/v1')
   await page.getByRole('button', { name: 'Update Provider' }).click()
 
-  await expect(page.getByRole('alert').filter({ hasText: 'type the API key again' })).toBeVisible()
+  // The hint under the field, not the error toast that says the same outside the page.
+  await expect(page.getByRole('main').getByRole('alert').filter({ hasText: 'type the API key again' })).toBeVisible()
   await expect(page.getByLabel('API key')).toBeFocused()
 
   const stored = await (await page.request.get(providers)).json() as { name: string; baseUrl: string }[]
