@@ -46,7 +46,8 @@ from plugin_api import router as plugin_router
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 from startup_guard import check_single_worker
 from utils import get_session_count
-from websocket_api import WebSocketManager, websocket_endpoint, MessageType
+from websocket_api import (WebSocketManager, websocket_endpoint, MessageType,
+                           PROXIED_SOCKETS, SOCKET_KINDS, close_sockets)
 import workspace_fs
 import job_runner
 import ws_job_emitter
@@ -1632,6 +1633,32 @@ class SessionStopRequest(BaseModel):
     user_id: str
     project_id: str
     session_id: str
+
+
+class WsCloseRequest(BaseModel):
+    user_id: Optional[str] = None
+    project_id: Optional[str] = None
+    kinds: List[Literal[SOCKET_KINDS]] = Field(..., min_length=1)
+
+
+@app.post("/ws/close", tags=["Sessions"],
+          dependencies=[Depends(require_configured_master_auth)])
+async def close_open_sockets(body: WsCloseRequest):
+    """Close the open sockets of `kinds` that belong to a user and/or a project.
+
+    The webapp calls it when access ends (a revoke, a disabled account, a removed
+    legacy grant): a ticket is checked only when its socket opens. Closing an
+    `agent` socket also stops its run. A user or a project is required, so a
+    caller's bug never closes every socket of the instance.
+    """
+    if not body.user_id and not body.project_id:
+        return JSONResponse(status_code=400, content={"error": "user_id or project_id is required"})
+    result = await close_sockets(ws_manager, PROXIED_SOCKETS, kinds=list(dict.fromkeys(body.kinds)),
+                                 user_id=body.user_id or None, project_id=body.project_id or None)
+    logger.warning("[rbac] ws close user=%s project=%s kinds=%s closed=%d stopped_runs=%d",
+                   body.user_id or "-", body.project_id or "-", ",".join(body.kinds),
+                   result["closed"], result["stopped_runs"])
+    return result
 
 
 @app.post("/agent-session/stop", tags=["Sessions"],
@@ -5533,10 +5560,12 @@ async def kali_terminal_proxy(websocket: WebSocket):
     Bridges the browser ↔ agent ↔ kali-sandbox terminal for interactive shell access.
 
     STRIDE S3: this proxy is the authentication chokepoint. Before accepting the
-    handshake or dialing the upstream PTY it requires a valid ws-ticket (query
-    param ``ticket``) and a same-origin request. An unset AGENT_WS_TICKET_SECRET
+    handshake or dialing the upstream PTY it requires a valid `kali-terminal`
+    ws-ticket (query param ``ticket``; the webapp mints one only for a holder of
+    the terminal) and a same-origin request. An unset AGENT_WS_TICKET_SECRET
     fails CLOSED (mirrors S2). Identity is taken from the verified claims, never
-    from the browser's self-asserted frame, and forwarded to the upstream.
+    from the browser's self-asserted frame, and forwarded to the upstream, which
+    admits only this proxy: it presents the MCP_AUTH_TOKEN bearer (NF-04).
     """
     from ws_ticket import authorize_ws
 
@@ -5544,7 +5573,7 @@ async def kali_terminal_proxy(websocket: WebSocket):
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
     ticket = websocket.query_params.get("ticket")
-    ok, claims, reason = authorize_ws(origin, host, ticket, _cors_origins)
+    ok, claims, reason = authorize_ws(origin, host, ticket, _cors_origins, aud="kali-terminal")
     if not ok:
         logger.warning("Rejected /ws/kali-terminal: %s (origin=%r host=%r)", reason, origin, host)
         await websocket.close(code=1008)
@@ -5560,13 +5589,18 @@ async def kali_terminal_proxy(websocket: WebSocket):
     })
     _sep = "&" if urlparse(_KALI_TERMINAL_WS_URL).query else "?"
     upstream_url = f"{_KALI_TERMINAL_WS_URL}{_sep}{_tenant}"
+    # Unset: no header, and the terminal server refuses the upgrade (it fails closed).
+    _mcp_token = os.environ.get("MCP_AUTH_TOKEN", "")
+    upstream_headers = {"Authorization": f"Bearer {_mcp_token}"} if _mcp_token else {}
 
     await websocket.accept()
+    PROXIED_SOCKETS.add(websocket, "kali-terminal", claims)
 
     close_code, close_reason = 1000, ""
     try:
         async with websockets.connect(
             upstream_url,
+            additional_headers=upstream_headers,
             ping_interval=30,
             ping_timeout=60,
             max_size=2**20,
@@ -5576,6 +5610,8 @@ async def kali_terminal_proxy(websocket: WebSocket):
                 try:
                     while True:
                         data = await websocket.receive()
+                        if data.get("type") == "websocket.disconnect":
+                            break
                         if "text" in data:
                             await kali_ws.send(data["text"])
                         elif "bytes" in data:
@@ -5611,6 +5647,7 @@ async def kali_terminal_proxy(websocket: WebSocket):
         close_code = 1011
         close_reason = f"Kali sandbox terminal unavailable ({type(e).__name__})"
     finally:
+        PROXIED_SOCKETS.remove(websocket)
         try:
             await websocket.close(code=close_code, reason=close_reason)
         except Exception:

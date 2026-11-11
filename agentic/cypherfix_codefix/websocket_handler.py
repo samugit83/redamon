@@ -87,17 +87,20 @@ async def handle_codefix_websocket(websocket: WebSocket):
     if _agentic not in _sys.path:
         _sys.path.insert(0, _agentic)
     from ws_ticket import authorize_ws, cors_allowlist
+    from websocket_api import PROXIED_SOCKETS
 
     _origin = websocket.headers.get("origin")
     _host = websocket.headers.get("host")
     _ticket = websocket.query_params.get("ticket")
-    _ok, _claims, _reason = authorize_ws(_origin, _host, _ticket, cors_allowlist())
+    _ok, _claims, _reason = authorize_ws(_origin, _host, _ticket, cors_allowlist(), aud="cypherfix-codefix")
     if not _ok:
         logger.warning("Rejected /ws/cypherfix-codefix: %s (origin=%r)", _reason, _origin)
         await reject_websocket(websocket, _reason)
         return
 
     await websocket.accept()
+    # Found again by POST /ws/close when the user's access ends.
+    PROXIED_SOCKETS.add(websocket, "cypherfix-codefix", _claims)
     callback = CodeFixStreamingCallback(websocket)
 
     state: CodeFixState | None = None
@@ -177,6 +180,7 @@ async def handle_codefix_websocket(websocket: WebSocket):
     except Exception as e:
         logger.exception(f"CodeFix WebSocket error: {e}")
     finally:
+        PROXIED_SOCKETS.remove(websocket)
         if codefix_task and not codefix_task.done():
             codefix_task.cancel()
         if orchestrator:

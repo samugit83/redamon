@@ -1,12 +1,13 @@
 """
 STRIDE S6 — cross-runtime integration: a ticket minted by the webapp (jose,
 HS256) MUST verify with the agent's stdlib verifier, and MUST be rejected under
-the wrong secret. This guards the seam that unit tests (which sign with Python
+the wrong secret and on another socket than the one its `aud` names (HD-25). This guards the seam that unit tests (which sign with Python
 hmac) can't: a format disagreement between jose and the Python verifier would
 silently fail S6 open in production.
 
-Runs the real `jose` SignJWT inside the webapp container, then verifies the exact
-token string here. SKIPs cleanly if the webapp container / docker is unavailable.
+Runs the real `jose` SignJWT inside the webapp container, with the claim set
+`createWsTicket` (webapp/src/lib/auth.ts) writes, then verifies the exact token
+string here. `auth.wsTicket.test.ts` pins that claim set on the TypeScript side. SKIPs cleanly if the webapp container / docker is unavailable.
 
 Run: python3 agentic/tests/test_ws_ticket_interop.py
 """
@@ -26,7 +27,7 @@ SECRET = "interop-secret-0123456789abcdef"
 _NODE_MINT = (
     'const {SignJWT}=require("jose");'
     '(async()=>{const k=new TextEncoder().encode(process.argv[1]);'
-    'const t=await new SignJWT({sub:"u1",pid:"p1",sid:"s1"})'
+    'const t=await new SignJWT({sub:"u1",pid:"p1",sid:"s1",aud:"kali-terminal",act:"a1"})'
     '.setProtectedHeader({alg:"HS256"}).setIssuedAt().setExpirationTime("60s").sign(k);'
     'process.stdout.write(t);})();'
 )
@@ -51,13 +52,19 @@ class TicketInterop(unittest.TestCase):
         if not self.token:
             self.skipTest("webapp container / jose unavailable")
 
-    def test_jose_ticket_verifies_in_python(self):
-        claims = verify_ws_ticket(self.token, SECRET)
+    def test_typescript_ticket_with_aud_verifies_in_python(self):
+        claims = verify_ws_ticket(self.token, SECRET, expected_aud="kali-terminal")
         self.assertIsNotNone(claims, "jose-minted ticket rejected by Python verifier (interop bug)")
-        self.assertEqual((claims["sub"], claims["pid"], claims["sid"]), ("u1", "p1", "s1"))
+        self.assertEqual((claims["sub"], claims["pid"], claims["sid"], claims["aud"], claims["act"]),
+                         ("u1", "p1", "s1", "kali-terminal", "a1"))
+
+    def test_typescript_ticket_refused_on_another_socket(self):
+        for other in ("agent", "cypherfix-triage", "cypherfix-codefix"):
+            with self.subTest(socket=other):
+                self.assertIsNone(verify_ws_ticket(self.token, SECRET, expected_aud=other))
 
     def test_wrong_secret_rejected(self):
-        self.assertIsNone(verify_ws_ticket(self.token, "the-wrong-secret"))
+        self.assertIsNone(verify_ws_ticket(self.token, "the-wrong-secret", expected_aud="kali-terminal"))
 
 
 if __name__ == "__main__":

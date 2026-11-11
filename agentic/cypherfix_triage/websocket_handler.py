@@ -425,17 +425,20 @@ async def handle_triage_websocket(websocket: WebSocket):
     if _agentic not in _sys.path:
         _sys.path.insert(0, _agentic)
     from ws_ticket import authorize_ws, cors_allowlist
+    from websocket_api import PROXIED_SOCKETS
 
     _origin = websocket.headers.get("origin")
     _host = websocket.headers.get("host")
     _ticket = websocket.query_params.get("ticket")
-    _ok, _claims, _reason = authorize_ws(_origin, _host, _ticket, cors_allowlist())
+    _ok, _claims, _reason = authorize_ws(_origin, _host, _ticket, cors_allowlist(), aud="cypherfix-triage")
     if not _ok:
         logger.warning("Rejected /ws/cypherfix-triage: %s (origin=%r)", _reason, _origin)
         await reject_websocket(websocket, _reason)
         return
 
     await websocket.accept()
+    # Found again by POST /ws/close when the user's access ends.
+    PROXIED_SOCKETS.add(websocket, "cypherfix-triage", _claims)
     callback = TriageStreamingCallback(websocket)
 
     state: TriageState | None = None
@@ -537,6 +540,7 @@ async def handle_triage_websocket(websocket: WebSocket):
     except Exception as e:
         logger.exception(f"Triage WebSocket error: {e}")
     finally:
+        PROXIED_SOCKETS.remove(websocket)
         # DETACH, never cancel. Closing the tab used to kill the run mid-flight,
         # throwing away a multi-minute paid LLM run and leaving no verdicts. The
         # run keeps going with nowhere to stream to; the next tab re-attaches and

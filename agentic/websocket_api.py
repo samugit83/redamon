@@ -8,6 +8,8 @@ Supports streaming of LLM thoughts, tool executions, and interactive approval/qu
 import asyncio
 import json
 import logging
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
@@ -240,6 +242,9 @@ class WebSocketConnection:
         self.user_id: Optional[str] = None
         self.project_id: Optional[str] = None
         self.session_id: Optional[str] = None
+        #: The person signed in when an admin acts as `user_id` (the ticket's `act`),
+        #: so closing that person's sockets reaches this one too.
+        self.actor_id: Optional[str] = None
         self.graph_view_cypher: Optional[str] = None
         self.authenticated = False
         self.connected_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -551,14 +556,16 @@ class WebSocketManager:
 
         return stopped
 
-    async def stop_session(self, session_key: str) -> bool:
+    async def stop_session(self, session_key: str,
+                           message: str = "Session stopped (conversation deleted)") -> bool:
         """Cancel the running agent task for a SINGLE session key.
 
         Used when its conversation is deleted so the backing agent loop halts
         instead of continuing headlessly (and re-seeding the attack-chain graph
-        after the UI clears it). Also cancels any in-flight tool tasks for the
-        session and marks a connected socket stopped. Returns True if a live
-        task was cancelled.
+        after the UI clears it), and when the person's access is revoked
+        (close_sockets). Also cancels any in-flight tool tasks for the session and
+        marks a connected socket stopped, telling it `message`. Returns True if a
+        live task was cancelled.
         """
         cancelled = False
         task = self._active_tasks.get(session_key)
@@ -579,13 +586,132 @@ class WebSocketManager:
             conn._is_stopped = True
             try:
                 await conn.send_message(MessageType.STOPPED, {
-                    "message": "Session stopped (conversation deleted)",
+                    "message": message,
                     "iteration": 0,
                     "phase": "informational",
                 })
             except Exception:
                 pass
         return cancelled
+
+
+# =============================================================================
+# PROXIED SOCKETS AND CLOSING BY USER (T16, DV-21)
+# =============================================================================
+
+#: Every socket kind a ticket can open (ws_ticket.WS_AUDIENCES); `agent` lives in
+#: WebSocketManager, the other three in PROXIED_SOCKETS.
+SOCKET_KINDS = ("agent", "kali-terminal", "cypherfix-triage", "cypherfix-codefix")
+PROXIED_KINDS = SOCKET_KINDS[1:]
+
+#: 4403: an application close code (4000-4999) the browser shows with its reason.
+ACCESS_REVOKED_CODE = 4403
+ACCESS_REVOKED_REASON = "Access revoked"
+
+
+@dataclass
+class ProxiedSocket:
+    ws: Any
+    kind: str
+    sub: str
+    act: Optional[str]
+    pid: str
+    sid: str
+    opened_at: float = field(default_factory=time.time)
+
+
+class ProxiedSocketRegistry:
+    """The open /ws/kali-terminal, /ws/cypherfix-triage and /ws/cypherfix-codefix
+    sockets, with the verified ticket's identity. Each handler adds its socket
+    after the ticket check and accept(), and removes it in its `finally`, so a
+    revoke can find a socket whose ticket was valid when it opened.
+    """
+
+    def __init__(self):
+        # By identity: two sockets of the same user, project and kind are two entries.
+        self._entries: Dict[int, ProxiedSocket] = {}
+
+    def add(self, ws, kind: str, claims: dict) -> ProxiedSocket:
+        if kind not in PROXIED_KINDS:
+            raise ValueError(f"not a proxied socket kind: {kind!r}")
+        entry = ProxiedSocket(
+            ws=ws, kind=kind, sub=str(claims["sub"]),
+            act=str(claims["act"]) if claims.get("act") else None,
+            pid=str(claims["pid"]), sid=str(claims["sid"]))
+        self._entries[id(ws)] = entry
+        return entry
+
+    def remove(self, ws) -> None:
+        entry = self._entries.get(id(ws))
+        if entry is not None and entry.ws is ws:
+            del self._entries[id(ws)]
+
+    def matching(self, *, kinds, user_id: Optional[str] = None,
+                 project_id: Optional[str] = None) -> List[ProxiedSocket]:
+        return [e for e in list(self._entries.values())
+                if e.kind in kinds and _names(user_id, e.sub, e.act)
+                and (project_id is None or e.pid == project_id)]
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+PROXIED_SOCKETS = ProxiedSocketRegistry()
+
+
+def _names(user_id: Optional[str], sub: str, act: Optional[str]) -> bool:
+    """A socket belongs to the user it runs as and to the admin acting as them."""
+    return user_id is None or user_id == sub or (act is not None and user_id == act)
+
+
+async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSocketRegistry, *,
+                        kinds, user_id: Optional[str] = None,
+                        project_id: Optional[str] = None) -> dict:
+    """Close the open sockets of `kinds` that match the user and/or the project.
+
+    A ticket is checked once, at the handshake, so a revoke, a disabled account or
+    a removed grant must end what is already open. Closing means, per kind:
+    `agent` stops the session's run too (a run outlives its socket by design, so a
+    headless run of the user is stopped as well); `cypherfix-codefix` cancels its
+    run (its handler's `finally`); `cypherfix-triage` only detaches from the
+    project's run, which keeps going; `kali-terminal` ends the proxy, which closes
+    the sandbox's PTY. A socket that fails to close is still forgotten.
+    """
+    by_kind: Dict[str, int] = {}
+    stopped_runs = 0
+
+    if "agent" in kinds and manager is not None:
+        keys = set(manager.active_connections) | set(manager._active_tasks)
+        for key in sorted(keys):
+            sub, _, rest = key.partition(":")
+            pid, _, _sid = rest.partition(":")
+            conn = manager.active_connections.get(key)
+            act = conn.actor_id if conn is not None else None
+            if not _names(user_id, sub, act) or (project_id is not None and pid != project_id):
+                continue
+            if await manager.stop_session(key, message="Session stopped (access revoked)"):
+                stopped_runs += 1
+            if conn is None:
+                continue
+            try:
+                await conn.websocket.close(code=ACCESS_REVOKED_CODE, reason=ACCESS_REVOKED_REASON)
+            except Exception as e:
+                logger.warning("[rbac] socket-close failed kind=agent: %s", type(e).__name__)
+            await manager.disconnect(conn)
+            # Any frame that still arrives before the disconnect is refused.
+            conn.authenticated = False
+            by_kind["agent"] = by_kind.get("agent", 0) + 1
+
+    for entry in registry.matching(kinds=[k for k in kinds if k in PROXIED_KINDS],
+                                   user_id=user_id, project_id=project_id):
+        try:
+            await entry.ws.close(code=ACCESS_REVOKED_CODE, reason=ACCESS_REVOKED_REASON)
+        except Exception as e:
+            logger.warning("[rbac] socket-close failed kind=%s: %s", entry.kind, type(e).__name__)
+        registry.remove(entry.ws)
+        by_kind[entry.kind] = by_kind.get(entry.kind, 0) + 1
+
+    return {"closed": sum(by_kind.values()), "by_kind": by_kind, "stopped_runs": stopped_runs}
 
 
 # =============================================================================
@@ -1368,7 +1494,7 @@ class WebSocketHandler:
                 await _reject_ticket("ticket auth not configured", "ws_ticket_not_configured")
                 return
 
-            claims = verify_ws_ticket(init_msg.ticket, secret)
+            claims = verify_ws_ticket(init_msg.ticket, secret, expected_aud="agent")
             if claims is None:
                 await _reject_ticket("Invalid or missing ticket", "ws_ticket_invalid")
                 return
@@ -1377,6 +1503,7 @@ class WebSocketHandler:
             project_id = str(claims["pid"])
             session_id = str(claims["sid"])
             verified = True
+            connection.actor_id = str(claims["act"]) if claims.get("act") else None
 
             # Authenticate connection
             await self.ws_manager.authenticate(

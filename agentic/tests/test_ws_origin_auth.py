@@ -38,7 +38,7 @@ def _sign(claims, secret=SECRET):
 
 
 def _claims(**over):
-    base = {"sub": "u", "pid": "p", "sid": "s",
+    base = {"sub": "u", "pid": "p", "sid": "s", "aud": "kali-terminal",
             "iat": int(time.time()), "exp": int(time.time()) + 60}
     base.update(over)
     return base
@@ -76,24 +76,24 @@ class AuthorizeGate(unittest.TestCase):
             os.environ["AGENT_WS_TICKET_SECRET"] = self._prev
 
     def test_requires_ticket(self):
-        ok, claims, _ = authorize_ws("https://x", "x", None, [])
+        ok, claims, _ = authorize_ws("https://x", "x", None, [], aud="kali-terminal")
         self.assertFalse(ok)
         self.assertIsNone(claims)
 
     def test_bad_origin_rejected_before_ticket(self):
-        ok, _, reason = authorize_ws("https://evil", "good", _sign(_claims()), [])
+        ok, _, reason = authorize_ws("https://evil", "good", _sign(_claims()), [], aud="kali-terminal")
         self.assertFalse(ok)
         self.assertIn("origin", reason)
 
     def test_valid_ticket_and_origin(self):
         ok, claims, _ = authorize_ws("https://good", "good",
-                                     _sign(_claims(sub="real", pid="rp", sid="rs")), [])
+                                     _sign(_claims(sub="real", pid="rp", sid="rs")), [], aud="kali-terminal")
         self.assertTrue(ok)
         self.assertEqual(claims["sub"], "real")
 
     def test_fail_closed_when_secret_unset(self):
         os.environ.pop("AGENT_WS_TICKET_SECRET", None)
-        ok, _, reason = authorize_ws("https://good", "good", _sign(_claims()), [])
+        ok, _, reason = authorize_ws("https://good", "good", _sign(_claims()), [], aud="kali-terminal")
         self.assertFalse(ok)
         self.assertIn("not configured", reason)
 

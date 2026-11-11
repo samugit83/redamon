@@ -45,7 +45,7 @@ def _sign(payload: dict, secret: str = SECRET, alg: str = "HS256") -> str:
 
 
 def _claims(**over):
-    base = {"sub": "user1", "pid": "proj1", "sid": "sess1",
+    base = {"sub": "user1", "pid": "proj1", "sid": "sess1", "aud": "agent",
             "iat": int(time.time()), "exp": int(time.time()) + 60}
     base.update(over)
     return base
@@ -53,42 +53,43 @@ def _claims(**over):
 
 class VerifyTicket(unittest.TestCase):
     def test_valid_ticket_returns_claims(self):
-        claims = verify_ws_ticket(_sign(_claims()), SECRET)
+        claims = verify_ws_ticket(_sign(_claims()), SECRET, expected_aud="agent")
         self.assertIsNotNone(claims)
         self.assertEqual((claims["sub"], claims["pid"], claims["sid"]),
                          ("user1", "proj1", "sess1"))
 
     def test_missing_ticket(self):
-        self.assertIsNone(verify_ws_ticket(None, SECRET))
-        self.assertIsNone(verify_ws_ticket("", SECRET))
+        self.assertIsNone(verify_ws_ticket(None, SECRET, expected_aud="agent"))
+        self.assertIsNone(verify_ws_ticket("", SECRET, expected_aud="agent"))
 
     def test_no_secret(self):
-        self.assertIsNone(verify_ws_ticket(_sign(_claims()), ""))
+        self.assertIsNone(verify_ws_ticket(_sign(_claims()), "", expected_aud="agent"))
 
     def test_wrong_signature(self):
-        self.assertIsNone(verify_ws_ticket(_sign(_claims(), secret="9" * 64), SECRET))
+        self.assertIsNone(verify_ws_ticket(_sign(_claims(), secret="9" * 64), SECRET, expected_aud="agent"))
 
     def test_tampered_payload(self):
         tok = _sign(_claims())
         h, _p, s = tok.split(".")
         forged = _b64url(json.dumps(_claims(sub="admin")).encode())
-        self.assertIsNone(verify_ws_ticket(f"{h}.{forged}.{s}", SECRET))
+        self.assertIsNone(verify_ws_ticket(f"{h}.{forged}.{s}", SECRET, expected_aud="agent"))
 
     def test_alg_none_rejected(self):
         # classic JWT bypass attempt
         h = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode())
         p = _b64url(json.dumps(_claims()).encode())
-        self.assertIsNone(verify_ws_ticket(f"{h}.{p}.", SECRET))
+        self.assertIsNone(verify_ws_ticket(f"{h}.{p}.", SECRET, expected_aud="agent"))
 
     def test_expired(self):
-        self.assertIsNone(verify_ws_ticket(_sign(_claims(exp=int(time.time()) - 120)), SECRET))
+        self.assertIsNone(verify_ws_ticket(_sign(_claims(exp=int(time.time()) - 120)), SECRET, expected_aud="agent"))
 
     def test_missing_claims(self):
-        self.assertIsNone(verify_ws_ticket(_sign({"sub": "u", "exp": int(time.time()) + 60}), SECRET))
+        self.assertIsNone(verify_ws_ticket(_sign({"sub": "u", "aud": "agent", "exp": int(time.time()) + 60}),
+                                           SECRET, expected_aud="agent"))
 
     def test_malformed(self):
-        self.assertIsNone(verify_ws_ticket("not-a-jwt", SECRET))
-        self.assertIsNone(verify_ws_ticket("a.b", SECRET))
+        self.assertIsNone(verify_ws_ticket("not-a-jwt", SECRET, expected_aud="agent"))
+        self.assertIsNone(verify_ws_ticket("a.b", SECRET, expected_aud="agent"))
 
 
 # --- Part B: authenticate() takeover hardening -------------------------------

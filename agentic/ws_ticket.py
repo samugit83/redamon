@@ -9,9 +9,15 @@ webapp mints a short-lived HS256 ticket bound to the operator's identity, and
 the agent verifies it here before registering the session.
 
 Ticket format: a standard compact HS256 JWS produced by the webapp via `jose`
-(`webapp/src/lib/auth.ts` -> createWsTicket), claims `{ sub, pid, sid, iat, exp }`,
+(`webapp/src/lib/auth.ts` -> createWsTicket), claims `{ sub, pid, sid, aud, iat, exp }`,
 plus an optional `act`: the person actually signed in when an admin simulates
 `sub`, which a triage run records as its real actor.
+
+`aud` names the one socket the ticket opens (WS_AUDIENCES). Each socket passes its
+own name as `expected_aud` and refuses a ticket without `aud` or with another
+socket's (HD-25): a chat ticket, which every project member can mint, must never
+open the Kali terminal, which only its grant holders may (the webapp checks the
+grant before it mints a `kali-terminal` ticket).
 Verification is stdlib-only (hmac/hashlib/base64) so the agent image needs no
 new dependency.
 
@@ -34,6 +40,10 @@ import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+#: The sockets a ticket can name in `aud`, one per WebSocket endpoint. The webapp's
+#: WS_SOCKETS (webapp/src/lib/wsTicket.ts) lists the same four.
+WS_AUDIENCES = ("agent", "kali-terminal", "cypherfix-triage", "cypherfix-codefix")
 
 
 def ticket_secret() -> str:
@@ -81,21 +91,22 @@ def cors_allowlist():
     return [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", default).split(",") if o.strip()]
 
 
-def authorize_ws(origin, host, ticket, extra_allowed=None):
+def authorize_ws(origin, host, ticket, extra_allowed=None, *, aud):
     """Combined WS gate for the raw-proxy endpoints (kali terminal, cypherfix):
-    same-origin check + fail-closed ticket verification.
+    same-origin check + fail-closed ticket verification for the socket `aud`.
 
     Returns ``(ok, claims, reason)``: ``ok`` True only when the origin is allowed
-    AND a valid ticket verified against the configured secret. ``claims`` is the
-    verified claim dict on success (None otherwise). ``reason`` is a short string
-    for logging when rejected. Fails CLOSED when the secret is unset (S3/S4).
+    AND a valid ticket for this socket verified against the configured secret.
+    ``claims`` is the verified claim dict on success (None otherwise). ``reason``
+    is a short fixed string for logging and the close frame when rejected. Fails
+    CLOSED when the secret is unset (S3/S4).
     """
     if not check_ws_origin(origin, host, extra_allowed):
         return False, None, "disallowed origin"
     secret = ticket_secret()
     if not secret:
         return False, None, "ticket auth not configured"
-    claims = verify_ws_ticket(ticket, secret)
+    claims = verify_ws_ticket(ticket, secret, expected_aud=aud)
     if claims is None:
         return False, None, "missing or invalid ticket"
     return True, claims, "ok"
@@ -106,12 +117,15 @@ def _b64url_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode(segment + padding)
 
 
-def verify_ws_ticket(ticket: Optional[str], secret: str, *, leeway: int = 30) -> Optional[dict]:
-    """Verify a compact HS256 ticket.
+def verify_ws_ticket(ticket: Optional[str], secret: str, *, expected_aud: str,
+                     leeway: int = 30) -> Optional[dict]:
+    """Verify a compact HS256 ticket for the socket `expected_aud`.
 
     Returns the claims dict on success, or None if the ticket is missing,
-    malformed, wrong-algorithm, has a bad signature, is expired, or lacks the
-    required `sub`/`pid`/`sid` claims. Never raises.
+    malformed, wrong-algorithm, has a bad signature, is expired, lacks the
+    required `sub`/`pid`/`sid` claims, or names no socket or another one than
+    `expected_aud`. Never raises. `expected_aud` has no default, so a caller
+    cannot forget to say which socket it guards.
     """
     if not ticket or not secret:
         return None
@@ -150,6 +164,13 @@ def verify_ws_ticket(ticket: Optional[str], secret: str, *, leeway: int = 30) ->
         return None
 
     if not payload.get("sub") or not payload.get("pid") or not payload.get("sid"):
+        return None
+
+    presented = payload.get("aud")
+    if expected_aud not in WS_AUDIENCES or presented != expected_aud:
+        # Signed by the webapp, so the claim is ours; still, only known names reach the log.
+        named = presented if presented in WS_AUDIENCES else ("none" if presented is None else "other")
+        logger.warning("[rbac] ticket refused aud=%s presented=%s", expected_aud, named)
         return None
 
     return payload
