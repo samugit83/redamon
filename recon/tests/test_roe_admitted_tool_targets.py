@@ -247,6 +247,10 @@ class _Rows(list):
         return self[0] if self else None
 
 
+#: Every Cypher query the fake graph answered, in order.
+QUERIES: list = []
+
+
 class _Session:
     def __init__(self, baseurls):
         self.baseurls = baseurls
@@ -258,8 +262,11 @@ class _Session:
         return False
 
     def run(self, cypher, **_params):
+        QUERIES.append(cypher)
         rows = _Rows()
-        if "collect(DISTINCT s.name)" in cypher:
+        if "AS host, i.address AS address" in cypher:
+            rows.extend({"host": s, "address": a} for s, a in [(APEX, APEX_IP), *GRAPH_DNS])
+        elif "collect(DISTINCT s.name)" in cypher:
             rows.append({"subdomains": sorted({s for s, _ in GRAPH_DNS})})
         elif "$apex_roots" in cypher:
             rows.append({"root": APEX, "address": APEX_IP, "version": "IPv4"})
@@ -315,6 +322,7 @@ def _partial_targets(module_name, entry, settings, monkeypatch, baseurls=GRAPH_B
         seen["urls"] = target_helpers.build_target_urls(*args, **kwargs)
         raise _Stop
 
+    QUERIES.clear()
     monkeypatch.setattr("graph_db.Neo4jClient", _graph_client(baseurls))
     monkeypatch.setattr(module, "build_target_urls", built)
     run_settings = {"SUBDOMAIN_LIST": ["."], **settings}
@@ -368,20 +376,53 @@ def test_partial_katana_is_started_without_the_excluded_name(monkeypatch):
     assert WWW in _hosts(seen["urls"])
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "R-2 follow-up: _build_http_probe_data_from_graph drops a name's excluded "
-    "address before the gate sees it, so a name with one excluded and one allowed "
-    "address looks wholly allowed and a partial crawler still resolves it by name"))
-def test_a_partial_crawler_never_gets_a_name_with_one_excluded_address(monkeypatch):
-    hosts = _hosts(_partial_targets(*PARTIAL[0], _roe(EXCLUDED_RANGE), monkeypatch))
+@pytest.mark.parametrize("module_name,entry", PARTIAL)
+def test_a_partial_crawler_never_gets_a_name_with_one_excluded_address(module_name, entry, monkeypatch):
+    # The tool resolves the name itself and could land on the excluded address.
+    hosts = _hosts(_partial_targets(module_name, entry, _roe(EXCLUDED_RANGE), monkeypatch))
     assert MIXED not in hosts
+    assert WWW in hosts
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "R-2 follow-up: a graph BaseURL is checked against the RoE by its name only "
-    "(graph_url_scope), so a BaseURL an earlier run wrote for a name resolving "
-    "into an excluded range is still a partial crawler's seed"))
-def test_a_partial_crawler_never_gets_a_graph_baseurl_resolving_into_an_excluded_range(monkeypatch):
-    urls = _partial_targets(*PARTIAL[0], _roe(EXCLUDED_RANGE), monkeypatch,
-                            baseurls=[*GRAPH_BASEURLS, f"https://{LEGACY}"])
-    assert LEGACY not in _hosts(urls)
+@pytest.mark.parametrize("module_name,entry", PARTIAL)
+def test_a_partial_crawler_never_gets_a_graph_baseurl_resolving_into_an_excluded_range(
+        module_name, entry, monkeypatch):
+    urls = _partial_targets(module_name, entry, _roe(EXCLUDED_RANGE), monkeypatch,
+                            baseurls=[*GRAPH_BASEURLS, f"https://{LEGACY}", f"https://{MIXED}"])
+    assert {LEGACY, MIXED}.isdisjoint(_hosts(urls))
+    assert f"https://{WWW}" in urls
+    gaps = [g for g in circuit_breaker.coverage_report().gaps if g["source"] == "roe_excluded"]
+    assert any(g["module"] == "partial_graph_targets" for g in gaps)
+
+
+def test_a_graph_baseurl_with_no_known_address_is_refused_only_under_ip_entries(monkeypatch):
+    unknown = "unknown.example.com"
+    baseurls = [*GRAPH_BASEURLS, f"https://{unknown}"]
+    assert unknown not in _hosts(_partial_targets(*PARTIAL[0], _roe(EXCLUDED_RANGE), monkeypatch,
+                                                  baseurls=baseurls))
+    # A host entry alone says nothing about addresses: nothing to fail closed on.
+    assert unknown in _hosts(_partial_targets(*PARTIAL[0], _roe("other.example.com"), monkeypatch,
+                                              baseurls=baseurls))
+
+
+@pytest.mark.parametrize("settings", [*NO_ROE, _roe(LEGACY)])
+def test_the_graph_scope_reads_no_addresses_without_an_ip_entry(settings, monkeypatch):
+    _partial_targets(*PARTIAL[0], settings, monkeypatch)
+    assert not [q for q in QUERIES if "AS host, i.address AS address" in q]
+
+
+def test_the_crawler_builder_keeps_the_excluded_address_for_the_gate(monkeypatch):
+    """A reader handed no settings still gates: the builder stamps the RoE."""
+    from recon.partial_recon_modules import helpers as partial_helpers
+    from recon.partial_recon_modules.graph_builders import _build_http_probe_data_from_graph
+    monkeypatch.setattr("graph_db.Neo4jClient", _graph_client(GRAPH_BASEURLS))
+    partial_helpers.set_run_roe(_roe(EXCLUDED_RANGE))
+    try:
+        recon_data = _build_http_probe_data_from_graph([APEX], "u1", "p1", include_root_domain=True)
+    finally:
+        partial_helpers.set_run_roe({})
+    assert MIXED_BAD in recon_data["dns"]["subdomains"][MIXED]["ips"]["ipv4"]
+    ips, names, _ = target_helpers.extract_targets_from_recon(recon_data)
+    assert {LEGACY, MIXED}.isdisjoint(names)
+    assert {LEGACY_IP, MIXED_BAD}.isdisjoint(ips)
+    assert MIXED_OK in ips

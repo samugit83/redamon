@@ -437,6 +437,57 @@ def _co_hosted_vhost_hosts(session, user_id: str, project_id: str) -> frozenset:
         return frozenset()
 
 
+#: Coverage-note module of the refusals the partial graph readers make.
+_ADMISSION_MODULE = "partial_graph_targets"
+
+
+def _run_roe() -> dict:
+    """The run's RoE in settings form, for the admission gate: the builders get
+    no settings, partial_recon sets the exclusions once (set_run_roe)."""
+    from recon.partial_recon_modules import helpers
+    excluded = list(helpers._RUN_ROE_EXCLUDED)
+    return {"ROE_ENABLED": bool(excluded), "ROE_EXCLUDED_HOSTS": excluded}
+
+
+def _graph_address_gate(session, user_id: str, project_id: str):
+    """``admits(host)`` under the run's RoE IP and CIDR entries, on the addresses
+    the graph resolved each name to (forward DNS).
+
+    The rule is admit_targets', as admit_urls applies it to httpx: a tool
+    handed a URL resolves its host itself, so a name with any excluded address,
+    or with none while such entries exist, is no target. Without an IP or CIDR
+    entry it admits everything and never queries (the name entries are
+    roe_excluded's).
+    """
+    from recon.helpers.target_admission import admission_context, admit_targets
+
+    roe = _run_roe()
+    if not admission_context(roe).ip_rules:
+        return lambda host: True
+    addresses: dict = {}
+    for record in session.run(
+        """
+        MATCH (s:Subdomain {user_id: $uid, project_id: $pid})-[r:RESOLVES_TO]->(i:IP)
+        WHERE """ + FORWARD_DNS + """
+        RETURN toLower(s.name) AS host, i.address AS address
+        """,
+        uid=user_id, pid=project_id,
+    ):
+        holders = addresses.setdefault(record["host"], [])
+        if record["address"] not in holders:
+            holders.append(record["address"])
+    verdicts: dict = {}
+
+    def admits(host: str) -> bool:
+        if host not in verdicts:
+            adm = admit_targets(roe, names={host: addresses.get(host, [])},
+                                module=_ADMISSION_MODULE, resolves_names=True)
+            verdicts[host] = host in adm.names
+        return verdicts[host]
+
+    return admits
+
+
 def graph_url_scope(session, user_id: str, project_id: str, domains, domain_groups,
                     include_root_domain: bool = False, apex_filter: bool = True):
     """A predicate over a graph URL's host: is it a target of this run?
@@ -448,6 +499,8 @@ def graph_url_scope(session, user_id: str, project_id: str, domains, domain_grou
     graph knows it only as a co-hosted vhost name (_co_hosted_vhost_hosts). A caller
     not yet migrated (no domain_groups) gets only the apex rule it had. With
     scope groups the decision is _GraphScope's (§4.6, longest scan root).
+    A host the scope keeps must also pass the RoE admission gate on every
+    address the graph resolved it to (_graph_address_gate).
     """
     roots = _as_roots(domains)
     scope = _GraphScope(roots, domain_groups, include_root_domain)
@@ -464,10 +517,15 @@ def graph_url_scope(session, user_id: str, project_id: str, domains, domain_grou
             co_hosted_cache["set"] = _co_hosted_vhost_hosts(session, user_id, project_id)
         return co_hosted_cache["set"]
 
+    admits = _graph_address_gate(session, user_id, project_id)
+
     def keep(host) -> bool:
         host = (host or "").strip().lower()
-        if not host:
-            return True
+        # Only a host the scope keeps reaches the gate, so a refusal is noted
+        # for a target the RoE took out, never for an out-of-scope host.
+        return not host or (_in_scope(host) and admits(host))
+
+    def _in_scope(host) -> bool:
         if roe_excluded(host):
             return False
         if scope.scoped:
@@ -878,11 +936,14 @@ def _build_http_probe_data_from_graph(domains, user_id: str, project_id: str,
       - 'subdomains': flat list for scope filtering in graph updates
       - 'metadata.include_root_domain': stamped so extract_targets_from_recon
         excludes the first root's apex when scope says so.
+      - 'metadata.roe': the run's RoE, while it has exclusions, for a reader
+        that gets no settings.
 
     `domains` is the run's roots, scoped per root like the other builders.
     BaseURLs are read project-wide and then filtered by graph_url_scope: an
-    excluded apex, a host a literal group never listed, and a host under a
-    Domain this run does not cover are all dropped.
+    excluded apex, a host a literal group never listed, a host under a
+    Domain this run does not cover, and a host the RoE admission gate refuses
+    are all dropped.
     """
     from graph_db import Neo4jClient
 
@@ -904,12 +965,17 @@ def _build_http_probe_data_from_graph(domains, user_id: str, project_id: str,
         },
         "metadata": {"include_root_domain": primary in apex_roots},
     }
+    roe = _run_roe()
+    if roe["ROE_ENABLED"]:
+        recon_data["metadata"]["roe"] = roe
     if not roots:
         return recon_data
 
+    # An RoE-excluded address is kept: every reader of these addresses passes
+    # them through the admission gate (extract_targets_from_recon), which needs
+    # it to see that a name with one excluded address is no by-name target.
+    # Dropped here, the name would look wholly allowed.
     def _add_ip(ips: dict, addr: str, version) -> None:
-        if roe_excluded(addr):
-            return
         bucket = _classify_ip(addr, version)
         if addr not in ips[bucket]:
             ips[bucket].append(addr)

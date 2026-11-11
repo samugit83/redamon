@@ -67,6 +67,8 @@ class _Session:
             return [{"base_url": "https://api.example.com", "path": "/v1/chat/completions",
                      "method": "POST", "iface": "llm-chat", "ai_fw": False,
                      "declared_only": False}]
+        if "AS host, i.address AS address" in cypher:
+            return [{"host": "api.example.com", "address": "203.0.113.20"}]
         if "HAS_PORT" not in cypher:
             return []
         rows = [r for r in PORTS if "ips" not in params or r[0] in params["ips"]]
