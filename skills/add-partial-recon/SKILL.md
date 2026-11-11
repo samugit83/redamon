@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [recon]
   auto_invoke:
     - "Adding partial-recon support for a recon tool"
@@ -33,6 +33,18 @@ graph-sourced inputs, the modal, and the single-phase re-run.
 - **NEVER let partial-recon results create duplicate nodes.** Partial runs merge
   into the **existing** graph and must dedup via `MERGE` on the tenant triple -
   see `graph-db-writes`. Partial and full share the same graph.
+- **NEVER write back a field the partial run did not measure.** A builder
+  rebuilds a full-run dict from the graph; handed whole to a full-pipeline
+  writer, every node in it is rewritten from the graph's own lossy copy. Give
+  the writer only what your tool measured (`measured_port_data` in
+  [port_scanning.py](../../recon/partial_recon_modules/port_scanning.py) cuts
+  port data to it), or write a dedicated Cypher for your tool's own fields. A
+  shared writer never takes `IP.is_cdn` from true to false, sets
+  `Port.passive_only` false only for a port its caller saw (a detail carrying
+  the graph's mark is none: `update_graph_from_port_scan` in
+  [port_mixin.py](../../graph_db/mixins/recon/port_mixin.py)), and writes
+  enrichment fields (category, sample values, provenance) with `coalesce` or
+  `ON CREATE SET`.
 - **NEVER expose a graph-only input type as a manual textarea.** `SECTION_INPUT_MAP`
   in [nodeMapping.ts](../../webapp/src/components/projects/ProjectForm/nodeMapping.ts)
   lists what the tool reads from the graph, but only the types that make sense for
