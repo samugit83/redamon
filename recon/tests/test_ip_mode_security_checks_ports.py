@@ -510,15 +510,26 @@ def test_domain_mode_never_runs_the_ip_mode_gate(monkeypatch, redirects):
     assert circuit_breaker.host_health.unreachable() == []
 
 
-def test_domain_mode_still_lets_requests_follow_a_redirect_anywhere(monkeypatch):
+def test_domain_mode_follows_a_redirect_only_onto_the_runs_own_hosts(monkeypatch):
+    """Domain mode walks hop by hop with its own admission rule (the run's
+    resolved names and addresses, test_security_checks_domain_redirects.py),
+    never IP mode's: a scope name is followed, a name the run never resolved
+    is not."""
     walked = []
-    monkeypatch.setattr(sc, "_follow_admitted_redirects",
-                        lambda *a, **_k: walked.append(a) or (a[0], 0), raising=False)
-    result, sent, _opened = _run(monkeypatch, _domain_recon(), live=_EVERYTHING,
-                                 redirects={f"http://{NAME_IP}": f"http://{OUTSIDE}/"})
+    real = sc._follow_admitted_redirects
 
-    assert walked == []
-    assert ("GET", f"http://{OUTSIDE}/") in sent
+    def spy(*a, **k):
+        walked.append((k.get("admit"), sc._IP_MODE_ADMIT))
+        return real(*a, **k)
+
+    monkeypatch.setattr(sc, "_follow_admitted_redirects", spy)
+    result, sent, _opened = _run(monkeypatch, _domain_recon(), live=_EVERYTHING,
+                                 redirects={f"http://{NAME_IP}": f"http://{NAME}/",
+                                            f"http://{NAME}/": f"http://{OUTSIDE}/"})
+
+    assert walked and all(admit is not None and ip_admit is None for admit, ip_admit in walked)
+    assert ("GET", f"http://{NAME}/") in sent
+    assert [u for _m, u in sent if urlsplit(u).hostname == OUTSIDE] == []
     finding = _direct_http_finding(result, NAME_IP)
     assert finding["final_url"] == f"http://{OUTSIDE}/"
-    assert "(1 redirect(s))" in finding["evidence"]
+    assert "(2 redirect(s))" in finding["evidence"]

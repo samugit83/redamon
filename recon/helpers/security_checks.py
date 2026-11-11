@@ -68,6 +68,9 @@ _IP_MODE_ADMIT = None
 # may probe there. None in IP mode, outside a run_security_checks call, and in
 # a run that measured nothing live at all, where every host is probed as before.
 _DOMAIN_LIVE_PORTS: Optional[Dict[str, frozenset]] = None
+# Domain mode: _domain_redirect_admission's admit(url) for every redirect hop
+# the checks follow; None otherwise, with the same lifetime as _IP_MODE_ADMIT.
+_DOMAIN_REDIRECT_ADMIT = None
 
 
 def _hh_alive(url) -> None:
@@ -240,22 +243,25 @@ def _is_ip_address(host: str) -> bool:
 _is_synthetic_ip_host = is_placeholder
 
 
-def _follow_admitted_redirects(url: str, response, timeout: int) -> Tuple[str, int]:
-    """IP mode's redirect walk for _analyze_redirect_chain, from the first
-    answer of ``url``: (the URL the chain ends at, the redirects in it), as
-    requests' own following reports them.
+def _follow_admitted_redirects(url: str, response, timeout: int, admit=None) -> Tuple[str, int]:
+    """The redirect walk of _analyze_redirect_chain, from the first answer of
+    ``url``: (the URL the chain ends at, the redirects in it), as requests'
+    own following reports them.
 
     requests sends each hop wherever its Location points, so a target that
     redirects to a name reaches that name's address, which need not be a
     target (I-1). Here every hop passes hop_refusal with the run's admission
-    rule (a target address, or a scope name whose every current address is a
-    target) and the run's Rules of Engagement (a name or address they exclude,
-    I-3) before it is sent alone through _hh_get. A refused hop is not sent
-    and counts no host failure; the chain ends there, which is what the last
-    answer said. The SSRF guard is not applied: the admitted addresses are the
-    operator's targets, private ones included.
+    rule and the run's Rules of Engagement (a name or address they exclude,
+    I-3) before it is sent alone through _hh_get, in a pacer slot of its own.
+    The rule is ``admit`` when given (domain mode: _domain_redirect_admission),
+    else IP mode's (a target address, or a scope name whose every current
+    address is a target). A refused hop is not sent and counts no host
+    failure; the chain ends there, which is what the last answer said. The
+    SSRF guard is not applied: the admitted addresses are the operator's
+    targets, private ones included.
     """
     from recon.helpers.js_recon.hop_guard import UNSAFE, hop_refusal
+    admit = admit if admit is not None else _IP_MODE_ADMIT
     roe = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": list(_ROE_EXCLUDED)} if _ROE_EXCLUDED else None
     jar = requests.cookies.RequestsCookieJar()
     current, hops = url, 0
@@ -269,7 +275,7 @@ def _follow_admitted_redirects(url: str, response, timeout: int) -> Tuple[str, i
             target = urljoin(current, location)
         except ValueError as exc:  # a Location the target wrote, e.g. "http://[bad"
             raise requests.exceptions.InvalidURL(str(exc)) from exc
-        refusal = hop_refusal(target, settings=roe, admit=_IP_MODE_ADMIT,
+        refusal = hop_refusal(target, settings=roe, admit=admit,
                               url_guard=lambda _url: True, module="security_checks")
         if refusal == UNSAFE:
             # Not an http(s) URL with a host: requests would raise here too.
@@ -328,6 +334,9 @@ def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
                 if _IP_MODE_ADMIT is not None:
                     final_url, redirect_count = _follow_admitted_redirects(
                         url, initial_response, timeout)
+                elif _DOMAIN_REDIRECT_ADMIT is not None:
+                    final_url, redirect_count = _follow_admitted_redirects(
+                        url, initial_response, timeout, admit=_DOMAIN_REDIRECT_ADMIT)
                 else:
                     final_response = _hh_get(
                         url,
@@ -4078,6 +4087,41 @@ def _domain_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozens
     return {host: frozenset(ports) for host, ports in live.items()}
 
 
+def _domain_redirect_admission(recon_data: Dict[str, Any], roe_excluded_hosts):
+    """Domain mode: ``admit(url)`` for a redirect hop the checks follow; None in IP mode.
+
+    A hop is followed only onto one of the run's own hosts: a name the run
+    resolved (its DNS and the port scan's name maps) or an address they hold,
+    that the Rules of Engagement admit (a name with any excluded address is
+    not one). A third party, an address the run never resolved (cloud
+    metadata, an internal service the target points at) and an excluded host
+    are not sent, so no SSRF guard is needed on top, and an internal-network
+    project's own private addresses still pass. hop_refusal asks the RoE again
+    for every hop, by the name's current addresses.
+    """
+    from recon.helpers.target_admission import admit_targets, ip_mode_targets, known_addresses
+    if ip_mode_targets(recon_data) is not None:
+        return None
+    known = known_addresses(recon_data)
+    addresses = [a for addrs in known.values() for a in addrs]
+    port_scan = recon_data.get("port_scan")
+    if isinstance(port_scan, dict):
+        addresses += list(_open_ports_by_ip(port_scan))
+    adm = admit_targets(_roe_settings(roe_excluded_hosts), recon_data, names=known,
+                        ips=list(dict.fromkeys(addresses)), module="security_checks",
+                        resolves_names=True, record=False)
+    hosts = {_live_key(h) for h in [*adm.names, *adm.addresses()]} - {""}
+
+    def admit(url: str) -> bool:
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            return False
+        return bool(host) and _live_key(host) in hosts
+
+    return admit
+
+
 def _keep_unproven_domain_hosts(recon_data: Dict[str, Any], hosts: List[str]) -> None:
     """Domain mode: keep the security_check findings of the hosts the checks
     leave unchecked for want of evidence. Never raises.
@@ -4147,7 +4191,8 @@ def run_security_checks(
     Returns:
         Dictionary with security check findings
     """
-    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED, _IP_LIVE_PORTS, _IP_MODE_ADMIT, _DOMAIN_LIVE_PORTS
+    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED, _IP_LIVE_PORTS, _IP_MODE_ADMIT, _DOMAIN_LIVE_PORTS, \
+        _DOMAIN_REDIRECT_ADMIT
     from recon.helpers import circuit_breaker as _cb
     from recon.helpers.target_admission import ip_mode_url_admission
     _HH_SCOPE = _cb.scope((), label="SecurityCheck", unit="host(s)")
@@ -4157,6 +4202,7 @@ def run_security_checks(
         _IP_LIVE_PORTS = _ip_mode_live_ports(recon_data)
         _IP_MODE_ADMIT = ip_mode_url_admission(recon_data)
         _DOMAIN_LIVE_PORTS = _domain_live_ports(recon_data)
+        _DOMAIN_REDIRECT_ADMIT = _domain_redirect_admission(recon_data, roe_excluded_hosts)
         return _run_security_checks(
             recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
             ai_classifier_enabled, ai_model, ai_user_id, ai_project_id, ai_engine,
@@ -4170,6 +4216,7 @@ def run_security_checks(
         _IP_LIVE_PORTS = None
         _IP_MODE_ADMIT = None
         _DOMAIN_LIVE_PORTS = None
+        _DOMAIN_REDIRECT_ADMIT = None
 
 
 def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
