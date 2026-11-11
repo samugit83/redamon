@@ -55,9 +55,47 @@ export async function recordCutoff(prisma) {
 }
 
 /** How many grants a marker says the accounts held; a marker without counts held none. */
-function recordedGrants(after) {
+export function recordedGrants(after) {
   if (!isPlainObject(after)) return 0
   return LEGACY_GRANTS.reduce((n, g) => n + (Number.isFinite(after[g]) ? after[g] : 0), 0)
+}
+
+/** An account the cutoff counts as existing: created at or before it. */
+export const existedAtCutoff = (cutoff) => (account) => !(account.createdAt > cutoff)
+
+const grantKey = (accountId, grant) => `${accountId}\u0000${grant}`
+
+/** The grants admins removed, from the `REMOVE_ACTION` rows ({targetId, after}). */
+export function removedGrantKeys(rows) {
+  const removed = new Set()
+  for (const r of rows) {
+    if (isPlainObject(r.after) && typeof r.after.grant === 'string') removed.add(grantKey(r.targetId, r.after.grant))
+  }
+  return removed
+}
+
+/**
+ * What the backfill writes for the accounts it grants (`members`: {id, legacyGrants}):
+ * each account's grants after the run, whether that is a change, and how many accounts
+ * hold each grant. The upgrade preview (rbac-upgrade-preview.mjs) calls it on the same
+ * rows, so what it lists is what this backfill writes.
+ */
+export function planLegacyGrants(members, tunnelHolders, removed) {
+  const holders = Object.fromEntries(LEGACY_GRANTS.map((g) => [g, 0]))
+  const accounts = members.map((member) => {
+    const held = Array.isArray(member.legacyGrants) ? member.legacyGrants : []
+    const due = ['kali_terminal', 'shell_sessions', ...(tunnelHolders.has(member.id) ? ['tunnels'] : [])]
+      .filter((g) => !removed.has(grantKey(member.id, g)))
+    // Known grants in a fixed order, then anything else the row already held, untouched.
+    const next = [
+      ...LEGACY_GRANTS.filter((g) => due.includes(g) || held.includes(g)),
+      ...held.filter((g) => !LEGACY_GRANTS.includes(g)),
+    ]
+    for (const g of LEGACY_GRANTS) if (next.includes(g)) holders[g]++
+    const changed = !(next.length === held.length && next.every((g, i) => g === held[i]))
+    return { member, next, changed }
+  })
+  return { holders, accounts }
 }
 
 /**
@@ -81,7 +119,7 @@ export async function backfillRbacLegacyGrants(prisma) {
       where: { role: { not: 'admin' }, password: { not: '' } },
       select: { id: true, legacyGrants: true, createdAt: true, updatedAt: true },
       orderBy: { id: 'asc' },
-    })).filter((u) => !(u.createdAt > cutoff))
+    })).filter(existedAtCutoff(cutoff))
     const ids = members.map((u) => u.id)
 
     // At most one settings row per account; the members are picked below.
@@ -90,27 +128,15 @@ export async function backfillRbacLegacyGrants(prisma) {
       select: { userId: true },
     })).map((s) => s.userId))
 
-    const removed = new Set()
-    for (const r of await tx.auditLog.findMany({
+    const removed = removedGrantKeys(await tx.auditLog.findMany({
       where: { action: REMOVE_ACTION, targetId: { in: ids } },
       select: { targetId: true, after: true },
-    })) {
-      if (isPlainObject(r.after) && typeof r.after.grant === 'string') removed.add(`${r.targetId}\u0000${r.after.grant}`)
-    }
+    }))
 
-    const holders = Object.fromEntries(LEGACY_GRANTS.map((g) => [g, 0]))
+    const { holders, accounts } = planLegacyGrants(members, tunnelHolders, removed)
     let usersChanged = 0
-    for (const member of members) {
-      const held = Array.isArray(member.legacyGrants) ? member.legacyGrants : []
-      const due = ['kali_terminal', 'shell_sessions', ...(tunnelHolders.has(member.id) ? ['tunnels'] : [])]
-        .filter((g) => !removed.has(`${member.id}\u0000${g}`))
-      // Known grants in a fixed order, then anything else the row already held, untouched.
-      const next = [
-        ...LEGACY_GRANTS.filter((g) => due.includes(g) || held.includes(g)),
-        ...held.filter((g) => !LEGACY_GRANTS.includes(g)),
-      ]
-      for (const g of LEGACY_GRANTS) if (next.includes(g)) holders[g]++
-      if (next.length === held.length && next.every((g, i) => g === held[i])) continue
+    for (const { member, next, changed } of accounts) {
+      if (!changed) continue
       await tx.user.update({ where: { id: member.id }, data: { legacyGrants: next, updatedAt: member.updatedAt } })
       usersChanged++
     }
