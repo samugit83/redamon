@@ -876,6 +876,40 @@ def _port_checks_enabled(settings: dict) -> dict:
     return enabled if any(enabled.values()) else {}
 
 
+def _dns_checks_enabled(settings: dict) -> dict:
+    """The org DNS checks this run's settings turn on; empty when none is."""
+    from recon.helpers.security_checks import DNS_CHECK_TYPES
+    if "vuln_scan" not in SCAN_MODULES or not settings.get('SECURITY_CHECK_ENABLED', True):
+        return {}
+    enabled = {t: bool(settings.get(f"SECURITY_CHECK_{t.upper()}", True)) for t in DNS_CHECK_TYPES}
+    return enabled if any(enabled.values()) else {}
+
+
+def _run_skipped_scan_checks(result: dict, settings: dict, output_file: Path, phase: str,
+                             label: str, enabled: dict, run) -> dict:
+    """Run one security check family the live-URL skip took out of vuln_scan,
+    and add its findings to vuln_scan.security_checks, the envelope the graph
+    writer and the report read. Never raises: a crash is `phase`'s error."""
+    try:
+        from recon.helpers import security_checks
+        print(f"\n[*][Pipeline] {label} (active scans skipped)")
+        roe = (settings.get('ROE_EXCLUDED_HOSTS') or None) if settings.get('ROE_ENABLED') else None
+        findings = run(security_checks, roe)
+        print(f"[+][Pipeline] {label}: {len(findings)} finding(s)")
+        if not findings:
+            return result
+        vuln = result.setdefault("vuln_scan", {})
+        vuln["security_checks"] = security_checks.add_security_findings(
+            vuln.get("security_checks"), findings, enabled)
+        save_recon_file(result, output_file)
+        _graph_update_bg("update_graph_from_vuln_scan", result, USER_ID, PROJECT_ID)
+    except Exception as e:
+        print(f"[!][Pipeline] {label} failed: {e}")
+        result.setdefault("metadata", {}).setdefault("phase_errors", {})[phase] = str(e)
+        _note_phase_error(phase)
+    return result
+
+
 def _maybe_run_port_checks(result: dict, settings: dict, output_file: Path) -> dict:
     """The port and service checks when the active scans were skipped (R-22).
 
@@ -884,42 +918,41 @@ def _maybe_run_port_checks(result: dict, settings: dict, output_file: Path) -> d
     run_security_checks inside the skipped vuln_scan. A database server with no
     web server trips the skip by construction, so the host these checks exist
     for was the one never checked. They send only the probes they send in the
-    full path, under the same settings (stealth turns those off) and RoE
-    exclusions, and the Redis and SMTP probes record per IP what they checked
-    (D1). Their findings join the certificate hygiene ones in
-    vuln_scan.security_checks.
+    full path, under the same settings (stealth turns those off), RoE
+    exclusions and host health (a host down on :80 and :443 is skipped and
+    keeps its findings); the Redis and SMTP probes record per IP what they
+    checked (D1). Their findings join the certificate hygiene ones.
     """
     enabled = _port_checks_enabled(settings)
     if not enabled:
         return result
-    try:
-        from recon.helpers import security_checks
-        print("\n[*][Pipeline] Port and service checks on the port scan (active scans skipped)")
-        findings = security_checks.run_port_service_checks(
-            recon_data=result,
-            enabled_checks=enabled,
-            timeout=settings.get('SECURITY_CHECK_TIMEOUT', 10),
-            max_workers=settings.get('SECURITY_CHECK_MAX_WORKERS', 10),
-            roe_excluded_hosts=(settings.get('ROE_EXCLUDED_HOSTS') or None)
-            if settings.get('ROE_ENABLED') else None,
-        )
-        print(f"[+][Pipeline] Port and service checks: {len(findings)} finding(s)")
-        if not findings:
-            return result
-        # One envelope, built as run_security_checks builds it, so the graph
-        # writer and the report read the same shape.
-        earlier = (result.get("vuln_scan") or {}).get("security_checks") or {}
-        checks = security_checks._assemble_security_result(
-            list(earlier.get("findings") or []) + findings,
-            {**(earlier.get("checks_enabled") or {}), **enabled}, 0, 0)["security_checks"]
-        result.setdefault("vuln_scan", {})["security_checks"] = checks
-        save_recon_file(result, output_file)
-        _graph_update_bg("update_graph_from_vuln_scan", result, USER_ID, PROJECT_ID)
-    except Exception as e:
-        print(f"[!][Pipeline] port and service checks failed: {e}")
-        result.setdefault("metadata", {}).setdefault("phase_errors", {})["port_checks"] = str(e)
-        _note_phase_error("port_checks")
-    return result
+    return _run_skipped_scan_checks(
+        result, settings, output_file, "port_checks", "Port and service checks", enabled,
+        lambda sc, roe: sc.run_port_checks_only(
+            result, enabled, timeout=settings.get('SECURITY_CHECK_TIMEOUT', 10),
+            max_workers=settings.get('SECURITY_CHECK_MAX_WORKERS', 10), roe_excluded_hosts=roe))
+
+
+def _maybe_run_dns_checks(result: dict, settings: dict, output_file: Path) -> dict:
+    """The org DNS checks (SPF, DMARC, DNSSEC, zone transfer) when the active
+    scans were skipped (R-22).
+
+    They ask resolvers and the org's nameservers, not a web server, but live in
+    run_security_checks inside the skipped vuln_scan, so a group with no live
+    URL never re-checked its org and the prune could only keep the old findings
+    (_note_unchecked_dns_orgs). As in the full path: the same settings (stealth
+    turns the zone transfer off), an org or nameserver the RoE excludes never
+    asked, each org once per run, a per-org verdict record (D1). IP mode has no
+    org, so nothing runs there.
+    """
+    enabled = _dns_checks_enabled(settings)
+    if not enabled:
+        return result
+    return _run_skipped_scan_checks(
+        result, settings, output_file, "dns_checks", "Org DNS checks", enabled,
+        lambda sc, roe: sc.run_dns_checks_only(
+            result, enabled, timeout=settings.get('SECURITY_CHECK_TIMEOUT', 10),
+            roe_excluded_hosts=roe))
 
 
 #: The GROUP 6 Phase A tools that need a live URL, with the setting that turns
@@ -950,12 +983,13 @@ def _note_gate_skipped(result: dict, settings: dict, *, phase_a: bool = True) ->
     These sources record nothing they re-checked, so the prune would read "not
     reported" as "gone". They were meant to run and could not: degraded, not
     switched off, and by host, so the groups of a Domain batch that had live
-    URLs still prune them. security_check is kept on the group's names and on
-    the addresses the port checks did not read: those checks re-checked their
-    addresses and prune there on their own. A tool switched off by
-    configuration notes nothing and prunes as before. `phase_a` False: the
-    caller never runs Phase A (the legacy path, which keeps those sources
-    already).
+    URLs still prune them. security_check is kept on the group's names and
+    addresses except the addresses the port checks read and the orgs the DNS
+    checks asked: those checks re-checked them and prune there on their own
+    (an apex that is also the org loses the keep for its web findings). A tool
+    switched off by configuration notes nothing and prunes as before.
+    `phase_a` False: the caller never runs Phase A (the legacy path, which
+    keeps those sources already).
     """
     from recon.helpers import circuit_breaker
     phases = [p for p in ("resource_enum", "vuln_scan") if p in SCAN_MODULES]
@@ -969,6 +1003,9 @@ def _note_gate_skipped(result: dict, settings: dict, *, phase_a: bool = True) ->
         if _port_checks_enabled(settings):
             by_ip = (result.get("port_scan") or {}).get("by_ip") or {}
             read = {ip for ip, entry in by_ip.items() if isinstance(entry, dict) and entry.get("ports")}
+        if _dns_checks_enabled(settings):
+            from recon.helpers.org_work import claimed_orgs
+            read |= set(claimed_orgs("dns_checks"))
         kept = []
         for phase in phases:
             for source in _PHASE_FINDING_SOURCES[phase]:
@@ -1767,6 +1804,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
         save_recon_file(combined_result, output_file)
         combined_result = _maybe_run_cert_hygiene(combined_result, settings, output_file)
         combined_result = _maybe_run_port_checks(combined_result, settings, output_file)
+        combined_result = _maybe_run_dns_checks(combined_result, settings, output_file)
         _note_gate_skipped(combined_result, settings)
     else:
         if "resource_enum" in SCAN_MODULES:
@@ -2529,6 +2567,7 @@ def run_domain_recon(target: str, bruteforce: bool = False,
         save_recon_file(combined_result, output_file)
         combined_result = _maybe_run_cert_hygiene(combined_result, _settings, output_file)
         combined_result = _maybe_run_port_checks(combined_result, _settings, output_file)
+        combined_result = _maybe_run_dns_checks(combined_result, _settings, output_file)
         _note_gate_skipped(combined_result, _settings)
     else:
         # GROUP 5 — Resource Enum (already parallel internally: Katana || GAU || Kiterunner)
@@ -3043,6 +3082,7 @@ _PHASE_FINDING_SOURCES = {
     "vuln_scan": ("nuclei", "security_check", "vuln_scan"),
     "cert_hygiene": ("security_check",),
     "port_checks": ("security_check",),
+    "dns_checks": ("security_check",),
     "graphql_scan": ("graphql_scan", "graphql_cop"),
     "subdomain_takeover": ("takeover_scan",),
     "vhost_sni": ("vhost_sni_enum",),
@@ -3675,6 +3715,7 @@ def run_domain_group(group: dict, start_time=None) -> int:
                 json.dump(domain_result, f, indent=2)
             domain_result = _maybe_run_cert_hygiene(domain_result, _settings, output_file)
             domain_result = _maybe_run_port_checks(domain_result, _settings, output_file)
+            domain_result = _maybe_run_dns_checks(domain_result, _settings, output_file)
             _note_gate_skipped(domain_result, _settings, phase_a=False)
         else:
             # Run resource_enum if in SCAN_MODULES (when domain_discovery is skipped)

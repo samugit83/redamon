@@ -1452,6 +1452,17 @@ def run_cert_hygiene_checks_only(recon_data: Dict[str, Any],
     return _assemble_security_result(findings, enabled_checks, 0, 0)
 
 
+def add_security_findings(security_checks: Optional[Dict[str, Any]], findings: List[Dict],
+                          enabled_checks: Dict[str, bool]) -> Dict[str, Any]:
+    """The `security_checks` envelope with `findings` added, rebuilt in the one
+    shape. A run with no live URL gathers its checks in steps (certificate
+    hygiene, the port checks, the org DNS checks) into one envelope."""
+    earlier = security_checks or {}
+    return _assemble_security_result(
+        list(earlier.get("findings") or []) + list(findings),
+        {**(earlier.get("checks_enabled") or {}), **enabled_checks}, 0, 0)["security_checks"]
+
+
 # =============================================================================
 # Page Content checks (item 5): titles, Server headers and certificate issuers
 # httpx and tlsx already collected, against the page_signals catalog. No
@@ -3611,6 +3622,44 @@ def _dns_check_claims(names: List[str], roe_excluded_hosts) -> List[str]:
         else:
             print(f"[-][SecurityCheck] DNS checks for {name} already ran this run")
     return out
+
+
+def run_port_checks_only(recon_data: Dict[str, Any], enabled_checks: Dict[str, bool],
+                         timeout: int = 10, max_workers: int = 10,
+                         roe_excluded_hosts: Optional[List[str]] = None) -> List[Dict]:
+    """The port and service checks alone, for a run whose active scans were
+    skipped (R-22), under a report scope of their own as run_security_checks
+    runs them: a host down on both :80 and :443 is skipped and recorded as
+    skipped, so its earlier findings are kept rather than read as clean.
+    Never alongside run_security_checks: both own the module's scope."""
+    global _HH_SCOPE
+    from recon.helpers import circuit_breaker as _cb
+    _HH_SCOPE = _cb.scope((), label="SecurityCheck", unit="host(s)")
+    try:
+        findings = run_port_service_checks(
+            recon_data=recon_data, enabled_checks=enabled_checks, timeout=timeout,
+            max_workers=max_workers, roe_excluded_hosts=roe_excluded_hosts)
+        _HH_SCOPE.finish("security_checks", host_source="security_check")
+        return findings
+    finally:
+        _HH_SCOPE = None
+
+
+def run_dns_checks_only(recon_data: Dict[str, Any], enabled_checks: Dict[str, bool],
+                        timeout: int = 10,
+                        roe_excluded_hosts: Optional[List[str]] = None) -> List[Dict]:
+    """The org DNS checks alone, for a run whose active scans were skipped
+    (R-22), as run_security_checks runs them: each org once per run, never an
+    org or a nameserver the RoE excludes. An IP-mode run has no org."""
+    if not any(enabled_checks.get(c, False) for c in DNS_CHECK_TYPES):
+        return []
+    excluded = [h for h in (roe_excluded_hosts or ()) if isinstance(h, str) and h.strip()]
+    findings: List[Dict] = []
+    for domain in _dns_check_claims(_dns_check_domains(recon_data), excluded):
+        print(f"[*][SecurityCheck] Running DNS Security checks on {domain}...")
+        findings.extend(run_dns_checks(domain=domain, enabled_checks=enabled_checks,
+                                       timeout=timeout, roe_excluded_hosts=excluded))
+    return findings
 
 
 def run_security_checks(

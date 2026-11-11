@@ -8,14 +8,19 @@ found no live URL. Two things in there need none:
   - the port and service checks (admin and database ports, Redis without auth,
     SMTP open relay, Kubernetes API) read the port scan, so a database server
     with no web server (an IP-mode project on 6379) never got "Redis Without
-    Authentication".
+    Authentication";
+  - the org DNS checks (SPF, DMARC, DNSSEC, zone transfer) ask resolvers and
+    nameservers, so a group with no live URL never re-checked its org.
 
 And every source the skip stopped from running recorded nothing, so the prune
 read "not reported" as "gone": their earlier findings were deleted. Now
 takeover runs whenever it is on, `_maybe_run_port_checks` runs the port checks
 in every skip branch (as `_maybe_run_cert_hygiene` does for the certificates),
 and `_note_gate_skipped` keeps the skipped sources' findings on the group's
-hosts. A tool switched off by configuration still prunes as before.
+hosts. `_maybe_run_dns_checks` runs the org DNS checks there too, and the port
+checks run under the same host-health scope as in the full path, so a host
+down on :80 and :443 keeps its findings. A tool switched off by configuration
+still prunes as before.
 
 Every scanner, the Redis socket and Neo4j are fakes; run_ip_recon,
 run_domain_recon, the port checks and the prune are real.
@@ -33,6 +38,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "recon"))
+
+import dns.resolver as dns_resolver  # noqa: E402
+import dns.xfr as dns_xfr  # noqa: E402
 
 from recon.helpers import circuit_breaker as cb  # noqa: E402
 from recon.helpers import security_checks as sc  # noqa: E402
@@ -380,37 +388,219 @@ class TestTheCoverageNotes:
             assert tool in recon_main._PHASE_FINDING_SOURCES
 
 
+class _Rdata:
+    def __init__(self, text):
+        self.text = self.target = self.address = text
+
+    def __str__(self):
+        return self.text
+
+    def to_text(self):
+        return self.text
+
+
+#: The org's DNS: no SPF record, DMARC and DNSSEC in place, one nameserver.
+ORG = "example.com"
+NS = f"ns1.{ORG}"
+NS_IP = "198.51.100.53"
+ORG_DNS = {
+    (ORG, "TXT"): dns_resolver.NoAnswer,
+    (f"_dmarc.{ORG}", "TXT"): ['"v=DMARC1; p=reject"'],
+    (ORG, "DNSKEY"): ["257 3 13 AAAA"],
+    (ORG, "NS"): [f"{NS}."],
+    (NS, "A"): [NS_IP],
+    (NS, "AAAA"): dns_resolver.NoAnswer,
+}
+
+
+class _Dns:
+    """dns.resolver.resolve and the zone transfer, faked; what each was asked."""
+
+    def __init__(self, monkeypatch, table=None):
+        self.table, self.asked, self.transfers = dict(table or ORG_DNS), [], []
+        monkeypatch.setattr(sc.dns.resolver, "resolve", self.resolve)
+        monkeypatch.setattr(sc.dns.query, "xfr", self.xfr)
+        monkeypatch.setattr(sc.dns.zone, "from_xfr", self.from_xfr)
+
+    def resolve(self, name, rtype, *a, **k):
+        self.asked.append((str(name), rtype))
+        outcome = self.table.get((str(name), rtype), dns_resolver.NXDOMAIN)
+        if isinstance(outcome, type) and issubclass(outcome, BaseException):
+            raise outcome()
+        return [_Rdata(t) for t in outcome]
+
+    def xfr(self, where, zone, *a, **k):
+        self.transfers.append((where, str(zone)))
+        return where
+
+    @staticmethod
+    def from_xfr(_where, *a, **k):
+        raise dns_xfr.TransferError(5)  # refused: a verdict, clean
+
+
+def _domain_main(tmp_path, monkeypatch, **settings):
+    with mock.patch('recon.project_settings.get_settings', return_value={
+            'TARGET_DOMAIN': ORG, 'SUBDOMAIN_LIST': [], 'IP_MODE': False,
+            'TARGET_IPS': [], 'DOMAIN_BATCH_MODE': False, 'DOMAIN_BATCH_GROUPS': [],
+            'USE_BRUTEFORCE_FOR_SUBDOMAINS': False, 'SCAN_MODULES': list(SCAN_MODULES),
+            'UPDATE_GRAPH_DB': False, 'USER_ID': 'u1', 'PROJECT_ID': 'p1',
+            'VERIFY_DOMAIN_OWNERSHIP': False, 'STEALTH_MODE': False,
+            'OWNERSHIP_TOKEN': '', 'OWNERSHIP_TXT_PREFIX': ''}):
+        for mod in [m for m in list(sys.modules) if m in ('recon.main', 'main')]:
+            del sys.modules[mod]
+        import recon.main as rm
+    from recon.main_recon_modules import domain_recon
+    monkeypatch.setattr(rm, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(rm, "SCAN_MODULES", list(SCAN_MODULES))
+    monkeypatch.setattr(rm, "_settings", dict(SETTINGS, DNS_ENABLED=True, **settings))
+    monkeypatch.setattr(domain_recon, "resolve_all_dns", lambda root, subs, **k: {
+        "domain": {}, "subdomains": {f"db.{ORG}": {
+            "has_records": True, "ips": {"ipv4": [IP], "ipv6": []},
+            "records": {"A": [IP]}}}})
+    return rm
+
+
+def _domain_run(tmp_path, monkeypatch, table=None, **settings):
+    rm = _domain_main(tmp_path, monkeypatch, **settings)
+    run, dns = _Run(rm, monkeypatch), _Dns(monkeypatch, table)
+    target_info = rm.parse_target(ORG, ["db."])
+    run.result = rm.run_domain_recon(ORG, target_info=target_info, discovery_enabled=False)
+    return run, dns
+
+
 class TestDomainMode:
     def test_regression_takeover_and_port_checks_run_with_no_live_url(self, tmp_path,
                                                                       monkeypatch):
-        with mock.patch('recon.project_settings.get_settings', return_value={
-                'TARGET_DOMAIN': 'example.com', 'SUBDOMAIN_LIST': [], 'IP_MODE': False,
-                'TARGET_IPS': [], 'DOMAIN_BATCH_MODE': False, 'DOMAIN_BATCH_GROUPS': [],
-                'USE_BRUTEFORCE_FOR_SUBDOMAINS': False, 'SCAN_MODULES': list(SCAN_MODULES),
-                'UPDATE_GRAPH_DB': False, 'USER_ID': 'u1', 'PROJECT_ID': 'p1',
-                'VERIFY_DOMAIN_OWNERSHIP': False, 'STEALTH_MODE': False,
-                'OWNERSHIP_TOKEN': '', 'OWNERSHIP_TXT_PREFIX': ''}):
-            for mod in [m for m in list(sys.modules) if m in ('recon.main', 'main')]:
-                del sys.modules[mod]
-            import recon.main as rm
-        from recon.main_recon_modules import domain_recon
-        monkeypatch.setattr(rm, "OUTPUT_DIR", tmp_path)
-        monkeypatch.setattr(rm, "SCAN_MODULES", list(SCAN_MODULES))
-        monkeypatch.setattr(rm, "_settings", dict(SETTINGS, DNS_ENABLED=True))
-        monkeypatch.setattr(domain_recon, "resolve_all_dns", lambda root, subs, **k: {
-            "domain": {}, "subdomains": {"db.example.com": {
-                "has_records": True, "ips": {"ipv4": [IP], "ipv6": []},
-                "records": {"A": [IP]}}}})
-        run = _Run(rm, monkeypatch)
-        target_info = rm.parse_target("example.com", ["db."])
-        result = rm.run_domain_recon("example.com", target_info=target_info,
-                                     discovery_enabled=False)
-        assert result["metadata"]["active_scans_skipped"] is True
+        run, _ = _domain_run(tmp_path, monkeypatch)
+        assert run.result["metadata"]["active_scans_skipped"] is True
         assert run.nuclei == []
-        assert run.takeover == [["db.example.com"]]
+        assert run.takeover == [[f"db.{ORG}"]]
         assert run.opened == [(IP, 6379)]
         assert "redis_no_auth" in {f["type"] for f in run.security_findings()}
-        assert set(cb.coverage_report().keep_hostnames("nuclei")) == {IP, "db.example.com"}
+        assert set(cb.coverage_report().keep_hostnames("nuclei")) == {IP, f"db.{ORG}"}
+
+
+class TestDownHosts:
+    def test_regression_a_host_down_on_80_and_443_lost_its_port_findings(self, recon_main,
+                                                                         monkeypatch):
+        # Down on both web ports: run_port_service_checks skips it, as in the
+        # full path, where run_security_checks' scope records it as skipped.
+        monkeypatch.setattr(cb.host_health, "is_down", lambda target: IP in str(target))
+        run = _ip_run(recon_main, monkeypatch)
+        assert run.opened == []
+        report = cb.coverage_report()
+        assert IP in report.keep_hostnames("security_check")
+        assert any(g["source"] == "security_check" and g["module"] == "security_checks"
+                   for g in report.gaps)
+        assert report.checked_hostnames("security_check", "redis_no_auth") == ()
+
+    def test_a_host_that_is_up_records_nothing_skipped(self, recon_main, monkeypatch):
+        _ip_run(recon_main, monkeypatch)
+        assert IP not in cb.coverage_report().keep_hostnames("security_check")
+
+    def test_the_scope_is_closed_after_the_run(self, recon_main, monkeypatch):
+        _ip_run(recon_main, monkeypatch)
+        assert sc._HH_SCOPE is None
+
+    def test_the_scope_is_closed_after_a_crash(self, monkeypatch):
+        monkeypatch.setattr(sc, "run_port_service_checks", mock.Mock(side_effect=RuntimeError("boom")))
+        with pytest.raises(RuntimeError):
+            sc.run_port_checks_only({"port_scan": _copy(PORT_SCAN)}, {"redis_no_auth": True})
+        assert sc._HH_SCOPE is None
+
+
+class TestOrgDnsChecks:
+    def test_regression_the_org_dns_checks_never_ran_with_no_live_url(self, tmp_path,
+                                                                      monkeypatch):
+        from recon.helpers.org_work import claimed_orgs
+        run, dns = _domain_run(tmp_path, monkeypatch)
+        found = {(f["type"], f.get("domain")) for f in run.security_findings()}
+        assert ("spf_missing", ORG) in found
+        assert {(ORG, "TXT"), (f"_dmarc.{ORG}", "TXT"), (ORG, "DNSKEY"), (ORG, "NS")} <= set(dns.asked)
+        assert dns.transfers == [(NS_IP, ORG)]
+        report = cb.coverage_report()
+        for check in ("spf_missing", "dmarc_missing", "dnssec_missing", "zone_transfer"):
+            assert report.checked_hostnames("security_check", check) == (ORG,), check
+        # Claimed: the prune's unchecked-org rule no longer keeps them.
+        assert claimed_orgs("dns_checks") == [ORG]
+
+    def test_a_clean_org_writes_no_dns_finding_and_still_counts_as_checked(self, tmp_path,
+                                                                           monkeypatch):
+        table = {**ORG_DNS, (ORG, "TXT"): ['"v=spf1 -all"']}
+        run, _ = _domain_run(tmp_path, monkeypatch, table)
+        assert not {f["type"] for f in run.security_findings()} & {
+            "spf_missing", "dmarc_missing", "dnssec_missing", "zone_transfer"}
+        assert cb.coverage_report().checked_hostnames("security_check", "spf_missing") == (ORG,)
+
+    def test_stealth_sends_no_zone_transfer(self, tmp_path, monkeypatch):
+        from recon.project_settings import apply_stealth_overrides
+        stealth = apply_stealth_overrides(dict(SETTINGS, STEALTH_MODE=True,
+                                               SECURITY_CHECK_ZONE_TRANSFER=True))
+        assert stealth["SECURITY_CHECK_ZONE_TRANSFER"] is False
+        run, dns = _domain_run(tmp_path, monkeypatch, STEALTH_MODE=True,
+                               SECURITY_CHECK_ZONE_TRANSFER=False)
+        assert dns.transfers == [] and (ORG, "NS") not in dns.asked
+        assert (ORG, "TXT") in dns.asked
+
+    def test_an_roe_excluded_nameserver_is_never_asked(self, tmp_path, monkeypatch):
+        run, dns = _domain_run(tmp_path, monkeypatch, ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[NS])
+        assert dns.transfers == []
+        assert (NS, "A") not in dns.asked
+        # No verdict: the org's earlier zone transfer finding is kept.
+        assert cb.coverage_report().checked_hostnames("security_check", "zone_transfer") == ()
+
+    def test_an_roe_excluded_org_gets_no_dns_check(self, recon_main, monkeypatch, tmp_path):
+        dns = _Dns(monkeypatch)
+        monkeypatch.setattr(recon_main, "_graph_update_bg", lambda *a: None)
+        result = {"domain": ORG, "metadata": {"org_domain": ORG}, "dns": {}}
+        recon_main._maybe_run_dns_checks(
+            result, dict(SETTINGS, ROE_ENABLED=True, ROE_EXCLUDED_HOSTS=[ORG]), tmp_path / "r.json")
+        assert dns.asked == []
+
+    def test_dns_checks_switched_off_send_nothing(self, tmp_path, monkeypatch):
+        off = {f"SECURITY_CHECK_{t.upper()}": False for t in sc.DNS_CHECK_TYPES}
+        run, dns = _domain_run(tmp_path, monkeypatch, **off)
+        assert dns.asked == []
+
+    def test_ip_mode_has_no_org_to_check(self, recon_main, monkeypatch):
+        dns = _Dns(monkeypatch)
+        _ip_run(recon_main, monkeypatch)
+        assert dns.asked == []
+
+    def test_an_org_already_checked_this_run_is_not_checked_again(self, recon_main,
+                                                                  monkeypatch, tmp_path):
+        from recon.helpers.org_work import claim_org
+        claim_org("dns_checks", ORG)
+        dns = _Dns(monkeypatch)
+        result = {"domain": ORG, "metadata": {"org_domain": ORG}, "dns": {}}
+        recon_main._maybe_run_dns_checks(result, dict(SETTINGS), tmp_path / "r.json")
+        assert dns.asked == []
+
+    def test_the_checked_org_prunes_its_own_dns_findings(self, recon_main):
+        # The apex is a target and the org: the DNS checks re-checked it, so
+        # security_check keeps no finding there; its address stays kept.
+        from recon.helpers.org_work import claim_org
+        claim_org("dns_checks", ORG)
+        result = {"domain": ORG, "metadata": {"include_root_domain": True, "org_domain": ORG},
+                  "dns": {"domain": {"ips": {"ipv4": [OTHER_IP], "ipv6": []}}, "subdomains": {}}}
+        recon_main._note_gate_skipped(result, dict(SETTINGS))
+        report = cb.coverage_report()
+        assert report.keep_hostnames("security_check") == (OTHER_IP,)
+        assert set(report.keep_hostnames("nuclei")) == {ORG, OTHER_IP}
+
+    def test_a_crash_keeps_security_check_whole(self, recon_main, monkeypatch, tmp_path):
+        monkeypatch.setattr(sc, "run_dns_checks_only", mock.Mock(side_effect=RuntimeError("boom")))
+        result = {"domain": ORG, "metadata": {"org_domain": ORG}, "dns": {}}
+        out = recon_main._maybe_run_dns_checks(result, dict(SETTINGS), tmp_path / "r.json")
+        assert "dns_checks" in out["metadata"]["phase_errors"]
+        assert "security_check" in cb.coverage_report().degraded_sources
+
+    def test_dns_findings_join_the_port_findings(self, tmp_path, monkeypatch):
+        run, _ = _domain_run(tmp_path, monkeypatch)
+        stored = run.result["vuln_scan"]["security_checks"]
+        types = {f["type"] for f in stored["findings"]}
+        assert {"redis_no_auth", "database_exposed", "spf_missing"} <= types
+        assert stored["summary"]["total_findings"] == len(stored["findings"])
 
 
 def _skip_branches():
@@ -426,4 +616,5 @@ def test_every_skip_branch_runs_the_port_checks_and_keeps_what_it_skipped():
     for branch in branches:
         called = {node.func.id for stmt in branch.body for node in ast.walk(stmt)
                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-        assert {"_maybe_run_port_checks", "_note_gate_skipped"} <= called, branch.lineno
+        assert {"_maybe_run_port_checks", "_maybe_run_dns_checks",
+                "_note_gate_skipped"} <= called, branch.lineno

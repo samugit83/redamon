@@ -40,7 +40,8 @@ SAVED = {
             "subdomains": {"www.example.com": {"ips": {"ipv4": ["192.0.2.11"]}},
                            "excluded.example.com": {"ips": {"ipv4": ["192.0.2.12"]}}}},
     # http_probe ran and found nothing: the active scans are skipped, so the
-    # legacy path only runs what needs no live target (and sends nothing).
+    # legacy path only runs what needs no live target (the org DNS checks are
+    # faked below; there is no port scan for the port checks).
     "http_probe": {"by_url": {}, "summary": {"live_urls": 0, "total_hosts": 0}},
 }
 
@@ -101,8 +102,16 @@ def legacy(tmp_path, monkeypatch):
     def cert_hygiene(result, enabled):
         return {"security_checks": {"findings": [{"check": "tls_expired", "host": "www.example.com"}]}}
 
+    dns_checked = []
+
+    def org_dns(result, enabled, **_kw):
+        dns_checked.append(result.get("domain"))
+        return []
+
     monkeypatch.setattr(rm, "run_ai_surface_recon", ai_surface)
     monkeypatch.setattr("recon.helpers.run_cert_hygiene_checks_only", cert_hygiene, raising=False)
+    monkeypatch.setattr("recon.helpers.security_checks.run_dns_checks_only", org_dns)
+    monkeypatch.setattr(rm, "_test_dns_checked", dns_checked, raising=False)
     group = rm.settings_scope_groups(rm._settings)[0]
     yield rm, graph, group
     rm._graph_wait_all()
@@ -149,6 +158,11 @@ class TestTheLegacyBranch:
         assert "excluded.example.com" not in data["subdomains"]
         assert "excluded.example.com" not in data["subdomain_status_map"]
         assert "excluded.example.com" not in data["dns"]["subdomains"]
+
+    def test_the_skip_branch_runs_the_org_dns_checks(self, legacy):
+        rm, _graph, group = legacy
+        rm.run_domain_group(group)
+        assert rm._test_dns_checked == ["example.com"]
 
     def test_the_rebuild_comes_before_the_coverage_record(self, legacy):
         rm, graph, group = legacy
