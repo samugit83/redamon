@@ -65,7 +65,7 @@ export interface RouteManifestEntry {
 
 export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/agent/command-whisperer', guard: 'project', methods: ['POST'] },
-  { path: '/api/agent/emergency-stop-all', guard: 'session', methods: ['POST'] },
+  { path: '/api/agent/emergency-stop-all', guard: 'session', methods: ['GET', 'POST'], note: 'every signed-in account calls it; the scope is decided inside: emergency_stop_all (admins, compat) stops every user\'s agent runs, anyone else only their own; GET answers the scope (HD-07, step 1.11)' },
   { path: '/api/agent/files', guard: 'project', methods: ['GET'] },
   { path: '/api/agent/health', guard: 'session', methods: ['GET'] },
   { path: '/api/agent/host-ip', guard: 'session', methods: ['GET'] },

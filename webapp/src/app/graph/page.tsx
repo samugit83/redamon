@@ -3,6 +3,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { GraphToolbar } from './components/GraphToolbar'
+import {
+  agentStopFailureLabel, agentStopSummary, isEmergencyStopScope, type EmergencyStopScope,
+} from './components/GraphToolbar/emergencyStopScope'
 import { FileSystemDrawer } from './components/FileSystemDrawer'
 import { GraphCanvas, AUTO_2D_THRESHOLD } from './components/GraphCanvas'
 import { GraphEmptyState } from './components/GraphEmptyState'
@@ -1576,6 +1579,18 @@ export default function GraphPage() {
     }
   }, [isEmergencyPausing, isAnyPipelineRunning])
 
+  // Whose agent runs a press stops (every user's for an admin, otherwise the person's
+  // own), for the tooltip. A failed read leaves it unknown and the tooltip says both.
+  const [emergencyStopScope, setEmergencyStopScope] = useState<EmergencyStopScope | undefined>()
+  useEffect(() => {
+    let live = true
+    fetch('/api/agent/emergency-stop-all')
+      .then(res => (res.ok ? res.json() : null))
+      .then(answer => { if (live && isEmergencyStopScope(answer?.scope)) setEmergencyStopScope(answer.scope) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [])
+
   const handleEmergencyPauseAll = useCallback(async () => {
     setIsEmergencyPausing(true)
     // Each target answers with the reason it did not stop, or null when it did:
@@ -1611,19 +1626,28 @@ export default function GraphPage() {
         tasks.push(stopPartialRecon(run.run_id).then(r => { if (!r) partialFailed = true; return null }, () => { partialFailed = true; return null }))
       }
     }
-    // Stop all running AI agent conversations
+    // Stop the AI agent runs the person may stop: every user's, or their own.
+    let agentSummary: string | null = null
+    const agentLabel = agentStopFailureLabel(emergencyStopScope)
     tasks.push(fetch('/api/agent/emergency-stop-all', { method: 'POST' }).then(
-      async res => res.ok ? null : `AI agents: ${(await readApiError(res, 'Failed to stop agents')).message}`,
-      err => `AI agents: ${toApiError(err, 'Failed to stop agents').message}`,
+      async res => {
+        if (!res.ok) return `${agentLabel}: ${(await readApiError(res, 'Failed to stop agents')).message}`
+        const answer = await res.json().catch(() => null)
+        if (isEmergencyStopScope(answer?.scope)) setEmergencyStopScope(answer.scope)
+        agentSummary = agentStopSummary(answer)
+        return null
+      },
+      err => `${agentLabel}: ${toApiError(err, 'Failed to stop agents').message}`,
     ))
     const failures = (await Promise.allSettled(tasks))
       .map(r => r.status === 'fulfilled' ? r.value : `${toApiError(r.reason, 'request failed').message}`)
       .filter((f): f is string => !!f)
     if (failures.length) toast.error(failures.join('; '), 'Emergency pause: not everything stopped')
+    if (agentSummary) toast.info(agentSummary)
     // The recon hooks keep their reason for the next render (see reportReconFailure).
     if (reconFailed) reportReconFailure('Emergency pause: recon did not pause', 'recon')
     if (partialFailed) reportReconFailure('Emergency pause: a partial recon did not stop', 'partial')
-  }, [reconState?.status, gvmState?.status, githubHuntState?.status, trufflehogRuns, activePartialRecons, pauseRecon, pauseGvm, pauseGithubHunt, stopTrufflehog, stopPartialRecon, getGvmActionError, getGithubActionError, getTrufflehogActionError, reportReconFailure, toast])
+  }, [reconState?.status, gvmState?.status, githubHuntState?.status, trufflehogRuns, activePartialRecons, pauseRecon, pauseGvm, pauseGithubHunt, stopTrufflehog, stopPartialRecon, getGvmActionError, getGithubActionError, getTrufflehogActionError, reportReconFailure, toast, emergencyStopScope])
 
   // Show message if no project is selected
   if (!projectLoading && !projectId) {
@@ -1723,6 +1747,7 @@ export default function GraphPage() {
         onEmergencyPauseAll={handleEmergencyPauseAll}
         isAnyPipelineRunning={isAnyPipelineRunning}
         isEmergencyPausing={isEmergencyPausing}
+        emergencyStopScope={emergencyStopScope}
         tunnelStatus={tunnelStatus}
         // Scan Timeline (version switch)
         scanVersions={scanVersions}

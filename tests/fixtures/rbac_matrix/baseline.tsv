@@ -129,7 +129,7 @@ bl-actas-by-anon	0.5	anon	POST	/api/auth/act-as	{"targetUserId":"${MEMBER_B_ID}"
 # job id the agent rejects with 422, a non-multipart upload, a missing path), so no session,
 # job, template or MCP server list is touched. emergency-stop-all is probed with GET (405):
 # its POST takes no input and cancels every user's agent run on the shared instance.
-bl-loginonly-estop-member	0.5	member_c	GET	/api/agent/emergency-stop-all	-	405	login-only hole:F-06 probe:method
+bl-loginonly-estop-member	0.5	member_c	GET	/api/agent/emergency-stop-all	-	405	login-only hole:F-06 probe:method superseded-by:p1
 bl-loginonly-agent-health-member	0.5	member_c	GET	/api/agent/health	-	200	login-only
 bl-loginonly-host-ip-member	0.5	member_c	GET	/api/agent/host-ip	-	200	login-only
 bl-loginonly-job-kill-member	0.5	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	422	login-only hole:F-01 probe:invalid-id

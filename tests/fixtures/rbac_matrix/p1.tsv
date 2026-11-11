@@ -139,3 +139,15 @@ p1-nuclei-select-mount-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nuclei
 p1-nuclei-select-root-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiCustomTemplates":["."]}	400;has=template_not_selectable	req:HD-08
 p1-nuclei-select-glob-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiSelectedCustomTemplates":["*"]}	400;has=template_not_selectable	req:HD-08
 p1-nuclei-select-instance-allowed	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiSelectedCustomTemplates":["aem-json-exposure.yaml"],"nucleiRateLimit":0}	400;has=setting_rejected;lacks=template_not_selectable	req:HD-08
+#
+# ---- step 1.11: emergency stop ----
+# GET tells the toolbar whose agent runs a press stops (HD-07): every user's for an admin
+# (also while acting as a member), the member's own otherwise. A member's POST stops only
+# that member's runs: member_c has none, so it stops nothing and no one else's. No row POSTs
+# as an admin, the instance-wide stop, which would end other people's runs on a shared stack;
+# the stop itself is checked live with two members' stub-model runs, one stopped, one not.
+p1-estop-scope-member	1.11	member_c	GET	/api/agent/emergency-stop-all	-	200;has="scope":"own"	req:HD-07
+p1-estop-scope-admin	1.11	admin_a	GET	/api/agent/emergency-stop-all	-	200;has="scope":"all"	req:HD-07
+p1-estop-scope-admin-acting	1.11	admin_a_as_member_a	GET	/api/agent/emergency-stop-all	-	200;has="scope":"all"	req:HD-07
+p1-estop-member-own	1.11	member_c	POST	/api/agent/emergency-stop-all	-	200;has="scope":"own";has="stopped":0	req:HD-07
+p1-estop-deleted	1.11	deleted	POST	/api/agent/emergency-stop-all	-	401	req:HD-07

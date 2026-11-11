@@ -9,6 +9,7 @@ import { VersionSwitch } from '../VersionSwitch'
 import { ScanStatusWarning } from '@/components/scans/ScanStatusWarning'
 import { GVM_NOT_INSTALLED } from '@/components/scans/scanErrors'
 import type { ScanVersionSummary } from '../../hooks/useScanVersions'
+import { emergencyPauseTitle, type EmergencyStopScope } from './emergencyStopScope'
 import styles from './GraphToolbar.module.css'
 
 interface GraphToolbarProps {
@@ -86,6 +87,8 @@ interface GraphToolbarProps {
   onEmergencyPauseAll?: () => void
   isAnyPipelineRunning?: boolean
   isEmergencyPausing?: boolean
+  /** Whose agent runs a press stops, as the emergency-stop route answered; unknown until it does. */
+  emergencyStopScope?: EmergencyStopScope
   // Tunnel status (displayed next to Pause All)
   tunnelStatus?: { ngrok?: { active: boolean; host?: string; port?: number }; chisel?: { active: boolean; host?: string; port?: number; srvPort?: number } }
   // Scan Timeline (version switch)
@@ -173,6 +176,7 @@ export function GraphToolbar({
   onEmergencyPauseAll,
   isAnyPipelineRunning = false,
   isEmergencyPausing = false,
+  emergencyStopScope,
   tunnelStatus,
   // Scan Timeline (version switch)
   scanVersions = [],
@@ -280,7 +284,7 @@ export function GraphToolbar({
         className={`${styles.emergencyPauseButton} ${isEmergencyPausing ? styles.emergencyPauseButtonActive : ''}`}
         onClick={onEmergencyPauseAll}
         disabled={!isAnyPipelineRunning && !isEmergencyPausing}
-        title="EMERGENCY PAUSE - Freeze all running containers immediately. Use if scanning or exploiting unwanted targets."
+        title={emergencyPauseTitle(emergencyStopScope)}
       >
         {isEmergencyPausing ? (
           <Loader2 size={14} className={styles.spinner} />
