@@ -238,7 +238,8 @@ def get_host_path(container_path: str) -> str:
     return container_path
 
 
-def build_naabu_command(targets_file: str, output_file: str, settings: dict) -> List[str]:
+def build_naabu_command(targets_file: str, output_file: str, settings: dict,
+                        container_name: str = None) -> List[str]:
     """
     Build the Docker command for running Naabu.
 
@@ -246,6 +247,7 @@ def build_naabu_command(targets_file: str, output_file: str, settings: dict) -> 
         targets_file: Path to file containing targets (one per line)
         output_file: Path for JSON output
         settings: Settings dictionary from main.py
+        container_name: the name the run timeout kills the container by
 
     Returns:
         List of command arguments
@@ -277,9 +279,13 @@ def build_naabu_command(targets_file: str, output_file: str, settings: dict) -> 
     cmd = [
         "docker", "run", "--rm",
         "--net=host",  # Required for SYN scans
+    ]
+    if container_name:
+        cmd.extend(["--name", container_name])
+    cmd.extend([
         "-v", f"{targets_host_path}:/targets:ro",
         "-v", f"{output_host_path}:/output",
-    ]
+    ])
 
     # Add image
     cmd.append(NAABU_DOCKER_IMAGE)
@@ -518,6 +524,35 @@ def fix_file_ownership(file_path: Path) -> None:
         pass  # Silently ignore if we can't change ownership
 
 
+def _targets_without_ports(targets: List[str], results: Dict) -> List[str]:
+    """The targets a cut naabu wrote no open port for: it did not finish them,
+    so they are not known to have none."""
+    found = set(results.get("by_host") or {}) | set(results.get("by_ip") or {})
+    return [t for t in targets if t not in found]
+
+
+def _note_naabu_cut(targets: List[str], unscanned: List[str], kept_ports: bool, reason: str) -> None:
+    """Record what a naabu run cut by its timeout did not port-scan. Never raises.
+
+    With the ports it did write kept, the downstream tools probe only those,
+    so no tool re-checked the hosts it left without one: they are cut for
+    every source. With nothing written there is no port data at all, as for a
+    failed scan: httpx falls back to the DNS names and the pipeline keeps
+    nmap's findings, so this is a coverage gap only.
+    """
+    try:
+        from recon.helpers import circuit_breaker
+        if kept_ports:
+            if unscanned:
+                circuit_breaker.note_degraded("port_scan", hosts=unscanned, host_source="naabu",
+                                              reason=reason)
+        else:
+            circuit_breaker.note_degraded("port_scan", entries=[
+                {"source": "naabu", "reason": reason, "skipped": len(targets)}])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # =============================================================================
 # Main Scan Function
 # =============================================================================
@@ -626,9 +661,6 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         # Set output file
         naabu_output = scan_temp_dir / "naabu_output.json"
 
-        # Build and run command
-        cmd = build_naabu_command(str(targets_file), str(naabu_output), settings)
-
         print(f"[*][Naabu] Starting scan...")
         print(f"[*][Naabu] Scan type: {'SYN' if NAABU_SCAN_TYPE == 's' else 'CONNECT'}")
         print(f"[*][Naabu] Ports: {NAABU_CUSTOM_PORTS if NAABU_CUSTOM_PORTS else f'top {NAABU_TOP_PORTS}'}")
@@ -646,17 +678,26 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         start_time = datetime.now()
 
         # Execute scan with fallback mechanism
+        from recon.helpers.docker_helpers import kill_container, tool_container_name
         scan_succeeded = False
+        timed_out = False
+        run_timeout = 1800  # 30 min
         actual_scan_type = NAABU_SCAN_TYPE
 
         for attempt, scan_type in enumerate([NAABU_SCAN_TYPE, 'c'] if NAABU_SCAN_TYPE == 's' else [NAABU_SCAN_TYPE]):
+            # One name per attempt: a timeout kills the container by it.
+            container_name = tool_container_name("naabu")
             if attempt > 0:
                 # Retry with CONNECT scan after SYN scan failed
                 print(f"[*][Naabu] Retrying with CONNECT scan...")
                 settings_copy = settings.copy()
                 settings_copy['NAABU_SCAN_TYPE'] = 'c'
-                cmd = build_naabu_command(str(targets_file), str(naabu_output), settings_copy)
+                cmd = build_naabu_command(str(targets_file), str(naabu_output), settings_copy,
+                                          container_name=container_name)
                 actual_scan_type = 'c'
+            else:
+                cmd = build_naabu_command(str(targets_file), str(naabu_output), settings,
+                                          container_name=container_name)
 
             process = subprocess.Popen(
                 cmd,
@@ -665,7 +706,21 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                 text=True
             )
 
-            _, stderr = process.communicate(timeout=1800)  # 30 min timeout
+            try:
+                _, stderr = process.communicate(timeout=run_timeout)
+            except subprocess.TimeoutExpired:
+                # Killing the docker CLI alone leaves the container scanning.
+                # No CONNECT retry: the budget is spent.
+                print(f"[!][Naabu] Scan timed out after {run_timeout}s -- stopping it, "
+                      f"keeping the ports it wrote")
+                kill_container(container_name)
+                try:
+                    process.kill()
+                    process.communicate(timeout=10)
+                except Exception:  # noqa: BLE001
+                    pass
+                timed_out = True
+                break
 
             # Check for SIGSEGV crash (common in SYN mode)
             if 'SIGSEGV' in stderr or 'segmentation' in stderr.lower():
@@ -699,7 +754,7 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
-        if not scan_succeeded and not naabu_output.exists():
+        if not timed_out and not scan_succeeded and not naabu_output.exists():
             print(f"[!][Naabu] All scan attempts failed")
             return recon_data
 
@@ -709,6 +764,18 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                                      ip_to_hostnames=ip_to_hostnames)
         if results.get("summary", {}).get("ai_ports_annotated"):
             print(f"[+][Naabu] AI port catalog matched {results['summary']['ai_ports_annotated']} port(s)")
+
+        unscanned = []
+        if timed_out:
+            unscanned = _targets_without_ports(all_targets, results)
+            _note_naabu_cut(all_targets, unscanned, bool(results["by_host"]),
+                            f"naabu timed out after {run_timeout}s")
+            if not results["by_host"]:
+                # An empty port list would read as "no open port anywhere".
+                print(f"[!][Naabu] Nothing was written before the timeout - no port data")
+                return recon_data
+            print(f"[!][Naabu] {len(unscanned)} of {len(all_targets)} target(s) got no port "
+                  f"before the timeout; their earlier findings are kept")
 
         # Build final structure
         naabu_results = {
@@ -731,10 +798,19 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
             "ip_to_hostnames": ip_to_hostnames,
             "summary": results["summary"]
         }
+        if timed_out:
+            # What a cut scan looked at is unknown, so it records no port list:
+            # port_coverage then counts the ports it found as open and calls
+            # none closed.
+            naabu_results["scan_metadata"].update(
+                ports_config=None, timed_out=True, unchecked_targets=len(unscanned))
 
         # Print summary
         summary = results["summary"]
-        print(f"[✓][Naabu] Scan completed in {duration:.1f} seconds")
+        if timed_out:
+            print(f"[!][Naabu] Scan cut at its {run_timeout}s timeout")
+        else:
+            print(f"[✓][Naabu] Scan completed in {duration:.1f} seconds")
         if actual_scan_type != NAABU_SCAN_TYPE:
             print(f"[*][Naabu] Note: Used CONNECT scan (SYN scan crashed)")
         print(f"[+][Naabu] Hosts with open ports: {summary['hosts_with_open_ports']}")
@@ -760,9 +836,6 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
 
         return recon_data
 
-    except subprocess.TimeoutExpired:
-        print("[!][Naabu] Scan timed out after 30 minutes")
-        return recon_data
     except Exception as e:
         print(f"[!][Naabu] Error during scan: {e}")
         return recon_data

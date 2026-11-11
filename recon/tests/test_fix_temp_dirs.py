@@ -190,6 +190,10 @@ class TestNaabuTempDir:
         d = _mounts(cmd)["/targets"]
         expected = ps.build_naabu_command(f"{d}/targets.txt", f"{d}/naabu_output.json",
                                           dict(_NAABU_SETTINGS))
+        # The name a timeout kills the container by (R-9) differs per run.
+        i = cmd.index("--name")
+        assert cmd[i + 1].startswith("naabu-")
+        del cmd[i:i + 2]
         assert cmd == expected
 
 
