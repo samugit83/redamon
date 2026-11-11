@@ -352,6 +352,12 @@ RETURN v.id AS id, 'Vulnerability' AS label,
        v.matcher_name AS matcher_name, v.fuzzing_parameter AS fuzzing_parameter,
        v.target_port AS target_port, v.solution_type AS solution_type,
        v.port_confirmed AS port_confirmed, v.control_check AS control_check,
+       // A full run rebuilds the IP nodes, and a passive CVE on an IP that left
+       // the run is kept until one re-checks it (D1): its port_confirmed is then
+       // an earlier run's. Matched as the passive writers link it, by address.
+       CASE WHEN coalesce(v.target_ip, '') = '' THEN null
+            ELSE EXISTS { MATCH (:IP {address: v.target_ip, user_id: $userId, project_id: $projectId}) }
+       END AS target_ip_in_graph,
        v.extracted_results AS extracted_results, v.is_dast_finding AS is_dast_finding,
        v.template_id AS template_id, v.tags AS tags, v.state AS state,
        coalesce(v.oid, v.nvt_oid) AS oid,

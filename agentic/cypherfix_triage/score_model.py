@@ -53,7 +53,7 @@ from urllib.parse import urlparse
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.10.0"
+SCORE_MODEL_VERSION = "v3.11.0"
 
 
 # ===========================================================================
@@ -924,7 +924,23 @@ def _passive_unconfirmed(finding: dict) -> bool:
     """A passive CVE no port scan of this run confirmed open."""
     verdict = finding.get("port_confirmed")
     return (_lower(finding.get("source")) in PASSIVE_CVE_SOURCES
-            and not (verdict is True or _lower(verdict) == "true"))
+            and (_ip_left_the_run(finding)
+                 or not (verdict is True or _lower(verdict) == "true")))
+
+
+def _ip_left_the_run(finding: dict) -> bool:
+    """A passive CVE whose IP has no node in the project's graph any more.
+
+    A full run rebuilds the IP nodes from its own targets, and the
+    positive-coverage prune keeps a passive CVE on an IP it did not re-check,
+    so the CVE outlives its IP: nothing of this run says whether it is
+    reachable, and its `port_confirmed` is the last run's that had the IP. A
+    row without `target_ip_in_graph` (no `target_ip`, an older reader) is not
+    one.
+    """
+    present = finding.get("target_ip_in_graph")
+    return (_lower(finding.get("source")) in PASSIVE_CVE_SOURCES
+            and (present is False or _lower(present) == "false"))
 
 
 def _validator_rejected_it(finding: dict) -> bool:
@@ -1495,12 +1511,19 @@ def _host_address(host: str) -> str:
 
 
 def reach(finding: dict, facts: ProjectFacts, cvss: Cvss) -> Factor:
-    """R, capped when the IP attribution tag says the address may not be the target's.
+    """R, capped when the IP attribution tag says the address may not be the
+    target's, or when a passive CVE's IP is no longer in the graph.
 
     The cap reads the IP itself (or a URL on it), never a hostname: a site
     served through a CDN is still the target's application.
     """
     factor = _reach(finding, facts, cvss)
+    if _ip_left_the_run(finding):
+        # Said even when R is already lower: R's evidence is what the reviewer
+        # reads about reach, and this run has no fact about the address at all.
+        return Factor(min(factor.value, LEFT_TARGET_MAX_REACH),
+                      f"the IP is no longer among this run's targets, so reach unknown "
+                      f"({factor.evidence})")
     address = _host_address(finding.get("triage_host") or finding.get("host") or "")
     if address in facts.shared_edge_hosts and factor.value > SHARED_EDGE_MAX_REACH:
         return Factor(SHARED_EDGE_MAX_REACH,
@@ -1625,10 +1648,14 @@ def _reachable_now(finding: dict, facts: ProjectFacts, cvss: Cvss, host: str,
         # A banner is as current as the port scan that found its port again,
         # whatever else on the host answers.
         verdict = finding.get("port_confirmed")
-        if verdict is True or _lower(verdict) == "true":
-            return True
         if verdict is False or _lower(verdict) == "false":
             return False
+        # Only an "open" is discounted: a stale "closed" keeps the finding
+        # resolved (finding_state), and this gate agrees with it.
+        if _ip_left_the_run(finding):
+            return None
+        if verdict is True or _lower(verdict) == "true":
+            return True
         return None
     if _behind_a_login(facts, host):
         # It answered: the login is the impact gate's business.
