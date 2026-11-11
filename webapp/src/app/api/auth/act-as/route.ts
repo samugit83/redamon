@@ -9,7 +9,7 @@ import { withRouteErrors } from '@/lib/routeErrors'
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
 // effective user is derived server-side from this signed httpOnly cookie, and it
-// is only ever consulted when the caller's real role (login JWT) is admin.
+// is only ever consulted when the signed-in caller is an admin in the database.
 
 // S12: `secure` is decided per-request (see cookieOpts); base opts hold the rest.
 function cookieOpts(request: NextRequest) {

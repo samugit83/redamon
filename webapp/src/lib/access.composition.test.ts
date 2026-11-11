@@ -27,9 +27,19 @@ vi.mock('next/headers', () => ({
   })),
 }))
 
+// getSession reads role and existence from the database (HD-10): every account these
+// tests sign in as, or act as, exists with the role its token claims.
+const DB_ROLES: Record<string, string> = { 'userX': 'standard', 'attacker': 'standard', 'admin-1': 'admin' }
+const dbUser = async ({ where }: { where: { id: string } }) =>
+  DB_ROLES[where.id]
+    ? { id: where.id, email: `${where.id}@e2e.local`, role: DB_ROLES[where.id], password: 'h', createdAt: new Date(0) }
+    : null
 const mockProjectFindUnique = vi.fn()
 vi.mock('@/lib/prisma', () => ({
-  default: { project: { findUnique: (...a: unknown[]) => mockProjectFindUnique(...a) } },
+  default: {
+    project: { findUnique: (...a: unknown[]) => mockProjectFindUnique(...a) },
+    user: { findUnique: (a: { where: { id: string } }) => dbUser(a) },
+  },
 }))
 
 import { requireEffectiveUser, requireProjectAccess } from './access'

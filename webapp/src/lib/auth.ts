@@ -82,8 +82,9 @@ export async function createWsTicket(
 // AND verified only inside the webapp, so reusing AUTH_SECRET is safe. It is
 // mutually non-substitutable with the login JWT by claim shape: a login token has
 // `role` and no `act`; an act-as token has `act` and no `role`. getEffectiveUser
-// only honors it when the caller's real role (from the untouched login JWT) is
-// admin AND the token's `sub` equals that admin's id - so a standard user forging
+// only honors it when the signed-in caller (the untouched login JWT) is an admin
+// in the database AND the token's `sub` equals that admin's id AND the target
+// still exists - so a standard user forging
 // this cookie is ignored, and a login cookie replayed here fails the `act` check.
 export const ACT_AS_COOKIE_NAME = 'redamon-act-as'
 const ACT_AS_EXPIRY = '12h'

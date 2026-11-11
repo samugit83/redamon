@@ -2,6 +2,8 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
+import { loadPrincipal } from './authz/principal'
+import { internalError } from './routeErrors'
 
 export interface Session {
   userId: string
@@ -17,13 +19,21 @@ export interface EffectiveUser {
   userId: string
 }
 
+/**
+ * The signed-in account, or null (the caller answers 401). The login JWT proves who
+ * signed in; whether that account still exists and its role are read from the
+ * database, so the role claim in the token is never trusted. A failed database
+ * read throws: it never reads as signed in.
+ */
 export async function getSession(): Promise<Session | null> {
   const cookieStore = await cookies()
   const token = cookieStore.get(AUTH_COOKIE_NAME)?.value
   if (!token) return null
   const payload = await verifyToken(token)
   if (!payload) return null
-  return { userId: payload.sub, role: payload.role }
+  const principal = await loadPrincipal(payload.sub)
+  if (!principal) return null
+  return { userId: principal.id, role: principal.role }
 }
 
 /**
@@ -31,12 +41,13 @@ export async function getSession(): Promise<Session | null> {
  *   - standard user       -> own id (any `redamon-act-as` cookie is IGNORED)
  *   - admin, not simulating -> own id
  *   - admin, simulating X   -> X, but only when the act-as cookie was minted by
- *                              THIS admin (claims.sub === session.userId)
+ *                              THIS admin (claims.sub === session.userId) and X
+ *                              still exists; otherwise own id
  * Returns null when there is no valid login session (caller returns 401).
  *
- * The real identity/role always comes from the untouched login JWT (getSession);
- * the act-as cookie can only ever narrow an admin to a single other user, never
- * grant a standard user cross-user access.
+ * The real identity comes from the untouched login JWT and the role from the
+ * database (getSession); the act-as cookie can only ever narrow an admin to a
+ * single other user, never grant a standard user cross-user access.
  */
 export async function getEffectiveUser(): Promise<EffectiveUser | null> {
   const session = await getSession()
@@ -48,7 +59,7 @@ export async function getEffectiveUser(): Promise<EffectiveUser | null> {
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
   if (actAsToken) {
     const claims = await verifyActAsToken(actAsToken)
-    if (claims && claims.sub === session.userId) {
+    if (claims && claims.sub === session.userId && (await loadPrincipal(claims.act))) {
       return { userId: claims.act }
     }
   }
@@ -56,11 +67,17 @@ export async function getEffectiveUser(): Promise<EffectiveUser | null> {
 }
 
 /**
- * Returns session or a 401 NextResponse. Caller must check and return the response.
+ * Returns session or a 401 NextResponse (a coded 500 when the account could not be
+ * read). Caller must check and return the response.
  * Usage: const result = await requireSession(); if (result instanceof NextResponse) return result;
  */
 export async function requireSession(): Promise<Session | NextResponse> {
-  const session = await getSession()
+  let session: Session | null
+  try {
+    session = await getSession()
+  } catch (err) {
+    return internalError(err, 'Could not read the signed-in account')
+  }
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
