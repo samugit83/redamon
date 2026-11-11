@@ -195,7 +195,7 @@ After creation, open **http://localhost:3000** and sign in with the email and pa
 > ./redamon.sh create-admin
 > ```
 >
-> It waits for the webapp, then prompts for the same details. It is safe to re-run: reusing an existing admin's email resets that password, a new email adds another admin.
+> It waits for the webapp, then prompts for the same details. It is safe to re-run: reusing an existing admin's email resets that password and revokes that admin's MCP tokens (re-entering the same password changes nothing), a new email adds another admin. A member's email is refused: to promote that member on purpose, run `FORCE_PROMOTE=1 ./redamon.sh create-admin`.
 
 **What the admin can do:**
 - Switch between all users via the user dropdown in the header (including users without a password).
@@ -213,7 +213,7 @@ If you forget the admin password, reset it from the terminal:
 ./redamon.sh create-admin     # create the first admin, or reset an admin by re-entering its email
 ```
 
-Use `create-admin` when no admin exists yet (it upserts on email); `reset-password` only updates a user that already exists.
+Use `create-admin` when no admin exists yet; `reset-password` only updates a user that already exists, never changes its role, and revokes its MCP tokens.
 
 ### 3. Configure
 
