@@ -1553,9 +1553,11 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: llm
     meaning: >-
-      How long AI attack-surface recon may spend before it is abandoned, in
-      seconds. A run that hits it contributes whatever it found so far rather than
-      failing the scan.
+      Per-request timeout, in seconds: how long each AI attack-surface probe waits
+      for its answer (the chat-shape POSTs, the MCP handshake, the OpenAPI and
+      model-list fetches, the Julius probe pack, the vector-database reads), NOT a
+      cap on the whole run; listing an MCP server's tools, resources and prompts
+      may take four times this value. A request that times out is skipped.
   aiSurfaceReconUserAgent:
     tool: ai_surface_recon
     runtime_key: "AI_SURFACE_RECON_USER_AGENT"
@@ -1770,8 +1772,12 @@ fields:
     bounds: { min: 60, max: 86400 }
     group: unbounded
     meaning: >-
-      How long arjun may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on one Arjun run (one HTTP method against every
+      target endpoint, in full and partial recon; the methods in arjunMethods run
+      side by side): Arjun is stopped once this value plus 60 seconds have passed.
+      A run that hits it keeps the parameters Arjun had saved for the endpoints it
+      finished, since it rewrites its JSON output after each endpoint where it
+      finds some, and the scan goes on.
   arjunStable:
     tool: arjun
     runtime_key: "ARJUN_STABLE"
@@ -1808,8 +1814,9 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long arjun may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds: how long Arjun waits for the answer to one
+      request (arjun's -T), NOT a cap on the whole run. The wall-clock cap for a
+      run is arjunScanTimeout.
   attackSkillConfig:
     tool: agent
     runtime_key: null
@@ -1883,8 +1890,12 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long baddns may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on the takeover scan's one BadDNS run over every
+      name; a value under 120 counts as 120. A run that hits it is stopped with
+      its container and keeps the findings BadDNS had printed. Every name from the
+      last one with a printed finding on (every name, when it printed none) is
+      recorded as not checked, so its earlier takeover findings are kept rather
+      than pruned, and the scan goes on.
   bannerGrabEnabled:
     tool: banner_grab
     runtime_key: "BANNER_GRAB_ENABLED"
@@ -1938,9 +1949,11 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long Banner grab may spend before it is abandoned, in seconds. A run
-      that hits it contributes whatever it found so far rather than failing the
-      scan.
+      Per-connection timeout, in seconds: how long banner grabbing waits to
+      connect to one non-HTTP port (and to finish the TLS handshake on a TLS
+      port), and for the answer to the probe it sends when the service has not
+      spoken first (it waits a fixed 3 seconds for that greeting), NOT a cap on
+      the whole run. A port that does not answer in time gets no banner.
     form_section: "HttpxSection"
   captureProxyEnabled:
     tool: capture_proxy
@@ -2785,8 +2798,9 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long ffuf may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds: how long ffuf waits for the answer to one
+      request (ffuf's -timeout), NOT a cap on the whole run. The wall-clock cap
+      for a run is ffufMaxTime.
   ffufWordlist:
     tool: ffuf
     runtime_key: "FFUF_WORDLIST"
@@ -3091,8 +3105,12 @@ fields:
     bounds: { min: 10, max: 86400 }
     group: unbounded
     meaning: >-
-      How long gau may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds: how long gau waits for one answer from an
+      archive provider (gau's --timeout), NOT a cap on the whole run. It also
+      sizes gau's wall-clock cap for one domain, this value times the number of
+      gauProviders plus 120 seconds: a domain whose run outlives it is stopped
+      with its container and keeps the URLs gau had printed for it, and the scan
+      goes on.
   gauVerbose:
     tool: gau
     runtime_key: "GAU_VERBOSE"
@@ -3641,8 +3659,10 @@ fields:
     bounds: { min: 1, max: 600 }
     stealth: { set: 60 }
     meaning: >-
-      How long graphql may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds: how long the GraphQL scanner waits for the
+      answer to each request it sends, retries included (the `{ __typename }`
+      probe and the introspection queries), NOT a cap on the whole scan. GraphQL
+      Cop's runs have their own cap, graphqlCopTimeout.
   graphqlVerifySsl:
     tool: graphql
     runtime_key: "GRAPHQL_VERIFY_SSL"
@@ -3734,8 +3754,12 @@ fields:
     bounds: { min: 0, max: 86400 }
     group: unbounded
     meaning: >-
-      How long gvm may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on one GVM scan task; every IP and every
+      hostname is scanned as a task of its own. 0 means no limit. A task that
+      outlives it gets no report: that target adds no findings and counts as a
+      failed one (three failed targets in a row abort the scan), its earlier GVM
+      findings are kept rather than pruned, and the scan goes on to the next
+      target.
   hackerTargetEnabled:
     tool: hackertarget
     runtime_key: "HACKERTARGET_ENABLED"
@@ -3898,8 +3922,11 @@ fields:
     bounds: { min: 5, max: 86400 }
     group: unbounded
     meaning: >-
-      How long hakrawler may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Per-seed cap, in seconds: how long hakrawler may crawl one seed URL
+      (hakrawler's -timeout), NOT a cap on the whole crawl. A seed still running
+      after twice this value plus 60 seconds is stopped with its container and
+      keeps the URLs it had printed; the wait for the whole crawl is sized from
+      that per-seed budget, with the seeds crawled hakrawlerParallelism at a time.
   httpProbeAiFaviconHashEnabled:
     tool: http_probe_ai
     runtime_key: "HTTP_PROBE_AI_FAVICON_HASH_ENABLED"
@@ -4390,8 +4417,10 @@ fields:
     bounds: { min: 5, max: 120 }
     group: intrusive
     meaning: >-
-      How long hydra may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      How long hydra waits for a response, in seconds (hydra's -w), NOT a cap on
+      the whole attack. It reaches hydra only through the flags the brute-force
+      skill's prompt tells the agent to pass, and only when it differs from
+      hydra's own default of 32.
   hydraEnabled:
     tool: hydra
     runtime_key: null
@@ -4889,8 +4918,15 @@ fields:
     bounds: { min: 60, max: 86400 }
     group: unbounded
     meaning: >-
-      How long JS recon may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Wall-clock budget, in seconds, for analyzing the downloaded JS files:
+      source-map discovery may spend half of it, and the analyzers must finish
+      within it, except TruffleHog, which gets what is left of it (at most 600
+      seconds) as a budget of its own. An analyzer still running when it runs out
+      adds nothing (the ones that finished are kept), and the hosts of the files
+      it was analyzing keep their earlier JS recon findings rather than having
+      them pruned. It also sizes each JS download's timeout (a tenth of it, at
+      most 30 seconds) and each source-map fetch's (a sixtieth, at least 10
+      seconds).
   jsReconTrufflehogEnabled:
     tool: js_recon
     runtime_key: "JS_RECON_TRUFFLEHOG_ENABLED"
@@ -4975,8 +5011,12 @@ fields:
     mcp: settable
     bounds: { min: 1, max: 30 }
     meaning: >-
-      How long JS recon may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds, for JS recon's live checks: each request
+      that tests a found key with its provider, each probe of an endpoint found in
+      the JS, and the time TruffleHog gives each detector, verification included
+      (its --detector-timeout), NOT a cap on the whole run. A key check that times
+      out leaves the key's status unknown, never dead; an endpoint probe that
+      times out marks the endpoint not hittable.
   jsluiceConcurrency:
     tool: jsluice
     runtime_key: "JSLUICE_CONCURRENCY"
@@ -5085,8 +5125,12 @@ fields:
     bounds: { min: 30, max: 86400 }
     group: unbounded
     meaning: >-
-      How long jsluice may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on one jsluice run, NOT on the whole analysis:
+      jsluice runs once to extract URLs and once to extract secrets from each
+      site's downloaded JS files, and each run has this cap. A run that hits it is
+      killed and adds nothing: a cut URL run contributes no URLs for that site,
+      and a cut secrets run keeps every earlier jsluice secret finding rather than
+      pruning it. The scan goes on.
   jsluiceVerifyAcceptStatus:
     tool: jsluice
     runtime_key: "JSLUICE_VERIFY_ACCEPT_STATUS"
@@ -5136,8 +5180,9 @@ fields:
     mcp: settable
     bounds: { min: 1, max: 60 }
     meaning: >-
-      How long jsluice may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds: how long httpx waits for one URL check when
+      jsluice's URLs are verified (httpx's -timeout), NOT a cap on the whole
+      verification run.
   jsluiceVerifyUrls:
     tool: jsluice
     runtime_key: "JSLUICE_VERIFY_URLS"
@@ -5311,8 +5356,11 @@ fields:
     bounds: { min: 60, max: 86400 }
     group: unbounded
     meaning: >-
-      How long katana may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      How long katana may crawl, in seconds: passed as katana's -crawl-duration
+      (its limit for crawling a target), and the whole Katana run, every seed
+      included, is stopped with its container once this value plus 60 seconds have
+      passed, or after 5 minutes with no output. A run that hits it keeps the URLs
+      katana had printed, and the scan goes on.
   kiterunnerBruteforceMethods:
     tool: kiterunner
     runtime_key: "KITERUNNER_BRUTEFORCE_METHODS"
@@ -6060,8 +6108,11 @@ fields:
     bounds: { min: 30, max: 86400 }
     group: unbounded
     meaning: >-
-      How long nmap may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      nmap's own per-IP limit, in seconds (its --host-timeout): nmap gives up on
+      an IP it has spent this long on. That IP is recorded as not scanned to
+      completion, so its earlier NSE findings are kept rather than pruned, and
+      whatever nmap wrote about it is still read. RedAmon's wall-clock cap on an
+      nmap run is nmapTimeout.
   nmapParallelism:
     tool: nmap
     runtime_key: "NMAP_PARALLELISM"
@@ -6101,8 +6152,11 @@ fields:
     bounds: { min: 60, max: 86400 }
     group: unbounded
     meaning: >-
-      How long nmap may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on one nmap run, which scans one IP
+      (nmapParallelism IPs at a time). A run that hits it is killed and adds
+      nothing for that IP: its output is not read, and the IP is recorded as not
+      scanned, so its earlier NSE findings are kept rather than pruned. The scan
+      goes on.
   nmapTimingTemplate:
     tool: nmap
     runtime_key: "NMAP_TIMING_TEMPLATE"
@@ -6462,8 +6516,12 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long nuclei may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on the takeover scan's one nuclei run (the
+      takeover and DNS templates against every candidate URL); a value under 120
+      counts as 120. A run that hits it is stopped with its container and keeps
+      the findings nuclei had already written, and every URL it was given is
+      recorded as not checked by that layer, so their hosts' earlier takeover
+      findings are kept rather than pruned. The scan goes on.
   nucleiTakeoversEnabled:
     tool: nuclei
     runtime_key: "NUCLEI_TAKEOVERS_ENABLED"
@@ -6623,9 +6681,13 @@ fields:
     bounds: { min: 1, max: 60 }
     group: egress
     meaning: >-
-      How long Origin discovery may spend before it is abandoned, in seconds. A
-      run that hits it contributes whatever it found so far rather than failing
-      the scan.
+      Per-request timeout, in seconds: how long origin discovery waits for each
+      request it sends, to its candidate sources and to the candidate origin
+      addresses it checks, NOT a cap on the whole run. Each TLS handshake gets at
+      most 5 seconds of it and each open-port pre-check a fifth of it (2 to 5
+      seconds). A source lookup that times out counts as a miss for that host
+      rather than an answer, and a candidate whose check times out is not
+      confirmed.
   originDiscoveryWorkers:
     tool: origin_discovery
     runtime_key: "ORIGIN_DISCOVERY_WORKERS"
@@ -6749,9 +6811,10 @@ fields:
     bounds: { min: 10, max: 86400 }
     group: unbounded
     meaning: >-
-      How long paramspider may spend before it is abandoned, in seconds. A run
-      that hits it contributes whatever it found so far rather than failing the
-      scan.
+      Wall-clock cap, in seconds, on one ParamSpider run, which covers one domain
+      (paramspiderWorkers domains at a time). A run that hits it is killed and
+      adds nothing for that domain: what it had printed is dropped and the run is
+      recorded as a ParamSpider failure. The scan goes on.
   paramspiderWorkers:
     tool: paramspider
     runtime_key: "PARAMSPIDER_WORKERS"
@@ -6860,9 +6923,10 @@ fields:
     bounds: { min: 1, max: 120 }
     group: attack
     meaning: >-
-      How long Path traversal may spend before it is abandoned, in seconds. A run
-      that hits it contributes whatever it found so far rather than failing the
-      scan.
+      Per-request timeout, in seconds, that the path traversal skill's prompt
+      gives the agent: its example curl probes use it as --max-time. It is
+      guidance the agent follows when it writes its commands, not a cap a tool
+      enforces, and NOT a limit on the whole attack.
   pathTraversalValidateSecretsEnabled:
     tool: path_traversal
     runtime_key: null
@@ -8665,9 +8729,10 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long Security checks may spend before it is abandoned, in seconds. A run
-      that hits it contributes whatever it found so far rather than failing the
-      scan.
+      Per-request timeout, in seconds: how long a security-check probe waits for
+      its answer (each HTTP request, TLS handshake, zone-transfer query and Redis
+      or SMTP probe), NOT a cap on the whole pass. A probe that times out produces
+      no finding from that check.
   securityCheckTlsExpired:
     tool: security_check
     runtime_key: "SECURITY_CHECK_TLS_EXPIRED"
@@ -9098,8 +9163,11 @@ fields:
     bounds: { min: 1, max: 120 }
     group: egress
     meaning: >-
-      How long ssrf may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Per-request timeout, in seconds, that the SSRF skill's prompt gives the
+      agent: its example curl probes use it as --max-time, and its internal port
+      sweep as --connect-timeout. It is guidance the agent follows when it writes
+      its commands, not a cap a tool enforces, and NOT a limit on the whole
+      attack.
   stealthMode:
     tool: pipeline
     runtime_key: "STEALTH_MODE"
@@ -9255,8 +9323,11 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long subjack may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on the takeover scan's one subjack run over
+      every name; a value under 60 counts as 60. A run that hits it is killed and
+      keeps the rows subjack had already written; subjack never says which names
+      it reached, so every name is recorded as not checked and keeps its earlier
+      takeover findings rather than having them pruned. The scan goes on.
   subjackSsl:
     tool: subjack
     runtime_key: "SUBJACK_SSL"
@@ -9294,8 +9365,9 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long subjack may spend before it is abandoned, in seconds. A run that
-      hits it contributes whatever it found so far rather than failing the scan.
+      Per-connection timeout, in seconds: how long subjack waits for one
+      connection (subjack's -timeout), NOT a cap on the whole run. The wall-clock
+      cap for the run is subjackRunTimeout.
   supplyChainDeepAnalysisEnabled:
     tool: supply_chain
     runtime_key: null
@@ -9843,8 +9915,10 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: unbounded
     meaning: >-
-      How long tlsx may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Wall-clock cap, in seconds, on the one tlsx run over every TLS target. A run
+      that hits it is abandoned: the certificates tlsx had printed are kept, and
+      every target it had not answered is recorded as not checked, so its earlier
+      security-check findings are kept rather than pruned. The scan goes on.
   tlsxScanMode:
     tool: tlsx
     runtime_key: "TLSX_SCAN_MODE"
@@ -9868,8 +9942,9 @@ fields:
     mcp: settable
     bounds: { min: 1, max: 60 }
     meaning: >-
-      How long tlsx may spend before it is abandoned, in seconds. A run that hits
-      it contributes whatever it found so far rather than failing the scan.
+      Per-connection timeout, in seconds: how long tlsx waits for one TLS
+      connection (tlsx's -timeout), NOT a cap on the whole run. The wall-clock cap
+      for the run is tlsxRunTimeout.
   tlsxVersionEnum:
     tool: tlsx
     runtime_key: "TLSX_VERSION_ENUM"
@@ -10514,9 +10589,10 @@ fields:
     mcp: settable
     bounds: { min: 1, max: 30 }
     meaning: >-
-      How long Vhost / SNI enumeration may spend before it is abandoned, in
-      seconds. A run that hits it contributes whatever it found so far rather than
-      failing the scan.
+      Per-probe timeout, in seconds: how long each virtual-host probe waits to
+      connect (curl's --connect-timeout), with three times this value for the
+      whole request (--max-time), NOT a cap on the whole run. A probe that times
+      out counts as no answer for that candidate name.
   vhostSniUseDefaultWordlist:
     tool: vhost_sni
     runtime_key: "VHOST_SNI_USE_DEFAULT_WORDLIST"
@@ -10896,9 +10972,12 @@ fields:
     bounds: { min: 1, max: 86400 }
     group: attack
     meaning: >-
-      How long Web cache poisoning may spend before it is abandoned, in seconds. A
-      run that hits it contributes whatever it found so far rather than failing
-      the scan.
+      Wall-clock cap, in seconds, on the WCVS breadth sweep over every target URL,
+      NOT on the native confirmation that follows (its per-request timeout is
+      webCachePoisonTimeoutPerReq). A sweep that hits it is stopped with its
+      container; the candidates in whatever report WCVS had written still go on to
+      confirmation, and every target host keeps its earlier cache-poisoning
+      findings rather than having them pruned.
   webCachePoisonTimeoutPerReq:
     tool: web_cache_poison
     runtime_key: "WEB_CACHE_POISON_TIMEOUT_PER_REQ"
