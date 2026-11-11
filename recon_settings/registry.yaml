@@ -4482,9 +4482,11 @@ fields:
     bounds: { min: 1, max: 64 }
     group: intrusive
     meaning: >-
-      How many hydra operations run at once. The memory governor scales it down
-      when the host is short of RAM, so the effective value can be below what is
-      written here.
+      How many connections hydra opens in parallel against one target (hydra's
+      -t). It reaches hydra only through the flags the brute-force skill's prompt
+      tells the agent to pass, and that prompt lowers it for the protocols that
+      break under parallel logins (at most 4 for SSH and VNC, 1 for RDP), so the
+      value used there can be below what is written here.
   hydraVerbose:
     tool: hydra
     runtime_key: null
@@ -4508,9 +4510,11 @@ fields:
     zero_means: literal
     group: intrusive
     meaning: >-
-      How many hydra operations run at once. The memory governor scales it down
-      when the host is short of RAM, so the effective value can be below what is
-      written here.
+      How long, in seconds, each of hydra's parallel tasks waits between one
+      connection and its next (hydra's -W): the attack then opens at most
+      hydraThreads / this value new connections a second. 0 means no wait, and
+      the flag is not passed. It reaches hydra only through the flags the
+      brute-force skill's prompt tells the agent to pass.
   id:
     tool: project
     runtime_key: null
@@ -6126,9 +6130,11 @@ fields:
     governor: { model: ratio, floor: 1 }
     group: not-tuning
     meaning: >-
-      How many nmap operations run at once. The memory governor scales it down
-      when the host is short of RAM, so the effective value can be below what is
-      written here.
+      How many IPs nmap scans at once, one nmap process each. The memory governor
+      scales it down when the host is short of RAM, so the effective value can be
+      below what is written here. Under an RoE request ceiling (roeGlobalMaxRps)
+      it is forced to 1, because each nmap process gets the whole ceiling as its
+      --max-rate and two at once would double it.
   nmapScriptScan:
     tool: nmap
     runtime_key: "NMAP_SCRIPT_SCAN"
@@ -9916,9 +9922,10 @@ fields:
     group: unbounded
     meaning: >-
       Wall-clock cap, in seconds, on the one tlsx run over every TLS target. A run
-      that hits it is abandoned: the certificates tlsx had printed are kept, and
-      every target it had not answered is recorded as not checked, so its earlier
-      security-check findings are kept rather than pruned. The scan goes on.
+      that hits it is stopped with its container (not just the docker client):
+      the certificates tlsx had printed by then are kept, and every target it had
+      not answered is recorded as not checked, so its earlier security-check
+      findings are kept rather than pruned. The scan goes on.
   tlsxScanMode:
     tool: tlsx
     runtime_key: "TLSX_SCAN_MODE"
