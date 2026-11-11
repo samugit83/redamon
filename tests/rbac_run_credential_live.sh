@@ -8,8 +8,13 @@
 #   - inside the agent container (tests/rbac_run_credential_live_ws.py): /graph/exec,
 #     /text-to-cypher and /traffic/exec refuse the bare scanner key; the master key and a graph
 #     run credential open /graph/exec; an expired credential and a traffic one are refused with
-#     their codes; a legacy holder's terminal shell has no service key and holds its run
-#     credential, and `redagraph types` / `redagraph ls Domain` answer with it;
+#     their codes; a credential whose run no open terminal holds is refused
+#     (`run_credential_closed`); a traffic credential of another run than its ctx tag is
+#     refused (`run_credential_ctx_mismatch`); a legacy holder's terminal shell has no service
+#     key and holds its run credential, and `redagraph types` / `redagraph ls Domain` answer
+#     with it, as does a copy of it presented from outside the shell's environment;
+#   - that copy is refused once the terminal has closed (it dies with the socket, not after
+#     12 hours);
 #   - the agent logged `[rbac] run credential refused reason=expired`.
 # The kali_shell half of P0-09 is the step-0.7 scripted stub run `kali-shell-env`, which must now
 # print 0 (see the step's progress-log entry for the command).
@@ -43,6 +48,7 @@ done
 
 TMP="$(mktemp -d)"
 CLEANED_UP=0
+CRED_FILE=""
 webapp_node() { # script: run a fixture script inside the webapp container, read from stdin
   (cd "$ROOT" && docker compose exec -T -w /app webapp node --input-type=module -) < "$ROOT/webapp/scripts/$1"
 }
@@ -55,6 +61,7 @@ cleanup() {
   CLEANED_UP=1
   echo "== Cleaning up fixtures =="
   webapp_node e2e-rbac-cleanup.mjs | sed 's/^/  /' || echo "  cleanup failed: rerun it by hand (see e2e-rbac-cleanup.mjs)"
+  [ -n "${CRED_FILE:-}" ] && (cd "$ROOT" && docker compose exec -T kali-sandbox rm -f "$CRED_FILE") >/dev/null 2>&1
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -110,7 +117,10 @@ if [ -z "$T_TERM" ]; then
   check "the agent-side checks need the terminal ticket" 0
 else
   since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  { printf 'T_TERM = "%s"\nHOLDER_ID = "%s"\nHOLDER_PID = "%s"\n' "$T_TERM" "${SEED[MEMBER_B_ID]}" "${SEED[PB_ID]}"
+  # Inside kali-sandbox: where the terminal's shell copies its credential (never printed).
+  CRED_FILE="/tmp/rbac-live-115-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  { printf 'T_TERM = "%s"\nHOLDER_ID = "%s"\nHOLDER_PID = "%s"\nCRED_FILE = "%s"\n' \
+      "$T_TERM" "${SEED[MEMBER_B_ID]}" "${SEED[PB_ID]}" "$CRED_FILE"
     cat "$ROOT/tests/rbac_run_credential_live_ws.py"
   } | (cd "$ROOT" && docker compose exec -T agent python3 -) > "$TMP/ws.out" 2>&1
   grep -E '^(PASS|FAIL)  ' "$TMP/ws.out"
@@ -120,6 +130,19 @@ else
     # Only the exception's class: a traceback line can quote a URL with a ticket in it.
     check "the agent-side checks ran to the end" 0 "$(grep -oE '^[A-Za-z_.]*(Error|Exception)' "$TMP/ws.out" | tail -1)"
   fi
+  # The terminal has closed: the same copy, presented again from the sandbox, is refused.
+  # Status and code only; the file is removed whatever the answer.
+  after="$(cd "$ROOT" && docker compose exec -T -e CRED_FILE="$CRED_FILE" kali-sandbox sh -c '
+    [ -s "$CRED_FILE" ] || { echo missing; exit 0; }
+    url="${REDAMON_AGENT_URL:-http://agent:8080}/graph/exec"; out=/tmp/rbac-live-115-after.$$
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      code=$(curl -s -o "$out" -w "%{http_code}" -H "X-Redamon-Run: $(cat "$CRED_FILE")" \
+        -H "Content-Type: application/json" -d "{\"op\":\"types\",\"user_id\":\"x\",\"project_id\":\"y\"}" "$url")
+      [ "$code" != 200 ] && break; sleep 1
+    done
+    echo "$code $(grep -o "run_credential_[a-z_]*" "$out" | head -1)"; rm -f "$CRED_FILE" "$out"')"
+  ok=0; [ "$after" = "401 run_credential_closed" ] && ok=1
+  check "the copy is refused once the terminal has closed -> ${after:-?}" "$ok"
   logged="$(cd "$ROOT" && docker compose logs --since "$since" agent 2>/dev/null | grep -c '\[rbac\] run credential refused reason=expired')"
   ok=0; [ "${logged:-0}" -ge 1 ] && ok=1
   check "the agent logged the refused expired credential -> ${logged:-0}" "$ok"

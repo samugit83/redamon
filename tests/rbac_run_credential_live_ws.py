@@ -1,9 +1,11 @@
 """Agent-container half of tests/rbac_run_credential_live.sh (RBAC step 1.15). Not a pytest file.
 
 Fed on stdin to `python3 -` inside the agent container (cwd /app, so the agent's
-machine_credential imports), after three assignments the shell prepends: T_TERM (a
+machine_credential imports), after four assignments the shell prepends: T_TERM (a
 legacy holder's terminal ticket, minted right before), HOLDER_ID and HOLDER_PID
-(that holder and its project). Prints PASS/FAIL lines and `RESULT_WS <pass> <fail>`;
+(that holder and its project), and CRED_FILE (a path in the sandbox where the
+terminal's shell copies its credential, which the shell script presents again once
+the terminal has closed). Prints PASS/FAIL lines and `RESULT_WS <pass> <fail>`;
 never a ticket, a key, a credential or terminal output.
 """
 import asyncio
@@ -69,9 +71,12 @@ def routes():
     status, _ = post("/graph/exec", graph_body, master)
     check(f"/graph/exec with the master key (the webapp's path) -> {status}", status == 200)
 
+    # A graph credential is honoured only while the terminal it was handed to is open:
+    # one minted for a run no terminal holds is refused (the terminal half shows a live one).
     cred = mint_run_credential("graph", HOLDER_ID, HOLDER_PID, "rbac-live-115", 600)  # noqa: F821
-    status, _ = post("/graph/exec", {**graph_body, "user_id": "rbac-not-this-user"}, {"X-Redamon-Run": cred})
-    check(f"/graph/exec with a graph run credential, body naming another user -> {status}", status == 200)
+    status, body = post("/graph/exec", graph_body, {"X-Redamon-Run": cred})
+    check(f"a graph credential whose run is no open terminal -> {status} {code_of(body)}",
+          status == 401 and code_of(body) == "run_credential_closed")
 
     expired = mint_run_credential("graph", HOLDER_ID, HOLDER_PID, "rbac-live-115", 60,  # noqa: F821
                                   now=time.time() - 3600)
@@ -83,6 +88,19 @@ def routes():
     check(f"a traffic credential on /graph/exec -> {status} {code_of(body)}",
           status == 401 and code_of(body) == "run_credential_wrong_audience")
 
+    # The traffic credential must name the run of the ctx tag it rides with.
+    from redamon_ctx import sign_tag
+    tag = sign_tag({"source": "agent", "user_id": HOLDER_ID, "project_id": HOLDER_PID,  # noqa: F821
+                    "session_id": "rbac-live-115", "tool": "proxy_brain", "phase": "informational"},
+                   os.environ.get("INTERNAL_API_KEY", ""))
+    other_run = mint_run_credential("traffic", HOLDER_ID, HOLDER_PID, "rbac-live-115-other", 600)  # noqa: F821
+    status, body = post("/traffic/exec", {"ctx": tag, "op": "sitemap"}, {"X-Redamon-Run": other_run})
+    check(f"/traffic/exec with another run's credential -> {status} {code_of(body)}",
+          status == 403 and code_of(body) == "run_credential_ctx_mismatch")
+    status, body = post("/traffic/exec", {"ctx": tag, "op": "sitemap"}, {"X-Redamon-Run": traffic})
+    check(f"/traffic/exec with the same run's credential passes both checks -> {status} {code_of(body)}",
+          status not in (401, 403))
+
 
 async def terminal():
     """HD-18 (E2E-P0-09, terminal half) and redagraph with the connection's credential."""
@@ -92,6 +110,13 @@ async def terminal():
         "CRED": "env | grep -c '^REDAMON_RUN_CREDENTIAL='",
         "TYPES": "redagraph types >/dev/null 2>&1; echo $?",
         "LS": "redagraph ls Domain >/dev/null 2>&1; echo $?",
+        # A copy outside the shell's environment works while the terminal is open (the
+        # residual: any root process of the sandbox can take it); the shell script
+        # presents the same copy again after the close.
+        "COPY": (f"umask 077; printf %s \"$REDAMON_RUN_CREDENTIAL\" > {CRED_FILE}; "  # noqa: F821
+                 f"env -i /usr/bin/curl -s -o /dev/null -w '%{{http_code}}' -H \"X-Redamon-Run: $(cat {CRED_FILE})\" "  # noqa: F821
+                 "-H 'Content-Type: application/json' -d '{\"op\":\"types\",\"user_id\":\"x\",\"project_id\":\"y\"}' "
+                 "\"${REDAMON_AGENT_URL:-http://agent:8080}/graph/exec\""),
     }
     # $((1+1)) so the marker is printed only by the shell, never by the PTY echo of the line.
     line = "; ".join(f"echo RBAC$((1+1)){k}=$({cmd})" for k, cmd in probes.items()) + "\r"
@@ -102,7 +127,7 @@ async def terminal():
             await ws.send(line)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 90
-            while b"RBAC2LS=" not in out and loop.time() < deadline:
+            while b"RBAC2COPY=" not in out and loop.time() < deadline:
                 try:
                     frame = await asyncio.wait_for(ws.recv(), timeout=2)
                 except asyncio.TimeoutError:
@@ -120,6 +145,8 @@ async def terminal():
     check(f"terminal: the shell holds its run credential -> {got.get('CRED')}", got.get("CRED") == "1")
     check(f"terminal: `redagraph types` answers -> exit {got.get('TYPES')}", got.get("TYPES") == "0")
     check(f"terminal: `redagraph ls Domain` answers -> exit {got.get('LS')}", got.get("LS") == "0")
+    check(f"terminal: a copy of the credential works while the terminal is open -> {got.get('COPY')}",
+          got.get("COPY") == "200")
 
 
 routes()
