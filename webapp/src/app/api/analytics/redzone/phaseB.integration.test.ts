@@ -76,8 +76,8 @@ beforeAll(async () => {
     VALUES (${PG_USER_ID}, 'redzone-itest', ${PG_USER_EMAIL}, CURRENT_TIMESTAMP, 'x', 'standard')
     ON CONFLICT (id) DO NOTHING`
   await prisma.$executeRaw`
-    INSERT INTO projects (id, user_id, name, updated_at)
-    VALUES (${PROJECT_ID}, ${PG_USER_ID}, 'redzone-itest', CURRENT_TIMESTAMP)
+    INSERT INTO projects (id, user_id, name, ownership_token, updated_at)
+    VALUES (${PROJECT_ID}, ${PG_USER_ID}, 'redzone-itest', gen_random_uuid()::text, CURRENT_TIMESTAMP)
     ON CONFLICT (id) DO NOTHING`
   const token = await createToken(PG_USER_ID, 'standard')
   authCookie = `${AUTH_COOKIE_NAME}=${token}`

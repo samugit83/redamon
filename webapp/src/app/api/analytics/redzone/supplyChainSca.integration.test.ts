@@ -158,8 +158,8 @@ beforeAll(async () => {
   psql(`INSERT INTO users (id, name, email, updated_at, password, role)
         VALUES ('${PG_USER_ID}', 'sca-itest', '${PG_USER_EMAIL}', CURRENT_TIMESTAMP, 'x', 'standard')
         ON CONFLICT (id) DO NOTHING`)
-  psql(`INSERT INTO projects (id, user_id, name, updated_at)
-        VALUES ('${PROJECT_ID}', '${PG_USER_ID}', 'sca-itest', CURRENT_TIMESTAMP)
+  psql(`INSERT INTO projects (id, user_id, name, ownership_token, updated_at)
+        VALUES ('${PROJECT_ID}', '${PG_USER_ID}', 'sca-itest', gen_random_uuid()::text, CURRENT_TIMESTAMP)
         ON CONFLICT (id) DO NOTHING`)
   const token = await createToken(PG_USER_ID, 'standard')
   authCookie = `${AUTH_COOKIE_NAME}=${token}`
