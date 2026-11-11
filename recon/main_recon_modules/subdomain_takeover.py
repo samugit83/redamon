@@ -1016,7 +1016,21 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
         if len(kept) != len(names):
             print(f"[RoE] Takeover: skipped {len(names) - len(kept)} excluded name(s)")
         names = kept
-    return [n for n in names if n and "." in n]
+    names = {n for n in names if n and "." in n}
+    if excluded and not (recon_data.get("metadata") or {}).get("ip_mode"):
+        from recon.helpers.target_admission import admission_context, admit_targets, known_addresses
+        if admission_context(settings, recon_data).ip_rules:
+            # Subjack and BadDNS resolve each name themselves (and the AI probe
+            # fetches it), so they may land on any address it has: under RoE IP
+            # or CIDR entries a name goes only when every address the run knows
+            # for it is allowed, and one with no known address is refused and
+            # kept as not checked (D2). IP mode keeps only names whose every
+            # address is an RoE-filtered target already.
+            known = known_addresses(recon_data)
+            names = set(admit_targets(settings, recon_data,
+                                      names={n: known.get(n, []) for n in sorted(names)},
+                                      module="takeover", resolves_names=True).names)
+    return list(names)
 
 
 def _collect_alive_urls(recon_data: dict, settings: Optional[dict] = None) -> list[str]:
@@ -1052,6 +1066,12 @@ def _collect_alive_urls(recon_data: dict, settings: Optional[dict] = None) -> li
     if excluded:
         from recon.helpers.roe_scope import _is_roe_excluded
         urls = {u for u in urls if not _is_roe_excluded(u, excluded)}
+        if not (recon_data.get("metadata") or {}).get("ip_mode"):
+            from recon.helpers.target_admission import admission_context, admit_urls
+            if admission_context(settings, recon_data).ip_rules:
+                # Nuclei resolves each URL's host itself: the same address rule
+                # as the names Subjack gets.
+                urls = set(admit_urls(settings, recon_data, sorted(urls), module="takeover")[0])
     return sorted(urls)
 
 
