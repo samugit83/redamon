@@ -20,7 +20,7 @@ mode rule can live inside ``admit_targets`` beside the RoE one.
 
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit
 
 from recon.helpers.roe_scope import _is_network, _is_roe_excluded, _normalize_scope_entry
@@ -240,6 +240,41 @@ def admit_ip_map(settings: Optional[Mapping], recon_data: Optional[Mapping],
         if names:
             kept_map[ip] = names
     return kept_ips, kept_map, adm
+
+
+def admit_host_targets(settings: Optional[Mapping], recon_data: Optional[Mapping],
+                       ips: Set[str], hostnames: Set[str], ip_to_hostnames: Dict[str, List[str]], *,
+                       module: str, resolves_names: bool = True,
+                       record: bool = True) -> Tuple[Set[str], Set[str], Dict[str, List[str]]]:
+    """The ``(ips, hostnames, ip_to_hostnames)`` triple the DNS target
+    extractors return, admitted.
+
+    ``hostnames`` keeps the names a tool may resolve itself; ``ips`` every
+    admitted address, a mixed name's allowed ones included; the map loses the
+    refused names and addresses. Inert: the inputs come back as they are.
+    """
+    ctx = admission_context(settings, recon_data)
+    if not ctx.active:
+        return ips, hostnames, ip_to_hostnames
+    by_name: Dict[str, List[str]] = {h: [] for h in sorted(hostnames)}
+    for ip, names in (ip_to_hostnames or {}).items():
+        for name in names if isinstance(names, list) else [names]:
+            if isinstance(name, str) and name:
+                by_name.setdefault(name, []).append(ip)
+    bare = [ip for ip in sorted(ips) if not (ip_to_hostnames or {}).get(ip)]
+    adm = admit_targets(settings, recon_data, names=by_name, ips=bare, module=module,
+                        resolves_names=resolves_names, record=record)
+    admitted = set(adm.addresses())
+    holders = adm.ip_to_names()
+    kept_map: Dict[str, List[str]] = {}
+    for ip, names in (ip_to_hostnames or {}).items():
+        if ip in admitted:
+            kept = [h for h in (names if isinstance(names, list) else [names]) if h in holders.get(ip, ())]
+            if kept:
+                kept_map[ip] = kept
+    return ({ip for ip in ips if ip in admitted},
+            {h for h in hostnames if h in adm.names},
+            kept_map)
 
 
 def admit_urls(settings: Optional[Mapping], recon_data: Optional[Mapping], urls: List[str], *,

@@ -25,6 +25,7 @@ from recon.helpers.target_admission import (  # noqa: E402
     REASON_ROE_EXCLUDED,
     REASON_ROE_UNRESOLVED,
     admission_context,
+    admit_host_targets,
     admit_ip_map,
     admit_targets,
     admit_urls,
@@ -79,10 +80,13 @@ def test_no_exclusion_hands_back_the_same_objects_and_records_nothing(settings, 
     ip_map = {"192.0.2.6": ["www.example.com"], "198.51.100.20": ["pay.example.com"]}
     urls = ["https://pay.example.com", "http://198.51.100.20:8080", "http://new.example.com"]
 
+    names = {"www.example.com", "pay.example.com", "new.example.com"}
     got_ips, got_map, _ = admit_ip_map(settings, {}, ips, ip_map, module="masscan")
     got_urls, adm = admit_urls(settings, {}, urls, module="httpx")
+    triple = admit_host_targets(settings, {}, set(ips), names, ip_map, module="dns_targets")
 
     assert got_ips is ips and got_map is ip_map and got_urls is urls
+    assert triple[1] is names and triple[2] is ip_map
     assert adm.refusals == []
     assert capsys.readouterr().out == ""
     assert _gaps() == []
@@ -251,3 +255,22 @@ def test_urls_with_host_entries_only_keep_unresolved_names():
     urls = ["http://txt.example.com", "https://mixed.example.com"]
     got, adm = admit_urls(_settings(["pay.example.com"]), _recon(), urls, module="httpx")
     assert got == urls and adm.refusals == []
+
+
+def test_host_triple_keeps_only_names_a_tool_may_resolve_and_every_admitted_address():
+    ips = {"192.0.2.1", "192.0.2.6", "198.51.100.20", "198.51.100.21", "192.0.2.7", "192.0.2.40"}
+    names = {"example.com", "www.example.com", "legacy.example.com", "mixed.example.com",
+             "txt.example.com"}
+    ip_map = {"192.0.2.1": ["example.com"], "192.0.2.6": ["www.example.com"],
+              "198.51.100.20": ["legacy.example.com"],
+              "198.51.100.21": ["mixed.example.com"], "192.0.2.7": ["mixed.example.com"],
+              "192.0.2.40": ["norecords.example.com"]}   # mapped, but not a hostname
+    got_ips, got_names, got_map = admit_host_targets(
+        _settings(["198.51.100.0/24"]), {}, ips, names, ip_map, module="dns_targets")
+
+    assert got_names == {"example.com", "www.example.com"}
+    assert got_ips == {"192.0.2.1", "192.0.2.6", "192.0.2.7", "192.0.2.40"}
+    assert got_map == {"192.0.2.1": ["example.com"], "192.0.2.6": ["www.example.com"],
+                       "192.0.2.7": ["mixed.example.com"],
+                       "192.0.2.40": ["norecords.example.com"]}
+    assert "txt.example.com" in circuit_breaker.coverage_report().skipped_hostnames()
