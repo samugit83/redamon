@@ -4214,7 +4214,7 @@ The agent's billed-LLM REST endpoints - `/llm/ffuf-extensions`, `/llm/nuclei-tag
 
 The endpoint controls remain:
 
-- **Auth**: constant-time (`hmac.compare_digest`) `X-Internal-Key`. The scan containers' `/llm/*` and `/jev/*` take the master `INTERNAL_API_KEY`, or the scoped `SCANNER_API_KEY` together with the scan's job credential (`X-Redamon-Job`, `require_master_or_job_credential`, RBAC step 1.16): the route then acts for the credential's tenant and project and refuses a body naming anyone else. They fail closed (503) without a configured master key; the other billed routes take the master key only.
+- **Auth**: constant-time (`hmac.compare_digest`) `X-Internal-Key`. The scan containers' `/llm/*` and `/jev/*` take the master `INTERNAL_API_KEY`, or the scoped `SCANNER_API_KEY` together with the scan's job credential (`X-Redamon-Job`, `require_master_or_job_credential`, RBAC step 1.16): the route then acts for the credential's tenant and project and refuses a body naming anyone else, and asks the webapp on every call whether that project still exists and belongs to the tenant (403 `job_credential_project_gone`; 503 `job_credential_project_unverifiable` when the webapp cannot say). They fail closed (503) without a configured master key; the other billed routes take the master key only.
 - **Rate limit**: a stdlib token bucket keyed by `(user_id, source-ip)` (`LLM_GUARD_RATE_CAPACITY`, `LLM_GUARD_RATE_REFILL_PER_SEC`).
 - **Spend cap**: a per-user rolling daily call ceiling (`LLM_GUARD_DAILY_CALL_CAP`), returning 429 when exceeded.
 
