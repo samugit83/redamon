@@ -248,6 +248,10 @@ def _broker():
     return SimpleNamespace(run_scope=run_scope)
 
 
+# A wait that a broken guard would make endless fails the test instead.
+BOUND_S = 10
+
+
 class RunAdmission(_FreshGuard):
     """The guard at run start, through the orchestrator's streaming entry point."""
 
@@ -278,12 +282,14 @@ class RunAdmission(_FreshGuard):
             graph_a = _Graph()
             run_a, _ = self._owner_run(orch, "owner-a", [SRV_A], graph_a)
             task_a = asyncio.create_task(run_a)
-            await graph_a.started.wait()
+            await asyncio.wait_for(graph_a.started.wait(), BOUND_S)
             run_b, cb_b = self._owner_run(orch, "owner-b", [SRV_B], _Graph())
-            with self.assertLogs("mcp_toolset_guard", "WARNING") as logs:
-                resp_b = await run_b
-            graph_a.release.set()
-            await task_a
+            try:
+                with self.assertLogs("mcp_toolset_guard", "WARNING") as logs:
+                    resp_b = await asyncio.wait_for(run_b, BOUND_S)
+            finally:
+                graph_a.release.set()
+                await asyncio.wait_for(task_a, BOUND_S)
             return resp_b, cb_b, logs
 
         resp_b, cb_b, logs = asyncio.run(main())
@@ -302,7 +308,7 @@ class RunAdmission(_FreshGuard):
             graph = _Graph()
             graph.release.set()
             run, cb = self._owner_run(orch, "owner-a", [SRV_A], graph)
-            await run
+            await asyncio.wait_for(run, BOUND_S)
             await asyncio.sleep(0)
             return cb
 
@@ -322,11 +328,11 @@ class RunAdmission(_FreshGuard):
 
         async def main():
             run_a, cb_a = self._owner_run(orch, "owner-a", [SRV_A], Boom())
-            await run_a
+            await asyncio.wait_for(run_a, BOUND_S)
             graph_b = _Graph()
             graph_b.release.set()
             run_b, cb_b = self._owner_run(orch, "owner-b", [SRV_B], graph_b)
-            await run_b
+            await asyncio.wait_for(run_b, BOUND_S)
             return cb_a, cb_b
 
         cb_a, cb_b = asyncio.run(main())
