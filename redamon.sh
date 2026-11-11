@@ -2682,8 +2682,10 @@ _admin_exists() {
 # Collect the admin details and upsert via create-admin.mjs. Non-interactive when
 # ADMIN_NAME/ADMIN_EMAIL/ADMIN_PASSWORD are all present in the environment (mirrors
 # the single-host deploy path); otherwise prompts on the controlling terminal.
-# create-admin.mjs upserts on email: a matching email RESETS that admin's
-# password, a new email adds another admin — so re-running is safe.
+# create-admin.mjs: a new email adds an admin; an existing admin's email resets
+# its password and revokes its MCP tokens (the unchanged password changes
+# nothing), so re-running is safe; a member's email is refused (exit 3) unless
+# FORCE_PROMOTE=1 is set, which is passed through to promote it on purpose.
 _prompt_and_create_admin() {
     local a_name="${ADMIN_NAME:-}" a_email="${ADMIN_EMAIL:-}" a_pass="${ADMIN_PASSWORD:-}" a_pass2=""
     if [[ -n "$a_name" && -n "$a_email" && -n "$a_pass" ]]; then
@@ -2717,11 +2719,23 @@ _prompt_and_create_admin() {
             break
         done
     fi
-    docker compose exec -T \
-        -e "ADMIN_NAME=$a_name" \
-        -e "ADMIN_EMAIL=$a_email" \
-        -e "ADMIN_PASSWORD=$a_pass" \
-        webapp node scripts/create-admin.mjs
+    local -a exec_env=(-e "ADMIN_NAME=$a_name" -e "ADMIN_EMAIL=$a_email" -e "ADMIN_PASSWORD=$a_pass")
+    if [[ -n "${FORCE_PROMOTE:-}" ]]; then
+        exec_env+=(-e "FORCE_PROMOTE=$FORCE_PROMOTE")
+    fi
+    # Captured, not left to `set -e`: ensure_admin runs this inside install/update/up,
+    # and a refused promotion must not end them.
+    local rc=0
+    docker compose exec -T "${exec_env[@]}" webapp node scripts/create-admin.mjs || rc=$?
+    if [[ $rc -eq 3 ]]; then
+        warn "No admin was created: ${a_email} belongs to an existing member account."
+        warn "To make that member an admin, re-run: FORCE_PROMOTE=1 ./redamon.sh create-admin"
+        echo ""
+        return 0
+    elif [[ $rc -ne 0 ]]; then
+        error "create-admin.mjs failed (exit $rc)."
+        exit "$rc"
+    fi
     success "Admin user ready."
     echo ""
 }
@@ -2745,8 +2759,9 @@ ensure_admin() {
 }
 
 # Standalone admin (re)creation — the reliable path when the automatic prompt was
-# skipped (slow first boot) or the admin password was lost. Safe to re-run: it
-# upserts on email (matching email resets the password; new email adds an admin).
+# skipped (slow first boot) or the admin password was lost. Safe to re-run: an
+# admin's email resets its password, a new email adds an admin, and a member's
+# email is refused unless FORCE_PROMOTE=1.
 cmd_create_admin() {
     print_banner
     check_prerequisites
@@ -2757,10 +2772,11 @@ cmd_create_admin() {
     fi
     if _admin_exists; then
         warn "An admin user already exists."
-        warn "Continuing will ADD a new admin, or RESET the password if you reuse an existing admin's email."
+        warn "Continuing will ADD a new admin, or RESET the password (and revoke the MCP tokens) if you reuse an existing admin's email."
     else
         info "No admin user found yet — let's create one."
     fi
+    info "A member's email is refused; to promote that member on purpose, run: FORCE_PROMOTE=1 ./redamon.sh create-admin"
     echo ""
     _prompt_and_create_admin
 }

@@ -3,7 +3,9 @@
 # Test suite for the admin-account creation logic in redamon.sh (issue #156).
 #   - _wait_for_webapp        -> returns 0 when healthy, 1 on timeout (no dead-end)
 #   - _admin_exists           -> parses check-admin.mjs count robustly
-#   - _prompt_and_create_admin-> non-interactive env path + min-length gate
+#   - _prompt_and_create_admin-> non-interactive env path + min-length gate,
+#                                FORCE_PROMOTE pass-through, exit-3 refusal
+#                                that does not abort the caller
 #   - ensure_admin            -> actionable skip message (points at create-admin)
 #   - cmd_create_admin        -> standalone recovery command (upsert = safe re-run)
 #   - dispatch + help wiring   for `create-admin`
@@ -79,6 +81,48 @@ assert_true "explains the minimum length"           "echo \"\$out\" | grep -qi '
 assert_false "did NOT reach create-admin.mjs"       "echo \"\$out\" | grep -q 'Admin user ready'"
 unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD
 
+echo "== _prompt_and_create_admin: FORCE_PROMOTE reaches create-admin.mjs only when set =="
+CAPFILE="$(mktemp)"
+docker() { echo "$*" > "$CAPFILE"; return 0; }
+unset FORCE_PROMOTE
+ADMIN_NAME="Alice" ADMIN_EMAIL="alice@example.com" ADMIN_PASSWORD="supersecret123" \
+  out="$(_prompt_and_create_admin 2>&1)"; rc=$?
+assert_eq    "without FORCE_PROMOTE the call succeeds"   "$rc" "0"
+assert_false "without FORCE_PROMOTE nothing is forwarded" "grep -q 'FORCE_PROMOTE' '$CAPFILE'"
+FORCE_PROMOTE=1 ADMIN_NAME="Alice" ADMIN_EMAIL="alice@example.com" ADMIN_PASSWORD="supersecret123" \
+  out="$(_prompt_and_create_admin 2>&1)"; rc=$?
+assert_eq    "with FORCE_PROMOTE=1 the call succeeds"    "$rc" "0"
+assert_true  "forwards FORCE_PROMOTE=1 with exec -e"     "grep -q -- '-e FORCE_PROMOTE=1 ' '$CAPFILE'"
+assert_true  "still forwards the admin's email"          "grep -q 'ADMIN_EMAIL=alice@example.com' '$CAPFILE'"
+rm -f "$CAPFILE"; unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD FORCE_PROMOTE
+
+echo "== _prompt_and_create_admin: exit 3 prints the refusal and redamon.sh does not abort =="
+# create-admin.mjs exits 3 when the email belongs to a member and FORCE_PROMOTE is
+# not set. Under redamon.sh's `set -e` a bare non-zero exec ended install/update/up
+# (ensure_admin calls this) right there; the caller must go on, told how to promote.
+docker() {
+    echo 'REFUSED: "bob@example.com": account exists as a member; set FORCE_PROMOTE=1 to promote it. Nothing was changed.' >&2
+    return 3
+}
+ADMIN_NAME="Bob" ADMIN_EMAIL="bob@example.com" ADMIN_PASSWORD="supersecret123" \
+  out="$( (set -e; _prompt_and_create_admin; echo '[caller continued]') 2>&1 )"; rc=$?
+assert_eq    "a refusal does not fail the caller"         "$rc" "0"
+assert_true  "the caller goes on under set -e"            "echo \"\$out\" | grep -qF '[caller continued]'"
+assert_true  "the script's refusal reaches the operator"  "echo \"\$out\" | grep -q 'account exists as a member'"
+assert_true  "redamon.sh says how to promote on purpose"  "echo \"\$out\" | grep -qF 'FORCE_PROMOTE=1 ./redamon.sh create-admin'"
+assert_false "no false 'Admin user ready'"                "echo \"\$out\" | grep -q 'Admin user ready'"
+unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD
+
+echo "== _prompt_and_create_admin: any other failure still stops, with a message =="
+docker() { echo 'ERROR: Failed to create admin user: connection refused' >&2; return 1; }
+ADMIN_NAME="Bob" ADMIN_EMAIL="bob@example.com" ADMIN_PASSWORD="supersecret123" \
+  out="$( (set -e; _prompt_and_create_admin; echo '[caller continued]') 2>&1 )"; rc=$?
+assert_eq    "the script's exit code is kept"             "$rc" "1"
+assert_false "the caller does not go on"                  "echo \"\$out\" | grep -qF '[caller continued]'"
+assert_true  "redamon.sh names the failed script"         "echo \"\$out\" | grep -q 'create-admin.mjs failed'"
+assert_false "no false 'Admin user ready'"                "echo \"\$out\" | grep -q 'Admin user ready'"
+unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD
+
 echo "== ensure_admin: webapp never ready -> actionable skip (points at create-admin) =="
 docker() { return 1; }   # health probe never succeeds -> _wait_for_webapp fails
 out="$(ensure_admin 2>&1)"; rc=$?
@@ -99,6 +143,19 @@ assert_eq   "cmd_create_admin succeeds"              "$rc" "0"
 assert_true "warns an admin already exists"          "echo \"\$out\" | grep -qi 'admin user already exists'"
 assert_true "explains add-new-or-reset semantics"    "echo \"\$out\" | grep -qiE 'reset|add a new'"
 assert_true "still proceeds to the prompt"           "echo \"\$out\" | grep -q '\[prompt ran\]'"
+unset -f print_banner check_prerequisites _wait_for_webapp _admin_exists _prompt_and_create_admin
+
+echo "== cmd_create_admin: says a member's email needs FORCE_PROMOTE, admin or not =="
+print_banner() { :; }
+check_prerequisites() { :; }
+_wait_for_webapp() { return 0; }
+_prompt_and_create_admin() { echo "[prompt ran]"; }
+for exists in 0 1; do
+    _admin_exists() { return "$exists"; }
+    out="$(cmd_create_admin 2>&1)"
+    assert_true "admin exists=$((1 - exists)): names FORCE_PROMOTE=1 before the prompt" \
+        "echo \"\$out\" | grep -q 'FORCE_PROMOTE=1'"
+done
 unset -f print_banner check_prerequisites _wait_for_webapp _admin_exists _prompt_and_create_admin
 
 echo "== cmd_create_admin: webapp down -> clear error, non-zero exit =="
