@@ -329,8 +329,6 @@ These are libraries and frameworks used to build RedAmon's own web application, 
 | **tree-sitter-languages** | Pre-built Tree-sitter language grammars | MIT | https://github.com/grantjenks/py-tree-sitter-languages | `agentic/requirements.txt` |
 | **mmh3** | MurmurHash3 bindings (favicon hashing for AI-frontend product detection) | MIT | https://github.com/hajimes/mmh3 | `recon/requirements.txt` (used by `recon/helpers/ai_signal_catalog.py`) |
 | **yara-python** | YARA bindings — static MCP tool-poisoning rules (deterministic, no LLM) in AI Surface Recon | Apache-2.0 | https://github.com/VirusTotal/yara-python | `recon/requirements.txt` (lazy-imported by `recon/main_recon_modules/ai_surface_recon.py`) |
-| **prance** | OpenAPI/Swagger `$ref`-resolving parser for AI Surface Recon OpenAPI discovery | MIT | https://github.com/RonnyPfannschmidt/prance | `recon/requirements.txt` (lazy-imported) |
-| **openapi-spec-validator** | OpenAPI 2.0/3.0/3.1 validation backend for prance | Apache-2.0 | https://github.com/python-openapi/openapi-spec-validator | `recon/requirements.txt` |
 | **jq.py** | Python bindings for jq (Julius probe-pack `models.extract` expressions); bundles libjq | BSD-2-Clause | https://github.com/mwilliamson/jq.py | `recon/requirements.txt` (lazy-imported) |
 | **markdownify** | HTML to Markdown converter (Tradecraft Lookup curated-resource crawl) | MIT | https://github.com/matthewwithanm/python-markdownify | `agentic/requirements.txt` |
 | **pypdf** | Pure-Python PDF text extraction (Tradecraft Lookup) | BSD-3-Clause | https://github.com/py-pdf/pypdf | `agentic/requirements.txt` |
