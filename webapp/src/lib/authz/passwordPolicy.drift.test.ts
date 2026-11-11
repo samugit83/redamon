@@ -1,8 +1,9 @@
 /**
  * The 12-character floor is written in more than one place because the host
  * scripts cannot import TypeScript: the standalone image copies `scripts/` as
- * plain .mjs (webapp/Dockerfile), and redamon.sh is bash. This test fails the
- * moment one of the copies drifts from passwordPolicy.ts.
+ * plain .mjs (webapp/Dockerfile), and redamon.sh and the single-host deploy.sh
+ * are bash. This test fails the moment one of the copies drifts from
+ * passwordPolicy.ts.
  *
  * @vitest-environment node
  */
@@ -29,7 +30,10 @@ describe('the password floor has one value everywhere', () => {
     expect(src).toContain('src/lib/authz/passwordPolicy.ts')
   })
 
-  test('redamon.sh MIN_ADMIN_PASSWORD_LEN', () => {
-    expect(onlyNumber(repoFile('redamon.sh'), /^MIN_ADMIN_PASSWORD_LEN=(\d+)$/gm, 'redamon.sh')).toBe(MIN_PASSWORD_LENGTH)
+  test.each(['redamon.sh', 'tooling/deploy/single-host/deploy.sh'])('%s MIN_ADMIN_PASSWORD_LEN', (rel) => {
+    const src = repoFile(rel)
+    expect(onlyNumber(src, /^MIN_ADMIN_PASSWORD_LEN=(\d+)$/gm, rel)).toBe(MIN_PASSWORD_LENGTH)
+    // The check compares against the variable, never a second literal.
+    expect(src).toMatch(/-ge \$\{?MIN_ADMIN_PASSWORD_LEN\}?/)
   })
 })

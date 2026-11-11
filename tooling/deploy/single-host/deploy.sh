@@ -182,6 +182,10 @@ CSP_CONNECT="${WS_SCHEME}://${PUBLIC_HOST}"
 WEBAPP_NODE_ENV="production"
 NEED_CERTBOT=false; [[ "${TLS_MODE}" == "letsencrypt" ]] && NEED_CERTBOT=true
 
+# The webapp's password floor (webapp/src/lib/authz/passwordPolicy.ts), also
+# redamon.sh's; passwordPolicy.drift.test.ts keeps the copies equal.
+MIN_ADMIN_PASSWORD_LEN=12
+
 # ------------------------------------------------------------------ local preflight validation
 preflight_validate() {
   hr "Local preflight"
@@ -249,7 +253,10 @@ preflight_validate() {
   if [[ "${MODE}" == "init" ]]; then
     [[ -n "${ADMIN_NAME}" && -n "${ADMIN_EMAIL}" && -n "${ADMIN_PASSWORD}" ]] \
       || die "init requires ADMIN_NAME, ADMIN_EMAIL and ADMIN_PASSWORD in .env (the first admin is created automatically)"
-    [[ ${#ADMIN_PASSWORD} -ge 8 ]] || warn "ADMIN_PASSWORD is short; there is no app-layer login lockout (nginx limit_req is the only brake)"
+    # Refused, not warned: the admin is created from this value, and the webapp
+    # refuses the same password when it is set through the UI.
+    [[ ${#ADMIN_PASSWORD} -ge ${MIN_ADMIN_PASSWORD_LEN} ]] \
+      || die "ADMIN_PASSWORD must be at least ${MIN_ADMIN_PASSWORD_LEN} characters (the webapp's password floor)"
   fi
   ok "Preflight passed (ACCESS_MODE=${ACCESS_MODE}, TLS_MODE=${TLS_MODE}, host=${HOST_IP}, user=${REMOTE_USER})"
 }
