@@ -80,6 +80,16 @@ class PortMixin:
         - Updates IP nodes with CDN information
         - Relationships: IP -[:HAS_PORT]-> Port, Port -[:RUNS_SERVICE]-> Service
 
+        It never lowers what it did not measure (D5). A full run clears the
+        assets first, so there it sets exactly what the scanner reported; a
+        partial run, or a later write in the same run, lands on nodes other
+        tools already tagged. So IP.is_cdn only ever goes up and the first
+        cdn_name stays, and Port.passive_only goes false only for a port the
+        caller saw itself: a port detail that carries a passive_only other
+        than false (port data rebuilt from the graph: true, or null on a Port
+        from before the mark) is none. A detail's own `ip` names the address
+        the port is on, for a host whose addresses have different ports.
+
         Args:
             recon_data: The recon JSON data containing port_scan results
             user_id: User identifier for multi-tenant isolation
@@ -122,13 +132,14 @@ class PortMixin:
 
                     # Update IP node with CDN info if available
                     cdn_name = ip_info.get("cdn")
-                    is_cdn = ip_info.get("is_cdn", False)
+                    # A bool, never None: `false OR null` is null, which would drop a stored true.
+                    is_cdn = bool(ip_info.get("is_cdn"))
 
                     session.run(
                         """
                         MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                        SET i.is_cdn = $is_cdn,
-                            i.cdn_name = $cdn_name,
+                        SET i.is_cdn = coalesce(i.is_cdn, false) OR $is_cdn,
+                            i.cdn_name = coalesce(i.cdn_name, $cdn_name),
                             i.updated_at = datetime()
                         """,
                         address=ip_addr, user_id=user_id, project_id=project_id,
@@ -141,32 +152,34 @@ class PortMixin:
 
             # Process by_host data - this gives us hostname -> port details with services
             for hostname, host_info in by_host.items():
-                ip_addr = host_info.get("ip")
+                host_ip = host_info.get("ip")
                 port_details = host_info.get("port_details", [])
                 cdn_name = host_info.get("cdn")
-                is_cdn = host_info.get("is_cdn", False)
+                is_cdn = bool(host_info.get("is_cdn"))
 
                 # Update IP node with CDN info (if not already done)
-                if ip_addr:
+                if host_ip:
                     try:
                         session.run(
                             """
                             MERGE (i:IP {address: $address, user_id: $user_id, project_id: $project_id})
-                            SET i.is_cdn = $is_cdn,
-                                i.cdn_name = $cdn_name,
+                            SET i.is_cdn = coalesce(i.is_cdn, false) OR $is_cdn,
+                                i.cdn_name = coalesce(i.cdn_name, $cdn_name),
                                 i.updated_at = datetime()
                             """,
-                            address=ip_addr, user_id=user_id, project_id=project_id,
+                            address=host_ip, user_id=user_id, project_id=project_id,
                             is_cdn=is_cdn, cdn_name=cdn_name
                         )
                     except Exception as e:
-                        stats["errors"].append(f"IP {ip_addr} update failed: {e}")
+                        stats["errors"].append(f"IP {host_ip} update failed: {e}")
 
                 # Create Port and Service nodes
                 for port_info in port_details:
                     port_number = port_info.get("port")
                     protocol = port_info.get("protocol", "tcp")
                     service_name = port_info.get("service")
+                    ip_addr = port_info.get("ip") or host_ip
+                    active = port_info.get("passive_only", False) is False
 
                     if not port_number:
                         continue
@@ -178,11 +191,12 @@ class PortMixin:
                             """
                             MERGE (p:Port {number: $port_number, protocol: $protocol, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
                             SET p.state = 'open',
-                                p.passive_only = false,
                                 p.updated_at = datetime()
+                            WITH p WHERE $active
+                            SET p.passive_only = false
                             """,
                             port_number=port_number, protocol=protocol, ip_addr=ip_addr,
-                            user_id=user_id, project_id=project_id
+                            active=active, user_id=user_id, project_id=project_id
                         )
                         stats["ports_created"] += 1
 
