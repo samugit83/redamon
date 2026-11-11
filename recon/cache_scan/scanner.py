@@ -159,7 +159,7 @@ def _collect_target_urls(combined_result: dict, settings: dict) -> list[str]:
     """Reuse the shared Nuclei target-builder, then apply RoE host filtering."""
     from recon.helpers.target_helpers import extract_targets_from_recon, build_target_urls
 
-    ips, hostnames, _ = extract_targets_from_recon(combined_result)
+    ips, hostnames, _ = extract_targets_from_recon(combined_result, settings)
     urls = build_target_urls(hostnames, ips, combined_result, scan_all_ips=False)
 
     excluded = _roe_excluded_hosts(combined_result, settings)

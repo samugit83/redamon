@@ -89,7 +89,7 @@ def _scans(combined_result: dict, settings: dict) -> list[_Scan]:
     masscan_only = meta.get("scanner") == "masscan"
 
     if port_scan and not masscan_only and not meta.get("passive_mode"):
-        ips = set(extract_targets_from_recon(combined_result)[0])
+        ips = set(extract_targets_from_recon(combined_result, settings)[0])
         if meta.get("cdn_exclusion"):
             # naabu -exclude-cdn probes a CDN IP on 80 and 443 only.
             ips -= collect_cdn_ips(combined_result)
@@ -102,7 +102,7 @@ def _scans(combined_result: dict, settings: dict) -> list[_Scan]:
         # An exclusion list leaves IPs unprobed that this cannot tell apart.
         ports = (None if (settings or {}).get("MASSCAN_EXCLUDE_TARGETS")
                  else ports_from_config(mmeta.get("ports_config")))
-        scans.append(_Scan(frozenset(resolve_targets_to_ips(combined_result)[0]), ports,
+        scans.append(_Scan(frozenset(resolve_targets_to_ips(combined_result, settings)[0]), ports,
                            _open_by_ip(masscan)))
     return scans
 

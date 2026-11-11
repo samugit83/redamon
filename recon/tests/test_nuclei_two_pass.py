@@ -397,7 +397,7 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
     def _patch_pipeline(self, target_urls=None):
         target_urls = target_urls or ["https://example.com"]
 
-        def _stub_extract_targets(recon_data):
+        def _stub_extract_targets(recon_data, *_a, **_k):
             return ([], ["example.com"], {})
 
         def _stub_build_target_urls(hostnames, ips, recon_data, scan_all_ips=False):

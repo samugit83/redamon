@@ -131,7 +131,7 @@ def run_katana(config: dict) -> None:
     #   - Custom URLs already merged into http_probe.by_url upstream
     # Replaces the old "BaseURLs only" logic where freshly-discovered subdomains
     # were silently dropped until httpx ran again.
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
 
     # target_domains is the unique-host set Katana needs for in-scope filtering.
@@ -398,7 +398,7 @@ def run_hakrawler(config: dict) -> None:
 
     # Union target-builder (see Katana for full rationale): BaseURLs ∪ uncovered
     # Subdomains ∪ user URLs, deduplicated. Uncovered subs get both schemes.
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
 
     target_domains = set()
@@ -706,7 +706,7 @@ def run_zap_ajax_spider_partial(config: dict) -> None:
                     "content_type": "text/html",
                 }
 
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
 
     target_domains = set()
@@ -1026,7 +1026,7 @@ def run_ffuf(config: dict) -> None:
     # Union target-builder: BaseURLs ∪ uncovered Subdomains ∪ user URLs (see
     # Katana for full rationale). New subs get both schemes; httpx-covered hosts
     # keep only the verified scheme.
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
 
     target_domains = set()

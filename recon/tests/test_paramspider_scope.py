@@ -87,7 +87,7 @@ def nuclei(monkeypatch):
     monkeypatch.setattr(vs, "is_docker_running", lambda: True)
     monkeypatch.setattr(vs, "pull_nuclei_docker_image", lambda image: True)
     monkeypatch.setattr(vs, "ensure_templates_volume", lambda image, auto: True)
-    monkeypatch.setattr(vs, "extract_targets_from_recon", lambda rd: ([], [HOST], {}))
+    monkeypatch.setattr(vs, "extract_targets_from_recon", lambda rd, *_a, **_k: ([], [HOST], {}))
     monkeypatch.setattr(vs, "build_target_urls",
                         lambda h, i, rd, scan_all_ips=False: [f"https://{HOST}"])
     monkeypatch.setattr(vs, "set_fp_ai_ctx", lambda **kw: None)

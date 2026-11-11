@@ -686,7 +686,7 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
     #      by source 1 — catches new subdomains discovered after httpx ran.
     # Replaces the old cascade where the subdomain fallback was skipped entirely
     # whenever httpx returned even a single URL.
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(
         hostnames, ips, recon_data, scan_all_ips=False
     )

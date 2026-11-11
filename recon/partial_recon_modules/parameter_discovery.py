@@ -286,7 +286,7 @@ def run_kiterunner(config: dict) -> None:
     # Union target-builder: BaseURLs ∪ uncovered Subdomains ∪ user URLs.
     # New subdomains get http(s)://<sub> fallback; httpx-covered hosts keep
     # only the verified scheme.
-    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    ips, hostnames, _ = extract_targets_from_recon(recon_data, settings)
     target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
 
     target_domains = set()

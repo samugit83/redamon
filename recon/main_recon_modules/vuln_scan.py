@@ -564,7 +564,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         print(f"[*][Nuclei] Templates Available: ~{template_count}")
 
         # Extract targets
-        ips, hostnames, ip_to_hostnames = extract_targets_from_recon(recon_data)
+        ips, hostnames, ip_to_hostnames = extract_targets_from_recon(recon_data, settings)
 
         if not hostnames and not ips:
             # Not degraded: this run resolved no host at all, which every other

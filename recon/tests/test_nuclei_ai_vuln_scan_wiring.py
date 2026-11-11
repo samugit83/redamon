@@ -90,7 +90,7 @@ def _pipeline_patches(target_urls=None):
         patch("recon.main_recon_modules.vuln_scan.pull_nuclei_docker_image", return_value=None),
         patch("recon.main_recon_modules.vuln_scan.ensure_templates_volume", return_value=True),
         patch("recon.main_recon_modules.vuln_scan.extract_targets_from_recon",
-              side_effect=lambda rd: ([], ["example.com"], {})),
+              side_effect=lambda rd, *_a, **_k: ([], ["example.com"], {})),
         patch("recon.main_recon_modules.vuln_scan.build_target_urls",
               side_effect=lambda h, i, r, scan_all_ips=False: target_urls),
     ]

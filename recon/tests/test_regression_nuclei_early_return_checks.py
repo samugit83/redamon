@@ -63,7 +63,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(vs, "is_docker_running", lambda: True)
     monkeypatch.setattr(vs, "pull_nuclei_docker_image", lambda image: True)
     monkeypatch.setattr(vs, "ensure_templates_volume", lambda image, auto: True)
-    monkeypatch.setattr(vs, "extract_targets_from_recon", lambda rd: calls["targets"])
+    monkeypatch.setattr(vs, "extract_targets_from_recon", lambda rd, *_a, **_k: calls["targets"])
     monkeypatch.setattr(vs, "build_target_urls",
                         lambda h, i, rd, scan_all_ips=False: ["https://www.example.com"])
     monkeypatch.setattr(vs, "set_fp_ai_ctx", lambda **kw: None)
