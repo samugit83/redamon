@@ -7,9 +7,18 @@
  */
 import { test, expect, beforeEach, vi } from 'vitest'
 
-const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, session: null as unknown, effective: '', audits: [] as Record<string, unknown>[] }))
+const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, session: null as unknown, effective: '', managed: new Set<string>(), audits: [] as Record<string, unknown>[] }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', () => ({ getSession: async () => h.session, getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null) }))
+// The account write rule (HD-23) over the session double: an admin acting as the owner
+// writes a user scope only while the owner is a passwordless managed account (h.managed).
+vi.mock('@/lib/session', async () => {
+  const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
+  return {
+    getSession: async () => h.session,
+    getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
+    requireAccountWrite: accountWriteDouble(() => h),
+  }
+})
 vi.mock('@/lib/agentFetch', () => {
   class AgentUnreachableError extends Error {}
   return { AgentUnreachableError, agentFetch: async () => new Response('{}', { status: 404 }) }
@@ -43,6 +52,7 @@ beforeEach(() => {
   seedWorld(db)
   h.session = { userId: 'alice', role: 'standard' }
   h.effective = 'alice'
+  h.managed = new Set()
   h.audits = []
 })
 
@@ -96,10 +106,11 @@ test('a project reset the caller owns clears it', async () => {
   expect(db.rows('pluginOverride').find((r) => r.changeSetId === cs)!.status).toBe('cleared')
 })
 
-test('an admin acting as the owner can reset; the audit actor is the admin', async () => {
+test('an admin acting as the owner, a passwordless managed account, can reset; the audit actor is the admin', async () => {
   const cs = await activeUserVersion()
   h.session = { userId: 'admin-1', role: 'admin' }
   h.effective = 'alice'
+  h.managed = new Set(['alice'])
   const res = await reset({ point: 'skill.text', group: 'ssrf', scopeType: 'user', scopeOwnerId: 'alice' })
   expect(res.status).toBe(200)
   expect(db.rows('pluginOverride').find((r) => r.changeSetId === cs)!.status).toBe('cleared')

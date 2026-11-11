@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { readJsonBody } from '@/lib/jsonBody'
 import { getEffectiveUser, getSession } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
-import { bodyOwnerMatches, ownsScope } from '@/lib/plugins/changeSetAccess'
+import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -19,7 +19,9 @@ import { auditActorFor, userSkillErrorResponse } from '@/lib/userSkillWrites'
 /**
  * POST /api/plugins/overrides/change-sets/[id]/approve: make a proposed version active
  * (design §6; OQ-08). The scope owner (or an admin acting as them) only; a user scope carries
- * `scopeOwnerId`, which must equal the effective user (the act-as cookie is site-wide; RV-33).
+ * `scopeOwnerId`, which must equal the effective user (the act-as cookie is site-wide; RV-33),
+ * and follows the account write rule: an admin acting as a member who can sign in is refused,
+ * one acting as a passwordless managed account is not (HD-23, OQ-49).
  *
  * The factory hashes AND texts come from the agent registry WITHOUT its cache, and the set is
  * re-validated by the agent's batch validator (whole-skill total included, so a lowered
@@ -55,6 +57,8 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
   if (!bodyOwnerMatches(set.scope, eff.userId, parsed.body.scopeOwnerId)) {
     return refuse(403, 'wrong_owner', 'This version does not belong to the user you are acting as.')
   }
+  const notAccountWriter = await userScopeWriteRefusal(set.scope)
+  if (notAccountWriter) return notAccountWriter
 
   if (set.point === ov.USER_SKILL_POINT) {
     const body = parsed.body

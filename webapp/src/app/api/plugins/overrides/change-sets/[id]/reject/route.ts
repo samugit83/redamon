@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { readJsonBody } from '@/lib/jsonBody'
 import { getEffectiveUser, getSession } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
-import { bodyOwnerMatches, ownsScope } from '@/lib/plugins/changeSetAccess'
+import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -29,6 +29,8 @@ export const POST = pluginRoute('override reject', 'The proposal could not be re
   if (!bodyOwnerMatches(set.scope, eff.userId, parsed.body.scopeOwnerId)) {
     return NextResponse.json({ error: 'This version does not belong to the user you are acting as.', code: 'wrong_owner' }, { status: 403 })
   }
+  const notAccountWriter = await userScopeWriteRefusal(set.scope)
+  if (notAccountWriter) return notAccountWriter
 
   const session = await getSession()
   const actor = session?.userId ?? eff.userId

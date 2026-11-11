@@ -13,11 +13,15 @@ const SECRET = 'SELECT value FROM plugin_data WHERE key = target.example'
 
 const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, resetCommits: false }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', async (orig) => ({
-  ...((await orig()) as Record<string, unknown>),
-  getSession: async () => ({ userId: 'u1', role: 'standard' }),
-  getEffectiveUser: async () => ({ userId: 'u1' }),
-}))
+vi.mock('@/lib/session', async (orig) => {
+  const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
+  return {
+    ...((await orig()) as Record<string, unknown>),
+    getSession: async () => ({ userId: 'u1', role: 'standard' }),
+    getEffectiveUser: async () => ({ userId: 'u1' }),
+    requireAccountWrite: accountWriteDouble(() => ({ session: { userId: 'u1', role: 'standard' }, effective: 'u1' })),
+  }
+})
 vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn() }))
 // For the one case of a reset that commits before the failing read.
 vi.mock('@/lib/plugins/overrides', async (orig) => {

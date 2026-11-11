@@ -11,13 +11,20 @@ const h = vi.hoisted(() => ({
   db: null as unknown as Record<string, unknown>,
   session: null as unknown,
   effective: '',
+  managed: new Set<string>(),
   audits: [] as Record<string, unknown>[],
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', () => ({
-  getSession: async () => h.session,
-  getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
-}))
+// The account write rule (HD-23) over the session double: an admin acting as the owner
+// writes a user scope only while the owner is a passwordless managed account (h.managed).
+vi.mock('@/lib/session', async () => {
+  const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
+  return {
+    getSession: async () => h.session,
+    getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
+    requireAccountWrite: accountWriteDouble(() => h),
+  }
+})
 vi.mock('@/lib/agentFetch', () => {
   class AgentUnreachableError extends Error {}
   return { AgentUnreachableError, agentFetch: async () => Response.json({}, { status: 404 }) }
@@ -45,6 +52,7 @@ beforeEach(() => {
   db.seed('project', [{ id: 'p-alice', userId: 'alice', name: 'A' }])
   h.session = { userId: 'alice', role: 'standard' }
   h.effective = 'alice'
+  h.managed = new Set()
   h.audits = []
 })
 afterEach(() => setNowForTests(null))
@@ -80,6 +88,11 @@ const actAsAlice = () => {
   h.session = { userId: 'user-admin', role: 'admin' }
   h.effective = 'alice'
 }
+/** A user scope is written through act-as only for a passwordless managed account (HD-23). */
+const actAsManagedAlice = () => {
+  actAsAlice()
+  h.managed = new Set(['alice'])
+}
 
 describe('reject', () => {
   test('a user-skill proposal: rejected and audited at its point by its owner, without onBehalfOf', async () => {
@@ -94,8 +107,8 @@ describe('reject', () => {
     }])
   })
 
-  test('an admin acting as the owner: decidedBy and the actor are the admin, onBehalfOf the owner', async () => {
-    actAsAlice()
+  test('an admin acting as the managed owner: decidedBy and the actor are the admin, onBehalfOf the owner', async () => {
+    actAsManagedAlice()
     const cs = await userSkillSet()
     expect((await post(cs, { scopeOwnerId: 'alice' })).status).toBe(200)
     expect(db.rows('pluginOverride')[0]).toMatchObject({ status: 'rejected', decidedBy: 'user-admin' })
@@ -103,7 +116,7 @@ describe('reject', () => {
   })
 
   test('the same for a built-in proposal', async () => {
-    actAsAlice()
+    actAsManagedAlice()
     const cs = await builtinSet()
     expect((await post(cs, { scopeOwnerId: 'alice' })).status).toBe(200)
     expect(h.audits[0]).toMatchObject({ actorId: 'user-admin', after: { onBehalfOf: 'alice', point: 'skill.text' } })
@@ -139,8 +152,8 @@ describe('delete', () => {
     }])
   })
 
-  test('an admin acting as the owner: the actor is the admin, onBehalfOf the owner', async () => {
-    actAsAlice()
+  test('an admin acting as the managed owner: the actor is the admin, onBehalfOf the owner', async () => {
+    actAsManagedAlice()
     const cs = await userSkillSet()
     expect((await del(cs)).status).toBe(200)
     expect(h.audits[0]).toMatchObject({ actorId: 'user-admin', action: 'plugin.override.delete', after: { onBehalfOf: 'alice', point: 'user_skill.text' } })

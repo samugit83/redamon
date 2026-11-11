@@ -1,4 +1,6 @@
+import type { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { requireAccountWrite } from '@/lib/session'
 import type { OverrideScope } from './overrides'
 
 /**
@@ -22,4 +24,16 @@ export async function ownsScope(scope: OverrideScope, effectiveUserId: string): 
 export function bodyOwnerMatches(scope: OverrideScope, effectiveUserId: string, scopeOwnerId: unknown): boolean {
   if (scope.type !== 'user') return true
   return typeof scopeOwnerId === 'string' && scopeOwnerId === effectiveUserId && scopeOwnerId === scope.id
+}
+
+/**
+ * A user scope is that account's own catalog and prompt: approving, rejecting, deleting or
+ * resetting one of its versions follows the account write rule (HD-23, OQ-49), so an admin
+ * acting as a member who can sign in is refused, and an admin acting as a passwordless
+ * managed account is not. A project scope keeps the owner check of `ownsScope`. Call it
+ * after `ownsScope`, so another account's set stays a 404. Null when allowed.
+ */
+export async function userScopeWriteRefusal(scope: OverrideScope): Promise<NextResponse | null> {
+  if (scope.type !== 'user') return null
+  return requireAccountWrite(scope.id)
 }

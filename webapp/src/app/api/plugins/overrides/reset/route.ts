@@ -3,7 +3,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { getEffectiveUser, getSession } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
 import { isBuiltinSkill } from '@/lib/plugins/builtinSkills'
-import { bodyOwnerMatches, ownsScope } from '@/lib/plugins/changeSetAccess'
+import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { internalErrorResponse, pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -13,7 +13,8 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
  * so factory text (or, for a project, the owner's user-scope version) runs again (design §6;
  * TD-18, OQ-23). Core UI, so it works whatever state the plugin is in — disabled, uninstalled
  * with data kept — because it never touches the plugin. Only the scope owner, or an admin
- * acting as them; a user-scope reset carries the scope owner id (X9).
+ * acting as them; a user-scope reset carries the scope owner id (X9) and follows the account
+ * write rule (HD-23).
  */
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -48,6 +49,8 @@ export const POST = pluginRoute('override reset', 'The skill could not be reset;
   if (!(await ownsScope(scope, eff.userId)) || !bodyOwnerMatches(scope, eff.userId, isObj(body) ? body.scopeOwnerId : undefined)) {
     return NextResponse.json({ error: 'Not found', code: 'not_found' }, { status: 404 })
   }
+  const notAccountWriter = await userScopeWriteRefusal(scope)
+  if (notAccountWriter) return notAccountWriter
 
   const session = await getSession()
   const actor = session?.userId ?? eff.userId

@@ -14,14 +14,21 @@ const h = vi.hoisted(() => ({
   db: null as unknown as Record<string, unknown>,
   session: null as unknown,
   effective: '',
+  managed: new Set<string>(),
   agentCalls: [] as string[],
   audits: [] as Record<string, unknown>[],
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', () => ({
-  getSession: async () => h.session,
-  getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
-}))
+// The account write rule (HD-23) over the session double: an admin acting as the owner
+// writes a user scope only while the owner is a passwordless managed account (h.managed).
+vi.mock('@/lib/session', async () => {
+  const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
+  return {
+    getSession: async () => h.session,
+    getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
+    requireAccountWrite: accountWriteDouble(() => h),
+  }
+})
 vi.mock('@/lib/agentFetch', () => {
   class AgentUnreachableError extends Error {}
   return {
@@ -87,6 +94,7 @@ beforeEach(() => {
   ])
   h.session = { userId: 'alice', role: 'standard' }
   h.effective = 'alice'
+  h.managed = new Set()
   h.audits = []
   h.agentCalls = []
 })
@@ -238,8 +246,9 @@ describe('saving a proposal as a new skill', () => {
     ])
   })
 
-  test('an admin acting as the owner: decidedBy and every audit actor is the admin, onBehalfOf the owner', async () => {
+  test('an admin acting as the owner, a passwordless managed account: decidedBy and every audit actor is the admin, onBehalfOf the owner', async () => {
     h.session = { userId: 'user-admin', role: 'admin' }
+    h.managed = new Set(['alice'])
     const cs = await proposal()
     const r = await save(cs, { projectId: 'p-alice', enableNew: true, disableSource: true })
     expect(r.status).toBe(200)

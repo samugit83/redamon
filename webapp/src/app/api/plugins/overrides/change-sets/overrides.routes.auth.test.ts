@@ -13,13 +13,20 @@ const h = vi.hoisted(() => ({
   db: null as unknown as Record<string, unknown>,
   session: null as unknown,
   effective: '',
+  managed: new Set<string>(),
   agent: null as unknown as (path: string) => Promise<Response>,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
-vi.mock('@/lib/session', () => ({
-  getSession: async () => h.session,
-  getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
-}))
+// The account write rule (HD-23) over the session double: an admin acting as the owner
+// writes a user scope only while the owner is a passwordless managed account (h.managed).
+vi.mock('@/lib/session', async () => {
+  const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
+  return {
+    getSession: async () => h.session,
+    getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null),
+    requireAccountWrite: accountWriteDouble(() => h),
+  }
+})
 vi.mock('@/lib/agentFetch', () => {
   class AgentUnreachableError extends Error {}
   return { AgentUnreachableError, agentFetch: (path: string) => h.agent(path) }
@@ -55,6 +62,7 @@ beforeEach(() => {
   h.agent = agentHandler(agent)
   h.session = { userId: 'alice', role: 'standard' }
   h.effective = 'alice'
+  h.managed = new Set()
   clearSkillPartsCache()
 })
 
