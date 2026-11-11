@@ -84,6 +84,39 @@ describe('LLM provider: base URL or type', () => {
   })
 })
 
+describe('LLM provider: Extra Headers values (review of 1.6)', () => {
+  const stored = {
+    providerType: 'openai_compatible', baseUrl: 'https://llm.example.com/v1',
+    apiKey: '', awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '',
+    defaultHeaders: { 'X-Api-Key': 'hdr-stored', 'X-Empty': '' },
+  }
+
+  test('a new base URL with a header value sent back masked is refused, naming it', () => {
+    expect(llmProviderSecretReentry(stored, { baseUrl: 'https://elsewhere.example.net/v1', defaultHeaders: { 'X-Api-Key': MASK } }))
+      .toMatchObject({ field: 'defaultHeaders.X-Api-Key', fields: ['defaultHeaders.X-Api-Key'], endpoint: 'baseUrl' })
+  })
+
+  test('a new base URL that omits the headers keeps them, so they are named too', () => {
+    expect(llmProviderSecretReentry(stored, { baseUrl: 'https://elsewhere.example.net/v1' }))
+      .toMatchObject({ fields: ['defaultHeaders.X-Api-Key'] })
+  })
+
+  test('a header typed again, or removed, passes', () => {
+    expect(llmProviderSecretReentry(stored, { baseUrl: 'https://elsewhere.example.net/v1', defaultHeaders: { 'X-Api-Key': 'typed' } })).toBeNull()
+    expect(llmProviderSecretReentry(stored, { baseUrl: 'https://elsewhere.example.net/v1', defaultHeaders: {} })).toBeNull()
+  })
+
+  test('the key and the headers are named together, the key first', () => {
+    const r = llmProviderSecretReentry({ ...stored, apiKey: 'sk-stored' }, { baseUrl: 'https://elsewhere.example.net/v1' })
+    expect(r).toMatchObject({ field: 'apiKey', fields: ['apiKey', 'defaultHeaders.X-Api-Key'] })
+    expect(r!.message).toContain('value of the header "X-Api-Key"')
+  })
+
+  test('the same endpoint keeps the masked header values', () => {
+    expect(llmProviderSecretReentry(stored, { baseUrl: stored.baseUrl, defaultHeaders: { 'X-Api-Key': MASK } })).toBeNull()
+  })
+})
+
 describe('settings: GitHub Enterprise host and chisel URL', () => {
   const stored = {
     githubEnterpriseHost: 'ghe.example.com', githubEnterpriseToken: 'ghp_stored',

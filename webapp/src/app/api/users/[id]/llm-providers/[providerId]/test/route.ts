@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { isJevProvider, jevPinnedConfig, type JevProviderType } from '@/lib/llmProviderKinds'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { restoreMaskedHeaders } from '@/lib/llmProviderMask'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -88,7 +89,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           continue
         }
         if (storedIsJev && LOCKED_FOR_JEV.has(key)) continue
-        config[key] = value
+        // Header values come back masked like the key; the masked ones keep the stored value.
+        config[key] = key === 'defaultHeaders' ? restoreMaskedHeaders(value, provider.defaultHeaders) : value
       }
     }
 

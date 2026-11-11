@@ -566,3 +566,40 @@ describe('HD-24: a new base URL with the masked key asks for the key again', () 
     expect(screen.getAllByText(/type the API key again/).length).toBeGreaterThan(0)
   })
 })
+
+describe('review of 1.6: a new base URL with a masked Extra Headers value asks for it again', () => {
+  const SAVED = { ...PROVIDER, id: 'compat-2', baseUrl: 'https://llm.example.com/v1', defaultHeaders: { Authorization: '••••••••0001' } }
+  const REFUSAL = {
+    ok: false,
+    status: 400,
+    json: async () => ({
+      error: 'The base URL changed: type the value of the header "Authorization" again, or clear it. A stored secret is never sent to a new address unless it is entered again.',
+      code: 'secret_reentry_required', field: 'defaultHeaders.Authorization', fields: ['defaultHeaders.Authorization'], endpoint: 'baseUrl',
+    }),
+  }
+
+  beforeEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    toastError.mockReset()
+  })
+  afterEach(cleanup)
+
+  test('Save: the message shows under Extra Headers, the header is named and its value field takes the focus', async () => {
+    mockFetch({ provider: REFUSAL })
+    render(<LlmProviderForm userId="user-1" provider={SAVED} onSave={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('http://host.docker.internal:11434/v1'), { target: { value: 'https://elsewhere.example.net/v1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }))
+
+    const hint = await screen.findByRole('alert')
+    expect(hint).toHaveTextContent('value of the header "Authorization"')
+    expect(screen.getByPlaceholderText('Header name')).toHaveValue('Authorization')
+    await waitFor(() => expect(screen.getByPlaceholderText('Value')).toHaveFocus())
+
+    // Typed again, the header replaces the masked one and the message goes.
+    fireEvent.change(screen.getByPlaceholderText('Value'), { target: { value: 'Bearer typed' } })
+    fireEvent.click(screen.getByPlaceholderText('Value').parentElement!.querySelector('button')!)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Bearer typed')).toBeInTheDocument()
+  })
+})

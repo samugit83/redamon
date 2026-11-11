@@ -5,6 +5,7 @@ import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { internalError } from '@/lib/routeErrors'
 import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { maskProvider, restoreMaskedHeaders } from '@/lib/llmProviderMask'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -20,21 +21,6 @@ const UPDATABLE_FIELDS = [
   'temperature', 'maxTokens', 'sslVerify', 'reasoningEnabled', 'reasoningEffort', 'awsRegion',
   'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken',
 ] as const
-
-function maskSecret(value: string): string {
-  if (!value || value.length <= 4) return value ? '••••' : ''
-  return '••••••••' + value.slice(-4)
-}
-
-function maskProvider(provider: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...provider,
-    apiKey: maskSecret(provider.apiKey as string),
-    awsAccessKeyId: maskSecret(provider.awsAccessKeyId as string),
-    awsSecretKey: maskSecret(provider.awsSecretKey as string),
-    awsBearerToken: maskSecret(provider.awsBearerToken as string),
-  }
-}
 
 // GET /api/users/[id]/llm-providers/[providerId]
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -133,6 +119,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           updateData[field] = existing[field]
         }
       }
+    }
+    if ('defaultHeaders' in updateData) {
+      updateData.defaultHeaders = restoreMaskedHeaders(updateData.defaultHeaders, existing.defaultHeaders)
     }
 
     // Reasoning controls only apply to OpenAI-compatible providers. For any

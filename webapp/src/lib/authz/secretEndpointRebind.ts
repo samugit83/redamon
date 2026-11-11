@@ -8,7 +8,8 @@
  * new address. So a write that changes an endpoint must carry each secret bound to it
  * typed again, or cleared. It holds for everyone, the account itself included.
  *
- * The endpoint -> secret pairs: an LLM provider's base URL or type -> its key fields;
+ * The endpoint -> secret pairs: an LLM provider's base URL or type -> its key fields and
+ * its Extra Headers values;
  * the GitHub Enterprise host -> githubEnterpriseToken (only that token is ever sent to
  * it, scanners/supply_chain_scan/project_settings.py); the chisel server URL ->
  * chiselAuth; an outbound MCP server's URL -> its bearer token and header values; a stdio
@@ -60,6 +61,7 @@ const ENDPOINT_LABELS: Record<string, string> = {
 
 function secretLabel(field: string): string {
   if (field.startsWith('headers.')) return `value of the header "${field.slice('headers.'.length)}"`
+  if (field.startsWith('defaultHeaders.')) return `value of the header "${field.slice('defaultHeaders.'.length)}"`
   if (field.startsWith('env.')) return `value of the environment variable "${field.slice('env.'.length)}"`
   return SECRET_LABELS[field] ?? field
 }
@@ -90,19 +92,37 @@ function changed(body: Record<string, unknown>, field: string, stored: unknown,
 
 const PROVIDER_SECRETS = ['apiKey', 'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken'] as const
 
+type StoredProvider = { providerType: string; baseUrl: string | null; defaultHeaders?: unknown }
+  & Partial<Record<(typeof PROVIDER_SECRETS)[number], string | null>>
+
+const recordOf = (v: unknown): Record<string, unknown> =>
+  v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+
+/** The field whose change sends a provider's key, headers and prompts elsewhere, or null. */
+export function llmProviderEndpointChange(stored: StoredProvider, body: Record<string, unknown>): string | null {
+  return changed(body, 'providerType', stored.providerType) ? 'providerType'
+    : changed(body, 'baseUrl', stored.baseUrl) ? 'baseUrl' : null
+}
+
 /**
  * A provider save (PUT) or a saved provider's test with an edited form: either starts
- * from the stored row and keeps a secret the body omits or masks. Jev rows never get
- * here: their type is locked and their transport pinned.
+ * from the stored row and keeps a secret the body omits or masks. The Extra Headers are
+ * one field: omitted, every stored header is kept; sent, each masked value is kept and
+ * a header left out is dropped. Jev rows never get here: their type is locked and their
+ * transport pinned.
  */
-export function llmProviderSecretReentry(
-  stored: { providerType: string; baseUrl: string | null } & Partial<Record<(typeof PROVIDER_SECRETS)[number], string | null>>,
-  body: Record<string, unknown>,
-): SecretReentry | null {
-  const endpoint = changed(body, 'providerType', stored.providerType) ? 'providerType'
-    : changed(body, 'baseUrl', stored.baseUrl) ? 'baseUrl' : null
+export function llmProviderSecretReentry(stored: StoredProvider, body: Record<string, unknown>): SecretReentry | null {
+  const endpoint = llmProviderEndpointChange(stored, body)
   if (!endpoint) return null
-  return refusal(endpoint, PROVIDER_SECRETS.filter(f => hasStored(stored[f]) && keepsStored(body, f)))
+  const sentHeaders = recordOf(body.defaultHeaders)
+  const keptHeaders = Object.entries(recordOf(stored.defaultHeaders))
+    .filter(([name, value]) => hasStored(value)
+      && (!('defaultHeaders' in body) || isMaskedSecret(sentHeaders[name])))
+    .map(([name]) => `defaultHeaders.${name}`)
+  return refusal(endpoint, [
+    ...PROVIDER_SECRETS.filter(f => hasStored(stored[f]) && keepsStored(body, f)),
+    ...keptHeaders,
+  ])
 }
 
 /** The host the settings PUT stores: no scheme, no path, lowercase. */

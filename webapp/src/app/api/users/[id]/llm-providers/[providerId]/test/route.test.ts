@@ -202,6 +202,27 @@ describe('POST llm-providers/[providerId]/test — agent reachable', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ apiKey: 'sk-typed-again', baseUrl: CONFIG.baseUrl })
   })
 
+  test('a masked Extra Headers value is tested with the stored one, on the stored endpoint (review of 1.6)', async () => {
+    mockFindFirst.mockResolvedValue({ id: 'p1', userId: 'u1', providerType: CONFIG.providerType, apiKey: '', baseUrl: CONFIG.baseUrl, defaultHeaders: { Authorization: 'Bearer hdr-REAL' } })
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+    await POST(post({ ...CONFIG, defaultHeaders: { Authorization: '••••••••REAL', 'X-New': 'typed' } }), params('u1', 'p1'))
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).defaultHeaders).toEqual({ Authorization: 'Bearer hdr-REAL', 'X-New': 'typed' })
+  })
+
+  test('a masked Extra Headers value with an edited base URL is refused (review of 1.6)', async () => {
+    mockFindFirst.mockResolvedValue({ id: 'p1', userId: 'u1', providerType: CONFIG.providerType, apiKey: '', baseUrl: 'http://old/v1', defaultHeaders: { Authorization: 'Bearer hdr-REAL' } })
+
+    const res = await POST(post({ ...CONFIG, defaultHeaders: { Authorization: '••••••••REAL' } }), params('u1', 'p1'))
+
+    expect(res.status).toBe(400)
+    const text = await res.text()
+    expect(JSON.parse(text)).toMatchObject({ success: false, code: 'secret_reentry_required', field: 'defaultHeaders.Authorization' })
+    expect(text).not.toContain('hdr-REAL')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test('the test spends the account\'s key, so it asks for the write rule (HD-23)', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
     await POST(post(CONFIG), params('u1', 'unsaved'))

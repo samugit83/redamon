@@ -355,3 +355,25 @@ describe('GET /api/users/[id]/llm-providers — failure', () => {
     expect(await res.json()).toEqual({ error: 'Failed to fetch LLM providers', code: 'P1001' })
   })
 })
+
+describe('GET /api/users/[id]/llm-providers - Extra Headers values are masked too (review of 1.6)', () => {
+  const HEADER = 'Bearer hdr-SECRET-77770001'
+  beforeEach(() => mockFindMany.mockResolvedValue([{ ...PROVIDER, defaultHeaders: { Authorization: HEADER, 'X-Org': 'acme-org' } }]))
+
+  test('an admin reading another account gets every header value masked', async () => {
+    mockIsInternal.mockReturnValue(false)
+    mockGetSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+    const res = await GET(req('http://x/api/users/victim/llm-providers'), params('victim'))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).not.toContain(HEADER)
+    expect(text).not.toContain('acme-org')
+    expect(JSON.parse(text)[0].defaultHeaders).toEqual({ Authorization: '••••••••0001', 'X-Org': '••••••••-org' })
+  })
+
+  test('the internal key with ?internal=true still reads them (the agent sends them)', async () => {
+    mockIsInternal.mockReturnValue(true)
+    const res = await GET(req('http://x/api/users/victim/llm-providers?internal=true'), params('victim'))
+    expect(await res.text()).toContain(HEADER)
+  })
+})

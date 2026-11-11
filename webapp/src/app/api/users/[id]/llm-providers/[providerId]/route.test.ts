@@ -314,3 +314,37 @@ describe('PUT provider - only the row\'s own settings reach the update (review o
     expect(mockUpdate.mock.calls[0][0].data).toEqual(form)
   })
 })
+
+describe('Extra Headers values: masked on read, kept when sent back masked, re-entered on a new endpoint (review of 1.6)', () => {
+  const HEADER = 'Bearer hdr-SECRET-77770001'
+  const WITH_HEADERS = { ...PROVIDER, defaultHeaders: { Authorization: HEADER } }
+  beforeEach(() => {
+    mockRequireUserAccess.mockResolvedValue(null)
+    mockFindFirst.mockResolvedValue(WITH_HEADERS)
+    mockUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ ...WITH_HEADERS, ...data }))
+  })
+
+  test('GET masks every header value for a browser caller', async () => {
+    mockIsInternal.mockReturnValue(false)
+    const res = await GET(get('http://x/api/users/victim/llm-providers/p1'), params('victim', 'p1'))
+    const text = await res.text()
+    expect(text).not.toContain(HEADER)
+    expect(JSON.parse(text).defaultHeaders).toEqual({ Authorization: '••••••••0001' })
+  })
+
+  test('a save that sends the header back masked keeps the stored value, and answers it masked', async () => {
+    const res = await PUT(put({ name: 'renamed', defaultHeaders: { Authorization: '••••••••0001', 'X-New': 'typed' } }), params('victim', 'p1'))
+    expect(res.status).toBe(200)
+    expect(mockUpdate.mock.calls[0][0].data.defaultHeaders).toEqual({ Authorization: HEADER, 'X-New': 'typed' })
+    expect(await res.text()).not.toContain(HEADER)
+  })
+
+  test('a new base URL with the header sent back masked is 400 naming it; nothing is written', async () => {
+    const res = await PUT(put({ baseUrl: 'https://elsewhere.example.net/v1', defaultHeaders: { Authorization: '••••••••0001' } }), params('victim', 'p1'))
+    expect(res.status).toBe(400)
+    const text = await res.text()
+    expect(JSON.parse(text)).toMatchObject({ code: 'secret_reentry_required', fields: ['apiKey', 'defaultHeaders.Authorization'] })
+    expect(text).not.toContain(HEADER)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})

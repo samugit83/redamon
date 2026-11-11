@@ -5,24 +5,10 @@ import { isReasoningEffort } from '@/lib/llmReasoning'
 import { requireUserExists, isForeignKeyViolation } from '@/lib/userScopedWrite'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { internalError } from '@/lib/routeErrors'
+import { maskProvider } from '@/lib/llmProviderMask'
 
 interface RouteParams {
   params: Promise<{ id: string }>
-}
-
-function maskSecret(value: string): string {
-  if (!value || value.length <= 4) return value ? '••••' : ''
-  return '••••••••' + value.slice(-4)
-}
-
-function maskProvider(provider: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...provider,
-    apiKey: maskSecret(provider.apiKey as string),
-    awsAccessKeyId: maskSecret(provider.awsAccessKeyId as string),
-    awsSecretKey: maskSecret(provider.awsSecretKey as string),
-    awsBearerToken: maskSecret(provider.awsBearerToken as string),
-  }
 }
 
 // GET /api/users/[id]/llm-providers
