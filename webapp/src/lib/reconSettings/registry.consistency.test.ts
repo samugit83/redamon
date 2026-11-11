@@ -235,13 +235,33 @@ describe('T32 the unit agrees with the name', () => {
     [/(Depth|DepthLimit|RecursionDepth|CrawlDepth)$/, ['depth', 'count'], 'depth'],
   ]
 
+  // Fields whose name ends like one of the rules above but measures something
+  // else, each with the unit it really has. Keep this list short: an entry
+  // here is a name a reader will misread, so it must say why it is right.
+  const EXCEPTIONS: Record<string, string> = {
+    // hydra's -W: the seconds each task waits between its connections, not a
+    // count of connections. The connection count is hydraThreads (-t).
+    hydraWaitBetweenConnections: 'seconds',
+  }
+
   test.each(RULES)('a name matching %s carries %s', (pattern, allowed, label) => {
     const problems = offenders((f, key) => {
-      if (!pattern.test(key)) return null
+      if (!pattern.test(key) || key in EXCEPTIONS) return null
       // A boolean named `...Timeout`-ish is a toggle, not a measurement.
       if (f.type === 'boolean' || f.type === 'string' || f.type === 'string-list') return null
       return allowed.includes(f.unit) ? null : `unit '${f.unit}' but the name expects ${label}`
     })
+    expect(problems).toEqual([])
+  })
+
+  test('every exception names a field that exists and carries the unit it states', () => {
+    const problems = Object.entries(EXCEPTIONS).flatMap(([key, unit]) =>
+      !fields[key]
+        ? [`${key}: an exception for a field the registry does not have`]
+        : fields[key].unit !== unit
+          ? [`${key}: unit '${fields[key].unit}' but the exception says '${unit}'`]
+          : []
+    )
     expect(problems).toEqual([])
   })
 

@@ -5544,7 +5544,7 @@
    "tool": "hydra",
    "traffic": "active",
    "type": "int",
-   "unit": "threads",
+   "unit": "seconds",
    "zero_means": "literal"
   },
   "id": {

@@ -4501,7 +4501,7 @@ fields:
   hydraWaitBetweenConnections:
     tool: hydra
     runtime_key: null
-    unit: threads
+    unit: seconds
     phase: standalone
     traffic: active
     roe_capped: false
