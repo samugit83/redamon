@@ -365,8 +365,12 @@ def query_crtsh(domain: str, settings: dict = None) -> dict:
         if resp.status_code == 200:
             for entry in resp.json():
                 for sub in entry['name_value'].lower().split('\n'):
-                    if not sub.startswith('*.'):
-                        crtsh_subs.add(sub.strip())
+                    sub = sub.strip()
+                    # name_value lists every SAN, email ones too: an address
+                    # under the root would otherwise pass the "ends with
+                    # .<root>" scope test and become a Subdomain.
+                    if sub and not sub.startswith('*.') and '@' not in sub:
+                        crtsh_subs.add(sub)
             max_results = settings.get('CRTSH_MAX_RESULTS', 5000)
             if len(crtsh_subs) > max_results:
                 crtsh_subs = set(sorted(crtsh_subs)[:max_results])
@@ -1567,9 +1571,11 @@ def discover_subdomains(domain: str, bruteforce: bool = False,
     filtered_subs = []
     external_domain_entries = []
     for s, sources in sourced_subs.items():
+        if not s or '@' in s:  # an email address (a certificate SAN) is no hostname
+            continue
         if s == domain or s.endswith("." + domain):
             filtered_subs.append(s)
-        elif s and '@' not in s:  # non-empty, out-of-scope (skip email addresses from crt.sh)
+        else:
             for source in sources:
                 external_domain_entries.append({"domain": s, "source": source})
     all_subs = sorted(filtered_subs)
