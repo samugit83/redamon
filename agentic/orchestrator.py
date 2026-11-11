@@ -8,6 +8,7 @@ Supports phase tracking, LLM-managed todo lists, and checkpoint-based approval.
 import asyncio
 import os
 import logging
+from contextlib import contextmanager
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -21,6 +22,7 @@ from state import (
     summarize_trace_for_response,
 )
 from project_settings import get_setting
+from mcp_toolset_guard import McpToolsetBusy, toolset_guard
 from tools import (
     MCPToolsManager,
     Neo4jToolManager,
@@ -224,7 +226,8 @@ class AgentOrchestrator:
         No credential is written onto a shared manager here (RBAC T17): the search
         tools, their rotation pools and the tradecraft GitHub token are read at call
         time from the run's own USER_SETTINGS (tools.run_user_settings), so an empty
-        key means none, never the previous run's.
+        key means none, never the previous run's. The user MCP toolset is admitted at
+        run start (_mcp_toolset_lease), under the guard of mcp_toolset_guard.
         """
         apply_project_settings(self, project_id)
 
@@ -249,35 +252,6 @@ class AgentOrchestrator:
                 self._tradecraft_manager.set_resources([])
                 from prompts.tool_registry import pop_tradecraft_entry
                 pop_tradecraft_entry()
-
-        # User-managed MCP servers: trigger an async reload when the user's
-        # mcpServers list has changed since the last apply. Hash-based check
-        # keeps the prompt-prefix cache stable when nothing's changed (a fresh
-        # fetch returning identical data is a no-op).
-        try:
-            import hashlib
-            import json as _json
-            user_mcp_raw = get_setting('USER_MCP_SERVERS', []) or []
-            digest = hashlib.sha256(
-                _json.dumps(user_mcp_raw, sort_keys=True, default=str).encode("utf-8")
-            ).hexdigest()
-            last_digest = getattr(self, '_last_user_mcp_hash', None)
-            if digest != last_digest:
-                self._last_user_mcp_hash = digest
-                try:
-                    import asyncio
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self.reload_mcp_manifests(user_mcp_raw))
-                    logger.info(
-                        f"User MCP manifest changed (hash {digest[:12]}); "
-                        f"reload scheduled."
-                    )
-                except RuntimeError:
-                    # No running loop — apply must be running outside async ctx.
-                    # Skip; reload will fire on the next async-context apply.
-                    logger.debug("User MCP manifest changed but no running loop; deferred.")
-        except Exception as e:
-            logger.warning(f"User MCP manifest reload check failed: {e}")
 
     def _build_section_picker_llm(self):
         """This session's "Tradecraft section picker" LLM, or None.
@@ -394,26 +368,34 @@ class AgentOrchestrator:
         """Re-merge system + user MCP servers, refresh registry, reconnect MCP client.
 
         Called from:
-        - Webapp's POST /mcp/reload after a user adds/edits/deletes an MCP server.
-        - Implicitly during project session startup once user settings are
-          fetched (so per-user MCPs activate without a manual reload click).
+        - Webapp's POST /mcp/reload after a user adds/edits/deletes an MCP server,
+          once mcp_toolset_guard admitted it.
+        - The run-start admission (_mcp_toolset_lease) when the run's owner's set
+          is not the loaded one (so per-user MCPs activate without a manual reload).
+
+        Reloads run one at a time, in the order they were asked for, and each
+        records the set it loads as the loaded set.
 
         Args:
-            user_servers_raw: list of dicts from UserSettings.mcpServers. When
-                None, reads from the most recent project_settings cache via
-                get_setting('USER_MCP_SERVERS', []).
+            user_servers_raw: list of dicts from UserSettings.mcpServers. None
+                reloads the set already loaded, never the last-loaded project's
+                settings (another owner's, possibly).
 
         Returns:
             dict with the new manifest snapshot (servers, errors, warnings,
             declared_tool_names) — same shape as GET /mcp/manifest body.
         """
+        guard = toolset_guard()
+        if user_servers_raw is None:
+            user_servers_raw = guard.loaded_servers or []
+        async with self.__dict__.setdefault("_mcp_reload_lock", asyncio.Lock()):
+            guard.record_loaded(user_servers_raw)
+            return await self._load_user_mcp_servers(user_servers_raw)
+
+    async def _load_user_mcp_servers(self, user_servers_raw: list) -> dict:
         from tools import _build_system_mcp_servers
         from prompts.tool_registry import apply_mcp_manifests_to_registry
-        from project_settings import get_setting
         import mcp_registry
-
-        if user_servers_raw is None:
-            user_servers_raw = get_setting('USER_MCP_SERVERS', []) or []
 
         user_servers, parse_errors = mcp_registry.parse_user_servers(user_servers_raw)
         system_servers = _build_system_mcp_servers()
@@ -907,7 +889,8 @@ class AgentOrchestrator:
                 "messages": [HumanMessage(content=fence_node_context(question))]
             }
 
-            final_state = await self.graph.ainvoke(input_data, config)
+            with self._mcp_toolset_lease(user_id):
+                final_state = await self.graph.ainvoke(input_data, config)
 
             return self._build_response(final_state)
 
@@ -982,7 +965,11 @@ class AgentOrchestrator:
     async def _report_run_failure(self, streaming_callback, msg: str,
                                   exc: BaseException) -> InvokeResponse:
         """Fail a run with its exception's class and provider HTTP status, never
-        its text: a provider message can quote a key, the prompt or target data."""
+        its text: a provider message can quote a key, the prompt or target data.
+        A run refused for the MCP toolset says so with its own code."""
+        if isinstance(exc, McpToolsetBusy):
+            await streaming_callback.on_error(str(exc), recoverable=False, code=exc.code)
+            return InvokeResponse(error=str(exc))
         from llm_builder import provider_error_details
         await streaming_callback.on_error(
             msg, recoverable=False, code="agent_run_failed", **provider_error_details(exc))
@@ -992,30 +979,54 @@ class AgentOrchestrator:
     # STREAMING PUBLIC API
     # =========================================================================
 
+    @contextmanager
+    def _mcp_toolset_lease(self, user_id: str):
+        """Hold the agent's user MCP toolset for this run (RBAC OQ-41, NF-06).
+
+        Raises McpToolsetBusy when the run's owner's server set is not the loaded
+        one and another owner's run on a different set is live; otherwise loads the
+        owner's set when it is not the loaded one, as before. Synchronous up to the
+        yield, so admission and registration are one step for the event loop.
+        """
+        servers = get_setting('USER_MCP_SERVERS', []) or []
+        lease, must_load = toolset_guard().admit_run(user_id, servers)
+        try:
+            if must_load:
+                try:
+                    asyncio.get_running_loop().create_task(self.reload_mcp_manifests(servers))
+                    logger.info("User MCP server set changed; reload scheduled.")
+                except Exception as e:                            # noqa: BLE001
+                    logger.warning(f"User MCP reload could not be scheduled: {e.__class__.__name__}")
+            yield
+        finally:
+            toolset_guard().release_run(lease)
+
     async def _stream_graph(self, graph_input, config, streaming_callback,
                             user_id: str, project_id: str, session_id: str):
         """Run the graph with streaming inside a run scope; return the final state.
 
         The scope lets an Agent in the Loop model open steps for this session
         (and only while it runs), and reports the run's end state to its driver.
-        For a provider model it only registers the run.
+        For a provider model it only registers the run. The run holds the user MCP
+        toolset for as long as it streams (_mcp_toolset_lease).
         """
         uses_loop = is_loop_llm(self.llm)
         final_state = None
-        # Every node and Fireteam member runs in a task created inside astream,
-        # so it inherits this listener and a rate-limit wait reaches the drawer.
-        listener = current_llm_wait_listener.set(
-            getattr(streaming_callback, "on_rate_limit_wait", None))
-        try:
-            async with get_broker().run_scope(
-                    user_id, project_id, session_id, streaming_callback, uses_loop=uses_loop,
-                    tool_confirmation=bool(get_setting('REQUIRE_TOOL_CONFIRMATION', True))) as scope:
-                async for event in self.graph.astream(graph_input, config, stream_mode="values"):
-                    final_state = event
-                    scope.final_state = event
-                    await emit_streaming_events(event, streaming_callback)
-        finally:
-            current_llm_wait_listener.reset(listener)
+        with self._mcp_toolset_lease(user_id):
+            # Every node and Fireteam member runs in a task created inside astream,
+            # so it inherits this listener and a rate-limit wait reaches the drawer.
+            listener = current_llm_wait_listener.set(
+                getattr(streaming_callback, "on_rate_limit_wait", None))
+            try:
+                async with get_broker().run_scope(
+                        user_id, project_id, session_id, streaming_callback, uses_loop=uses_loop,
+                        tool_confirmation=bool(get_setting('REQUIRE_TOOL_CONFIRMATION', True))) as scope:
+                    async for event in self.graph.astream(graph_input, config, stream_mode="values"):
+                        final_state = event
+                        scope.final_state = event
+                        await emit_streaming_events(event, streaming_callback)
+            finally:
+                current_llm_wait_listener.reset(listener)
         return final_state
 
     async def invoke_with_streaming(

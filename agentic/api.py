@@ -1954,15 +1954,34 @@ async def reload_mcp_manifest(payload: dict = None):
     Re-merge system + user MCP servers and reconnect the MCP client.
 
     Called by the webapp after a user adds/edits/deletes an MCP server.
-    Body (optional): {"userMcpServers": [...]} — when omitted, uses the
-    most recent cached project settings.
+    Body (optional): {"ownerId": "<user id>", "userMcpServers": [...]}; when the
+    list is omitted (an administrator's reload) the loaded set is reloaded.
+
+    The agent holds one user MCP toolset (RBAC OQ-41): a new set while another
+    owner's run on a different set is live is deferred, 202 `mcp_toolset_busy`,
+    and loads at the owner's next run start (mcp_toolset_guard).
     """
     if orchestrator is None:
         return JSONResponse({"error": "orchestrator not ready"}, status_code=503)
 
+    from mcp_toolset_guard import (
+        MCP_RELOAD_DEFERRED_MESSAGE, MCP_TOOLSET_BUSY, toolset_guard,
+    )
+
     user_servers_raw = None
+    owner_id = None
     if isinstance(payload, dict):
         user_servers_raw = payload.get("userMcpServers")
+        owner = payload.get("ownerId")
+        owner_id = owner if isinstance(owner, str) and owner else None
+
+    guard = toolset_guard()
+    wanted = user_servers_raw if user_servers_raw is not None else (guard.loaded_servers or [])
+    if not guard.admit_reload(owner_id, wanted):
+        return JSONResponse(
+            {"deferred": True, "code": MCP_TOOLSET_BUSY, "message": MCP_RELOAD_DEFERRED_MESSAGE},
+            status_code=202,
+        )
 
     try:
         result = await orchestrator.reload_mcp_manifests(user_servers_raw)
