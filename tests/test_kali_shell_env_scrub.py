@@ -134,7 +134,11 @@ class ShellsGivenToTheAgent(unittest.TestCase):
 
     def test_kali_shell_cannot_read_a_key_through_its_own_proc_entry(self):
         with _server_env():
-            out = nrs.kali_shell("tr '\\0' '\\n' < /proc/self/environ")
+            # Not `tr ... < /proc/self/environ`: bash opens that entry and then execs
+            # tr over itself, and the entry of a replaced image reads empty.
+            out = nrs.kali_shell("cat /proc/self/environ | tr '\\0' '\\n'")
+        # The read happened: an ordinary setting of the same environment came back.
+        self.assertIn("RBAC_PLAIN_SETTING=kept", out, out[-500:])
         for value in SECRETS.values():
             self.assertNotIn(value, out)
 
@@ -315,7 +319,10 @@ class FixedArgvWrappers(unittest.TestCase):
 
 # --- the guard: every spawn in mcp/servers/*.py passes env built by safe_env ---
 
+_SPAWN_MODULES = ("subprocess", "os", "asyncio", "pty")
 _SUBPROCESS_SPAWNS = {"run", "Popen", "call", "check_call", "check_output"}
+# subprocess helpers that take no env= at all: they always inherit.
+_SUBPROCESS_INHERITING = {"getoutput", "getstatusoutput"}
 # os.* spawns that take an environment, and where it sits when passed positionally.
 _OS_ENV_POSITION = {"execve": 2, "execvpe": 2, "spawnve": 3, "spawnvpe": 3, "posix_spawn": 2, "posix_spawnp": 2}
 # os.* spawns that cannot take one: they always inherit, so they are never allowed.
@@ -362,9 +369,14 @@ def spawn_sites(source, filename="<src>"):
 def _inspect_spawns(source, filename):
     """(where, problem-or-None) for every child-process start in `source`."""
     tree = ast.parse(source, filename)
+    modules = {m: m for m in _SPAWN_MODULES}  # local name -> module, for `import subprocess as sp`
     aliases = {}  # local name -> (module, function) for `from subprocess import run`
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "os", "asyncio", "pty"):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name in _SPAWN_MODULES:
+                    modules[a.asname or a.name] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module in _SPAWN_MODULES:
             for a in node.names:
                 aliases[a.asname or a.name] = (node.module, a.name)
 
@@ -379,14 +391,15 @@ def _inspect_spawns(source, filename):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            module, name = func.value.id, func.attr
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in modules:
+            module, name = modules[func.value.id], func.attr
         elif isinstance(func, ast.Name) and func.id in aliases:
             module, name = aliases[func.id]
         else:
             continue
         where = f"{filename}:{node.lineno} {module}.{name}"
-        if module == "os" and name in _OS_INHERITING or module == "pty" and name == "spawn":
+        if (module == "os" and name in _OS_INHERITING or module == "pty" and name == "spawn"
+                or module == "subprocess" and name in _SUBPROCESS_INHERITING):
             out.append((where, f"{where} always inherits the environment"))
             continue
         if module == "subprocess" and name in _SUBPROCESS_SPAWNS or \
@@ -445,6 +458,16 @@ class EverySpawnIsScrubbed(unittest.TestCase):
             "from-import": "from subprocess import run\ndef f():\n    run(['x'])\n",
             "asyncio": ("import asyncio\nasync def f():\n"
                         "    await asyncio.create_subprocess_exec('x')\n"),
+            "aliased subprocess": "import subprocess as sp\ndef f():\n    sp.run(['x'])\n",
+            "aliased subprocess, copied env": ("import os\nimport subprocess as sp\ndef f():\n"
+                                               "    sp.Popen(['x'], env=os.environ.copy())\n"),
+            "aliased os": "import os as o\ndef f(c):\n    o.system(c)\n",
+            "aliased os execvpe": "import os as o\ndef f():\n    o.execvpe('/bin/bash', ['bash'], o.environ)\n",
+            "aliased asyncio": ("import asyncio as aio\nasync def f():\n"
+                                "    await aio.create_subprocess_shell('x')\n"),
+            "getoutput": "import subprocess\ndef f(c):\n    subprocess.getoutput(c)\n",
+            "getstatusoutput": "import subprocess\ndef f(c):\n    subprocess.getstatusoutput(c)\n",
+            "from-import getstatusoutput as": "from subprocess import getstatusoutput as g\ndef f(c):\n    g(c)\n",
         }
         for label, src in leaky.items():
             with self.subTest(shape=label):
@@ -456,6 +479,23 @@ class EverySpawnIsScrubbed(unittest.TestCase):
                  "    env = safe_env({'REDAMON_CTX': c})\n    subprocess.Popen(['y'], env=env)\n"
                  "    os.execvpe('/bin/bash', ['bash'], safe_env({'TERM': 'xterm'}))\n")
         self.assertEqual(spawn_violations(clean), [])
+        aliased = ("import subprocess as sp\nfrom _safe_env import safe_env\n"
+                   "def f():\n    sp.run(['x'], env=safe_env())\n")
+        self.assertEqual(spawn_violations(aliased), [])
+        self.assertEqual(len(spawn_sites(aliased)), 1)
+
+    def test_a_probe_file_with_an_aliased_spawn_is_caught(self):
+        # A probe module on disk, read the way the guard reads mcp/servers/*.py
+        # (the run that mounts one into that directory is in the step's evidence).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe_aliased_spawn.py"
+            probe.write_text("import subprocess as sp\n\ndef leak(cmd):\n"
+                             "    return sp.check_output(cmd, shell=True)\n", encoding="utf-8")
+            found = spawn_violations(probe.read_text(encoding="utf-8"), probe.name)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("probe_aliased_spawn.py:4 subprocess.check_output", found[0])
 
 
 class TheSandboxHoldsNoScannerKey(unittest.TestCase):
