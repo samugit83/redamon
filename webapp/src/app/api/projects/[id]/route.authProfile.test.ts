@@ -36,6 +36,13 @@ vi.mock('@/lib/access', async () => {
 })
 
 import { GET, PUT } from './route'
+import { mintJobCredential } from '@/lib/authz/machineCredential'
+
+// Step 1.16: a scan reads its project with the scanner key AND its job credential.
+function scanJob(projectId = 'proj-1', tenant = 'owner'): Record<string, string> {
+  vi.stubEnv('INTERNAL_API_KEY', 'internal-key-for-tests-0000000000000')
+  return { 'x-redamon-job': mintJobCredential({ tenant, projectId }) }
+}
 
 const SECRET = 'sid=super-secret-session-value'
 const CSRF = 'csrf-secret-token'
@@ -56,7 +63,7 @@ function wireProject(authProfile: unknown) {
   )
 }
 const params = { params: Promise.resolve({ id: 'proj-1' }) }
-const get = () => new NextRequest('http://x/api/projects/proj-1')
+const get = (headers: Record<string, string> = {}) => new NextRequest('http://x/api/projects/proj-1', { headers })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -104,12 +111,12 @@ describe('GET /api/projects/[id] — auth profile boundary', () => {
   })
 
   test.each([
-    ['internal (agent/orchestrator)', () => mockIsInternal.mockReturnValue(true)],
-    ['scanner (recon)', () => mockIsScanner.mockReturnValue(true)],
-  ])('%s caller receives the full profile', async (_label, arrange) => {
+    ['internal (agent/orchestrator)', () => mockIsInternal.mockReturnValue(true), () => ({})],
+    ['scanner (recon)', () => mockIsScanner.mockReturnValue(true), () => scanJob()],
+  ])('%s caller receives the full profile', async (_label, arrange, headers) => {
     arrange()
     wireProject(PROFILE)
-    const body = await (await GET(get(), params)).json()
+    const body = await (await GET(get(headers()), params)).json()
     expect(body.authProfile.authValue).toBe(SECRET)
     expect(body.authProfile.extraHeaders).toEqual({ 'X-CSRF-Token': CSRF })
     expect(mockGetEffectiveUser).not.toHaveBeenCalled()

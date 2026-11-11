@@ -63,6 +63,13 @@ vi.mock('@/lib/access', async () => {
 })
 
 import { GET, PUT } from './route'
+import { mintJobCredential } from '@/lib/authz/machineCredential'
+
+// Step 1.16: a scan reads its project with the scanner key AND its job credential.
+function scanJob(projectId = 'proj-1', tenant = 'owner'): Record<string, string> {
+  vi.stubEnv('INTERNAL_API_KEY', 'internal-key-for-tests-0000000000000')
+  return { 'x-redamon-job': mintJobCredential({ tenant, projectId }) }
+}
 
 const params = { params: Promise.resolve({ id: 'proj-1' }) }
 
@@ -71,7 +78,8 @@ function put(body: Record<string, unknown>) {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }), params)
 }
-const get = () => GET(new NextRequest('http://localhost/api/projects/proj-1'), params)
+const get = (headers: Record<string, string> = {}) =>
+  GET(new NextRequest('http://localhost/api/projects/proj-1', { headers }), params)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -159,7 +167,7 @@ describe('GET', () => {
     for (const who of ['internal', 'scanner'] as const) {
       h.internal = who === 'internal'
       h.scanner = who === 'scanner'
-      const res = await get()
+      const res = await get(who === 'scanner' ? scanJob() : {})
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.nucleiSelectedCustomTemplates).toEqual(['mine.yaml', 'shipped.yaml'])

@@ -115,7 +115,8 @@ export function isInternalRequest(request: NextRequest): boolean {
  * must scope it to exactly GET /api/users/[id]/settings and GET /api/projects/[id]
  * (the middleware allowlist enforces the route scope; these route handlers accept
  * the principal). It is deliberately NOT accepted on llm-providers, tradecraft,
- * or any user-CRUD route.
+ * or any user-CRUD route. On its own it reads nothing: each of those routes also
+ * requires the scan's job credential (`scannerJobRefusal`, step 1.16).
  */
 export function isScannerRequest(request: NextRequest): boolean {
   const key = request.headers.get('x-internal-key')

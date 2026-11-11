@@ -83,7 +83,14 @@ describe('includeSkillContent only for the master key', () => {
   })
 
   test('the scanner key gets them neither', async () => {
-    const body = await (await GET(get(SCANNER), params)).json()
+    // Step 1.16: as a scan calls it, with its job credential, so the read succeeds.
+    const { mintJobCredential } = await import('@/lib/authz/machineCredential')
+    const req = new NextRequest('http://x/api/projects/proj-1?includeSkillContent=true', {
+      headers: { 'x-internal-key': SCANNER, 'x-redamon-job': mintJobCredential({ tenant: 'owner-1', projectId: 'proj-1' }) },
+    })
+    const res = await GET(req, params)
+    expect(res.status).toBe(200)
+    const body = await res.json()
     expect(body).not.toHaveProperty('userMcpServers')
     expect(body).not.toHaveProperty('userAttackSkills')
   })

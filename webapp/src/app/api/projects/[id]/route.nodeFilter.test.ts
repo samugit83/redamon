@@ -42,6 +42,13 @@ vi.mock('@/lib/access', async () => {
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { GET, PUT } from './route'
+import { mintJobCredential } from '@/lib/authz/machineCredential'
+
+// Step 1.16: a scan reads its project with the scanner key AND its job credential.
+function scanJob(projectId = 'proj-1', tenant = 'owner'): Record<string, string> {
+  vi.stubEnv('INTERNAL_API_KEY', 'internal-key-for-tests-0000000000000')
+  return { 'x-redamon-job': mintJobCredential({ tenant, projectId }) }
+}
 
 const RULES = { version: 1, kinds: { 'vuln.nuclei': { enabled: true, action: 'mute', rules: [] } } }
 const CONTRACT_RULES = { version: 1, kinds: { 'vuln.nuclei': { enabled: true, action: 'mute', rules: [
@@ -105,14 +112,15 @@ describe('PUT keeps only scalar columns', () => {
 })
 
 describe('GET hands node filters to service callers only', () => {
-  const get = () => GET(new NextRequest('http://x/api/projects/proj-1'), params)
+  const get = (headers: Record<string, string> = {}) =>
+    GET(new NextRequest('http://x/api/projects/proj-1', { headers }), params)
 
   test.each([
-    ['internal', () => mockIsInternal.mockReturnValue(true)],
-    ['scanner', () => mockIsScanner.mockReturnValue(true)],
-  ])('%s caller gets the rules and the exemptions', async (_label, arrange) => {
+    ['internal', () => mockIsInternal.mockReturnValue(true), () => ({})],
+    ['scanner', () => mockIsScanner.mockReturnValue(true), () => scanJob()],
+  ])('%s caller gets the rules and the exemptions', async (_label, arrange, headers) => {
     arrange()
-    const body = await (await get()).json()
+    const body = await (await get(headers())).json()
     expect(body.nodeFilter).toEqual({
       mode: 'denylist', applyToScans: true, rules: RULES, revision: 4,
       exemptions: [['Vulnerability', 'v1']],
@@ -145,7 +153,7 @@ describe('GET hands node filters to service callers only', () => {
       },
       nodeFilterExemptions: [{ label: 'Vulnerability', nodeKey: 'v1' }, { label: 'Secret', nodeKey: 's9' }],
     })
-    const body = await (await get()).json()
+    const body = await (await get(scanJob())).json()
     const wire = { nodeFilter: body.nodeFilter }
     if (process.env.NODE_FILTER_CONTRACT_WRITE === '1') {
       writeFileSync(PROJECT_GET_CONTRACT, JSON.stringify(wire, null, 2) + '\n')
@@ -159,6 +167,6 @@ describe('GET hands node filters to service callers only', () => {
       id: 'proj-1', userId: 'owner', user: { id: 'owner' }, authProfile: null,
       nodeFilter: null, nodeFilterExemptions: [],
     })
-    expect((await (await get()).json()).nodeFilter).toBeNull()
+    expect((await (await get(scanJob())).json()).nodeFilter).toBeNull()
   })
 })

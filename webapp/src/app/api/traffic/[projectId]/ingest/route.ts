@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
 import { iocColumns } from '@/lib/scaIntel'
+import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import type { Prisma } from '@prisma/client'
 
 // POST /api/traffic/[projectId]/ingest
 //
 // Phase 0 write path for captured HTTP transactions. Called by the recon
-// pipeline with `X-Internal-Key: SCANNER_API_KEY` (and, later, by the agent with
-// INTERNAL_API_KEY). There is NO browser-session path here - this route is
+// pipeline with `X-Internal-Key: SCANNER_API_KEY` plus its scan's job credential
+// (`X-Redamon-Job`), and by the agent with INTERNAL_API_KEY. There is NO browser-session path here - this route is
 // internal-only, gated in middleware to the internal/scanner allowlist.
 //
 // Trust model: tenant fields are NEVER taken from the request body. `projectId`
@@ -95,6 +96,11 @@ export async function POST(
     // Internal-only: recon (scanner key) or agent (internal key). No session path.
     if (!isScannerRequest(request) && !isInternalRequest(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    // Recon writes only into the project its job credential names (step 1.16).
+    if (!isInternalRequest(request)) {
+      const refused = scannerJobRefusal(request, { projectId })
+      if (refused) return refused
     }
 
     // Resolve tenant from the trusted server side, never from the body.

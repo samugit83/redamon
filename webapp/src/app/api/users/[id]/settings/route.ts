@@ -15,6 +15,7 @@ import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { normalizeGithubHost, secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
+import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { followUpWarning, type SaveWarning } from './saveWarnings'
 
@@ -193,10 +194,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // account (or be admin) and NEVER receive unmasked secrets; unmasking is
     // gated on a valid X-Internal-Key header (the agent/scanners), not the
     // client-supplied ?internal=true query param.
-    // S3/E6: the scoped scanner token reads its OSINT settings here (recon needs
-    // Shodan/URLScan keys). It is accepted like the internal principal on THIS
-    // route only (middleware enforces the route scope) and gets unmasked values.
-    const scanner = isScannerRequest(request)
+    // S3/E6: a scan reads its owner's OSINT settings here (recon needs the
+    // Shodan/URLScan keys) with the scoped scanner token, on THIS route only
+    // (middleware enforces the route scope), unmasked. The bare key reads nothing:
+    // it needs the scan's job credential naming this account (step 1.16, HD-20).
+    const scanner = isScannerRequest(request) && !isInternalRequest(request)
+    if (scanner) {
+      const refused = scannerJobRefusal(request, { tenant: id })
+      if (refused) return refused
+    }
     const denied = scanner ? null : await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
     const service = isInternalRequest(request) || scanner

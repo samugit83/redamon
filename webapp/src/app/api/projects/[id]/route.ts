@@ -25,6 +25,7 @@ import { projectModelProblem } from '@/lib/agentInTheLoop'
 import { templateSelectionRefusal, withoutUnselectableTemplates } from '@/lib/nucleiTemplateOwnership'
 import { isStdioServer } from '@/lib/mcp/schema'
 import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
+import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -71,6 +72,12 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // every browser caller may only read a project owned by their effective user
     // (admin only while simulating that user). Closes the BOLA where any
     // logged-in user could read another user's project by id (S15/E15).
+    // The scanner key reads a project only beside the job credential of a scan of
+    // that project (step 1.16, HD-20).
+    if (isScannerRequest(request) && !isInternalRequest(request)) {
+      const refused = scannerJobRefusal(request, { projectId: id })
+      if (refused) return refused
+    }
     const isServiceCaller = isInternalRequest(request) || isScannerRequest(request)
     if (!isServiceCaller) {
       const eff = await requireEffectiveUser()
