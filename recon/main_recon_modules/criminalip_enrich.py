@@ -437,7 +437,7 @@ def run_criminalip_enrichment(combined_result: dict, settings: dict) -> dict:
 
     cip_scope.finish("criminalip_enrich", payload=cip_data)
     from recon.helpers.passive_cve_coverage import note_cve_coverage
-    note_cve_coverage("criminalip", "criminalip_enrich", ips, checked,
+    note_cve_coverage("criminalip", "criminalip_enrich", ips, checked, considered=all_ips,
                       no_input=not all_ips, failed=failed)
     combined_result["criminalip"] = cip_data
     return combined_result

@@ -395,7 +395,7 @@ class _Graph:
         self.backfilled.append((user_id, project_id))
         return 0
 
-    def prune_unseen_findings(self, user_id, project_id, sources, since, keep_hosts=()):
+    def prune_unseen_findings(self, user_id, project_id, sources, since, keep_hosts=(), **kw):
         self.prunes.append((list(sources), tuple(keep_hosts)))
 
 

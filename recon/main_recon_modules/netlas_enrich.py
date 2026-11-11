@@ -395,8 +395,9 @@ def run_netlas_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
               f"kept as history, not written to the graph")
     netlas_scope.finish("netlas_enrich", payload=netlas_data)
     from recon.helpers.passive_cve_coverage import note_cve_coverage
-    note_cve_coverage("netlas", "netlas_enrich", ips, checked, reached=reached,
-                      no_input=not all_ips or (not is_ip_mode and not domain), failed=failed)
+    note_cve_coverage("netlas", "netlas_enrich", ips, checked, considered=all_ips,
+                      reached=reached, failed=failed,
+                      no_input=not all_ips or (not is_ip_mode and not domain))
     combined_result["netlas"] = netlas_data
     return combined_result
 

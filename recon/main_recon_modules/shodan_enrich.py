@@ -746,7 +746,7 @@ def run_shodan_enrichment(combined_result: dict, settings: dict[str, Any]) -> di
     shodan_scope.finish("shodan_enrich", payload=shodan_data)
     if do_cves:
         from recon.helpers.passive_cve_coverage import note_cve_coverage
-        note_cve_coverage("shodan", "shodan_enrich", ips, cve_checked,
+        note_cve_coverage("shodan", "shodan_enrich", ips, cve_checked, considered=all_ips,
                           no_input=not all_ips, failed=failed)
     combined_result["shodan"] = shodan_data
     return combined_result
