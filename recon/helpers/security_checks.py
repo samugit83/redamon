@@ -54,6 +54,15 @@ _HH_SCOPE = None
 # exclusions no control may be sent to, for the same span.
 _CONTROL_CACHE: Optional[catchall.ControlCache] = None
 _ROE_EXCLUDED: Tuple[str, ...] = ()
+# IP mode: each target address -> the ports this run found live on it, the
+# only ones a check may probe there (_ip_port_live). None outside IP mode and
+# outside a run_security_checks call, so domain mode and a leaf a test drives
+# directly are never gated.
+_IP_LIVE_PORTS: Optional[Dict[str, frozenset]] = None
+# IP mode: target_admission.ip_mode_url_admission's admit(url) for every
+# redirect hop the checks follow (_follow_admitted_redirects); None otherwise,
+# with the same lifetime as _IP_LIVE_PORTS.
+_IP_MODE_ADMIT = None
 
 
 def _hh_alive(url) -> None:
@@ -168,6 +177,35 @@ def _host_down(host: str) -> bool:
         return False
 
 
+_SCHEME_PORT = {"http": 80, "https": 443}
+
+
+def _canonical_ip(value) -> Optional[str]:
+    """One spelling per address (``[2001:0db8::1]`` -> ``2001:db8::1``); None for a name."""
+    try:
+        return str(ipaddress.ip_address(str(value).strip().strip("[]")))
+    except ValueError:
+        return None
+
+
+def _ip_port_live(host: str, port: int) -> bool:
+    """False when an IP-mode run has no evidence of ``port`` live on the address ``host``.
+
+    A blind https://<ip> on an address that serves HTTP only is refused, three
+    refusals mark "<ip>:443" unreachable, and the prune then keeps every
+    source's findings on that address, so a fixed finding never goes away. A
+    check therefore skips an IP literal's port that neither the port scan nor
+    httpx found live, counting no failure: those scanners cover every target,
+    so nothing found is their verdict. When one of them was cut short it is
+    not, and _keep_unproven_targets keeps those targets' findings instead. A
+    name, and every host outside IP mode, is probed as before.
+    """
+    if _IP_LIVE_PORTS is None:
+        return True
+    ip = _canonical_ip(host)
+    return ip is None or port in _IP_LIVE_PORTS.get(ip, ())
+
+
 # =============================================================================
 # Direct IP Access Security Checks
 # =============================================================================
@@ -186,6 +224,52 @@ def _is_ip_address(host: str) -> bool:
 # name only raises ConnectionError and would open a HostHealth breaker for a
 # host whose IP is alive and checked directly. Kept under its old name.
 _is_synthetic_ip_host = is_placeholder
+
+
+def _follow_admitted_redirects(url: str, response, timeout: int) -> Tuple[str, int]:
+    """IP mode's redirect walk for _analyze_redirect_chain, from the first
+    answer of ``url``: (the URL the chain ends at, the redirects in it), as
+    requests' own following reports them.
+
+    requests sends each hop wherever its Location points, so a target that
+    redirects to a name reaches that name's address, which need not be a
+    target (I-1). Here every hop passes hop_refusal with the run's admission
+    rule (a target address, or a scope name whose every current address is a
+    target) and the run's Rules of Engagement (a name or address they exclude,
+    I-3) before it is sent alone through _hh_get. A refused hop is not sent
+    and counts no host failure; the chain ends there, which is what the last
+    answer said. The SSRF guard is not applied: the admitted addresses are the
+    operator's targets, private ones included.
+    """
+    from recon.helpers.js_recon.hop_guard import UNSAFE, hop_refusal
+    roe = {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": list(_ROE_EXCLUDED)} if _ROE_EXCLUDED else None
+    jar = requests.cookies.RequestsCookieJar()
+    current, hops = url, 0
+    while True:
+        location = catchall.header_map(response).get("location", "")
+        if catchall.status_of(response) not in requests.models.REDIRECT_STATI or not location:
+            return current, hops
+        if hops >= requests.models.DEFAULT_REDIRECT_LIMIT:
+            raise requests.exceptions.TooManyRedirects(f"Exceeded {hops} redirects")
+        try:
+            target = urljoin(current, location)
+        except ValueError as exc:  # a Location the target wrote, e.g. "http://[bad"
+            raise requests.exceptions.InvalidURL(str(exc)) from exc
+        refusal = hop_refusal(target, settings=roe, admit=_IP_MODE_ADMIT,
+                              url_guard=lambda _url: True)
+        if refusal == UNSAFE:
+            # Not an http(s) URL with a host: requests would raise here too.
+            raise requests.exceptions.InvalidURL(f"redirect to {target!r}")
+        hops += 1
+        if refusal:
+            return target, hops
+        set_now = getattr(response, "cookies", None)
+        if isinstance(set_now, requests.cookies.RequestsCookieJar):
+            jar.update(set_now)
+        response = _hh_get(target, timeout=timeout, allow_redirects=False, verify=False,
+                           headers={"User-Agent": DEFAULT_BROWSER_UA},
+                           **({"cookies": jar} if len(jar) else {}))
+        current = target
 
 
 def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
@@ -227,18 +311,23 @@ def _analyze_redirect_chain(ip: str, scheme: str, timeout: int = 10) -> Dict:
             
             # Now follow redirects to see where it goes
             try:
-                final_response = _hh_get(
-                    url,
-                    timeout=timeout,
-                    allow_redirects=True,
-                    verify=False,
-                    headers={"User-Agent": DEFAULT_BROWSER_UA}
-                )
-                result["final_url"] = final_response.url
-                result["redirect_count"] = len(final_response.history)
-                
+                if _IP_MODE_ADMIT is not None:
+                    final_url, redirect_count = _follow_admitted_redirects(
+                        url, initial_response, timeout)
+                else:
+                    final_response = _hh_get(
+                        url,
+                        timeout=timeout,
+                        allow_redirects=True,
+                        verify=False,
+                        headers={"User-Agent": DEFAULT_BROWSER_UA}
+                    )
+                    final_url, redirect_count = final_response.url, len(final_response.history)
+                result["final_url"] = final_url
+                result["redirect_count"] = redirect_count
+
                 # .hostname, not netloc.split(':'): an IPv6 netloc is "[2001:db8::1]:8080".
-                final_host = urlparse(final_response.url).hostname or ""
+                final_host = urlparse(final_url).hostname or ""
                 result["final_host"] = final_host
                 
                 # Check if final destination is a hostname (not an IP)
@@ -830,6 +919,8 @@ def check_cache_purge_exposed(ip: str, hostnames: Optional[List[str]] = None,
     if hostnames:
         headers["Host"] = hostnames[0]
     for scheme in ("http", "https"):
+        if not _ip_port_live(ip, _SCHEME_PORT[scheme]):
+            continue
         base = f"{scheme}://{_url_host(ip)}/"
         try:
             control = _hh_request("RDMNNOOP", base, timeout=timeout, verify=False,
@@ -1039,17 +1130,17 @@ def run_direct_ip_checks(
         ip_findings = []
         hostnames = ip_to_hostnames.get(ip) or None
 
-        if enabled_checks.get("direct_ip_http", True):
+        if enabled_checks.get("direct_ip_http", True) and _ip_port_live(ip, 80):
             result = check_direct_ip_http(ip, hostnames=hostnames, timeout=timeout)
             if result:
                 ip_findings.append(result)
 
-        if enabled_checks.get("direct_ip_https", True):
+        if enabled_checks.get("direct_ip_https", True) and _ip_port_live(ip, 443):
             result = check_direct_ip_https(ip, hostnames=hostnames, timeout=timeout)
             if result:
                 ip_findings.append(result)
 
-        if enabled_checks.get("ip_api_exposed", True):
+        if enabled_checks.get("ip_api_exposed", True) and _ip_port_live(ip, 80):
             result = check_ip_api_exposed(ip, timeout)
             if result:
                 ip_findings.append(result)
@@ -1075,7 +1166,7 @@ def run_direct_ip_checks(
     if enabled_checks.get("waf_bypass", True):
         for subdomain, subdomain_ips in subdomains_to_ips.items():
             for ip in subdomain_ips:
-                if ip in cdn_ips:
+                if ip in cdn_ips or not _ip_port_live(ip, 443):
                     continue
                 result = check_waf_bypass(subdomain, ip, timeout)
                 if result:
@@ -1234,7 +1325,7 @@ def run_tls_checks(
             return []
         host_findings = []
 
-        if enabled_checks.get("tls_expiring_soon", True):
+        if enabled_checks.get("tls_expiring_soon", True) and _ip_port_live(hostname, 443):
             result = check_tls_expiring_soon(hostname, days_threshold=expiry_days_threshold, timeout=timeout)
             if result:
                 host_findings.append(result)
@@ -2221,11 +2312,12 @@ def run_auth_checks(
             return []
         host_findings = []
 
-        if enabled_checks.get("login_no_https", True):
+        if enabled_checks.get("login_no_https", True) and _ip_port_live(hostname, 80):
             results = check_login_no_https(hostname, timeout=timeout)
             host_findings.extend(results)
 
-        if enabled_checks.get("session_no_secure", True) or enabled_checks.get("session_no_httponly", True):
+        if ((enabled_checks.get("session_no_secure", True) or enabled_checks.get("session_no_httponly", True))
+                and _ip_port_live(hostname, 443)):
             results = check_session_cookies(hostname, timeout=timeout)
             # Filter based on which checks are enabled
             for finding in results:
@@ -2234,7 +2326,7 @@ def run_auth_checks(
                 elif finding["type"] == "session_no_httponly" and enabled_checks.get("session_no_httponly", True):
                     host_findings.append(finding)
 
-        if enabled_checks.get("basic_auth_no_tls", True):
+        if enabled_checks.get("basic_auth_no_tls", True) and _ip_port_live(hostname, 80):
             result = check_basic_auth_no_tls(hostname, timeout=timeout)
             if result:
                 host_findings.append(result)
@@ -3239,7 +3331,7 @@ def run_app_security_checks(
     findings = []
 
     def check_single_host(hostname: str) -> List[Dict]:
-        if _host_down(hostname):
+        if _host_down(hostname) or not _ip_port_live(hostname, 443):
             return []
         host_findings = []
 
@@ -3324,8 +3416,10 @@ def check_no_rate_limiting(urls: List[str], hostname: str, timeout: int = 5) -> 
         except Exception:
             pass
 
-    # Fallback: also check common endpoints if no auth URLs found from recon
-    if not auth_urls:
+    # Fallback: also check common endpoints if no auth URLs found from recon.
+    # They are guesses on https, so an IP-mode address needs :443 live; the
+    # discovered URLs above come from live sources and need no evidence.
+    if not auth_urls and _ip_port_live(hostname, 443):
         fallback_endpoints = [
             "/login", "/signin", "/sign-in", "/auth", "/authenticate",
             "/admin/login", "/wp-login.php", "/user/login", "/api/login",
@@ -3572,7 +3666,7 @@ def run_security_headers_checks(
     findings = []
 
     def check_single_host(hostname: str) -> List[Dict]:
-        if _host_down(hostname):
+        if _host_down(hostname) or not _ip_port_live(hostname, 443):
             return []
         host_findings = []
 
@@ -3730,6 +3824,105 @@ def _ip_mode_hosts(recon_data: Dict[str, Any], hostnames: List[str], ips: List[s
     return names + [ip for ip in sorted(ips) if ip not in names], ips
 
 
+def _ip_mode_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozenset]]:
+    """IP mode: {address: the ports this run found live on it}; None outside IP mode.
+
+    A port is live when the port scan lists it open, or httpx has a live URL on
+    it: by the URL's own host, or by the address httpx reached for a name. Any
+    HTTP answer is life, so the URL's status does not matter.
+    """
+    from recon.helpers.target_admission import ip_mode_targets
+    if ip_mode_targets(recon_data) is None:
+        return None
+    live: Dict[str, Set[int]] = {}
+
+    def add(address, port) -> None:
+        ip = _canonical_ip(address) if address else None
+        if ip and port:
+            live.setdefault(ip, set()).add(port)
+
+    port_scan = recon_data.get("port_scan")
+    if isinstance(port_scan, dict):
+        for address, (ports, _entry) in _open_ports_by_ip(port_scan).items():
+            for port in ports:
+                add(address, port)
+    by_url = (recon_data.get("http_probe") or {}).get("by_url") or {}
+    for key, entry in (by_url.items() if isinstance(by_url, dict) else ()):
+        entry = entry if isinstance(entry, dict) else {}
+        for url in {key, entry.get("url")}:
+            try:
+                parts = urlparse(str(url or ""))
+                scheme = parts.scheme.lower()
+                port = parts.port or _SCHEME_PORT.get(scheme)
+            except ValueError:
+                continue
+            if scheme in _SCHEME_PORT:
+                add(parts.hostname, port)
+                add(entry.get("ip"), port)
+    return {ip: frozenset(ports) for ip, ports in live.items()}
+
+
+#: The coverage names a cut of the live-port evidence is recorded under: a
+#: degraded source (httpx over its budget), a gap (naabu stopped before it
+#: wrote a port) or a phase error (a crashed scan).
+_EVIDENCE_COVERAGE = frozenset({"port_scan", "naabu", "masscan", "masscan_scan", "http_probe"})
+_PORT_SCAN_COVERAGE = _EVIDENCE_COVERAGE - {"http_probe"}
+
+
+def _evidence_cuts(recon_data: Dict[str, Any]) -> Set[str]:
+    """The evidence sources this run cut short or lost, by coverage name;
+    "coverage" when the record itself is unknown, which counts as all of them."""
+    errors = (recon_data.get("metadata") or {}).get("phase_errors") or {}
+    cuts = {name for name in errors if name in _EVIDENCE_COVERAGE}
+    try:
+        from recon.helpers import circuit_breaker as cb
+        report = cb.coverage_report()
+    except Exception:  # noqa: BLE001 - unknown coverage: assume every source was cut
+        return cuts | {"coverage"}
+    cuts |= set(report.degraded_sources) & _EVIDENCE_COVERAGE
+    for gap in report.gaps:
+        cuts |= {gap.get("source"), gap.get("module")} & _EVIDENCE_COVERAGE
+    return cuts
+
+
+def _keep_unproven_targets(recon_data: Dict[str, Any], ips: List[str]) -> None:
+    """IP mode: keep the security_check findings of the targets a cut evidence
+    source left unproven. Never raises.
+
+    With the port scan and httpx complete, a port neither found live is their
+    verdict, and the checks _ip_port_live skips there prune as clean. A cut
+    that records no host (naabu stopped before writing a port, httpx over its
+    budget) would make a live target it never reached read as clean too. So,
+    for security_check alone: a target with no evidence at all is kept, and so
+    is one with an unproven web port when no finished port scan says it is
+    closed. Nothing is probed blind, and none is called unreachable.
+    """
+    from recon.helpers import circuit_breaker as cb
+    try:
+        cuts = _evidence_cuts(recon_data)
+        if not cuts:
+            return
+        port_verdict = ("port_scan" in recon_data and "coverage" not in cuts
+                        and not cuts & _PORT_SCAN_COVERAGE)
+        kept = []
+        for ip in ips:
+            if not (_IP_LIVE_PORTS or {}).get(_canonical_ip(ip) or ""):
+                kept.append(ip)
+            elif not port_verdict and not (_ip_port_live(ip, 80) and _ip_port_live(ip, 443)):
+                kept.append(ip)
+        if not kept:
+            return
+        why = ", ".join(sorted(cuts))
+        cb.note_degraded("security_checks", hosts=kept, host_source="security_check",
+                         source_only_hosts=True,
+                         reason=f"no live-port evidence ({why} cut short)")
+        print(f"[!][SecurityCheck] {len(kept)} IP-mode target(s) without live-port evidence "
+              f"({why} cut short): not probed there, earlier findings kept")
+    except Exception:  # noqa: BLE001 - not knowing which: keep them all
+        cb.note_degraded("security_checks", sources=["security_check"],
+                         reason="live-port evidence unknown")
+
+
 def run_security_checks(
     recon_data: Dict[str, Any],
     enabled_checks: Dict[str, bool],
@@ -3763,12 +3956,15 @@ def run_security_checks(
     Returns:
         Dictionary with security check findings
     """
-    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED
+    global _HH_SCOPE, _CONTROL_CACHE, _ROE_EXCLUDED, _IP_LIVE_PORTS, _IP_MODE_ADMIT
     from recon.helpers import circuit_breaker as _cb
+    from recon.helpers.target_admission import ip_mode_url_admission
     _HH_SCOPE = _cb.scope((), label="SecurityCheck", unit="host(s)")
     _CONTROL_CACHE = catchall.ControlCache()
     _ROE_EXCLUDED = tuple(h for h in (roe_excluded_hosts or ()) if isinstance(h, str) and h.strip())
     try:
+        _IP_LIVE_PORTS = _ip_mode_live_ports(recon_data)
+        _IP_MODE_ADMIT = ip_mode_url_admission(recon_data)
         return _run_security_checks(
             recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
             ai_classifier_enabled, ai_model, ai_user_id, ai_project_id, ai_engine,
@@ -3779,6 +3975,8 @@ def run_security_checks(
         _HH_SCOPE = None
         _CONTROL_CACHE = None
         _ROE_EXCLUDED = ()
+        _IP_LIVE_PORTS = None
+        _IP_MODE_ADMIT = None
 
 
 def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, max_workers,
@@ -3842,6 +4040,11 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
     print(f"[*][SecurityCheck] Targets: {len(hostnames)} hostnames, {len(ips)} IPs")
     print(f"[*][SecurityCheck] Timeout: {timeout}s")
     print(f"[*][SecurityCheck] Workers: {max_workers}")
+    if _IP_LIVE_PORTS is not None:
+        print(f"[*][SecurityCheck] IP mode: a target is probed only on a port this run found live "
+              f"(:80 on {sum(_ip_port_live(ip, 80) for ip in ips)}, "
+              f":443 on {sum(_ip_port_live(ip, 443) for ip in ips)} of {len(ips)} target(s))")
+        _keep_unproven_targets(recon_data, ips)
 
     # Count enabled checks by category
     ip_checks = ["direct_ip_http", "direct_ip_https", "ip_api_exposed", "waf_bypass"]
