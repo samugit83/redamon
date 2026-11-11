@@ -379,3 +379,81 @@ def run_credential_claims(value) -> Optional[dict]:
     the master key. A handler called directly (a unit test) gets the Depends marker,
     which counts as the master key: only FastAPI fills it in production."""
     return value if isinstance(value, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Master key, or scanner key + job credential (RBAC T15, step 1.16): the scan routes
+# ---------------------------------------------------------------------------
+JOB_CREDENTIAL_HEADER = "x-redamon-job"
+
+
+def job_credential_refusal(code: str, status: int = 401) -> HTTPException:
+    """Log a refused job credential and build the answer the scan container reads."""
+    logger.warning("[rbac] job credential refused reason=%s", code)
+    return HTTPException(status_code=status, detail={
+        "error": "job credential expired" if code == "expired" else "job credential refused",
+        "code": f"job_credential_{code}",
+    })
+
+
+async def require_master_or_job_credential(request: Request) -> Optional[dict]:
+    """FastAPI dependency for the scan containers' routes (/llm/*, /jev/*): the MASTER
+    key, or the scanner key TOGETHER WITH a valid job credential (X-Redamon-Job), the
+    one the webapp minted for the scan's start. Fails closed; billed.
+
+    It returns None for the master key (the webapp: the body's user_id stands and the
+    LLM limits count against it) and the verified claims for a scan, which acts for the
+    credential's tenant and project only: a body user_id or project_id naming anyone
+    else is refused (403 `job_credential_user_mismatch` / `_project_mismatch`), one
+    left out is filled from the claims (`scan_job_ids`), and the limits count against
+    the tenant. The bare scanner key answers 401 `job_credential_missing`. A weak
+    master key answers 503: no credential can be verified without it.
+    """
+    if master_key_is_weak():
+        raise HTTPException(
+            status_code=503,
+            detail="INTERNAL_API_KEY is not configured; this endpoint is disabled. "
+                   "Generate the secret via redamon.sh.",
+        )
+    provided = request.headers.get("x-internal-key", "")
+    if provided and hmac.compare_digest(provided.encode(), os.environ["INTERNAL_API_KEY"].encode()):
+        _enforce_llm_limits(request, await _extract_user_id(request))
+        return None
+    scanner = os.environ.get("SCANNER_API_KEY", "")
+    if not (scanner and scanner != _CHANGEME and provided
+            and hmac.compare_digest(provided.encode(), scanner.encode())):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = request.headers.get(JOB_CREDENTIAL_HEADER, "")
+    if not token:
+        raise job_credential_refusal("missing")
+    from machine_credential import CredentialRefused, verify_job_credential
+    try:
+        claims = verify_job_credential(token)
+    except CredentialRefused as e:
+        raise job_credential_refusal(e.code)
+    body = await _json_body(request)
+    for field, claim, code in (("user_id", "ten", "user_mismatch"), ("project_id", "pid", "project_mismatch")):
+        value = body.get(field)
+        if value and str(value) != claims[claim]:
+            raise job_credential_refusal(code, 403)
+    _enforce_llm_limits(request, claims["ten"])
+    return claims
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def scan_job_ids(value, user_id: Optional[str], project_id: Optional[str]) -> tuple:
+    """The (user, project) a scan route acts for: the job credential's when one opened
+    it (the gate refused other body ids), else the body's (the master key). A handler
+    called directly (a unit test) gets the Depends marker, which counts as the master
+    key: only FastAPI fills it in production."""
+    if isinstance(value, dict):
+        return value["ten"], value["pid"]
+    return user_id, project_id
+

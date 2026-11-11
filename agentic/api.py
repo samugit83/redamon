@@ -34,8 +34,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
-                       require_master_internal_auth, require_master_or_run_credential,
-                       run_credential_claims, set_run_liveness)
+                       require_master_internal_auth, require_master_or_job_credential,
+                       require_master_or_run_credential, run_credential_claims,
+                       scan_job_ids, set_run_liveness)
 from kali_auth import kali_auth_headers
 from logging_config import setup_logging
 from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
@@ -728,22 +729,23 @@ def _build_llm_with_model_for_user(model_name: str, user_id: Optional[str]):
     )
 
 
-@app.post("/llm/ffuf-extensions", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def llm_ffuf_extensions(body: FfufExtensionsRequest):
+@app.post("/llm/ffuf-extensions", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def llm_ffuf_extensions(body: FfufExtensionsRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     """Suggest FFuf file extensions for a target based on its response headers.
 
     Called by the recon container's AI planner when FFUF_AI_EXTENSIONS is on.
     Reuses the same per-user LLM provider resolution as the agent itself.
     """
+    user_id, _ = scan_job_ids(cred, body.user_id, body.project_id)
     import json as json_mod
 
     logger.info(
         "ffuf-extensions: url=%s model=%s user=%s headers=%d-keys",
-        body.url, body.model, body.user_id, len(body.headers or {}),
+        body.url, body.model, user_id, len(body.headers or {}),
     )
 
     try:
-        llm = _build_llm_with_model_for_user(body.model, body.user_id)
+        llm = _build_llm_with_model_for_user(body.model, user_id)
     except LoopModelNotSupportedHere:
         return _loop_model_refusal(body.model)
     except Exception as e:
@@ -828,23 +830,24 @@ Respond with ONLY a JSON object of this exact shape, no prose:
 {"tags": ["tag1", "tag2", ...]}"""
 
 
-@app.post("/llm/nuclei-tags", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def llm_nuclei_tags(body: NucleiTagsRequest):
+@app.post("/llm/nuclei-tags", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def llm_nuclei_tags(body: NucleiTagsRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     """Suggest Nuclei tags for a vuln scan based on tech fingerprint.
 
     Called by the recon container's AI planner when NUCLEI_AI_TAGS is on.
     Reuses the same per-user LLM provider resolution as the agent itself.
     """
+    user_id, _ = scan_job_ids(cred, body.user_id, body.project_id)
     import json as json_mod
 
     logger.info(
         "nuclei-tags: model=%s user=%s techs=%d servers=%d candidates=%d",
-        body.model, body.user_id, len(body.technologies or []),
+        body.model, user_id, len(body.technologies or []),
         len(body.servers or []), len(body.candidates or []),
     )
 
     try:
-        llm = _build_llm_with_model_for_user(body.model, body.user_id)
+        llm = _build_llm_with_model_for_user(body.model, user_id)
     except LoopModelNotSupportedHere:
         return _loop_model_refusal(body.model)
     except Exception as e:
@@ -942,23 +945,24 @@ Respond with ONLY a JSON object of this exact shape, no prose:
 {"waf_detected": true|false, "waf_type": "cloudflare"|null, "confidence": 0..100, "reasoning": "..."}"""
 
 
-@app.post("/llm/waf-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def llm_waf_classify(body: WafClassifyRequest):
+@app.post("/llm/waf-classify", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def llm_waf_classify(body: WafClassifyRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     """Classify whether a response came through a WAF/CDN.
 
     Called by the recon container's WAF AI classifier when WAF_AI_CLASSIFIER is on.
     Reuses the same per-user LLM provider resolution as the agent itself.
     """
+    user_id, _ = scan_job_ids(cred, body.user_id, body.project_id)
     import json as json_mod
 
     logger.info(
         "waf-classify: url=%s status=%d model=%s user=%s headers=%d body=%dB rt=%dms",
-        body.url, body.status_code, body.model, body.user_id,
+        body.url, body.status_code, body.model, user_id,
         len(body.headers or {}), len(body.body_sample or ''), body.response_time_ms,
     )
 
     try:
-        llm = _build_llm_with_model_for_user(body.model, body.user_id)
+        llm = _build_llm_with_model_for_user(body.model, user_id)
     except LoopModelNotSupportedHere:
         return _loop_model_refusal(body.model)
     except Exception as e:
@@ -1070,8 +1074,8 @@ Respond with ONLY a JSON object of this exact shape, no prose:
 {"is_blocked": true|false, "confidence": 0..100, "reason": "..."}"""
 
 
-@app.post("/llm/nuclei-fp-filter", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def llm_nuclei_fp_filter(body: NucleiFpFilterRequest):
+@app.post("/llm/nuclei-fp-filter", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def llm_nuclei_fp_filter(body: NucleiFpFilterRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     """Classify whether a Nuclei response is a WAF/rate-limit block page
     rather than a real vulnerability hit.
 
@@ -1079,16 +1083,17 @@ async def llm_nuclei_fp_filter(body: NucleiFpFilterRequest):
     NUCLEI_AI_RESPONSE_FILTER is on. Reuses the same per-user LLM provider
     resolution as the agent itself.
     """
+    user_id, _ = scan_job_ids(cred, body.user_id, body.project_id)
     import json as json_mod
 
     logger.info(
         "nuclei-fp-filter: template=%s tags=%s status=%s body=%dB model=%s user=%s",
         body.template_id, body.tags, body.status_line[:60],
-        len(body.response_sample or ''), body.model, body.user_id,
+        len(body.response_sample or ''), body.model, user_id,
     )
 
     try:
-        llm = _build_llm_with_model_for_user(body.model, body.user_id)
+        llm = _build_llm_with_model_for_user(body.model, user_id)
     except LoopModelNotSupportedHere:
         return _loop_model_refusal(body.model)
     except Exception as e:
@@ -1206,24 +1211,25 @@ Respond with ONLY a JSON object of this exact shape, no prose:
 {"is_waf_block": true|false, "confidence": 0..100, "reason": "..."}"""
 
 
-@app.post("/llm/takeover-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def llm_takeover_classify(body: TakeoverClassifyRequest):
+@app.post("/llm/takeover-classify", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def llm_takeover_classify(body: TakeoverClassifyRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     """Disambiguate a takeover finding from a WAF block masquerading as one.
 
     Called by the recon container's takeover scanner when
     TAKEOVER_AI_CLASSIFIER is on. Reuses the same per-user LLM provider
     resolution as the agent itself.
     """
+    user_id, _ = scan_job_ids(cred, body.user_id, body.project_id)
     import json as json_mod
 
     logger.info(
         "takeover-classify: host=%s provider=%s status=%d body=%dB model=%s user=%s",
         body.hostname, body.expected_provider, body.status_code,
-        len(body.response_sample or ''), body.model, body.user_id,
+        len(body.response_sample or ''), body.model, user_id,
     )
 
     try:
-        llm = _build_llm_with_model_for_user(body.model, body.user_id)
+        llm = _build_llm_with_model_for_user(body.model, user_id)
     except LoopModelNotSupportedHere:
         return _loop_model_refusal(body.model)
     except Exception as e:
@@ -1342,6 +1348,12 @@ def _log_jev(endpoint: str, user_id: str, project_id: str, n_questions: int,
     )
 
 
+def _scan_ids(cred, body) -> tuple:
+    """The (user, project) a /jev/* call acts for: its job credential's, else the body's."""
+    user_id, project_id = scan_job_ids(cred, body.user_id, body.project_id)
+    return user_id or "", project_id or ""
+
+
 async def _run_jev(endpoint: str, user_id: str, project_id: str, n_questions: int, coro):
     """Shared wrapper: owner/token preamble, timing, fixed-error mapping, log."""
     import time as _time
@@ -1374,42 +1386,42 @@ async def _run_jev(endpoint: str, user_id: str, project_id: str, n_questions: in
     return result
 
 
-@app.post("/jev/ffuf-extensions", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_ffuf_extensions(body: FfufExtensionsRequest):
+@app.post("/jev/ffuf-extensions", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_ffuf_extensions(body: FfufExtensionsRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "ffuf-extensions", body.user_id or "", body.project_id or "",
+        "ffuf-extensions", *_scan_ids(cred, body),
         len(jev_hooks.FFUF_JEV_CATALOG),
         lambda key: jev_hooks.ffuf_extensions(key, body.url, body.headers or {}, body.max_extensions),
     )
 
 
-@app.post("/jev/nuclei-tags", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_nuclei_tags(body: NucleiTagsRequest):
+@app.post("/jev/nuclei-tags", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_nuclei_tags(body: NucleiTagsRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "nuclei-tags", body.user_id or "", body.project_id or "",
+        "nuclei-tags", *_scan_ids(cred, body),
         len(body.candidates or []),
         lambda key: jev_hooks.nuclei_tags(key, body.technologies, body.servers,
                                           body.candidates, body.max_tags),
     )
 
 
-@app.post("/jev/waf-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_waf_classify(body: WafClassifyRequest):
+@app.post("/jev/waf-classify", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_waf_classify(body: WafClassifyRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "waf-classify", body.user_id or "", body.project_id or "", 2,
+        "waf-classify", *_scan_ids(cred, body), 2,
         lambda key: jev_hooks.waf_classify(key, body.url, body.status_code, body.headers or {},
                                            body.body_sample, body.response_time_ms),
     )
 
 
-@app.post("/jev/takeover-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_takeover_classify(body: TakeoverClassifyRequest):
+@app.post("/jev/takeover-classify", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_takeover_classify(body: TakeoverClassifyRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "takeover-classify", body.user_id or "", body.project_id or "", 1,
+        "takeover-classify", *_scan_ids(cred, body), 1,
         lambda key: jev_hooks.takeover_classify(key, body.hostname, body.expected_provider,
                                                 body.status_code, body.headers or {},
                                                 body.response_sample),
@@ -1557,68 +1569,68 @@ class RouteExposureAssessRequest(BaseModel):
     project_id: Optional[str] = None
 
 
-@app.post("/jev/ffuf-base-paths", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_ffuf_base_paths(body: FfufBasePathsRequest):
+@app.post("/jev/ffuf-base-paths", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_ffuf_base_paths(body: FfufBasePathsRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "ffuf-base-paths", body.user_id or "", body.project_id or "", len(body.candidates),
+        "ffuf-base-paths", *_scan_ids(cred, body), len(body.candidates),
         lambda key: jev_hooks.ffuf_base_paths(key, body.candidates, body.cap),
     )
 
 
-@app.post("/jev/page-type", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_page_type(body: PageTypeRequest):
+@app.post("/jev/page-type", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_page_type(body: PageTypeRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "page-type", body.user_id or "", body.project_id or "",
+        "page-type", *_scan_ids(cred, body),
         len(body.pages) * len(jev_hooks.PAGE_CLASSES),
         lambda key: jev_hooks.page_type(key, [p.model_dump() for p in body.pages]),
     )
 
 
-@app.post("/jev/tool-health", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_tool_health(body: ToolHealthRequest):
+@app.post("/jev/tool-health", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_tool_health(body: ToolHealthRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "tool-health", body.user_id or "", body.project_id or "", 1,
+        "tool-health", *_scan_ids(cred, body), 1,
         lambda key: jev_hooks.tool_health(key, body.tool, body.return_code, body.elapsed_s,
                                           body.seed_count, body.stderr),
     )
 
 
-@app.post("/jev/crawl-seed-order", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_crawl_seed_order(body: CrawlSeedOrderRequest):
+@app.post("/jev/crawl-seed-order", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_crawl_seed_order(body: CrawlSeedOrderRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "crawl-seed-order", body.user_id or "", body.project_id or "", len(body.hosts),
+        "crawl-seed-order", *_scan_ids(cred, body), len(body.hosts),
         lambda key: jev_hooks.crawl_seed_order(key, [h.model_dump() for h in body.hosts]),
     )
 
 
-@app.post("/jev/serialized-classify", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_serialized_classify(body: SerializedClassifyRequest):
+@app.post("/jev/serialized-classify", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_serialized_classify(body: SerializedClassifyRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "serialized-classify", body.user_id or "", body.project_id or "",
+        "serialized-classify", *_scan_ids(cred, body),
         len(body.blobs) * 2,
         lambda key: jev_hooks.serialized_classify(key, [b.model_dump() for b in body.blobs]),
     )
 
 
-@app.post("/jev/route-privacy-rank", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_route_privacy_rank(body: RoutePrivacyRankRequest):
+@app.post("/jev/route-privacy-rank", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_route_privacy_rank(body: RoutePrivacyRankRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "route-privacy-rank", body.user_id or "", body.project_id or "", len(body.routes),
+        "route-privacy-rank", *_scan_ids(cred, body), len(body.routes),
         lambda key: jev_hooks.route_privacy_rank(key, [r.model_dump() for r in body.routes]),
     )
 
 
-@app.post("/jev/route-exposure-assess", tags=["LLM"], dependencies=[Depends(require_internal_auth)])
-async def jev_route_exposure_assess(body: RouteExposureAssessRequest):
+@app.post("/jev/route-exposure-assess", tags=["LLM"], dependencies=[Depends(require_master_or_job_credential)])
+async def jev_route_exposure_assess(body: RouteExposureAssessRequest, cred: Optional[dict] = Depends(require_master_or_job_credential)):
     import jev_hooks
     return await _run_jev(
-        "route-exposure-assess", body.user_id or "", body.project_id or "",
+        "route-exposure-assess", *_scan_ids(cred, body),
         len(body.candidates) * 2,
         lambda key: jev_hooks.route_exposure_assess(key, [c.model_dump() for c in body.candidates]),
     )

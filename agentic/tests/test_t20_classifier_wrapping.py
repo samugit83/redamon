@@ -14,6 +14,7 @@ Run inside the agent container:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from contextlib import asynccontextmanager
@@ -59,8 +60,11 @@ class T20ClassifierWrapping(unittest.TestCase):
 
     def _capture(self, endpoint: str, body: dict) -> _CapturingLLM:
         stub = _CapturingLLM()
-        with patch.object(self.api, "_build_llm_with_model_for_user", return_value=stub):
-            self.TestClient(self.api.app).post(endpoint, json=body)
+        # The webapp's master key: the /llm/* routes fail closed without one (step 1.16).
+        master = "t20-test-master-key"
+        with patch.object(self.api, "_build_llm_with_model_for_user", return_value=stub), \
+                patch.dict(os.environ, {"INTERNAL_API_KEY": master}):
+            self.TestClient(self.api.app).post(endpoint, json=body, headers={"x-internal-key": master})
         self.assertIsNotNone(stub.messages, f"{endpoint} never reached the LLM")
         return stub
 

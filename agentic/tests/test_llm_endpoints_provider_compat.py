@@ -26,6 +26,7 @@ Run inside the agent container:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from contextlib import asynccontextmanager
@@ -115,12 +116,14 @@ class _LLMEndpointFixture(unittest.TestCase):
     def _post_with_stub_llm(self, endpoint: str, body: dict, llm_content):
         """POST to `endpoint`, with `_build_llm_with_model_for_user` patched
         to return a StubLLM emitting `llm_content`."""
+        # The webapp's master key: the /llm/* routes fail closed without one (step 1.16).
+        master = "provider-compat-test-master-key"
         with patch.object(
             self.api_module,
             "_build_llm_with_model_for_user",
             return_value=_StubLLM(llm_content),
-        ):
-            return self._client().post(endpoint, json=body)
+        ), patch.dict(os.environ, {"INTERNAL_API_KEY": master}):
+            return self._client().post(endpoint, json=body, headers={"x-internal-key": master})
 
 
 # ---------------------------------------------------------------------------

@@ -78,9 +78,11 @@ class Endpoints(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def post(self, path, body):
-        with mock.patch.dict(os.environ, {**ON, "INTERNAL_API_KEY": ""}), \
+        # The master key: the /llm/* routes fail closed without one (step 1.16).
+        master = "loop-routing-test-master-key"
+        with mock.patch.dict(os.environ, {**ON, "INTERNAL_API_KEY": master}), \
                 mock.patch("requests.get", side_effect=AssertionError("providers must not be fetched")):
-            return self.client.post(path, json=body)
+            return self.client.post(path, json=body, headers={"x-internal-key": master})
 
     def assert_refused(self, resp):
         self.assertEqual(resp.status_code, 400, resp.text)

@@ -4,8 +4,8 @@ The scanner key opens only the scan containers' routes (NF-01, steps 1.9, 1.15, 
 SCANNER_API_KEY sits in every target-facing scan container. Step 1.9 moves every route
 whose only caller is the webapp (the master T15 list) to `require_configured_master_auth`:
 the master key, fail-closed. Step 1.15 moved the in-sandbox routes to run credentials;
-step 1.16 moves the scan routes (`/llm/*`, `/jev/*`) to job credentials, and only then
-does no route accept the bare scanner key at all.
+step 1.16 moved the scan routes (`/llm/*`, `/jev/*`) to job credentials: since then no
+route accepts the bare scanner key at all.
 
 The walk below is behavioural: every `llm_guard` dependency a route declares is called
 with a request carrying only the scanner key, and the route accepts that key when all
@@ -21,7 +21,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from fastapi.routing import APIRoute  # noqa: E402
 from starlette.requests import Request  # noqa: E402
@@ -46,7 +45,7 @@ MASTER_LIST = [
     ("GET", "/kali/toolbox"),
 ]
 
-# The scan containers' routes, which keep the scanner key until step 1.16.
+# The scan containers' routes: the scanner key opens them only beside a job credential.
 SCAN_ROUTE_PREFIXES = ("/llm/", "/jev/")
 
 GATE_503 = "INTERNAL_API_KEY is not configured"
@@ -59,6 +58,7 @@ with patch.dict(os.environ, KEYS):
     with patch("api.lifespan", _no_lifespan):
         import api  # noqa: E402
 import llm_guard  # noqa: E402
+import machine_credential  # noqa: E402
 
 
 def _route(method: str, path: str) -> APIRoute:
@@ -170,7 +170,12 @@ class WholeAppTests(_Keys):
         stop = _route("POST", "/emergency-stop-all")
         self.assertTrue(_accepts(stop, {"x-internal-key": MASTER}))
         self.assertFalse(_accepts(stop, {"x-internal-key": SCANNER}))
-        self.assertTrue(_accepts(_route("POST", "/llm/nuclei-tags"), {"x-internal-key": SCANNER}))
+        scan = _route("POST", "/llm/nuclei-tags")
+        self.assertFalse(_accepts(scan, {"x-internal-key": SCANNER}))
+        job = machine_credential.mint(
+            {"aud": "scan", "ten": "u1", "pid": "p1", "job": "j1", "exp": 4_102_444_800},
+            machine_credential.derive_key(MASTER, machine_credential.JOB_CREDENTIAL_LABEL))
+        self.assertTrue(_accepts(scan, {"x-internal-key": SCANNER, "x-redamon-job": job}))
 
     def test_no_route_outside_the_scan_routes_accepts_the_bare_scanner_key(self):
         open_ = [
@@ -180,7 +185,6 @@ class WholeAppTests(_Keys):
         ]
         self.assertEqual(open_, [])
 
-    @pytest.mark.xfail(strict=True, reason="the scan routes (/llm/*, /jev/*) take job credentials in step 1.16")
     def test_no_route_in_app_routes_accepts_the_bare_scanner_key(self):
         open_ = [
             f"{sorted(r.methods)} {r.path}" for r in _guarded_routes()
