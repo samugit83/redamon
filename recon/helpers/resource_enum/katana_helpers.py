@@ -14,6 +14,7 @@ import uuid
 from typing import Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse, urlsplit
 
+from recon.helpers import request_pacer
 from recon.helpers.docker_helpers import kill_container, pull_image_or_use_local, tool_container_name
 from recon.helpers.system_resolvers import resolver_args
 from recon.helpers.js_recon.urls import is_js_url
@@ -369,6 +370,24 @@ class _SameHostRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _PacedRequests(urllib.request.BaseHandler):
+    """Every request the opener sends takes a slot of the RoE pacer first,
+    each redirect hop included: urllib sends a hop through the opener again,
+    so this runs per hop. A refused hop is never sent and takes none. A 429
+    backs every in-process requester off. Inert with no ceiling."""
+
+    def http_request(self, req):
+        request_pacer.acquire()
+        return req
+
+    def http_response(self, req, response):
+        request_pacer.back_off_on_429(response)
+        return response
+
+    https_request = http_request
+    https_response = http_response
+
+
 def _url_host(url: str) -> str:
     try:
         return (urlsplit(url).hostname or "").rstrip(".").lower()
@@ -422,7 +441,8 @@ def fetch_forms_from_urls(
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
-    handlers = [urllib.request.HTTPSHandler(context=ssl_context)]
+    # Sequential on purpose: under the RoE ceiling every fetch waits for its slot.
+    handlers = [urllib.request.HTTPSHandler(context=ssl_context), _PacedRequests()]
     same_host = _SameHostRedirects() if redirects_contained(settings, recon_data) else None
     if same_host is not None:
         handlers.append(same_host)
