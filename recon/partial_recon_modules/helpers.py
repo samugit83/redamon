@@ -623,7 +623,12 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
     Then the RoE exclusion list, as the graph builders apply it to what they
     read: an excluded host, URL host, address or attach target is dropped, and
     a typed CIDR holding an excluded address becomes its other hosts (the ones
-    the modules would expand it to). Mirrors the orchestrator's copy; both run
+    the modules would expand it to). Under RoE IP or CIDR entries a typed name
+    (host, URL host, the name typed IPs attach to) passes only when the
+    admission gate admits every address it resolves to (D2): the tools are
+    handed the name and resolve it themselves, so one excluded address refuses
+    it, and so does no address at all (nothing shows it stays off the ranges).
+    Mirrors the orchestrator's copy; both run
     recon/tests/fixtures/partial_typed_input_roe_vectors.json.
 
     The hard guardrail is not repeated here: every pattern is a suffix match,
@@ -649,6 +654,11 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
     excluded = [e for e in (settings.get("ROE_EXCLUDED_HOSTS") or []) if isinstance(e, str) and e.strip()] \
         if settings.get("ROE_ENABLED") else []
     roe_cut = 0
+    roe_unresolved = 0
+    # IP mode admits no name (host_ok), so its typed input is never resolved.
+    from recon.helpers.target_admission import admission_context, admit_targets
+    check_addresses = bool(excluded) and not ip_mode and admission_context(settings).ip_rules
+    answers: dict = {}
 
     def host_ok(host: str) -> bool:
         if ip_mode:
@@ -676,6 +686,34 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
         roe_cut += 1
         refused.append(f"{what} (excluded by the Rules of Engagement)")
 
+    def address_refused(what: str, host: str) -> bool:
+        """Refuse a typed name the gate does not admit on every address it
+        resolves to; True when refused. Each name is resolved once, as the
+        modules resolve it (_resolve_hostname)."""
+        nonlocal roe_cut, roe_unresolved
+        name = _norm_host(host)
+        if not check_addresses or not name or _is_ip_or_cidr(name):
+            return False
+        if name not in answers:
+            try:
+                found = _resolve_hostname(name)
+                answers[name] = found["ipv4"] + found["ipv6"]
+            except (OSError, UnicodeError):
+                answers[name] = []
+        admission = admit_targets(settings, None, names={name: answers[name]},
+                                  module="partial_recon", resolves_names=True, record=False)
+        if name in admission.names:
+            return False
+        if not answers[name]:
+            roe_unresolved += 1
+            refused.append(f"{what} (no address, while the Rules of Engagement exclude IP ranges)")
+            return True
+        cut = [r.target for r in admission.refusals if r.name == name]
+        roe_cut += 1
+        refused.append(f"{what} (resolves to {', '.join(cut[:5])}{', ...' if len(cut) > 5 else ''},"
+                       f" excluded by the Rules of Engagement)")
+        return True
+
     def keep_hosts(values, label):
         kept = []
         for v in values if isinstance(values, list) else []:
@@ -683,7 +721,7 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
                 refused.append(f"{label} {str(v)[:120]!r}")
             elif roe_out(v):
                 refuse_roe(f"{label} {str(v)[:120]!r}")
-            else:
+            elif not address_refused(f"{label} {str(v)[:120]!r}", v):
                 kept.append(_norm_host(v))
         return kept
 
@@ -701,7 +739,7 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
                     refused.append(f"url {str(u)[:120]!r}")
                 elif roe_out(_url_host(u)):
                     refuse_roe(f"url {str(u)[:120]!r}")
-                else:
+                elif not address_refused(f"url {str(u)[:120]!r}", _url_host(u)):
                     kept.append(u.strip())
             user_targets["urls"] = kept
         if "ips" in user_targets:
@@ -737,7 +775,9 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
         # url_attach_to is a graph node the modules look up, and ip_attach_to
         # may only be a target's own label: every module writes it as a
         # source-less RESOLVES_TO that later runs read as forward DNS (B-20).
-        # An excluded one is dropped in either mode.
+        # An excluded one is dropped in either mode. An ip_attach_to name is
+        # also checked on its addresses, as modules hand it to tools that
+        # resolve it (httpx's by_host); url_attach_to is only a graph link.
         for key, host_of in (("ip_attach_to", str), ("url_attach_to", _url_host)):
             value = user_targets.get(key)
             if value and ip_mode and key == "ip_attach_to" and not is_target_label(
@@ -750,18 +790,27 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
             elif value and isinstance(value, str) and roe_out(host_of(value)):
                 refuse_roe(f"{key} {value[:120]!r}")
                 user_targets[key] = None
+            elif value and key == "ip_attach_to" and isinstance(value, str) and address_refused(
+                    f"{key} {value[:120]!r}", value):
+                user_targets[key] = None
         config["user_targets"] = user_targets
     elif user_targets is not None:
         config["user_targets"] = {}
-    if roe_cut:
+    if roe_cut or roe_unresolved:
         # A partial run never prunes, so this only reaches the run's coverage
         # record; _prepare_scope prints each refusal once.
         from recon.helpers import circuit_breaker
-        circuit_breaker.note_degraded("partial_recon", entries=[{
-            "source": "roe_excluded",
-            "reason": "typed partial-recon input excluded by the Rules of Engagement",
-            "skipped": roe_cut,
-        }])
+        entries = []
+        if roe_cut:
+            entries.append({"source": "roe_excluded",
+                            "reason": "typed partial-recon input excluded by the Rules of Engagement",
+                            "skipped": roe_cut})
+        if roe_unresolved:
+            entries.append({"source": "roe_excluded",
+                            "reason": "typed partial-recon name with no address while RoE IP/CIDR "
+                                      "exclusions are set",
+                            "skipped": roe_unresolved})
+        circuit_breaker.note_degraded("partial_recon", entries=entries)
     return refused
 
 

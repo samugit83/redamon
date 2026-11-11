@@ -464,7 +464,8 @@ def _is_target_label(value, targets) -> bool:
     return False
 
 
-def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user_targets):
+def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user_targets, *,
+                              dns_budget_s: float = 5.0):
     """The operator-typed inputs a partial run may use, and those it may not.
 
     Hosts (typed subdomains, URL hosts, attach targets) pass the §4.6 partial
@@ -472,9 +473,18 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
     URL host must be one of the project's own addresses. IPs and CIDRs get the
     modal's prefix limits. Then the RoE exclusion list: an excluded host, URL
     host, address or attach target is dropped, and a typed CIDR holding an
-    excluded address becomes its other hosts. The container repeats this
-    (recon/partial_recon_modules/helpers.py); both run
+    excluded address becomes its other hosts. Under RoE IP or CIDR entries a
+    typed name (host, URL host, the name typed IPs attach to) with an excluded
+    address among those it resolves to is dropped too (D2). The container
+    repeats this (recon/partial_recon_modules/helpers.py); both run
     recon/tests/fixtures/partial_typed_input_roe_vectors.json.
+
+    One difference, on purpose: this service resolves from the compose
+    network, and the scan resolves from the host's (a lab or split-horizon
+    zone answers only there), so a name with no answer here is left to the
+    container, which refuses it if the scan's resolver has none either. The
+    lookups run inside the start request, so together they take at most
+    ``dns_budget_s``; a name not answered within it is left to the container.
 
     IP mode (B-20, B-22): a typed address, URL host or CIDR host must be one of
     the project's targets, by address (CIDR-aware, any IPv6 spelling); a typed
@@ -500,6 +510,46 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
     excluded = [e for e in project.get('roeExcludedHosts') or [] if isinstance(e, str) and e.strip()] \
         if derive_roe_enabled(project) else []
 
+    def is_address(value: str) -> bool:
+        try:
+            ipaddress.ip_address(value.strip('[]'))
+            return True
+        except ValueError:
+            return False
+
+    # IP mode admits no name (host_ok), so its typed input is never resolved.
+    check_addresses = bool(excluded) and not ip_mode and any(
+        entry and (_roe_is_network(entry) or is_address(entry))
+        for entry in (_roe_normalize_entry(e) for e in excluded))
+    answers: dict[str, list[str]] = {}
+    dns_deadline = None
+
+    def resolve(name: str) -> list[str]:
+        """The addresses ``name`` has, [] when none answered within the budget."""
+        import socket
+        import threading
+        import time
+        nonlocal dns_deadline
+        if dns_deadline is None:
+            dns_deadline = time.monotonic() + dns_budget_s
+        left = dns_deadline - time.monotonic()
+        if left <= 0:
+            return []
+        found: list[str] = []
+
+        def lookup() -> None:
+            try:
+                found.extend(sorted({info[4][0].split('%')[0] for info in socket.getaddrinfo(name, None)}))
+            except (OSError, UnicodeError):
+                pass
+
+        # A daemon thread, so a resolver that hangs past the budget costs the
+        # request nothing more.
+        worker = threading.Thread(target=lookup, daemon=True)
+        worker.start()
+        worker.join(left)
+        return [] if worker.is_alive() else list(found)
+
     def host_ok(host: str) -> bool:
         if ip_mode:
             return host.strip('[]') in ip_targets
@@ -524,6 +574,21 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
     def refuse_roe(what: str) -> None:
         refused.append(f'{what} (excluded by the Rules of Engagement)')
 
+    def address_refused(what: str, host: str) -> bool:
+        """Refuse a typed name with an excluded address among those it
+        resolves to; True when refused. Each name is resolved once."""
+        name = host.strip().rstrip('.').lower()
+        if not check_addresses or not name or is_address(name):
+            return False
+        if name not in answers:
+            answers[name] = resolve(name)
+        cut = [a for a in answers[name] if is_roe_excluded(a, excluded)]
+        if not cut:
+            return False
+        refused.append(f"{what} (resolves to {', '.join(cut[:5])}{', ...' if len(cut) > 5 else ''},"
+                       f" excluded by the Rules of Engagement)")
+        return True
+
     def keep_hosts(values, label):
         kept = []
         for v in values if isinstance(values, list) else []:
@@ -531,7 +596,7 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
                 refused.append(f'{label} {v!r}')
             elif roe_out(v):
                 refuse_roe(f'{label} {v!r}')
-            else:
+            elif not address_refused(f'{label} {v!r}', v):
                 kept.append(v.strip().lower())
         return kept
 
@@ -548,7 +613,7 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
                     refused.append(f'url {u!r}')
                 elif roe_out(_url_host(u)):
                     refuse_roe(f'url {u!r}')
-                else:
+                elif not address_refused(f'url {u!r}', _url_host(u)):
                     kept.append(u.strip())
             targets['urls'] = kept
         if 'ips' in targets:
@@ -586,7 +651,9 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
         # url_attach_to is a graph node the container looks up, and ip_attach_to
         # may only be a target's own label: every module writes it as a
         # source-less RESOLVES_TO that later runs read as forward DNS (B-20).
-        # An excluded one is dropped in either mode.
+        # An excluded one is dropped in either mode. An ip_attach_to name is
+        # also checked on its addresses, as modules hand it to tools that
+        # resolve it (httpx's by_host); url_attach_to is only a graph link.
         for key, host_of in (('ip_attach_to', str), ('url_attach_to', _url_host)):
             value = targets.get(key)
             if value and ip_mode and key == 'ip_attach_to' and not _is_target_label(value, ip_targets):
@@ -598,6 +665,9 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
                 targets[key] = None
             elif value and isinstance(value, str) and roe_out(host_of(value)):
                 refuse_roe(f'{key} {value!r}')
+                targets[key] = None
+            elif value and key == 'ip_attach_to' and isinstance(value, str) and address_refused(
+                    f'{key} {value!r}', value):
                 targets[key] = None
         if 'ports' in targets:
             ports = targets['ports'] if isinstance(targets['ports'], list) else []
