@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Callable
@@ -301,6 +302,9 @@ class WebSocketManager:
         # persist queue — the DB otherwise lags the live stream, so the restore
         # read returns a stale/empty timeline. See handle_init flush-on-connect.
         self._active_callbacks: Dict[str, 'StreamingCallback'] = {}
+        # Keyed by the run's task itself, so an entry leaves with the run however
+        # its registration ends (released, stopped, found done, emergency stop).
+        self._run_actors: 'weakref.WeakKeyDictionary[asyncio.Task, str]' = weakref.WeakKeyDictionary()
         # Per-tool task registry for individual tool cancellation.
         # Keyed by f"{session_key}|{wave_id or '__standalone__'}|{step_index if step_index is not None else -1}|{tool_name}".
         # Populated by execute_tool_node / execute_plan_node before awaiting the
@@ -456,9 +460,22 @@ class WebSocketManager:
                 else:
                     logger.debug(f"Skipped disconnect for {session_key} — connection already replaced")
 
-    def register_task(self, session_key: str, task: asyncio.Task):
-        """Register an active task for a session (survives connection replacement)"""
+    def register_task(self, session_key: str, task: asyncio.Task,
+                      actor_id: Optional[str] = None):
+        """Register an active task for a session (survives connection replacement).
+
+        `actor_id` is the admin who started it while acting as the session's user
+        (the starting socket's `actor_id`). It stays with the run, so closing that
+        admin's sockets finds the run after its tab is gone (close_sockets).
+        """
         self._active_tasks[session_key] = task
+        if actor_id:
+            self._run_actors[task] = actor_id
+
+    def run_actor(self, session_key: str) -> Optional[str]:
+        """The admin who started the session's registered run while acting, if any."""
+        task = self._active_tasks.get(session_key)
+        return self._run_actors.get(task) if task is not None else None
 
     def get_task(self, session_key: str) -> Optional[asyncio.Task]:
         """Get active (non-done) task for a session"""
@@ -647,9 +664,11 @@ class ProxiedSocketRegistry:
             del self._entries[id(ws)]
 
     def matching(self, *, kinds, user_id: Optional[str] = None,
-                 project_id: Optional[str] = None) -> List[ProxiedSocket]:
+                 project_id: Optional[str] = None, scope: str = "access") -> List[ProxiedSocket]:
+        _check_scope(scope)
         return [e for e in list(self._entries.values())
-                if e.kind in kinds and _names(user_id, e.sub, e.act)
+                if e.kind in kinds
+                and _names(user_id, e.sub, e.act, scope=scope, project_id=project_id)
                 and (project_id is None or e.pid == project_id)]
 
     def __len__(self) -> int:
@@ -659,14 +678,29 @@ class ProxiedSocketRegistry:
 PROXIED_SOCKETS = ProxiedSocketRegistry()
 
 
-def _names(user_id: Optional[str], sub: str, act: Optional[str]) -> bool:
-    """A socket belongs to the user it runs as and to the admin acting as them."""
-    return user_id is None or user_id == sub or (act is not None and user_id == act)
+#: What ended for the user a close names (`scope` of close_sockets and POST /ws/close).
+CLOSE_SCOPES = ("access", "account")
+
+
+def _check_scope(scope: str) -> None:
+    if scope not in CLOSE_SCOPES:
+        raise ValueError(f"unknown close scope: {scope!r}")
+
+
+def _names(user_id: Optional[str], sub: str, act: Optional[str], *,
+           scope: str, project_id: Optional[str]) -> bool:
+    """Whether a socket or run opened as `sub` (by admin `act`, when acting) is `user_id`'s.
+
+    See close_sockets for the rule.
+    """
+    if user_id is None or user_id == (act or sub):
+        return True
+    return user_id == sub and (scope == "account" or project_id is not None)
 
 
 async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSocketRegistry, *,
                         kinds, user_id: Optional[str] = None,
-                        project_id: Optional[str] = None) -> dict:
+                        project_id: Optional[str] = None, scope: str = "access") -> dict:
     """Close the open sockets of `kinds` that match the user and/or the project.
 
     A ticket is checked once, at the handshake, so a revoke, a disabled account or
@@ -676,22 +710,40 @@ async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSo
     run (its handler's `finally`); `cypherfix-triage` only detaches from the
     project's run, which keeps going; `kali-terminal` ends the proxy, which closes
     the sandbox's PTY. A socket that fails to close is still forgotten.
+
+    Matching a `user_id`. An admin acting as a member opens sockets as the member
+    (`sub`) with the admin as `act`; the ticket route checks the project for the
+    member and the terminal grant on the admin. `scope` says what ended:
+    - `access` (default), something the user's own access gave, such as a legacy
+      grant: a socket matches the person whose access opened it, `act` when set,
+      else `sub`. The member losing a grant leaves the admin's act-as socket open.
+    - `account`, the account itself (disabled, deleted, sessions revoked): every
+      socket naming the user, as `sub` or as `act`.
+    With a `project_id`, the user's access to that project ended, which an act-as
+    socket relied on, so it matches as `account` inside that project. An agent
+    run matches by who started it (recorded at its start, so a run whose tab is
+    closed is still found) and its socket by who holds it: stopping one never
+    ends another person's.
     """
+    _check_scope(scope)
     by_kind: Dict[str, int] = {}
     stopped_runs = 0
+
+    def ours(sub: str, act: Optional[str]) -> bool:
+        return _names(user_id, sub, act, scope=scope, project_id=project_id)
 
     if "agent" in kinds and manager is not None:
         keys = set(manager.active_connections) | set(manager._active_tasks)
         for key in sorted(keys):
             sub, _, rest = key.partition(":")
             pid, _, _sid = rest.partition(":")
-            conn = manager.active_connections.get(key)
-            act = conn.actor_id if conn is not None else None
-            if not _names(user_id, sub, act) or (project_id is not None and pid != project_id):
+            if project_id is not None and pid != project_id:
                 continue
-            if await manager.stop_session(key, message="Session stopped (access revoked)"):
-                stopped_runs += 1
-            if conn is None:
+            if key in manager._active_tasks and ours(sub, manager.run_actor(key)):
+                if await manager.stop_session(key, message="Session stopped (access revoked)"):
+                    stopped_runs += 1
+            conn = manager.active_connections.get(key)
+            if conn is None or not ours(sub, conn.actor_id):
                 continue
             try:
                 await conn.websocket.close(code=ACCESS_REVOKED_CODE, reason=ACCESS_REVOKED_REASON)
@@ -703,7 +755,7 @@ async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSo
             by_kind["agent"] = by_kind.get("agent", 0) + 1
 
     for entry in registry.matching(kinds=[k for k in kinds if k in PROXIED_KINDS],
-                                   user_id=user_id, project_id=project_id):
+                                   user_id=user_id, project_id=project_id, scope=scope):
         try:
             await entry.ws.close(code=ACCESS_REVOKED_CODE, reason=ACCESS_REVOKED_REASON)
         except Exception as e:
@@ -1627,7 +1679,7 @@ class WebSocketHandler:
                 self._run_orchestrator_query(connection, query_msg.question, callback)
             )
             connection._active_task = task
-            self.ws_manager.register_task(connection.get_key(), task)
+            self.ws_manager.register_task(connection.get_key(), task, actor_id=connection.actor_id)
             self.ws_manager.register_callback(connection.get_key(), callback)
 
         except ValidationError as e:
@@ -1694,7 +1746,7 @@ class WebSocketHandler:
                 self._run_orchestrator_approval(connection, approval_msg, callback)
             )
             connection._active_task = task
-            self.ws_manager.register_task(connection.get_key(), task)
+            self.ws_manager.register_task(connection.get_key(), task, actor_id=connection.actor_id)
             self.ws_manager.register_callback(connection.get_key(), callback)
 
         except ValidationError as e:
@@ -1760,7 +1812,7 @@ class WebSocketHandler:
                 self._run_orchestrator_answer(connection, answer_msg.answer, callback)
             )
             connection._active_task = task
-            self.ws_manager.register_task(connection.get_key(), task)
+            self.ws_manager.register_task(connection.get_key(), task, actor_id=connection.actor_id)
             self.ws_manager.register_callback(connection.get_key(), callback)
 
         except ValidationError as e:
@@ -1877,7 +1929,7 @@ class WebSocketHandler:
                 self._run_orchestrator_tool_confirmation(connection, confirmation_msg, callback)
             )
             connection._active_task = task
-            self.ws_manager.register_task(connection.get_key(), task)
+            self.ws_manager.register_task(connection.get_key(), task, actor_id=connection.actor_id)
             self.ws_manager.register_callback(connection.get_key(), callback)
 
         except ValidationError as e:
@@ -2106,7 +2158,7 @@ class WebSocketHandler:
             self._run_orchestrator_resume(connection, callback)
         )
         connection._active_task = task
-        self.ws_manager.register_task(connection.get_key(), task)
+        self.ws_manager.register_task(connection.get_key(), task, actor_id=connection.actor_id)
         self.ws_manager.register_callback(connection.get_key(), callback)
         logger.info(f"Resuming execution for session {connection.session_id}")
 

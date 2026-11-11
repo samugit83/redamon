@@ -47,7 +47,7 @@ from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 from startup_guard import check_single_worker
 from utils import get_session_count
 from websocket_api import (WebSocketManager, websocket_endpoint, MessageType,
-                           PROXIED_SOCKETS, SOCKET_KINDS, close_sockets)
+                           CLOSE_SCOPES, PROXIED_SOCKETS, SOCKET_KINDS, close_sockets)
 import workspace_fs
 import job_runner
 import ws_job_emitter
@@ -1639,6 +1639,7 @@ class WsCloseRequest(BaseModel):
     user_id: Optional[str] = None
     project_id: Optional[str] = None
     kinds: List[Literal[SOCKET_KINDS]] = Field(..., min_length=1)
+    scope: Literal[CLOSE_SCOPES] = "access"
 
 
 @app.post("/ws/close", tags=["Sessions"],
@@ -1646,17 +1647,24 @@ class WsCloseRequest(BaseModel):
 async def close_open_sockets(body: WsCloseRequest):
     """Close the open sockets of `kinds` that belong to a user and/or a project.
 
-    The webapp calls it when access ends (a revoke, a disabled account, a removed
-    legacy grant): a ticket is checked only when its socket opens. Closing an
-    `agent` socket also stops its run. A user or a project is required, so a
-    caller's bug never closes every socket of the instance.
+    A ticket is checked only when its socket opens, so ending someone's access
+    must also end the sockets they hold open; no webapp route calls this yet.
+    Closing an `agent` socket also stops its run. A user or a project is
+    required, so a caller's bug never closes every socket of the instance.
+
+    `scope` says what ended for `user_id`, which decides an admin's act-as
+    sockets: `access` (default), something the user's own access gave, such as
+    a legacy grant, leaves open the sockets an admin opened acting as the user;
+    `account` (a disabled or deleted account, revoked sessions) closes them too,
+    as does a `project_id` (the user's access to that project ended).
     """
     if not body.user_id and not body.project_id:
         return JSONResponse(status_code=400, content={"error": "user_id or project_id is required"})
     result = await close_sockets(ws_manager, PROXIED_SOCKETS, kinds=list(dict.fromkeys(body.kinds)),
-                                 user_id=body.user_id or None, project_id=body.project_id or None)
-    logger.warning("[rbac] ws close user=%s project=%s kinds=%s closed=%d stopped_runs=%d",
-                   body.user_id or "-", body.project_id or "-", ",".join(body.kinds),
+                                 user_id=body.user_id or None, project_id=body.project_id or None,
+                                 scope=body.scope)
+    logger.warning("[rbac] ws close user=%s project=%s kinds=%s scope=%s closed=%d stopped_runs=%d",
+                   body.user_id or "-", body.project_id or "-", ",".join(body.kinds), body.scope,
                    result["closed"], result["stopped_runs"])
     return result
 
