@@ -11,6 +11,7 @@ run keeps its reservation and its place in the mutual exclusion.
 """
 import asyncio
 import logging
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -274,8 +275,23 @@ class TestTheHardStop:
         assert recon.removed
 
     def test_the_project_delete_asks_for_the_hard_stop(self):
+        # The DELETE route hands its stops to the shared teardown, which user
+        # deletion runs too, so the hard stop is pinned where the teardown lives.
         route = (REPO / "webapp/src/app/api/projects/[id]/route.ts").read_text()
-        assert "/stop?graceful=false" in route
+        assert "export async function DELETE" in route
+        delete = route.split("export async function DELETE", 1)[1]
+        assert "from '@/lib/projectTeardown'" in route
+        assert "teardownProject(" in delete
+
+        teardown = (REPO / "webapp/src/lib/projectTeardown.ts").read_text()
+        assert "export async function teardownProject" in teardown
+        body = teardown.split("export async function teardownProject", 1)[1]
+        # The full recon: matched on the code, not the comment that explains it.
+        assert re.search(r"\brecon:\s*'\?graceful=false'", body)
+        assert "/stop${stopQuery[kind]" in body
+        # Each running partial recon.
+        assert "stopPartialRecons(id)" in body
+        assert "/stop?graceful=false" in teardown
 
 
 class TestThePartialStop:
