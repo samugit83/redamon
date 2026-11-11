@@ -54,13 +54,32 @@ async function updateUser(userId: string, data: Partial<{ name: string; email: s
   }, 'Failed to update user')
 }
 
-// Delete a user
-async function deleteUser(userId: string): Promise<void> {
-  await fetchOk(`/api/users/${userId}`, { method: 'DELETE' }, 'Failed to delete user')
+/** Deleting another admin carries the acting admin's own password (step-up). */
+export type DeleteUserArg = string | { userId: string; stepUpPassword: string }
+
+async function deleteUser(arg: DeleteUserArg): Promise<void> {
+  if (typeof arg === 'string') {
+    await fetchOk(`/api/users/${arg}`, { method: 'DELETE' }, 'Failed to delete user')
+    return
+  }
+  await fetchOk(`/api/users/${arg.userId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stepUpPassword: arg.stepUpPassword }),
+  }, 'Failed to delete user')
 }
 
-// Change user password
-async function changePassword(userId: string, data: { newPassword: string; currentPassword?: string }): Promise<void> {
+/**
+ * `currentPassword` for your own password; `stepUpPassword` (your own) when an admin
+ * resets another admin's.
+ */
+export interface ChangePasswordData {
+  newPassword: string
+  currentPassword?: string
+  stepUpPassword?: string
+}
+
+async function changePassword(userId: string, data: ChangePasswordData): Promise<void> {
   await fetchOk(`/api/users/${userId}/password`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -126,7 +145,7 @@ export function useDeleteUser() {
 // Hook for changing password
 export function useChangePassword() {
   return useMutation({
-    mutationFn: ({ userId, data }: { userId: string; data: { newPassword: string; currentPassword?: string } }) =>
+    mutationFn: ({ userId, data }: { userId: string; data: ChangePasswordData }) =>
       changePassword(userId, data),
   })
 }

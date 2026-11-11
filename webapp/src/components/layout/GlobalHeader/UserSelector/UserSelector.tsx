@@ -7,12 +7,15 @@ import { useAuth } from '@/providers/AuthProvider'
 import { useUsers } from '@/hooks/useUsers'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import { useErrorToast } from '@/hooks/useErrorToast'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 import styles from './UserSelector.module.css'
 
 export function UserSelector() {
   const router = useGuardedRouter()
   const guard = useNavigationGuard()
   const [isOpen, setIsOpen] = useState(false)
+  // Another admin to act as, waiting for the signed-in admin's own password.
+  const [stepUpTarget, setStepUpTarget] = useState<{ id: string; name: string } | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const { userId, setUserId, setCurrentProject, userSwitchError } = useProject()
   const { user: authUser, isAdmin, logout, sessionError } = useAuth()
@@ -33,15 +36,27 @@ export function UserSelector() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const handleSelectUser = async (user: { id: string; name: string }) => {
+  const handleSelectUser = async (user: { id: string; name: string; role?: string }) => {
     if (user.id !== userId) {
       // Switching user resets project context and reloads data - confirm first
       // if a dirty form would lose edits.
       if (guard?.hasGuards() && !(await guard.confirmAllGuards())) return
+      if (user.role === 'admin' && user.id !== authUser?.id) {
+        setStepUpTarget({ id: user.id, name: user.name })
+        setIsOpen(false)
+        return
+      }
       setUserId(user.id)
       setCurrentProject(null)
     }
     setIsOpen(false)
+  }
+
+  const confirmActAsAdmin = async (password: string) => {
+    if (!stepUpTarget) return
+    const refusal = await setUserId(stepUpTarget.id, { stepUpPassword: password })
+    if (refusal) throw refusal
+    setCurrentProject(null)
   }
 
   const handleManageUsers = () => {
@@ -156,6 +171,15 @@ export function UserSelector() {
           )}
         </div>
       )}
+
+      <StepUpModal
+        isOpen={stepUpTarget !== null}
+        title="Act as an admin"
+        message={`${stepUpTarget?.name ?? ''} is an admin: acting as them needs your own password.`}
+        confirmLabel="Switch user"
+        onConfirm={confirmActAsAdmin}
+        onClose={() => setStepUpTarget(null)}
+      />
     </div>
   )
 }

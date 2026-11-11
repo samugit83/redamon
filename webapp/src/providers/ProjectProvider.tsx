@@ -13,7 +13,12 @@ interface ProjectContextValue {
   setCurrentProject: (project: ProjectSummary | null) => void
   projectId: string | null
   userId: string | null
-  setUserId: (id: string | null) => void
+  /**
+   * Switch the effective user. Acting as another admin needs `stepUpPassword` (the
+   * signed-in admin's own); a refused one resolves the error and changes nothing, so
+   * the dialog that asked can ask again. Resolves null on success.
+   */
+  setUserId: (id: string | null, opts?: { stepUpPassword?: string }) => Promise<ApiError | null>
   isLoading: boolean
   /**
    * Why the last user switch was refused (the effective user stayed the admin's
@@ -143,11 +148,27 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
   }, [searchParams, router, pathname])
 
-  const setUserId = useCallback((id: string | null) => {
+  const setUserId = useCallback(async (id: string | null, opts?: { stepUpPassword?: string }): Promise<ApiError | null> => {
     // Standard users cannot switch users
     if (!isAdmin && authUser) {
       setUserIdState(authUser.id)
-      return
+      return null
+    }
+    if (opts?.stepUpPassword !== undefined && id && id !== authUser?.id) {
+      try {
+        const resp = await fetch('/api/auth/act-as', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetUserId: id, stepUpPassword: opts.stepUpPassword }),
+        })
+        if (!resp.ok) return await readApiError(resp, 'Could not switch user')
+      } catch (e) {
+        return toApiError(e, 'Could not switch user')
+      }
+      localStorage.setItem(STORAGE_KEY_USER, id)
+      setUserSwitchError(null)
+      setUserIdState(id)
+      return null
     }
     // Persist the UI hint immediately; the localStorage value is NOT trusted for
     // authorization - the server derives the effective user from the signed
@@ -160,7 +181,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Set the server cookie FIRST, then flip the effective userId so that the data
     // fetches it triggers already carry the correct impersonation (no race / no
     // transient 404 under enforcement).
-    void (async () => {
+    let refusal: ApiError | null = null
+    {
       let impersonated = Boolean(id && id !== authUser?.id)
       try {
         if (impersonated) {
@@ -173,7 +195,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           // target must never become the effective id.
           if (!resp.ok) {
             impersonated = false
-            setUserSwitchError(await readApiError(resp, 'Could not switch user'))
+            refusal = await readApiError(resp, 'Could not switch user')
+            setUserSwitchError(refusal)
             localStorage.removeItem(STORAGE_KEY_USER)
             await fetch('/api/auth/act-as', { method: 'DELETE' }).catch(() => {})
           } else {
@@ -190,11 +213,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         if (impersonated) {
           impersonated = false
           localStorage.removeItem(STORAGE_KEY_USER)
-          setUserSwitchError(toApiError(e, 'Could not switch user'))
+          refusal = toApiError(e, 'Could not switch user')
+          setUserSwitchError(refusal)
         }
       }
       setUserIdState(impersonated ? id : (authUser?.id ?? null))
-    })()
+    }
+    return refusal
   }, [isAdmin, authUser])
 
   return (

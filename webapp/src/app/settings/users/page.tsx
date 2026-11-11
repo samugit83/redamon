@@ -5,14 +5,16 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/providers/AuthProvider'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
 import { Modal } from '@/components/ui'
+import { StepUpModal } from '@/components/auth/StepUpModal'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
 type ModalState =
   | { type: 'none' }
   | { type: 'create' }
-  | { type: 'password'; userId: string; userName: string }
+  | { type: 'password'; userId: string; userName: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
+  | { type: 'deleteAdmin'; userId: string; userName: string }
   | { type: 'changeOwn' }
 
 export default function UsersPage() {
@@ -35,6 +37,8 @@ export default function UsersPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [role, setRole] = useState('standard')
   const [currentPassword, setCurrentPassword] = useState('')
+  // The acting admin's own password, for a reset of another admin (step-up).
+  const [stepUpPassword, setStepUpPassword] = useState('')
 
   const wantsPasswordChange = searchParams.get('changePassword') === 'true'
 
@@ -60,6 +64,7 @@ export default function UsersPage() {
     setConfirmPassword('')
     setRole('standard')
     setCurrentPassword('')
+    setStepUpPassword('')
     setFormError('')
     setFormSuccess('')
   }
@@ -119,15 +124,30 @@ export default function UsersPage() {
     }
 
     if (modal.type !== 'password') return
+    const isOwnRow = modal.userId === authUser?.id
+    if (isOwnRow && !currentPassword) {
+      setFormError('Current password is required')
+      return
+    }
+    if (!isOwnRow && modal.targetIsAdmin && !stepUpPassword) {
+      setFormError('Enter your password to reset another admin\'s password')
+      return
+    }
 
     try {
       await changePasswordMutation.mutateAsync({
         userId: modal.userId,
-        data: { newPassword: password },
+        data: isOwnRow
+          ? { newPassword: password, currentPassword }
+          : modal.targetIsAdmin
+            ? { newPassword: password, stepUpPassword }
+            : { newPassword: password },
       })
       setFormSuccess('Password updated')
       setPassword('')
       setConfirmPassword('')
+      setCurrentPassword('')
+      setStepUpPassword('')
     } catch (err: unknown) {
       setFormError(err instanceof Error ? err.message : 'Failed to change password')
     }
@@ -231,6 +251,9 @@ export default function UsersPage() {
 
   if (!isAdmin) return null
 
+  const setOwnRow = modal.type === 'password' && modal.userId === authUser?.id
+  const setAnotherAdmin = modal.type === 'password' && !setOwnRow && modal.targetIsAdmin
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
@@ -285,14 +308,18 @@ export default function UsersPage() {
                   <div className={styles.actions}>
                     <button
                       className={styles.actionButton}
-                      onClick={() => openModal({ type: 'password', userId: user.id, userName: user.name })}
+                      onClick={() => openModal({
+                        type: 'password', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin',
+                      })}
                     >
                       Set Password
                     </button>
                     {user.id !== authUser?.id && (
                       <button
                         className={`${styles.actionButton} ${styles.deleteButton}`}
-                        onClick={() => openModal({ type: 'delete', userId: user.id, userName: user.name })}
+                        onClick={() => openModal({
+                          type: user.role === 'admin' ? 'deleteAdmin' : 'delete', userId: user.id, userName: user.name,
+                        })}
                       >
                         Delete
                       </button>
@@ -381,25 +408,57 @@ export default function UsersPage() {
         <div className={styles.form}>
           {formError && <div className={styles.error}>{formError}</div>}
           {formSuccess && <div className={styles.success}>{formSuccess}</div>}
+          {setOwnRow && (
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="set-password-current">Current Password</label>
+              <input
+                id="set-password-current"
+                type="password"
+                className={styles.input}
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </div>
+          )}
           <div className={styles.field}>
-            <label className={styles.label}>New Password</label>
+            <label className={styles.label} htmlFor="set-password-new">New Password</label>
             <input
+              id="set-password-new"
               type="password"
               className={styles.input}
               value={password}
               onChange={e => setPassword(e.target.value)}
-              autoFocus
+              autoComplete="new-password"
+              autoFocus={!setOwnRow}
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.label}>Confirm Password</label>
+            <label className={styles.label} htmlFor="set-password-confirm">Confirm Password</label>
             <input
+              id="set-password-confirm"
               type="password"
               className={styles.input}
               value={confirmPassword}
               onChange={e => setConfirmPassword(e.target.value)}
+              autoComplete="new-password"
             />
           </div>
+          {setAnotherAdmin && (
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="set-password-step-up">Your password</label>
+              <input
+                id="set-password-step-up"
+                type="password"
+                className={styles.input}
+                value={stepUpPassword}
+                onChange={e => setStepUpPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+              <span className={styles.hint}>This account is an admin: confirm the reset with your own password.</span>
+            </div>
+          )}
           <div className={styles.modalActions}>
             <button className={styles.actionButton} onClick={closeModal}>Cancel</button>
             <button
@@ -439,6 +498,18 @@ export default function UsersPage() {
           </div>
         </div>
       </Modal>
+
+      <StepUpModal
+        isOpen={modal.type === 'deleteAdmin'}
+        title="Delete an admin"
+        message={`Delete ${modal.type === 'deleteAdmin' ? modal.userName : ''}, an admin account? This also deletes their projects, conversations and settings. Confirm with your own password.`}
+        confirmLabel="Delete User"
+        onConfirm={async (pw) => {
+          if (modal.type !== 'deleteAdmin') return
+          await deleteUser.mutateAsync({ userId: modal.userId, stepUpPassword: pw })
+        }}
+        onClose={closeModal}
+      />
     </div>
   )
 }
