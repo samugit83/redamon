@@ -44,6 +44,7 @@ from agent_in_the_loop.broker import get_broker
 from agent_in_the_loop.errors import LoopModelNotSupportedHere
 from agent_in_the_loop.routes import router as loop_router
 from orchestrator import AgentOrchestrator
+from project_settings import DEFAULT_AGENT_SETTINGS as _DEFAULT_AGENT_SETTINGS
 from orchestrator_helpers import normalize_content
 from plugin_api import router as plugin_router
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
@@ -268,12 +269,11 @@ async def check_target_guardrail(body: GuardrailRequest):
     if not orchestrator or not orchestrator._initialized:
         return {"allowed": True, "reason": "Agent not initialized, guardrail skipped"}
 
-    # The named user's own client (RBAC T17): never the client of whichever run
-    # loaded last, and nothing is written for the next run. An Agent in the Loop
-    # model counts as no LLM: it answers only inside a chat run, and this check has
-    # no driver.
+    # The named user's own client (RBAC T17): the default model on their own keys,
+    # never the client or model of whichever project loaded last, and nothing is
+    # written for the next run. Built off the event loop: the provider fetch blocks.
     try:
-        llm = _build_llm_for_user(body.user_id or None)
+        llm = await asyncio.to_thread(_build_llm_for_user, body.user_id or None, purpose="guardrail")
     except LoopModelNotSupportedHere:
         llm = None
     except Exception as e:
@@ -1783,10 +1783,18 @@ def _pick_custom_provider(user_providers: list, model_name: str) -> Optional[dic
     return custom_provider_or_fallback(user_providers, model_name)
 
 
-def _build_llm_for_user(user_id: Optional[str]):
+# The model of a user's out-of-run client (the guardrail, a tradecraft verify with
+# no model). Never get_settings()['OPENAI_MODEL']: outside a run that is whichever
+# project any owner loaded last, possibly a loop model or a provider this user
+# has no key for, and the check would then be skipped.
+DEFAULT_OUT_OF_RUN_MODEL = _DEFAULT_AGENT_SETTINGS.get('OPENAI_MODEL', 'claude-opus-4-6')
+
+
+def _build_llm_for_user(user_id: Optional[str], purpose: str = "tradecraft verify"):
     """Build an LLM for a non-project endpoint by loading the user's providers
-    via the internal webapp API. Falls back to env-based providers when user_id
-    is missing or the lookup fails.
+    via the internal webapp API: the default model on the user's own keys. Falls
+    back to env-based providers when user_id is missing or the lookup fails.
+    Blocking (an HTTP fetch): an async route calls it through asyncio.to_thread.
 
     When the user has only a custom (OpenAI-compatible / bedrock_custom /
     ollama_local) provider configured, this honors it instead of falling back
@@ -1796,13 +1804,10 @@ def _build_llm_for_user(user_id: Optional[str]):
     import os
     import requests
     from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
-    from project_settings import DEFAULT_AGENT_SETTINGS, get_settings
+    from agent_in_the_loop.errors import refuse_loop_model
 
-    model_name = (get_settings() or {}).get(
-        'OPENAI_MODEL', DEFAULT_AGENT_SETTINGS.get('OPENAI_MODEL', 'claude-opus-4-6')
-    )
-    if is_loop_model(model_name):
-        raise LoopModelNotSupportedHere()
+    model_name = DEFAULT_OUT_OF_RUN_MODEL
+    refuse_loop_model(model_name)
     user_providers: list = []
     if user_id:
         webapp_url = os.environ.get('WEBAPP_URL', 'http://webapp:3000')
@@ -1816,13 +1821,13 @@ def _build_llm_for_user(user_id: Optional[str]):
             resp.raise_for_status()
             user_providers = resp.json() or []
         except Exception as e:
-            logger.warning(f"tradecraft verify: failed to fetch user LLM providers: {e}")
+            logger.warning(f"{purpose}: failed to fetch user LLM providers: {e}")
 
     custom_provider = _pick_custom_provider(user_providers, model_name)
     if custom_provider:
         custom_model = f"custom/{custom_provider.get('id', '')}"
         logger.info(
-            f"tradecraft verify: using custom provider id={custom_provider.get('id')} "
+            f"{purpose}: using custom provider id={custom_provider.get('id')} "
             f"type={custom_provider.get('providerType')}"
         )
         return setup_llm(custom_model, custom_llm_config=custom_provider)

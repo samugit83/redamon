@@ -100,10 +100,17 @@ class Endpoints(unittest.TestCase):
             "prompt": "list files", "session_type": "shell", "project_id": "p1",
             "user_id": "u1", "model": "loop/mcp"}))
 
-    def test_build_llm_for_user_refuses_a_loop_project_model(self):
-        with mock.patch("project_settings.get_settings", return_value={"OPENAI_MODEL": "loop/mcp"}):
-            with self.assertRaises(LoopModelNotSupportedHere):
-                self.api._build_llm_for_user("u1")
+    def test_build_llm_for_user_never_takes_a_loop_model_from_the_last_loaded_project(self):
+        # Out of any run the module-global settings are whichever project loaded last
+        # (RBAC T17): the user's out-of-run client is the default model, never a loop one.
+        built = []
+        with mock.patch("project_settings.get_settings", return_value={"OPENAI_MODEL": "loop/mcp"}), \
+                mock.patch("requests.get", side_effect=ConnectionError("no webapp")), \
+                mock.patch("orchestrator_helpers.llm_setup.setup_llm",
+                           side_effect=lambda model, **_k: built.append(model) or object()):
+            self.api._build_llm_for_user("u1")
+        self.assertEqual(built, [self.api.DEFAULT_OUT_OF_RUN_MODEL])
+        self.assertFalse(built[0].startswith("loop/"))
 
     def test_build_llm_with_model_for_user_refuses_before_any_fetch(self):
         with mock.patch("requests.get", side_effect=AssertionError("no fetch")):

@@ -406,7 +406,8 @@ class OutOfRunRoutesBuildTheirOwnClient(unittest.TestCase):
             return {"allowed": True, "reason": "ok"}
 
         with mock.patch.object(self.api, "orchestrator", orch), \
-                mock.patch.object(self.api, "_build_llm_for_user", side_effect=lambda uid: _Tag(f"user:{uid}")), \
+                mock.patch.object(self.api, "_build_llm_for_user",
+                                  side_effect=lambda uid, **_k: _Tag(f"user:{uid}")), \
                 mock.patch("orchestrator_helpers.guardrail.check_target_allowed", check):
             out = asyncio.run(self.api.check_target_guardrail(
                 self.api.GuardrailRequest(target_domain="example.com", user_id="owner-b", project_id="PB")))
@@ -442,6 +443,89 @@ class OutOfRunRoutesBuildTheirOwnClient(unittest.TestCase):
             asyncio.run(self.api.tradecraft_verify(self.api.TradecraftVerifyRequest(
                 url="https://docs.example.test/", user_id="owner-b")))
         self.assertEqual(captured["llm"], "user:owner-b")
+
+
+
+class _Providers:
+    """The webapp's internal llm-providers answer, recording the thread it ran on."""
+
+    def __init__(self, rows):
+        self.rows, self.threads = rows, []
+
+    def __call__(self, url, **_k):
+        import threading
+        self.threads.append(threading.current_thread() is threading.main_thread())
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: self.rows)
+
+
+class GuardrailModelIsTheUsersOwn(unittest.TestCase):
+    """/guardrail/check-target outside any run, with _build_llm_for_user really run:
+    the model is the product default on the calling user's own keys, whatever
+    project any owner loaded last (a loop model, a provider this user lacks)."""
+
+    def setUp(self):
+        import api
+        self.api = api
+        self.built = []
+
+        def setup(model, **kw):
+            self.built.append((model, kw.get("anthropic_api_key")))
+            if model.startswith("claude-") and not kw.get("anthropic_api_key"):
+                raise ValueError("Anthropic API key is required")
+            if model.startswith("gpt-") and not kw.get("openai_api_key"):
+                raise ValueError("OpenAI API key is required")
+            return _Tag(f"{model}:{kw.get('anthropic_api_key') or kw.get('openai_api_key')}")
+
+        self.checked = []
+
+        async def check(llm, **_k):
+            self.checked.append(llm.source)
+            return {"allowed": False, "reason": "well-known company"}
+
+        for target, value in (("orchestrator_helpers.llm_setup.setup_llm", setup),
+                              ("orchestrator_helpers.guardrail.check_target_allowed", check)):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.api, "orchestrator", mock.MagicMock(_initialized=True))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ps._settings_ctx.set(None)
+        self.addCleanup(setattr, ps, "_settings", None)
+
+    def _check(self, providers):
+        with mock.patch("requests.get", providers):
+            return asyncio.run(self.api.check_target_guardrail(
+                self.api.GuardrailRequest(target_domain="example.com", user_id="owner-b")))
+
+    def test_the_last_loaded_projects_model_is_never_used(self):
+        default = ps.DEFAULT_AGENT_SETTINGS["OPENAI_MODEL"]
+        for last_loaded in ("loop/mcp", "gpt-4o-mini"):
+            with self.subTest(last_loaded=last_loaded):
+                self.built, self.checked = [], []
+                # Another owner's project loaded last: its model, possibly a loop model.
+                ps._settings = {**ps.DEFAULT_AGENT_SETTINGS, "OPENAI_MODEL": last_loaded}
+                out = self._check(_Providers([
+                    {"id": "p-b", "userId": "owner-b", "providerType": "anthropic", "apiKey": "sk-ant-B"}]))
+                self.assertEqual(out, {"allowed": False, "reason": "well-known company"})
+                self.assertEqual(self.built, [(default, "sk-ant-B")])
+                self.assertEqual(self.checked, [f"{default}:sk-ant-B"])
+
+    def test_the_provider_fetch_runs_off_the_event_loop(self):
+        providers = _Providers([{"id": "p-b", "providerType": "anthropic", "apiKey": "sk-ant-B"}])
+        self._check(providers)
+        self.assertEqual(providers.threads, [False], "a blocking fetch on the loop stalls every run")
+
+    def test_a_failed_fetch_is_logged_as_the_guardrails_and_skips_open(self):
+        def down(*_a, **_k):
+            raise ConnectionError("webapp down")
+
+        with self.assertLogs("api", "WARNING") as logs:
+            out = self._check(down)
+        self.assertEqual(out, {"allowed": True, "reason": "LLM not configured, guardrail skipped"})
+        text = "\n".join(logs.output)
+        self.assertIn("guardrail: failed to fetch user LLM providers", text)
+        self.assertNotIn("tradecraft verify", text)
 
 
 if __name__ == "__main__":
