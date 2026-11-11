@@ -577,7 +577,7 @@ def run_nmap_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     print(f"[*][Nmap] Timing: {NMAP_TIMING}")
     print(f"[*][Nmap] Host timeout: {NMAP_HOST_TIMEOUT}")
 
-    nmap_parallelism = (settings or {}).get('NMAP_PARALLELISM', 2)
+    nmap_parallelism = (settings or {}).get('NMAP_PARALLELISM', 5)
     # Each nmap process gets the whole RoE ceiling as its --max-rate, so two at
     # once would double it (D3): one IP at a time under a ceiling.
     from recon.helpers.request_pacer import ceiling_rps

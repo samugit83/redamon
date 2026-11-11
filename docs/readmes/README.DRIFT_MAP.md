@@ -359,7 +359,7 @@ close:
 5. `MINIMAL_DEFAULTS` (`ProjectForm/formDefaults.ts`) and per-section fallbacks:
    7 differ from both defaults today (`hakrawlerParallelism` 4/5,
    `jsluiceParallelism` 3/5, `katanaParallelism` 5/8, `katanaConcurrency` 10/15,
-   `kiterunnerParallelism` 2/3, `nmapParallelism` 2/5, `paramspiderWorkers` 5/8,
+   `kiterunnerParallelism` 2/3, `paramspiderWorkers` 5/8,
    `dnsMaxWorkers` 50/80)
 6. every **existing row** (needs a SQL backfill)
 
