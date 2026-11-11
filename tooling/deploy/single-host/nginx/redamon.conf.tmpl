@@ -3,11 +3,12 @@
 # Rendered by modules/nginx.sh: __TOKENS__ are replaced, then installed to
 # /etc/nginx/sites-available/redamon, `nginx -t` gates the deploy, then reload.
 #
-# THREAT MODEL (verified against the codebase): the agent (:8090) exposes four WS paths;
-# THREE are UNAUTHENTICATED (/ws/kali-terminal is an anonymous root PTY; the two cypherfix
-# sockets clone repos / edit code), and /ws/agent's ticket check FAILS OPEN if its secret
-# is unset. So nginx does NOT trust the agent to authenticate: it (1) proxies ONLY the four
-# WS paths (never the agent REST surface), (2) requires a valid webapp session cookie before
+# THREAT MODEL: the agent (:8090) exposes four WS paths, each refusing a handshake without
+# a webapp-signed ticket naming that socket (fail closed when AGENT_WS_TICKET_SECRET is
+# unset). They are still the most powerful surface (/ws/kali-terminal is a root PTY; the two
+# cypherfix sockets clone repos / edit code), so nginx does NOT rely on the agent alone:
+# it (1) proxies ONLY the four WS paths (never the agent REST surface), (2) requires a
+# valid webapp session cookie before
 # any WS upgrade via auth_request, and (3) sits behind the operator IP/basic-auth gate.
 # The webapp (:3000) trusts X-Internal-Key as an auth bypass and injects X-User-*/ headers,
 # so those client headers are stripped (redamon-proxy-common.conf).

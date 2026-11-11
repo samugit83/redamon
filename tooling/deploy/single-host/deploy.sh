@@ -675,8 +675,10 @@ secrets_gate "\$APP_PATH/.env"
 EOF
 }
 
-# idempotent guarantee: upsert the admin from .env (create-admin.mjs). No-op if the
-# pty-driven install already made it. Needs the webapp container running (post-install).
+# idempotent guarantee: create the admin from .env (create-admin.mjs). No-op if the
+# pty-driven install already made it with this password; a changed ADMIN_PASSWORD resets
+# it (and revokes its MCP tokens). A member with that email is refused (exit 3) rather
+# than promoted, since promotion takes FORCE_PROMOTE=1. Needs the webapp container running.
 bootstrap_admin() {
   hr "Admin bootstrap (idempotent guarantee)"
   remote <<EOF

@@ -832,7 +832,8 @@ services:
       MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       # INBOUND token the tunnel-manager (:8015) validates on config pushes
       # (STRIDE I19/S14). Same inbound-validation category as MCP_AUTH_TOKEN, so
-      # it does not violate the "worker holds no secrets" rule. Fail-open if unset.
+      # it does not violate the "worker holds no secrets" rule. When empty the
+      # tunnel manager refuses every config push (fail-closed, with a warning).
       TUNNEL_AUTH_TOKEN: "${TUNNEL_AUTH_TOKEN:-}"
       # Webapp API for fetching tunnel config from Global Settings on boot
       WEBAPP_API_URL: http://webapp:3000
@@ -937,7 +938,7 @@ services:
       MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       # Secret used to verify short-lived agent-WebSocket tickets on the /ws/agent
       # init frame (STRIDE S6). Must match the webapp's AGENT_WS_TICKET_SECRET.
-      # Empty in dev → agent fails open (accepts init without a ticket).
+      # Empty → the agent refuses every WebSocket (close 1008, fail-closed).
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
       # Webapp API (internal docker network)
       WEBAPP_API_URL: http://webapp:3000
@@ -1245,7 +1246,7 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-false}
       # Signs short-lived agent-WebSocket tickets the agent verifies (STRIDE S6).
       # Dedicated secret (NOT AUTH_SECRET) so agent-side exposure can't forge
-      # login cookies. Empty in dev → no ticket minted, agent fails open.
+      # login cookies. Empty → no ticket minted, and the agent refuses the socket.
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
       # Bearer token the webapp presents when pushing tunnel config to the
       # worker's tunnel-manager :8015 (STRIDE I19/S14). Empty in dev → no header.
