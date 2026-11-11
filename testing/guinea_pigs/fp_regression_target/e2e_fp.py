@@ -356,7 +356,10 @@ PROBEFAIL_SETTINGS = {
 TLS_STATE = f"http://{NET}.40/_lab/tls"
 HTTPX_IMAGE = "projectdiscovery/httpx:latest"
 HTTPX_FAIL_IMAGE = "redamon-fp-httpx-fail:latest"
-HTTPX_FAIL_TRIGGER = "GROUP 4: HTTP Probing"
+# Swapped from the port scan on: GROUP 4 starts httpx within a second, faster
+# than a log poll. Nothing before GROUP 4 runs the httpx image.
+HTTPX_FAIL_TRIGGER = "GROUP 3: "
+HTTPX_FAIL_DONE = ("[!][httpx]", "[✓][httpx] Probe completed", "SKIPPING ACTIVE SCANS", "GROUP 5", "GROUP 6")
 
 # The security-check cases (L-20, L-21, L-7) run as their own project: three
 # SMTP servers (.41 refuses the relay, .42 accepts it, .43 greylists), three
@@ -447,7 +450,7 @@ def _image_id(ref):
 def httpx_fail_watch(project_id, stop):
     """R-21 run 3: make this run's httpx fail, and only this run's.
 
-    Waits for the recon log to reach GROUP 4 (httpx is its first step), then tags the lab's
+    Waits for the recon log to reach the port scan (GROUP 3), then tags the lab's
     failing stand-in as httpx's image, waits for the probe to fail, and puts the
     real image back (always, also on any error). The tag is host-wide, so it is
     only swapped while no other recon or partial-recon container and no other
@@ -477,7 +480,7 @@ def httpx_fail_watch(project_id, stop):
                 swapped = True
                 print(f"[*] --httpx-fail: {HTTPX_IMAGE} now names the failing stand-in", flush=True)
             after = text.split(HTTPX_FAIL_TRIGGER, 1)[-1]
-            if swapped and ("[!][httpx]" in after or "GROUP 5" in after or "SKIPPING ACTIVE SCANS" in after):
+            if swapped and any(mark in after for mark in HTTPX_FAIL_DONE):
                 return
             time.sleep(0.5)
     finally:

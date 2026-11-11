@@ -265,7 +265,7 @@ the host.
     python3 e2e_fp.py --r14 --no-triage --no-reset --log r14.log
     python3 validate_e2e.py <id> --r14 <RUN_START> r14.log
     python3 e2e_fp.py --rerun <id> --no-triage --no-reset --spa-state show=r14,r14js \
-      --set '{"roeEnabled": true, "roeExcludedHosts": ["192.88.94.21"]}' --log r14js.log
+      --set '{"roeExcludedHosts": ["192.88.94.21"]}' --log r14js.log
     python3 validate_e2e.py <id> --r14js <RUN_START> r14js.log
     # R-7: a 0 GraphQL rate under a 2 rps ceiling; R-42: graphql-cop's gates
     python3 e2e_fp.py --graphql --no-triage --no-reset --set '{"roeGlobalMaxRps": 2, "graphqlRateLimit": 0}'
@@ -295,7 +295,7 @@ the host.
 
     `--httpx-fail` makes the run's httpx fail by tagging `redamon-fp-httpx-fail:latest`
     (`docker build -t redamon-fp-httpx-fail:latest httpx_fail/`) as
-    `projectdiscovery/httpx:latest` from GROUP 4 until the probe fails, then tags the real
+    `projectdiscovery/httpx:latest` from the port scan (GROUP 3) until httpx has run, then tags the real
     image back. The tag is host-wide: it is swapped only while no other recon, partial-recon
     or httpx container is running, and the run stays healthy (and says so) otherwise.
 
