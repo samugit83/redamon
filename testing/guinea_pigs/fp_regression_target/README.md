@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # twenty-six hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # thirty-five hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -233,6 +233,72 @@ the host.
     A recon run allows one start per project every few minutes, so `--rerun`
     may wait out the token's rate limit first.
 
+14. **Recon-audit cases, round 2.** Same rules as step 13. A run sets only the lab
+    switches it names and resets them after, so two projects on different hosts can
+    scan at once; pass `--no-reset` to any project that does not include `.14`/`.15`
+    while another one is scanning them (every run restarts those two otherwise).
+
+    ```bash
+    # R-21 / R-9 (tlsx): .40, an expired certificate on 993 (TLS, no HTTP)
+    python3 e2e_fp.py --probefail --no-triage --no-reset --log pf1.log
+    python3 validate_e2e.py <id> --probefail baseline <RUN_START> pf1.log
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --tls-state stall=1 --log pf2.log
+    python3 validate_e2e.py <id> --probefail stall <RUN_START> pf2.log
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --httpx-fail --log pf3.log
+    python3 validate_e2e.py <id> --probefail httpx <RUN_START> pf3.log
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --tls-state cert=valid --log pf4.log
+    python3 validate_e2e.py <id> --probefail healthy <RUN_START> pf4.log
+    # L-20 SMTP relay, L-21 login form over HTTP, L-7 .48 -> .21
+    python3 e2e_fp.py --secchk --no-triage --no-reset
+    python3 validate_e2e.py <id> --secchk <RUN_START>
+    # R-22: .39 on 6379 alone (no live URL)
+    python3 e2e_fp.py --redis-nohttp --no-triage --no-reset
+    python3 validate_e2e.py <id> --redis-nohttp open <RUN_START>      # prints REDIS_FINDING_ID
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset
+    python3 validate_e2e.py <id> --redis-nohttp rerun <findingId>
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --redis-mode auth
+    python3 validate_e2e.py <id> --redis-nohttp auth
+    # R-31: three runs in a row, each followed by
+    python3 e2e_fp.py --fanout --no-triage --no-reset --log fo1.log
+    python3 validate_e2e.py <id> --fanout fo1.log
+    # R-14: source maps off the scanned host; then bundle downloads with .21 RoE-excluded
+    python3 e2e_fp.py --r14 --no-triage --no-reset --log r14.log
+    python3 validate_e2e.py <id> --r14 <RUN_START> r14.log
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --spa-state show=r14,r14js \
+      --set '{"roeEnabled": true, "roeExcludedHosts": ["192.88.94.21"]}' --log r14js.log
+    python3 validate_e2e.py <id> --r14js <RUN_START> r14js.log
+    # R-7: a 0 GraphQL rate under a 2 rps ceiling; R-42: graphql-cop's gates
+    python3 e2e_fp.py --graphql --no-triage --no-reset --set '{"roeGlobalMaxRps": 2, "graphqlRateLimit": 0}'
+    python3 validate_e2e.py <id> --graphql-rate <RUN_START>
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset --log gc.log \
+      --set '{"roeGlobalMaxRps": 0, "stealthMode": true, "graphqlCopEnabled": true}'
+    python3 validate_e2e.py <id> --graphql-cop stealth <RUN_START> gc.log    # then stealthMode false: ran;
+    #   then graphqlCopTestAliasOverloading false: dos-off
+    # Main project, run 2 and 3 (R-46, R-23, R-9 WCVS): .10 drops bare-IP requests, .15 stalls the scanner
+    python3 e2e_fp.py --rerun <id> --no-triage --vhost-drop-bare --cache-state stall --log main2.log \
+      --set '{"webCachePoisonTimeout": 60, "webCachePoisonTimeoutPerReq": 2}'
+    python3 validate_e2e.py <id> --vhost-drop <RUN_START> main2.log
+    python3 validate_e2e.py <id> --cache stall <RUN_START> main2.log
+    python3 e2e_fp.py --rerun <id> --no-triage --set '{"webCachePoisonTimeout": 1800, "webCachePoisonTimeoutPerReq": 10}'
+    python3 validate_e2e.py <id> --cache open <RUN_START>
+    ```
+
+    Partial runs go through the webapp's REST API with `partial_fp.py <id> <toolId>
+    [--body JSON] [--upload FILE] [--log PATH]` (signs in with the `.env` UI login, never
+    printed). R-27 (main project): `validate_e2e.py <id> --epai snapshot <file>`, exclude one
+    host by RoE, `partial_fp.py <id> EndpointAiClassifier`, then `--epai compare <file> <ip>`.
+    L-11: `partial_fp.py <id> Httpx --body '{"include_graph_targets": false, "user_targets":
+    {"ips": [...]}}'`, then `--userinput Httpx`. L-1: `partial_fp.py <id> JsRecon --upload
+    <bundle.js> --body '{"include_graph_targets": false}'`, then `--upload-sink <bundle.js>`.
+    R-10 (`--stealth` project): `partial_fp.py <id> Ffuf` ends in error with "Refusing to run:
+    Ffuf is off in stealth mode" and no tool container.
+
+    `--httpx-fail` makes the run's httpx fail by tagging `redamon-fp-httpx-fail:latest`
+    (`docker build -t redamon-fp-httpx-fail:latest httpx_fail/`) as
+    `projectdiscovery/httpx:latest` from GROUP 4 until the probe fails, then tags the real
+    image back. The tag is host-wide: it is swapped only while no other recon, partial-recon
+    or httpx container is running, and the run stays healthy (and says so) otherwise.
+
 ## Hosts and the cases they carry
 
 | Host | Behaves like | Case | Must hold |
@@ -310,6 +376,17 @@ the host.
 | `.20`, `.21` | R-43 project (`--r43`): typed GraphQL endpoints `http://192.88.94.20/graphql` (in scope) and `http://192.88.94.21/graphql` (outside it), bearer auth | R43-01..R43-04 | the recon log says once that `.21` was refused with no request and no credential; `.21` logs no `/graphql` and no `auth=yes`; `.20` logs `POST /graphql ... auth=yes`; the run's `roe_excluded` / `graphql_scan` coverage gap counts 1 skipped |
 | `.37`, `.38` | R-19 project (`--nuclei-throttle`), Nuclei only (`git`, `headers` tags): `.37` serves pages and an exposed `/.git/config` (200), each ending "Loading, please wait... rate limit of 60 requests per minute"; `.38` answers every path `429` + `Retry-After: 60` + "Please wait ... try again later" | N19-01..N19-05 | `git-config` on `.37` (the old filter dropped it for the copy); `.38`'s `http-missing-security-headers` (not a timing template) is kept despite the 429; no `git-config` on `.38`; nothing in `vuln_scan.false_positives`; every Nuclei JSONL line carries the raw response, status line first, which the throttle rule parses |
 | `.39` | R-24 project (`--redis`): a Redis stand-in on 6379, its PING answer set per run over `/_lab/redis?mode=open|delay|auth` on port 80 | RD-01..RD-06 | `open`: `redis_no_auth` on `.39`, no gap; `delay` (PONG after 25 s, past the 10 s check timeout): the finding is kept and the `security_check` coverage gap names `redis_no_auth`; `auth` (`-NOAUTH`, a verdict): the finding is pruned, no gap |
+
+| `.10` | Fastly role also routes `dev-api` and `dev.api`, two apps one character apart; `/_lab/vhost?drop_bare=1` closes bare-IP connections | V-01/02/03, V-16, VD-01..03 | four L7 findings (admin, dev-api, dev.api, wiki), two distinct `vhost_sni_<20 hex>` ids for the look-alike pair; with the baseline failing the four are kept unchanged, the `vhost_sni_enum` gap names the cut, `.11`/`.14` refresh |
+| `.15` | `/_lab/cache?mode=stall`: the cache scanner's requests (RedAmon-CachePoison and WCVS user agents) answered 10 s late | CS-01..CS-08 | C-01 kept with a `cache_scan` gap "no answer" and "WCVS timed out after 60s"; the `wcvs-*` container gone within 10 s of the timeout; a healthy rerun refreshes C-01 with no gap |
+| `.40` | TLS on 993 (an IMAP greeting, no HTTP) with an expired certificate, a page on 80; `/_lab/tls?stall=1` hangs the handshake, `cert=valid` renews | PF-01..PF-14 | tls_expired on :993 and Nuclei/header findings on 80; a tlsx run cut at 20 s keeps tls_expired (gap source security_check, module tlsx) and its container is gone; a failed httpx skips the active scans, keeps every finding, names the gaps and sends no request; a renewed certificate prunes tls_expired |
+| `.41`/`.42`/`.43` | an SMTP server greeting in two writes with a multi-line HELO answer; RCPT refused (554), accepted (250), greylisted (451) | SC-01, SC-02 | `smtp_open_relay` on `.42` only; `.43` is a `security_check` gap naming the 451 |
+| `.44`/`.45`/`.46` | a shell saying "login" with a search box and no password field; a real `/login` form; one password page on every path | SC-03, SC-04 | `login_no_https` on `.45/login` only, `control_check: passed`, after one `/…rdm-<hex>` control request |
+| `.48`, `.24`, `.21` | `.48` (the `sso` role, also on HTTPS) 302s to `.21`, outside the project; `.24` 302s to its own `/login`. The header, cookie, CSP and form checks read HTTPS only | SC-05, SC-06 | no header, cookie, CSP or form finding on `.48`; `.24`'s own login page has its header findings; `.21` gets no request |
+| `.39` | Redis on 6379 alone in the port list (`--redis-nohttp`) | RN-01..RN-06 | active scans skipped, yet `redis_no_auth` fires, keeps its id on a rerun and is pruned by NOAUTH; the skipped Nuclei is a gap, Redis is not |
+| `.22`, `.31`, `.37` | every Phase A tool at once, three runs (`--fanout`) | FO-01..FO-03 | each run lists every tool in `modules_executed`; no "changed size" race, no failed tool |
+| `.20`, `.21` | `/_lab/js?show=r14`: a map named on `.21`, a map URL 302-ing to `.21`, one 301-ing to another `.20` path; `show=r14js` with `.21` RoE-excluded: a bundle 302-ing to `.21`, one 301-ing on `.20` | R14-01..06, R14J-01..04 | `.21` gets no request; the `.21` map is a `source_map_reference` `out_of_scope`, the bounce gives no row, the moved map is an exposure, M-01 unchanged; the RoE refusal is logged and the moved bundle analysed |
+| `.47` | a GraphQL server (introspection, batches) | GQ-01..03, GC-* | a 0 rate under a 2 rps ceiling resolves to 2 and no second carries more than 2 requests; graphql-cop never starts in stealth or with a DoS test off, and runs otherwise |
 
 ## Not covered here
 

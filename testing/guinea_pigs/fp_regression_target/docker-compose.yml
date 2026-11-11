@@ -201,6 +201,67 @@ services:
     environment: { ROLE: redis, PORTS: "80", REDIS_DELAY: "25" }
     networks: { fp_lab: { ipv4_address: 192.88.94.39 } }
 
+  # An expired certificate on a non-HTTP TLS port, with a handshake that can be
+  # made to hang (R-21, R-9): tlsx is the only reader of that certificate.
+  fp-tlsmail:
+    <<: *lab
+    container_name: redamon-fp-tlsmail
+    environment: { ROLE: tlsmail, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.40 } }
+
+  # SMTP relay check (L-20): the same server three times, only the RCPT answer differs.
+  fp-smtp-denied:
+    <<: *lab
+    container_name: redamon-fp-smtp-denied
+    environment: { ROLE: smtp, PORTS: "80", SMTP_RCPT: "554 5.7.1 Relay access denied" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.41 } }
+
+  fp-smtp-relay:
+    <<: *lab
+    container_name: redamon-fp-smtp-relay
+    environment: { ROLE: smtp, PORTS: "80", SMTP_RCPT: "250 2.1.5 Ok" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.42 } }
+
+  fp-smtp-grey:
+    <<: *lab
+    container_name: redamon-fp-smtp-grey
+    environment: { ROLE: smtp, PORTS: "80", SMTP_RCPT: "451 4.7.1 Greylisted, try again later" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.43 } }
+
+  # Login forms over HTTP (L-21): a shell that only says "login", a real form, a catch-all.
+  fp-login-shell:
+    <<: *lab
+    container_name: redamon-fp-login-shell
+    environment: { ROLE: login, PORTS: "80", LOGIN_MODE: shell }
+    networks: { fp_lab: { ipv4_address: 192.88.94.44 } }
+
+  fp-login-real:
+    <<: *lab
+    container_name: redamon-fp-login-real
+    environment: { ROLE: login, PORTS: "80", LOGIN_MODE: real }
+    networks: { fp_lab: { ipv4_address: 192.88.94.45 } }
+
+  fp-login-all:
+    <<: *lab
+    container_name: redamon-fp-login-all
+    environment: { ROLE: login, PORTS: "80", LOGIN_MODE: all }
+    networks: { fp_lab: { ipv4_address: 192.88.94.46 } }
+
+  # .23's redirect to the third-party IdP on .21, also over HTTPS, where the
+  # header, cookie, CSP and form checks read a page (L-7).
+  fp-sso-tls:
+    <<: *lab
+    container_name: redamon-fp-sso-tls
+    environment: { ROLE: sso, PORTS: "80,443", TLS_PORTS: "443" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.48 } }
+
+  # A GraphQL server for the rate cap and graphql-cop's gates (R-7, R-42).
+  fp-graphql:
+    <<: *lab
+    container_name: redamon-fp-graphql
+    environment: { ROLE: graphql, PORTS: "80" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.47 } }
+
 networks:
   fp_lab:
     name: redamon_fp_lab

@@ -64,8 +64,15 @@ USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n>
          " | --disposition before|decided | --disposition-stored before|decided|http-layer"
          " | --ip-ownership | --ip-ownership-stealth <recon.log>"
          " | --ip-ownership-nwlab | --roe <runStart> | --roe-window | --r29 <runStart>"
-         " | --r43 <runStart> <recon.log> | --nuclei-throttle <recon.log> | --redis open|delay|auth]")
-if len(sys.argv) not in (2, 3, 4, 5):
+         " | --r43 <runStart> <recon.log> | --nuclei-throttle <recon.log> | --redis open|delay|auth"
+         " | --probefail baseline|stall|httpx|healthy <runStart> [recon.log] | --secchk <runStart>"
+         " | --redis-nohttp open <runStart> | --redis-nohttp rerun <findingId> | --redis-nohttp auth"
+         " | --fanout <recon.log> | --r14 <runStart> [recon.log] | --r14js <runStart> <recon.log>"
+         " | --graphql-rate <runStart> | --graphql-cop stealth|ran|dos-off <runStart> [recon.log]"
+         " | --vhost-drop <runStart> <recon.log> | --cache stall|open <runStart> [recon.log]"
+         " | --epai snapshot <file> | --epai compare <file> <excludedHost> | --userinput <toolId>"
+         " | --upload-sink <fileName>]")
+if len(sys.argv) not in (2, 3, 4, 5, 6):
     sys.exit(USAGE)
 P = sys.argv[1]
 NET = "192.88.94"
@@ -853,7 +860,425 @@ def redis_checks(stage):
         sys.exit(USAGE)
 
 
+# --------------------------------------------------------------------------- recon-audit cases, round 2
+def _all_gaps():
+    rows = q("""MATCH (d:Domain) WHERE d.recon_coverage_gaps IS NOT NULL
+                RETURN d.recon_coverage_gaps AS g, d.recon_skipped_hosts AS sk""")
+    return ([g for r in rows for g in json.loads(r["g"] or "[]")],
+            sorted({h for r in rows for h in (r.get("sk") or [])}))
+
+
+def _gaps(source=None, module=None, reason=None):
+    return [g for g in _all_gaps()[0] if (source is None or g.get("source") == source)
+            and (module is None or g.get("module") == module)
+            and (reason is None or reason in str(g.get("reason") or ""))]
+
+
+def _recon_json():
+    path = os.path.join(HERE, "..", "..", "..", "recon", "output", f"recon_{P}.json")
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return None
+
+
+def _log_text(path):
+    return open(path, errors="replace").read() if path and os.path.exists(path) else ""
+
+
+def _http_lines(container, since):
+    return [ln for ln in _lab_log(container, since) if any(f"] {m} " in ln for m in ("GET", "POST", "HEAD"))]
+
+
+def _tool_lifetimes(prefix, since):
+    """(name, seconds from start to die) of each container named `prefix`* that
+    started since `since`, from the Docker event log."""
+    import subprocess
+    import datetime as dt
+    out = subprocess.run(["docker", "events", "--since", since, "--until", "0s", "--filter", "type=container",
+                          "--format", "{{json .}}"], capture_output=True, text=True).stdout
+    starts, ends = {}, {}
+    for ln in out.splitlines():
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        name = (ev.get("Actor") or {}).get("Attributes", {}).get("name", "")
+        if not name.startswith(prefix):
+            continue
+        t = ev.get("timeNano", 0) / 1e9
+        if ev.get("Action") == "start":
+            starts[name] = t
+        elif ev.get("Action") in ("die", "kill") and name not in ends:
+            ends[name] = t
+    return [(n, round(ends[n] - starts[n], 1) if n in ends else None) for n in sorted(starts)]
+
+
+def _updated(rows):
+    return [str(r.get("seen") or "") for r in rows]
+
+
+def probefail_checks(stage, since, log_path=None):
+    """R-21 (and R-9's tlsx kill): .40's expired certificate on 993, Nuclei and
+    the header checks on 80, through a stalled handshake and a failed httpx."""
+    tls = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'tls_expired'
+                AND v.matched_ip = '{NET}.40' RETURN v.id AS id, v.url AS url, toString(v.updated_at) AS seen""")
+    # The header checks read HTTPS only: on .40's port 80 the web findings are
+    # Nuclei's missing-headers template and the direct-IP-over-HTTP check.
+    web = q(f"""MATCH (v:Vulnerability) WHERE (v.source = 'nuclei' OR (v.source = 'security_check'
+                AND v.type = 'direct_ip_http')) AND coalesce(v.matched_at, v.url, '') CONTAINS '{NET}.40'
+                RETURN v.id AS id, v.source AS src, v.type AS t, toString(v.updated_at) AS seen""")
+    log = _log_text(log_path)
+    on993 = [r for r in tls if ":993" in (r["url"] or "")]
+    if stage == "baseline":
+        check("PF-01", len(on993) == 1, f"tls_expired on .40:993 (only tlsx reads it): {tls}")
+        check("PF-02", any(r["src"] == "nuclei" for r in web) and any(r["src"] == "security_check" for r in web),
+              f"Nuclei and security-check findings on .40:80: {sorted({(r['src'], str(r['t'])) for r in web})}")
+    elif stage == "stall":
+        check("PF-03", len(on993) == 1 and all(s < since for s in _updated(on993)),
+              f"tls_expired kept, not re-written, through a tlsx run cut at its timeout: {on993}")
+        gaps = _gaps("security_check", "tlsx", "tlsx timed out after 20s")
+        check("PF-04", gaps, f"security_check gap from tlsx naming its timeout: {gaps or _all_gaps()[0]}")
+        check("PF-05", "tlsx timed out after 20s" in log or not log_path,
+              "recon log says tlsx timed out after 20s")
+        kept = _tool_lifetimes("tlsx-", since)
+        check("PF-06 (R-9)", kept and all(t is not None and t <= 30 for _, t in kept),
+              f"tlsx containers (start -> die, s; the run timeout is 20 s): {kept} (expect each gone by 30 s)")
+    elif stage == "httpx":
+        rj = _recon_json() or {}
+        meta = rj.get("metadata") or {}
+        check("PF-07", "SKIPPING ACTIVE SCANS: http_probe failed (" in log,
+              "recon log: SKIPPING ACTIVE SCANS: http_probe failed (...)")
+        check("PF-08", (meta.get("phase_errors") or {}).get("http_probe")
+              and "http_probe" not in (meta.get("modules_executed") or []),
+              f"phase_errors.http_probe={str((meta.get('phase_errors') or {}).get('http_probe'))[:80]!r}, "
+              f"modules_executed={meta.get('modules_executed')}")
+        check("PF-09", web and all(s < since for s in _updated(web)),
+              f"run-1 Nuclei and header findings kept untouched: {sorted({(r['src'], str(r['t']), r['seen'][:19]) for r in web})}")
+        why = "http_probe failed, no host probed"
+        named = {g.get("source") for g in _all_gaps()[0]
+                 if why in str(g.get("reason") or "") or g.get("source") == "http_probe"}
+        check("PF-10", {"http_probe", "nuclei", "security_check"} <= named,
+              f"sources with a gap ({why!r} or httpx's own): {sorted(named)}")
+        hits = _http_lines("redamon-fp-tlsmail", since)
+        check("PF-11", not hits, f"HTTP requests on .40 while httpx had failed: {hits[:3]} (expect none: no Nuclei)")
+    elif stage == "healthy":
+        check("PF-12", not on993, f"a renewed certificate prunes tls_expired: {on993}")
+        check("PF-13", web and all(s >= since for s in _updated(web)),
+              f"Nuclei and header findings re-checked: {sorted({(r['src'], str(r['t']), r['seen'][:19]) for r in web})}")
+        left = [g for g in _all_gaps()[0] if g.get("module") == "tlsx" or g.get("source") == "http_probe"]
+        check("PF-14", not left, f"no tlsx or httpx gap on a healthy run: {left}")
+    else:
+        sys.exit(USAGE)
+
+
+def secchk_checks(since):
+    """L-20 SMTP relay, L-21 login form over HTTP, L-7 no header check off the host."""
+    relay = q("""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'smtp_open_relay'
+                 RETURN coalesce(v.matched_ip, v.ip, v.matched_at, v.url) AS at""")
+    at = sorted(str(r["at"]) for r in relay)
+    check("SC-01 (L-20)", len(at) == 1 and f"{NET}.42" in at[0],
+          f"smtp_open_relay: {at} (expect .42 only: .41 refuses with 554 after a split greeting, .43 greylists)")
+    grey = [g for g in _gaps("security_check") if "smtp_open_relay" in json.dumps(g)]
+    check("SC-02 (L-20)", grey and "451" in json.dumps(grey),
+          f"security_check gap for the greylisted server: {grey}")
+    login = q("""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'login_no_https'
+                 RETURN v.url AS url, v.control_check AS cc, v.evidence AS ev""")
+    check("SC-03 (L-21)", len(login) == 1 and f"{NET}.45/login" in (login[0]["url"] or "")
+          and login[0]["cc"] == "passed"
+          and login[0]["ev"] == "Login form with password field found on HTTP; control_check: passed",
+          f"login_no_https: {login} (expect .45/login only; not .44's shell without a password field, "
+          f"not .46's catch-all)")
+    import re as _re
+    ctl = [ln for ln in _lab_log("redamon-fp-login-real", since) if _re.search(r"GET /\S*rdm-[0-9a-f]{12}", ln)]
+    check("SC-04 (L-21)", len(ctl) >= 1, f".45 control requests (/…rdm-<hex>): {len(ctl)} {ctl[:2]}")
+    page = lambda t: t.startswith(("missing_", "session_no_")) or t in (
+        "cache_control_missing", "csp_unsafe_inline", "insecure_form_action")
+    sso = [r["t"] for r in q(f"""MATCH (v:Vulnerability) WHERE v.source = 'security_check'
+                                  AND v.url CONTAINS '{NET}.48' RETURN v.type AS t""") if page(r["t"])]
+    own = [r["t"] for r in q(f"""MATCH (v:Vulnerability) WHERE v.source = 'security_check'
+                                  AND v.url CONTAINS '{NET}.24' RETURN v.type AS t""") if page(r["t"])]
+    check("SC-05 (L-7)", not sso and own,
+          f"page findings on .48 (HTTPS 302 to .21): {sso} (expect none); on .24 (HTTPS 302 to its own "
+          f"/login): {sorted(own)} (expect some)")
+    # The direct-IP redirect analysis (_analyze_redirect_chain, outside L-7)
+    # still follows .48's 302 once per scheme; the five page checks, which
+    # followed it too before L-7, would add one request each.
+    vendor = _http_lines("redamon-fp-vendor", since)
+    check("SC-06 (L-7)", len(vendor) <= 2 and all("GET /saml/login" in ln for ln in vendor),
+          f"requests on .21 (outside the project) since {since}: {len(vendor)} {vendor[:3]} (expect at most "
+          f"the redirect analysis's one per scheme, none from the page checks)")
+
+
+def redis_nohttp_checks(stage, extra=None):
+    """R-22: with no live URL the port checks still run and keep their verdicts."""
+    rows = q("""MATCH (v:Vulnerability) WHERE v.source = 'security_check' AND v.type = 'redis_no_auth'
+                RETURN v.id AS id, v.matched_ip AS ip""")
+    meta = (_recon_json() or {}).get("metadata") or {}
+    if stage in ("open", "rerun"):
+        check("RN-01", meta.get("active_scans_skipped") is True,
+              f"active_scans_skipped={meta.get('active_scans_skipped')} ({meta.get('active_scans_skip_reason')})")
+        check("RN-02", len(rows) == 1 and rows[0]["ip"] == f"{NET}.39", f"redis_no_auth with no live URL: {rows}")
+        not_run = sorted({g.get("source") for g in _gaps(reason="not run: no live HTTP URL")})
+        redis_gap = [g for g in _gaps("security_check") if "redis_no_auth" in json.dumps(g)]
+        check("RN-03", "nuclei" in not_run and not redis_gap,
+              f"sources noted 'not run: no live HTTP URL': {not_run}; redis_no_auth gap: {redis_gap}")
+        if stage == "open":
+            pings = [ln for ln in _lab_log("redamon-fp-redis", extra) if "PING mode=open" in ln] if extra else []
+            # The stand-in on 6379 logs "mode=", the toggle on 80 "host= ... auth=".
+            web = [ln for ln in _http_lines("redamon-fp-redis", extra) if "auth=" in ln] if extra else []
+            check("RN-04", pings and not web, f"PINGs on 6379: {len(pings)}; HTTP requests on :80 (Nuclei, "
+                                             f"crawlers): {web[:3]} (expect none)")
+            print(f"REDIS_FINDING_ID={rows[0]['id'] if rows else ''}")
+        else:
+            check("RN-05", rows and rows[0]["id"] == extra, f"same finding id on a rerun: {rows} vs {extra}")
+    elif stage == "auth":
+        check("RN-06", not rows, f"NOAUTH is a verdict with no live URL too: pruned: {rows}")
+    else:
+        sys.exit(USAGE)
+
+
+PHASE_A = ("vuln_scan", "vhost_sni", "cache_scan", "origin_discovery", "graphql_scan", "port_scan")
+
+
+def fanout_checks(log_path):
+    """R-31: every Phase A tool ran, and no shared-snapshot race."""
+    meta = (_recon_json() or {}).get("metadata") or {}
+    ran = meta.get("modules_executed") or []
+    check("FO-01", all(m in ran for m in PHASE_A), f"modules_executed: {ran} (expect {list(PHASE_A)})")
+    errs = json.dumps(meta.get("phase_errors") or {})
+    check("FO-02", "changed size" not in errs, f"phase_errors: {errs[:300]}")
+    log = _log_text(log_path)
+    bad = [w for w in ("changed size", "vuln_scan failed", "Enrichment failed") if w in log]
+    check("FO-03", log and not bad, f"recon log lines naming a race or a failed tool: {bad}")
+
+
+def _map_rows():
+    return q("""MATCH (f:JsReconFinding) WHERE f.finding_type IN ['source_map_exposure', 'source_map_reference']
+                RETURN f.source_url AS js, f.finding_type AS t, f.severity AS sev, f.map_url AS map,
+                       f.fetch_result AS fr, f.first_party_files AS fp""")
+
+
+def r14_checks(since, log_path=None):
+    """R-14: a source map (or a map URL's redirect) off the run's hosts is never fetched."""
+    m = {r["js"].rsplit("/", 1)[-1]: r for r in _map_rows()}
+    vendor = _http_lines("redamon-fp-vendor", since)
+    check("R14-01", not [ln for ln in vendor if ".map" in ln], f".map requests on .21: {vendor[:3]} (expect none)")
+    r = m.get("r14.offhost.4d1e.js")
+    check("R14-02", r and r["t"] == "source_map_reference" and r["fr"] == "out_of_scope"
+          and f"{NET}.21" in (r["map"] or ""), f"map named on .21: {r}")
+    check("R14-03", "r14.bounce.5e2f.js" not in m, f"map URL redirecting to .21: {m.get('r14.bounce.5e2f.js')}")
+    r = m.get("r14.moved.6f3a.js")
+    check("R14-04", r and r["t"] == "source_map_exposure", f"map URL redirecting to another .20 path: {r}")
+    r = m.get("main.4f2a9c.js")
+    check("R14-05 (M-01)", r and r["t"] == "source_map_exposure" and r["sev"] == "low" and r["fp"] == 2,
+          f"the first-party map is unchanged: {r}")
+    if log_path:
+        import re as _re
+        hit = _re.search(r"Source-map requests not sent \(hop guard\): out_of_scope (\d+)", _log_text(log_path))
+        check("R14-06", hit and int(hit.group(1)) >= 1, f"hop-guard summary line: {hit.group(0) if hit else None}")
+
+
+def r14js_checks(since, log_path):
+    """R-14 (downloads): a .20 bundle redirecting to the RoE-excluded .21 is not
+    followed; one moving to another .20 path is analysed."""
+    vendor = _http_lines("redamon-fp-vendor", since)
+    check("R14J-01", not vendor, f"requests on .21 (RoE-excluded): {vendor[:3]} (expect none)")
+    log = _log_text(log_path)
+    check("R14J-02", "blocked (RoE exclusion)" in log and "[-][RoE] js_recon: not sent to" in log,
+          "recon log: 'blocked (RoE exclusion)' and '[-][RoE] js_recon: not sent to ...'")
+    moved = q("""MATCH (f:JsReconFinding) WHERE f.source_url CONTAINS 'r14js.'
+                 RETURN f.finding_type AS t, f.source_url AS u""")
+    eps = q(f"""MATCH (e:Endpoint) WHERE e.path = '/api/r14js/moved' RETURN e.baseurl AS b""")
+    check("R14J-03", moved or eps, f"the moved bundle was analysed: findings {moved[:4]}, endpoints {eps}")
+    off = [r for r in moved if "offhost" in (r["u"] or "")]
+    check("R14J-04", not [r for r in off if r["t"] != "js_file"], f"nothing analysed from the .21 redirect: {off}")
+
+
+def graphql_rate_checks(since):
+    """R-7: graphqlRateLimit 0 under a 2 rps ceiling runs at 2 requests a second at most."""
+    import subprocess
+    out, err = mcp.call("preflight_scope_check", {"projectId": P})
+    rates = (out or {}).get("resolvedRates") or [] if isinstance(out, dict) else []
+    entry = next((x for x in rates if x.get("field") == "graphqlRateLimit"), None)
+    check("GQ-01", not err and entry and entry.get("written") == 0,
+          f"preflight lists graphqlRateLimit as written: {entry}")
+    check("GQ-02", entry and entry.get("resolved") == 2 and entry.get("capped") is True,
+          f"graphqlRateLimit 0 (unlimited) under a 2 rps ceiling resolves to 2, capped: {entry}")
+    logs = subprocess.run(["docker", "logs", "--timestamps", "--since", since, "redamon-fp-graphql"],
+                          capture_output=True, text=True)
+    per_s = {}
+    for ln in (logs.stdout + logs.stderr).splitlines():
+        if "] POST /graphql" in ln:
+            per_s[ln[:19]] = per_s.get(ln[:19], 0) + 1
+    worst = max(per_s.values()) if per_s else 0
+    check("GQ-03", sum(per_s.values()) >= 3 and worst <= 2, f"POST /graphql: {sum(per_s.values())} in {len(per_s)} s, "
+                                         f"busiest second {worst} (expect <= 2)")
+
+
+def graphql_cop_checks(stage, since, log_path=None):
+    """R-42: graphql-cop never runs in stealth or with a DoS test excluded."""
+    started = _tool_lifetimes("graphql-cop-", since)
+    import subprocess
+    ev = subprocess.run(["docker", "events", "--since", since, "--until", "0s", "--filter", "type=container",
+                         "--filter", "image=dolevf/graphql-cop:1.14", "--filter", "event=start",
+                         "--format", "{{.Actor.Attributes.name}}"], capture_output=True, text=True).stdout.split()
+    ran = q("""MATCH (e:Endpoint) WHERE e.graphql_cop_ran = true RETURN e.baseurl AS b, e.path AS p""")
+    if stage in ("stealth", "dos-off"):
+        check(f"GC-{stage}", not ev and not ran, f"graphql-cop containers: {ev or started}; "
+                                                  f"Endpoints with graphql_cop_ran: {ran} (expect none)")
+        if stage == "dos-off":
+            check("GC-dos-off log", "denial-of-service test(s) excluded" in _log_text(log_path),
+                  "recon log: Skipping ... denial-of-service test(s) excluded")
+    elif stage == "ran":
+        check("GC-ran", ev and ran, f"graphql-cop containers: {ev}; Endpoints with graphql_cop_ran: {ran}")
+    else:
+        sys.exit(USAGE)
+
+
+def vhost_drop_checks(since, log_path):
+    """R-46 run 2: .10's baseline fails, so its vhost findings are kept, not re-written."""
+    rows = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'vhost_sni_enum' AND v.ip = '{NET}.10'
+                 RETURN v.hostname AS h, v.id AS id, toString(v.updated_at) AS seen ORDER BY h""")
+    names = sorted(r["h"] for r in rows)
+    want = sorted(f"{w}.{APEX}" for w in ("admin", "dev-api", "dev.api", "wiki"))
+    check("VD-01", names == want and all(s < since for s in _updated(rows)),
+          f".10 findings kept from run 1: {[(r['h'], r['seen'][:19]) for r in rows]}")
+    gaps = _gaps("vhost_sni_enum")
+    skipped = _all_gaps()[1]
+    log = _log_text(log_path)
+    line = f"[!][VhostSni] IP {NET}.10:80 (http) baseline failed -- skipping port"
+    check("VD-02", gaps and (f"{NET}.10:80" in skipped or line in log),
+          f"vhost_sni_enum gap: {gaps}; recon_skipped_hosts: {skipped}; log line: {line in log}")
+    others = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'vhost_sni_enum' AND v.ip IN ['{NET}.11', '{NET}.14']
+                   RETURN v.ip AS ip, toString(v.updated_at) AS seen""")
+    check("VD-03", others and all(s >= since for s in _updated(others)), f".11/.14 refreshed: {others}")
+
+
+def cache_checks(stage, since, log_path=None):
+    """R-23 / R-9: a stalled cache scan keeps C-01 and says why; WCVS is stopped."""
+    rows = q("""MATCH (v:Vulnerability) WHERE v.source = 'cache_poisoning'
+                AND coalesce(v.endpoint_url, v.url, v.matched_at, '') CONTAINS '/home'
+                RETURN v.id AS id, toString(v.updated_at) AS seen""")
+    gaps = _gaps("cache_poisoning", "cache_scan")
+    if stage == "stall":
+        check("CS-01", rows and all(s < since for s in _updated(rows)), f"C-01 kept, not re-written: {rows}")
+        check("CS-02", any("no answer" in str(g.get("reason")) for g in gaps), f"cache_scan gaps: {gaps}")
+        check("CS-03 (R-9)", any("WCVS timed out after 60s" in str(g.get("reason")) for g in gaps),
+              f"WCVS timeout gap: {gaps}")
+        log = _log_text(log_path)
+        check("CS-04", "not fully tested (no answer)" in log and "WCVS timed out after 60s" in log,
+              "recon log: '... not fully tested (no answer)' and 'WCVS timed out after 60s'")
+        stalled = [ln for ln in _lab_log("redamon-fp-cache", since) if "stalled GET /home ua=RedAmon-CachePoison" in ln]
+        check("CS-05", stalled, f".15 stalled the cache scanner's /home: {len(stalled)}x")
+        wcvs = _tool_lifetimes("wcvs-", since)
+        check("CS-06 (R-9)", wcvs and all(t is not None and t <= 70 for _, t in wcvs),
+              f"wcvs containers (start -> die, s; timeout 60 s): {wcvs} (expect each gone by 70 s)")
+    elif stage == "open":
+        check("CS-07", rows and all(s >= since for s in _updated(rows)), f"C-01 re-checked: {rows}")
+        check("CS-08", not gaps, f"no cache_scan gap: {gaps}")
+    else:
+        sys.exit(USAGE)
+
+
+EPAI_Q1 = """MATCH (e:Endpoint) RETURN e.baseurl AS b, e.path AS path, e.method AS m, e.category AS cat,
+             e.urls_found AS n, e.source AS src, e.sources AS srcs, e.ai_interface_type AS ai ORDER BY b, path, m"""
+EPAI_Q2 = """MATCH (e:Endpoint)-[:HAS_PARAMETER]->(p:Parameter) RETURN DISTINCT p.baseurl AS b,
+             p.endpoint_path AS path, p.name AS name, p.position AS pos, p.category AS cat,
+             p.sample_values AS sv, p.is_ai_prompt_injectable AS inj ORDER BY b, path, name"""
+
+
+def epai_checks(stage, path, host=None):
+    """R-27: a partial EndpointAiClassifier writes only AI fields, only on its run's hosts."""
+    snap = {"q1": q(EPAI_Q1), "q2": q(EPAI_Q2),
+            "counts": q("MATCH (e:Endpoint) RETURN count(e) AS e") + q("MATCH (p:Parameter) RETURN count(p) AS p")}
+    if stage == "snapshot":
+        json.dump(snap, open(path, "w"), default=str)
+        hosts = sorted({r["b"] for r in snap["q2"] if r.get("sv")})
+        print(f"EPAI_SNAPSHOT={path} endpoints={len(snap['q1'])} params={len(snap['q2'])} hosts_with_samples={hosts}")
+        return
+    before = json.load(open(path))
+    key = lambda r: (r["b"], r["path"], r.get("m") or r.get("name"))
+    b1 = {key(r): r for r in before["q1"]}
+    a1 = {key(r): r for r in json.loads(json.dumps(snap["q1"], default=str))}
+    check("EP-01", json.dumps(before["counts"]) == json.dumps(snap["counts"], default=str),
+          f"node counts: {before['counts']} -> {snap['counts']}")
+    fixed = ("cat", "n", "src", "srcs")
+    changed = [(k, f, b1[k].get(f), a1[k].get(f)) for k in b1 if k in a1 for f in fixed
+               if b1[k].get(f) != a1[k].get(f)]
+    check("EP-02", not changed, f"cat/urls_found/source/sources changed: {changed[:4]}")
+    on_h = [(k, b1[k].get("ai"), a1[k].get("ai")) for k in b1 if k in a1 and host and host in k[0]
+            and b1[k].get("ai") != a1[k].get("ai")]
+    check("EP-03", not on_h, f"the RoE-excluded host's endpoints untouched (ai): {on_h[:4]}")
+    tagged = [k for k in b1 if k in a1 and not (host and host in k[0]) and b1[k].get("ai") is None
+              and a1[k].get("ai") is not None]
+    check("EP-04", tagged, f"other hosts' endpoints newly typed by the classifier: {len(tagged)} {tagged[:3]}")
+    b2 = {key(r): r for r in before["q2"]}
+    a2 = {key(r): r for r in json.loads(json.dumps(snap["q2"], default=str))}
+    p_changed = [(k, f) for k in b2 if k in a2 for f in ("pos", "sv", "cat")
+                 if b2[k].get(f) != a2[k].get(f)]
+    p_host = [k for k in b2 if k in a2 and host and host in k[0] and b2[k] != a2[k]]
+    check("EP-05", not p_changed and not p_host and set(b2) == set(a2),
+          f"Parameter position/sample_values/category changed: {p_changed[:4]}; on the excluded host: {p_host[:3]}")
+
+
+def userinput_checks(tool):
+    """L-11: a partial run marks its own UserInput nodes completed, with their PRODUCED edges."""
+    rows = q(f"""MATCH (ui:UserInput {{tool_id: '{tool}'}})
+                 RETURN ui.id AS id, ui.status AS status, toString(ui.completed_at) AS done,
+                        size([(ui)-[:PRODUCED]->(x) | x]) AS produced""")
+    print(f"USERINPUT={json.dumps(rows)}")
+    check("UI-01", rows and all(r["status"] == "completed" and r["done"] and r["produced"] >= 1 for r in rows),
+          f"UserInput nodes of {tool}: {rows}")
+
+
+def upload_sink_checks(name):
+    """L-1: a partial JS Recon run on an upload alone writes its DOM sink."""
+    rows = q(f"""MATCH (f:JsReconFinding {{finding_type: 'js_file'}}) WHERE f.source_url CONTAINS '{name}'
+                 OPTIONAL MATCH (f)-[]->(s:JsReconFinding {{finding_type: 'dom_sink'}})
+                 RETURN f.source_url AS u, collect(s.title) AS sinks""")
+    check("UP-01", rows and any(r["sinks"] for r in rows), f"uploaded bundle's js_file node and its sinks: {rows}")
+
 if len(sys.argv) > 2:
+    if sys.argv[2] == "--probefail" and len(sys.argv) in (5, 6):
+        probefail_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--secchk" and len(sys.argv) == 4:
+        secchk_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--redis-nohttp" and len(sys.argv) in (4, 5):
+        redis_nohttp_checks(sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--fanout" and len(sys.argv) == 4:
+        fanout_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--r14" and len(sys.argv) in (4, 5):
+        r14_checks(sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--r14js" and len(sys.argv) == 5:
+        r14js_checks(sys.argv[3], sys.argv[4])
+        sys.exit(report())
+    if sys.argv[2] == "--graphql-rate" and len(sys.argv) == 4:
+        graphql_rate_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--graphql-cop" and len(sys.argv) in (5, 6):
+        graphql_cop_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--vhost-drop" and len(sys.argv) == 5:
+        vhost_drop_checks(sys.argv[3], sys.argv[4])
+        sys.exit(report())
+    if sys.argv[2] == "--cache" and len(sys.argv) in (5, 6):
+        cache_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(report())
+    if sys.argv[2] == "--epai" and len(sys.argv) in (5, 6):
+        epai_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
+        sys.exit(0 if sys.argv[3] == "snapshot" else report())
+    if sys.argv[2] == "--userinput" and len(sys.argv) == 4:
+        userinput_checks(sys.argv[3])
+        sys.exit(report())
+    if sys.argv[2] == "--upload-sink" and len(sys.argv) == 4:
+        upload_sink_checks(sys.argv[3])
+        sys.exit(report())
     if sys.argv[2] == "--ip-ownership" and len(sys.argv) == 3:
         ip_ownership_checks()
         sys.exit(report())
@@ -925,8 +1350,16 @@ def vhosts(ip):
 
 
 got, _ = vhosts(f"{NET}.10")
-check("V-01/V-02/V-03", got == [(f"admin.{APEX}", "L7"), (f"wiki.{APEX}", "L7")],
-      f"Fastly-like edge: {got} (expect admin + wiki, L7, nothing from the 19 catch-all names)")
+check("V-01/V-02/V-03", got == [(f"admin.{APEX}", "L7"), (f"dev-api.{APEX}", "L7"), (f"dev.api.{APEX}", "L7"),
+                                 (f"wiki.{APEX}", "L7")],
+      f"Fastly-like edge: {got} (expect admin, dev-api, dev.api and wiki, L7, nothing from the 19 catch-all names)")
+ids = q(f"""MATCH (v:Vulnerability) WHERE v.source = 'vhost_sni_enum' AND v.ip = '{NET}.10'
+            AND v.hostname IN ['dev-api.{APEX}', 'dev.api.{APEX}'] RETURN v.hostname AS h, v.id AS id""")
+import re as _re  # noqa: E402
+check("V-16 (R-46)", len(ids) == 2 and len({r["id"] for r in ids}) == 2
+      and all(_re.fullmatch(r"vhost_sni_[0-9a-f]{20}", r["id"] or "") for r in ids),
+      f"dev-api and dev.api, two apps one character apart: {[(r['h'], r['id']) for r in ids]} "
+      f"(expect two distinct vhost_sni_<20 hex> ids)")
 got, _ = vhosts(f"{NET}.11")
 check("V-04/V-05", got == [(f"admin.{APEX}", "L4")], f"Cloudflare-like edge: {got} (expect the SNI-routed admin only)")
 got, _ = vhosts(f"{NET}.12")
@@ -1003,7 +1436,9 @@ check("M-04", r and r["t"] == "source_map_reference" and r["sev"] == "info" and 
 check("M-07", "s3miss.0c1d.js" not in m, f"an S3 AccessDenied 403 for a missing map: {m.get('s3miss.0c1d.js')}")
 check("M-08", "cfmiss.2e3f.js" not in m, f"a 403 the made-up sibling also gets: {m.get('cfmiss.2e3f.js')}")
 r = m.get("buildref.7a8b.js")
-check("M-05", r and r["t"] == "source_map_reference" and r["fr"] in ("unreachable", "unsafe")
+# R-14: .99 is not one of the run's hosts, so the hop guard refuses it before
+# any request (out_of_scope); before R-14 the fetch was tried and failed.
+check("M-05", r and r["t"] == "source_map_reference" and r["fr"] in ("unreachable", "unsafe", "out_of_scope")
       and f"{NET}.99" in (r["map"] or ""), f"map on another unreachable host: {r}")
 r = m.get("inline.5e6f.js")
 check("M-06", r and r["t"] == "source_map_exposure" and (r["map"] or "").startswith("data:application/json;base64,…")

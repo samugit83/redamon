@@ -27,6 +27,14 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --r43 --no-triage --log r43.log   # typed GraphQL endpoints vs project scope (R-43)
     python3 e2e_fp.py --nuclei-throttle --no-triage --log nuclei.log   # R-19 (the log echoes Nuclei's JSONL)
     python3 e2e_fp.py --redis --no-triage   # then --rerun <id> --redis-mode delay|auth (R-24)
+    python3 e2e_fp.py --probefail --no-triage --no-reset   # R-21: .40 (then --tls-state / --httpx-fail reruns)
+    python3 e2e_fp.py --secchk --no-triage --no-reset      # L-20 SMTP, L-21 login forms, L-7 (.48 -> .21)
+    python3 e2e_fp.py --redis-nohttp --no-triage --no-reset   # R-22: .39 on 6379 alone, no live URL
+    python3 e2e_fp.py --fanout --no-triage --no-reset      # R-31: every Phase A tool at once (run it 3x)
+    python3 e2e_fp.py --r14 --no-triage --no-reset         # R-14: source maps off the scanned host
+    python3 e2e_fp.py --graphql --no-triage --no-reset     # R-7 / R-42: GraphQL rate and graphql-cop gates
+    python3 e2e_fp.py --stealth --no-triage --no-reset     # R-10: stealth project for partial runs
+    python3 e2e_fp.py --rerun <id> --vhost-drop-bare --cache-state stall ...   # R-46 / R-23 on the main project
     python3 e2e_fp.py --prefix e2e-audit- ...   # name prefix for the created project
 
 Reads MCP_SERVER_TOKEN from the repo .env through the lab's mcp_client, which
@@ -39,6 +47,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -51,7 +60,7 @@ TARGETS = [f"{NET}.{n}" for n in (10, 11, 12, 13, 14, 15, 20)]
 APEX = "fplab.test"
 VHOST_NAMES = ["admin", "wiki", "dev", "staging", "jenkins", "portal-internal", "qa", "grafana", "vpn",
                "api-gateway", "kibana", "ci", "sso", "monitoring", "backoffice", "uat", "x1",
-               "preprod-eu-west", "status", "mail", "intranet"]
+               "preprod-eu-west", "status", "mail", "intranet", "dev-api", "dev.api"]
 
 AI_OFF = [
     "portScanAiPortCatalogEnabled", "masscanAiPortCatalogEnabled", "nmapAiVersionRegexEnabled",
@@ -313,6 +322,170 @@ def redis_state(mode="open"):
         return json.loads(resp.read())
 
 
+# R-22 runs as its own project: .39 scanned on 6379 alone, so httpx finds no
+# live URL and the active scans are skipped; the port checks must still run.
+REDIS_NOHTTP_SETTINGS = {
+    **REDIS_SETTINGS,
+    "naabuCustomPorts": "6379",
+    "subdomainTakeoverEnabled": True,
+    # On, so that its skip is visible: no live URL, no Nuclei request.
+    "nucleiEnabled": True, "nucleiTags": ["headers"], "nucleiAutoUpdateTemplates": False,
+    "nucleiDastMode": False, "nucleiInteractsh": False, "nucleiAiTags": False, "nucleiAiResponseFilter": False,
+}
+
+
+NUCLEI_QUIET = {"nucleiAutoUpdateTemplates": False, "nucleiDastMode": False, "nucleiInteractsh": False,
+                "nucleiAiTags": False, "nucleiAiResponseFilter": False,
+                "nucleiSeverity": ["critical", "high", "medium", "low", "info"]}
+
+# R-21 / R-9 run as their own project on .40: an expired certificate on 993
+# (TLS, no HTTP: only tlsx reads it) and a page on 80 that Nuclei and the
+# header checks report. tlsx waits 30 s per handshake but the run is cut at
+# 20 s, so a stalled handshake (/_lab/tls?stall=1) times the run out.
+PROBEFAIL_TARGETS = [f"{NET}.40"]
+PROBEFAIL_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "80,993",
+    "tlsxEnabled": True, "tlsxTimeout": 30, "tlsxRetries": 0, "tlsxRunTimeout": 20,
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "securityCheckEnabled": True,
+    "nucleiEnabled": True, "nucleiTags": ["headers"], **NUCLEI_QUIET,
+}
+TLS_STATE = f"http://{NET}.40/_lab/tls"
+HTTPX_IMAGE = "projectdiscovery/httpx:latest"
+HTTPX_FAIL_IMAGE = "redamon-fp-httpx-fail:latest"
+HTTPX_FAIL_TRIGGER = "GROUP 4: HTTP Probing"
+
+# The security-check cases (L-20, L-21, L-7) run as their own project: three
+# SMTP servers (.41 refuses the relay, .42 accepts it, .43 greylists), three
+# login shapes (.44 a "login" shell, .45 a real form, .46 a catch-all), .48,
+# whose HTTPS page 302s to .21 (outside the project), and .24, whose HTTPS page
+# 302s to its own /login. The page checks read HTTPS only.
+SECCHK_TARGETS = [f"{NET}.{n}" for n in (24, 41, 42, 43, 44, 45, 46, 48)]
+SECCHK_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "25,80,443",
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "securityCheckEnabled": True,
+}
+
+# R-31 runs as its own project, three times in a row: every Phase A tool on at
+# once (Nuclei, vhost/SNI, cache poisoning, origin discovery, GraphQL).
+FANOUT_TARGETS = [f"{NET}.{n}" for n in (22, 31, 37)]
+FANOUT_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "vuln_scan"],
+    "naabuCustomPorts": "80,443",
+    "katanaEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "vhostSniCustomWordlist": "\n".join(f"{w}.{APEX}" for w in ("portal", "split", "admin")),
+    "webCachePoisonEnabled": True, "originDiscoveryEnabled": True,
+    "graphqlSecurityEnabled": True, "graphqlCopEnabled": False,
+    "nucleiEnabled": True, "nucleiTags": ["git", "headers"], **NUCLEI_QUIET,
+}
+
+# R-14 runs as its own project on .20: with /_lab/js?show=r14 the shell links a
+# bundle whose map sits on .21, one whose map URL redirects to .21 and one whose
+# map URL redirects to another .20 path. A rerun with show=r14,r14js and .21
+# RoE-excluded adds a bundle that redirects to .21 and one that moves on .20.
+R14_TARGETS = [f"{NET}.20"]
+R14_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe", "resource_enum", "js_recon"],
+    "naabuCustomPorts": "80",
+    "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+}
+
+# R-7 / R-42 run as their own project on .47, a GraphQL server, typed. No port
+# scan: stealth mode would turn naabu into a lookup of the lab address on
+# Shodan's InternetDB, and httpx finds .47:80 by itself.
+GRAPHQL_TARGETS = [f"{NET}.47"]
+GRAPHQL_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["http_probe", "vuln_scan"],
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False, "shodanEnabled": False,
+    "webCachePoisonEnabled": False,
+    "graphqlSecurityEnabled": True, "graphqlCopEnabled": False, "graphqlIntrospectionTest": True,
+    "graphqlEndpoints": f"http://{NET}.47/graphql",
+}
+
+# R-10 runs as its own stealth project (.22, .37); its partial runs are started
+# with partial_fp.py. No port scan, for the same reason as the GraphQL project.
+STEALTH_TARGETS = [f"{NET}.{n}" for n in (22, 37)]
+STEALTH_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["http_probe", "resource_enum"],
+    "jsReconEnabled": False, "vhostSniEnabled": False, "shodanEnabled": False, "webCachePoisonEnabled": False,
+    "stealthMode": True,
+}
+
+
+def lab_state(url, query=""):
+    """GET a lab toggle (``/_lab/...``), with a name in Host where a bare-IP
+    request is the thing the toggle changes."""
+    req = urllib.request.Request(f"{url}?{query}", headers={"Host": f"lab.{APEX}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+CACHE_STATE = f"http://{NET}.15/_lab/cache"
+VHOST_STATE = f"http://{NET}.10/_lab/vhost"
+
+
+def _recon_container(project_id):
+    return "redamon-recon-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", project_id)
+
+
+def _image_id(ref):
+    return subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", ref],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def httpx_fail_watch(project_id, stop):
+    """R-21 run 3: make this run's httpx fail, and only this run's.
+
+    Waits for the recon log to reach GROUP 4 (httpx is its first step), then tags the lab's
+    failing stand-in as httpx's image, waits for the probe to fail, and puts the
+    real image back (always, also on any error). The tag is host-wide, so it is
+    only swapped while no other recon or partial-recon container and no other
+    httpx container is running; otherwise the run stays healthy and this says so.
+    """
+    real = _image_id(HTTPX_IMAGE)
+    if not real or not _image_id(HTTPX_FAIL_IMAGE):
+        print(f"[!] --httpx-fail needs {HTTPX_IMAGE} and {HTTPX_FAIL_IMAGE} "
+              f"(docker build -t {HTTPX_FAIL_IMAGE} httpx_fail/)", flush=True)
+        return
+    name = _recon_container(project_id)
+    swapped = False
+    try:
+        while not stop.is_set():
+            log = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+            text = log.stdout + log.stderr
+            if not swapped and HTTPX_FAIL_TRIGGER in text:
+                others = [n for n in subprocess.run(
+                    ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+                    if n != name and (n.startswith(("redamon-recon-", "redamon-partial-recon-", "redamon-httpx-",
+                                                    "httpx-")) and n != "redamon-recon-orchestrator")]
+                if others:
+                    print(f"[!] --httpx-fail: other scan containers are running ({others[:3]}): "
+                          f"httpx left healthy", flush=True)
+                    return
+                subprocess.run(["docker", "tag", HTTPX_FAIL_IMAGE, HTTPX_IMAGE], check=True, capture_output=True)
+                swapped = True
+                print(f"[*] --httpx-fail: {HTTPX_IMAGE} now names the failing stand-in", flush=True)
+            after = text.split(HTTPX_FAIL_TRIGGER, 1)[-1]
+            if swapped and ("[!][httpx]" in after or "GROUP 5" in after or "SKIPPING ACTIVE SCANS" in after):
+                return
+            time.sleep(0.5)
+    finally:
+        if swapped:
+            subprocess.run(["docker", "tag", real, HTTPX_IMAGE], check=False, capture_output=True)
+            print(f"[*] --httpx-fail: {HTTPX_IMAGE} restored ({_image_id(HTTPX_IMAGE)[:19]})", flush=True)
+
+
 def require_shodan_stub():
     """Refuse to run unless the orchestrator forwards Shodan to the lab stub.
     Reads only the two override names from its environment; prints no value."""
@@ -495,6 +668,29 @@ def main():
     ap.add_argument("--redis", action="store_true", help="create the R-24 Redis project (.39)")
     ap.add_argument("--redis-mode", choices=("open", "delay", "auth"), default="open",
                     help="what .39 answers to PING for this run (reset to open after)")
+    ap.add_argument("--redis-nohttp", action="store_true",
+                    help="create the R-22 project (.39 on 6379 alone: no live URL, port checks still run)")
+    ap.add_argument("--probefail", action="store_true",
+                    help="create the R-21 project (.40: expired certificate on 993, Nuclei + checks on 80)")
+    ap.add_argument("--tls-state", metavar="QUERY", default="",
+                    help=".40's TLS state for this run, e.g. 'stall=1' or 'cert=valid' (reset to expired after)")
+    ap.add_argument("--httpx-fail", action="store_true",
+                    help="make this run's httpx fail (R-21): its image tag names a failing stand-in for a few seconds")
+    ap.add_argument("--secchk", action="store_true",
+                    help="create the security-check project (L-20 SMTP, L-21 login forms, L-7 .48 -> .21)")
+    ap.add_argument("--fanout", action="store_true",
+                    help="create the R-31 project (every Phase A tool at once; rerun it twice)")
+    ap.add_argument("--r14", action="store_true",
+                    help="create the R-14 project (.20 with /_lab/js?show=r14 for the run)")
+    ap.add_argument("--graphql", action="store_true", help="create the R-7 / R-42 GraphQL project (.47)")
+    ap.add_argument("--stealth", action="store_true",
+                    help="create the R-10 stealth project (.22, .37; partial runs with partial_fp.py)")
+    ap.add_argument("--cache-state", choices=("open", "stall"), default="open",
+                    help="what .15 does with the cache scanner's requests this run (reset to open after)")
+    ap.add_argument("--vhost-drop-bare", action="store_true",
+                    help=".10 closes bare-IP connections this run (R-46; reset after)")
+    ap.add_argument("--no-reset", action="store_true",
+                    help="do not restart .14 and .15 first (another project may be scanning them)")
     ap.add_argument("--prefix", default="", help="prefix for the created project's name")
     args = ap.parse_args()
 
@@ -506,13 +702,17 @@ def main():
         require_shodan_stub()
     if args.ip_ownership_nwlab:
         nwlab_routing_gate()
-    reset_lab()
+    if not args.no_reset:
+        reset_lab()
     if args.rerun:
         project_id = args.rerun
     else:
         kind = (" (RoE, R-3/R-32)" if args.roe else " (R-29 per-origin endpoints)" if args.r29 else
                 " (R-43 GraphQL scope)" if args.r43 else " (R-19 Nuclei throttle)" if args.nuclei_throttle else
-                " (R-24 Redis)" if args.redis else
+                " (R-24 Redis)" if args.redis else " (R-22 Redis, no HTTP)" if args.redis_nohttp else
+                " (R-21 probe failures)" if args.probefail else " (security checks)" if args.secchk else
+                " (R-31 fan-out)" if args.fanout else " (R-14 source maps)" if args.r14 else
+                " (R-7/R-42 GraphQL)" if args.graphql else " (R-10 stealth)" if args.stealth else
                 " (HTTP layer)" if args.http_layer else " (passive CVEs)" if args.passive_cves else
                 " (JS coverage)" if args.js_coverage else " (vhost and CDN tag)" if args.vhost_origin else
                 " (host coverage)" if args.coverage else " (host coverage, clean)" if args.coverage_clean
@@ -523,6 +723,13 @@ def main():
                              (R43_TARGETS, R43_SETTINGS) if args.r43 else
                              (NUCLEI_THROTTLE_TARGETS, NUCLEI_THROTTLE_SETTINGS) if args.nuclei_throttle else
                              (REDIS_TARGETS, REDIS_SETTINGS) if args.redis else
+                             (REDIS_TARGETS, REDIS_NOHTTP_SETTINGS) if args.redis_nohttp else
+                             (PROBEFAIL_TARGETS, PROBEFAIL_SETTINGS) if args.probefail else
+                             (SECCHK_TARGETS, SECCHK_SETTINGS) if args.secchk else
+                             (FANOUT_TARGETS, FANOUT_SETTINGS) if args.fanout else
+                             (R14_TARGETS, R14_SETTINGS) if args.r14 else
+                             (GRAPHQL_TARGETS, GRAPHQL_SETTINGS) if args.graphql else
+                             (STEALTH_TARGETS, STEALTH_SETTINGS) if args.stealth else
                              (HTTP_LAYER_TARGETS, HTTP_LAYER_SETTINGS) if args.http_layer else
                              (PASSIVE_TARGETS, PASSIVE_SETTINGS) if args.passive_cves else
                              (JS_COVERAGE_TARGETS, {**JS_COVERAGE_SETTINGS,
@@ -552,11 +759,22 @@ def main():
     if extra:
         changed = call("update_recon_settings", {"projectId": project_id, "settings": extra})
         print("[*] settings:", json.dumps(changed)[:300], flush=True)
-    print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
-    spa_query = "&".join(q for q in (args.spa_state, "show=r29" if args.r29 else "") if q)
-    print("[*] SPA state:", json.dumps(spa_state(spa_query)), flush=True)
-    if args.redis or args.redis_mode != "open":
+    # Each switch is set only when this run asks for it, and reset after it:
+    # another project may be scanning the same lab host meanwhile.
+    if args.shodan_state:
+        print("[*] Shodan stub:", json.dumps(shodan_state(args.shodan_state)), flush=True)
+    auto_show = "show=r29" if args.r29 else "show=r14" if args.r14 and "show=" not in args.spa_state else ""
+    spa_query = "&".join(q for q in (args.spa_state, auto_show) if q)
+    if spa_query:
+        print("[*] SPA state:", json.dumps(spa_state(spa_query)), flush=True)
+    if args.redis_mode != "open":
         print("[*] Redis stand-in:", json.dumps(redis_state(args.redis_mode)), flush=True)
+    if args.tls_state:
+        print("[*] TLS stand-in:", json.dumps(lab_state(TLS_STATE, args.tls_state)), flush=True)
+    if args.cache_state != "open":
+        print("[*] cache:", json.dumps(lab_state(CACHE_STATE, f"mode={args.cache_state}")), flush=True)
+    if args.vhost_drop_bare:
+        print("[*] vhost edge:", json.dumps(lab_state(VHOST_STATE, "drop_bare=1")), flush=True)
     print(f"RUN_START={datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}", flush=True)
     try:
         print("[*] preflight:", json.dumps(call("preflight_scope_check", {"projectId": project_id}))[:600],
@@ -564,13 +782,28 @@ def main():
         started = start_recon(project_id)
         print("[+] start_recon:", json.dumps(started)[:400], flush=True)
         tail = follow_logs(project_id, args.log) if args.log else None
-        time.sleep(20)
-        final = wait("get_recon_status", project_id, _recon_done, args.timeout)
+        stop, watcher = threading.Event(), None
+        if args.httpx_fail:
+            watcher = threading.Thread(target=httpx_fail_watch, args=(project_id, stop), daemon=True)
+            watcher.start()
+        try:
+            time.sleep(20)
+            final = wait("get_recon_status", project_id, _recon_done, args.timeout)
+        finally:
+            stop.set()
+            if watcher:
+                watcher.join(timeout=30)
         print("[+] recon finished:", json.dumps(final)[:600], flush=True)
         if tail:
             time.sleep(3)
             tail.terminate()
     finally:
+        if args.tls_state:
+            lab_state(TLS_STATE, "cert=expired&stall=0")
+        if args.cache_state != "open":
+            lab_state(CACHE_STATE, "mode=open")
+        if args.vhost_drop_bare:
+            lab_state(VHOST_STATE, "drop_bare=0")
         if args.shodan_state:
             shodan_state("")
         if spa_query:
