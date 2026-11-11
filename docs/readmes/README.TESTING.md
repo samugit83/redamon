@@ -129,7 +129,7 @@ The plugin platform ([README.PLUGINS.md](README.PLUGINS.md)) is tested at every 
 | Single-host deploy | `tests/deploy_plugins_env_chain_test.sh`, `deploy_plugins_nginx_test.sh` (the three plugin-internal prefixes denied at nginx) | shell |
 | Isolation, live | `tests/plugins_isolation_live.sh`: runs a probe inside the runner and the proxy and fails on any leak (internet, stack services, host through the bridge, `/plugins` writes, worker environments). Needs a stack started with `./redamon.sh up`; not in the gate | live |
 | Official catalog, live | `webapp/src/lib/plugins/catalog.live.test.ts`: opt-in with `PLUGINS_LIVE=1` (network), optionally `PLUGINS_LIVE_EXPECT=<id>@<version>`; skipped otherwise | live |
-| Real Postgres | `webapp/src/lib/plugins/{stores,lifecycle,jobs,userSkillAdoption}.pg.integration.test.ts`, `webapp/src/lib/userSkillNames.pg.integration.test.ts`, `webapp/scripts/backfill-user-skill-toggles.pg.integration.test.ts`: the SQL name key, the advisory locks, the CHECK constraints and the toggle backfill, on a DISPOSABLE database after `prisma db push` and `scripts/apply-plugin-constraints.mjs`. Opt-in with `PLUGINS_PG_TEST_URL`; skipped otherwise, so **not in the gate**: run them after changing any of that | integration |
+| Real Postgres | `webapp/src/lib/plugins/{stores,lifecycle,jobs,userSkillAdoption}.pg.integration.test.ts`, `webapp/src/lib/userSkillNames.pg.integration.test.ts`, `webapp/scripts/backfill-user-skill-toggles.pg.integration.test.ts`, `webapp/scripts/e2e-rbac-cleanup.pg.integration.test.ts`: the SQL name key, the advisory locks, the CHECK constraints, the toggle backfill and the live-check fixture cleanup's checkpoint SQL, on a DISPOSABLE database after `prisma db push` and `scripts/apply-plugin-constraints.mjs`. Opt-in with `PLUGINS_PG_TEST_URL`; skipped otherwise, so **not in the gate**: run them after changing any of that | integration |
 | End to end | `testing/e2e/tests/pluginsPage.spec.ts` (install and uninstall the `echo` test plugin) and `pluginsSkiller.spec.ts` (Skiller: analyse a seeded session, review, approve, versions, reset) | Playwright |
 
 Hermetic doubles, all in `webapp/src/lib/plugins/__testing__/` (no production module may import
@@ -263,9 +263,11 @@ stub on the address the agent reaches the host by (`docker exec redamon-agent ge
 host.docker.internal`), register it as an `openai_compatible` provider of the project's owner
 (`http://host.docker.internal:<port>/v1`) and set the project's `agentOpenaiModel` to
 `custom/<providerId>`. One stub per run: turns are spent per process. The fixture cleanup
-(`e2e-rbac-cleanup.mjs`) does not clear a project's graph or the agent's checkpoints, so a run on
-a fixture project leaves `AttackChain` nodes, a `Domain` seeded by the project update and
-`checkpoints` rows to remove by hand. The matcher has its own test, outside the gate:
+(`e2e-rbac-cleanup.mjs`) also clears the fixture projects' graph nodes (shared `CVE`, `MitreData`
+and `Capec` nodes stay) and the checkpoint rows of their agent runs, and of any `rbac-*` session
+whose user and project are both gone, before it deletes a row; when Neo4j or the checkpoint delete
+fails it deletes nothing and exits 1, so a rerun finishes the job. The matcher has its own test,
+outside the gate:
 
 ```bash
 node --test testing/e2e/scripts/stub-llm-server.test.mjs

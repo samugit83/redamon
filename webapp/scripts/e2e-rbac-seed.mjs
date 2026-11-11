@@ -31,8 +31,9 @@ const USERS = [
   { key: 'MEMBER_C', email: 'rbac-member-c@e2e.local', name: 'RBAC Member C', role: 'standard', login: true },
   // Passwordless managed account: an admin runs it through act-as; it cannot sign in.
   { key: 'MANAGED', email: 'rbac-managed@e2e.local', name: 'RBAC Managed', role: 'standard', login: false },
-  // Owns nothing: the matrix signs it in, deletes it by SQL and replays its cookie.
-  { key: 'DELETED', email: 'rbac-deleted@e2e.local', name: 'RBAC Deleted', role: 'standard', login: true },
+  // Owns nothing: the matrix signs it in, deletes it by SQL and replays its cookie. A fixed
+  // id, because the cleanup can no longer find it by address to remove the rows it left.
+  { key: 'DELETED', id: 'rbac-deleted-fixture', email: 'rbac-deleted@e2e.local', name: 'RBAC Deleted', role: 'standard', login: true },
 ]
 
 // The two throwaway projects exist to be deleted by the matrix: one by the owner,
@@ -60,7 +61,7 @@ async function upsertUser(u, hash) {
   return prisma.user.upsert({
     where: { email: u.email },
     update: { password, role: u.role, name: u.name },
-    create: { email: u.email, name: u.name, password, role: u.role },
+    create: { ...(u.id ? { id: u.id } : {}), email: u.email, name: u.name, password, role: u.role },
   })
 }
 
