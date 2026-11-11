@@ -3162,9 +3162,12 @@ def run_port_service_checks(
 
     from recon.helpers.roe_scope import _is_roe_excluded
 
+    open_by_ip = {ip: ports for ip, (ports, _entry) in _open_ports_by_ip(port_scan).items()
+                  if ip not in edge_ips}
+    admitted = set(_domain_roe_port_ips(recon_data, port_scan, list(open_by_ip), roe_excluded_hosts))
     ips_to_check = []
-    for ip, (open_ports, _entry) in _open_ports_by_ip(port_scan).items():
-        if ip in edge_ips:
+    for ip, open_ports in open_by_ip.items():
+        if ip not in admitted:
             continue
         if roe_excluded_hosts and _is_roe_excluded(ip, roe_excluded_hosts):
             continue
@@ -3824,6 +3827,79 @@ def _ip_mode_hosts(recon_data: Dict[str, Any], hostnames: List[str], ips: List[s
     return names + [ip for ip in sorted(ips) if ip not in names], ips
 
 
+def _roe_settings(roe_excluded_hosts) -> Optional[Dict[str, Any]]:
+    """The caller's RoE list as admission settings; None without one, so the
+    gate falls back to the recon dict's metadata.roe (a partial builder's)."""
+    excluded = [h for h in (roe_excluded_hosts or ()) if isinstance(h, str) and h.strip()]
+    return {"ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": excluded} if excluded else None
+
+
+def _keep_roe_refused(refused: List[str]) -> None:
+    """A host the RoE refused was not checked, so its security_check findings
+    are kept; the other sources gate and keep for themselves."""
+    if not refused:
+        return
+    from recon.helpers import circuit_breaker as cb
+    cb.note_degraded("security_checks", hosts=refused, host_source="security_check",
+                     source_only_hosts=True, reason="refused by the Rules of Engagement")
+    print(f"[-][SecurityCheck] {len(refused)} host(s) the Rules of Engagement refuse: "
+          f"not checked, earlier findings kept")
+
+
+def _domain_roe_port_ips(recon_data: Dict[str, Any], port_scan: Dict[str, Any],
+                         ips: List[str], roe_excluded_hosts) -> List[str]:
+    """Domain mode: the port-scan addresses the port and service checks may
+    probe. An address held only by names an entry excludes goes with them, as
+    for nmap (target_admission.admit_ip_map). Inert without an exclusion, and in
+    IP mode, whose port data holds targets only."""
+    from recon.helpers.target_admission import admit_ip_map, ip_mode_targets
+    if ip_mode_targets(recon_data) is not None:
+        return ips
+    names = {ip: list(entry.get("hostnames") or [])
+             for ip, (_ports, entry) in _open_ports_by_ip(port_scan).items()
+             if isinstance(entry.get("hostnames"), list)}
+    kept, _map, _adm = admit_ip_map(_roe_settings(roe_excluded_hosts), recon_data, ips,
+                                    {ip: n for ip, n in names.items() if ip in ips and n},
+                                    module="security_checks")
+    _keep_roe_refused([ip for ip in ips if ip not in kept])
+    return kept
+
+
+def _domain_roe_hosts(recon_data: Dict[str, Any], hostnames: List[str], ips: List[str],
+                      subdomains_to_ips: Dict[str, List[str]],
+                      roe_excluded_hosts) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+    """Domain mode: the hosts the Rules of Engagement let the checks reach (R-2, D2).
+
+    The hostname checks name a host and let the HTTP stack resolve it, so a
+    name with any excluded address could land there: it is refused, and its
+    allowed addresses are still checked as bare IPs (the direct-IP checks), but
+    never paired with it (the WAF bypass, the bare-origin comparison). An
+    excluded address is never probed. Each refused host is kept as not checked
+    for security_check, so the prune never reads it as clean. The RoE comes
+    from the caller, else from a partial builder's metadata.roe stamp. Inert
+    without an exclusion, and in IP mode, which _ip_mode_hosts already clamps.
+    """
+    from recon.helpers.target_admission import admit_host_targets, ip_mode_targets
+    if ip_mode_targets(recon_data) is not None:
+        return hostnames, ips, subdomains_to_ips
+    ip_to_hostnames: Dict[str, List[str]] = {}
+    for name, addrs in subdomains_to_ips.items():
+        for addr in addrs or ():
+            ip_to_hostnames.setdefault(addr, []).append(name)
+    kept_ips, kept_names, _kept_map = admit_host_targets(
+        _roe_settings(roe_excluded_hosts), recon_data, set(ips), set(hostnames), ip_to_hostnames,
+        module="security_checks", resolves_names=True)
+    refused = ([h for h in hostnames if h not in kept_names]
+               + [ip for ip in ips if ip not in kept_ips])
+    if not refused:
+        return hostnames, ips, subdomains_to_ips
+    _keep_roe_refused(refused)
+    return ([h for h in hostnames if h in kept_names],
+            [ip for ip in ips if ip in kept_ips],
+            {h: [a for a in addrs if a in kept_ips]
+             for h, addrs in subdomains_to_ips.items() if h in kept_names})
+
+
 def _ip_mode_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozenset]]:
     """IP mode: {address: the ports this run found live on it}; None outside IP mode.
 
@@ -4040,6 +4116,8 @@ def _run_security_checks(recon_data, enabled_checks, timeout, tls_expiry_days, m
     subdomains_to_ips = {k: v for k, v in subdomains_to_ips.items()
                          if not _is_synthetic_ip_host(k)}
     hostnames, ips = _ip_mode_hosts(recon_data, hostnames, ips, subdomains_to_ips)
+    hostnames, ips, subdomains_to_ips = _domain_roe_hosts(
+        recon_data, hostnames, ips, subdomains_to_ips, roe_excluded_hosts)
 
     print(f"[*][SecurityCheck] Targets: {len(hostnames)} hostnames, {len(ips)} IPs")
     print(f"[*][SecurityCheck] Timeout: {timeout}s")

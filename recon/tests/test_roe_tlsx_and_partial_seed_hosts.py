@@ -530,8 +530,6 @@ def test_security_checks_reach_every_dns_address_without_an_exclusion():
     assert {LEGACY, MIXED} <= names
 
 
-@pytest.mark.xfail(strict=True, reason="R-2: run_security_checks applies no RoE address gate in "
-                   "domain mode (direct-IP checks and hostname checks)")
 def test_security_checks_never_reach_an_excluded_address():
     ips, names = _security_check_targets(_roe(EXCLUDED_RANGE))
     assert {LEGACY_IP, MIXED_BAD}.isdisjoint(ips)
