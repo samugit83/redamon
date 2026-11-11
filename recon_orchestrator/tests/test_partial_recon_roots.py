@@ -30,6 +30,7 @@ from batch_scope import (
     validate_partial_overrides,
 )
 from models import PartialReconStartRequest, PartialReconState, PartialReconStatus, ReconStatus
+from tests.job_credentials import job_credential, use_keys
 
 BATCH = {
     "domainBatchMode": True,
@@ -181,7 +182,7 @@ class _SpyManager:
 
 def _request(**kw):
     base = dict(project_id="p1", user_id="u1", webapp_api_url="http://localhost:3000",
-                tool_id="Tlsx", graph_inputs={})
+                tool_id="Tlsx", graph_inputs={}, job_credential=job_credential("p1", "u1"))
     base.update(kw)
     return PartialReconStartRequest(**base)
 
@@ -190,6 +191,7 @@ def _request(**kw):
 def spy(monkeypatch):
     s = _SpyManager()
     monkeypatch.setattr(api, "container_manager", s)
+    use_keys(monkeypatch)
     return s
 
 

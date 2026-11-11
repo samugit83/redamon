@@ -5,8 +5,8 @@ Covers the four pure decision helpers added in the STRIDE D1 / S3-E6 wave:
   * _container_cpu_limit  — core-proportional nano_cpus, fraction + abs clamp,
     fail-open when governor off / fraction <= 0.
   * _container_pids_limit — fixed fork-bomb ceiling, env-overridable, fail-open.
-  * _scanner_env          — scoped SCANNER_API_KEY, falls back to master key only
-    when the scanner key is unset/placeholder.
+  * _scanner_env          — scoped SCANNER_API_KEY; with it unset/placeholder no
+    key at all, never the master key (NF-16, step 1.16).
   * _scanner_hardening    — cap_drop:[ALL] only when drop_caps=True.
 
 None of these touch the docker client, so we build a ContainerManager without
@@ -108,14 +108,14 @@ class TestScannerEnv(unittest.TestCase):
             # the master key must NOT be handed to the scan spawn
             self.assertNotIn("INTERNAL_API_KEY", env)
 
-    def test_falls_back_to_master_when_scanner_unset(self):
+    def test_no_master_key_when_scanner_unset(self):
         with _env(INTERNAL_API_KEY="master"):
             os.environ.pop("SCANNER_API_KEY", None)
-            self.assertEqual(self.m._scanner_env(), {"INTERNAL_API_KEY": "master"})
+            self.assertEqual(self.m._scanner_env(), {})
 
-    def test_falls_back_when_scanner_is_placeholder(self):
+    def test_no_master_key_when_scanner_is_placeholder(self):
         with _env(SCANNER_API_KEY="changeme", INTERNAL_API_KEY="master"):
-            self.assertEqual(self.m._scanner_env(), {"INTERNAL_API_KEY": "master"})
+            self.assertEqual(self.m._scanner_env(), {})
 
 
 class TestScannerHardening(unittest.TestCase):

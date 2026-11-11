@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 import api
 from models import ReconStartRequest, ReconState, ReconStatus
+from tests.job_credentials import job_credential, use_keys
 
 
 class _SpyManager:
@@ -39,7 +40,9 @@ def _start(webapp_api_url, monkeypatch, project):
         return project
 
     monkeypatch.setattr(api, "_fetch_project_for_preflight", _fetch)
-    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url=webapp_api_url)
+    use_keys(monkeypatch)
+    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url=webapp_api_url,
+                            job_credential=job_credential("p1", "u1"))
     return fetched, (lambda: asyncio.run(api.start_recon("p1", req)))
 
 

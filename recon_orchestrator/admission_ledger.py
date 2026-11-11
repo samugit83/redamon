@@ -199,8 +199,9 @@ class ReservationLedger:
                     ceiling=cap, setting_name="RECON_MAX_CONCURRENT_GLOBAL",
                     detail=f"{len(self._committed)} of {cap} concurrent scans allowed")
 
-            # D3: per-user hard count cap. `user_id` is server-derived (project.userId)
-            # so it is trustworthy; unset falls back to a generous default.
+            # D3: per-user hard count cap. `user_id` is the tenant of the start's job
+            # credential (api._job_tenant), signed by the webapp, never the request
+            # body's; unset falls back to a generous default.
             if user_id is not None:
                 per_user = self.max_concurrent_per_user()
                 cur = self.user_active_count(user_id)

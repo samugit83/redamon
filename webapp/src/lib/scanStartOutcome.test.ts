@@ -88,6 +88,12 @@ describe('classifyStartFailure for the queue and the scheduler (plan 12.6, 12.9)
     }, answered).kind).toBe('permanent')
   })
 
+  test.each(['scanner_key_missing', 'job_credential_unverifiable'])(
+    'a missing key at the orchestrator (%s) is permanent: only redamon.sh update fixes it', code => {
+      expect(classifyStartFailure(503, { error: 'x', code }, answered).kind).toBe('permanent')
+    },
+  )
+
   test.each([400, 403, 404, 422])('an answered %i stays permanent', status => {
     expect(classifyStartFailure(status, { error: 'x' }, answered).kind).toBe('permanent')
   })

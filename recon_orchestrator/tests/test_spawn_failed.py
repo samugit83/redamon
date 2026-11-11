@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO))
 import api  # noqa: E402
 import container_manager as cm_mod  # noqa: E402
 from models import PartialReconStartRequest, ReconStartRequest  # noqa: E402
+from tests.job_credentials import job_credential, use_keys  # noqa: E402
 
 
 class _Ledger:
@@ -66,13 +67,15 @@ def _manager():
 def manager(monkeypatch, tmp_path):
     m = _manager()
     monkeypatch.setattr(api, "container_manager", m)
+    use_keys(monkeypatch)
     monkeypatch.setattr(api, "_fetch_project_for_preflight", lambda pid, **k: {"targetDomain": "example.com"})
     monkeypatch.setattr(cm_mod, "Path", lambda p: tmp_path / Path(p).name)
     return m
 
 
 def test_a_full_start_that_cannot_spawn_answers_500_spawn_failed(manager):
-    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url="")
+    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url="",
+                            job_credential=job_credential("p1", "u1"))
     with pytest.raises(HTTPException) as ei:
         asyncio.run(api.start_recon("p1", req))
     assert ei.value.status_code == 500
@@ -100,7 +103,8 @@ def test_a_partial_start_that_cannot_spawn_answers_500_spawn_failed(manager):
 def test_an_accepted_start_is_answered_as_before(manager):
     manager.client.containers.run.side_effect = None
     manager.client.containers.run.return_value = MagicMock(id="cid")
-    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url="")
+    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url="",
+                            job_credential=job_credential("p1", "u1"))
     state = asyncio.run(api.start_recon("p1", req))
     assert state.status.value == "running"
     assert manager.ledger.released == []

@@ -28,6 +28,10 @@ class ReconStartRequest(BaseModel):
     # pipeline behaves identically either way, because a full recon always wipes
     # and rebuilds the live graph. Forwarded to the container as SCAN_MODE.
     mode: Optional[str] = None
+    # Step 1.16: minted by the webapp for this start; verified here, admitted under
+    # its tenant, handed to the scan container. Optional in every start request
+    # model so a missing one gets the endpoint's coded 403, not a bare 422.
+    job_credential: Optional[str] = None
 
 
 class CaptureProxyConfig(BaseModel):
@@ -132,6 +136,7 @@ class GvmStartRequest(BaseModel):
     project_id: str
     user_id: str
     webapp_api_url: str
+    job_credential: Optional[str] = None
 
 
 class GvmState(BaseModel):
@@ -179,6 +184,7 @@ class GithubHuntStartRequest(BaseModel):
     project_id: str
     user_id: str
     webapp_api_url: str
+    job_credential: Optional[str] = None
 
 
 class GithubHuntState(BaseModel):
@@ -245,6 +251,7 @@ class TrufflehogStartRequest(BaseModel):
     #: only: the webapp start route reads them, the orchestrator injects the ones
     #: this source needs, and they are never persisted or logged.
     secrets: dict = Field(default_factory=dict)
+    job_credential: Optional[str] = None
 
 
 class TrufflehogState(BaseModel):
@@ -323,6 +330,7 @@ class SupplyChainStartRequest(BaseModel):
     repo_override_ref: Optional[str] = None
     repo_override_scope: Optional[str] = None
     repo_override_deep: Optional[bool] = None
+    job_credential: Optional[str] = None
 
 
 class GuarddogRequest(BaseModel):
@@ -386,6 +394,7 @@ class PartialReconStartRequest(BaseModel):
     user_targets: dict | None = None          # structured inputs (Naabu: {subdomains, ips, ip_attach_to})
     include_graph_targets: bool = True        # whether to include existing graph data in scan
     settings_overrides: dict = {}             # optional per-tool settings
+    job_credential: Optional[str] = None
 
 
 class PartialReconState(BaseModel):
@@ -450,6 +459,7 @@ class AiAttackSurfaceStartRequest(BaseModel):
     api_key: str = ""
     auth_header: str = ""
     auth_scheme: str = ""
+    job_credential: Optional[str] = None
 
 
 class AiAttackSurfaceState(BaseModel):

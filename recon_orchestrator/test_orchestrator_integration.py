@@ -24,6 +24,7 @@ os.environ["REDAMON_MEM_GOVERNOR"] = "0"  # deterministic admission (fail-open)
 
 import api  # noqa: E402  (env must be set before import)
 from container_manager import ContainerManager  # noqa: E402
+from tests.job_credentials import job_credential, use_keys  # noqa: E402
 from models import (  # noqa: E402
     PartialReconState,
     PartialReconStatus,
@@ -141,6 +142,7 @@ class TestStartPartialReconEndpoint:
         # webapp), so the start needs a webapp URL; the project it would fetch is this.
         monkeypatch.setattr(api, "_fetch_project_for_preflight",
                             lambda pid: {"targetDomain": "example.com", "subdomainList": []})
+        use_keys(monkeypatch)
 
     @pytest.mark.asyncio
     async def test_spawns_container_and_returns_running(self, wired_manager, mock_docker_client):
@@ -155,6 +157,7 @@ class TestStartPartialReconEndpoint:
         req = PartialReconStartRequest(
             project_id="p", user_id="u", webapp_api_url="http://localhost:3000",
             tool_id="SubdomainDiscovery", graph_inputs={"domain": "example.com"},
+            job_credential=job_credential("p", "u"),
         )
         state = await api.start_partial_recon("p", req)
 
@@ -187,6 +190,7 @@ class TestStartPartialReconEndpoint:
         req = PartialReconStartRequest(
             project_id="p2", user_id="u", webapp_api_url="http://localhost:3000",
             tool_id="Naabu", graph_inputs={"domain": "example.com"},
+            job_credential=job_credential("p2", "u"),
         )
         hb = asyncio.create_task(heartbeat())
         state = await api.start_partial_recon("p2", req)

@@ -5,12 +5,14 @@ The route coroutines are awaited directly against a faked container_manager
 the 503 guards (uninitialized / source not mounted).
 """
 import asyncio
+import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 
 import api
+from tests.job_credentials import KEYS, job_credential
 from models import (
     AiAttackSurfaceListResponse,
     AiAttackSurfaceState,
@@ -25,6 +27,9 @@ def run(coro):
 
 class TestAiAttackRoutes(unittest.TestCase):
     def setUp(self):
+        keys = patch.dict(os.environ, KEYS)
+        keys.start()
+        self.addCleanup(keys.stop)
         self._saved_mgr = api.container_manager
         self._saved_path = api.AI_ATTACK_SURFACE_PATH
         api.AI_ATTACK_SURFACE_PATH = "/host/ai_attack_surface_scan"
@@ -46,7 +51,7 @@ class TestAiAttackRoutes(unittest.TestCase):
         api.AI_ATTACK_SURFACE_PATH = self._saved_path
 
     def _req(self, **kw):
-        base = dict(project_id="p", user_id="u", tool="skeleton",
+        base = dict(project_id="p", user_id="u", job_credential=job_credential("p", "u"), tool="skeleton",
                     targets=[{"baseurl": "http://h", "path": "/c"}],
                     bounds={"judge_model": "m"}, roe_confirmed=True)
         base.update(kw)

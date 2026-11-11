@@ -80,6 +80,12 @@ def _secret_hmac_env() -> dict:
     return {"REDAMON_SECRET_HMAC_KEY": key} if key else {}
 
 
+def scanner_key() -> str:
+    """SCANNER_API_KEY, or "" while it is unset or still the compose default."""
+    key = os.environ.get("SCANNER_API_KEY", "")
+    return key if key and key != "changeme" else ""
+
+
 #: The urlscan lab's hooks: a fake urlscan (it receives the project's urlscan key)
 #: and an extra CDN edge prefix.
 URLSCAN_LAB_HOOKS = ("URLSCAN_API_BASE", "REDAMON_LAB_CDN_PREFIXES")
@@ -916,16 +922,21 @@ class ContainerManager:
             return 512
 
     def _scanner_env(self) -> dict:
-        """S3/E6: give scan spawns the SCOPED scanner token instead of the master
+        """S3/E6: give scan spawns the SCOPED scanner token, never the master
         INTERNAL_API_KEY, so a compromised scanner cannot mint an admin, harvest
-        LLM-provider keys, or reach the control plane. Falls back to the master
-        key ONLY when SCANNER_API_KEY is unset/placeholder (pre-secret installs),
-        so an operator who runs `up` before `update` is never hard-broken; the
-        scope closes automatically once redamon.sh generates the key."""
-        scanner = os.environ.get("SCANNER_API_KEY", "")
-        if scanner and scanner != "changeme":
-            return {"SCANNER_API_KEY": scanner}
-        return {"INTERNAL_API_KEY": os.environ.get("INTERNAL_API_KEY", "")}
+        LLM-provider keys, or reach the control plane. Without a configured
+        scanner key they get no key at all (NF-16): the API refuses the starts
+        whose container calls back first (`scanner_key_missing`), so this only
+        keeps any other caller from handing out the master key."""
+        key = scanner_key()
+        return {"SCANNER_API_KEY": key} if key else {}
+
+    @staticmethod
+    def _job_env(job_credential: Optional[str]) -> dict:
+        """The scan's job credential (step 1.16): its calls back to the webapp and
+        the agent send it as X-Redamon-Job, and the scanner key opens nothing
+        there without it."""
+        return {"REDAMON_JOB_CREDENTIAL": job_credential} if job_credential else {}
 
     # The dirty-analyzer knobs an operator may pin in .env. They are read from
     # os.environ by BOTH spawn implementations (this module for the SDK path,
@@ -1209,6 +1220,7 @@ class ContainerManager:
         recon_path: str,
         custom_templates_path: str = "",
         scan_mode: Optional[str] = None,
+        job_credential: Optional[str] = None,
     ) -> ReconState:
         """Start a recon container for a project.
 
@@ -1320,6 +1332,7 @@ class ContainerManager:
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                     **self._scanner_env(),  # S3/E6: scoped scanner token
+                    **self._job_env(job_credential),
                     # Agent API for AI hooks (FFuf AI extensions, etc.)
                     "AGENT_API_URL": os.environ.get("AGENT_API_URL", "http://localhost:8090"),
                     # The recon CLI (docker run/pull/info) honors DOCKER_HOST, so
@@ -2597,6 +2610,7 @@ class ContainerManager:
         config: dict,
         recon_path: str,
         custom_templates_path: str = "",
+        job_credential: Optional[str] = None,
     ) -> PartialReconState:
         """Start a partial recon container for a specific tool.
 
@@ -2704,6 +2718,7 @@ class ContainerManager:
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                     **self._scanner_env(),  # S3/E6: scoped scanner token
+                    **self._job_env(job_credential),
                     # Agent API for AI hooks (FFuf AI extensions, etc.)
                     "AGENT_API_URL": os.environ.get("AGENT_API_URL", "http://localhost:8090"),
                     # The recon CLI (docker run/pull/info) honors DOCKER_HOST, so
@@ -3343,6 +3358,7 @@ class ContainerManager:
         webapp_api_url: str,
         recon_path: str,
         gvm_scan_path: str,
+        job_credential: Optional[str] = None,
     ) -> GvmState:
         """Start a GVM vulnerability scanner container for a project"""
 
@@ -3408,6 +3424,7 @@ class ContainerManager:
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                     **self._scanner_env(),  # S3/E6: scoped scanner token
+                    **self._job_env(job_credential),
                     # GVM connection settings
                     # Operator pin for the stall watchdog. Forwarded ONLY when set,
                     # so an unset knob reaches the scan as "use the shipped default"
@@ -3822,6 +3839,7 @@ class ContainerManager:
         user_id: str,
         webapp_api_url: str,
         github_hunt_path: str,
+        job_credential: Optional[str] = None,
     ) -> GithubHuntState:
         """Start a GitHub secret hunt container for a project"""
 
@@ -3884,6 +3902,7 @@ class ContainerManager:
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                     **self._scanner_env(),  # S3/E6: scoped scanner token
+                    **self._job_env(job_credential),
                 },
                 volumes={
                     # GitHub hunt output (read-write, for saving results)
@@ -4990,7 +5009,8 @@ exit $RC
                                  repo_override_host: Optional[str] = None,
                                  repo_override_ref: Optional[str] = None,
                                  repo_override_scope: Optional[str] = None,
-                                 repo_override_deep: Optional[bool] = None) -> "SupplyChainState":
+                                 repo_override_deep: Optional[bool] = None,
+                                 job_credential: Optional[str] = None) -> "SupplyChainState":
         current = await self.get_supply_chain_status(project_id)
         if current.status in (SupplyChainStatus.RUNNING, SupplyChainStatus.PAUSED):
             raise ValueError(f"Supply-chain scan already active for project {project_id}")
@@ -5068,6 +5088,7 @@ exit $RC
                     "NEO4J_USER": os.environ.get("NEO4J_USER", "neo4j"),
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                     **self._scanner_env(),
+                    **self._job_env(job_credential),
                     # Operator overrides for the dirty analyzer this scan spawns.
                     **self._analyzer_env(),
                     # Per-repo override for an org-batch item (Phase 6); empty otherwise.

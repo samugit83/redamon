@@ -20,7 +20,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from auth import is_orchestrator_request_authorized
 from recon_settings.engagement import derive_roe_enabled
-from container_manager import ContainerManager
+from container_manager import ContainerManager, scanner_key
+from job_credential import JobCredentialRefused, verify_job_credential
 from admission_ledger import AdmissionError
 
 
@@ -260,6 +261,45 @@ def _refuse_failed_spawn(state) -> None:
             detail={"detail": f"The scan container could not be started: {state.error}",
                     "code": "spawn_failed"},
         )
+
+
+def _refuse_job_credential(code: str, project_id: str) -> HTTPException:
+    logger.warning(f"[rbac] job credential refused reason={code} project={project_id}")
+    if code == "weak_master_key":
+        return HTTPException(status_code=503, detail={
+            "detail": "INTERNAL_API_KEY is not configured, so the scan's job credential cannot be "
+                      "verified. Run ./redamon.sh update to generate it.",
+            "code": "job_credential_unverifiable"})
+    return HTTPException(status_code=403, detail={
+        "detail": f"This scan start carries no valid job credential ({code}).",
+        "code": f"job_credential_{code}"})
+
+
+def _job_tenant(project_id: str, request, *, calls_back: bool) -> str:
+    """The tenant a scan start is admitted and run under: the `ten` of the job
+    credential the webapp minted for it (step 1.16, NF-08), never the body's
+    user_id, which must name the same account.
+
+    `calls_back`: the scan's container calls the webapp and the agent with the
+    scanner key and its credential. Without a scanner key it would get no key at
+    all (NF-16), so the start is refused here with the fix, not left to fail
+    inside the container.
+    """
+    if calls_back and not scanner_key():
+        logger.error("[rbac] scanner key missing: run ./redamon.sh update to generate it")
+        raise HTTPException(status_code=503, detail={
+            "detail": "SCANNER_API_KEY is not configured, so the scan could not read its settings. "
+                      "Run ./redamon.sh update to generate it.",
+            "code": "scanner_key_missing"})
+    if not request.job_credential:
+        raise _refuse_job_credential("missing", project_id)
+    try:
+        claims = verify_job_credential(request.job_credential, project_id)
+    except JobCredentialRefused as e:
+        raise _refuse_job_credential(e.code, project_id)
+    if request.user_id != claims["ten"]:
+        raise _refuse_job_credential("user_mismatch", project_id)
+    return claims["ten"]
 
 
 def _check_roe_time_window(project: dict, _now=None) -> None:
@@ -1231,15 +1271,17 @@ async def start_recon(project_id: str, request: ReconStartRequest):
             raise HTTPException(status_code=403, detail=f"Hard guardrail: {hit[1]}")
 
     _check_roe_time_window(project)
+    tenant = _job_tenant(project_id, request, calls_back=True)
 
     try:
         state = await container_manager.start_recon(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             webapp_api_url=_spawned_webapp_url(),
             recon_path=RECON_PATH,
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
             scan_mode=request.mode,
+            job_credential=request.job_credential,
         )
     except ValueError as e:
         raise _value_error_http(e)
@@ -1440,6 +1482,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
     kept = bool(user_inputs) or any((user_targets or {}).get(k) for k in ('subdomains', 'urls', 'ips'))
     if typed and not kept and not request.include_graph_targets:
         raise HTTPException(status_code=400, detail=f"No typed target is in this project's scope: {refused[:10]}")
+    tenant = _job_tenant(project_id, request, calls_back=True)
 
     # Settings, and with them each root's group scope, are fetched by the recon
     # container itself via get_settings() (PROJECT_ID + WEBAPP_API_URL env vars,
@@ -1454,7 +1497,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
         "user_targets": user_targets,
         "include_graph_targets": request.include_graph_targets,
         "settings_overrides": overrides,
-        "user_id": request.user_id,
+        "user_id": tenant,
         "webapp_api_url": _spawned_webapp_url(),
     }
 
@@ -1465,6 +1508,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
             config=config,
             recon_path=RECON_PATH,
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
+            job_credential=request.job_credential,
         )
         logger.info(
             f"Partial recon run {state.run_id}: project {project_id}, "
@@ -1711,6 +1755,9 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
             detail={"detail": "AI Attack Surface source not mounted into the orchestrator",
                      "code": "not_configured"},
         )
+    # Its container calls nothing back, so it gets neither the credential nor a
+    # need for the scanner key; the credential still decides its admission.
+    tenant = _job_tenant(project_id, request, calls_back=False)
 
     run_config = {
         "tool": request.tool,
@@ -1726,14 +1773,14 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
         "api_key": request.api_key,
         "auth_header": request.auth_header,
         "auth_scheme": request.auth_scheme,
-        "user_id": request.user_id,
+        "user_id": tenant,
         "webapp_api_url": _spawned_webapp_url(),
     }
 
     try:
         state = await container_manager.start_ai_attack_surface(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             webapp_api_url=_spawned_webapp_url(),
             run_config=run_config,
             ai_attack_path=AI_ATTACK_SURFACE_PATH,
@@ -1823,13 +1870,16 @@ async def start_gvm_scan(project_id: str, request: GvmStartRequest):
             detail="Recon data required. Run reconnaissance first.",
         )
 
+    tenant = _job_tenant(project_id, request, calls_back=True)
+
     try:
         state = await container_manager.start_gvm_scan(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             webapp_api_url=_spawned_webapp_url(),
             recon_path=RECON_PATH,
             gvm_scan_path=GVM_SCAN_PATH,
+            job_credential=request.job_credential,
         )
         return state
     except ValueError as e:
@@ -1952,12 +2002,15 @@ async def start_github_hunt(project_id: str, request: GithubHuntStartRequest):
             detail="Recon data required. Run reconnaissance first.",
         )
 
+    tenant = _job_tenant(project_id, request, calls_back=True)
+
     try:
         state = await container_manager.start_github_hunt(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             webapp_api_url=_spawned_webapp_url(),
             github_hunt_path=GITHUB_HUNT_PATH,
+            job_credential=request.job_credential,
         )
         return state
     except ValueError as e:
@@ -2074,11 +2127,14 @@ async def start_trufflehog(project_id: str, request: TrufflehogStartRequest):
     """
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
+    # The TruffleHog container is the dirty half of a dirty/clean split and calls
+    # nothing back: no key, no credential; the credential decides its admission.
+    tenant = _job_tenant(project_id, request, calls_back=False)
 
     try:
         state = await container_manager.start_trufflehog(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             trufflehog_path=TRUFFLEHOG_PATH,
             source=request.source,
             config=request.config,
@@ -2190,10 +2246,11 @@ async def start_supply_chain(project_id: str, request: SupplyChainStartRequest):
     """Start a Supply-Chain scan (offline OSV audit of an uploaded SBOM/lockfile)."""
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
+    tenant = _job_tenant(project_id, request, calls_back=True)
     try:
         return await container_manager.start_supply_chain(
             project_id=project_id,
-            user_id=request.user_id,
+            user_id=tenant,
             webapp_api_url=_spawned_webapp_url(),
             supply_chain_path=SUPPLY_CHAIN_PATH,
             repo_override_url=request.repo_override_url,
@@ -2201,6 +2258,7 @@ async def start_supply_chain(project_id: str, request: SupplyChainStartRequest):
             repo_override_ref=request.repo_override_ref,
             repo_override_scope=request.repo_override_scope,
             repo_override_deep=request.repo_override_deep,
+            job_credential=request.job_credential,
         )
     except ValueError as e:
         raise _value_error_http(e)

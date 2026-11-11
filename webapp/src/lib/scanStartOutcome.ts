@@ -19,8 +19,8 @@
  *   - transient: an answered 500 or 503, or the webapp's own freeze failure
  *     (snapshotFailed: nothing started). Retried with backoff, spending an
  *     attempt; not a capacity wait. A body code that names a configuration
- *     problem (`spawn_failed`, `not_configured`) stays permanent: it fails
- *     every retry.
+ *     problem (`spawn_failed`, `not_configured`, `scanner_key_missing`,
+ *     `job_credential_unverifiable`) stays permanent: it fails every retry.
  *
  * Permanent: everything else, notably 400 (bad config), 404 (missing project),
  * 403 (outside the RoE window), and a 500 when the caller did not say the
@@ -62,8 +62,11 @@ export interface StartFailureOptions {
   orchestratorAnswered?: boolean
 }
 
-/** Body codes for a refusal no retry can fix. */
-const PERMANENT_CODES = new Set(['spawn_failed', 'not_configured'])
+/**
+ * Body codes for a refusal no retry can fix. The two keys the orchestrator needs
+ * for a scan (step 1.16) are configuration: `redamon.sh update` generates them.
+ */
+const PERMANENT_CODES = new Set(['spawn_failed', 'not_configured', 'scanner_key_missing', 'job_credential_unverifiable'])
 
 export interface StartFailureClassification {
   kind: StartFailureKind

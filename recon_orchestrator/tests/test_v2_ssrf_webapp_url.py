@@ -19,6 +19,7 @@ import types
 
 import api
 from models import ReconStartRequest
+from tests.job_credentials import job_credential, use_keys
 
 ATTACKER = "http://attacker.evil.example:9999"
 SAFE = "http://localhost:3000"
@@ -59,7 +60,9 @@ def _drive_start_recon(monkeypatch, client_webapp_url):
                         lambda *a, **kw: _BenignProjectResponse())
     monkeypatch.setattr(api, "container_manager",
                         types.SimpleNamespace(start_recon=fake_start_recon))
-    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url=client_webapp_url)
+    use_keys(monkeypatch)
+    req = ReconStartRequest(project_id="p1", user_id="u1", webapp_api_url=client_webapp_url,
+                            job_credential=job_credential("p1", "u1"))
     asyncio.run(api.start_recon("p1", req))
     return captured
 
