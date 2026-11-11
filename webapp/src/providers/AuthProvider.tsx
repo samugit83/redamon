@@ -3,11 +3,19 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 
+/** What the header's admin banners show; /api/auth/me sends it to admins only. */
+export interface AdminNotices {
+  compat: boolean
+  /** Null when the count could not be read: no review banner then. */
+  legacyGrantsPending: number | null
+}
+
 export interface AuthUser {
   id: string
   name: string
   email: string
   role: 'admin' | 'standard'
+  rbac?: AdminNotices
 }
 
 interface AuthContextValue {

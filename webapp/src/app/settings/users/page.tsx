@@ -6,6 +6,8 @@ import { useAuth } from '@/providers/AuthProvider'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
 import { Modal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
+import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
+import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
@@ -262,6 +264,9 @@ export default function UsersPage() {
           Create User
         </button>
       </div>
+
+      <WhatChangedCard />
+      <LegacyAccessCard />
 
       {isLoading ? (
         <div className={styles.empty}>Loading users...</div>

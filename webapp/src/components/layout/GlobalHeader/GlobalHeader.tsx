@@ -10,13 +10,14 @@ import { Crosshair, FolderOpen, Shield, BookOpen, TrendingUp, FileText, Settings
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
+import { AdminBanners } from '@/components/admin/CompatBanner'
 import { useAuth } from '@/providers/AuthProvider'
 import { useProject } from '@/providers/ProjectProvider'
 import styles from './GlobalHeader.module.css'
 
 export function GlobalHeader() {
   const pathname = usePathname()
-  const { isAdmin } = useAuth()
+  const { isAdmin, user } = useAuth()
   const { projectId } = useProject()
 
   const coreNav: Array<{ label: string; href: string; icon: ReactNode; isNew?: boolean }> = [
@@ -35,6 +36,7 @@ export function GlobalHeader() {
   ]
 
   return (
+    <>
     <header className={styles.header}>
       <Link href="/graph" className={styles.logo}>
         <Image src="/logo.png" alt="RedAmon" width={28} height={28} className={styles.logoImg} />
@@ -116,5 +118,7 @@ export function GlobalHeader() {
         </Link>
       </div>
     </header>
+    <AdminBanners isAdmin={isAdmin} rbac={user?.rbac} pathname={pathname} />
+    </>
   )
 }

@@ -185,7 +185,10 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
       }
     }
     walk(src)
-    // Step 1.18's admin banner: /api/auth/me tells admins whether the switch is on; it opens no tool.
-    expect(readers.sort()).toEqual(['app/api/auth/me/route.ts', 'lib/authz/flags.ts', 'lib/authz/sharedTools.ts'])
+    // Step 1.18's admin banner: /api/auth/me tells admins whether the switch is on, and the banner
+    // names it; neither opens a tool.
+    expect(readers.sort()).toEqual([
+      'app/api/auth/me/route.ts', 'components/admin/CompatBanner.tsx', 'lib/authz/flags.ts', 'lib/authz/sharedTools.ts',
+    ])
   })
 })
