@@ -24,6 +24,45 @@ from .introspection import (
 )
 from .normalizers import normalize_introspection_finding, aggregate_findings
 from .auth import build_auth_headers
+from recon.helpers import request_pacer
+
+# Retry-After is the target's to set: one answer holds every in-process
+# requester back this long at most.
+_BACK_OFF_MAX_S = 30.0
+
+
+def _back_off(retry_after) -> None:
+    """A 429 pushes the next slot of every in-process requester back (the RoE
+    pacer; inert with no ceiling): Retry-After seconds, else 1 s, capped."""
+    try:
+        seconds = float(retry_after)
+    except (TypeError, ValueError):
+        seconds = 1.0
+    request_pacer.pacer().back_off(min(_BACK_OFF_MAX_S, max(1.0, seconds)))
+
+
+class _PacedRetry(Retry):
+    """A retry is one more request: it takes its own slot of the RoE pacer."""
+
+    def sleep(self, response=None) -> None:
+        if response is not None and response.status == 429:
+            _back_off(response.headers.get("Retry-After"))
+        super().sleep(response)
+        request_pacer.acquire()
+
+
+class _PacedAdapter(HTTPAdapter):
+    """Every request of the session, each redirect hop included, takes a slot of
+    the process-wide RoE pacer first. GRAPHQL_RATE_LIMIT only spaces the
+    endpoints' start; the requests inside each one, across the concurrent
+    workers, are what the ceiling counts."""
+
+    def send(self, request, *args, **kwargs):
+        request_pacer.acquire()
+        response = super().send(request, *args, **kwargs)
+        if response.status_code == 429:
+            _back_off(response.headers.get("Retry-After"))
+        return response
 
 
 def _build_retry_session(retry_count: int, backoff: float) -> requests.Session:
@@ -35,14 +74,14 @@ def _build_retry_session(retry_count: int, backoff: float) -> requests.Session:
     """
     retry_count = max(0, min(10, int(retry_count)))  # clamp 0-10
     backoff = max(0.0, min(10.0, float(backoff)))    # clamp 0-10 seconds
-    retry = Retry(
+    retry = _PacedRetry(
         total=retry_count,
         backoff_factor=backoff,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=frozenset(["GET", "POST"]),
         raise_on_status=False,
     )
-    adapter = HTTPAdapter(max_retries=retry)
+    adapter = _PacedAdapter(max_retries=retry)
     session = requests.Session()
     session.mount("http://", adapter)
     session.mount("https://", adapter)
