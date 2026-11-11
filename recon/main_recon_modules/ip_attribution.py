@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from urllib.parse import urlparse
 
+from recon.helpers import request_pacer
 from recon.helpers.cdn_ranges import EDGE_REASON_ASN, classify_ip, is_reliable_edge_cdn_name
 from recon.helpers.peer_cert import cert_covers, cert_names, tls_failure_reason, tls_handshake_cert
 from recon.helpers.public_suffix import org_domain
@@ -311,7 +312,10 @@ def _default_cert(ip: str, domains: list, pacer: _Pacer) -> tuple[str, str, list
     target = f"https://[{ip}]:{TLS_PORT}" if ":" in ip else f"https://{ip}:{TLS_PORT}"
     if not cb.host_health.allow(target):
         return CERT_NOT_CHECKED, "host marked unreachable", []
+    # Both clocks: the step's own pace, then the RoE ceiling every in-process
+    # requester shares, which the step alone would otherwise use up.
     pacer.wait()
+    request_pacer.acquire()
     try:
         cert = tls_handshake_cert(ip, None, TLS_PORT, _TLS_TIMEOUT_S)
     except (OSError, ValueError) as e:
