@@ -123,6 +123,70 @@ ALLOWED_SETTINGS_OVERRIDES = frozenset({
     "SECURITY_CHECK_ENABLED",
 })
 
+# The on/off switch(es) each partial tool runs under: its module forces them on,
+# because the operator asked for that tool. Only the tool -> switch link lives
+# here; whether stealth turns a switch off is read from the registry's stealth
+# profile (_stealth_refusal). test_partial_stealth_refusal.py fails a dispatched
+# tool with no row and a forced switch missing from every row.
+PARTIAL_TOOL_SWITCHES = {
+    "SubdomainDiscovery": ("SUBDOMAIN_DISCOVERY_ENABLED",),
+    "Naabu": ("NAABU_ENABLED",),
+    "Masscan": ("MASSCAN_ENABLED",),
+    "Nmap": ("NMAP_ENABLED",),
+    "Tlsx": ("TLSX_ENABLED",),
+    "Httpx": ("HTTPX_ENABLED",),
+    "IpAttribution": ("IP_ATTRIBUTION_ENABLED",),
+    "Katana": ("KATANA_ENABLED",),
+    "Hakrawler": ("HAKRAWLER_ENABLED",),
+    "ZapAjaxSpider": ("ZAP_AJAX_SPIDER_ENABLED",),
+    "Gau": ("GAU_ENABLED",),
+    "Jsluice": ("JSLUICE_ENABLED",),
+    "Kiterunner": ("KITERUNNER_ENABLED",),
+    "ParamSpider": ("PARAMSPIDER_ENABLED",),
+    "Ffuf": ("FFUF_ENABLED",),
+    "Arjun": ("ARJUN_ENABLED",),
+    "EndpointAiClassifier": ("RESOURCE_ENUM_AI_CLASSIFIER_ENABLED",),
+    "OpenAPI": ("OPENAPI_ENABLED",),
+    "AiSurfaceRecon": ("AI_SURFACE_RECON_ENABLED",),
+    "JsRecon": ("JS_RECON_ENABLED",),
+    "SerializedScan": ("SERIALIZED_SCAN_ENABLED",),
+    "RouteExposure": ("ROUTE_EXPOSURE_ENABLED",),
+    "SupplyChainRecon": ("SUPPLY_CHAIN_RECON_ENABLED", "JS_RECON_ENABLED"),
+    "GraphqlScan": ("GRAPHQL_SECURITY_ENABLED",),
+    "Nuclei": ("NUCLEI_ENABLED",),
+    "SubdomainTakeover": ("SUBDOMAIN_TAKEOVER_ENABLED",),
+    "VhostSni": ("VHOST_SNI_ENABLED",),
+    "WebCachePoison": ("WEB_CACHE_POISON_ENABLED",),
+    "SecurityChecks": ("SECURITY_CHECK_ENABLED",),
+    "Shodan": ("SHODAN_ENABLED",),
+    "Urlscan": ("URLSCAN_ENABLED",),
+    "Uncover": ("UNCOVER_ENABLED", "OSINT_ENRICHMENT_ENABLED"),
+    "OsintEnrichment": ("OSINT_ENRICHMENT_ENABLED",),
+    "OriginDiscovery": ("ORIGIN_DISCOVERY_ENABLED",),
+}
+
+
+def _stealth_refusal(tool_id: str, settings: dict):
+    """Why stealth mode refuses this partial tool, or None.
+
+    The module would force its switch back on after get_settings() applied the
+    stealth profile, so a partial FFuf in a stealth project ran unthrottled. A
+    tool is refused when the profile sets one of its switches to false; a tool
+    stealth only throttles runs, on the stealth values already applied. A tool
+    with no row is refused too: stealth never assumes an unknown tool is quiet.
+    """
+    if not settings.get("STEALTH_MODE"):
+        return None
+    switches = PARTIAL_TOOL_SWITCHES.get(tool_id)
+    if switches is None:
+        return f"{tool_id} has no recorded on/off switch, so it does not run in stealth mode"
+    from recon.settings_registry import stealth_profile
+    profile = stealth_profile()
+    off = [key for key in switches if (profile.get(key) or {}).get("set", True) is False]
+    if off:
+        return f"{tool_id} is off in stealth mode ({', '.join(off)})"
+    return None
+
 
 
 def load_config() -> dict:
@@ -340,6 +404,14 @@ def main():
     except Exception as e:  # noqa: BLE001 - fail closed, whatever the cause
         print(f"[!][Partial Recon] Cannot load the project settings ({type(e).__name__}). "
               f"Refusing to scan.")
+        sys.exit(1)
+
+    # Before the scope pass: a refused tool should not even make its ownership
+    # TXT lookups or graph reads.
+    stealth = _stealth_refusal(tool_id, settings)
+    if stealth:
+        print(f"[!][Partial Recon] Refusing to run: {stealth}")
+        print_run_report(tool_id, {}, {root: f"refused: {stealth}" for root in scope_roots(config)})
         sys.exit(1)
 
     refused = _prepare_scope(config, settings, project_id)
