@@ -15,6 +15,8 @@ export interface Principal {
   /** False for a passwordless (managed) account, which can never sign in itself. */
   hasPassword: boolean
   createdAt: Date
+  /** The shared tools the account kept at the RBAC upgrade (authz/sharedTools.ts). */
+  legacyGrants: string[]
 }
 
 /** The account `userId` names, or null when it no longer exists. A failed read throws. */
@@ -24,8 +26,15 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
   // boolean here; it never leaves this function.
   const row = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, password: true, createdAt: true },
+    select: { id: true, email: true, role: true, password: true, createdAt: true, legacyGrants: true },
   })
   if (!row) return null
-  return { id: row.id, email: row.email, role: row.role, hasPassword: row.password !== '', createdAt: row.createdAt }
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    hasPassword: row.password !== '',
+    createdAt: row.createdAt,
+    legacyGrants: Array.isArray(row.legacyGrants) ? row.legacyGrants : [],
+  }
 }

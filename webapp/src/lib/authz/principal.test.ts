@@ -27,11 +27,24 @@ describe('loadPrincipal', () => {
 
   test('returns the role, the email and the creation time the row holds', async () => {
     findUnique.mockResolvedValue({
-      id: 'u1', email: 'u1@e2e.local', role: 'admin', password: '$2a$12$hash', createdAt: CREATED,
+      id: 'u1', email: 'u1@e2e.local', role: 'admin', password: '$2a$12$hash', createdAt: CREATED, legacyGrants: [],
     })
     expect(await loadPrincipal('u1')).toEqual({
-      id: 'u1', email: 'u1@e2e.local', role: 'admin', hasPassword: true, createdAt: CREATED,
+      id: 'u1', email: 'u1@e2e.local', role: 'admin', hasPassword: true, createdAt: CREATED, legacyGrants: [],
     })
+  })
+
+  test('returns the shared tools the account kept at the upgrade (HD-28)', async () => {
+    findUnique.mockResolvedValue({
+      id: 'm', email: 'm@e2e.local', role: 'standard', password: '$2a$12$hash', createdAt: CREATED,
+      legacyGrants: ['kali_terminal', 'shell_sessions', 'tunnels'],
+    })
+    expect((await loadPrincipal('m'))?.legacyGrants).toEqual(['kali_terminal', 'shell_sessions', 'tunnels'])
+  })
+
+  test('a row that carries no grants reads as none', async () => {
+    findUnique.mockResolvedValue({ id: 'm', email: 'm@e2e.local', role: 'standard', password: 'h', createdAt: CREATED })
+    expect((await loadPrincipal('m'))?.legacyGrants).toEqual([])
   })
 
   test('a passwordless account has no password, and the hash never leaves the loader', async () => {
@@ -47,7 +60,7 @@ describe('loadPrincipal', () => {
     expect(findUnique).toHaveBeenCalledTimes(1)
     expect(findUnique).toHaveBeenCalledWith({
       where: { id: 'u1' },
-      select: { id: true, email: true, role: true, password: true, createdAt: true },
+      select: { id: true, email: true, role: true, password: true, createdAt: true, legacyGrants: true },
     })
   })
 

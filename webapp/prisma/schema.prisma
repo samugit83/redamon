@@ -46,6 +46,11 @@ model User {
   // going forward only; no default, no backfill, MUST stay nullable.
   createdById   String?           @map("created_by_id")
   updatedById   String?           @map("updated_by_id")
+  // The instance-wide tools a member could use before the RBAC hardening and keeps
+  // (kali_terminal, shell_sessions, tunnels). Written once by
+  // scripts/backfill-rbac-legacy-grants.mjs for accounts that existed at the upgrade;
+  // admins review them. Read by src/lib/authz/sharedTools.ts.
+  legacyGrants  String[]          @default([]) @map("legacy_grants")
 
   @@map("users")
 }

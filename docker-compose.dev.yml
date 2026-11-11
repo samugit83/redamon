@@ -36,6 +36,7 @@ services:
         node scripts/clamp-triage-review-budget.mjs
         node scripts/backfill-user-skill-toggles.mjs
         node scripts/backfill-jev-provider-selection.mjs
+        node scripts/backfill-rbac-legacy-grants.mjs
         npm run dev
     volumes:
       - ./webapp:/app
