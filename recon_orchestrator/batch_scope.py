@@ -327,32 +327,146 @@ def _url_host(url: str) -> str:
         return ''
 
 
+# ---------------------------------------------------------------------------
+# Partial recon: the RoE exclusion list. This image carries no recon/, so the
+# matcher below is a copy of recon/helpers/roe_scope.py's _is_roe_excluded. It
+# runs recon/tests/fixtures/roe_exclusion_vectors.json, as recon's, the agent's
+# and the webapp's copies do, so none of them can drift alone.
+# ---------------------------------------------------------------------------
+
+def _roe_url_hostname(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(url).hostname or ''
+    except ValueError:
+        return ''
+
+
+def _roe_normalize_host(host) -> str:
+    if not isinstance(host, str):
+        return ''
+    host = host.strip()
+    if '://' in host:
+        host = _roe_url_hostname(host)
+    elif host.startswith('['):
+        host = host[1:].split(']', 1)[0]
+    elif host.count(':') == 1:
+        host = host.split(':', 1)[0]
+    return host.strip().rstrip('.').lower()
+
+
+def _roe_is_network(entry: str) -> bool:
+    import ipaddress
+    head, _, tail = entry.partition('/')
+    try:
+        ipaddress.ip_address(head)
+    except ValueError:
+        return False
+    if tail.isascii() and tail.isdigit():
+        return True
+    try:
+        ipaddress.IPv4Address(tail)
+        return True
+    except ValueError:
+        return False
+
+
+def _roe_entry_host(entry: str) -> str:
+    import ipaddress
+    head = entry.split('/', 1)[0]
+    try:
+        ipaddress.ip_address(head)
+        return head.lower()
+    except ValueError:
+        return _roe_normalize_host(_roe_url_hostname('//' + entry))
+
+
+def _roe_normalize_entry(entry) -> str:
+    if not isinstance(entry, str):
+        return ''
+    entry = entry.strip()
+    if entry.startswith('*.'):
+        rest = entry[2:]
+        return '*.' + (_roe_entry_host(rest) if '/' in rest and '://' not in rest
+                       else _roe_normalize_host(rest))
+    if '/' in entry and '://' not in entry:
+        return entry.lower() if _roe_is_network(entry) else _roe_entry_host(entry)
+    return _roe_normalize_host(entry)
+
+
+def is_roe_excluded(host: str, excluded_list: list) -> bool:
+    """True when ``host`` matches an RoE exclusion (exact host or IP, a domain
+    and its subdomains, ``*.domain`` for its subdomains only, or a CIDR)."""
+    import ipaddress
+    host = _roe_normalize_host(host)
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    for value in excluded_list:
+        entry = _roe_normalize_entry(value)
+        if not entry:
+            continue
+        if entry.startswith('*.'):
+            if host.endswith(entry[1:]):
+                return True
+        elif '/' in entry or address is not None:
+            try:
+                if address is not None and address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                pass
+        elif host == entry or host.endswith('.' + entry):
+            return True
+    return False
+
+
 def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user_targets):
     """The operator-typed inputs a partial run may use, and those it may not.
 
     Hosts (typed subdomains, URL hosts, attach targets) pass the §4.6 partial
     rule for the groups of the run's roots and the hard guardrail; in IP mode a
     URL host must be one of the project's own addresses. IPs and CIDRs get the
-    modal's prefix limits. Returns (user_inputs, user_targets, refused).
+    modal's prefix limits. Then the RoE exclusion list: an excluded host, URL
+    host, address or attach target is dropped, and a typed CIDR holding an
+    excluded address becomes its other hosts. The container repeats this
+    (recon/partial_recon_modules/helpers.py); both run
+    recon/tests/fixtures/partial_typed_input_roe_vectors.json.
+    Returns (user_inputs, user_targets, refused).
     """
+    import ipaddress
     from hard_guardrail import is_hard_blocked
+    from recon_settings.engagement import derive_roe_enabled
     refused: list[str] = []
     wanted = {r.lower() for r in roots}
     groups = [g for g in scope_groups(project) if g['scanRoot'] in wanted]
     target_ips = {str(i).strip() for i in project.get('targetIps') or []}
+    # roeEnabled is derived from the limits, never read from its column.
+    excluded = [e for e in project.get('roeExcludedHosts') or [] if isinstance(e, str) and e.strip()] \
+        if derive_roe_enabled(project) else []
 
     def host_ok(host: str) -> bool:
         if project.get('ipMode', False):
             return host in target_ips
         return admits_partial_host(groups, host) and not is_hard_blocked(host)[0]
 
+    def roe_out(host_or_ip: str) -> bool:
+        return bool(excluded) and is_roe_excluded(host_or_ip, excluded)
+
+    def refuse_roe(what: str) -> None:
+        refused.append(f'{what} (excluded by the Rules of Engagement)')
+
     def keep_hosts(values, label):
         kept = []
         for v in values if isinstance(values, list) else []:
-            if isinstance(v, str) and host_ok(v.strip().lower()):
-                kept.append(v.strip().lower())
-            else:
+            if not (isinstance(v, str) and host_ok(v.strip().lower())):
                 refused.append(f'{label} {v!r}')
+            elif roe_out(v):
+                refuse_roe(f'{label} {v!r}')
+            else:
+                kept.append(v.strip().lower())
         return kept
 
     inputs = keep_hosts(user_inputs, 'subdomain')
@@ -364,26 +478,50 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
         if 'urls' in targets:
             kept = []
             for u in targets['urls'] if isinstance(targets['urls'], list) else []:
-                if isinstance(u, str) and host_ok(_url_host(u)):
-                    kept.append(u.strip())
-                else:
+                if not (isinstance(u, str) and host_ok(_url_host(u))):
                     refused.append(f'url {u!r}')
+                elif roe_out(_url_host(u)):
+                    refuse_roe(f'url {u!r}')
+                else:
+                    kept.append(u.strip())
             targets['urls'] = kept
         if 'ips' in targets:
             kept = []
             for ip in targets['ips'] if isinstance(targets['ips'], list) else []:
-                if isinstance(ip, str) and _valid_user_ip(ip.strip()):
-                    kept.append(ip.strip())
-                else:
+                if not (isinstance(ip, str) and _valid_user_ip(ip.strip())):
                     refused.append(f'ip {ip!r}')
+                    continue
+                ip = ip.strip()
+                if '/' not in ip:
+                    if roe_out(ip):
+                        refuse_roe(f'ip {ip!r}')
+                    else:
+                        kept.append(ip)
+                    continue
+                # The container's modules expand a CIDR to .hosts(); the same
+                # expansion here keeps exactly the addresses they would scan.
+                hosts = [str(h) for h in ipaddress.ip_network(ip, strict=False).hosts()] if excluded else []
+                cut = {h for h in hosts if roe_out(h)}
+                if not cut:
+                    kept.append(ip)
+                elif len(cut) == len(hosts):
+                    refuse_roe(f'ip {ip!r}')
+                else:
+                    kept.extend(h for h in hosts if h not in cut)
+                    shown = ', '.join(sorted(cut)[:5]) + (', ...' if len(cut) > 5 else '')
+                    refuse_roe(f'ip {shown} in {ip!r}')
             targets['ips'] = kept
         # ip_attach_to names a Subdomain, url_attach_to a BaseURL. In IP mode
-        # both are graph nodes the container looks up, so only domain mode checks.
+        # both are graph nodes the container looks up, so only domain mode checks
+        # the scope; an excluded one is dropped in either mode.
         for key, host_of in (('ip_attach_to', str), ('url_attach_to', _url_host)):
             value = targets.get(key)
             if value and not project.get('ipMode', False) and not (
                     isinstance(value, str) and host_ok(host_of(value).strip().lower())):
                 refused.append(f'{key} {value!r}')
+                targets[key] = None
+            elif value and isinstance(value, str) and roe_out(host_of(value)):
+                refuse_roe(f'{key} {value!r}')
                 targets[key] = None
         if 'ports' in targets:
             ports = targets['ports'] if isinstance(targets['ports'], list) else []

@@ -495,27 +495,49 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
     §4.6 partial rule for the run's groups (in IP mode, a URL host must be one
     of the project's addresses); IPs and CIDRs get the modal's width limits.
 
+    Then the RoE exclusion list, as the graph builders apply it to what they
+    read: an excluded host, URL host, address or attach target is dropped, and
+    a typed CIDR holding an excluded address becomes its other hosts (the ones
+    the modules would expand it to). Mirrors the orchestrator's copy; both run
+    recon/tests/fixtures/partial_typed_input_roe_vectors.json.
+
     The hard guardrail is not repeated here: every pattern is a suffix match,
     so a host the scope rule admits is blocked only if its scan root is, and
     the roots were guardrailed by the orchestrator before this container ran.
     """
+    import ipaddress as _ipaddress
+    from recon.helpers.roe_scope import _is_roe_excluded
+
     refused: list = []
     groups = config.get("domain_groups") or []
     ip_mode = bool(settings.get("IP_MODE"))
     target_ips = {str(i).strip().lower() for i in settings.get("TARGET_IPS") or []}
+    excluded = [e for e in (settings.get("ROE_EXCLUDED_HOSTS") or []) if isinstance(e, str) and e.strip()] \
+        if settings.get("ROE_ENABLED") else []
+    roe_cut = 0
 
     def host_ok(host: str) -> bool:
         if ip_mode:
             return _norm_host(host) in target_ips
         return admits_partial_host(groups, host)
 
+    def roe_out(host_or_ip: str) -> bool:
+        return bool(excluded) and _is_roe_excluded(host_or_ip, excluded)
+
+    def refuse_roe(what: str) -> None:
+        nonlocal roe_cut
+        roe_cut += 1
+        refused.append(f"{what} (excluded by the Rules of Engagement)")
+
     def keep_hosts(values, label):
         kept = []
         for v in values if isinstance(values, list) else []:
-            if isinstance(v, str) and host_ok(v):
-                kept.append(_norm_host(v))
-            else:
+            if not (isinstance(v, str) and host_ok(v)):
                 refused.append(f"{label} {str(v)[:120]!r}")
+            elif roe_out(v):
+                refuse_roe(f"{label} {str(v)[:120]!r}")
+            else:
+                kept.append(_norm_host(v))
         return kept
 
     if "user_inputs" in config:
@@ -528,29 +550,60 @@ def filter_partial_user_input(config: dict, settings: dict) -> list:
         if "urls" in targets:
             kept = []
             for u in targets["urls"] if isinstance(targets["urls"], list) else []:
-                if isinstance(u, str) and host_ok(_url_host(u)):
-                    kept.append(u.strip())
-                else:
+                if not (isinstance(u, str) and host_ok(_url_host(u))):
                     refused.append(f"url {str(u)[:120]!r}")
+                elif roe_out(_url_host(u)):
+                    refuse_roe(f"url {str(u)[:120]!r}")
+                else:
+                    kept.append(u.strip())
             targets["urls"] = kept
         if "ips" in targets:
             kept = []
             for ip in targets["ips"] if isinstance(targets["ips"], list) else []:
-                if isinstance(ip, str) and _valid_user_ip(ip.strip()):
-                    kept.append(ip.strip())
-                else:
+                if not (isinstance(ip, str) and _valid_user_ip(ip.strip())):
                     refused.append(f"ip {str(ip)[:60]!r}")
+                    continue
+                ip = ip.strip()
+                if "/" not in ip:
+                    if roe_out(ip):
+                        refuse_roe(f"ip {ip!r}")
+                    else:
+                        kept.append(ip)
+                    continue
+                hosts = [str(h) for h in _ipaddress.ip_network(ip, strict=False).hosts()] if excluded else []
+                cut = {h for h in hosts if roe_out(h)}
+                if not cut:
+                    kept.append(ip)
+                elif len(cut) == len(hosts):
+                    refuse_roe(f"ip {ip!r}")
+                else:
+                    kept.extend(h for h in hosts if h not in cut)
+                    shown = ", ".join(sorted(cut)[:5]) + (", ..." if len(cut) > 5 else "")
+                    refuse_roe(f"ip {shown} in {ip!r}")
             targets["ips"] = kept
         # ip_attach_to names a Subdomain, url_attach_to a BaseURL. In IP mode
-        # both are graph nodes the modules look up, so only domain mode checks.
+        # both are graph nodes the modules look up, so only domain mode checks
+        # the scope; an excluded one is dropped in either mode.
         for key, host_of in (("ip_attach_to", str), ("url_attach_to", _url_host)):
             value = targets.get(key)
             if value and not ip_mode and not (isinstance(value, str) and host_ok(host_of(value))):
                 refused.append(f"{key} {str(value)[:120]!r}")
                 targets[key] = None
+            elif value and isinstance(value, str) and roe_out(host_of(value)):
+                refuse_roe(f"{key} {value[:120]!r}")
+                targets[key] = None
         config["user_targets"] = targets
     elif targets is not None:
         config["user_targets"] = {}
+    if roe_cut:
+        # A partial run never prunes, so this only reaches the run's coverage
+        # record; _prepare_scope prints each refusal once.
+        from recon.helpers import circuit_breaker
+        circuit_breaker.note_degraded("partial_recon", entries=[{
+            "source": "roe_excluded",
+            "reason": "typed partial-recon input excluded by the Rules of Engagement",
+            "skipped": roe_cut,
+        }])
     return refused
 
 
