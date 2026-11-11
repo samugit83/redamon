@@ -386,7 +386,10 @@ def run_subdomain_takeover(
                     current = (n.get("takeover_provider") or "").lower()
                     if current in ("", "unknown", "none"):
                         n["takeover_provider"] = cert_prov
-                    elif cert_prov != current:
+                    elif not same_provider_family(cert_prov, current):
+                        # Same rule as the CNAME check: the edge's default
+                        # certificate (*.azurewebsites.net) corroborates a
+                        # generic `azure` template, it does not contradict it.
                         n["cert_provider_mismatch"] = True
                     # The edge presents its own default cert (identifies a
                     # provider) but does NOT name this host -> claimable.
