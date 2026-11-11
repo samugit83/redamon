@@ -22,8 +22,15 @@ vi.mock('@/lib/access', () => ({
 vi.mock('@/lib/prisma', () => ({
   default: {
     userSettings: { findUnique: vi.fn(async () => ({ githubAccessToken: '' })) },
+    // The session and job routes read the account (HD-01): u1 holds every session.
+    user: {
+      findUnique: vi.fn(async () => ({
+        id: 'u1', email: 'u1@x', role: 'user', password: 'h', createdAt: new Date(0), legacyGrants: ['shell_sessions'],
+      })),
+    },
     conversation: {
       findUnique: vi.fn(async () => ({ sessionId: 's1', userId: 'u1', projectId: 'p1' })),
+      findMany: vi.fn(async () => [{ sessionId: 's1', projectId: 'p1', project: { userId: 'u1' } }]),
       delete: vi.fn(async () => ({})),
     },
   },
@@ -157,7 +164,11 @@ beforeEach(() => {
   vi.stubEnv('INTERNAL_API_KEY', KEY)
   vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
     calls.push({ url: String(url), init })
-    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    // Interact and kill look their target up in the session list first (HD-01).
+    const body = String(url).endsWith('/sessions')
+      ? { sessions: [{ id: 1, chat_session_id: 's1' }], jobs: [{ id: 1 }], non_msf_sessions: [] }
+      : { ok: true }
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }))
 })
 
