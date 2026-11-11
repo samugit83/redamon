@@ -222,6 +222,10 @@ class TestJhaddixNotSelected:
                              "AMASS_TIMEOUT": 7, "AMASS_BRUTE_WORDLISTS": ["default"]})
         config = cmd[cmd.index("-v") + 1]
         assert config.endswith(":/root/.config/amass")
+        # The name a timeout kills the container by (R-9) differs per run.
+        i = cmd.index("--name")
+        assert cmd[i + 1].startswith("amass-")
+        del cmd[i:i + 2]
         assert cmd == ["docker", "run", "--rm", "-v", config, "caffix/amass:latest",
                        "enum", "-d", "example.test", "-timeout", "7", "-brute"]
 

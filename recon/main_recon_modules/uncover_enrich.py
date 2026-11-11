@@ -20,7 +20,7 @@ import ipaddress
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # noqa: F401 - the tool tests fake docker through uncover_enrich.subprocess
 import tempfile
 from typing import Any, Dict, Optional, Set
 from urllib.parse import urlparse
@@ -196,6 +196,20 @@ def _build_queries(domain: str, settings: dict, whois_org: str = '') -> list[str
     return queries
 
 
+def _note_timed_out(queries: int) -> None:
+    """A gap for a search cut short: what the engines had not answered is
+    unknown. Uncover's results are assets, so there is no prune effect."""
+    try:
+        from recon.helpers import circuit_breaker as cb
+        cb.note_degraded("uncover", entries=[{
+            "source": "uncover",
+            "reason": f"timed out after {UNCOVER_TIMEOUT}s; the results written before it are kept",
+            "skipped": queries,
+        }])
+    except Exception:  # noqa: BLE001 - a lost note must not fail the expansion
+        pass
+
+
 def _run_uncover_docker(
     queries: list[str],
     engines: list[str],
@@ -229,16 +243,15 @@ def _run_uncover_docker(
 
     print(f"[*][Uncover] Running: engines={engines}, queries={queries}")
 
+    from recon.helpers.docker_helpers import run_tool_container
     result = None
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=UNCOVER_TIMEOUT,
-        )
+        result = run_tool_container(cmd, tool="uncover", timeout=UNCOVER_TIMEOUT)
 
-        if result.returncode != 0:
+        if result.timed_out:
+            print("[!][Uncover] Timed out: stopped it, keeping the results it wrote")
+            _note_timed_out(len(queries))
+        elif result.returncode != 0:
             stderr = (result.stderr or '').strip()
             if stderr:
                 for line in stderr.split('\n')[:5]:
@@ -246,8 +259,6 @@ def _run_uncover_docker(
                     if line and not line.startswith('[WRN]'):
                         print(f"[!][Uncover] stderr: {line}")
 
-    except subprocess.TimeoutExpired:
-        print("[!][Uncover] Timed out — partial results may be available")
     except FileNotFoundError:
         print("[!][Uncover] Docker not found — skipping")
         return []

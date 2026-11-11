@@ -818,16 +818,18 @@ def run_subfinder(domain: str, settings: dict = None) -> set:
     if _source_skipped("subfinder", "Subfinder"):
         return set()
 
+    from recon.helpers.docker_helpers import run_tool_container
     subdomains = set()
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=720)
+        result = run_tool_container(command, tool="subfinder", timeout=720)
 
-        if result.returncode != 0:
+        if not result.timed_out and result.returncode != 0:
             tail = (result.stderr or "").strip().splitlines()[-1:] or ["no stderr"]
             print(f"[!][Subfinder] Failed (exit {result.returncode}): {tail[0][:200]}")
             _source_record("subfinder", _outcome("TRANSIENT"), detail=f"exit {result.returncode}")
             return set()
 
+        # A cut-short run's last line may be a half-written object: it does not parse.
         for line in result.stdout.strip().split('\n'):
             line = line.strip()
             if not line:
@@ -844,15 +846,18 @@ def run_subfinder(domain: str, settings: dict = None) -> set:
             subdomains = set(sorted(subdomains)[:max_results])
             print(f"[*][Subfinder] Capped at {max_results} results")
 
+        if result.timed_out:
+            print(f"[!][Subfinder] Timed out: stopped it, keeping the {len(subdomains)} "
+                  f"subdomain(s) it printed")
+            _source_record("subfinder", _outcome("TRANSIENT"), detail="timeout")
+            return subdomains
+
         _source_record("subfinder", _outcome("OK"))
         if subdomains:
             print(f"[+][Subfinder] Found {len(subdomains)} subdomains")
         else:
             print(f"[*][Subfinder] Found 0 subdomains")
 
-    except subprocess.TimeoutExpired:
-        print("[!][Subfinder] Timed out")
-        _source_record("subfinder", _outcome("TRANSIENT"), detail="timeout")
     except FileNotFoundError:
         print("[!][Subfinder] Docker not found — cannot run")
     except Exception as e:
@@ -988,21 +993,21 @@ def run_amass(domain: str, settings: dict = None) -> set:
         shutil.rmtree(amass_temp, ignore_errors=True)
         return set()
 
+    from recon.helpers.docker_helpers import run_tool_container
     subdomains = set()
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True,
-            timeout=(timeout_min * 60) + 120
-        )
+        result = run_tool_container(command, tool="amass", timeout=(timeout_min * 60) + 120)
 
-        if result.returncode != 0:
+        if not result.timed_out and result.returncode != 0:
             tail = (result.stderr or "").strip().splitlines()[-1:] or ["no stderr"]
             print(f"[!][Amass] Failed (exit {result.returncode}): {tail[0][:200]}")
             _source_record("amass", _outcome("TRANSIENT"), detail=f"exit {result.returncode}")
             return set()
 
         # Output format: "name (FQDN) --> record_type --> target (FQDN)"
-        # Capture ALL FQDNs per line (both source and target can be subdomains)
+        # Capture ALL FQDNs per line (both source and target can be subdomains).
+        # A name counts only once its "(FQDN)" follows it, so a name the
+        # timeout's kill cut short is never taken.
         fqdn_pattern = re.compile(r'([\w.\-]+)\s+\(FQDN\)')
         for line in result.stdout.strip().split('\n'):
             line = line.strip()
@@ -1017,15 +1022,18 @@ def run_amass(domain: str, settings: dict = None) -> set:
             subdomains = set(sorted(subdomains)[:max_results])
             print(f"[*][Amass] Capped at {max_results} results")
 
+        if result.timed_out:
+            print(f"[!][Amass] Timed out: stopped it, keeping the {len(subdomains)} "
+                  f"subdomain(s) it printed")
+            _source_record("amass", _outcome("TRANSIENT"), detail="timeout")
+            return subdomains
+
         _source_record("amass", _outcome("OK"))
         if subdomains:
             print(f"[+][Amass] Found {len(subdomains)} subdomains")
         else:
             print(f"[*][Amass] Found 0 subdomains")
 
-    except subprocess.TimeoutExpired:
-        print("[!][Amass] Timed out")
-        _source_record("amass", _outcome("TRANSIENT"), detail="timeout")
     except FileNotFoundError:
         print("[!][Amass] Docker not found — cannot run")
     except Exception as e:
@@ -1415,8 +1423,16 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
     if skip_validation:
         command.append('--skip-validation')
 
+    from recon.helpers.docker_helpers import run_tool_container
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+        result = run_tool_container(command, tool="puredns", timeout=600)
+
+        if result.timed_out:
+            # puredns writes its list as it goes: a cut-short list would drop
+            # every name it had not reached yet.
+            print("[!][Puredns] Timed out (600s): stopped it, returning the unfiltered list")
+            _source_record("puredns", _outcome("TRANSIENT"), detail="timeout")
+            return _puredns_skipped(subdomains, "timeout")
 
         if output_file.exists():
             with open(output_file, 'r') as f:
@@ -1433,10 +1449,6 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
                            detail=f"no output (exit {result.returncode})")
             return _puredns_skipped(subdomains, "no_output")
 
-    except subprocess.TimeoutExpired:
-        print("[!][Puredns] Timed out (600s) — returning unfiltered list")
-        _source_record("puredns", _outcome("TRANSIENT"), detail="timeout")
-        return _puredns_skipped(subdomains, "timeout")
     except FileNotFoundError:
         print("[!][Puredns] Docker not found — cannot run")
         return _puredns_skipped(subdomains, "docker_missing")
@@ -1453,11 +1465,10 @@ def run_puredns_resolve(subdomains: list, domain: str, settings: dict = None) ->
                 # The cleanup container itself must be bounded: without a timeout
                 # a hung `docker run` here would stall the whole scan at the end.
                 try:
-                    subprocess.run(
+                    run_tool_container(
                         ["docker", "run", "--rm", "-v", f"{data_dir}:/cleanup",
                          "alpine", "rm", "-f", f"/cleanup/{tmp.name}"],
-                        capture_output=True, timeout=60
-                    )
+                        tool="puredns-cleanup", timeout=60)
                 except Exception:  # noqa: BLE001 - best-effort cleanup
                     pass
 

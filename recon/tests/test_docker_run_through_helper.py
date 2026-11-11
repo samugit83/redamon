@@ -41,11 +41,6 @@ NOT_YET_MIGRATED = {
 
     # Unnamed: a timeout kills only the docker CLI.
     ("helpers/resource_enum/kiterunner_helpers.py", "detect_kiterunner_methods"): 2,
-    ("main_recon_modules/uncover_enrich.py", "_run_uncover_docker"): 1,
-    ("main_recon_modules/domain_recon.py", "run_subfinder"): 1,
-    ("main_recon_modules/domain_recon.py", "run_amass"): 1,
-    # puredns, and the alpine `rm` that cleans its root-owned files (60 s).
-    ("main_recon_modules/domain_recon.py", "run_puredns_resolve"): 2,
     # The alpine `rm` that cleans nuclei's root-owned temp files, with no timeout.
     ("main_recon_modules/vuln_scan.py", "run_vuln_scan"): 1,
 }

@@ -7,8 +7,8 @@ that name when its deadline fires, and keeps what the tool printed before the
 cut:
 
 - through `docker_helpers.run_tool_container`: GAU and its two httpx probes,
-  the jsluice verifier, and the ZAP Ajax Spider (named already, now through
-  the helper);
+  the jsluice verifier, subfinder, amass, puredns and its cleanup, uncover, and
+  the ZAP Ajax Spider (named already, now through the helper);
 - streaming loops (`tool_container_name` + `kill_container`): katana and
   hakrawler, on their deadline and on their URL cap;
 - the TruffleHog sidecar already did both; it is pinned here with the rest.
@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +40,8 @@ from recon.helpers.resource_enum import (  # noqa: E402
     gau_helpers, hakrawler_helpers, jsluice_helpers, katana_helpers, tool_health,
     zap_ajax_spider_helpers as zap,
 )
+from recon.main_recon_modules import domain_recon as dr  # noqa: E402
+from recon.main_recon_modules import uncover_enrich  # noqa: E402
 
 RUN_ID = "5d1c0b7a-2e4f-4a1b-9c3d-7e6f5a4b3c2d"
 DOMAIN = "example.com"
@@ -249,6 +253,158 @@ class TestJsluiceVerifier:
         assert verified == set() and stats["jsluice_skipped_unverified"] == 2
         assert fake.kills == []
         assert _without_name(fake.runs[0])[:4] == ["docker", "run", "--rm", "--net=host"]
+
+
+# ---------------------------------------------------------------------------
+# Subdomain discovery: subfinder, amass, puredns
+# ---------------------------------------------------------------------------
+
+def _sources(fn, fake, *args, **settings):
+    record = mock.MagicMock()
+    with _docker(fake), mock.patch.object(dr, "_source_skipped", return_value=False), \
+            mock.patch.object(dr, "_source_record", record):
+        return fn(*args, settings=settings), record
+
+
+class TestSubfinderAndAmass:
+    def test_regression_a_subfinder_timeout_stops_it_and_keeps_the_names_it_printed(self):
+        out = _jsonl({"host": f"a.{DOMAIN}"}, {"host": f"B.{DOMAIN}"}).encode() + b'{"host": "c.exa'
+        fake = FakeDocker({"timeout": True, "out": out})
+        found, record = _sources(dr.run_subfinder, fake, DOMAIN)
+        assert found == {f"a.{DOMAIN}", f"b.{DOMAIN}"}
+        fake.assert_killed_by_name(0, tool="subfinder")
+        assert record.call_args_list == [mock.call("subfinder", cb.Outcome.TRANSIENT, detail="timeout")]
+
+    def test_a_finished_subfinder_run_is_the_same_command_plus_its_name(self):
+        fake = FakeDocker({"out": _jsonl({"host": f"a.{DOMAIN}"})})
+        found, record = _sources(dr.run_subfinder, fake, DOMAIN)
+        assert found == {f"a.{DOMAIN}"} and fake.kills == []
+        assert _without_name(fake.runs[0]) == [
+            "docker", "run", "--rm", "projectdiscovery/subfinder:latest", "-d", DOMAIN,
+            "-json", "-silent", "-timeout", "30", "-max-time", "10"]
+        assert fake.calls[0][1]["timeout"] == 720
+        assert record.call_args_list == [mock.call("subfinder", cb.Outcome.OK)]
+
+    def test_regression_an_amass_timeout_stops_it_and_keeps_the_names_it_printed(self):
+        out = (f"a.{DOMAIN} (FQDN) --> a_record --> 192.0.2.1 (IPAddress)\n"
+               f"b.{DOMAIN} (FQDN) --> cname_record --> c.{DOMAIN} (FQDN)\n"
+               f"d.exa").encode()
+        fake = FakeDocker({"timeout": True, "out": out})
+        found, record = _sources(dr.run_amass, fake, DOMAIN, AMASS_ENABLED=True, AMASS_TIMEOUT=3)
+        assert found == {f"a.{DOMAIN}", f"b.{DOMAIN}", f"c.{DOMAIN}"}
+        fake.assert_killed_by_name(0, tool="amass")
+        assert fake.calls[0][1]["timeout"] == 3 * 60 + 120
+        assert record.call_args_list == [mock.call("amass", cb.Outcome.TRANSIENT, detail="timeout")]
+
+    def test_a_finished_amass_run_is_the_same_command_plus_its_name(self):
+        fake = FakeDocker({"out": f"a.{DOMAIN} (FQDN) --> a_record --> 192.0.2.1 (IPAddress)\n"})
+        found, _ = _sources(dr.run_amass, fake, DOMAIN, AMASS_ENABLED=True)
+        cmd = _without_name(fake.runs[0])
+        assert found == {f"a.{DOMAIN}"} and fake.kills == []
+        assert cmd[:4] == ["docker", "run", "--rm", "-v"]
+        assert cmd[4].startswith("/tmp/redamon/.amass_temp_") and cmd[4].endswith(":/root/.config/amass")
+        assert cmd[5:] == ["caffix/amass:latest", "enum", "-d", DOMAIN, "-timeout", "10"]
+
+
+@pytest.fixture
+def resolvers():
+    shared = Path("/tmp/redamon/resolvers.txt")
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    if not shared.exists():
+        shared.write_text("192.0.2.53\n")
+    yield
+    for f in Path("/tmp/redamon").glob(f"puredns_*_{DOMAIN}_*.txt"):
+        f.unlink(missing_ok=True)
+
+
+SUBS = [f"a.{DOMAIN}", f"b.{DOMAIN}", f"c.{DOMAIN}"]
+
+
+def _puredns_output(names):
+    def write(cmd):
+        out = Path("/tmp/redamon") / Path(cmd[cmd.index("--write") + 1]).name
+        out.write_text("".join(n + "\n" for n in names))
+    return write
+
+
+class TestPuredns:
+    def test_regression_a_puredns_timeout_stops_it_and_filters_nothing(self, resolvers):
+        # puredns writes its list as it goes: a cut-short list would drop every
+        # name it had not reached yet, so none of it is used.
+        fake = FakeDocker({"timeout": True, "write": _puredns_output(SUBS[:1])})
+        (names, status), record = _sources(dr.run_puredns_resolve, fake, list(SUBS), DOMAIN,
+                                           PUREDNS_ENABLED=True)
+        assert (names, status) == (SUBS, "skipped:timeout")
+        fake.assert_killed_by_name(0, tool="puredns")
+        assert record.call_args_list == [mock.call("puredns", cb.Outcome.TRANSIENT, detail="timeout")]
+        gap, = _gaps("puredns")
+        assert "timed out" in gap["reason"] and gap["skipped"] == 3
+
+    def test_a_finished_puredns_run_is_the_same_command_plus_its_name(self, resolvers):
+        fake = FakeDocker({"write": _puredns_output(SUBS[:2])})
+        (names, status), _ = _sources(dr.run_puredns_resolve, fake, list(SUBS), DOMAIN,
+                                      PUREDNS_ENABLED=True)
+        assert (names, status) == (SUBS[:2], "filtered") and fake.kills == []
+        cmd = _without_name(fake.runs[0])
+        inp, out = cmd[cmd.index("resolve") + 1], cmd[cmd.index("--write") + 1]
+        assert inp.startswith(f"/data/puredns_input_{DOMAIN}_") and out.startswith(f"/data/puredns_output_{DOMAIN}_")
+        assert cmd == ["docker", "run", "--rm", "-v", "/tmp/redamon:/data", "frost19k/puredns:latest",
+                       "resolve", inp, "-r", "/data/resolvers.txt", "--write", out, "-q"]
+        assert fake.calls[0][1]["timeout"] == 600
+
+    def test_a_hung_cleanup_container_is_stopped_by_its_name(self, resolvers):
+        # Files the puredns container wrote as root are removed by an alpine
+        # container, bounded at 60 s like any other.
+        fake = FakeDocker({"write": _puredns_output(SUBS)}, {"timeout": True})
+        with mock.patch.object(dr.Path, "unlink", side_effect=PermissionError("root-owned")):
+            (names, _), _ = _sources(dr.run_puredns_resolve, fake, list(SUBS), DOMAIN,
+                                     PUREDNS_ENABLED=True)
+        assert names == SUBS
+        cleanups = fake.runs[1:]
+        assert [_without_name(c)[:-1] for c in cleanups] == [
+            ["docker", "run", "--rm", "-v", "/tmp/redamon:/cleanup", "alpine", "rm", "-f"]] * 2
+        assert sorted(c[-1].split("_")[1] for c in cleanups) == ["input", "output"]
+        fake.assert_killed_by_name(1, 2)
+        assert all(kw["timeout"] == 60 for c, kw in fake.calls[1:] if c[:2] == ["docker", "run"])
+
+
+# ---------------------------------------------------------------------------
+# uncover
+# ---------------------------------------------------------------------------
+
+class TestUncover:
+    def _uncover(self, fake):
+        temp = Path(tempfile.mkdtemp(prefix="redamon_uncover_t_", dir="/tmp/redamon"))
+        try:
+            with _docker(fake):
+                return uncover_enrich._run_uncover_docker(
+                    [DOMAIN], ["shodan"], str(temp / "provider-config.yaml"), 100, str(temp))
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
+
+    ROW = {"ip": "192.0.2.10", "port": 443, "host": f"www.{DOMAIN}", "source": "shodan"}
+
+    def test_regression_an_uncover_timeout_stops_it_keeps_its_rows_and_says_so(self):
+        def write(cmd):
+            (_mount(cmd, "/output") / "uncover_output.jsonl").write_text(_jsonl(self.ROW))
+
+        fake = FakeDocker({"timeout": True, "write": write})
+        assert self._uncover(fake) == [self.ROW]
+        fake.assert_killed_by_name(0, tool="uncover")
+        gap, = _gaps("uncover")
+        assert f"timed out after {uncover_enrich.UNCOVER_TIMEOUT}s" in gap["reason"]
+
+    def test_a_finished_uncover_run_is_the_same_command_plus_its_name(self):
+        fake = FakeDocker({"out": _jsonl(self.ROW)})
+        assert self._uncover(fake) == [self.ROW]
+        cmd = _without_name(fake.runs[0])
+        temp = _mount(cmd, "/output")
+        assert cmd == [
+            "docker", "run", "--rm", "-v", f"{temp}:/config:ro", "-v", f"{temp}:/output",
+            uncover_enrich.UNCOVER_DOCKER_IMAGE_DEFAULT, "-pc", "/config/provider-config.yaml",
+            "-e", "shodan", "-json", "-silent", "-l", "100", "-timeout", "60",
+            "-o", "/output/uncover_output.jsonl", "-q", DOMAIN]
+        assert fake.kills == [] and _gaps("uncover") == []
 
 
 # ---------------------------------------------------------------------------
