@@ -26,27 +26,12 @@ from .normalizers import normalize_introspection_finding, aggregate_findings
 from .auth import build_auth_headers
 from recon.helpers import request_pacer
 
-# Retry-After is the target's to set: one answer holds every in-process
-# requester back this long at most.
-_BACK_OFF_MAX_S = 30.0
-
-
-def _back_off(retry_after) -> None:
-    """A 429 pushes the next slot of every in-process requester back (the RoE
-    pacer; inert with no ceiling): Retry-After seconds, else 1 s, capped."""
-    try:
-        seconds = float(retry_after)
-    except (TypeError, ValueError):
-        seconds = 1.0
-    request_pacer.pacer().back_off(min(_BACK_OFF_MAX_S, max(1.0, seconds)))
-
 
 class _PacedRetry(Retry):
     """A retry is one more request: it takes its own slot of the RoE pacer."""
 
     def sleep(self, response=None) -> None:
-        if response is not None and response.status == 429:
-            _back_off(response.headers.get("Retry-After"))
+        request_pacer.back_off_on_429(response)
         super().sleep(response)
         request_pacer.acquire()
 
@@ -60,8 +45,7 @@ class _PacedAdapter(HTTPAdapter):
     def send(self, request, *args, **kwargs):
         request_pacer.acquire()
         response = super().send(request, *args, **kwargs)
-        if response.status_code == 429:
-            _back_off(response.headers.get("Retry-After"))
+        request_pacer.back_off_on_429(response)
         return response
 
 

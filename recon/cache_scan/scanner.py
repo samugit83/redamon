@@ -33,9 +33,6 @@ from recon.helpers import request_pacer
 # Hard caps so a huge recon surface can't turn into a runaway active scan.
 _MAX_URLS = 200
 _MAX_VECTORS_PER_URL = 55
-# Retry-After is the target's to set: one answer holds every in-process
-# requester back this long at most.
-_BACK_OFF_MAX_S = 30.0
 
 # Every cache finding is written as cache_poisoning, the WCVS-surfaced ones
 # included (source_engine "wcvs"); the "wcvs" finding source is cut with it.
@@ -68,22 +65,11 @@ def _note_untested(urls, reason: str) -> None:
         pass
 
 
-def _back_off(retry_after) -> None:
-    """A 429 pushes the next slot of every in-process requester back (the RoE
-    pacer; inert with no ceiling): Retry-After seconds, else 1 s, capped."""
-    try:
-        seconds = float(retry_after)
-    except (TypeError, ValueError):
-        seconds = 1.0
-    request_pacer.pacer().back_off(min(_BACK_OFF_MAX_S, max(1.0, seconds)))
-
-
 class _PacedRetry(Retry):
     """A retry is one more request: it takes its own slot of the RoE pacer."""
 
     def sleep(self, response=None) -> None:
-        if response is not None and response.status == 429:
-            _back_off(response.headers.get("Retry-After"))
+        request_pacer.back_off_on_429(response)
         super().sleep(response)
         request_pacer.acquire()
 
@@ -96,8 +82,7 @@ class _PacedAdapter(HTTPAdapter):
     def send(self, request, *args, **kwargs):
         request_pacer.acquire()
         response = super().send(request, *args, **kwargs)
-        if response.status_code == 429:
-            _back_off(response.headers.get("Retry-After"))
+        request_pacer.back_off_on_429(response)
         return response
 
 
