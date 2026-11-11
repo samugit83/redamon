@@ -67,6 +67,14 @@ _KEEP_HOST_FIELDS = (
     "target_ip", "target_hostname", "domain",
 )
 
+#: Host fields holding a list, each element naming a host the finding is
+#: about: a dependency-confusion finding's `source_urls` names every JS file
+#: that imports its package, on up to five hosts, while `source_url` and
+#: `base_url` name the first one only. A listed host counts as a scalar
+#: field's does: cut, it keeps the finding; re-checked, it lets the prune
+#: reach it.
+_KEEP_HOST_LIST_FIELDS = ("source_urls",)
+
 #: What a hostname in `keep_hosts` must look like before it is regex-escaped:
 #: a DNS name, or an IPv6 literal without brackets. Underscores are allowed
 #: because real hostnames carry them (`_dmarc.`, `my_host.`) and dropping one
@@ -90,18 +98,41 @@ _RESTORED_UPDATED_AT = (
     f"CASE WHEN n.updated_at IS :: STRING AND n.updated_at =~ '{_ISO_DATETIME}' "
     "THEN datetime(n.updated_at) END")
 
-_HOST_FIELD_VALUES = ", ".join(f"toLower(toStringOrNull(n.{f}))" for f in _KEEP_HOST_FIELDS)
+
+def _list_field_values(field: str) -> str:
+    """Cypher for the elements of a list host field, lower-cased (null for one
+    toStringOrNull cannot read). A scalar left in the field is read as a
+    one-element list: iterating it would fail the statement, and with it the
+    whole prune."""
+    return (f"CASE WHEN n.{field} IS :: LIST<ANY> NOT NULL "
+            f"THEN [x IN n.{field} | toLower(toStringOrNull(x))] "
+            f"ELSE [toLower(toStringOrNull(n.{field}))] END")
+
+
+#: Every host value of the finding, scalars and list elements, as one list.
+_HOST_FIELD_VALUES = (
+    "[" + ", ".join(f"toLower(toStringOrNull(n.{f}))" for f in _KEEP_HOST_FIELDS) + "]"
+    + "".join(f" + {_list_field_values(f)}" for f in _KEEP_HOST_LIST_FIELDS))
+
+#: Whether a host field names a host the keep pattern `rx` matches. A null
+#: value reads as '', since one null would make the whole test null and so
+#: keep every finding.
+_KEEP_HOST_CHECKS = " OR ".join(
+    [f"coalesce(toLower(toStringOrNull(n.{f})), '') =~ rx" for f in _KEEP_HOST_FIELDS]
+    + [f"any(v IN {_list_field_values(f)} WHERE coalesce(v, '') =~ rx)"
+       for f in _KEEP_HOST_LIST_FIELDS])
 
 #: Positive coverage (D1): only findings about a host the source re-checked.
-#: Each host field is read the way keep_host_patterns reads one (a bare host,
-#: host:port, [v6]:port, or a URL whose authority is the host, userinfo only
-#: after a scheme) and its hostname is looked up in $only_hosts. An exact
+#: Each host field, and each element of a list one, is read the way
+#: keep_host_patterns reads one (a bare host, host:port, [v6]:port, or a URL
+#: whose authority is the host, userinfo only after a scheme) and its
+#: hostname is looked up in $only_hosts. An exact
 #: lookup, not the keep regexes: the checked set is the whole scanned surface,
 #: and a regex per hundred hosts per field per candidate measured 10.8 s for
 #: 2,000 stale findings over 3,000 hosts, against 0.5 s for the lookup. A
 #: value it cannot read names no host, so its finding is kept.
 _ONLY_HOSTS_CLAUSE = f"""
-        WITH n, [v IN [{_HOST_FIELD_VALUES}] WHERE v IS NOT NULL |
+        WITH n, [v IN {_HOST_FIELD_VALUES} WHERE v IS NOT NULL |
                  CASE WHEN v =~ '[a-z][a-z0-9+.-]*://.*'
                       THEN {{scheme: true, rest: substring(v, size(split(v, '://')[0]) + 3)}}
                       ELSE {{scheme: false, rest: v}} END] AS parsed
@@ -304,8 +335,9 @@ class BaseMixin:
            cannot tell.
 
         `keep_hosts` are hostnames a degraded run skipped as unreachable: every
-        finding about one of them is left exactly as it is (neither deleted
-        nor stamped stale), since the run never re-checked it. Per host rather
+        finding about one of them (named by any host field, or by any element
+        of a list one) is left exactly as it is (neither deleted nor stamped
+        stale), since the run never re-checked it. Per host rather
         than per source, so one permanently dead host cannot keep a whole
         source unpruned for ever. With it empty the query is unchanged.
 
@@ -331,9 +363,7 @@ class BaseMixin:
         keep_patterns = keep_host_patterns(keep_hosts)
         keep_clause = ""
         if keep_patterns:
-            checks = " OR ".join(
-                f"coalesce(toLower(toStringOrNull(n.{f})), '') =~ rx" for f in _KEEP_HOST_FIELDS)
-            keep_clause = f"\n          AND NOT any(rx IN $keep_patterns WHERE {checks})"
+            keep_clause = f"\n          AND NOT any(rx IN $keep_patterns WHERE {_KEEP_HOST_CHECKS})"
         only = None if only_hosts is None else _host_names(only_hosts)
         types = None if types is None else sorted({str(t) for t in types if t})
         types_clause = "" if types is None else "\n          AND coalesce(n.type, '') IN $types"
