@@ -2,10 +2,12 @@
 """
 redagraph — Tenant-scoped CLI for the RedAmon graph database.
 
-Runs inside kali-sandbox. Reads REDAMON_USER_ID and REDAMON_PROJECT_ID from
-the environment (injected by the terminal server when launched from the
-webapp Graph -> Terminal tab) and queries the graph THROUGH THE AGENT — it
-holds no Neo4j credentials of its own. The agent's `/graph/exec` endpoint
+Runs inside kali-sandbox. Reads REDAMON_USER_ID, REDAMON_PROJECT_ID and
+REDAMON_RUN_CREDENTIAL from the environment (injected by the terminal server
+when launched from the webapp Graph -> Terminal tab) and queries the graph
+THROUGH THE AGENT — it holds no Neo4j credentials of its own. The credential is
+the terminal connection's: the agent takes the user and project from it, not from
+the request body. The agent's `/graph/exec` endpoint
 enforces read-only + tenant scoping server-side, so a compromised worker
 cannot write, tamper, or escape the tenant filter. Supports raw Cypher,
 natural-language questions (text-to-cypher via the agent), and shorthand
@@ -38,6 +40,46 @@ def _require_tenant() -> tuple[str, str]:
     return user_id, project_id
 
 
+_EXPIRED = "redagraph: the terminal session expired: reopen the terminal."
+
+
+def _credential_headers() -> Dict[str, str]:
+    """The terminal's run credential, which the agent's graph routes require."""
+    cred = os.environ.get("REDAMON_RUN_CREDENTIAL", "").strip()
+    if not cred:
+        _eprint(
+            "redagraph: this shell has no graph credential. Open the terminal from the "
+            "webapp Graph -> Terminal tab; a shell started any other way cannot query the graph."
+        )
+        sys.exit(2)
+    return {"X-Redamon-Run": cred}
+
+
+def _refusal(resp) -> tuple:
+    """(message, code) of an agent error body: top-level, or nested under FastAPI's `detail`."""
+    try:
+        body = resp.json()
+    except Exception:
+        return resp.text, ""
+    if isinstance(body, dict) and isinstance(body.get("detail"), dict):
+        body = body["detail"]
+    if not isinstance(body, dict):
+        return resp.text, ""
+    return str(body.get("error") or body.get("detail") or resp.text), str(body.get("code") or "")
+
+
+def _exit_if_credential_refused(resp) -> None:
+    if resp.status_code != 401:
+        return
+    _msg, code = _refusal(resp)
+    if code == "run_credential_expired":
+        _eprint(_EXPIRED)
+    else:
+        _eprint(f"redagraph: the agent refused this terminal's credential ({code or 'unauthorized'}): "
+                "reopen the terminal.")
+    sys.exit(2)
+
+
 def _agent_post(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """POST a graph operation to the agent's /graph/exec endpoint and return the
     coerced records. The agent holds the Neo4j credentials and enforces read-only
@@ -45,13 +87,7 @@ def _agent_post(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     import requests
 
     agent_url = os.environ.get("REDAMON_AGENT_URL", "http://agent:8080").rstrip("/")
-    # S8/I8: /graph/exec now requires internal auth. The worker presents the
-    # SCOPED SCANNER_API_KEY (never a master secret), which the agent's llm_guard
-    # accepts. Empty header in a token-less dev stack (agent fails open there).
-    headers = {}
-    scanner_key = os.environ.get("SCANNER_API_KEY", "").strip()
-    if scanner_key:
-        headers["X-Internal-Key"] = scanner_key
+    headers = _credential_headers()
     try:
         resp = requests.post(f"{agent_url}/graph/exec", json=payload, headers=headers, timeout=120)
     except requests.RequestException as e:
@@ -60,6 +96,7 @@ def _agent_post(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     if resp.status_code == 200:
         return resp.json().get("records", [])
+    _exit_if_credential_refused(resp)
 
     try:
         err = resp.json().get("error", resp.text)
@@ -224,12 +261,8 @@ def cmd_ask(args, user_id: str, project_id: str) -> int:
 
     agent_url = os.environ.get("REDAMON_AGENT_URL", "http://agent:8080").rstrip("/")
     question = " ".join(args.question) if isinstance(args.question, list) else args.question
-    # /text-to-cypher is a BILLED endpoint and now requires internal auth, like
-    # /graph/exec above. Without this header `ask` returns 401 (mcp_plan P0-3).
-    headers = {}
-    scanner_key = os.environ.get("SCANNER_API_KEY", "").strip()
-    if scanner_key:
-        headers["X-Internal-Key"] = scanner_key
+    # /text-to-cypher bills the credential's user, whatever the body names.
+    headers = _credential_headers()
     try:
         resp = requests.post(
             f"{agent_url}/text-to-cypher",
@@ -249,10 +282,8 @@ def cmd_ask(args, user_id: str, project_id: str) -> int:
         return 4
 
     if resp.status_code != 200:
-        try:
-            err = resp.json().get("error", resp.text)
-        except Exception:
-            err = resp.text
+        _exit_if_credential_refused(resp)
+        err, _code = _refusal(resp)
         _eprint(f"redagraph: agent returned {resp.status_code}: {err}")
         return 4
 

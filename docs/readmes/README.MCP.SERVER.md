@@ -771,8 +771,8 @@ the agent does not hold with a compare-and-swap on the row's `updatedAt`. There
 is no time-to-live, because a run lasts hours. An agent that cannot answer
 leaves a set flag counting as a running session: fail closed.
 The endpoint takes the MASTER internal key only (`require_master_internal_auth`):
-the kali sandbox holds `SCANNER_API_KEY` and faces the target, and a live
-session id is all the unauthenticated `/agent-session/stop` needs.
+the kali sandbox faces the target, and a live session id is all the
+unauthenticated `/agent-session/stop` needs.
 
 **Residual, stated plainly.** A token holding both `project:rescope` and
 `engagement:authorize` can record an authorization for any document digest and

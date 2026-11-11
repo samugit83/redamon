@@ -18,6 +18,7 @@ import os
 # Chromium launch constants live in browser_launch so this server and the
 # in-process `redamon` SDK cannot drift on the root/Docker flags.
 from browser_launch import BROWSER_ARGS, CHROME_UA
+from _safe_env import safe_env
 
 # Strip ANSI escape codes (terminal colors) from output
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
@@ -45,7 +46,8 @@ def _run_playwright_script(script: str, timeout: int = 45) -> str:
             ['python3', script_path],
             capture_output=True,
             text=True,
-            timeout=timeout
+            timeout=timeout,
+            env=safe_env()
         )
 
         output = ANSI_ESCAPE.sub('', result.stdout)

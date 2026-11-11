@@ -26,6 +26,8 @@ import atexit
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Set, List, Dict, Tuple
 
+from _safe_env import safe_env
+
 # Server configuration
 SERVER_NAME = "metasploit"
 SERVER_HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -100,6 +102,7 @@ class PersistentMsfConsole:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=safe_env(),
             )
             print(f"[MSF] Process started with PID: {self.process.pid}")
 

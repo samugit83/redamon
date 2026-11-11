@@ -14,6 +14,8 @@ import shlex
 import re
 import os
 
+from _safe_env import safe_env
+
 # Strip ANSI escape codes (terminal colors) from output
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
@@ -67,7 +69,8 @@ def execute_nmap(args: str) -> str:
             ["nmap"] + cmd_args,
             capture_output=True,
             text=True,
-            timeout=600
+            timeout=600,
+            env=safe_env()
         )
         output = ANSI_ESCAPE.sub('', result.stdout)
         if result.stderr:

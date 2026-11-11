@@ -11,7 +11,10 @@ Docker networks every lab container shares, and it hands out a root shell, so th
 upgrade must carry the bearer MCP_AUTH_TOKEN (which only the agent holds; unset
 refuses everyone), checked before any PTY is forked. The proxy has verified the
 browser's ticket and names the user and project in the upgrade's query; the
-browser's own init frame is read and dropped, its ids ignored.
+browser's own init frame is read and dropped, its ids ignored. The proxy also
+sends the connection's graph credential (X-Redamon-Run), which the shell gets as
+REDAMON_RUN_CREDENTIAL for redagraph. The shell gets no service secret: its
+environment is built by safe_env().
 """
 
 import asyncio
@@ -25,10 +28,12 @@ import struct
 import termios
 import json
 import logging
+import re
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
 from _auth_middleware import configured_token
+from _safe_env import safe_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [terminal] %(message)s")
 logger = logging.getLogger("terminal-server")
@@ -81,6 +86,24 @@ def _tenant_env(path: str):
     return {"REDAMON_USER_ID": user_id, "REDAMON_PROJECT_ID": project_id}
 
 
+# b64url(claims).b64url(hmac): the only shape the agent mints. Anything else never
+# reaches the shell's environment.
+_RUN_CREDENTIAL = re.compile(r"[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,128}")
+
+
+def _shell_env(request):
+    """_tenant_env plus the run credential the proxy sent, or None without an identity."""
+    env = _tenant_env(request.path)
+    if env is None:
+        return None
+    credential = (request.headers.get("X-Redamon-Run", "") or "").strip()
+    if _RUN_CREDENTIAL.fullmatch(credential):
+        env["REDAMON_RUN_CREDENTIAL"] = credential
+    elif credential:
+        logger.warning("Dropped a malformed run credential from the terminal upgrade")
+    return env
+
+
 def _process_request(connection, request):
     """Refuse the upgrade, before the handler runs, unless the agent's proxy sent it."""
     global _warned_no_token
@@ -104,7 +127,7 @@ async def _pty_session(ws):
     """Handle a single WebSocket connection with a PTY bash shell."""
     global _active_sessions
 
-    tenant_env = _tenant_env(ws.request.path)
+    tenant_env = _shell_env(ws.request)
     if tenant_env is None:
         await ws.close(1008, "Missing identity")
         return
@@ -174,11 +197,12 @@ async def _run_pty_session(ws, tenant_env=None):
         if slave_fd > 2:
             os.close(slave_fd)
 
-        env = os.environ.copy()
-        env["TERM"] = "xterm-256color"
-        env["SHELL"] = "/bin/bash"
-        env["PS1"] = r"\[\033[1;31m\]redamon\[\033[0m\]@\[\033[1;36m\]kali\[\033[0m\]:\[\033[1;33m\]\w\[\033[0m\]$ "
-        env.update(tenant_env or {})
+        env = safe_env({
+            "TERM": "xterm-256color",
+            "SHELL": "/bin/bash",
+            "PS1": r"\[\033[1;31m\]redamon\[\033[0m\]@\[\033[1;36m\]kali\[\033[0m\]:\[\033[1;33m\]\w\[\033[0m\]$ ",
+            **(tenant_env or {}),
+        })
 
         os.execvpe("/bin/bash", ["/bin/bash", "--login"], env)
         # Never reached

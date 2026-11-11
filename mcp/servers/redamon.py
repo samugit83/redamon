@@ -11,9 +11,10 @@ is an authenticated HTTP call to the agent's `/traffic/exec` (read) and
 foothold here cannot read or send for a tenant it was not issued for.
 
 Env (injected per-invocation by the proxy_brain MCP tool):
-  REDAMON_AGENT_URL  - the agent base URL (default http://agent:8080)
-  SCANNER_API_KEY    - scoped transport auth (X-Internal-Key)
-  REDAMON_CTX        - the signed agent tag (tenant/session/phase claims)
+  REDAMON_AGENT_URL       - the agent base URL (default http://agent:8080)
+  REDAMON_RUN_CREDENTIAL  - this run's 15-minute credential (X-Redamon-Run), bound to
+                            the same user and project as the tag
+  REDAMON_CTX             - the signed agent tag (tenant/session/phase claims)
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from _safe_env import safe_env
+
 _TIMEOUT = 60
 _CURL_TIMEOUT = 45
 _BROWSER_NAV_TIMEOUT = 30000  # ms
@@ -51,11 +54,24 @@ def _ctx() -> str:
 
 
 def _headers() -> Dict[str, str]:
-    h = {}
-    key = os.environ.get("SCANNER_API_KEY", "").strip()
-    if key:
-        h["X-Internal-Key"] = key
-    return h
+    cred = os.environ.get("REDAMON_RUN_CREDENTIAL", "").strip()
+    if not cred:
+        _die("no REDAMON_RUN_CREDENTIAL in the environment — proxy_brain must be launched by the agent, "
+             "which hands each run its own credential.")
+    return {"X-Redamon-Run": cred}
+
+
+def _refusal(r) -> tuple:
+    """(message, code) of an agent error body: top-level, or nested under FastAPI's `detail`."""
+    try:
+        body = r.json()
+    except Exception:  # noqa: BLE001
+        return r.text, ""
+    if isinstance(body, dict) and isinstance(body.get("detail"), dict):
+        body = body["detail"]
+    if not isinstance(body, dict):
+        return r.text, ""
+    return str(body.get("error") or body.get("detail") or r.text), str(body.get("code") or "")
 
 
 def _die(msg: str) -> None:
@@ -71,10 +87,9 @@ def _post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         _die(f"cannot reach agent at {_agent_url()}{path}: {e}")
     if r.status_code == 200:
         return r.json()
-    try:
-        err = r.json().get("error", r.text)
-    except Exception:  # noqa: BLE001
-        err = r.text
+    err, code = _refusal(r)
+    if code == "run_credential_expired":
+        _die("this proxy_brain run's credential expired (15 minutes): call proxy_brain again.")
     _die(f"{path} -> {r.status_code}: {err}")
     return {}  # unreachable
 
@@ -355,7 +370,7 @@ def _run(curl_args: str, ctx: str, payload: Optional[str] = None, identity: str 
     if cap_url and cap_tok:
         args = args + ["-x", cap_url, "-k", "-H", f"X-Redamon-Ctx: {cap_tok}"]
     try:
-        proc = subprocess.run(["curl", *args], capture_output=True, text=True, timeout=_CURL_TIMEOUT)
+        proc = subprocess.run(["curl", *args], capture_output=True, text=True, timeout=_CURL_TIMEOUT, env=safe_env())
         raw = proc.stdout
     except subprocess.TimeoutExpired:
         return Response(None, {}, "[timeout]", payload, identity)

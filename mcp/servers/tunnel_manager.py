@@ -19,6 +19,8 @@ import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from _safe_env import safe_env
+
 PORT = 8015
 
 # Track tunnel processes
@@ -67,6 +69,7 @@ def _start_ngrok(authtoken: str) -> subprocess.Popen | None:
          "--log=stdout", "--log-level=info"],
         stdout=open("/var/log/ngrok.log", "w"),
         stderr=subprocess.STDOUT,
+        env=safe_env(),
     )
     print(f"[tunnel_manager] ngrok started (pid {proc.pid}, API at http://0.0.0.0:4040)")
     return proc
@@ -89,6 +92,7 @@ def _start_chisel(server_url: str, auth: str) -> subprocess.Popen | None:
         cmd,
         stdout=open("/var/log/chisel.log", "w"),
         stderr=subprocess.STDOUT,
+        env=safe_env(),
     )
     print(f"[tunnel_manager] chisel started (pid {proc.pid}, tunneling port 4444)")
     return proc

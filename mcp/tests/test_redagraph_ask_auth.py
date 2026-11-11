@@ -1,10 +1,11 @@
-"""P0-3 — `redagraph ask` must present the scanner key to /text-to-cypher.
+"""P0-3 — `redagraph ask` must authenticate to /text-to-cypher like /graph/exec.
 
-`_agent_post` (the /graph/exec path) has always sent `X-Internal-Key:
-SCANNER_API_KEY`, but `cmd_ask` sent no header at all. That was harmless while
-/text-to-cypher was unauthenticated; once it carries `require_internal_auth`
-(P0-3) a header-less `ask` returns 401 and the Graph -> Terminal `ask` command
-breaks. This pins the header on both paths so they cannot drift apart again.
+`cmd_ask` once sent no header at all while `_agent_post` (the /graph/exec path)
+did; once /text-to-cypher was authenticated (P0-3) a header-less `ask` returned
+401 and the Graph -> Terminal `ask` command broke. Both now present the
+terminal's run credential (RBAC 1.15: the sandbox no longer holds the scanner
+key, which they sent before). This pins the header on both paths so they cannot
+drift apart again.
 
 Run:
     python -m unittest mcp.tests.test_redagraph_ask_auth -v
@@ -50,30 +51,33 @@ class RedagraphAskAuthTests(unittest.TestCase):
             return _Resp()
 
         with mock.patch.dict(os.environ, env, clear=False):
-            if "SCANNER_API_KEY" not in env:
-                os.environ.pop("SCANNER_API_KEY", None)
+            if "REDAMON_RUN_CREDENTIAL" not in env:
+                os.environ.pop("REDAMON_RUN_CREDENTIAL", None)
             with mock.patch.object(redagraph, "_execute", return_value=[]):
                 with mock.patch("requests.post", side_effect=fake_post):
                     redagraph.cmd_ask(_args(), "u1", "p1")
         return captured
 
-    def test_ask_sends_the_scanner_key(self):
-        captured = self._post_headers({"SCANNER_API_KEY": "scan-tok"})
+    def test_ask_sends_the_run_credential(self):
+        captured = self._post_headers({"REDAMON_RUN_CREDENTIAL": "run-tok"})
         self.assertIn("text-to-cypher", captured["url"])
-        self.assertEqual(captured["headers"].get("X-Internal-Key"), "scan-tok")
+        self.assertEqual(captured["headers"], {"X-Redamon-Run": "run-tok"})
 
-    def test_ask_sends_no_header_when_there_is_no_key(self):
-        # A token-less dev stack: the agent's guard fails open there, and
-        # sending an empty key would be rejected once a key IS set.
-        captured = self._post_headers({})
-        self.assertNotIn("X-Internal-Key", captured["headers"] or {})
+    def test_ask_without_a_credential_sends_nothing(self):
+        # A shell the terminal did not open: say so, rather than a bare 401.
+        env = {k: v for k, v in os.environ.items() if k != "REDAMON_RUN_CREDENTIAL"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("sys.stderr"), \
+                mock.patch("requests.post") as post, self.assertRaises(SystemExit):
+            redagraph.cmd_ask(_args(), "u1", "p1")
+        post.assert_not_called()
 
-    def test_ask_never_sends_the_master_key(self):
-        # The worker is the least-trusted tier and must not hold INTERNAL_API_KEY.
+    def test_ask_never_sends_the_master_or_the_scanner_key(self):
+        # The worker is the least-trusted tier and must not present either.
         captured = self._post_headers(
-            {"SCANNER_API_KEY": "scan-tok", "INTERNAL_API_KEY": "master-secret"}
+            {"REDAMON_RUN_CREDENTIAL": "run-tok", "SCANNER_API_KEY": "scan-tok", "INTERNAL_API_KEY": "master-secret"}
         )
         self.assertNotIn("master-secret", str(captured["headers"]))
+        self.assertNotIn("scan-tok", str(captured["headers"]))
 
 
 if __name__ == "__main__":

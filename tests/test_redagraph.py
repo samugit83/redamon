@@ -526,7 +526,16 @@ def _fake_resp(status, payload):
     return r
 
 
-class TestExecuteProxy(unittest.TestCase):
+class _WithRunCredential(unittest.TestCase):
+    """A shell the terminal opened: it holds the connection's run credential (RBAC 1.15)."""
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"REDAMON_RUN_CREDENTIAL": "rbac-test-run-credential"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class TestExecuteProxy(_WithRunCredential):
     """_execute proxies to the agent's /graph/exec; the agent enforces read-only
     + tenant scoping. The CLI must send the right op and surface the agent's
     rejections with the right exit codes (write/label = 3, transport = 4)."""
@@ -569,7 +578,7 @@ class TestExecuteProxy(unittest.TestCase):
         self.assertNotIn("GraphDatabase", src)
 
 
-class TestCmdTypesProxied(unittest.TestCase):
+class TestCmdTypesProxied(_WithRunCredential):
     """cmd_types / cmd_schema run as fixed server-side ops (no client Cypher)."""
 
     def test_types_sends_types_op(self):
@@ -642,8 +651,10 @@ class TestReadInitFrame(unittest.TestCase):
         self.assertEqual(self._run(ws, timeout=0.05), b"")
 
 
-class TestRedagraphSendsScannerKey(unittest.TestCase):
-    """S8/I8: redagraph presents X-Internal-Key: SCANNER_API_KEY on /graph/exec."""
+class TestRedagraphSendsTheRunCredential(unittest.TestCase):
+    """redagraph presents the terminal's run credential on /graph/exec, never the
+    scanner key, which the sandbox no longer holds (RBAC 1.15, NF-01; it presented
+    X-Internal-Key: SCANNER_API_KEY before)."""
 
     def _capture_post(self):
         captured = {}
@@ -660,20 +671,24 @@ class TestRedagraphSendsScannerKey(unittest.TestCase):
 
         return captured, fake_post
 
-    def test_sends_scanner_key_when_set(self):
+    def test_sends_the_run_credential_and_never_the_scanner_key(self):
         captured, fake_post = self._capture_post()
         with mock.patch("requests.post", fake_post), \
-             mock.patch.dict(os.environ, {"SCANNER_API_KEY": "scoped-key-xyz"}):
+             mock.patch.dict(os.environ, {"SCANNER_API_KEY": "scoped-key-xyz",
+                                          "REDAMON_RUN_CREDENTIAL": "run-cred-xyz"}):
             rg._agent_post({"op": "types", "user_id": "u", "project_id": "p"})
-        self.assertEqual(captured["headers"].get("X-Internal-Key"), "scoped-key-xyz")
-
-    def test_no_header_when_unset(self):
-        captured, fake_post = self._capture_post()
-        env = {k: v for k, v in os.environ.items() if k != "SCANNER_API_KEY"}
-        with mock.patch("requests.post", fake_post), \
-             mock.patch.dict(os.environ, env, clear=True):
-            rg._agent_post({"op": "types", "user_id": "u", "project_id": "p"})
+        self.assertEqual(captured["headers"].get("X-Redamon-Run"), "run-cred-xyz")
         self.assertNotIn("X-Internal-Key", captured["headers"])
+
+    def test_no_request_without_a_credential(self):
+        captured, fake_post = self._capture_post()
+        env = {k: v for k, v in os.environ.items() if k != "REDAMON_RUN_CREDENTIAL"}
+        with mock.patch("requests.post", fake_post), \
+             mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("sys.stderr", new_callable=io.StringIO), \
+             self.assertRaises(SystemExit):
+            rg._agent_post({"op": "types", "user_id": "u", "project_id": "p"})
+        self.assertNotIn("headers", captured)
 
 
 if __name__ == "__main__":

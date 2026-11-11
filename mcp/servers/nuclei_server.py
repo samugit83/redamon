@@ -14,6 +14,8 @@ import shlex
 import os
 import yaml
 
+from _safe_env import safe_env
+
 # Server configuration
 SERVER_NAME = "nuclei"
 SERVER_HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -145,7 +147,8 @@ def execute_nuclei(args: str, _redamon_ctx: str = "") -> str:
             ["nuclei"] + cmd_args,
             capture_output=True,
             text=True,
-            timeout=1800  # 30 min — full template scans routinely take 20-40 min
+            timeout=1800,  # 30 min — full template scans routinely take 20-40 min
+            env=safe_env()
         )
         output = result.stdout
         if result.stderr:

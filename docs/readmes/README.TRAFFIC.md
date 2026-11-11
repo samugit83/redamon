@@ -888,16 +888,19 @@ flowchart LR
     end
     CP["redamon-capture-proxy<br/>egress guard + re-capture"]
     TGT["target host"]
-    RS -->|"HTTP: signed ctx tag + SCANNER_API_KEY header"| EP
+    RS -->|"HTTP: signed ctx tag + run credential header"| EP
     EP -->|"data / curl recipe / allow-or-deny"| RS
     RS -->|"live curl routed via -x proxy"| CP --> TGT
     TGT -->|response| CP --> RS
 ```
 
-The kali box is given only the **scoped** `SCANNER_API_KEY` (transport auth: "I am an
-allowed caller") and the agent's URL. It is deliberately **not** given
-`INTERNAL_API_KEY` or any database URL, so a foothold there cannot forge a tenant or
-read the store directly.
+The kali box holds no key for these calls. Each `proxy_brain` call carries, beside the
+signed tag, a **run credential** the agent minted for it (`REDAMON_RUN_CREDENTIAL` in the
+child's environment, sent as `X-Redamon-Run`: audience `traffic`, the run's user and
+project, 15 minutes; `agentic/machine_credential.py`). The routes refuse it unless its
+user and project equal the tag's. The box is deliberately **not** given
+`INTERNAL_API_KEY`, the scanner key or any database URL, so a foothold there cannot
+forge a tenant or read the store directly.
 
 #### Two hops: the agent triggers, then the code calls back
 
@@ -1046,7 +1049,7 @@ flowchart LR
 
 ### Tenant isolation (the signed tag)
 
-The kali worker presents the scoped `SCANNER_API_KEY` for transport auth but does
+The kali worker presents the call's run credential for transport auth but does
 **not** hold `INTERNAL_API_KEY`, so it cannot forge a tenant claim. Identity travels
 as an HMAC-signed tag the agent mints and the endpoint verifies:
 
