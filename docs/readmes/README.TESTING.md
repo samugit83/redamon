@@ -189,6 +189,13 @@ throwaway `rbac-deleted` account, which is then deleted, and replays its still-v
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
 real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
 
+`tests/rbac_user_audit_live.sh` uses the same fixtures to check the audit of user
+administration: `rbac-admin-a` creates, edits, promotes, demotes, resets and deletes a throwaway
+`rbac-audit-*@e2e.local` account, and `audit_log` must hold exactly those six rows, in order,
+with that admin as actor and no password or hash; it then checks that the act-as end row names
+its target and that a logout row names who signed out. It reads both audit tables through `psql`
+in the `postgres` container and prints `SKIP` without a stack.
+
 ### The RBAC upgrade harness
 
 `tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`
