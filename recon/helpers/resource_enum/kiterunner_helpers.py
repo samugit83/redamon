@@ -334,12 +334,15 @@ def run_kiterunner_discovery(
         for header in headers:
             cmd.extend(["-H", header])
 
-        # HTTP traffic capture (Phase 1): route through the capture proxy when
-        # enabled + reachable; tag added ONLY in this branch (§20.2 no-leak).
+        # kr v1.0.2 cannot use the capture proxy: `scan` has no proxy flag (only
+        # `kb replay` has one; cobra exits 1 on an unknown flag before any
+        # request), and its fasthttp client dials direct, ignoring HTTP(S)_PROXY.
+        # So it runs direct under capture (fail-open, §20.1) and without the
+        # X-Redamon-Ctx tag, which rides only with the proxy (§20.2 no-leak).
         from helpers.proxy_routing import get_capture_routing
-        _cap_url, _cap_token = get_capture_routing("kiterunner")
-        if _cap_url and _cap_token:
-            cmd.extend(["--proxy", _cap_url, "-H", f"X-Redamon-Ctx: {_cap_token}"])
+        if get_capture_routing("kiterunner")[0]:
+            print("[*][Kiterunner] Traffic capture is on, but kr cannot use a proxy: "
+                  "it runs direct and its requests are not captured")
 
         from recon.helpers.resource_enum import tool_health
         started = time.time()
