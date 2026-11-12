@@ -699,11 +699,12 @@ class ProxiedSocketRegistry:
             del self._entries[id(ws)]
 
     def matching(self, *, kinds, user_id: Optional[str] = None,
-                 project_id: Optional[str] = None, scope: str = "access") -> List[ProxiedSocket]:
-        _check_scope(scope)
+                 project_id: Optional[str] = None, scope: str = "access",
+                 actor_id: Optional[str] = None) -> List[ProxiedSocket]:
+        _check_scope(scope, user_id=user_id, actor_id=actor_id)
         return [e for e in list(self._entries.values())
                 if e.kind in kinds
-                and _names(user_id, e.sub, e.act, scope=scope, project_id=project_id)
+                and _names(user_id, e.sub, e.act, scope=scope, project_id=project_id, actor_id=actor_id)
                 and (project_id is None or e.pid == project_id)]
 
     def __len__(self) -> int:
@@ -714,20 +715,27 @@ PROXIED_SOCKETS = ProxiedSocketRegistry()
 
 
 #: What ended for the user a close names (`scope` of close_sockets and POST /ws/close).
-CLOSE_SCOPES = ("access", "account")
+CLOSE_SCOPES = ("access", "account", "act_as")
 
 
-def _check_scope(scope: str) -> None:
+def _check_scope(scope: str, *, user_id: Optional[str] = None, actor_id: Optional[str] = None) -> None:
     if scope not in CLOSE_SCOPES:
         raise ValueError(f"unknown close scope: {scope!r}")
+    # One impersonation names both people; any other scope names no admin.
+    if scope == "act_as" and not (user_id and actor_id):
+        raise ValueError("the act_as scope needs user_id and actor_id")
+    if scope != "act_as" and actor_id is not None:
+        raise ValueError("actor_id belongs to the act_as scope")
 
 
 def _names(user_id: Optional[str], sub: str, act: Optional[str], *,
-           scope: str, project_id: Optional[str]) -> bool:
+           scope: str, project_id: Optional[str], actor_id: Optional[str] = None) -> bool:
     """Whether a socket or run opened as `sub` (by admin `act`, when acting) is `user_id`'s.
 
     See close_sockets for the rule.
     """
+    if scope == "act_as":
+        return sub == user_id and act == actor_id
     if user_id is None or user_id == (act or sub):
         return True
     return user_id == sub and (scope == "account" or project_id is not None)
@@ -735,7 +743,8 @@ def _names(user_id: Optional[str], sub: str, act: Optional[str], *,
 
 async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSocketRegistry, *,
                         kinds, user_id: Optional[str] = None,
-                        project_id: Optional[str] = None, scope: str = "access") -> dict:
+                        project_id: Optional[str] = None, scope: str = "access",
+                        actor_id: Optional[str] = None) -> dict:
     """Close the open sockets of `kinds` that match the user and/or the project.
 
     A ticket is checked once, at the handshake, so a revoke, a disabled account or
@@ -754,18 +763,22 @@ async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSo
       else `sub`. The member losing a grant leaves the admin's act-as socket open.
     - `account`, the account itself (disabled, deleted, sessions revoked): every
       socket naming the user, as `sub` or as `act`.
+    - `act_as`, one impersonation ended (Stop, its time limit, sign-out, the admin
+      losing the right): only what admin `actor_id` opened or started acting as
+      `user_id`. The member's own sockets and runs, the admin's own, and other
+      admins' impersonations of the member stay.
     With a `project_id`, the user's access to that project ended, which an act-as
     socket relied on, so it matches as `account` inside that project. An agent
     run matches by who started it (recorded at its start, so a run whose tab is
     closed is still found) and its socket by who holds it: stopping one never
     ends another person's.
     """
-    _check_scope(scope)
+    _check_scope(scope, user_id=user_id, actor_id=actor_id)
     by_kind: Dict[str, int] = {}
     stopped_runs = 0
 
     def ours(sub: str, act: Optional[str]) -> bool:
-        return _names(user_id, sub, act, scope=scope, project_id=project_id)
+        return _names(user_id, sub, act, scope=scope, project_id=project_id, actor_id=actor_id)
 
     if "agent" in kinds and manager is not None:
         keys = set(manager.active_connections) | set(manager._active_tasks)
@@ -790,7 +803,8 @@ async def close_sockets(manager: Optional[WebSocketManager], registry: ProxiedSo
             by_kind["agent"] = by_kind.get("agent", 0) + 1
 
     for entry in registry.matching(kinds=[k for k in kinds if k in PROXIED_KINDS],
-                                   user_id=user_id, project_id=project_id, scope=scope):
+                                   user_id=user_id, project_id=project_id, scope=scope,
+                                   actor_id=actor_id):
         try:
             await entry.ws.close(code=ACCESS_REVOKED_CODE, reason=ACCESS_REVOKED_REASON)
         except Exception as e:

@@ -316,6 +316,51 @@ class CloseSockets(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(acted_term.closed)
         self.assertTrue(task.cancelled())
 
+    # --- one impersonation ended: only that admin's sockets as that member -----
+
+    async def test_an_ended_impersonation_closes_only_that_admins_sockets_as_that_member(self):
+        # admin-1 acting as uC (terminal + chat run); uC's own terminal; admin-1's own terminal;
+        # admin-2 acting as uC; admin-1 acting as uD. Only the first pair ends.
+        acted_term, own_term, task, conn = await self._acting()
+        admin_own = _FakeWS()
+        other_admin = _FakeWS()
+        other_member = _FakeWS()
+        self.reg.add(admin_own, "kali-terminal", _claims("admin-1", "p9"))
+        self.reg.add(other_admin, "kali-terminal", _claims("uC", "p3", act="admin-2"))
+        self.reg.add(other_member, "kali-terminal", _claims("uD", "p3", act="admin-1"))
+        _, own_run, own_conn = await self._agent_session("admin-1", "p9", "s9")
+        _, member_run, member_conn = await self._agent_session("uC", "p3", "s4")
+        out = await close_sockets(self.mgr, self.reg, kinds=["kali-terminal", "agent"],
+                                  user_id="uC", actor_id="admin-1", scope="act_as")
+        await asyncio.sleep(0)
+        self.assertEqual(out, {"closed": 2, "by_kind": {"kali-terminal": 1, "agent": 1},
+                               "stopped_runs": 1})
+        self.assertEqual(acted_term.closed, (4403, "Access revoked"))
+        self.assertTrue(task.cancelled())
+        for untouched in (own_term, admin_own, other_admin, other_member):
+            self.assertIsNone(untouched.closed)
+        for run, c in ((own_run, own_conn), (member_run, member_conn)):
+            self.assertFalse(run.done())
+            self.assertIsNone(c.websocket.closed)
+
+    async def test_an_ended_impersonation_stops_the_run_the_admin_started_while_the_members_tab_stays(self):
+        key, task, conn = await self._agent_session("uC", "p3", "s3", act=None, run_act="admin-1")
+        out = await close_sockets(self.mgr, self.reg, kinds=["agent"], user_id="uC",
+                                  actor_id="admin-1", scope="act_as")
+        await asyncio.sleep(0)
+        self.assertEqual(out, {"closed": 0, "by_kind": {}, "stopped_runs": 1})
+        self.assertTrue(task.cancelled())
+        self.assertIs(self.mgr.active_connections[key], conn)
+
+    async def test_the_act_as_scope_needs_both_people(self):
+        for kwargs in ({"user_id": "uC"}, {"actor_id": "admin-1"}, {"user_id": "uC", "actor_id": ""}):
+            with self.assertRaises(ValueError):
+                await close_sockets(self.mgr, self.reg, kinds=["kali-terminal"], scope="act_as", **kwargs)
+        with self.assertRaises(ValueError):
+            await close_sockets(self.mgr, self.reg, kinds=["kali-terminal"], user_id="uA",
+                                actor_id="admin-1", scope="account")
+        self.assertIsNone(self.ws["a_term"].closed)
+
     async def test_an_unknown_scope_is_refused(self):
         with self.assertRaises(ValueError):
             await close_sockets(self.mgr, self.reg, kinds=["kali-terminal"], user_id="uA", scope="all")
@@ -497,6 +542,27 @@ class Route(unittest.TestCase):
             PROXIED_SOCKETS.remove(ws)
         self.assertEqual(account.json(), {"closed": 1, "by_kind": {"kali-terminal": 1}, "stopped_runs": 0})
         self.assertEqual(ws.closed, (4403, "Access revoked"))
+
+    def test_the_act_as_scope_closes_one_admins_sockets_as_one_member(self):
+        acted = _FakeWS()
+        own = _FakeWS()
+        PROXIED_SOCKETS.add(acted, "kali-terminal", _claims("uQ", "pQ", act="admin-Q"))
+        PROXIED_SOCKETS.add(own, "kali-terminal", _claims("uQ", "pQ"))
+        try:
+            with mock.patch.object(self.api, "ws_manager", WebSocketManager()):
+                body = {"user_id": "uQ", "kinds": ["kali-terminal"], "scope": "act_as"}
+                self.assertEqual(self._post(body).status_code, 400)
+                self.assertEqual(self._post({**body, "actor_id": ""}).status_code, 400)
+                self.assertEqual(self._post({"user_id": "uQ", "actor_id": "admin-Q", "kinds": ["kali-terminal"]}).status_code, 400)
+                self.assertIsNone(acted.closed)
+                res = self._post({**body, "actor_id": "admin-Q"})
+        finally:
+            PROXIED_SOCKETS.remove(acted)
+            PROXIED_SOCKETS.remove(own)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"closed": 1, "by_kind": {"kali-terminal": 1}, "stopped_runs": 0})
+        self.assertEqual(acted.closed, (4403, "Access revoked"))
+        self.assertIsNone(own.closed)
 
     def test_the_terminal_proxy_registers_its_socket_and_forgets_it(self):
         echo = _EchoKali()

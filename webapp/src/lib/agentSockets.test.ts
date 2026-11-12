@@ -42,6 +42,19 @@ describe('closeAgentSockets', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ user_id: 'u-1', kinds: ['kali-terminal'], scope: 'access' })
   })
 
+  test('one impersonation (act_as): the account acted as and the admin, both sent; the failure line names the admin', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{"closed":2,"stopped_runs":1}', { status: 200 }))
+    expect(await closeAgentSockets({ userId: 'm-1', actorId: 'a-1', kinds: ['agent', 'kali-terminal'], scope: 'act_as' }))
+      .toEqual({ ok: true, closed: 2, stoppedRuns: 1 })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ user_id: 'm-1', actor_id: 'a-1', kinds: ['agent', 'kali-terminal'], scope: 'act_as' })
+    // An agent from before the scope refuses it (422): never a wider close.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":[]}', { status: 422 }))
+    expect(await closeAgentSockets({ userId: 'm-1', actorId: 'a-1', kinds: ['agent'], scope: 'act_as' }))
+      .toEqual({ ok: false, reason: 'agent_http_422' })
+    expect(errors.mock.calls.map((c: unknown[]) => String(c[0])))
+      .toEqual(['[rbac] socket-close failed user=m-1 actor=a-1 project=- kinds=agent: agent_http_422'])
+  })
+
   test('an answer without counts reads as zero', async () => {
     fetchMock.mockResolvedValue(new Response('not json', { status: 200 }))
     expect(await closeAgentSockets({ userId: 'u-1', kinds: ['kali-terminal'] })).toEqual({ ok: true, closed: 0, stoppedRuns: 0 })

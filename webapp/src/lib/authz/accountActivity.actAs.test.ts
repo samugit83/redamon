@@ -19,6 +19,8 @@ vi.mock('@/lib/prisma', async () => {
   h.db = db
   return { default: db, prisma: db }
 })
+// An ended impersonation closes its agent sockets (actAs.sockets.test.ts): no agent here.
+vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: vi.fn(async () => ({ ok: true, closed: 0, stoppedRuns: 0 })) }))
 
 import type { AccountDb } from './__testing__/accountDb'
 import { setFlagsForTests } from './flags'

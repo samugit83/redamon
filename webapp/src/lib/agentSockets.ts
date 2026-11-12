@@ -5,7 +5,9 @@
  *
  * `scope` is the agent's rule for an admin's act-as sockets: `access` (a grant the user's
  * own access gave) leaves open the sockets an admin opened acting as the user; `account`
- * (a disabled or deleted account) closes them too.
+ * (a disabled or deleted account) closes them too; `act_as` (one impersonation ended) closes
+ * only what admin `actorId` opened acting as `userId`, and needs both. An agent from before
+ * `act_as` refuses it (422), so it never closes wider than asked.
  *
  * Never throws: the change it follows is already committed and stands. A close the agent
  * did not confirm logs `[rbac] socket-close failed` with a fixed reason, and the caller
@@ -18,8 +20,10 @@ import type { WsSocket } from '@/lib/wsTicket'
 export interface CloseSocketsRequest {
   userId?: string
   projectId?: string
+  /** The admin of the impersonation (`act_as` only). */
+  actorId?: string
   kinds: WsSocket[]
-  scope?: 'access' | 'account'
+  scope?: 'access' | 'account' | 'act_as'
 }
 
 export type CloseSocketsResult =
@@ -32,7 +36,7 @@ const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v :
 
 function failed(req: CloseSocketsRequest, reason: string): CloseSocketsResult {
   console.error(
-    `[rbac] socket-close failed user=${req.userId ?? '-'} project=${req.projectId ?? '-'} `
+    `[rbac] socket-close failed user=${req.userId ?? '-'}${req.actorId ? ` actor=${req.actorId}` : ''} project=${req.projectId ?? '-'} `
     + `kinds=${req.kinds.join(',')}: ${reason}`,
   )
   return { ok: false, reason }
@@ -46,6 +50,7 @@ export async function closeAgentSockets(req: CloseSocketsRequest): Promise<Close
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...(req.userId ? { user_id: req.userId } : {}),
+        ...(req.actorId ? { actor_id: req.actorId } : {}),
         ...(req.projectId ? { project_id: req.projectId } : {}),
         kinds: req.kinds,
         scope: req.scope ?? 'access',

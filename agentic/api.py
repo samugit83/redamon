@@ -1633,6 +1633,7 @@ class WsCloseRequest(BaseModel):
     project_id: Optional[str] = None
     kinds: List[Literal[SOCKET_KINDS]] = Field(..., min_length=1)
     scope: Literal[CLOSE_SCOPES] = "access"
+    actor_id: Optional[str] = None
 
 
 @app.post("/ws/close", tags=["Sessions"],
@@ -1650,16 +1651,23 @@ async def close_open_sockets(body: WsCloseRequest):
     sockets: `access` (default), something the user's own access gave, such as
     a legacy grant, leaves open the sockets an admin opened acting as the user;
     `account` (a disabled or deleted account, revoked sessions) closes them too,
-    as does a `project_id` (the user's access to that project ended).
+    as does a `project_id` (the user's access to that project ended). `act_as`
+    (one impersonation ended) closes only what admin `actor_id` opened acting as
+    `user_id`, and needs both. An agent from before `act_as` answers 422 to it, so
+    a newer webapp never closes the member's own sockets by mistake.
     """
     if not body.user_id and not body.project_id:
         return JSONResponse(status_code=400, content={"error": "user_id or project_id is required"})
+    if body.scope == "act_as" and not (body.user_id and body.actor_id):
+        return JSONResponse(status_code=400, content={"error": "the act_as scope needs user_id and actor_id"})
+    if body.scope != "act_as" and body.actor_id is not None:
+        return JSONResponse(status_code=400, content={"error": "actor_id belongs to the act_as scope"})
     result = await close_sockets(ws_manager, PROXIED_SOCKETS, kinds=list(dict.fromkeys(body.kinds)),
                                  user_id=body.user_id or None, project_id=body.project_id or None,
-                                 scope=body.scope)
-    logger.warning("[rbac] ws close user=%s project=%s kinds=%s scope=%s closed=%d stopped_runs=%d",
-                   body.user_id or "-", body.project_id or "-", ",".join(body.kinds), body.scope,
-                   result["closed"], result["stopped_runs"])
+                                 scope=body.scope, actor_id=body.actor_id or None)
+    logger.warning("[rbac] ws close user=%s project=%s actor=%s kinds=%s scope=%s closed=%d stopped_runs=%d",
+                   body.user_id or "-", body.project_id or "-", body.actor_id or "-", ",".join(body.kinds),
+                   body.scope, result["closed"], result["stopped_runs"])
     return result
 
 

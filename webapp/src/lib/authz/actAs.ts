@@ -33,7 +33,9 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { createActAsToken, readActAsToken, type ActAsClaims } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
+import { closeAgentSockets } from '@/lib/agentSockets'
 import { safeErrorCode } from '@/lib/routeErrors'
+import { WS_SOCKETS } from '@/lib/wsTicket'
 import { rbacFlags } from './flags'
 import { now } from './clock'
 import { resolveCapabilities, type CapabilityPrincipal } from './capabilities'
@@ -249,6 +251,20 @@ export interface ActAsEndInput {
   adminEmail?: string | null
   /** The impersonation that ends; left out, whichever start of the pair is open. */
   binding?: ActAsBinding
+  /** False when the caller closes the admin's sockets itself (a whole account's, accountStatus.ts). */
+  closeSockets?: boolean
+}
+
+/**
+ * The agent checks a WebSocket ticket only when its socket opens, so what the admin opened acting
+ * as the account (a chat and its run, a terminal, a CypherFix socket) is closed when the
+ * impersonation ends; the account's own sockets and runs stay. Never throws: a close the agent
+ * did not confirm is logged (`[rbac] socket-close failed user=<account> actor=<admin>`) and the
+ * end stands.
+ */
+async function closeActAsSockets({ adminId, targetUserId, closeSockets = true }: ActAsEndInput): Promise<void> {
+  if (!closeSockets) return
+  await closeAgentSockets({ userId: targetUserId, actorId: adminId, kinds: [...WS_SOCKETS], scope: 'act_as' })
 }
 
 /** The end row, inside the caller's locked transaction, when the impersonation is still the running one. */
@@ -277,6 +293,7 @@ export async function recordActAsEnd(input: ActAsEndInput): Promise<boolean> {
   })
   if (!wrote) return false
   loggedEnd(input)
+  await closeActAsSockets(input)
   if (endedBy === 'refused') {
     await writeAudit({
       actorId: adminId,
@@ -300,6 +317,8 @@ export async function recordActAsEndQuietly(input: ActAsEndInput): Promise<void>
     await recordActAsEnd(input)
   } catch (err) {
     console.error(`[rbac] act-as end not recorded admin=${input.adminId} target=${input.targetUserId} ended-by=${input.endedBy} code=${safeErrorCode(err)}`)
+    // It ends all the same, and so does what was opened under it.
+    await closeActAsSockets(input)
   }
 }
 
@@ -412,6 +431,8 @@ export async function startImpersonation(start: ImpersonationStart): Promise<str
   })
   for (const end of ended) loggedEnd(end)
   console.info(`[audit] act-as.start admin=${admin.id} target=${targetUserId}`)
+  // Before the browser can open a socket under the new token, so only the ended ones close.
+  for (const end of ended) await closeActAsSockets(end)
   return token
 }
 
