@@ -123,6 +123,14 @@ ok=1; while IFS=$'\t' read -r _ actor source _ _; do
   [ "$actor" = "${SEED[ADMIN_A_ID]}" ] && [ "$source" = api ] || ok=0
 done < "$TMP/rows"
 check "every row: actor = the admin, source api" "$ok"
+# Step 2.1 (AU-01, AU-08): the actor's email is snapshotted; nobody was acted for here.
+printf "select coalesce(actor_email, '-') || chr(9) || coalesce(on_behalf_of_user_id, '-') from audit_log where target_type = 'user' and target_id = '%s' order by created_at, id;\n" "$TID" \
+  | db_sql > "$TMP/actor_cols" || true
+ok=0; [ "$(wc -l < "$TMP/actor_cols")" -eq 6 ] && ok=1
+while IFS=$'\t' read -r email onbehalf; do
+  [ "$email" = "${SEED[ADMIN_A_EMAIL]}" ] && [ "$onbehalf" = - ] || ok=0
+done < "$TMP/actor_cols"
+check "every row: actor_email = the admin's address, no on_behalf_of_user_id" "$ok" "got: $(tr '\t\n' ', ' < "$TMP/actor_cols")"
 ok=1
 for s in "$THROWAWAY_PASSWORD" "$RESET_PASSWORD" "${SEED[RBAC_PASSWORD]}" '$2a$' '$2b$' '$2y$' '"password"' 'stepUpPassword'; do
   grep -qF -- "$s" "$TMP/rows" && ok=0
@@ -162,9 +170,9 @@ code="$(login "${SEED[MEMBER_B_EMAIL]}" "$MEMBER_JAR")"
 [ "$code" = 200 ] || check "sign-in as rbac-member-b -> $code" 0
 safe_id "${SEED[MEMBER_B_ID]}" || exit 1
 code="$(call "$MEMBER_JAR" POST /api/auth/logout)"
-n="$(printf "select count(*) from audit_log where action = 'auth.logout' and actor_id = '%s';\n" "${SEED[MEMBER_B_ID]}" | db_sql)"
+n="$(printf "select count(*) from audit_log where action = 'auth.logout' and actor_id = '%s' and actor_email = '%s';\n" "${SEED[MEMBER_B_ID]}" "${SEED[MEMBER_B_EMAIL]}" | db_sql)"
 ok=0; [ "$code" = 200 ] && [ "$n" = 1 ] && ok=1
-check "auth.logout row with actor rbac-member-b -> $code" "$ok" "rows: ${n:-?}"
+check "auth.logout row with actor rbac-member-b and its email -> $code" "$ok" "rows: ${n:-?}"
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="

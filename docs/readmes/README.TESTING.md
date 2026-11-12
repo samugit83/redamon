@@ -192,8 +192,9 @@ real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the 
 `tests/rbac_user_audit_live.sh` uses the same fixtures to check the audit of user
 administration: `rbac-admin-a` creates, edits, promotes, demotes, resets and deletes a throwaway
 `rbac-audit-*@e2e.local` account, and `audit_log` must hold exactly those six rows, in order,
-with that admin as actor and no password or hash; it then checks that the act-as end row names
-its target and that a logout row names who signed out. It reads both audit tables through `psql`
+with that admin as actor, its email in `actor_email`, nobody in `on_behalf_of_user_id` and no
+password or hash; it then checks that the act-as end row names
+its target and that a logout row names who signed out, with their email. It reads both audit tables through `psql`
 in the `postgres` container and prints `SKIP` without a stack.
 
 `tests/rbac_user_delete_teardown_live.sh` deletes a throwaway `rbac-teardown-owner@e2e.local`
@@ -236,8 +237,11 @@ containers on a private network, and checks what the upgrade did. The scenarios 
 in `tests/fixtures/rbac_upgrade/` (one admin, several, none, passwordless admins, tunnel and
 capture rows, members with and without passwords), made with the pinned image
 `redamon-webapp:rbac-7.7.2` so they keep the 7.7.x shape while `redamon-webapp:latest` moves
-on. After every run it asserts that the row count of every table and every `users` column are
-unchanged, and diffs `checks.sql` against `expected/<scenario>.out`.
+on. It checks each fixture with `checks.sql` against `expected/<scenario>.out` before the run;
+after every run it asserts that the row count of every table and every `users` column are
+unchanged, and diffs `checks.sql` then `checks_after.sql` (what the upgrade adds: legacy
+grants, Nuclei template owners, the identity columns at their defaults, the empty
+instance-settings and invite tables) against `expected/<scenario>.after.out`.
 
 ```bash
 bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain
