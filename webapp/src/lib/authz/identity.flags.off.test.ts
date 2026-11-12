@@ -59,6 +59,14 @@ const WEBAPP = path.resolve(__dirname, '../../..')
 
 /** Production files allowed to read an identity table or column, each checking the switch where it must. */
 const IDENTITY_READERS: string[] = [
+  // The host commands (step 2.7) run whatever the switch: a host reset bumps the session
+  // version (the one identity check the switch does not gate) and re-enables the account;
+  // check-root / set-root and create-admin's first admin record Root, which takes effect
+  // only with the switch on.
+  'scripts/check-root.mjs',
+  'scripts/create-admin.mjs',
+  'scripts/reset-password.mjs',
+  'scripts/set-root.mjs',
   // Login: the session version it signs (compared whatever the switch) and the last-login
   // time it writes whatever the switch; status / must-change are read for later steps.
   'src/app/api/auth/login/route.ts',
