@@ -9,6 +9,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { ToastProvider } from '@/components/ui/Toast/Toast'
 
 const state = vi.hoisted(() => ({ identity: true, userId: 'admin-1' }))
+const h = vi.hoisted(() => ({ push: vi.fn() }))
 const USERS = [
   { id: 'admin-1', name: 'Ada', email: 'ada@x.z', role: 'admin' },
   { id: 'admin-2', name: 'Marco', email: 'marco.admin@x.z', role: 'admin' },
@@ -33,7 +34,7 @@ vi.mock('@/providers/AuthProvider', () => ({
 }))
 vi.mock('@/hooks/useUsers', () => ({ useUsers: () => ({ data: USERS }) }))
 vi.mock('@/context/NavigationGuardContext', () => ({
-  useGuardedRouter: () => ({ push: vi.fn() }),
+  useGuardedRouter: () => ({ push: h.push }),
   useNavigationGuard: () => null,
 }))
 
@@ -68,6 +69,20 @@ describe('switch on', () => {
     expect(trigger).toHaveTextContent('Marco')
     expect(trigger).toHaveTextContent('Member')
     expect(trigger).toHaveAttribute('aria-label', 'User menu: Marco, marco@x.z, Member')
+  })
+})
+
+describe('My account in the menu', () => {
+  test('switch on: the menu leads to /account', () => {
+    open()
+    fireEvent.click(screen.getByRole('button', { name: 'My account' }))
+    expect(h.push).toHaveBeenCalledWith('/account')
+  })
+
+  test('switch off: no such entry (Phase 1 menu)', () => {
+    state.identity = false
+    open()
+    expect(screen.queryByRole('button', { name: 'My account' })).toBeNull()
   })
 })
 

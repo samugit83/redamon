@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, Users, LogOut, KeyRound } from 'lucide-react'
+import { ChevronDown, Users, LogOut, KeyRound, UserRound } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useAuth } from '@/providers/AuthProvider'
 import { useUsers } from '@/hooks/useUsers'
@@ -62,6 +62,13 @@ export function UserSelector() {
 
   const handleManageUsers = () => {
     router.push('/settings/users')
+    setIsOpen(false)
+  }
+
+  // Identity switch on (the session carries an account type): the My account page (step 2.11).
+  const hasAccountPage = authUser?.accountType !== undefined
+  const handleMyAccount = () => {
+    router.push('/account')
     setIsOpen(false)
   }
 
@@ -158,6 +165,12 @@ export function UserSelector() {
               </div>
 
               <div className={styles.footer}>
+                {hasAccountPage && (
+                  <button className={styles.footerButton} onClick={handleMyAccount}>
+                    <UserRound size={12} />
+                    My account
+                  </button>
+                )}
                 <button className={styles.footerButton} onClick={handleManageUsers}>
                   <Users size={12} />
                   Manage Users
@@ -175,6 +188,14 @@ export function UserSelector() {
               </div>
 
               <div className={styles.list}>
+                {hasAccountPage && (
+                  <button className={styles.item} onClick={handleMyAccount}>
+                    <UserRound size={14} />
+                    <div className={styles.itemContent}>
+                      <span className={styles.itemName}>My account</span>
+                    </div>
+                  </button>
+                )}
                 <button className={styles.item} onClick={handleChangePassword}>
                   <KeyRound size={14} />
                   <div className={styles.itemContent}>
