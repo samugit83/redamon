@@ -8,7 +8,9 @@ container's environment, for the same member with a chosen `cap`, and checks on 
 
 - a person holding only `agent:fireteam` (a Recon operator's cap) is refused a phase approval
   (`agent:approve_phase`), a dangerous-tool confirmation and a Fireteam member confirmation
-  (`agent:approve_dangerous`), each with an error frame coded `permission_required`;
+  (`agent:approve_dangerous`), each with an error frame coded `permission_required` that names
+  the refused answer (`answer`, and the wave and member of a Fireteam one), which the drawer
+  needs to put the card back;
 - a person holding only `agent:approve_dangerous` is refused a Fireteam member confirmation
   (`agent:fireteam`);
 - the webapp's ticket (Default member: all four) is not refused, and its Fireteam answer is saved
@@ -86,9 +88,19 @@ async def answer(ticket, frame_type, payload):
         raise RuntimeError("no pong")
 
 
-def refused_with(errors, permission):
+# What a refusal of each frame names, besides the permission.
+ANSWERS = {
+    "approval": {"answer": "approval"},
+    "tool_confirmation": {"answer": "tool_confirmation"},
+    "fireteam_member_confirmation": {"answer": "fireteam_member_confirmation",
+                                     "wave_id": FT["wave_id"], "member_id": FT["member_id"]},
+}
+
+
+def refused_with(errors, permission, frame_type):
     return any(e.get("code") == "permission_required" and e.get("permission") == permission
-               and e.get("recoverable") is True for e in errors)
+               and e.get("recoverable") is True
+               and all(e.get(k) == v for k, v in ANSWERS[frame_type].items()) for e in errors)
 
 
 def codes(errors):
@@ -103,14 +115,14 @@ async def main():
             ("fireteam_member_confirmation", FT, "agent:approve_dangerous")):
         errors = await answer(recon_operator, frame_type, payload)
         check(f"cap [agent:fireteam]: {frame_type} refused naming {permission} -> {codes(errors)}",
-              refused_with(errors, permission))
+              refused_with(errors, permission, frame_type))
 
     errors = await answer(sign(["agent:approve_dangerous"]), "fireteam_member_confirmation", FT)
     check(f"cap [agent:approve_dangerous]: Fireteam confirmation refused naming agent:fireteam -> {codes(errors)}",
-          refused_with(errors, "agent:fireteam"))
+          refused_with(errors, "agent:fireteam", "fireteam_member_confirmation"))
 
     errors = await answer(sign([]), "approval", {"decision": "abort"})
-    check(f"cap []: approval refused -> {codes(errors)}", refused_with(errors, "agent:approve_phase"))
+    check(f"cap []: approval refused -> {codes(errors)}", refused_with(errors, "agent:approve_phase", "approval"))
 
     errors = await answer(T_AGENT, "fireteam_member_confirmation", FT)  # noqa: F821
     check(f"the webapp's ticket (all four): Fireteam confirmation not refused -> {codes(errors)}",
