@@ -8,9 +8,15 @@
  * Each row carries only the fields named here, and who did it by name and email; never an account
  * id, a token, a hash or a password (the rows themselves never hold the last three). The page is a
  * read of the newest ACTIVITY_PAGE rows of each source.
+ *
+ * With RBAC_PERMISSIONS_ENABLED on (step 3.14): an act-as row carries its reason, chosen duration and
+ * how it ended; an impersonation whose time ran out is ended (`expired`) before the list is read; and
+ * with Root's `impersonationNotifyTarget` off the account is not shown admins acting as it.
  */
 import prisma from '@/lib/prisma'
 import { noticeView, readNotices, type NoticeView } from './accountNotices'
+import { rbacFlags } from './flags'
+import { impersonationPolicy, settleExpiredActAsQuietly } from './actAs'
 
 export const ACTIVITY_PAGE = 50
 
@@ -41,13 +47,17 @@ export interface ActivityEvent {
   details: Record<string, unknown>
 }
 
-export type ActivityNotice = NoticeView & { shownAt: string | null }
+/** The act-as notices are shown once at a sign-in; the act-as events below are their lasting line. */
+export type ActivityNotice = Exclude<NoticeView, { type: 'acted_as' }> & { shownAt: string | null }
 
 const asObject = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {})
 
 /** The account's notices and the events about it, each list newest first. */
 export async function accountActivity(userId: string): Promise<{ notices: ActivityNotice[]; events: ActivityEvent[] }> {
   const account = await prisma.user.findUnique({ where: { id: userId }, select: { pendingNotices: true } })
+  const enforced = rbacFlags().permissions
+  const showActAs = !enforced || (await impersonationPolicy()).notifyTarget
+  if (enforced && showActAs) await settleExpiredActAsQuietly({ targetUserId: userId })
   const [audit, actAs] = await Promise.all([
     prisma.auditLog.findMany({
       where: { targetType: 'user', targetId: userId, action: { in: [...SAFE_ACTIVITY_ACTIONS] } },
@@ -55,12 +65,14 @@ export async function accountActivity(userId: string): Promise<{ notices: Activi
       take: ACTIVITY_PAGE,
       select: { id: true, action: true, createdAt: true, actorId: true, actorEmail: true, before: true, after: true },
     }),
-    prisma.actAsAudit.findMany({
-      where: { targetUserId: userId },
-      orderBy: { createdAt: 'desc' },
-      take: ACTIVITY_PAGE,
-      select: { id: true, adminId: true, event: true, createdAt: true },
-    }),
+    showActAs
+      ? prisma.actAsAudit.findMany({
+        where: { targetUserId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: ACTIVITY_PAGE,
+        select: { id: true, adminId: true, event: true, createdAt: true, reason: true, durationMinutes: true, endedBy: true },
+      })
+      : Promise.resolve([]),
   ])
 
   const people = new Set<string>()
@@ -89,12 +101,20 @@ export async function accountActivity(userId: string): Promise<{ notices: Activi
     })
   }
   for (const r of actAs) {
-    events.push({ id: r.id, at: r.createdAt.toISOString(), action: `act_as.${r.event}`, by: who(r.adminId), details: {} })
+    // Only what the row holds: a row from before step 3.14 shows no details, as it always did.
+    const details: Record<string, unknown> = {}
+    if (r.reason) details.reason = r.reason
+    if (r.durationMinutes) details.durationMinutes = r.durationMinutes
+    if (r.endedBy) details.endedBy = r.endedBy
+    events.push({ id: r.id, at: r.createdAt.toISOString(), action: `act_as.${r.event}`, by: who(r.adminId), details })
   }
   events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
 
   const notices = readNotices(account?.pendingNotices)
-    .map((n) => ({ ...noticeView(n), shownAt: n.shownAt ?? null }))
+    .flatMap((n) => {
+      const view = noticeView(n)
+      return view.type === 'acted_as' ? [] : [{ ...view, shownAt: n.shownAt ?? null }]
+    })
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
   return { notices, events: events.slice(0, ACTIVITY_PAGE) }
 }

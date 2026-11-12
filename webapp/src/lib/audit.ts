@@ -86,20 +86,35 @@ export interface ActAsAuditEntry {
   targetUserId: string
   event: 'start' | 'end'
   source?: string // "api" | "self-clear"
+  /** Step 3.14 (permissions switch on): the start row's reason and duration, the end row's cause. */
+  reason?: string | null
+  durationMinutes?: number | null
+  endedBy?: string | null
 }
 
-export async function writeActAsAudit(entry: ActAsAuditEntry): Promise<void> {
+const ACT_AS_OPTIONAL = ['reason', 'durationMinutes', 'endedBy'] as const
+
+/**
+ * Best effort, like writeAudit; `strict` throws instead, for a row the action must not go on
+ * without (an impersonation's start with the permissions switch on: no row, no impersonation).
+ */
+export async function writeActAsAudit(entry: ActAsAuditEntry, { strict = false }: { strict?: boolean } = {}): Promise<void> {
   console.info(`[audit] act-as.${entry.event} admin=${entry.adminId} target=${entry.targetUserId}`)
+  const data: Prisma.ActAsAuditUncheckedCreateInput = {
+    adminId: entry.adminId,
+    targetUserId: entry.targetUserId,
+    event: entry.event,
+    source: entry.source ?? 'api',
+  }
+  // Left out when empty, so a row written without them keeps the shape it always had.
+  for (const column of ACT_AS_OPTIONAL) {
+    const value = entry[column]
+    if (value !== undefined && value !== null && value !== '') (data as Record<string, unknown>)[column] = value
+  }
   try {
-    await prisma.actAsAudit.create({
-      data: {
-        adminId: entry.adminId,
-        targetUserId: entry.targetUserId,
-        event: entry.event,
-        source: entry.source ?? 'api',
-      },
-    })
+    await prisma.actAsAudit.create({ data })
   } catch (e) {
     console.error(`[audit] failed to persist act-as.${entry.event}:`, e)
+    if (strict) throw e
   }
 }

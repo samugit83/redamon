@@ -1,11 +1,13 @@
 import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
+import { verifyToken, verifyActAsToken, readActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
 import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Principal } from './authz/principal'
 import { rememberSessionPrincipal, sessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
-import { isRootAccount } from './authz/root'
+import {
+  actAsRuleRefusal, actsAsOthers, endForRefusal, recordActAsEndQuietly, type ActAsActor, type ActAsEnd,
+} from './authz/actAs'
 import { sessionHolds } from './authz/adminPermission'
 import { forbiddenResponse } from './authz/guards'
 import { internalError } from './routeErrors'
@@ -149,43 +151,81 @@ export async function actsAsAccount(session: Session, userId: string, opts: Sess
   return (await actAsTarget(session, opts))?.id === userId
 }
 
-/** Only an admin acts as anyone: anyone else's act-as cookie is ignored. */
-function actsAsOthers(account: { role: string }): boolean {
-  return account.role === 'admin'
-}
-
 /**
- * The act-as rule: whether `actor` may act as `target`. The act-as cookie (actAsTarget) and
- * `can()`'s `actingAs` both answer to it, so a caller that builds an `actingAs` by hand cannot
- * skip it. Only an admin acts as anyone, and nobody acts as Root (identity switch on): a cookie
- * minted before the account became Root, or before the switch, acts for nobody. Acting as
- * oneself is no act-as.
+ * The act-as rule (authz/actAs.ts `actAsRuleRefusal`): whether `actor` may act as `target`. The
+ * act-as cookie (actAsTarget) and `can()`'s `actingAs` both answer to it, so a caller that builds an
+ * `actingAs` by hand cannot skip it. Only an admin acts as anyone, and nobody acts as Root (identity
+ * switch on); with the permissions switch on the admin also needs `users:impersonate`, an admin
+ * target is Root's, and a disabled account is acted as by nobody. Acting as oneself is no act-as.
  */
 export async function mayActAs(
-  actor: Pick<Principal, 'id' | 'role'>,
-  target: Pick<Principal, 'id' | 'role'>,
+  actor: ActAsActor,
+  target: Pick<Principal, 'id' | 'role'> & { status?: string },
   opts: SessionOptions = {},
 ): Promise<boolean> {
-  if (!actsAsOthers(actor)) return false
-  if (target.id === actor.id) return true
-  // Root is an admin, so a member target costs no instance read.
-  return target.role !== 'admin' || !(await isRootAccount(target.id, opts))
+  return (await actAsRuleRefusal(actor, target, opts)) === null
+}
+
+/** The impersonation a request carries: the account acted as, and when its token expires (seconds). */
+export interface ActAsInForce {
+  target: Principal
+  expiresAt: number | null
+}
+
+/** A refused act-as cookie is cleared where the store allows it (a route handler); a Server Component only ignores it. */
+function forgetActAs(cookieStore: CookieStore): void {
+  try {
+    cookieStore.delete(ACT_AS_COOKIE_NAME)
+  } catch {
+    // read-only cookie store: the cookie is ignored all the same
+  }
 }
 
 /**
- * The account an admin session is acting as: the act-as cookie must have been minted
- * by this admin and name an account that still exists, which the act-as rule allows.
- * Null for anyone else.
+ * Permissions switch on (step 3.14): the act-as cookie is judged again on every request. It is
+ * this admin's, unexpired, minted at the admin's current session version (a cookie from before
+ * the switch carries none and keeps its own expiry, IM-12), and the rule still allows the pair.
+ * Otherwise the impersonation ends here: its end row is written once with how it ended, and the
+ * cookie is cleared. A cookie another admin minted is ignored and records nothing.
  */
-async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise<Principal | null> {
+async function impersonation(session: Session, token: string, cookieStore: CookieStore, opts: SessionOptions): Promise<ActAsInForce | null> {
+  const read = await readActAsToken(token)
+  if (!read || read.claims.sub !== session.userId || read.claims.act === session.userId) return null
+  const { claims } = read
+  const actor = sessionPrincipal(session) ?? (await loadPrincipal(session.userId, opts))
+  if (!actor) return null
+  const end = async (endedBy: ActAsEnd): Promise<null> => {
+    await recordActAsEndQuietly({ adminId: actor.id, targetUserId: claims.act, endedBy, adminEmail: actor.email })
+    forgetActAs(cookieStore)
+    return null
+  }
+  if (read.expired) return end('expired')
+  if (claims.asv !== undefined && claims.asv !== actor.sessionVersion) return end('invalidated')
+  const target = await loadPrincipal(claims.act, opts)
+  if (!target) return end('target_deleted')
+  const refusal = await actAsRuleRefusal(actor, target, opts)
+  if (refusal) return end(endForRefusal(refusal, claims.asv !== undefined))
+  return { target, expiresAt: read.expiresAt }
+}
+
+/**
+ * The impersonation an admin session carries: the act-as cookie must have been minted by this
+ * admin and name an account that still exists, which the act-as rule allows. Null for anyone else.
+ */
+export async function actAsInForce(session: Session, opts: SessionOptions = {}): Promise<ActAsInForce | null> {
   if (!actsAsOthers(session)) return null
   const cookieStore = await cookies()
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
   if (!actAsToken) return null
+  if (rbacFlags().permissions) return impersonation(session, actAsToken, cookieStore, opts)
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
   const target = await loadPrincipal(claims.act, opts)
-  return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts)) ? target : null
+  return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts)) ? { target, expiresAt: null } : null
+}
+
+async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise<Principal | null> {
+  return (await actAsInForce(session, opts))?.target ?? null
 }
 
 /**

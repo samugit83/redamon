@@ -1,4 +1,4 @@
-import { SignJWT, jwtVerify } from 'jose'
+import { SignJWT, jwtVerify, errors as joseErrors } from 'jose'
 import bcrypt from 'bcryptjs'
 import type { WsSocket } from './wsTicket'
 import type { AgentTicketCap } from './authz/agentCap'
@@ -157,20 +157,66 @@ export async function createWsTicket(
 export const ACT_AS_COOKIE_NAME = 'redamon-act-as'
 const ACT_AS_EXPIRY = '12h'
 
-/** `seconds`: the lifetime the identity switch gives act-as (step 2.11); without it, 12 h. */
-export async function createActAsToken(adminUserId: string, targetUserId: string, seconds?: number): Promise<string> {
-  const jwt = new SignJWT({ sub: adminUserId, act: targetUserId }).setProtectedHeader({ alg: 'HS256' })
+/**
+ * `seconds`: the lifetime the identity switch gives act-as (step 2.11); without it, 12 h. `asv`: the
+ * admin's session version when the impersonation started (step 3.14, permissions switch on): a later
+ * change of the admin's version ends it.
+ */
+export async function createActAsToken(
+  adminUserId: string,
+  targetUserId: string,
+  seconds?: number,
+  { asv }: { asv?: number } = {},
+): Promise<string> {
+  if (asv !== undefined && !isSessionVersion(asv)) throw new Error('A session version is a whole number from 0')
+  const claims = { sub: adminUserId, act: targetUserId, ...(asv !== undefined ? { asv } : {}) }
+  const jwt = new SignJWT(claims).setProtectedHeader({ alg: 'HS256' })
   if (seconds === undefined) return jwt.setIssuedAt().setExpirationTime(ACT_AS_EXPIRY).sign(getSecret())
   const iat = Math.floor(Date.now() / 1000)
   return jwt.setIssuedAt(iat).setExpirationTime(iat + seconds).sign(getSecret())
 }
 
-export async function verifyActAsToken(token: string): Promise<{ sub: string; act: string } | null> {
+/** The claims of an act-as token; `asv` only on a token minted with the permissions switch on. */
+export interface ActAsClaims {
+  sub: string
+  act: string
+  asv?: number
+}
+
+function actAsClaims(payload: Record<string, unknown>): ActAsClaims | null {
+  if (typeof payload.sub !== 'string' || !payload.sub || typeof payload.act !== 'string' || !payload.act) return null
+  if (payload.asv === undefined) return { sub: payload.sub, act: payload.act }
+  return isSessionVersion(payload.asv) ? { sub: payload.sub, act: payload.act, asv: payload.asv } : null
+}
+
+export async function verifyActAsToken(token: string): Promise<ActAsClaims | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret())
-    if (!payload.sub || typeof payload.act !== 'string' || !payload.act) return null
-    return { sub: payload.sub as string, act: payload.act }
+    return actAsClaims(payload)
   } catch {
     return null
   }
+}
+
+/**
+ * An act-as token whose signature holds, expired or not (step 3.14): an expired one is how the
+ * end of an impersonation by its time limit is noticed. `issuedAt` / `expiresAt` in seconds.
+ */
+export async function readActAsToken(
+  token: string,
+): Promise<{ claims: ActAsClaims; issuedAt: number | null; expiresAt: number | null; expired: boolean } | null> {
+  let payload: Record<string, unknown>
+  let expired = false
+  try {
+    payload = (await jwtVerify(token, getSecret())).payload
+  } catch (err) {
+    // jose checks the signature before the claims, so an expired token's payload is authentic.
+    if (!(err instanceof joseErrors.JWTExpired)) return null
+    payload = err.payload
+    expired = true
+  }
+  const claims = actAsClaims(payload)
+  if (!claims) return null
+  const seconds = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  return { claims, issuedAt: seconds(payload.iat), expiresAt: seconds(payload.exp), expired }
 }

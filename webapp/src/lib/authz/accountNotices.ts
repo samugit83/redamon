@@ -4,7 +4,8 @@
  * writes a notice into the account's `pendingNotices`; the next sign-in hands the pending ones
  * to the person once and marks them shown. The account keeps them, the newest NOTICE_LIMIT, for
  * its activity list (step 2.11). A change of the sign-in email is told the same way (step 2.11,
- * ID-30): whoever changes it can then reset the password through it.
+ * ID-30): whoever changes it can then reset the password through it. An admin acting as the
+ * account is told too (step 3.14, IM-10), unless Root turned it off.
  *
  * The first sign-in after a reset is the one whose account last signed in before the latest
  * reset notice; only that sign-in records its address and browser (DV-11).
@@ -43,7 +44,20 @@ export interface EmailChangedNotice {
   shownAt?: string
 }
 
-export type AccountNotice = CredentialsResetNotice | EmailChangedNotice
+export interface ActedAsNotice {
+  id: string
+  type: 'acted_as'
+  /** When the impersonation started (ISO). */
+  at: string
+  /** The real signed-in admin. */
+  by: { id: string; name: string; email: string }
+  reason: string | null
+  /** The time limit chosen (the impersonation may have ended earlier: My activity has the end). */
+  durationMinutes: number
+  shownAt?: string
+}
+
+export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice
 
 /** What the person is shown: the notice without the admin's account id. */
 export type NoticeView =
@@ -64,6 +78,14 @@ export type NoticeView =
     to: string
     self: boolean
   }
+  | {
+    id: string
+    type: 'acted_as'
+    at: string
+    by: { name: string; email: string }
+    reason: string | null
+    durationMinutes: number
+  }
 
 const text = (v: unknown): v is string => typeof v === 'string'
 
@@ -77,6 +99,9 @@ function isNotice(v: unknown): v is AccountNotice {
   if (!common) return false
   if (n.type === 'credentials_reset') {
     return (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || text(n.reason))
+  }
+  if (n.type === 'acted_as') {
+    return (n.reason === null || text(n.reason)) && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
   }
   return n.type === 'email_changed' && text(n.from) && text(n.to) && typeof n.self === 'boolean'
 }
@@ -96,6 +121,12 @@ export function emailChangedNotice(
   { by, at, from, to, self }: { by: EmailChangedNotice['by']; at: Date; from: string; to: string; self: boolean },
 ): EmailChangedNotice {
   return { id: randomUUID(), type: 'email_changed', at: at.toISOString(), by, from, to, self }
+}
+
+export function actedAsNotice(
+  { by, at, reason, durationMinutes }: { by: ActedAsNotice['by']; at: Date; reason: string | null; durationMinutes: number },
+): ActedAsNotice {
+  return { id: randomUUID(), type: 'acted_as', at: at.toISOString(), by, reason, durationMinutes }
 }
 
 /** `stored` with `notice` appended, keeping the newest NOTICE_LIMIT. */
@@ -150,6 +181,7 @@ export function afterResetEntry(
 export function noticeView(n: AccountNotice): NoticeView {
   const by = { name: n.by.name, email: n.by.email }
   if (n.type === 'email_changed') return { id: n.id, type: n.type, at: n.at, by, from: n.from, to: n.to, self: n.self }
+  if (n.type === 'acted_as') return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, durationMinutes: n.durationMinutes }
   return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, mode: n.mode }
 }
 
@@ -157,6 +189,27 @@ export function noticeView(n: AccountNotice): NoticeView {
 export function markShown(stored: unknown): AccountNotice[] {
   const at = now().toISOString()
   return readNotices(stored).map((n) => (n.shownAt ? n : { ...n, shownAt: at }))
+}
+
+// A notice written meanwhile makes the conditional write miss: read again, at most this often.
+const APPEND_ATTEMPTS = 3
+
+/**
+ * Adds a notice to the account outside any other change (an impersonation's start). Raw and
+ * conditional on the list it read, like handOverNotices, so `updated_at` does not move and a notice
+ * written at the same moment is never lost. Throws when the account is gone or the list kept
+ * changing; the caller decides whether that fails its action.
+ */
+export async function appendNotice(userId: string, notice: AccountNotice): Promise<void> {
+  for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt += 1) {
+    const row = await prisma.user.findUnique({ where: { id: userId }, select: { pendingNotices: true } })
+    if (!row) throw new Error('accountNotices: no such account')
+    const stored = row.pendingNotices
+    const written = await prisma.$executeRaw`
+      UPDATE users SET pending_notices = ${JSON.stringify(withNotice(stored, notice))}::jsonb WHERE id = ${userId} AND pending_notices = ${JSON.stringify(stored)}::jsonb`
+    if (written === 1) return
+  }
+  throw new Error('accountNotices: the notices kept changing')
 }
 
 /**

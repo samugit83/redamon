@@ -214,11 +214,14 @@ describe('can() holds an actingAs to the act-as rule (session.ts mayActAs: only 
     expect(setFindMany).not.toHaveBeenCalled()
   })
 
-  test('nobody acts as Root; an admin still acts as another admin (Phase 2 rule)', async () => {
+  test('nobody acts as Root; an admin target is Root\'s (step 3.14, IM-03), any admin\'s with the switch off (Phase 2 rule)', async () => {
     db.instance = { rootUserId: 'root-1', rootConfirmedAt: new Date(0), rootAssignedBy: null, defaultMemberSetId: null }
     db.users.set('root-1', { email: 'root-1@e2e.local', role: 'admin' })
     await expect(can(admin('admin-1'), 'recon:read', { actingAs: admin('root-1'), projectId: 'P-admin' })).rejects.toThrow(ActAsNotAllowedError)
     await expect(can(admin('admin-1'), 'users:read', { actingAs: admin('root-1') })).rejects.toThrow(ActAsNotAllowedError)
+    await expect(can(admin('admin-1'), 'recon:read', { actingAs: admin('admin-2'), projectId: 'P-admin-2' })).rejects.toThrow(ActAsNotAllowedError)
+    expect((await can(admin('root-1'), 'recon:read', { actingAs: admin('admin-2'), projectId: 'P-admin-2' })).allowed).toBe(true)
+    setFlagsForTests({ identity: true, permissions: false })
     expect((await can(admin('admin-1'), 'recon:read', { actingAs: admin('admin-2'), projectId: 'P-admin-2' })).allowed).toBe(true)
   })
 })
@@ -317,12 +320,15 @@ describe('can() with fresh (a critical check)', () => {
   })
 
   test('the act-as rule reads the Root again: an account that became Root is acted as by nobody', async () => {
+    // Root acts as the admin (step 3.14: an admin target is Root's), then Root moves to that admin.
+    db.instance = { rootUserId: 'root-1', rootConfirmedAt: new Date(0), rootAssignedBy: null, defaultMemberSetId: null }
+    db.users.set('root-1', { email: 'root-1@e2e.local', role: 'admin' })
     const opts = { actingAs: admin('admin-2'), projectId: 'P-admin-2' }
-    expect((await can(admin('admin-1'), 'recon:read', opts)).allowed).toBe(true)
+    expect((await can(admin('root-1'), 'recon:read', opts)).allowed).toBe(true)
     db.instance = { rootUserId: 'admin-2', rootConfirmedAt: new Date(0), rootAssignedBy: null, defaultMemberSetId: null }
     db.users.set('admin-2', { email: 'admin-2@e2e.local', role: 'admin' })
-    expect((await can(admin('admin-1'), 'recon:read', opts)).allowed).toBe(true)
-    await expect(can(admin('admin-1'), 'recon:read', { ...opts, fresh: true })).rejects.toThrow(ActAsNotAllowedError)
+    expect((await can(admin('root-1'), 'recon:read', opts)).allowed).toBe(true)
+    await expect(can(admin('root-1'), 'recon:read', { ...opts, fresh: true })).rejects.toThrow(ActAsNotAllowedError)
   })
 
   test('the people are the caller\'s read: can() reads no account, fresh or not (DV-25: a request reads its account once)', async () => {

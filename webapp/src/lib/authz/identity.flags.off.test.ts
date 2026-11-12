@@ -189,6 +189,9 @@ const IDENTITY_READERS: string[] = [
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
   'src/lib/authz/accountStatus.ts',
+  // Step 3.14: the impersonation settings and the admin's session version an act-as token carries,
+  // read only with the permissions switch on, which needs this switch.
+  'src/lib/authz/actAs.ts',
   // Step 3.4: reads an admin's profile and the instance default set only with the permissions
   // switch on, which needs this switch; off, the account type's default (no Root, nothing read).
   'src/lib/authz/capabilities.ts',

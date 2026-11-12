@@ -125,3 +125,32 @@ describe('the email change notice (step 2.11, ID-30)', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
   })
 })
+
+describe('the act-as notice (step 3.14, IM-10)', () => {
+  const actedAs = (over: Record<string, unknown> = {}) => ({
+    id: 'a1', type: 'acted_as', at: '2026-11-12T10:00:00.000Z',
+    by: { name: 'Laura', email: 'laura@e2e.local' }, reason: 'ticket #42', durationMinutes: 35, ...over,
+  })
+
+  test('target notice: who acted as the person, when, for how long, why, and what to do if unexpected', () => {
+    const text = noticeMessage(readNoticeViews([actedAs()])[0])
+    expect(text).toContain('Laura (laura@e2e.local) acted as you')
+    expect(text).toContain('35 min')
+    expect(text).toContain('Reason: ticket #42.')
+    expect(text).toMatch(/tell your administrator/i)
+    expect(noticeMessage(readNoticeViews([actedAs({ reason: null })])[0])).toContain('No reason was given.')
+  })
+
+  test('only well-formed ones are read', () => {
+    expect(readNoticeViews([actedAs({ durationMinutes: 0 }), actedAs({ reason: 3 }), actedAs()])).toHaveLength(1)
+  })
+
+  test('shown in the app dialog under its own title', async () => {
+    const onDone = vi.fn()
+    render(<AlertProvider><Harness notices={[actedAs()]} onDone={onDone} /></AlertProvider>)
+    const dialog = await screen.findByRole('dialog', { name: 'An administrator acted as you' })
+    expect(dialog).toHaveTextContent('ticket #42')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+})

@@ -19,7 +19,10 @@
  * - (step 3.11) the `permission_sets`, `user_permission_sets` and `user_permission_overrides`
  *   rows (an account's assignments and overrides go with it, as the schema's cascade), the
  *   account's nested `permissionSets` / `permissionOverrides` select the principal makes, a
- *   unique set name (P2002), and `orderBy` ignored (callers sort).
+ *   unique set name (P2002), and `orderBy` ignored (callers sort);
+ * - (step 3.14) the act-as log read newest first (`findFirst` / `findMany` with `take`, rows
+ *   ordered by `createdAt`, then by insertion), and the conditional raw write of an account's
+ *   notices (`appendNotice`), which writes only when the stored list is still the one it read.
  */
 import { Prisma } from '@prisma/client'
 
@@ -230,16 +233,35 @@ export function createAccountDb() {
       return a.data
     },
   }
+  let actAsSeq = 0
+  const newestActAs = (where?: Row): Row[] => state.actAs
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => matches(r, where))
+    .sort((a, b) => ((b.r.createdAt as Date).getTime() - (a.r.createdAt as Date).getTime()) || b.i - a.i)
+    .map(({ r }) => r)
   const actAsAudit = {
     create: async (a: { data: Row }) => {
-      state.actAs.push({ ...a.data })
-      return a.data
+      const r: Row = { id: `actas-${++actAsSeq}`, createdAt: new Date(), reason: null, durationMinutes: null, endedBy: null, ...a.data }
+      state.actAs.push(r)
+      return { ...r }
     },
+    findFirst: async (a: { where?: Row; select?: Row } = {}) => {
+      const r = newestActAs(a.where)[0]
+      return r ? pick(r, a.select) : null
+    },
+    findMany: async (a: { where?: Row; select?: Row; take?: number } = {}) =>
+      newestActAs(a.where).slice(0, a.take ?? Infinity).map((r) => pick(r, a.select)),
   }
   const $executeRaw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?')
     rawCalls.push(sql)
     rawValues.push(values)
+    if (/UPDATE users SET pending_notices = \?::jsonb WHERE id = \? AND pending_notices = \?::jsonb/.test(sql)) {
+      const u = state.users.find((x) => x.id === values[1])
+      if (!u || JSON.stringify(u.pendingNotices) !== values[2]) return 0
+      u.pendingNotices = JSON.parse(String(values[0]))
+      return 1
+    }
     if (!/pg_advisory_xact_lock/.test(sql)) throw new Error(`accountDb: raw SQL not supported: ${sql}`)
     return 1
   }
@@ -382,6 +404,10 @@ export function createAccountDb() {
     },
     audit: () => state.audit.map((a) => ({ ...a })),
     actAs: () => state.actAs.map((a) => ({ ...a })),
+    /** An act-as log row as an earlier run wrote it (`createdAt` sets its place in time). */
+    seedActAs(row: { adminId: string; targetUserId: string; event: string; createdAt: Date } & Row) {
+      state.actAs.push({ id: `actas-${++actAsSeq}`, source: 'api', reason: null, durationMinutes: null, endedBy: null, ...row })
+    },
     /** A stored permission set or admin profile (`kind`), its other columns defaulted. */
     seedSet(row: { id: string; kind: string; name: string; permissions: string[] } & Row) {
       state.sets.push({ description: null, clonedFrom: null, createdById: 'root-1', createdAt: new Date(0), updatedAt: new Date(0), ...row })
@@ -413,6 +439,7 @@ export function createAccountDb() {
       state.overrides = []
       inviteSeq = 0
       setSeq = 0
+      actAsSeq = 0
       failing.clear()
       rawCalls.length = 0
       rawValues.length = 0

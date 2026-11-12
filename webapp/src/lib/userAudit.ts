@@ -11,6 +11,8 @@ import { ACT_AS_COOKIE_NAME, verifyActAsToken } from '@/lib/auth'
 import { writeAudit, type AuditEntry } from '@/lib/audit'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
+import { actsAsOthers } from '@/lib/authz/actAs'
+import { sessionHolds } from '@/lib/authz/adminPermission'
 
 interface Actor {
   userId: string
@@ -21,29 +23,37 @@ interface Actor {
 type RequestLike = { headers?: Headers }
 
 /**
- * The act-as cookie the request carries, when its signature holds. Whether it was
- * this admin's is the caller's decision. The header is read before the cookie name,
- * so a request without cookies never touches the auth module.
+ * The act-as token the request's cookie header carries, unverified. The header is read before
+ * the cookie name, so a request without cookies never touches the auth module.
  */
-export async function presentedActAs(request: RequestLike): Promise<{ sub: string; act: string } | null> {
+export function presentedActAsToken(request: RequestLike): string | null {
   const header = request.headers?.get?.('cookie')
   if (!header) return null
   const prefix = `${ACT_AS_COOKIE_NAME}=`
   const pair = header.split(';').map(p => p.trim()).find(p => p.startsWith(prefix))
-  const token = pair?.slice(prefix.length)
+  return pair?.slice(prefix.length) || null
+}
+
+/**
+ * The act-as cookie the request carries, when its signature holds. Whether it was
+ * this admin's is the caller's decision.
+ */
+export async function presentedActAs(request: RequestLike): Promise<{ sub: string; act: string } | null> {
+  const token = presentedActAsToken(request)
   return token ? verifyActAsToken(token) : null
 }
 
 /**
  * The account `actor` was acting as: an act-as cookie this admin minted, naming
- * someone else. The target is not re-read from the database; the row records what
- * the request carried.
+ * someone else, held by someone who may act as others (`users:impersonate`: with the
+ * permissions switch off every admin). The target is not re-read from the database; the
+ * row records what the request carried.
  */
 export async function actingAsUserId(request: RequestLike, actor: Actor): Promise<string | null> {
-  if (actor.role !== 'admin') return null
+  if (!actsAsOthers(actor)) return null
   const claims = await presentedActAs(request)
   if (!claims || claims.sub !== actor.userId || claims.act === actor.userId) return null
-  return claims.act
+  return (await sessionHolds(actor, 'users:impersonate')) ? claims.act : null
 }
 
 export interface UserAuditFields {

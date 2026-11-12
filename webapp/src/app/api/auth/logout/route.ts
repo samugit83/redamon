@@ -5,7 +5,10 @@ import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { getClientMeta } from '@/lib/requestMeta'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { getSession } from '@/lib/session'
-import { actingAsUserId } from '@/lib/userAudit'
+import { actingAsUserId, presentedActAsToken } from '@/lib/userAudit'
+import { rbacFlags } from '@/lib/authz/flags'
+import { actsAsOthers, endPresentedActAs } from '@/lib/authz/actAs'
+import { safeErrorCode } from '@/lib/routeErrors'
 
 export async function POST(request: NextRequest) {
   const meta = getClientMeta(request)
@@ -20,6 +23,14 @@ export async function POST(request: NextRequest) {
       ...(actingAs ? { actingAsUserId: actingAs } : {}),
     },
   })
+  // Permissions switch on: signing out ends the impersonation (`endedBy: 'logout'`, step 3.14).
+  if (session && rbacFlags().permissions && actsAsOthers(session)) {
+    try {
+      await endPresentedActAs(session.userId, presentedActAsToken(request), 'logout')
+    } catch (err) {
+      console.error(`[rbac] act-as end not recorded at sign-out code=${safeErrorCode(err)}`)
+    }
+  }
   const response = NextResponse.json({ ok: true })
   const expire = {
     httpOnly: true,

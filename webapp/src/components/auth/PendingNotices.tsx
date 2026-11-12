@@ -23,12 +23,22 @@ export type AccountNoticeView =
     /** The account changed it itself. */
     self: boolean
   }
+  | {
+    id: string
+    type: 'acted_as'
+    at: string
+    by: { name: string; email: string }
+    reason: string | null
+    /** The time limit the admin chose (step 3.14). */
+    durationMinutes: number
+  }
 
 type Alerts = ReturnType<typeof useOptionalAlertModal>
 
 const TITLES: Record<AccountNoticeView['type'], string> = {
   credentials_reset: 'Your password was reset',
   email_changed: 'Your sign-in email was changed',
+  acted_as: 'An administrator acted as you',
 }
 
 function isView(v: unknown): v is AccountNoticeView {
@@ -40,6 +50,9 @@ function isView(v: unknown): v is AccountNoticeView {
   if (!common) return false
   if (n.type === 'credentials_reset') {
     return (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || typeof n.reason === 'string')
+  }
+  if (n.type === 'acted_as') {
+    return (n.reason === null || typeof n.reason === 'string') && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
   }
   return n.type === 'email_changed' && typeof n.from === 'string' && typeof n.to === 'string' && typeof n.self === 'boolean'
 }
@@ -60,6 +73,12 @@ export function noticeMessage(n: AccountNoticeView): string {
     const who = n.self ? 'You changed your sign-in email' : `${n.by.name} (${n.by.email}) changed your sign-in email`
     return `${who} from ${n.from} to ${n.to} on ${when}. `
       + 'If you did not ask for this, tell your administrator: you now sign in with the new address.'
+  }
+  if (n.type === 'acted_as') {
+    // Acting as someone is taking over their account for a while (feature document §4.7): say who, when, why.
+    const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'
+    return `${n.by.name} (${n.by.email}) acted as you on ${when}, for up to ${n.durationMinutes} min, using your account and API keys. ${why} `
+      + 'If you did not expect this, tell your administrator. My account lists when it started and ended.'
   }
   const how = n.mode === 'link' ? 'with a reset link' : 'with a temporary password'
   const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'

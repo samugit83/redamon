@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { authzIdentityOf, getSession, type Session } from '@/lib/session'
+import { actAsInForce, authzIdentityOf, getSession, type Session } from '@/lib/session'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { rbacFlags } from '@/lib/authz/flags'
 import { capabilitiesInForce } from '@/lib/authz/can'
 import type { PermissionId } from '@/lib/authz/permissions'
 import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
 import { accountTypeOf, loadInstanceRoot, type AccountType, type InstanceRoot } from '@/lib/authz/root'
-import type { AdminNotices, RootNotice } from '@/providers/AuthProvider'
+import { currentActAsStart, impersonationPolicy } from '@/lib/authz/actAs'
+import type { ActingAsView, AdminNotices, ImpersonationLimits, RootNotice } from '@/providers/AuthProvider'
 
 // The boot backfill's row (scripts/backfill-rbac-root.mjs): when an automatic Root was chosen.
 const ROOT_ASSIGNED_ACTION = 'system.rbac_root_assigned'
@@ -54,6 +55,42 @@ async function capabilitiesView(session: Session, root: RootView | null): Promis
     return [...caps.held]
   } catch (err) {
     console.error(`[rbac] could not resolve the capabilities: ${safeErrorCode(err)}`)
+    return null
+  }
+}
+
+/**
+ * Permissions switch on (step 3.14, IM-05): whom the admin is acting as, why and until when, for the
+ * banner every page shows and for the user switcher, which no longer remembers it in the browser.
+ * Null when not acting; also null (logged) when it could not be read: the session never fails.
+ */
+async function actingAsView(session: Session, root: RootView | null): Promise<ActingAsView | null> {
+  try {
+    const inForce = await actAsInForce(session)
+    if (!inForce) return null
+    const { target, expiresAt } = inForce
+    const start = await currentActAsStart(session.userId, target.id)
+    return {
+      id: target.id,
+      name: target.name,
+      email: target.email,
+      accountType: accountTypeOf(target, root && 'read' in root ? root.read ?? null : null),
+      reason: start?.reason ?? null,
+      endsAt: expiresAt !== null ? new Date(expiresAt * 1000).toISOString() : null,
+    }
+  } catch (err) {
+    console.error(`[rbac] could not read the act-as session: ${safeErrorCode(err)}`)
+    return null
+  }
+}
+
+/** What the act-as dialog offers (step 3.14): the instance limit and whether a reason is required. Null when unread (logged). */
+async function impersonationView(): Promise<ImpersonationLimits | null> {
+  try {
+    const { maxMinutes, reasonRequired } = await impersonationPolicy()
+    return { maxMinutes, reasonRequired }
+  } catch (err) {
+    console.error(`[rbac] could not read the impersonation settings: ${safeErrorCode(err)}`)
     return null
   }
 }
@@ -125,7 +162,11 @@ export async function GET() {
     // The real signed-in account's type, read from the database: only admins see the switch.
     if (!isAdministrator({ id: session.userId, role: session.role })) return NextResponse.json(account)
     const rbac = await adminNotices()
-    return NextResponse.json({ ...account, rbac: root && 'root' in root ? { ...rbac, root: root.root } : rbac })
+    // `actingAs` with the permissions switch on only: off, the answer is the one before it existed.
+    const actingAs = rbacFlags().permissions
+      ? { actingAs: await actingAsView(session, root), impersonation: await impersonationView() }
+      : {}
+    return NextResponse.json({ ...account, ...actingAs, rbac: root && 'root' in root ? { ...rbac, root: root.root } : rbac })
   } catch (error) {
     return internalError(error, 'Internal server error', { log: 'Auth me error' })
   }

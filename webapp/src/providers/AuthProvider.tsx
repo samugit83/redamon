@@ -26,6 +26,23 @@ export interface AdminNotices {
   root?: RootNotice | null
 }
 
+/** Whom an admin is acting as (permissions switch on, step 3.14): the banner and the switcher read it. */
+export interface ActingAsView {
+  id: string
+  name: string
+  email: string
+  accountType: 'root' | 'admin' | 'member'
+  reason: string | null
+  /** When the impersonation ends (ISO); null for a cookie that carries no expiry. */
+  endsAt: string | null
+}
+
+/** What the act-as dialog offers: the instance's longest impersonation and whether it needs a reason. */
+export interface ImpersonationLimits {
+  maxMinutes: number
+  reasonRequired: boolean
+}
+
 export interface AuthUser {
   id: string
   name: string
@@ -40,6 +57,13 @@ export interface AuthUser {
   capabilities?: PermissionId[] | null
   /** The RBAC switch states (every account). */
   flags?: RbacFlags
+  /**
+   * Administrator accounts with RBAC_PERMISSIONS_ENABLED on: the account the admin acts as, null when
+   * none. Absent otherwise (the act-as cookie then follows the browser's remembered choice).
+   */
+  actingAs?: ActingAsView | null
+  /** Administrator accounts with the permissions switch on; null when it could not be read. */
+  impersonation?: ImpersonationLimits | null
   rbac?: AdminNotices
 }
 

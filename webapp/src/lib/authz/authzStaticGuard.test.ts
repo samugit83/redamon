@@ -368,17 +368,9 @@ const ALLOWED: Record<string, Allowed> = {
     ],
   },
   'src/lib/session.ts::role_admin': {
-    reason: `${ACCOUNT_TYPE}: the act-as rule (only an admin acts as anyone, nobody as Root) and requireAdmin, the administrator-account gate each caller follows with its permission`,
+    reason: `${ACCOUNT_TYPE}: requireAdmin, the administrator-account gate each caller follows with its permission`,
     lines: [
-      "return account.role === 'admin'",
-      "return target.role !== 'admin' || !(await isRootAccount(target.id, opts))",
       "if (result.role !== 'admin') {",
-    ],
-  },
-  'src/lib/userAudit.ts::role_admin': {
-    reason: "the act-as rule (only an admin acts as anyone), as session.ts mayActAs reads it, for the audit row",
-    lines: [
-      "if (actor.role !== 'admin') return null",
     ],
   },
   'src/lib/userSkillWrites.ts::find_by_id_and_owner': {

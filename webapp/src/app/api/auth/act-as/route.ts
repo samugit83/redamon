@@ -1,19 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { decodeJwt } from 'jose'
 import prisma from '@/lib/prisma'
 import { requireAdmin } from '@/lib/session'
 import { requireSessionPermission } from '@/lib/authz/adminPermission'
 import { createActAsToken, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeActAsAudit } from '@/lib/audit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
-import { withRouteErrors } from '@/lib/routeErrors'
+import { safeErrorCode, withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { requireStepUp } from '@/lib/authz/stepUp'
-import { presentedActAs } from '@/lib/userAudit'
+import { presentedActAs, presentedActAsToken } from '@/lib/userAudit'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
 import { PHASE1_ACT_AS_SECONDS, actAsLifetimeSeconds } from '@/lib/authz/sessionLifetime'
+import { endPresentedActAs, impersonationPolicy, mintImpersonationToken, parseActAsRequest } from '@/lib/authz/actAs'
+import { actedAsNotice, appendNotice } from '@/lib/authz/accountNotices'
+import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
+import { loadPrincipal } from '@/lib/authz/principal'
+import { now } from '@/lib/authz/clock'
+import type { Session } from '@/lib/session'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -33,8 +40,29 @@ function cookieOpts(request: NextRequest, maxAge = PHASE1_ACT_AS_SECONDS) {
   }
 }
 
-// POST /api/auth/act-as  { targetUserId }  -> begin simulating targetUserId.
-// Acting as self clears the cookie (equivalent to "stop simulating").
+/**
+ * Tells the account acted as (IM-10), unless Root turned it off: its next sign-in shows who, when,
+ * why and for how long. Never fails the impersonation, which its start row already records.
+ */
+async function noticeTarget(admin: Session, targetUserId: string, reason: string | null, durationMinutes: number): Promise<void> {
+  try {
+    const actor = sessionPrincipal(admin) ?? (await loadPrincipal(admin.userId))
+    const notice = actedAsNotice({
+      by: { id: admin.userId, name: actor?.name ?? '', email: actor?.email ?? '' },
+      at: now(),
+      reason,
+      durationMinutes,
+    })
+    await appendNotice(targetUserId, notice)
+  } catch (err) {
+    console.error(`[rbac] act-as notice not written target=${targetUserId} code=${safeErrorCode(err)}`)
+  }
+}
+
+// POST /api/auth/act-as  { targetUserId, reason?, durationMinutes?, stepUpPassword? }  -> begin
+// simulating targetUserId. Acting as self clears the cookie (equivalent to "stop simulating").
+// Permissions switch on (step 3.14): a reason (mandatory when Root says so), a duration held to the
+// instance limit, and the admin's own password whatever the target.
 export const POST = withRouteErrors('Could not switch user', async (request: NextRequest) => {
   const admin = await requireAdmin({ fresh: true })
   if (admin instanceof NextResponse) return admin
@@ -52,9 +80,11 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
     return NextResponse.json({ error: 'targetUserId is required' }, { status: 400 })
   }
 
+  const enforced = rbacFlags().permissions
   if (targetUserId === admin.userId) {
     // Acting as self = stop simulating. Audit as an end event (R2).
-    await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'end', source: 'self-clear' })
+    if (enforced) await endPresentedActAs(admin.userId, presentedActAsToken(request), 'stopped')
+    else await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'end', source: 'self-clear' })
     const res = NextResponse.json({ actingAs: null })
     res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), maxAge: 0 })
     return res
@@ -62,28 +92,63 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
 
   const target = await prisma.user.findUnique({
     where: { id: targetUserId },
-    select: { id: true, role: true },
+    select: { id: true, role: true, ...(enforced ? { status: true } : {}) },
   })
   if (!target) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }
   const rootRefusal = await rootProtectedRefusal(request, admin, targetUserId, 'act_as')
   if (rootRefusal) return rootRefusal
+  // The form is checked before any password, so a mistake there spends nothing of the step-up budget.
+  const policy = enforced ? await impersonationPolicy() : null
+  const asked = policy ? parseActAsRequest(body, policy) : null
+  if (asked && 'code' in asked) {
+    return NextResponse.json({ error: asked.error, code: asked.code, field: asked.field }, { status: asked.status })
+  }
+  if ('status' in target && target.status === 'disabled') {
+    return NextResponse.json({ error: 'This account is disabled: nobody can act as it.', code: 'account_disabled' }, { status: 409 })
+  }
   // Acting as another admin borrows that admin's account: the acting admin's own
   // password first, like a reset of it. With the identity switch on only the confirmed
-  // Root may, until Phase 3's impersonation rules (step 2.6).
+  // Root may (step 2.6). With the permissions switch on any impersonation takes the
+  // admin's own password (ID-25).
   if (target.role === 'admin') {
     const refusal = rbacFlags().identity
       ? await requireRootPower(request, admin, body.stepUpPassword, 'Only Root can act as another admin.')
       : await requireStepUp(request, body.stepUpPassword)
     if (refusal) return refusal
+  } else if (enforced) {
+    const refusal = await requireStepUp(request, body.stepUpPassword)
+    if (refusal) return refusal
   }
 
-  const identity = rbacFlags().identity
-  const seconds = identity ? await actAsLifetimeSeconds() : undefined
-  const token = await createActAsToken(admin.userId, targetUserId, seconds)
-  await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'start' })
-  const res = NextResponse.json({ actingAs: targetUserId })
+  if (!asked) {
+    const identity = rbacFlags().identity
+    const seconds = identity ? await actAsLifetimeSeconds() : undefined
+    const token = await createActAsToken(admin.userId, targetUserId, seconds)
+    await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'start' })
+    const res = NextResponse.json({ actingAs: targetUserId })
+    res.cookies.set(ACT_AS_COOKIE_NAME, token, cookieOpts(request, seconds))
+    return res
+  }
+
+  // The impersonation the browser held until now ends here, and any whose time ran out.
+  await endPresentedActAs(admin.userId, presentedActAsToken(request), 'stopped')
+  // The cookie lives the chosen duration, never longer than an admin session (or 12 h).
+  const seconds = Math.min(asked.durationMinutes * 60, await actAsLifetimeSeconds())
+  const durationMinutes = Math.ceil(seconds / 60)
+  const actor = sessionPrincipal(admin) ?? (await loadPrincipal(admin.userId, { fresh: true }))
+  if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const token = await mintImpersonationToken(actor, targetUserId, seconds)
+  // No start row, no impersonation: the row is how it is seen (IM-09).
+  await writeActAsAudit(
+    { adminId: admin.userId, targetUserId, event: 'start', reason: asked.reason, durationMinutes },
+    { strict: true },
+  )
+  if (policy!.notifyTarget) await noticeTarget(admin, targetUserId, asked.reason, durationMinutes)
+  // The token's own expiry: the wall clock jose signs and checks it with.
+  const endsAt = new Date(decodeJwt(token).exp! * 1000).toISOString()
+  const res = NextResponse.json({ actingAs: targetUserId, durationMinutes, endsAt })
   res.cookies.set(ACT_AS_COOKIE_NAME, token, cookieOpts(request, seconds))
   return res
 })
@@ -99,9 +164,13 @@ export const DELETE = withRouteErrors('Could not stop switching user', async (re
   // No cookie of this admin's means nothing was being acted as: the browser sends
   // this DELETE on every admin page load and after a refused restore, so a row
   // there would only be noise.
-  const claims = await presentedActAs(request)
-  if (claims && claims.sub === admin.userId) {
-    await writeActAsAudit({ adminId: admin.userId, targetUserId: claims.act, event: 'end' })
+  if (rbacFlags().permissions) {
+    await endPresentedActAs(admin.userId, presentedActAsToken(request), 'stopped')
+  } else {
+    const claims = await presentedActAs(request)
+    if (claims && claims.sub === admin.userId) {
+      await writeActAsAudit({ adminId: admin.userId, targetUserId: claims.act, event: 'end' })
+    }
   }
   const res = NextResponse.json({ actingAs: null })
   res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), maxAge: 0 })
