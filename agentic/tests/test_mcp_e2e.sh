@@ -5,27 +5,53 @@
 # webapp triggers agent /mcp/reload → agent re-registers TOOL_REGISTRY +
 # MultiServerMCPClient → /mcp/manifest reflects the change.
 #
-# Pre-conditions: docker compose up; user with id `cmnxhb92m0000qp01u89ic4x5`
-# exists; INTERNAL_API_KEY env var is set inside webapp.
+# Pre-conditions: the stack up (webapp on :3000, agent on :8090, postgres);
+# INTERNAL_API_KEY set inside webapp. Prints SKIP and exits 0 without a stack.
+#
+# The account is the synthetic RBAC fixture member A (webapp/scripts/e2e-rbac-seed.mjs,
+# rbac-member-a@e2e.local), never a real one: the script writes that account's MCP
+# servers. The fixtures are removed on exit (e2e-rbac-cleanup.mjs), even on a failure.
 #
 # Run from repo root:  bash agentic/tests/test_mcp_e2e.sh
 
 set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 # Helper: red/green dots, fail loudly on the first miss.
 ok()   { echo -e "\033[32m✓\033[0m $*"; }
 fail() { echo -e "\033[31m✗\033[0m $*"; exit 1; }
 
+WEBAPP="http://localhost:3000"
+AGENT="http://localhost:8090"
+
+health="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$WEBAPP/api/health" 2>/dev/null || true)"
+if [ "$health" != 200 ]; then
+  echo "SKIP: RedAmon webapp not answering at $WEBAPP/api/health (got ${health:-nothing})"
+  exit 0
+fi
+for svc in webapp postgres agent; do
+  if ! docker compose ps --status running -q "$svc" 2>/dev/null | grep -q .; then
+    echo "SKIP: no running $svc container (docker compose ps $svc)"
+    exit 0
+  fi
+done
+
+webapp_node() { # script: run a fixture script inside the webapp container, read from stdin
+  docker compose exec -T -w /app webapp node --input-type=module - < "webapp/scripts/$1"
+}
+cleanup() {
+  webapp_node e2e-rbac-cleanup.mjs | tr '\n' ' ' | sed 's/^/fixture cleanup: /'; echo
+}
+trap cleanup EXIT
+
 # Resolve the internal API key from the webapp container so we don't need
 # the caller to know it.
 KEY=$(docker compose exec -T webapp printenv INTERNAL_API_KEY 2>/dev/null | tr -d '\r')
-USER=$(docker compose exec -T postgres psql -U redamon -d redamon -t -c "select id from users limit 1;" 2>/dev/null | xargs)
 [ -n "$KEY" ] || fail "INTERNAL_API_KEY missing in webapp"
-[ -n "$USER" ] || fail "no user found in DB"
-ok "bootstrap: KEY/USER resolved (user=$USER)"
-
-WEBAPP="http://localhost:3000"
-AGENT="http://localhost:8090"
+seed_out="$(webapp_node e2e-rbac-seed.mjs)" || fail "RBAC fixture seed failed"
+USER=$(printf '%s\n' "$seed_out" | sed -n 's/^MEMBER_A_ID=\([A-Za-z0-9_-]*\)$/\1/p')
+[ -n "$USER" ] || fail "RBAC fixture seed printed no MEMBER_A_ID"
+ok "bootstrap: KEY resolved, fixture user rbac-member-a seeded (user=$USER)"
 
 # Cleanup any leftover from prior runs.
 curl -s -X DELETE -H "x-internal-key: $KEY" \
@@ -129,7 +155,8 @@ ok "test: unreachable URL returns ok=false"
 curl -s -X DELETE -H "x-internal-key: $KEY" \
   "$WEBAPP/api/users/$USER/mcp/e2e_test_srv" >/dev/null
 sleep 2
-final=$(curl -s "$AGENT/mcp/manifest" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(s["id"] for s in d["servers"]))')
+final=$(curl -s -H "x-internal-key: $KEY" "$AGENT/mcp/manifest" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(s["id"] for s in d["servers"]))') \
+  || fail "agent manifest unreadable after delete (the /mcp/* routes need the master key)"
 echo "$final" | grep -q 'e2e_test_srv' && fail "e2e_test_srv still present after delete: $final"
 ok "delete: e2e_test_srv removed from agent manifest"
 
