@@ -127,6 +127,16 @@ afterEach(() => {
 
 const NEW_ADMIN = { name: 'New Admin', email: 'rbac-new-admin@e2e.local', password: 'a-long-new-admin-passphrase', role: 'admin' }
 
+/** A role sent as the account already holds it is no role change: no row, no session-version bump. */
+async function sameRoleWritesNothing() {
+  await signIn('admin-2')
+  expect((await editUser(req('PUT', { role: 'standard' }), params('member-1'))).status).toBe(200)
+  expect((await editUser(req('PUT', { role: 'admin' }), params('admin-2'))).status).toBe(200)
+  expect(db().account('member-1')).toMatchObject({ role: 'standard', sessionVersion: 0 })
+  expect(db().account('admin-2')).toMatchObject({ role: 'admin', sessionVersion: 0 })
+  expect(db().audit()).toEqual([])
+}
+
 describe('creating an admin', () => {
   test('admin cannot create an admin (switch on)', async () => {
     await signIn('admin-2')
@@ -314,6 +324,8 @@ describe('role editing', () => {
     expect((await editUser(req('PUT', { role: 'standard', name: 'Marco' }), params('member-1'))).status).toBe(200)
     expect(db().account('member-1')!.sessionVersion).toBe(0)
   })
+
+  test('a role sent as the account already holds it writes no user.role_changed row', sameRoleWritesNothing)
 })
 
 type Action = { name: string; call: (pw?: string) => Promise<Response>; done: () => void; untouched: () => void }
@@ -432,6 +444,8 @@ describe('switch off: the Phase 1 rules', () => {
     expect((await editUser(req('PUT', { name: 'Ines B.' }), params('admin-3'))).status).toBe(200)
     expect(db().account('member-1')).toMatchObject({ role: 'admin', sessionVersion: 0 })
   })
+
+  test('a role sent as the account already holds it writes no user.role_changed row', sameRoleWritesNothing)
 
   test('acting as another admin asks the admin for its own password', async () => {
     await signIn('admin-2')

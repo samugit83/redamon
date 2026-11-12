@@ -99,6 +99,16 @@ function userEditRows(
   return rows
 }
 
+/**
+ * The stored values `userEditRows` compares a write against, read whenever the write names one:
+ * without the stored role, a role sent as the account already holds it would be recorded as a
+ * change from null.
+ */
+async function auditedBefore(id: string, data: Record<string, string>): Promise<AuditedFields | null> {
+  if (!('name' in data || 'email' in data || 'role' in data)) return null
+  return prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
+}
+
 async function auditUserEdit(
   request: NextRequest,
   session: Session,
@@ -184,9 +194,7 @@ async function updateWithIdentity(
   const attempted = roleChange ? 'role_change' : 'edit'
 
   if (!roleChange && !adminWrite && !emailChange) {
-    const before = ('name' in data || 'email' in data)
-      ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
-      : null
+    const before = await auditedBefore(id, data)
     const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
     invalidatePrincipal(id)
     await auditUserEdit(request, session, id, data, before, user)
@@ -420,9 +428,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     if (data.role !== 'standard') {
-      const before = ('name' in data || 'email' in data || 'role' in data)
-        ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
-        : null
+      const before = await auditedBefore(id, data)
       const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
       invalidatePrincipal(id)
       await auditUserEdit(request, session, id, data, before, user)
