@@ -743,7 +743,13 @@ class HttpMixin:
 
             # --- Update Subdomain nodes with HTTP probe status ---
             by_host = http_probe_data.get("by_host", {})
-            for hostname, host_info in by_host.items():
+            # IP mode probes the IP literal while the Subdomain node carries the
+            # placeholder name minted for that IP ("21.40.250.84" -> "21-40-250-84").
+            # A hostname the run scanned is keyed by its own name, which the map
+            # never holds, so it keeps matching its own Subdomain.
+            ip_to_hostname = (recon_data.get("metadata") or {}).get("ip_to_hostname") or {}
+            for probed_host, host_info in by_host.items():
+                hostname = ip_to_hostname.get(probed_host, probed_host)
                 try:
                     status_codes = host_info.get("status_codes", [])  # already sorted int list
                     live_urls = host_info.get("live_urls", [])
@@ -774,12 +780,9 @@ class HttpMixin:
                 except Exception as e:
                     stats["errors"].append(f"Subdomain status update for {hostname}: {e}")
 
-            # Mark resolved subdomains that got no HTTP response at all as "no_http"
+            # Mark resolved subdomains that got no HTTP response at all as "no_http".
+            # Translated like the loop above, or every live IP-mode host is demoted.
             all_probed_hosts = set(by_host.keys())
-            # IP mode probes the IP literal while the Subdomain node carries the
-            # placeholder name minted for that IP ("21.40.250.84" -> "21-40-250-84"),
-            # so translate before the diff or every live IP-mode host is demoted.
-            ip_to_hostname = (recon_data.get("metadata") or {}).get("ip_to_hostname", {})
             all_probed_hosts |= {ip_to_hostname[h] for h in all_probed_hosts if h in ip_to_hostname}
             all_target_subs = set(recon_data.get("subdomains", []))
             no_response_hosts = all_target_subs - all_probed_hosts
