@@ -7,11 +7,15 @@ fallback), HackerTarget, Subfinder without -active, and urlscan
 URLSCAN_API_BASE (the lab hook) receives it. The names are bounded
 (IP_HOSTNAME_PASSIVE_MAX_NAMES, never above the hook's per-run bound) before
 any lookup, then wildcard_control.filter_late_names marks the names under a
-filter domain that only its wildcard answers. A paused or failing source is a
-coverage gap and the search goes on. The thread gets a copy of the settings
-and nothing of the run; join() waits for it, at most JOIN_BUDGET_S, and logs
-one line. Past the budget the hook goes on with the names found so far, notes
-the sources and domains not finished, and leaves the daemon threads behind.
+filter domain that only its wildcard answers, and every name under a zone it
+could not probe. A paused or failing source is a coverage gap and the search
+goes on; with DNS lookups off it never starts. The thread gets a copy of the
+settings and nothing of the run; join() waits for it, at most JOIN_BUDGET_S,
+and logs one line. Past the budget the hook goes on with the names found so
+far, checks them itself, notes the sources and domains not finished, and
+leaves the daemon threads behind, which never start the wildcard control; a
+search already in that check is waited for instead. The timing tests use
+gates and events, never the clock.
 
 The hook joins it: the names become candidates with source passive_<src>, no
 ips_seen, judged by the same rule; a wildcard-dropped name seen on no target
@@ -308,6 +312,16 @@ def test_no_search_unless_the_checkbox_is_true(monkeypatch, value):
     called.assert_not_called()
 
 
+@pytest.mark.parametrize("value", [False, None, 0])
+def test_no_search_with_dns_lookups_off(monkeypatch, capsys, value):
+    called = mock.Mock()
+    monkeypatch.setattr(ipe, "search", called)
+    assert ipe.start(_settings(DNS_ENABLED=value)) is None
+    called.assert_not_called()
+    assert ("[-][IpNames] Passive search skipped: DNS lookups are off, so no name it found could be scanned"
+            in capsys.readouterr().out)
+
+
 def test_start_never_raises(monkeypatch, capsys):
     monkeypatch.setattr(ipe, "plan", mock.Mock(side_effect=RuntimeError("x")))
     assert ipe.start(_settings()) is None
@@ -318,13 +332,21 @@ def test_start_never_raises(monkeypatch, capsys):
 # Caps, before any lookup
 # ---------------------------------------------------------------------------
 
+def _checked(names, roots, dropped=()):
+    """The control's answer with every zone probed and plain (no wildcard),
+    `dropped` aside."""
+    zones = set(wildcard_control.assign_zones(list(names), list(roots)).values())
+    return wildcard_control.FilterResult(kept=[n for n in names if n not in dropped],
+                                         dropped=[n for n in names if n in dropped],
+                                         zones={z: {"is_wildcard": False, "ips": []} for z in zones})
+
+
 def _spy_filter(monkeypatch, dropped=()):
     calls = []
 
     def spy(names, roots, settings, label="late"):
         calls.append({"names": list(names), "roots": list(roots), "settings": settings, "label": label})
-        return wildcard_control.FilterResult(kept=[n for n in names if n not in dropped],
-                                             dropped=[n for n in names if n in dropped])
+        return _checked(names, roots, dropped)
 
     monkeypatch.setattr(wildcard_control, "filter_late_names", spy)
     return calls
@@ -492,6 +514,22 @@ def test_a_failing_control_refuses_every_passive_name(monkeypatch, capsys):
     assert ("passive_search", "ip_hostnames") in _gaps()
 
 
+def test_a_zone_the_control_could_not_probe_refuses_its_passive_names(monkeypatch, capsys):
+    """The control keeps a name whose zone it could not probe; a passive name
+    there would be scanned unchecked, so check 15 gets it (I-6). A zone that
+    answered keeps its names."""
+    Net(crtsh={"example.com": ["a.example.com", "b.example.com"], "example.net": ["x.example.net"]}
+        ).install(monkeypatch)
+    monkeypatch.setattr(wildcard_control, "_query",
+                        lambda name, rtype: ("fail", []) if name.endswith(".example.com") else ("nx", []))
+    found = _search(_settings(IP_HOSTNAME_INCLUDE=["*.example.com", "*.example.net"]),
+                    domains=("example.com", "example.net"))
+    assert sorted(found.names) == ["a.example.com", "b.example.com", "x.example.net"]
+    assert found.wildcard_zone == frozenset({"a.example.com", "b.example.com"})
+    assert ("[!][IpNames] Wildcard DNS could not be checked for 2 passive name(s): none of them is scanned"
+            in capsys.readouterr().out)
+
+
 def test_no_name_no_control(monkeypatch):
     Net().install(monkeypatch)
     calls = _spy_filter(monkeypatch)
@@ -509,8 +547,8 @@ def test_the_thread_is_handed_a_copy_of_the_settings_and_nothing_of_the_run(monk
     seen = {}
     gate = threading.Event()
 
-    def fake_search(domains, roots, settings, answers=None):
-        gate.wait(5)
+    def fake_search(domains, roots, settings, answers=None, claim=None):
+        gate.wait(300)
         seen["settings"] = dict(settings)
         return ipe.Found(domains=tuple(domains), names={"hidden.example.com": ("passive_urlscan",)})
 
@@ -531,17 +569,35 @@ def _alive(prefix):
     return [t for t in threading.enumerate() if t.name.startswith(prefix) and t.is_alive()]
 
 
+class _OpensWhenWaitedOn:
+    """The search's done event; the hook's first wait opens `gate` first, so
+    the search ends only once the hook is waiting for it."""
+
+    def __init__(self, real, gate):
+        self.real, self.gate = real, gate
+
+    def wait(self, timeout=None):
+        self.gate.set()
+        return self.real.wait(timeout)
+
+    def is_set(self):
+        return self.real.is_set()
+
+    def set(self):
+        self.real.set()
+
+
 def test_join_waits_for_the_search_and_ends_its_thread(monkeypatch, capsys):
     gate = threading.Event()
 
-    def slow(domains, roots, settings, answers=None):
-        gate.wait(5)
+    def slow(domains, roots, settings, answers=None, claim=None):
+        gate.wait(300)
         return ipe.Found(domains=tuple(domains))
 
     monkeypatch.setattr(ipe, "search", slow)
     search = ipe.start(_settings())
     assert _alive("ipn-passive")
-    threading.Timer(0.2, gate.set).start()
+    search._done = _OpensWhenWaitedOn(search._done, gate)
     found = search.join()
     assert found.domains == ("example.com",)
     assert not _alive("ipn-passive")
@@ -582,25 +638,76 @@ def release(monkeypatch):
     yield gate
     gate.set()
     for thread in [t for t in threading.enumerate() if t.name.startswith("ipn-")]:
-        thread.join(5)
+        thread.join(60)
 
 
 def _sources(monkeypatch, gate, slow):
     """crt.sh, Subfinder and urlscan answer `<letter>.<domain>` at once, except
-    each (source, domain) in `slow`, which waits for the gate. HackerTarget is
-    switched off by the tests' settings."""
+    each (source, domain) in `slow`, which waits for the gate (opened by the
+    test or at teardown, never by the clock). HackerTarget is switched off by
+    the tests' settings."""
     def make(source):
         def call(domain, settings):
             if (source, domain) in slow:
-                gate.wait(10)
+                gate.wait(300)
             return {f"{source[0]}.{domain}": f"passive_{source}"}
         return call
     for source in ("crtsh", "subfinder", "urlscan"):
         monkeypatch.setitem(ipe._CALLS, source, make(source))
 
 
+def _until(ready, what):
+    """Wait for something another thread does; the limit only ends a failure."""
+    end = time.monotonic() + 60
+    while not ready():
+        assert time.monotonic() < end, f"{what} never happened"
+        time.sleep(0.01)
+
+
+def _answered(search, **done):
+    """True once each named source has finished exactly these domains."""
+    return all(search.answers[source].snapshot().done == list(domains) for source, domains in done.items())
+
+
+class _Expired:
+    """The search's done event as the hook sees it when its budget has run out:
+    every timed wait fails at once, whatever the clock says. An untimed wait
+    first calls `then`, so the search can only finish once the hook waits."""
+
+    def __init__(self, real, then):
+        self.real, self.then = real, then
+
+    def wait(self, timeout=None):
+        if timeout is not None:
+            return False
+        self.then()
+        return self.real.wait()
+
+    def is_set(self):
+        return self.real.is_set()
+
+    def set(self):
+        self.real.set()
+
+
 def _alive_behind():
     return [t for t in threading.enumerate() if t.name.startswith("ipn-") and t.is_alive()]
+
+
+def _control_callers(monkeypatch, dropped=(), hold=None, entered=None):
+    """Replace the wildcard control; record the thread that runs it. With
+    `hold`, the search thread's call sets `entered` and waits for it."""
+    callers = []
+
+    def control(names, roots, settings, label="late"):
+        callers.append(threading.current_thread().name)
+        if hold is not None and threading.current_thread().name == "ipn-passive":
+            entered.set()
+            hold.wait(300)
+        return _checked(names, roots, dropped)
+
+    monkeypatch.setattr(wildcard_control, "filter_late_names", control)
+    return callers
 
 
 def test_the_default_budget_is_900_seconds(monkeypatch):
@@ -611,19 +718,22 @@ def test_the_default_budget_is_900_seconds(monkeypatch):
 
 
 def test_past_the_budget_the_hook_goes_on_with_what_came(monkeypatch, release, capsys):
-    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 1.0)
+    # Budget 0: the slow sources hold until the gate opens, so the wait ends
+    # at once whatever the load; the fast answers are awaited first.
+    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 0)
     _sources(monkeypatch, release, slow={("subfinder", "example.com"), ("subfinder", "example.net"),
                                          ("urlscan", "example.net")})
+    callers = _control_callers(monkeypatch)
     search = ipe.start(_settings(IP_HOSTNAME_INCLUDE=["*.example.com", "*.example.net"],
                                  HACKERTARGET_ENABLED=False))
-    began = time.monotonic()
+    _until(lambda: _answered(search, crtsh=["example.com", "example.net"], urlscan=["example.com"]),
+           "the fast sources' answers")
     found = search.join()
-    assert time.monotonic() - began < 5
     assert sorted(found.names) == ["c.example.com", "c.example.net", "u.example.com"]
     assert found.unfinished == {"subfinder": ("example.com", "example.net"), "urlscan": ("example.net",)}
     out = capsys.readouterr().out
-    assert "[*][IpNames] Waiting for the passive search to finish (at most 1 s)" in out
-    assert ("[!][IpNames] Passive search over its 1 s budget: going on with the names found so far; "
+    assert "[*][IpNames] Waiting for the passive search to finish (at most 0 s)" in out
+    assert ("[!][IpNames] Passive search over its 0 s budget: going on with the names found so far; "
             "not finished: subfinder (example.com, example.net); urlscan (example.net)") in out
     assert found.log_line() == ("[*][IpNames] Passive search: 2 domains, 3 names "
                                 "(crt.sh 2, subfinder not finished, urlscan 1 [1 domain not finished])")
@@ -637,43 +747,73 @@ def test_past_the_budget_the_hook_goes_on_with_what_came(monkeypatch, release, c
     behind = _alive_behind()
     assert behind and all(t.daemon for t in behind)
     assert search.join() is found
+    # Let the abandoned search end: it never starts the wildcard control (whose
+    # worker pool the interpreter would wait for); the hook ran it.
+    release.set()
+    search._thread.join(60)
+    assert not search._thread.is_alive() and search._result is None
+    assert callers == [threading.current_thread().name]
 
 
 def test_the_hook_scans_what_came_before_the_budget(armed, monkeypatch, release):
-    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 1.0)
+    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 0)
     _sources(monkeypatch, release, slow={("subfinder", "example.com")})
     settings = _settings(HACKERTARGET_ENABLED=False)
+    search = ipe.start(settings)
+    _until(lambda: _answered(search, crtsh=["example.com"], urlscan=["example.com"]), "the fast sources' answers")
     block = ih.hostname_step(_run(), settings, resolve=lambda name: [T1], late_scan=mock.Mock(return_value={}),
-                             passive_search=ipe.start(settings))
+                             passive_search=search)
     reasons = {name: c["reason"] for name, c in block["candidates"].items()}
     assert reasons == {"app.example.com": "scanned", "c.example.com": "scanned", "u.example.com": "scanned"}
     assert block["summary"]["expansion"]["not_finished"] == {"subfinder": 1}
 
 
-def test_a_search_held_up_in_its_wildcard_check_is_finished_by_the_hook(monkeypatch, release, capsys):
-    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 1.0)
+def test_a_search_already_checking_its_names_is_waited_for(monkeypatch, release, capsys):
     _sources(monkeypatch, release, slow=set())
-    callers = []
-
-    def control(names, roots, settings, label="late"):
-        callers.append(threading.current_thread().name)
-        if threading.current_thread().name == "ipn-passive":
-            release.wait(10)
-        return wildcard_control.FilterResult(kept=list(names), dropped=["s.example.com"])
-
-    monkeypatch.setattr(wildcard_control, "filter_late_names", control)
-    found = ipe.start(_settings(HACKERTARGET_ENABLED=False)).join()
+    entered = threading.Event()
+    callers = _control_callers(monkeypatch, dropped={"s.example.com"}, hold=release, entered=entered)
+    search = ipe.start(_settings(HACKERTARGET_ENABLED=False))
+    assert entered.wait(60)
+    # The budget runs out now; the search may finish only once the hook waits.
+    search._done = _Expired(search._done, then=release.set)
+    found = search.join()
+    assert callers == ["ipn-passive"]
     assert sorted(found.names) == ["c.example.com", "s.example.com", "u.example.com"]
     assert found.unfinished == {} and found.wildcard_zone == frozenset({"s.example.com"})
-    assert "not finished: the wildcard DNS check" in capsys.readouterr().out
-    assert callers == ["ipn-passive", threading.current_thread().name]
+    assert ("[*][IpNames] Passive search over its 900 s budget while checking its names for wildcard DNS: "
+            "waiting for that check") in capsys.readouterr().out
+    assert not search._thread.is_alive()
     assert _gaps() == {}
 
 
+def test_sources_that_answered_as_the_budget_ran_out_leave_nothing_unfinished(monkeypatch, release, capsys):
+    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 0)
+    entered, claimed = threading.Event(), []
+
+    def search(domains, roots, settings, answers=None, claim=None):
+        for answer in answers.values():
+            with answer.lock:
+                answer.done = list(domains)
+        entered.set()
+        release.wait(300)
+        claimed.append(claim())
+
+    monkeypatch.setattr(ipe, "search", search)
+    handle = ipe.start(_settings())
+    assert entered.wait(60)
+    found = handle.join()
+    assert found.unfinished == {} and found.names == {}
+    assert "not finished: nothing (its sources had just answered)" in capsys.readouterr().out
+    release.set()
+    handle._thread.join(60)
+    assert claimed == [False]
+
+
 def test_a_failure_after_the_budget_hands_over_no_name(monkeypatch, release, capsys):
-    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 0.5)
+    monkeypatch.setattr(ipe, "JOIN_BUDGET_S", 0)
     _sources(monkeypatch, release, slow={("crtsh", "example.com")})
     search = ipe.start(_settings(HACKERTARGET_ENABLED=False))
+    _until(lambda: _answered(search, subfinder=["example.com"], urlscan=["example.com"]), "the fast sources' answers")
     monkeypatch.setattr(ipe, "finish", mock.Mock(side_effect=RuntimeError("x")))
     found = search.join()
     assert found.names == {} and found.domains == ("example.com",)
@@ -787,6 +927,18 @@ def test_passive_only_names_survive_the_volume_bound_and_count_against_the_run_c
     # The name a target IP showed ranks first, then the passive ones by name.
     assert sorted(block["candidates"]) == ["app.example.com", "b.example.com"]
     assert block["summary"]["truncated"] == 2
+
+
+def test_a_passive_name_ranks_after_every_observed_name_at_the_run_cut(armed, monkeypatch):
+    """Two names Shodan's reverse DNS showed on a target (no live source, no
+    date) and one only the search found: the observed ones are kept, though
+    the passive name sorts first."""
+    monkeypatch.setattr(ih, "MAX_CANDIDATES_PER_RUN", 2)
+    run = _run(ptr={})
+    run["shodan"] = {"reverse_dns": {T1: ["yyy.example.com", "zzz.example.com"]}}
+    block, _, _ = _hook(run, _found({"aaa.example.com": ("passive_crtsh",)}), dns={})
+    assert sorted(block["candidates"]) == ["yyy.example.com", "zzz.example.com"]
+    assert block["summary"]["truncated"] == 1
 
 
 def test_a_name_cut_on_every_ip_stays_when_the_search_found_it(armed, monkeypatch):

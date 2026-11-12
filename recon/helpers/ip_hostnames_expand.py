@@ -18,18 +18,20 @@ returns data, and never touches the recon dict or its file.
 Bounded before any lookup: at most IP_HOSTNAME_PASSIVE_MAX_NAMES names per run
 (never more than the hook's per-run candidate bound), one search per domain
 and source. RedAmon's wildcard-DNS control then marks the names that resolve
-only through a wildcard record under a filter domain; the rule refuses them
-(wildcard_zone). A paused or failing source is a coverage gap, never a failed
-run, and so is one still running when the hook's wait runs out
-(JOIN_BUDGET_S): the hook goes on with the names found so far and the search's
-threads, all daemons, are left behind.
+only through a wildcard record under a filter domain, or sit under a zone it
+could not probe; the rule refuses them (wildcard_zone). A paused or failing
+source is a coverage gap, never a failed run, and so is one still running when
+the hook's wait runs out (JOIN_BUDGET_S): the hook goes on with the names found
+so far and checks them itself. The search's threads, all daemons, are left
+behind; one left behind never starts the wildcard control, whose worker pool
+is the only thread here that the interpreter would wait for at exit.
 """
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
 from itertools import zip_longest
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from recon.helpers import circuit_breaker
 from recon.helpers.ip_hostnames import MAX_CANDIDATES_PER_RUN, PASSIVE_PREFIX, candidate_name, hostname_mode
@@ -336,21 +338,29 @@ def _bounded(names: dict, domains: tuple, settings: dict) -> tuple[list, int]:
 
 
 def _wildcard_zone(names: list, roots: tuple, settings: dict) -> frozenset:
-    """The names the wildcard-DNS control drops, under the filter domains.
-    A control that fails refuses every passive name (I-6): they would be
-    scanned unchecked."""
+    """The passive names check 15 refuses: those the wildcard-DNS control
+    drops, and every name under a zone it could not probe (a failed probe,
+    its zone cap, an RoE-excluded zone). The control keeps the latter and
+    only notes them, which suits a name a target IP showed; a name only an
+    index listed would then be scanned unchecked, so it is refused (I-6). A
+    control that fails refuses every passive name for the same reason."""
     if not names:
         return frozenset()
     from recon.helpers import wildcard_control
     try:
         result = wildcard_control.filter_late_names(list(names), roots=list(roots), settings=settings,
                                                     label="ip_hostnames")
+        zone_of = wildcard_control.assign_zones(list(names), list(roots))
     except Exception as e:  # noqa: BLE001
         print(f"[!][IpNames] Wildcard DNS check of the passive names failed ({type(e).__name__}): "
               f"none of them is scanned")
         _note_gap(PASSIVE_PREFIX + "search", "wildcard DNS check failed; passive names refused", len(names))
         return frozenset(names)
-    return frozenset(result.dropped)
+    unchecked = frozenset(n for n in names if zone_of.get(n) not in result.zones)
+    if unchecked:
+        print(f"[!][IpNames] Wildcard DNS could not be checked for {len(unchecked)} passive name(s): "
+              f"none of them is scanned")
+    return frozenset(result.dropped) | unchecked
 
 
 def new_answers(settings: dict) -> dict:
@@ -373,13 +383,17 @@ def finish(domains, roots, settings: dict, answers: dict, unfinished: Optional[d
                  unfinished=dict(unfinished or {}))
 
 
-def search(domains, roots, settings: dict, answers: Optional[dict] = None) -> Found:
+def search(domains, roots, settings: dict, answers: Optional[dict] = None,
+           claim: Optional[Callable[[], bool]] = None) -> Optional[Found]:
     """Every source over every domain (the sources in parallel), then the cap,
     then the wildcard control. Returns data only.
 
     `answers` (new_answers) receives each source's progress as it goes. The
-    source threads are daemons: a caller that stops waiting leaves them
-    behind, and they never hold the process open at exit."""
+    source threads are daemons and start no thread of their own. `claim()`,
+    asked once the sources are done, says whether this search may still
+    finish; when it says no (the caller stopped waiting and checks the names
+    itself) the search returns None without starting the wildcard control,
+    so a search left behind never holds the process open at exit."""
     domains, roots = tuple(domains), tuple(roots)
     answers = answers if answers is not None else new_answers(settings)
     threads = [threading.Thread(target=_search_source, args=(source, domains, settings, answer),
@@ -389,6 +403,8 @@ def search(domains, roots, settings: dict, answers: Optional[dict] = None) -> Fo
         thread.start()
     for thread in threads:
         thread.join()
+    if claim is not None and not claim():
+        return None
     return finish(domains, roots, settings, answers)
 
 
@@ -404,7 +420,11 @@ def _crashed(domains: tuple, e: BaseException) -> Found:
 
 class PassiveSearch:
     """The search running on its own daemon thread; join() hands its result
-    over once, after at most `budget` seconds."""
+    over once, after at most `budget` seconds of waiting for its sources.
+
+    Exactly one side runs the cap and the wildcard control, decided under
+    `_lock`: the search thread once its sources are done, unless the hook
+    gave up on it first; then the hook, over what came so far."""
 
     def __init__(self, domains, roots, settings: dict, budget: Optional[float] = None):
         self.domains, self.roots, self.settings = tuple(domains), tuple(roots), settings
@@ -413,27 +433,51 @@ class PassiveSearch:
         self._found: Optional[Found] = None
         self._result: Optional[Found] = None
         self._error: Optional[BaseException] = None
+        self._lock = threading.Lock()
+        self._finishing = False
+        self._abandoned = False
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ipn-passive", daemon=True)
         self._thread.start()
 
+    def _claim(self) -> bool:
+        with self._lock:
+            if self._abandoned:
+                return False
+            self._finishing = True
+            return True
+
+    def _abandon(self) -> bool:
+        """Give up on the search unless it is already checking its names."""
+        with self._lock:
+            if not self._finishing:
+                self._abandoned = True
+            return self._abandoned
+
     def _run(self) -> None:
         try:
-            self._result = search(self.domains, self.roots, self.settings, self.answers)
+            self._result = search(self.domains, self.roots, self.settings, self.answers, claim=self._claim)
         except Exception as e:  # noqa: BLE001 - handed to join()
             self._error = e
         finally:
             self._done.set()
 
     def join(self) -> Found:
-        """Wait for the search, at most `budget` seconds, and log its line.
-        Never raises: a crashed search hands over no name, one still running
-        hands over what its sources found so far; both leave a coverage note."""
+        """Wait for the search, at most `budget` seconds for its sources, and
+        log its line. Never raises: a crashed search hands over no name, one
+        whose sources are still running hands over what they found so far;
+        both leave a coverage note. A search already checking its names for
+        wildcard DNS is waited for: that check is the hook's own work
+        otherwise, bounded by its DNS timeouts."""
         if self._found is not None:
             return self._found
         if not self._done.is_set():
             print(f"[*][IpNames] Waiting for the passive search to finish (at most {self.budget:g} s)")
-        if self._done.wait(self.budget):
+        if self._done.wait(self.budget) or not self._abandon():
+            if not self._done.is_set():
+                print(f"[*][IpNames] Passive search over its {self.budget:g} s budget while checking its "
+                      f"names for wildcard DNS: waiting for that check")
+                self._done.wait()
             # It has set the event, its last act: this join cannot wait long.
             self._thread.join()
             found = self._result if self._error is None else _crashed(self.domains, self._error)
@@ -444,17 +488,19 @@ class PassiveSearch:
         return found
 
     def _partial(self) -> Found:
-        """What the sources found before the budget ran out. The threads stay
-        behind and whatever they find later is dropped."""
+        """What the sources found before the budget ran out, checked here. The
+        threads stay behind and whatever they find later is dropped."""
         unfinished = {}
         for source, answer in self.answers.items():
             seen = answer.snapshot()
             pending = tuple(d for d in self.domains if d not in seen.done) if seen.enabled else ()
             if pending:
                 unfinished[source] = pending
+        # Every source may have answered between the timeout and the snapshot,
+        # before the search thread asked to finish: then nothing is missing.
         late = "; ".join(f"{_LABEL[s]} ({', '.join(d)})" for s, d in unfinished.items())
         print(f"[!][IpNames] Passive search over its {self.budget:g} s budget: going on with the names "
-              f"found so far; not finished: {late or 'the wildcard DNS check'}")
+              f"found so far; not finished: {late or 'nothing (its sources had just answered)'}")
         for source, pending in unfinished.items():
             _note_gap(PASSIVE_PREFIX + source, f"not finished in the time budget: {', '.join(pending)}",
                       len(pending))
@@ -466,10 +512,16 @@ class PassiveSearch:
 
 def start(settings: Optional[dict]) -> Optional[PassiveSearch]:
     """Start the passive search, or None: only record_filter with the
-    expansion explicitly on, and only for `*.x` include entries. Never raises."""
+    expansion explicitly on and DNS lookups on, and only for `*.x` include
+    entries. Never raises."""
     try:
         settings = dict(settings or {})
         if hostname_mode(settings) != "record_filter" or settings.get("IP_HOSTNAME_PASSIVE_EXPAND") is not True:
+            return None
+        # The hook's own reading of DNS_ENABLED: off, the rule refuses every
+        # name dns_disabled, so the indexes would be asked for nothing.
+        if settings.get("DNS_ENABLED", True) is not True:
+            print("[-][IpNames] Passive search skipped: DNS lookups are off, so no name it found could be scanned")
             return None
         roots, domains = plan(settings)
         if not domains:

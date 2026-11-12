@@ -388,11 +388,13 @@ def bound(candidates: dict) -> tuple[dict, dict, dict, int]:
             del kept_on[name][ip]
             per_ip_cut[ip] = per_ip_cut.get(ip, 0) + 1
 
-    # A name the passive search found stands without a target IP; it ranks
-    # after every observed name when the per-run limit cuts.
+    # A name the passive search found stands without a target IP.
     survivors = [n for n, seen in kept_on.items() if seen or _passive(candidates[n])]
     dropped = len(candidates) - len(survivors)
     ranked = _ranked(survivors, lambda n: list(kept_on[n].values()))
+    # It ranks after every name a target IP showed, even an undated one no
+    # live source saw, which would otherwise tie with it and lose on its name.
+    ranked.sort(key=lambda n: not kept_on[n])
     run_cut: dict[str, int] = {}
     for name in ranked[MAX_CANDIDATES_PER_RUN:]:
         for ip in kept_on[name]:
@@ -518,8 +520,8 @@ def _evaluate(candidates: dict, combined_result: dict, settings: dict, mode: str
 
     Recording modes resolve nothing (the rule stops at check 4); the
     guardrail and the RoE still come first. `wildcard_zone` is check 15's
-    set: the passive-search names the wildcard-DNS control dropped (empty
-    when the search did not run).
+    set: the passive-search names the wildcard-DNS control dropped or could
+    not check (empty when the search did not run).
     """
     from recon.helpers.roe_scope import _is_roe_excluded
     from recon.helpers.target_admission import target_set
@@ -755,8 +757,9 @@ def hostname_step(combined_result: dict, settings: Optional[dict], *,
     kept, per_ip_cut, run_cut, dropped = bound(candidates)
     edge, failed = _attribution_sets(combined_result)
     # Check 15 refuses a name only the search found that a wildcard alone
-    # answers. A name a target IP showed was observed there: turning the
-    # search on must not cost it the scan it gets without it.
+    # answers, or whose zone could not be checked. A name a target IP showed
+    # was observed there: turning the search on must not cost it the scan it
+    # gets without it.
     wildcard = {n for n in (expansion.wildcard_zone if expansion else ()) if n in kept and not kept[n]["ips_seen"]}
     evaluation, target_ips = _evaluate(kept, combined_result, settings, rule_mode, edge, failed, resolve, wildcard)
     for name, cand in kept.items():
