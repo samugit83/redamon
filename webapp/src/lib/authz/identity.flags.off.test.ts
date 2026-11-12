@@ -77,6 +77,9 @@ const IDENTITY_READERS: string[] = [
   // Step 2.4: fills the instance settings row whatever the switch (the data is ready the day
   // it goes on); with the switch off nothing reads that row.
   'scripts/backfill-rbac-instance-settings.mjs',
+  // Step 2.5: chooses the automatic Root whatever the switch (ready the day it goes on);
+  // with the switch off no Root power or protection reads it.
+  'scripts/backfill-rbac-root.mjs',
   // The host commands (step 2.7) run whatever the switch: a host reset bumps the session
   // version (the one identity check the switch does not gate) and re-enables the account;
   // check-root / set-root and create-admin's first admin record Root, which takes effect
