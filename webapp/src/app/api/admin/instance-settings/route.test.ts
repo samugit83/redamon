@@ -105,6 +105,7 @@ import { createActAsToken, createToken } from '@/lib/auth'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
+import { clearCapabilityCachesForTests } from '@/lib/authz/capabilities'
 import { CAPTURE_DEFAULTS, CAPTURE_FIELDS } from '@/lib/sharedInstanceSettings'
 
 const CUTOFF = new Date('2026-11-11T08:00:00Z')
@@ -426,5 +427,42 @@ describe('the capture proxy', () => {
   test('values are validated as the settings PUT validates them', async () => {
     await put({ captureProxyRetentionDays: 0, captureProxyScope: 'everything', scaIntelIgnoreSuffixes: 'Good.TEST, bad_value!' })
     expect(h.instance).toMatchObject({ captureProxyRetentionDays: 1, captureProxyScope: 'both', scaIntelIgnoreSuffixes: 'good.test' })
+  })
+})
+
+// Review of step 3.7: with RBAC_IDENTITY_ENABLED on this PUT is the only TrafficMind write (the
+// user settings route answers 409 moved_to_instance_settings), so the capture fields ask
+// platform:traffic_capture of the real person, not the administrator account alone.
+describe('the capture write asks platform:traffic_capture (permissions switch on)', () => {
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true })
+    clearCapabilityCachesForTests()
+    account('admin-um', 'admin', { adminProfileId: 'builtin:user-manager' })
+    account('admin-po', 'admin', { adminProfileId: 'builtin:platform-operator' })
+    h.instance = instanceRow({ captureProxyEnabled: false })
+  })
+
+  test('an admin whose profile lacks it is refused 403 naming it: nothing written, nothing started', async () => {
+    await signIn('admin-um')
+    const res = await put({ captureProxyEnabled: true })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'platform:traffic_capture', fields: ['captureProxyEnabled'] })
+    expect(h.instance).toEqual(instanceRow({ captureProxyEnabled: false }))
+    expect(changes()).toEqual([])
+    expect(h.orch).not.toHaveBeenCalled()
+  })
+
+  test('a profile holding it changes it', async () => {
+    await signIn('admin-po')
+    expect((await put({ captureProxyEnabled: true })).status).toBe(200)
+    expect(h.instance!.captureProxyEnabled).toBe(true)
+    expect(h.orch.mock.calls[0][0]).toMatch(/\/capture-proxy\/start$/)
+  })
+
+  test('switch off: every admin changes it, as before', async () => {
+    setFlagsForTests({ identity: true, permissions: false })
+    await signIn('admin-um')
+    expect((await put({ captureProxyEnabled: true })).status).toBe(200)
+    expect(h.instance!.captureProxyEnabled).toBe(true)
   })
 })

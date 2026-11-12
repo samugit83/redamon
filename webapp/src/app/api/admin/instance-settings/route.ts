@@ -6,6 +6,7 @@ import { loadPrincipal, type Principal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
+import { sessionHolds } from '@/lib/authz/adminPermission'
 import { rootOnlyRefusal, rootStanding, type RootStanding } from '@/lib/authz/rootPowers'
 import {
   changedSecurityPolicyFields, parseSecurityPolicyPatch, securityPolicyView,
@@ -30,7 +31,9 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  *
  * The person is the one signed in, read fresh for a write (T3), never the account an admin
  * acts as (F-15): an admin acting as a member saves here under their own name. An admin
- * changes everything; the tunnel also the member holding the `tunnels` legacy grant, or a
+ * changes everything, the capture fields only holding platform:traffic_capture (every admin
+ * with RBAC_PERMISSIONS_ENABLED off; this is the only TrafficMind write with the identity
+ * switch on); the tunnel also the member holding the `tunnels` legacy grant, or a
  * pre-upgrade account under REDAMON_SHARED_TOOLS_COMPAT (HD-06, T27; owner question OQ-R3,
  * default (a)), who sees and changes only the tunnel. Secrets are answered masked.
  *
@@ -142,7 +145,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   const tunnelChanges = changedTunnelFields(stored, body)
   const capturePatch = parseCapturePatch(body, sanitizeBodyRules)
   const captureChanges = changedCaptureFields(stored, capturePatch, body)
-  if (captureChanges.length && !a.capture) {
+  if (captureChanges.length && !(a.capture && await sessionHolds(a.session, 'platform:traffic_capture', { fresh: true }))) {
     return forbidden('Only an administrator changes the TrafficMind settings.', 'platform:traffic_capture', {
       fields: captureChanges,
     })

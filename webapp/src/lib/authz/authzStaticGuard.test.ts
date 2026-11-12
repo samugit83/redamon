@@ -58,7 +58,10 @@ interface Allowed {
 
 const ALLOWED: Record<string, Allowed> = {
   'src/app/api/admin/instance-settings/route.ts::role_admin': {
-    reason: SHARED_TOOL,
+    reason: 'the administrator account answers the instance settings: the tunnel short-circuit before sharedToolAccess (sharedTools.ts), and ' +
+      "every admin's read of the capture part and the security policy (capture: true). The capture write also asks platform:traffic_capture: " +
+      'with the identity switch on it is the only TrafficMind write (users/[id]/settings answers 409 moved_to_instance_settings). Step 3.9 ' +
+      'replaces the short-circuit and the read with the platform permissions',
     lines: [
       "if (session.role === 'admin') {",
     ],
