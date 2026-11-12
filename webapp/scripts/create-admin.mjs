@@ -23,6 +23,7 @@
 
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { ensureInstanceSettingsRow } from './backfill-rbac-instance-settings.mjs'
 
 const name = process.env.ADMIN_NAME
 const email = process.env.ADMIN_EMAIL
@@ -78,15 +79,15 @@ async function audit(tx, action, targetId, before, after) {
 // or one naming no account. The lock (set-root.mjs takes it too) makes the check
 // below run after any other claim committed, so two at once leave one Root; it is a
 // statement of its own because a statement only sees rows committed before it began.
+// A row no boot has filled yet is created with the tunnel and capture values in force.
 async function claimRootIfNone(tx, userId) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('rbac-root'))`
+  await ensureInstanceSettingsRow(tx)
   return (await tx.$executeRaw`
-    INSERT INTO instance_settings (id, root_user_id, root_confirmed_at, root_assigned_by, updated_at)
-    VALUES ('instance', ${userId}, now(), 'install', now())
-    ON CONFLICT (id) DO UPDATE SET root_user_id = EXCLUDED.root_user_id, root_confirmed_at = now(),
+    UPDATE instance_settings SET root_user_id = ${userId}, root_confirmed_at = now(),
       root_assigned_by = 'install', updated_at = now()
-    WHERE instance_settings.root_user_id IS NULL
-       OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = instance_settings.root_user_id)`) > 0
+    WHERE id = 'instance' AND (root_user_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = instance_settings.root_user_id))`) > 0
 }
 
 let exitCode = 0

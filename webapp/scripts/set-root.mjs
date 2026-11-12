@@ -21,6 +21,7 @@
  */
 
 import { PrismaClient } from '@prisma/client'
+import { ensureInstanceSettingsRow } from './backfill-rbac-instance-settings.mjs'
 
 const email = process.argv[2] || process.env.ROOT_EMAIL
 
@@ -72,10 +73,10 @@ try {
     }
 
     // The lock create-admin.mjs takes to claim Root, then the row lock any other
-    // writer of the singleton meets: the Root read below is the one that is replaced.
+    // writer of the singleton meets: the Root read below is the one that is replaced. A
+    // row no boot has filled yet is created with the tunnel and capture values in force.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('rbac-root'))`
-    await tx.$executeRaw`
-      INSERT INTO instance_settings (id, updated_at) VALUES ('instance', now()) ON CONFLICT (id) DO NOTHING`
+    await ensureInstanceSettingsRow(tx)
     const [current] = await tx.$queryRaw`
       SELECT root_user_id, root_confirmed_at, root_assigned_by FROM instance_settings
       WHERE id = 'instance' FOR UPDATE`

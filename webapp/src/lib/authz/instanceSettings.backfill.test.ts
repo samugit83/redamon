@@ -14,10 +14,12 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { Prisma } from '@prisma/client'
 import {
-  CAPTURE_DEFAULTS, CAPTURE_FIELDS, CAPTURE_ROW_ORDER, LOCK_KEY, MARKER_ACTION, SINGLETON_ID,
+  CAPTURE_DEFAULTS, CAPTURE_FIELDS, CAPTURE_ROW_ORDER, JSON_FIELDS, LOCK_KEY, MARKER_ACTION, SINGLETON_ID,
   TUNNEL_CANDIDATE_WHERE, TUNNEL_DEFAULTS, TUNNEL_FIELDS, TUNNEL_ROW_ORDER,
-  backfillRbacInstanceSettings, failureReason, identitySwitchOn, run,
+  backfillRbacInstanceSettings, columnOf, deriveInstanceValues, ensureInstanceSettingsRow, failureReason,
+  identitySwitchOn, run,
 } from '../../../scripts/backfill-rbac-instance-settings.mjs'
 import * as lib from '@/lib/sharedInstanceSettings'
 import { parsePrismaModels } from './__testing__/prismaSchema'
@@ -407,6 +409,145 @@ describe('backfillRbacInstanceSettings', () => {
     })
     expect(failureReason(err)).toBe('PrismaClientValidationError')
     expect(failureReason(new Error('relation "instance_settings"\n does not exist'))).toBe('relation "instance_settings" does not exist')
+  })
+})
+
+describe('ensureInstanceSettingsRow: the row the host commands record Root in', () => {
+  const models = parsePrismaModels(readFileSync(path.resolve(__dirname, '../../../prisma/schema.prisma'), 'utf8'))
+  const fieldOfColumn = Object.fromEntries(
+    Object.entries(models.InstanceSettings.fields).map(([f, def]) => [def.column, f]))
+  const copied = [...TUNNEL_FIELDS, 'tunnelSourceUserId', ...CAPTURE_FIELDS, 'captureSourceUserId']
+
+  // create-admin's and set-root's transaction: their raw statements, rebuilt as Prisma
+  // builds them, over the same user rows as the backfill's double.
+  function hostTx(rowPresent: boolean) {
+    const statements: Prisma.Sql[] = []
+    const tx = {
+      $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        statements.push(Prisma.sql(strings, ...(values as Prisma.Sql[])))
+        return rowPresent ? [{ '?column?': 1 }] : []
+      },
+      $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        statements.push(Prisma.sql(strings, ...(values as Prisma.Sql[])))
+        return 1
+      },
+      userSettings: {
+        findMany: async ({ where, orderBy, select }: { where: Where; orderBy: OrderBy; select: Row }) =>
+          sorted(db.settings.filter((r) => matches(r, where)), orderBy).map((r) => project(r, select)),
+      },
+      user: {
+        findMany: async ({ where, select }: { where: Where; select: Row }) =>
+          db.users.filter((r) => matches(r, where)).map((r) => project(r, select)),
+      },
+    }
+    return { tx, statements }
+  }
+
+  /** The INSERT's row by schema field, plus which fields it cast to jsonb. */
+  function insertedRow(statement: Prisma.Sql) {
+    const m = statement.sql.match(/INSERT INTO instance_settings \(([^)]*)\)\s*VALUES \((.*)\)\s*ON CONFLICT \(id\) DO NOTHING/s)
+    expect(m, statement.sql).not.toBeNull()
+    const columns = m![1].split(',').map((c) => c.trim())
+    const slots = m![2].split(',').map((s) => s.trim())
+    expect(slots).toHaveLength(columns.length)
+    const values = [...statement.values]
+    const row: Row = {}
+    const jsonFields: string[] = []
+    columns.forEach((column, i) => {
+      const field = fieldOfColumn[column]
+      expect(field, `${column} is no InstanceSettings column`).toBeDefined()
+      if (slots[i] === 'now()') { row[field] = 'now()'; return }
+      expect(slots[i]).toMatch(/^\?(::jsonb)?$/)
+      const value = values.shift()
+      if (slots[i] === '?::jsonb') jsonFields.push(field)
+      row[field] = slots[i] === '?::jsonb' ? JSON.parse(String(value)) : value
+    })
+    expect(values).toEqual([])
+    return { row, jsonFields }
+  }
+
+  test('a missing row is created with the values the backfill copies, never the schema defaults', async () => {
+    account('m-t'); account('admin-a', 'admin'); account('admin-b', 'admin')
+    settingsRow('m-t', { tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok-t' })
+    settingsRow('admin-a', {
+      captureProxyPort: 9191, captureProxyBodyRules: { 'text/html': 'skip' }, captureEgressBlockPrivate: false,
+      scaIntelIgnoreSuffixes: 'example.test', updatedAt: at('2026-06-01T09:00:00Z'),
+    })
+    settingsRow('admin-b', { captureProxyPort: 7000, updatedAt: at('2026-02-01T09:00:00Z') })
+    const { tx, statements } = hostTx(false)
+
+    await expect(ensureInstanceSettingsRow(tx)).resolves.toBe(true)
+
+    expect(statements).toHaveLength(2)
+    const { row } = insertedRow(statements[1])
+    expect(row).toEqual({
+      id: SINGLETON_ID, updatedAt: 'now()',
+      ...TUNNEL_DEFAULTS, tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok-t', tunnelSourceUserId: 'm-t',
+      ...CAPTURE_DEFAULTS, captureProxyPort: 9191, captureProxyBodyRules: { 'text/html': 'skip' },
+      captureEgressBlockPrivate: false, scaIntelIgnoreSuffixes: 'example.test', captureSourceUserId: 'admin-a',
+    })
+    // The backfill's own pick, field for field: its rules decide, not a copy of them.
+    const { data } = await deriveInstanceValues(hostTx(false).tx)
+    expect(row).toEqual({ id: SINGLETON_ID, updatedAt: 'now()', ...data })
+    expect(db.audit).toEqual([])
+    expect(db.userWrites).toBe(0)
+  })
+
+  test('every column it names is the @map of its schema field, the Json ones cast, no Root column', async () => {
+    account('admin-a', 'admin')
+    settingsRow('admin-a')
+    const { tx, statements } = hostTx(false)
+    await ensureInstanceSettingsRow(tx)
+    const { row, jsonFields } = insertedRow(statements[1])
+    expect(Object.keys(row).sort()).toEqual(['id', 'updatedAt', ...copied].sort())
+    for (const f of copied) expect(columnOf(f), f).toBe(models.InstanceSettings.fields[f].column)
+    const jsonTyped = copied.filter((f) => models.InstanceSettings.fields[f].type === 'Json')
+    expect(jsonFields.sort()).toEqual(jsonTyped.sort())
+    expect([...JSON_FIELDS].sort()).toEqual(jsonTyped.sort())
+  })
+
+  test('a row already there is left as it is: nothing derived, nothing written', async () => {
+    account('admin-a', 'admin')
+    settingsRow('admin-a', { captureProxyPort: 9191 })
+    const { tx, statements } = hostTx(true)
+    const spy = vi.spyOn(tx.userSettings, 'findMany')
+    await expect(ensureInstanceSettingsRow(tx)).resolves.toBe(false)
+    expect(statements).toHaveLength(1)
+    expect(statements[0].sql).toMatch(/^SELECT 1 FROM instance_settings WHERE id = \?$/)
+    expect(statements[0].values).toEqual([SINGLETON_ID])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  test('the next boot fills the row it created and records it; the Root columns stay', async () => {
+    account('m-t'); account('admin-a', 'admin')
+    settingsRow('m-t', { tunnelsEnabled: true, chiselServerUrl: 'https://chisel.t.test' })
+    settingsRow('admin-a', { captureProxyEnabled: false, updatedAt: at('2026-06-01T09:00:00Z') })
+    const { tx, statements } = hostTx(false)
+    await ensureInstanceSettingsRow(tx)
+    const { row } = insertedRow(statements[1])
+    delete row.updatedAt
+    const root = { rootUserId: 'admin-a', rootConfirmedAt: at('2026-11-12T08:00:00Z'), rootAssignedBy: 'install' }
+    db.instance = { ...row, ...root, updatedById: null }
+    const before = structuredClone(db.instance)
+
+    const r = await backfillRbacInstanceSettings(db, ON)
+
+    expect(r).toMatchObject({ marker: true, identity: true, tunnelSourceUserId: 'm-t', captureSourceUserId: 'admin-a' })
+    const { updatedAt: _ignored, ...after } = instance()
+    expect(after).toEqual(before)
+    expect(markers()).toHaveLength(1)
+  })
+
+  test('create-admin and set-root create the row only through it, after the Root lock', () => {
+    for (const name of ['create-admin.mjs', 'set-root.mjs']) {
+      const text = readFileSync(path.resolve(__dirname, '../../../scripts', name), 'utf8')
+      expect(text, name).toContain("import { ensureInstanceSettingsRow } from './backfill-rbac-instance-settings.mjs'")
+      expect(text, name).not.toMatch(/INSERT INTO instance_settings/i)
+      const lock = text.indexOf("pg_advisory_xact_lock(hashtext('rbac-root'))")
+      const ensure = text.indexOf('await ensureInstanceSettingsRow(tx)')
+      expect(lock, name).toBeGreaterThan(0)
+      expect(ensure, name).toBeGreaterThan(lock)
+    }
   })
 })
 

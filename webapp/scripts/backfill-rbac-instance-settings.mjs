@@ -23,14 +23,14 @@
  * copies booting together fill it once. It is skipped only when the marker exists AND the
  * row is there: a downgrade's `db push` drops the table while the AuditLog marker survives,
  * so a re-upgrade fills it again. The host commands (set-root, create-admin) may create the
- * row first, with defaults: without a marker the backfill fills that row, never its Root
- * columns. No cutoff row: a user row saved after the first boot holds the values in force
- * then, so it is copied too.
+ * row first (ensureInstanceSettingsRow: these same values, no marker): the backfill fills
+ * that row again and records it, never touching its Root columns. No cutoff row: a user
+ * row saved after the first boot holds the values in force then, so it is copied too.
  *
  * Runs from the webapp entrypoint AFTER `db push`, and from the dev container's command.
  * Never fatal: a failure is logged and the next boot tries again (no marker was written).
  */
-import { PrismaClient } from '@prisma/client'
+import { Prisma, PrismaClient } from '@prisma/client'
 import { pathToFileURL } from 'node:url'
 
 export const LOCK_KEY = 'system.rbac_instance_settings'
@@ -104,6 +104,36 @@ export async function deriveInstanceValues(tx) {
     tunnelCandidates: tunnelRows.map((r) => r.userId),
     captureCandidates: captureRows.map((r) => r.userId),
   }
+}
+
+// The copied fields the schema types Json: sent as text and cast.
+export const JSON_FIELDS = ['captureProxyBodyRules']
+
+/** The instance_settings column of a copied field: its @map (a test holds them equal). */
+export const columnOf = (field) => field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+
+/**
+ * Creates the row, when missing, with the values this backfill copies, for the host
+ * commands (create-admin, set-root): they record Root in it and can run before any boot
+ * filled it (an upgrade's first `update`, or a boot whose backfill failed). A row of
+ * schema defaults would be the readers' truth once the switch is on: the tunnel would read
+ * empty and capture would run with the defaults. No marker: the next boot still fills the
+ * row and records it. Raw SQL, as the host commands write the identity columns: they also
+ * run from a checkout on an older image's client (tests/rbac_scripts_db_test.sh).
+ * Returns whether it created the row.
+ */
+export async function ensureInstanceSettingsRow(tx) {
+  const [present] = await tx.$queryRaw`SELECT 1 FROM instance_settings WHERE id = ${SINGLETON_ID}`
+  if (present) return false
+  const { data } = await deriveInstanceValues(tx)
+  const fields = Object.keys(data)
+  const values = fields.map((f) => (JSON_FIELDS.includes(f)
+    ? Prisma.sql`${JSON.stringify(data[f])}::jsonb`
+    : Prisma.sql`${data[f]}`))
+  return (await tx.$executeRaw`
+    INSERT INTO instance_settings (id, updated_at, ${Prisma.raw(fields.map(columnOf).join(', '))})
+    VALUES (${SINGLETON_ID}, now(), ${Prisma.join(values)})
+    ON CONFLICT (id) DO NOTHING`) > 0
 }
 
 const same = (a, b) => (isPlainObject(a) || isPlainObject(b) ? JSON.stringify(a) === JSON.stringify(b) : a === b)

@@ -6,7 +6,7 @@
 # The webapp/scripts/*.mjs host scripts run as the host operator (`./redamon.sh
 # create-admin`, `reset-password`, `set-root`, `update`, deploy.sh bootstrap_admin),
 # so no route test reaches them. This runs THIS checkout's copy of each script (sent
-# on stdin, so a stale webapp image cannot hide a change) inside the webapp
+# with the scripts it imports, so a stale webapp image cannot hide a change) inside the webapp
 # container, against a throwaway schema (`rbac_scripts_<pid>`, dropped on exit) that
 # the image's Prisma CLI creates from THIS checkout's schema.prisma, so the test does
 # not depend on what the live database was last pushed with. No real row is read or
@@ -23,7 +23,9 @@
 #   disabled or invited account usable again. A new admin is the confirmed Root when
 #   the instance has none; set-root moves Root (both accounts signed out, the new
 #   Root's MCP tokens revoked) or confirms the Root chosen at boot; check-root prints
-#   who is Root and who could be.
+#   who is Root and who could be. On an instance whose settings row no boot has filled
+#   yet, the script that records Root creates the row with the tunnel and capture values
+#   in force in the user rows (what the boot's backfill copies), never schema defaults.
 #
 # Requires the stack's postgres and webapp containers:
 #   docker compose up -d postgres webapp
@@ -78,14 +80,20 @@ fi
 
 # run_script <script> [KEY=VALUE ... [-- ARG ...]]: runs webapp/scripts/<script>.mjs,
 # environment first, then its command-line arguments; sets OUT (stdout+stderr) and RC.
+# Every checkout script travels with it (a script imports its siblings, e.g. the instance
+# settings backfill) into a folder of its own under the image's /app/scripts, where their
+# bare imports resolve to the image's node_modules; the folder is removed after the run.
 run_script() {
   local script=$1 kv
   shift
   local -a envs=(-e "RBAC_TEST_SCHEMA=$S")
   while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=(-e "$1"); shift; done
   [ "${1:-}" = "--" ] && shift
-  OUT=$(docker compose exec -T "${envs[@]}" webapp sh -c "$SCHEMA_URL"'
-DATABASE_URL="$u" exec node --input-type=module - "$@"' sh "$@" <"webapp/scripts/$script.mjs" 2>&1)
+  OUT=$( (cd webapp/scripts && tar -cf - ./*.mjs) | docker compose exec -T "${envs[@]}" webapp sh -c "$SCHEMA_URL"'
+d=$(mktemp -d /app/scripts/.rbac-scripts-test.XXXXXX) || exit 97
+tar -xf - -C "$d" || { rm -rf "$d"; exit 97; }
+DATABASE_URL="$u" node "$d/$0.mjs" "$@"; rc=$?
+rm -rf "$d"; exit $rc' "$script" "$@" 2>&1)
   RC=$?
 }
 bhash()  { docker compose exec -T -e "P=$1" webapp node -e \
@@ -419,6 +427,56 @@ expect_eq "set-root refuses, changing nothing" "1|$SV_BEFORE" "$RC|$(sv_of "${P}
 q "alter table $S.instance_settings_hidden rename to instance_settings" >/dev/null
 
 echo
+echo "-- a host command before any boot filled the instance settings: the values in force, not defaults --"
+# An upgrade's first `update`, or a boot whose instance settings backfill failed, leaves no
+# row. With the identity switch on the readers take any row as the truth, so a row of
+# schema defaults would read an empty tunnel and the default capture policy.
+q "delete from $S.instance_settings" >/dev/null
+TUNNEL_TOKEN="fake-ngrok-token-$$"
+add_user "${P}tu" "$E-tunnel@e2e.local" standard "$(bhash "$PW_NEW")"
+add_user "${P}ca" "$E-capture@e2e.local" admin "$(bhash "$PW_NEW")"
+q "insert into $S.user_settings (id, user_id, updated_at, tunnels_enabled, ngrok_authtoken)
+   values ('${P}s-tu', '${P}tu', now(), true, '$TUNNEL_TOKEN')" >/dev/null
+q "insert into $S.user_settings (id, user_id, updated_at, capture_proxy_store_bodies, capture_proxy_port,
+     capture_proxy_body_rules, capture_egress_block_private, sca_intel_ignore_suffixes)
+   values ('${P}s-ca', '${P}ca', now() + interval '1 hour', false, 9191,
+     '{\"text/html\": \"skip\"}', false, 'example.test')" >/dev/null
+# <tunnels on>|<token>|<tunnel source>|<store bodies>|<port>|<body rules>|<block private>|<suffixes>|<capture source>|<admin-written>
+settings_of() { q "select tunnels_enabled || '|' || ngrok_authtoken || '|' || coalesce(tunnel_source_user_id, '-') || '|' ||
+                 capture_proxy_store_bodies || '|' || capture_proxy_port || '|' || capture_proxy_body_rules::text || '|' ||
+                 capture_egress_block_private || '|' || sca_intel_ignore_suffixes || '|' ||
+                 coalesce(capture_source_user_id, '-') || '|' || (updated_by_id is not null)
+               from $S.instance_settings where id = 'instance'"; }
+IN_FORCE="true|$TUNNEL_TOKEN|${P}tu|false|9191|{\"text/html\": \"skip\"}|false|example.test|${P}ca|false"
+# Every capture, egress and SCA column of the admin row saved last against the instance row.
+capture_drift() { q "select count(*) || '|' || count(*) filter (where to_jsonb(i) -> e.key is distinct from e.value)
+                      from $S.instance_settings i, $S.user_settings c, jsonb_each(to_jsonb(c)) e
+                      where c.user_id = '${P}ca' and (e.key like 'capture\\_%' or e.key = 'sca_intel_ignore_suffixes')"; }
+markers() { q "select count(*) from $S.audit_log where action = 'system.rbac_instance_settings_backfill'"; }
+
+run_script create-admin "ADMIN_NAME=Before Boot" "ADMIN_EMAIL=$E-before-boot@e2e.local" "ADMIN_PASSWORD=$PW_NEW"
+expect_eq "create-admin with no settings row makes the new admin the confirmed Root" \
+  "0|$(id_of "$E-before-boot@e2e.local")|true|install" "$RC|$(root_of)"
+expect_eq "...in a row holding the tunnel and capture values in force, with their sources" "$IN_FORCE" "$(settings_of)"
+expect_eq "...every capture, egress and SCA value of the admin row saved last" "24|0" "$(capture_drift)"
+expect_eq "...and no backfill marker: the next boot still fills the row and records it" "0" "$(markers)"
+
+q "delete from $S.instance_settings" >/dev/null
+run_script set-root "ROOT_EMAIL=$E-capture@e2e.local"
+expect_eq "set-root with no settings row moves Root" "0|${P}ca|true|host" "$RC|$(root_of)"
+expect_eq "...in a row holding the tunnel and capture values in force, with their sources" "$IN_FORCE" "$(settings_of)"
+expect_eq "...every capture, egress and SCA value of the admin row saved last" "24|0" "$(capture_drift)"
+expect_eq "...and no backfill marker" "0" "$(markers)"
+
+q "update $S.instance_settings set ngrok_authtoken = 'admin-set-$$', capture_proxy_port = 9292,
+     updated_by_id = '${P}ca'" >/dev/null
+run_script set-root "ROOT_EMAIL=$E-before-boot@e2e.local"
+expect_eq "set-root with the row present moves Root" "0|$(id_of "$E-before-boot@e2e.local")|true|host" "$RC|$(root_of)"
+expect_eq "...and keeps the row's tunnel and capture values" "admin-set-$$|9292|true" \
+  "$(q "select ngrok_authtoken || '|' || capture_proxy_port || '|' || (updated_by_id is not null)
+        from $S.instance_settings where id = 'instance'")"
+
+echo
 echo "-- two create-admin at once on an instance without Root: one Root --"
 q "delete from $S.instance_settings" >/dev/null
 for n in 1 2; do
@@ -439,9 +497,9 @@ expect_eq "one Root assignment is audited" "1" \
 echo
 echo "-- what no script may touch --"
 expect_eq "an uninvolved account's MCP token stays live" "1" "$(live_tokens "${P}o")"
-expect_eq "no audit row holds a hash or a password" "0" \
+expect_eq "no audit row holds a hash, a password or the tunnel token" "0" \
   "$(q "select count(*) from $S.audit_log where coalesce(before::text, '') || coalesce(after::text, '')
-        ~ '\\\$2[aby]\\\$|$PW_NEW|$PW_B|$PW_A|$PW_M|$PW_ROOT|$PW_HELD|admin-passphrase'")"
+        ~ '\\\$2[aby]\\\$|$PW_NEW|$PW_B|$PW_A|$PW_M|$PW_ROOT|$PW_HELD|admin-passphrase|$TUNNEL_TOKEN'")"
 expect_eq "every audit row is the system's" "0" \
   "$(q "select count(*) from $S.audit_log where source <> 'system' or actor_id is not null")"
 expect_eq "nothing reached the real tables" "0|0" \
