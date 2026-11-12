@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { agentErrorResponse, callAgent } from '../../agentProxy'
 import { codedAgentError } from '../codedAgentError'
@@ -17,8 +17,8 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   if (!projectId) {
     return NextResponse.json({ error: 'projectId required' }, { status: 400 })
   }
-  const __denied = await guardProject(String(projectId))
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:write', { projectId: String(projectId) })
+  if (auth instanceof NextResponse) return auth
   const file = formData.get('file')
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'file required' }, { status: 400 })

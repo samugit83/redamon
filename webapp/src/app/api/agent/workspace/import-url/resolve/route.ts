@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { callAgent } from '../../../agentProxy'
 import { codedAgentError } from '../../codedAgentError'
-import { guardImport, tokenFor, urlProblem } from '../importUrlRequest'
+import { requirePermission } from '@/lib/authz/guards'
+import { importCaller, importProjectProblem, tokenFor, urlProblem } from '../importUrlRequest'
 
 const FAILED = 'Failed to check the link'
 
@@ -14,8 +15,11 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   } catch {
     return NextResponse.json({ error: 'invalid JSON body', code: 'invalid_request' }, { status: 400 })
   }
-  const guard = await guardImport(body?.projectId)
-  if (!guard.ok) return guard.response
+  const missing = importProjectProblem(body?.projectId)
+  if (missing) return missing
+  const auth = await requirePermission(request, 'workspace:import', { projectId: String(body.projectId) })
+  if (auth instanceof NextResponse) return auth
+  const guard = await importCaller(auth)
   const bad = urlProblem(body.url)
   if (bad) return bad
   const url = String(body.url).trim()

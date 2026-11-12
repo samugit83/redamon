@@ -43,8 +43,6 @@ export const GUARD_HELPERS = {
   requireProjectAccess: 'project',
   requireProjectScopedResource: 'project',
   requireProjectOwner: 'project',
-  // importUrlRequest.ts: requireEffectiveUser + requireProjectAccess for the URL-import proxies.
-  guardImport: 'project',
   requireUserAccess: 'user',
   // userSkillRouteGuard.ts: same origin + the effective user is the path's user, no admin bypass.
   requireOwnBrowserRequest: 'user',

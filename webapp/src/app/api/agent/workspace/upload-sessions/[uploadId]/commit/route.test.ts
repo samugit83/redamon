@@ -11,6 +11,7 @@ const mockGuard = vi.fn()
 const mockAudit = vi.fn()
 const mockSession = vi.fn()
 const mockEffective = vi.fn()
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => mockGuard(...a) }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => mockAudit(...a) }))
 vi.mock('@/lib/session', () => ({

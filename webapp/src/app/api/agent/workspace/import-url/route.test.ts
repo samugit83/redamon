@@ -11,6 +11,7 @@ const TOKEN = 'TEST-SENTINEL-TOKEN-0000'
 const h = vi.hoisted(() => ({
   effective: vi.fn(), access: vi.fn(), session: vi.fn(), audit: vi.fn(), findUnique: vi.fn(),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.effective(),
   requireProjectAccess: (...a: unknown[]) => h.access(...a),

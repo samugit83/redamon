@@ -3,6 +3,7 @@ import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { conversationTitleFromUserMessage } from '@/lib/agentQueryEnvelope'
 
 // POST /api/conversations/by-session/[sessionId]/messages
@@ -20,6 +21,8 @@ export async function POST(
       if (eff instanceof NextResponse) return eff
       const guard = await requireConversationAccessBySession(eff, sessionId)
       if (guard instanceof NextResponse) return guard
+      const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+      if (auth instanceof NextResponse) return auth
     }
 
     const body = await request.json()

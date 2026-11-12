@@ -3,6 +3,7 @@ import { internalError, safeErrorCode, upstreamFailure } from '@/lib/routeErrors
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '../../graph/neo4j'
 import { requireEffectiveUser, requireConversationAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 
 /** A cleanup step that failed while the conversation itself was deleted. */
@@ -25,6 +26,8 @@ export async function GET(
     if (eff instanceof NextResponse) return eff
     const guard = await requireConversationAccess(eff, id)
     if (guard instanceof NextResponse) return guard
+    const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+    if (auth instanceof NextResponse) return auth
 
     const conversation = await prisma.conversation.findUnique({
       where: { id },
@@ -60,6 +63,8 @@ export async function PATCH(
     if (eff instanceof NextResponse) return eff
     const guard = await requireConversationAccess(eff, id)
     if (guard instanceof NextResponse) return guard
+    const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+    if (auth instanceof NextResponse) return auth
 
     const body = await request.json()
 
@@ -94,6 +99,8 @@ export async function DELETE(
     if (eff instanceof NextResponse) return eff
     const guard = await requireConversationAccess(eff, id)
     if (guard instanceof NextResponse) return guard
+    const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Fetch conversation to get sessionId (= chain_id in Neo4j)
     const conversation = await prisma.conversation.findUnique({

@@ -24,6 +24,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => mockIsInternal(...a) }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overConversation()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
   requireConversationAccess: (...a: unknown[]) => mockRequireConvAccess(...a),

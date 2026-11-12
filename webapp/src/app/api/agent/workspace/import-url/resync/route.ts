@@ -5,7 +5,8 @@ import { isGithubFamilyHost } from '@/lib/workspaceImport/githubHosts'
 import { githubTokenForImport } from '@/lib/workspaceImport/githubToken'
 import { callAgent } from '../../../agentProxy'
 import { codedAgentError } from '../../codedAgentError'
-import { guardImport } from '../importUrlRequest'
+import { requirePermission } from '@/lib/authz/guards'
+import { importCaller, importProjectProblem } from '../importUrlRequest'
 
 const FAILED = 'Failed to start the re-sync'
 
@@ -19,8 +20,11 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   } catch {
     return NextResponse.json({ error: 'invalid JSON body', code: 'invalid_request' }, { status: 400 })
   }
-  const guard = await guardImport(body?.projectId)
-  if (!guard.ok) return guard.response
+  const missing = importProjectProblem(body?.projectId)
+  if (missing) return missing
+  const auth = await requirePermission(request, 'workspace:import', { projectId: String(body.projectId) })
+  if (auth instanceof NextResponse) return auth
+  const guard = await importCaller(auth)
   if (typeof body.path !== 'string' || !body.path) {
     return NextResponse.json({ error: 'path required', code: 'invalid_request' }, { status: 400 })
   }

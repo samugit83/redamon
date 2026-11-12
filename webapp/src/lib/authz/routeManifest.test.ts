@@ -178,6 +178,7 @@ describe('the manifest and the route tree', () => {
  * call `session`, and the route checks no project.
  */
 const CAPABILITY_ONLY: Record<string, string> = {
+  '/api/agent/files agent:chat': 'the in-chat download of a file the agent wrote under /tmp, which names no project (older messages): the chat capability alone; with a projectId the route asks workspace:read on it (step 3.9)',
   '/api/nuclei-templates scan:custom_templates': 'a template belongs to an account, not a project: uploading or deleting one is the capability alone; selecting it for a project is the project PUT\'s check (templateSelectionRefusal, under project:settings) (step 3.8)',
   '/api/reports reports:read': 'the list of every report over the projects the account can see (visibleProjectsWhere): no one project to name; opening or deleting one asks on its project (step 3.9)',
 }
@@ -378,7 +379,6 @@ describe('the generator', () => {
     const cases: [string, string][] = [
       ['requireProjectScopedResource', 'project'],
       ['requireProjectOwner', 'project'],
-      ['guardImport', 'project'],
       ['requireUserAccess', 'user'],
       ['requireOwnBrowserRequest', 'user'],
       ['lifecyclePost', 'admin-db'],

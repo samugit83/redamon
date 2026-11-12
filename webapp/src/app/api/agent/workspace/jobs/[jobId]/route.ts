@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { agentErrorResponse, callAgent } from '../../../agentProxy'
 
@@ -12,8 +12,8 @@ export const GET = withRouteErrors(FAILED, async (
 ) => {
   const { jobId } = await params
   const projectId = request.nextUrl.searchParams.get('projectId')
-  const __denied = await guardProject(projectId || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:read', { projectId: projectId || '' })
+  if (auth instanceof NextResponse) return auth
 
   if (!projectId) {
     return NextResponse.json({ error: 'projectId required' }, { status: 400 })

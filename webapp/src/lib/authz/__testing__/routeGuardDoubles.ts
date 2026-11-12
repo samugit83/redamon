@@ -110,3 +110,36 @@ export function overProjectOwner(): Promise<Guards> {
     return context(permission, { userId: caller.userId }, { id: caller.projectId, userId: caller.userId })
   })
 }
+
+/**
+ * For a test of a conversation route (step 3.9), which decided who passes through the conversation
+ * guard (`requireEffectiveUser` + `requireConversationAccess[BySession]`, doubled): the route then
+ * asks `agent:chat` on the conversation's project, which that guard already found the caller's.
+ * The context's effective user is the one `requireEffectiveUser` answers, its project the one named.
+ */
+export function overConversation(): Promise<Guards> {
+  return withDouble(async (_request: Request, permission: PermissionId, opts: RequirePermissionOptions = {}) => {
+    assertKnownPermission(permission)
+    if (!('projectId' in opts)) throw new Error('overConversation doubles project checks only')
+    const access = await import('@/lib/access')
+    const eff = await access.requireEffectiveUser()
+    if (isResponse(eff)) return asNextResponse(eff)
+    return context(permission, eff, { id: opts.projectId ?? '', userId: eff.userId })
+  })
+}
+
+/**
+ * For a test that doubles `guardProject` of a route that also asks a permission with no project
+ * (`/api/agent/files` without a projectId, step 3.9): a project check is `guardProject(projectId)`,
+ * a capability alone passes holding every permission, as an owner on *Default member* does.
+ */
+export function overGuardProjectOrCapability(): Promise<Guards> {
+  return withDouble(async (_request: Request, permission: PermissionId, opts: RequirePermissionOptions = {}) => {
+    assertKnownPermission(permission)
+    if (!('projectId' in opts)) return context(permission, { userId: '' }, null)
+    const { guardProject } = await import('@/lib/access')
+    const denied = await guardProject(opts.projectId ?? '')
+    if (denied) return asNextResponse(denied)
+    return context(permission, { userId: '' }, { id: opts.projectId ?? '', userId: '' })
+  })
+}

@@ -14,6 +14,7 @@ const mockProject = vi.fn()
 const mockSettings = vi.fn()
 const mockAgentFetch = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overProjectOwner()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: () => mockEff() }))
 vi.mock('@/lib/prisma', () => ({
   default: {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { buildTrafficWhere } from '../route'
 
 export const runtime = 'nodejs'
@@ -33,10 +33,9 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   const { projectId } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, projectId)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'traffic:export', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   const sp = request.nextUrl.searchParams
   const format = sp.get('format') === 'json' ? 'json' : 'csv'

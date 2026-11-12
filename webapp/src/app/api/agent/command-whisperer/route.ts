@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner } from '@/lib/triageClient'
+import { requirePermission } from '@/lib/authz/guards'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
 import { callFeatureAgent } from '@/lib/featureAgentCall'
 
@@ -24,8 +24,9 @@ export async function POST(request: NextRequest) {
     prompt?: unknown; session_type?: unknown; project_id?: unknown
   }
 
-  const caller = await requireProjectOwner(typeof projectId === 'string' ? projectId : null)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'agent:assistants', { projectId: typeof projectId === 'string' ? projectId : null })
+  if (auth instanceof NextResponse) return auth
+  const caller = { userId: auth.access!.project.userId, projectId: auth.access!.project.id }
 
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return NextResponse.json({ error: 'prompt is required' }, { status: 400 })

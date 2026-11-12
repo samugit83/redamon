@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const neo4jRun = vi.fn(async () => ({ records: [] }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProjectOrCapability()))
 vi.mock('@/lib/access', () => ({
   guardProject: vi.fn(async () => null),
   requireEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),

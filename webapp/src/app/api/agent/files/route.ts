@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { agentErrorResponse } from '../agentProxy'
 import { callAgentForDownload, safeDownloadName, streamDownload } from '../downloadProxy'
@@ -9,13 +9,14 @@ const FAILED = 'Failed to download file'
 export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
   const path = request.nextUrl.searchParams.get('path')
   const projectId = request.nextUrl.searchParams.get('projectId')
-  // projectId is optional here: when present we enforce project ownership; when
-  // absent this is the legacy /tmp-only in-chat download flow (session-gated by
-  // middleware), which has no project to scope to.
-  if (projectId) {
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
-  }
+  // projectId is optional here: when present the caller reads that project's
+  // workspace; when absent this is the legacy /tmp-only in-chat download flow,
+  // which has no project to scope to: a file the agent wrote in a chat, so the
+  // person must be one who talks to the agent.
+  const auth = projectId
+    ? await requirePermission(request, 'workspace:read', { projectId })
+    : await requirePermission(request, 'agent:chat')
+  if (auth instanceof NextResponse) return auth
 
   if (!path) {
     return NextResponse.json({ error: 'Missing path parameter' }, { status: 400 })

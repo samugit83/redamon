@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { callAgent } from '../../agentProxy'
 import { codedAgentError } from '../codedAgentError'
@@ -18,8 +18,8 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
     || typeof size !== 'number' || !Number.isInteger(size)) {
     return NextResponse.json({ error: 'projectId, name, size and kind required', code: 'invalid_request' }, { status: 400 })
   }
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:write', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   const call = await callAgent('/workspace/upload-sessions', {
     method: 'POST',

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { agentErrorResponse, callAgent } from '../../agentProxy'
 
@@ -7,8 +7,8 @@ const FAILED = 'Failed to list workspace'
 
 export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
   const projectId = request.nextUrl.searchParams.get('projectId')
-  const __denied = await guardProject(projectId || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:read', { projectId: projectId || '' })
+  if (auth instanceof NextResponse) return auth
   const path = request.nextUrl.searchParams.get('path') ?? '.'
 
   if (!projectId) {

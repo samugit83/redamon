@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { callAgent } from '../../../../agentProxy'
 import { codedAgentError } from '../../../codedAgentError'
@@ -20,8 +20,8 @@ export const PUT = withRouteErrors(FAILED, async (
   const { uploadId } = await params
   const projectId = request.nextUrl.searchParams.get('projectId') || ''
   const offset = request.nextUrl.searchParams.get('offset') || ''
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:write', { projectId })
+  if (auth instanceof NextResponse) return auth
   if (!UPLOAD_ID.test(uploadId || '')) {
     return NextResponse.json({ error: 'Upload session not found', code: 'session_not_found' }, { status: 404 })
   }

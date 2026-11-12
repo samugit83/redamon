@@ -23,6 +23,7 @@ const { db, readBody } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/prisma', () => ({ default: db }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'u1' }),
   requireProjectAccess: vi.fn().mockResolvedValue({ project: { id: 'p1', userId: 'u1' } }),

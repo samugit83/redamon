@@ -6,6 +6,7 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn(async () => null) }))
 
 import { POST } from './route'

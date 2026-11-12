@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 // GET /api/conversations?projectId=X (conversations are scoped to the effective
 // user; the client-supplied userId is ignored as an auth input).
@@ -17,10 +17,9 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'agent:chat', { projectId })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const conversations = await prisma.conversation.findMany({
       where: { projectId, userId: eff.userId },
@@ -59,10 +58,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'agent:chat', { projectId })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     // Owner is the effective user, never a client-supplied body value.
     const conversation = await prisma.conversation.create({

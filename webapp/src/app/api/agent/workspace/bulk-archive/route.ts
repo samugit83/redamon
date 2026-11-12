@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { agentErrorResponse } from '../../agentProxy'
 import { callAgentForDownload, safeDownloadName, streamDownload } from '../../downloadProxy'
@@ -19,8 +19,8 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   if (!body.projectId || !Array.isArray(body.paths) || body.paths.length === 0) {
     return NextResponse.json({ error: 'projectId + non-empty paths required' }, { status: 400 })
   }
-  const __denied = await guardProject(body.projectId || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:read', { projectId: body.projectId || '' })
+  if (auth instanceof NextResponse) return auth
 
   // The agent builds the whole archive before its first byte.
   const call = await callAgentForDownload(request, '/workspace/bulk-archive', {

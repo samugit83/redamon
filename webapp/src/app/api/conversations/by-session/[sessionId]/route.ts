@@ -3,6 +3,7 @@ import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 // GET /api/conversations/by-session/[sessionId] - Lookup by session.
 // The agent persists chat via this route with X-Internal-Key (carve-out); every
@@ -19,6 +20,8 @@ export async function GET(
       if (eff instanceof NextResponse) return eff
       const guard = await requireConversationAccessBySession(eff, sessionId)
       if (guard instanceof NextResponse) return guard
+      const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+      if (auth instanceof NextResponse) return auth
     }
 
     const conversation = await prisma.conversation.findUnique({
@@ -56,6 +59,8 @@ export async function PATCH(
       if (eff instanceof NextResponse) return eff
       const guard = await requireConversationAccessBySession(eff, sessionId)
       if (guard instanceof NextResponse) return guard
+      const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
+      if (auth instanceof NextResponse) return auth
     }
 
     const body = await request.json()

@@ -9,7 +9,7 @@
  * (mcp_plan.md P0-3).
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 
@@ -32,9 +32,6 @@ function providerFacts(json: Record<string, unknown> | null): Record<string, unk
 }
 
 export async function POST(request: NextRequest) {
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-
   let body: Record<string, unknown>
   try {
     body = await request.json()
@@ -43,8 +40,10 @@ export async function POST(request: NextRequest) {
   }
 
   const projectId = typeof body.project_id === 'string' ? body.project_id : ''
-  const access = await requireProjectAccess(eff, projectId)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'agent:assistants', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
+  const access = auth.access!
 
   try {
     const resp = await agentFetch('/text-to-cypher', {

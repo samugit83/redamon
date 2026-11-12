@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { requireEffectiveUser, requireProjectAccess, ownerScope } from '@/lib/access'
+import { ownerScope } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { readCapturedBody } from '@/lib/captureBodies'
 
 // GET /api/traffic/[projectId]/[id] - full transaction including headers + bodies.
@@ -19,10 +20,9 @@ export async function GET(
   try {
     const { projectId, id } = await params
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'traffic:read', { projectId })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const row = await prisma.capturedHttpTransaction.findFirst({
       where: { id, projectId, ...ownerScope(eff) },

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { auditWorkspaceAction } from '@/lib/workspaceImport/audit'
 import { callAgent } from '../../../../agentProxy'
@@ -22,8 +22,8 @@ export const POST = withRouteErrors(FAILED, async (
     return NextResponse.json({ error: 'invalid JSON body', code: 'invalid_request' }, { status: 400 })
   }
   const projectId = typeof body?.projectId === 'string' ? body.projectId : ''
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'workspace:write', { projectId })
+  if (auth instanceof NextResponse) return auth
   if (!UPLOAD_ID.test(uploadId || '')) {
     return NextResponse.json({ error: 'Upload session not found', code: 'session_not_found' }, { status: 404 })
   }
