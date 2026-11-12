@@ -3,8 +3,8 @@
  * the verdict (rescored, audited) and the board's filters.
  *
  * Same authorisation rule as the rest of /api/triage: a caller who does not own
- * the project gets 404 whatever ACCESS_ENFORCE says, and the tenant sent to the
- * agent comes from the project row, never the request.
+ * the project gets 404 (ownership is always enforced; ACCESS_ENFORCE is ignored),
+ * and the tenant sent to the agent comes from the project row, never the request.
  *
  * @vitest-environment node
  */

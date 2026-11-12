@@ -13,7 +13,7 @@ import { ownsRow, rowOwnerFilter, type RowOwnerFilter } from './authz/rowOwner'
  * this?" (identity) into "may this user touch this resource?" (authorization).
  *
  * Ownership is always enforced: ACCESS_ENFORCE, which once allowed a log-only rollout,
- * is ignored with one warning per process (PE-24).
+ * is ignored with one warning per process.
  *
  * Anti-enumeration: a cross-user resource is reported as 404 (not 403) so the
  * distinction "exists but not yours" vs "does not exist" cannot be used to

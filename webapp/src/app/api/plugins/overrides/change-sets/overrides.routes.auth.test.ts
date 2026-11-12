@@ -1,7 +1,7 @@
 /**
  * The change-set routes' access and review model (design §6; OQ-08, X9). Only the scope owner
- * or an admin acting as them may read or delete; another user's set is a 404 even under
- * ACCESS_ENFORCE=0 (the check is the strict owner check, never requireProjectAccess). The GET
+ * or an admin acting as them may read or delete; another user's set is a 404 whatever
+ * ACCESS_ENFORCE says (ownership is always enforced; the variable is ignored). The GET
  * model carries the skill, v<from>→v<proposed>, the scope sentence, each part's before/after,
  * reverts-to-factory, the replacement, and the risk flags on an added risky line.
  *

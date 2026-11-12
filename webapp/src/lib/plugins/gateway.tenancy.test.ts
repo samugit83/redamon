@@ -1,8 +1,8 @@
 /**
  * The Gateway frame (TD-06, R-06, R-68): whose data a call may reach. The project and
- * the session a token names must still belong to its user, compared directly, never
- * through requireProjectAccess (log-only under ACCESS_ENFORCE=0). A foreign or missing
- * resource is a 404, as everywhere else in the webapp (anti-enumeration).
+ * the session a token names must still belong to its user, whatever ACCESS_ENFORCE says:
+ * ownership is always enforced. A foreign or missing resource is a 404, as everywhere
+ * else in the webapp (anti-enumeration).
  *
  * @vitest-environment node
  */

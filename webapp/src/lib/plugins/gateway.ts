@@ -307,8 +307,8 @@ const NOT_FOUND = () => new GatewayError(404, 'not_found', 'Not found')
 
 /**
  * Whose data the call may reach: the token's project at the owner level of `projectAccess()` for
- * the token's user (a share never reaches the Gateway here; Phase 5 sets the level an action
- * declares), and the session's conversation its author's (`ownsRow`).
+ * the token's user (no route permission backs a Gateway call, so access below the owner's never
+ * reaches one), and the session's conversation its author's (`ownsRow`) and in that project.
  */
 async function checkTenancy(claims: CallTokenClaims): Promise<GatewayConversation | null> {
   const user = await prisma.user.findUnique({ where: { id: claims.sub }, select: { id: true } })

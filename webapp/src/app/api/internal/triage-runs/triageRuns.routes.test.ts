@@ -9,8 +9,8 @@
  *
  * What these tests defend, in order of how much it costs to get wrong:
  *
- * 1. A run cannot start on a project the actor does not own, even in the
- *    log-only ACCESS_ENFORCE=0 mode that the WebSocket ticket honours (S9).
+ * 1. A run cannot start on a project the actor does not own: ownership is
+ *    always enforced, whatever ACCESS_ENFORCE says (the variable is ignored).
  * 2. A run cannot start during an activation, or beside another live run.
  * 3. A dead agent's run stops blocking the project after its heartbeat expires,
  *    and cannot then come back and publish.

@@ -144,8 +144,8 @@ function runnerFailure(e: unknown, extra: Json = {}): NextResponse | null {
 
 /**
  * The context of an action or a picker, owned by `userId`: the project at the owner level of
- * `projectAccess()` (a share never runs a plugin here; Phase 5 sets the level an action needs),
- * the session's conversation its author's (`ownsRow`).
+ * `projectAccess()` (no route permission backs a plugin action, so access below the owner's never
+ * runs one), the session's conversation its author's (`ownsRow`) and in that project.
  */
 export async function strictContext(raw: unknown, userId: string): Promise<JobContext | NextResponse> {
   if (raw === undefined || raw === null) return { projectId: null, sessionId: null, conversationId: null }

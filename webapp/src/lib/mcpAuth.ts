@@ -370,8 +370,9 @@ export class McpAccessDenied extends Error {
  *
  * A project that does not exist and a project owned by someone else are the
  * same answer, so a token holder cannot enumerate other users' project ids.
- * The decision is `projectAccess()`'s, asked for the token's user, at the owner level: a
- * shared project reaches a token only through Phase 4's opt-in.
+ * The decision is `projectAccess()`'s, asked for the token's user, and it must reach the owner
+ * level: no route permission backs a token's project tools, so access below the owner's never
+ * reaches a token through this check.
  */
 export async function assertMcpProjectAccess(
   userId: string,

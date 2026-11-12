@@ -2,8 +2,8 @@
  * The owner check of a per-user row: a preset, a mute-rule preset, a conversation's author, a
  * user-scope override set. The row names its owner's id and only that account may use it: the
  * effective user, under act-as the account acted as. It is not a project check: who may reach a
- * project is `projectAccess()`'s answer, which can admit more than the owner, while a per-user row
- * stays its owner's.
+ * project is `projectAccess()`'s answer, and a per-user row stays its owner's whoever else may
+ * reach its project.
  *
  * The owner helpers of access.ts and the plugin platform share this one strict rule, so it fails
  * closed in one place: an exact match of two non-empty ids, and a filter that matches nothing for
