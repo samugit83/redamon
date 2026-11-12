@@ -76,6 +76,8 @@ import { assertOwner, ownerScope, requireProjectAccess } from '@/lib/access'
 import { McpAccessDenied, assertMcpProjectAccess } from '@/lib/mcpAuth'
 import { ownsScope } from '@/lib/plugins/changeSetAccess'
 import { backfillRbacLegacyOverrides, run as runLegacyOverrides } from '../../../scripts/backfill-rbac-legacy-overrides.mjs'
+import { actAsRuleRefusal } from './actAs'
+import { ACTING_AS_ACTIONS, refuseWhileActingAs } from './actAsRefusals'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
 const ALL = [...PERMISSION_IDS]
@@ -400,5 +402,25 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.15)', () => {
     expect(err).not.toHaveBeenCalled()
     log.mockRestore()
     err.mockRestore()
+  })
+})
+
+describe('RBAC_PERMISSIONS_ENABLED off: impersonation is Phase 2\'s (step 3.14)', () => {
+  test.each([true, false])('the act-as rule ignores the profile, the account status and an admin target (identity %s)', async (identity) => {
+    setFlagsForTests({ identity, permissions: false })
+    const admin = account('admin-1', 'admin', NARROWED)
+    expect(await actAsRuleRefusal(admin, account('member-1', 'standard', { status: 'disabled' }))).toBeNull()
+    expect(await actAsRuleRefusal(admin, account('admin-2', 'admin'))).toBeNull()
+    expect(await actAsRuleRefusal(account('member-1', 'standard'), account('member-2', 'standard'))).toBe('not_an_admin')
+    // Only the Root check of Phase 2 reads (identity on, an admin target): no sets, no profile.
+    expect(setFindMany).not.toHaveBeenCalled()
+  })
+
+  test('nothing is refused while acting as someone, and no session is read to decide it', async () => {
+    const session = { userId: 'admin-1', role: 'admin' }
+    for (const action of ACTING_AS_ACTIONS) {
+      expect(await refuseWhileActingAs({ session }, action)).toBeNull()
+    }
+    expect(userFindUnique).not.toHaveBeenCalled()
   })
 })
