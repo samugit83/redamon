@@ -41,7 +41,7 @@ vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: vi.fn(async () => ({ o
 import { SignJWT } from 'jose'
 import type { AccountDb } from '@/lib/authz/__testing__/accountDb'
 import { createActAsToken, createToken } from './auth'
-import { getEffectiveUser, getAuthzIdentity, getSession, actAsInForce } from './session'
+import { getEffectiveUser, getAuthzIdentity, getSession, actAsInForce, authzIdentityOf } from './session'
 import { setFlagsForTests } from './authz/flags'
 import { clearPrincipalCacheForTests, loadPrincipal } from './authz/principal'
 import { clearInstanceRootCacheForTests } from './authz/root'
@@ -282,5 +282,55 @@ describe('the audit rows name the account acted as only for someone who may act 
     setFlagsForTests({ identity: true, permissions: false })
     await db().user.update({ where: { id: 'admin-1' }, data: { adminProfileId: 'builtin:user-manager' } })
     expect(await actingAsUserId(carrying(await cookie('admin-1', 'member-1')), { userId: 'admin-1', role: 'admin' })).toBe('member-1')
+  })
+
+  // Step 3.14 review, finding 6: the row names whom the request ran as, which session.ts decided.
+  const endings: Array<[string, () => Promise<string>]> = [
+    ['the admin\'s session version moved', async () => cookie('admin-1', 'member-1', { asv: 1 })],
+    ['the account acted as was disabled', async () => {
+      const token = await cookie('admin-1', 'member-1')
+      await db().user.update({ where: { id: 'member-1' }, data: { status: 'disabled' } })
+      return token
+    }],
+    ['the account acted as was promoted', async () => {
+      const token = await cookie('admin-1', 'member-1')
+      await db().user.update({ where: { id: 'member-1' }, data: { role: 'admin' } })
+      return token
+    }],
+    ['its impersonation was already stopped (a saved copy)', async () => {
+      const token = await cookie('admin-1', 'member-1')
+      db().seedActAs({ adminId: 'admin-1', targetUserId: 'member-1', event: 'end', createdAt: new Date(), endedBy: 'stopped' })
+      return token
+    }],
+  ]
+
+  test.each(endings)('%s: the request that ended the cookie runs as the admin, and its rows name no one acted as', async (_name, arrange) => {
+    await signIn('admin-1')
+    const token = await arrange()
+    h.jar.actAs = token
+    nextRequest()
+    const session = (await getSession())!
+    expect((await authzIdentityOf(session)).actingAs).toBeNull()
+    expect(await actingAsUserId(carrying(token), session)).toBeNull()
+  })
+
+  test('a row written before anything else on the request judges the cookie the same way (and ends it once)', async () => {
+    await signIn('admin-1')
+    const token = await cookie('admin-1', 'member-1')
+    await db().user.update({ where: { id: 'member-1' }, data: { status: 'disabled' } })
+    nextRequest()
+    const session = (await getSession())!
+    expect(await actingAsUserId(carrying(token), session)).toBeNull()
+    expect(await actingAsUserId(carrying(token), session)).toBeNull()
+    expect(ends()).toEqual([expect.objectContaining({ endedBy: 'target_disabled' })])
+    expect(await actAsInForce(session)).toBeNull()
+  })
+
+  test('a valid impersonation: the row and the request agree on the account acted as', async () => {
+    await signIn('admin-1')
+    h.jar.actAs = await cookie('admin-1', 'member-1')
+    const session = (await getSession())!
+    expect((await actAsInForce(session))?.target.id).toBe('member-1')
+    expect(await actingAsUserId(carrying(h.jar.actAs), session)).toBe('member-1')
   })
 })

@@ -51,12 +51,12 @@ beforeEach(async () => {
   db().reset()
   db().seedUsers([{ id: 'root-1', role: 'admin' }, { id: 'admin-1', role: 'admin' }, { id: 'member-1' }])
   db().seedInstance({ rootUserId: 'root-1', rootAssignedBy: 'host', rootConfirmedAt: new Date('2026-11-12T08:00:00Z') })
-  db().seedActAs({ adminId: 'admin-1', targetUserId: 'member-1', event: 'start', createdAt: new Date(Date.now() - 60_000), durationMinutes: 60 })
+  db().seedActAs({ id: 'start-1', adminId: 'admin-1', targetUserId: 'member-1', event: 'start', createdAt: new Date(Date.now() - 60_000), durationMinutes: 60 })
   setFlagsForTests({ identity: true, permissions: true })
   clearPrincipalCacheForTests()
   clearInstanceRootCacheForTests()
   clearCapabilityCachesForTests()
-  h.jar = { auth: await createToken('admin-1', 'admin', 0), actAs: await createActAsToken('admin-1', 'member-1', 3600, { asv: 0 }) }
+  h.jar = { auth: await createToken('admin-1', 'admin', 0), actAs: await createActAsToken('admin-1', 'member-1', 3600, { asv: 0, jti: 'start-1' }) }
 })
 afterEach(() => {
   setFlagsForTests(null)
@@ -71,6 +71,17 @@ describe('logout ends the impersonation', () => {
     expect(res.headers.getSetCookie().filter((c) => /Max-Age=0/i.test(c)).length).toBe(2)
     // The sign-out row still names whom the admin was acting as.
     expect(db().audit()).toEqual([expect.objectContaining({ action: 'auth.logout', actorId: 'admin-1', onBehalfOfUserId: 'member-1' })])
+  })
+
+  test('a cookie that ends on this very request (its account disabled): the sign-out row names no one acted as', async () => {
+    await db().user.update({ where: { id: 'member-1' }, data: { status: 'disabled' } })
+    clearPrincipalCacheForTests()
+    await POST(req())
+    expect(ends()).toEqual([expect.objectContaining({ endedBy: 'target_disabled' })])
+    const row = db().audit().find((r) => r.action === 'auth.logout')!
+    expect(row).toMatchObject({ actorId: 'admin-1' })
+    expect(row.onBehalfOfUserId ?? null).toBeNull()
+    expect(row.after).not.toHaveProperty('actingAsUserId')
   })
 
   test('its time had run out with no cookie left: `expired`', async () => {

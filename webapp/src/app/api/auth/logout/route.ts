@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const meta = getClientMeta(request)
   // Signing out never fails: an unreadable account only leaves the row without an actor.
   const session = await getSession().catch(() => null)
-  const actingAs = session ? await actingAsUserId(request, session) : null
+  const actingAs = session ? await actingAsUserId(request, session).catch(() => null) : null
   await writeAudit({
     ...actorFields(auditActorOf(session && sessionActor(session), actingAs)),
     action: 'auth.logout', targetType: 'session',

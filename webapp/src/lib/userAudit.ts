@@ -10,9 +10,11 @@
 import { ACT_AS_COOKIE_NAME, verifyActAsToken } from '@/lib/auth'
 import { writeAudit, type AuditEntry } from '@/lib/audit'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
+import { actAsInForceFor } from '@/lib/session'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
 import { actsAsOthers } from '@/lib/authz/actAs'
 import { sessionHolds } from '@/lib/authz/adminPermission'
+import { rbacFlags } from '@/lib/authz/flags'
 
 interface Actor {
   userId: string
@@ -44,13 +46,15 @@ export async function presentedActAs(request: RequestLike): Promise<{ sub: strin
 }
 
 /**
- * The account `actor` was acting as: an act-as cookie this admin minted, naming
- * someone else, held by someone who may act as others (`users:impersonate`: with the
- * permissions switch off every admin). The target is not re-read from the database; the
- * row records what the request carried.
+ * The account `actor` was acting as. Permissions switch on: the request's own decision (session.ts
+ * `actAsInForceFor`), so a cookie that ended on this request (the admin's version moved, the account
+ * disabled or promoted, its impersonation already stopped) names no one, as the request ran as the
+ * admin. Off: an act-as cookie this admin minted, naming someone else, held by an admin; the target
+ * is not re-read from the database, the row records what the request carried.
  */
 export async function actingAsUserId(request: RequestLike, actor: Actor): Promise<string | null> {
   if (!actsAsOthers(actor)) return null
+  if (rbacFlags().permissions) return (await actAsInForceFor(actor, presentedActAsToken(request)))?.target.id ?? null
   const claims = await presentedActAs(request)
   if (!claims || claims.sub !== actor.userId || claims.act === actor.userId) return null
   return (await sessionHolds(actor, 'users:impersonate')) ? claims.act : null

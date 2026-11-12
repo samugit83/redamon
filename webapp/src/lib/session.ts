@@ -174,9 +174,9 @@ export interface ActAsInForce {
 }
 
 /** A refused act-as cookie is cleared where the store allows it (a route handler); a Server Component only ignores it. */
-function forgetActAs(cookieStore: CookieStore): void {
+function forgetActAs(cookieStore: CookieStore | null): void {
   try {
-    cookieStore.delete(ACT_AS_COOKIE_NAME)
+    cookieStore?.delete(ACT_AS_COOKIE_NAME)
   } catch {
     // read-only cookie store: the cookie is ignored all the same
   }
@@ -192,7 +192,7 @@ function forgetActAs(cookieStore: CookieStore): void {
  * ended (a Stop, a sign-out, a newer act-as) is cleared and records nothing; so is a cookie
  * another admin minted.
  */
-async function impersonation(session: Session, token: string, cookieStore: CookieStore, opts: SessionOptions): Promise<ActAsInForce | null> {
+async function impersonation(session: Session, token: string, cookieStore: CookieStore | null, opts: SessionOptions): Promise<ActAsInForce | null> {
   const read = await readActAsToken(token)
   if (!read || read.claims.sub !== session.userId || read.claims.act === session.userId) return null
   const { claims } = read
@@ -246,6 +246,28 @@ export async function actAsInForce(session: Session, opts: SessionOptions = {}):
   if (!claims || claims.sub !== session.userId) return null
   const target = await loadPrincipal(claims.act, opts)
   return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts)) ? { target, expiresAt: null } : null
+}
+
+/**
+ * The act-as decision an audit row follows (lib/userAudit.ts), permissions switch on: the one this
+ * request already made for the session object, else made now from the act-as token the request
+ * carries, and remembered, so a row names the account acted as only when the request ran as it (a
+ * cookie that ended on this request names no one). A failed read throws, as in actAsInForce.
+ */
+export async function actAsInForceFor(session: Session, token: string | null): Promise<ActAsInForce | null> {
+  if (!actsAsOthers(session)) return null
+  const made = judged.get(session)
+  if (made) return made.decision
+  if (!token) return null
+  let cookieStore: CookieStore | null = null
+  try {
+    cookieStore = await cookies()
+  } catch {
+    // outside a request (a job, a test): there is no cookie to clear
+  }
+  const decision = impersonation(session, token, cookieStore, {})
+  judged.set(session, { fresh: false, decision })
+  return decision
 }
 
 async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise<Principal | null> {
