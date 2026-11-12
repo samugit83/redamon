@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
 import { loadPrincipal, type Principal } from './authz/principal'
+import { rememberSessionPrincipal } from './authz/sessionPrincipal'
 import { internalError } from './routeErrors'
 
 export interface Session {
@@ -33,7 +34,9 @@ export async function getSession(): Promise<Session | null> {
   if (!payload) return null
   const principal = await loadPrincipal(payload.sub)
   if (!principal) return null
-  return { userId: principal.id, role: principal.role }
+  const session = { userId: principal.id, role: principal.role }
+  rememberSessionPrincipal(session, principal)
+  return session
 }
 
 /**

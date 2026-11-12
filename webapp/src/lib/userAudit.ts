@@ -2,12 +2,15 @@
  * Audit rows of user administration (HD-14): creating, editing, promoting or
  * demoting, resetting and deleting an account. Best effort through `writeAudit`.
  *
- * Actor convention: `actorId` is the REAL signed-in account (the login cookie),
- * and `after.actingAsUserId` names the account an admin was acting as. A row never
- * carries a password, a hash or a token.
+ * Actor convention (lib/auditActor.ts): `actorId` is the REAL signed-in account (the
+ * login cookie); the account an admin was acting as goes in `onBehalfOfUserId` and,
+ * as before that column existed, in `after.actingAsUserId`. A row never carries a
+ * password, a hash or a token.
  */
 import { ACT_AS_COOKIE_NAME, verifyActAsToken } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
+import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
 
 interface Actor {
   userId: string
@@ -49,8 +52,9 @@ export async function writeUserAudit(
   entry: { action: string; targetId: string; before?: Record<string, unknown>; after?: Record<string, unknown> },
 ): Promise<void> {
   const actingAs = await actingAsUserId(request, actor)
+  const real = { id: actor.userId, email: sessionPrincipal(actor)?.email }
   await writeAudit({
-    actorId: actor.userId,
+    ...actorFields(auditActorOf(real, actingAs)),
     action: entry.action,
     targetType: 'user',
     targetId: entry.targetId,

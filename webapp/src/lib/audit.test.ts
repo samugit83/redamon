@@ -46,6 +46,16 @@ describe('writeAudit', () => {
     expect(data.source).toBe('api')
   })
 
+  test('columns: the person acted for, the project, the permission and the actor email (AU-01)', async () => {
+    await writeAudit({
+      actorId: 'admin1', onBehalfOfUserId: 'user1', projectId: 'p1', permission: 'project:read',
+      actorEmail: 'admin1@e2e.local', action: 'x', targetType: 'project', targetId: 'p1',
+    })
+    expect(auditCreate.mock.calls[0][0].data).toMatchObject({
+      actorId: 'admin1', onBehalfOfUserId: 'user1', projectId: 'p1', permission: 'project:read', actorEmail: 'admin1@e2e.local',
+    })
+  })
+
   test('never throws when the DB insert fails', async () => {
     auditCreate.mockRejectedValue(new Error('db down'))
     await expect(
