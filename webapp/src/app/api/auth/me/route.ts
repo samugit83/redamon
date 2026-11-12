@@ -4,19 +4,23 @@ import { getSession } from '@/lib/session'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { rbacFlags } from '@/lib/authz/flags'
 import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
+import type { AdminNotices } from '@/providers/AuthProvider'
 
 /**
  * What the header's admin banners show (step 1.18). Never fails the session, which the
  * whole app reads: a failed count is `null`, and the banner that needs it stays hidden.
  */
-async function adminNotices(): Promise<{ compat: boolean; legacyGrantsPending: number | null }> {
+async function adminNotices(): Promise<AdminNotices> {
   let legacyGrantsPending: number | null = null
   try {
     legacyGrantsPending = await pendingLegacyGrantCount()
   } catch (err) {
     console.error(`[rbac] could not read the legacy grant review: ${safeErrorCode(err)}`)
   }
-  return { compat: rbacFlags().sharedToolsCompat, legacyGrantsPending }
+  const flags = rbacFlags()
+  // `identity` only while the switch is on (the Users page then offers disable and sign-out),
+  // so with it off the answer is exactly the one before the switch existed.
+  return { compat: flags.sharedToolsCompat, legacyGrantsPending, ...(flags.identity ? { identity: true } : {}) }
 }
 
 export async function GET() {

@@ -8,6 +8,8 @@ export interface AdminNotices {
   compat: boolean
   /** Null when the count could not be read: no review banner then. */
   legacyGrantsPending: number | null
+  /** Present (true) only while RBAC_IDENTITY_ENABLED is on: disable and sign-out are offered. */
+  identity?: true
 }
 
 export interface AuthUser {

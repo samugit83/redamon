@@ -28,7 +28,8 @@ vi.mock('@/lib/session', () => ({
 }))
 vi.mock('@/lib/auth', () => ({ hashPassword: async (p: string) => `hashed:${p}` }))
 
-import { POST } from './route'
+import prisma from '@/lib/prisma'
+import { GET, POST } from './route'
 
 function postReq(body: unknown, headers: Record<string, string> = {}) {
   return new NextRequest('http://localhost/api/users', {
@@ -180,5 +181,21 @@ describe('POST /api/users — one account per email whatever its case (NF-09)', 
     expect(res.status).toBe(400)
     expect(mockQueryRaw).not.toHaveBeenCalled()
     expect(mockCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/users — account status (step 2.3)', () => {
+  test('each row carries its status and whether a password is set, never the hash', async () => {
+    mockIsInternal.mockReturnValue(false)
+    mockGetSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: 'u1', name: 'A', email: 'a@x.z', role: 'standard', status: 'disabled', password: '', createdAt: new Date(0), updatedAt: new Date(0), _count: { projects: 2 } },
+      { id: 'u2', name: 'B', email: 'b@x.z', role: 'admin', status: 'active', password: '$2a$12$hash', createdAt: new Date(0), updatedAt: new Date(0), _count: { projects: 0 } },
+    ] as never)
+    const res = await GET(new NextRequest('http://localhost/api/users'))
+    const rows = await res.json()
+    expect(rows.map((r: Record<string, unknown>) => [r.id, r.status, r.hasPassword])).toEqual([['u1', 'disabled', false], ['u2', 'active', true]])
+    expect(JSON.stringify(rows)).not.toContain('$2a$')
+    expect(vi.mocked(prisma.user.findMany).mock.calls[0][0]?.select).toMatchObject({ status: true })
   })
 })

@@ -8,6 +8,8 @@ export interface User {
   name: string
   email: string
   role: string
+  /** active | invited | disabled */
+  status?: string
   hasPassword: boolean
   createdAt: string
   updatedAt: string

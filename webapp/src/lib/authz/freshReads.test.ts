@@ -48,6 +48,11 @@ import { POST as startActAs } from '@/app/api/auth/act-as/route'
 import { POST as mintWsTicket } from '@/app/api/agent/ws-ticket/route'
 import { GET as listLegacyGrants, POST as decideLegacyGrants } from '@/app/api/admin/legacy-grants/route'
 import { PUT as saveSettings } from '@/app/api/users/[id]/settings/route'
+import { POST as disableUser } from '@/app/api/users/[id]/disable/route'
+import { POST as enableUser } from '@/app/api/users/[id]/enable/route'
+import { POST as revokeUserSessions } from '@/app/api/users/[id]/revoke-sessions/route'
+import { POST as revokeAllSessions } from '@/app/api/auth/sessions/revoke-all/route'
+import { setFlagsForTests } from './flags'
 import { checkStepUp } from './stepUp'
 
 const FRESH = { fresh: true }
@@ -123,6 +128,22 @@ describe('critical paths read the account fresh', () => {
     expect((await res.json()).code).toBe('tunnels_admin_only')
     expect(h.getSession).toHaveBeenCalledWith(FRESH)
     expect(h.loadPrincipal).toHaveBeenCalledWith('m1', FRESH)
+  })
+
+  // Step 2.3: account status. The identity switch is on so the routes exist.
+  test.each([
+    ['disabling an account', () => disableUser(req('POST', {}), params()), 'requireAdmin'],
+    ['enabling an account', () => enableUser(req('POST', {}), params()), 'requireAdmin'],
+    ['signing an account out everywhere', () => revokeUserSessions(req('POST', {}), params()), 'requireAdmin'],
+    ['signing out everywhere (own account)', () => revokeAllSessions(req('POST', {})), 'requireSession'],
+  ] as const)('%s', async (_name, call, helper) => {
+    setFlagsForTests({ identity: true })
+    try {
+      expect((await call()).status).toBe(401)
+      expect(h[helper]).toHaveBeenCalledWith(FRESH)
+    } finally {
+      setFlagsForTests(null)
+    }
   })
 })
 

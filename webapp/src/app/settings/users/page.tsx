@@ -8,6 +8,7 @@ import { Modal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
 import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
+import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
@@ -23,7 +24,7 @@ export default function UsersPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { user: authUser, isAdmin, isLoading: authLoading } = useAuth()
-  const { data: users, isLoading, error: usersError } = useUsers()
+  const { data: users, isLoading, error: usersError, refetch: refetchUsers } = useUsers()
   const createUser = useCreateUser()
   const deleteUser = useDeleteUser()
   const changePasswordMutation = useChangePassword()
@@ -292,6 +293,7 @@ export default function UsersPage() {
                 <td className={styles.td}>
                   {user.name}
                   {user.id === authUser?.id && <span className={styles.selfLabel}>(you)</span>}
+                  <AccountStatusBadge status={user.status} className={`${styles.badge} ${styles.badgeDisabled}`} />
                 </td>
                 <td className={styles.td}>
                   <span className={styles.email}>{user.email}</span>
@@ -329,6 +331,14 @@ export default function UsersPage() {
                         Delete
                       </button>
                     )}
+                    <AccountStatusActions
+                      user={user}
+                      selfId={authUser?.id}
+                      identity={authUser?.rbac?.identity === true}
+                      buttonClassName={styles.actionButton}
+                      dangerClassName={styles.deleteButton}
+                      onChanged={() => void refetchUsers?.()}
+                    />
                   </div>
                 </td>
               </tr>

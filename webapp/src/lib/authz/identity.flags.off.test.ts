@@ -20,12 +20,20 @@
  *     not sent to /login: clearing the cookie and the redirect belong to the switch (review of
  *     step 2.2). The cookie is dead anyway: a version only rises, a deleted id never returns.
  *
+ * Step 2.3 adds disable, enable and "sign out everywhere". With the switch off:
+ *   - disable, revoke-sessions and revoke-all answer 404 to everyone, as before they existed,
+ *     and read nothing;
+ *   - enable stays open to admins, so an account disabled while the switch was on can be
+ *     restored (a member is refused, as on every admin route);
+ *   - schedules and queued jobs start whatever their account's status: nothing is read.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import path from 'path'
+import { NextRequest } from 'next/server'
 
 vi.stubEnv('AUTH_SECRET', 'f'.repeat(64))
 
@@ -75,6 +83,10 @@ const IDENTITY_READERS: string[] = [
   // time it writes whatever the switch; status / must-change are read for later steps.
   'src/app/api/auth/login/route.ts',
   'src/lib/authz/accountEmail.ts',
+  // Disable, enable, revoke sessions (step 2.3): reached only through routes that answer 404
+  // with the switch off, except enable, which stays open to restore an account disabled
+  // while the switch was on.
+  'src/lib/authz/accountStatus.ts',
   // Reads every identity field of the account; the cache only with the switch on.
   'src/lib/authz/principal.ts',
   // Compares the session version whatever the switch, the status only with it on.
@@ -180,5 +192,48 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.2)', () => {
     await getSession()
     await getSession()
     expect(findUnique).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.3)', () => {
+  const post = (url: string) => new NextRequest(`http://redamon.test${url}`, {
+    method: 'POST', headers: { host: 'redamon.test', 'content-type': 'application/json' }, body: '{}',
+  })
+  const params = { params: Promise.resolve({ id: 'member-2' }) }
+
+  test.each([
+    ['admin', 'admin-1', 'admin'],
+    ['member', 'member-1', 'standard'],
+    ['nobody', null, null],
+  ])('disable, revoke-sessions and revoke-all answer 404 to %s and read nothing', async (_who, id, role) => {
+    setFlagsForTests({ identity: false })
+    authCookie = id && role ? await createToken(id, role) : undefined
+    const { POST: disable } = await import('@/app/api/users/[id]/disable/route')
+    const { POST: revokeSessions } = await import('@/app/api/users/[id]/revoke-sessions/route')
+    const { POST: revokeAll } = await import('@/app/api/auth/sessions/revoke-all/route')
+    for (const res of [
+      await disable(post('/api/users/member-2/disable'), params),
+      await revokeSessions(post('/api/users/member-2/revoke-sessions'), params),
+      await revokeAll(post('/api/auth/sessions/revoke-all')),
+    ]) {
+      expect(res.status).toBe(404)
+    }
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+
+  test('enable stays open: the route answers (a member is refused as on every admin route)', async () => {
+    setFlagsForTests({ identity: false })
+    authCookie = await createToken('member-1', 'standard')
+    const { POST: enable } = await import('@/app/api/users/[id]/enable/route')
+    const res = await enable(post('/api/users/member-2/enable'), params)
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'users:disable' })
+  })
+
+  test('a deferred scan is judged on nothing: no account is read', async () => {
+    setFlagsForTests({ identity: false })
+    const { inactiveScanAccount } = await import('./scanActor')
+    expect(await inactiveScanAccount({ actorUserId: 'member-1', projectId: 'p1' })).toBeNull()
+    expect(findUnique).not.toHaveBeenCalled()
   })
 })

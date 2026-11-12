@@ -8,7 +8,7 @@
  * password, a hash or a token.
  */
 import { ACT_AS_COOKIE_NAME, verifyActAsToken } from '@/lib/auth'
-import { writeAudit } from '@/lib/audit'
+import { writeAudit, type AuditEntry } from '@/lib/audit'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
 
@@ -46,14 +46,18 @@ export async function actingAsUserId(request: RequestLike, actor: Actor): Promis
   return claims.act
 }
 
-export async function writeUserAudit(
-  request: RequestLike,
-  actor: Actor,
-  entry: { action: string; targetId: string; before?: Record<string, unknown>; after?: Record<string, unknown> },
-): Promise<void> {
+export interface UserAuditFields {
+  action: string
+  targetId: string
+  before?: Record<string, unknown>
+  after?: Record<string, unknown>
+}
+
+/** The row `writeUserAudit` writes, for a writer that must write it in its own transaction (`writeAuditTx`). */
+export async function userAuditEntry(request: RequestLike, actor: Actor, entry: UserAuditFields): Promise<AuditEntry> {
   const actingAs = await actingAsUserId(request, actor)
   const real = { id: actor.userId, email: sessionPrincipal(actor)?.email }
-  await writeAudit({
+  return {
     ...actorFields(auditActorOf(real, actingAs)),
     action: entry.action,
     targetType: 'user',
@@ -61,5 +65,9 @@ export async function writeUserAudit(
     before: entry.before,
     after: actingAs ? { ...entry.after, actingAsUserId: actingAs } : entry.after,
     source: 'api',
-  })
+  }
+}
+
+export async function writeUserAudit(request: RequestLike, actor: Actor, entry: UserAuditFields): Promise<void> {
+  await writeAudit(await userAuditEntry(request, actor, entry))
 }

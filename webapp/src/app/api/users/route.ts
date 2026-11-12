@@ -34,6 +34,9 @@ export async function GET(request: NextRequest) {
         name: true,
         email: true,
         role: true,
+        // active | invited | disabled: the Users page shows it whatever the identity switch,
+        // so an account disabled while the switch was on can be found and enabled.
+        status: true,
         password: true,
         createdAt: true,
         updatedAt: true,

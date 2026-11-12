@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyPassword, createToken, AUTH_COOKIE_NAME, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
 import { findSignInAccount, recordSignIn } from '@/lib/authz/accountEmail'
 import { invalidatePrincipal } from '@/lib/authz/principal'
+import { rbacFlags } from '@/lib/authz/flags'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
@@ -45,13 +46,19 @@ export async function POST(request: NextRequest) {
     // password, the compare runs against a hash nothing matches, so the answer
     // takes as long as a wrong password and its latency names no account.
     const valid = await verifyPassword(password, user?.password || UNMATCHABLE_PASSWORD_HASH)
-    if (!user || !user.password || !valid) {
+    // With the identity switch on only an active account signs in. A disabled one has an
+    // empty password anyway, which the passwordless check refuses on any release; the status
+    // check also refuses one whose password was set while it was disabled. Same answer as a
+    // wrong password, so the status of an account is never disclosed.
+    const identity = rbacFlags().identity
+    const disabled = identity && user?.status === 'disabled'
+    if (!user || !user.password || !valid || (identity && user.status !== 'active')) {
       // R5: log the failure. Record ONLY the attempted email + source IP; never
       // the password or hash. S11: increment the lockout counter.
       recordFailure(email, lockIp)
       await writeAudit({
-        action: 'auth.login.failure', targetType: 'user',
-        ...(user?.password ? { targetId: user.id } : {}),
+        action: disabled ? 'auth.login.disabled' : 'auth.login.failure', targetType: 'user',
+        ...(user?.password || disabled ? { targetId: user!.id } : {}),
         after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
       })
       return NextResponse.json(

@@ -70,6 +70,14 @@ describe('GET /api/auth/me', () => {
     expect((await (await GET()).json()).rbac).toEqual({ compat: true, legacyGrantsPending: 1 })
   })
 
+  test('identity: true only while the identity switch is on (step 2.3); a member never gets it', async () => {
+    setFlagsForTests({ identity: true })
+    h.jar.auth = await createToken('admin-1', 'admin')
+    expect((await (await GET()).json()).rbac).toEqual({ compat: false, legacyGrantsPending: 1, identity: true })
+    h.jar.auth = await createToken('member-1', 'standard')
+    expect(await (await GET()).json()).not.toHaveProperty('rbac')
+  })
+
   test('a demoted admin (token still says admin) is a member here', async () => {
     h.jar.auth = await createToken('member-1', 'admin')
     expect(await (await GET()).json()).not.toHaveProperty('rbac')
