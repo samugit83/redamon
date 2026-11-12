@@ -14,6 +14,7 @@ import { internalError } from '@/lib/routeErrors'
 import { mcpServerEndpointChange, mcpServerSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { reloadAgentMcp } from '../reload'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; serverId: string }>
@@ -24,6 +25,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const { id, serverId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:mcp_servers')
+    if (selfRefused) return selfRefused
     // The step-up password rides with the save and is never part of the server.
     const { stepUpPassword, ...body } = await request.json()
 
@@ -106,6 +109,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const { id, serverId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:mcp_servers')
+    if (selfRefused) return selfRefused
 
     const existing = await prisma.userSettings.findUnique({
       where: { userId: id },

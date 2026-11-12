@@ -13,6 +13,7 @@ import {
 } from '@/components/shared/FeatureModelGate'
 import { getDisplayName } from '@/app/graph/components/AIAssistantDrawer/modelUtils'
 import { ApiError, fetchJson, formatApiError, toApiError } from '@/lib/apiError'
+import { forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { LLM_FEATURES, isPluginFeatureId, modelAllowedForFeature, type PluginFeatureId } from '@/lib/llmFeatures'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import styles from './FeatureModelsSection.module.css'
@@ -47,6 +48,8 @@ async function fetchPluginFeatures(): Promise<{ features: PluginFeature[]; error
     )
     return { features, error: null }
   } catch (err) {
+    // A person without plugins:use has no plugin tile to set, which is not a failure.
+    if (forbiddenPermission(err) === 'plugins:use') return { features: [], error: null }
     return { features: [], error: toApiError(err, PLUGINS_FAILED) }
   }
 }

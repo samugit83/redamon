@@ -59,6 +59,14 @@ describe('PluginNavLinks', () => {
     expect(container.textContent).toBe('')
   })
 
+  test('refused for plugins:use: no link and no hint, nothing failed (step 3.9)', async () => {
+    const { container } = draw(403, { error: 'You do not hold the permission this action needs (plugins:use).', code: 'forbidden', permission: 'plugins:use' })
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.queryByTestId('plugin-nav-error')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
   // The links must not just vanish: a quiet line says what failed, and Retry asks again.
   test('a failed request shows a small hint with the code and status, and Retry reads again', async () => {
     draw(500, { error: 'The plugin items could not be read; see the webapp log.', code: 'P2024' })

@@ -126,6 +126,15 @@ describe('the page', () => {
     expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
   })
 
+  test('refused for plugins:use: the permission and what it allows, no error and no retry (step 3.9)', async () => {
+    pageAnswer = async () => new Response(JSON.stringify({ error: 'You do not hold the permission this action needs (plugins:use).', code: 'forbidden', permission: 'plugins:use' }), { status: 403 })
+    show()
+    expect(await screen.findByText('You do not have the permission this needs.')).toBeTruthy()
+    expect(screen.getByText('plugins:use')).toBeTruthy()
+    expect(screen.queryByText('The Plugins page could not be loaded.')).toBeNull()
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull()
+  })
+
   test("Next's empty 500 still names its status", async () => {
     pageAnswer = async () => new Response('', { status: 500 })
     show()

@@ -9,9 +9,10 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
 const eff = vi.hoisted(() => ({ current: { userId: 'u-member' } as { userId: string } | null }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn(async () => eff.current ?? NextResponse.json({ error: 'Unauthorized' }, { status: 401 })),
 }))
@@ -41,7 +42,7 @@ beforeEach(() => {
 
 describe('GET /api/mcp/manifest', () => {
   test("returns the caller's servers redacted", async () => {
-    const res = await GET()
+    const res = await GET(new NextRequest('http://localhost/api/mcp/manifest'))
     expect(res.status).toBe(200)
     expect(mockFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u-member' } }))
     const text = await res.text()
@@ -55,25 +56,25 @@ describe('GET /api/mcp/manifest', () => {
   })
 
   test('no agent call', async () => {
-    await GET()
+    await GET(new NextRequest('http://localhost/api/mcp/manifest'))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test('nothing saved: an empty list', async () => {
     mockFindUnique.mockResolvedValue(null)
-    expect((await (await GET()).json()).servers).toEqual([])
+    expect((await (await GET(new NextRequest('http://localhost/api/mcp/manifest'))).json()).servers).toEqual([])
   })
 
   test('no session 401, nothing read', async () => {
     eff.current = null
-    expect((await GET()).status).toBe(401)
+    expect((await GET(new NextRequest('http://localhost/api/mcp/manifest'))).status).toBe(401)
     expect(mockFindUnique).not.toHaveBeenCalled()
   })
 
   test('a database failure answers its code, not its text', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     mockFindUnique.mockRejectedValue(Object.assign(new Error('row user=u-member secret'), { code: 'P1001' }))
-    const res = await GET()
+    const res = await GET(new NextRequest('http://localhost/api/mcp/manifest'))
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to read your MCP servers', code: 'P1001' })
   })

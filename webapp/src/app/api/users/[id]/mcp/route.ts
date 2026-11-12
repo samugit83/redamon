@@ -14,6 +14,7 @@ import { maskMcpServersForApi, restoreMaskedToken } from '@/lib/mcp/mask'
 import { actingAccount, ownerRunsStdio, stdioRefusal, tokenEnvVarRefusal } from '@/lib/mcp/userServerAccess'
 import { internalError } from '@/lib/routeErrors'
 import { reloadAgentMcp } from './reload'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 // Re-exported for the per-server [serverId] route which imports from here.
 export { maskMcpServersForApi, restoreMaskedToken }
@@ -27,6 +28,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:mcp_servers')
+    if (selfRefused) return selfRefused
     const settings = await prisma.userSettings.findUnique({
       where: { userId: id },
       select: { mcpServers: true },
@@ -45,6 +48,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:mcp_servers')
+    if (selfRefused) return selfRefused
     const body = await request.json()
 
     const refused = await refuseUserServer(request, id, body)

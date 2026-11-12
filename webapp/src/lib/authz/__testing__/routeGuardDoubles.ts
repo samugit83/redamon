@@ -143,3 +143,40 @@ export function overGuardProjectOrCapability(): Promise<Guards> {
     return context(permission, { userId: '' }, { id: opts.projectId ?? '', userId: '' })
   })
 }
+
+/**
+ * For a test of a plugin route (step 3.9) that doubles `getEffectiveUser` of '@/lib/session': the
+ * route asks `plugins:use` or `plugins:approve_overrides`, a capability with no project; no
+ * effective user answers the 401, anyone else passes holding every permission, as an owner on
+ * *Default member* does.
+ */
+export function overSessionEffectiveUser(): Promise<Guards> {
+  // One import shared by every call: two requests at once (a concurrency test) each importing the
+  // session module can be handed the real one while the test's async mock factory still runs.
+  let session: Promise<typeof import('@/lib/session')> | null = null
+  return withDouble(async (_request: Request, permission: PermissionId, opts: RequirePermissionOptions = {}) => {
+    assertKnownPermission(permission)
+    if ('projectId' in opts) throw new Error('overSessionEffectiveUser doubles capability checks only')
+    const { getEffectiveUser } = await (session ??= import('@/lib/session'))
+    const eff = await getEffectiveUser()
+    if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return context(permission, eff, null)
+  })
+}
+
+/**
+ * A double of '@/lib/authz/selfService' for a self-service route test written before its route
+ * asked `self:*` (step 3.9): the route's account rule (requireUserAccess, doubled or real) decides
+ * who passes, and the person holds the catalog's permission, as an owner on *Default member* does.
+ * The permission each route asks is proved by `users/[id]/selfService.permissions.test.ts`.
+ *
+ *   vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
+ */
+export async function overSelfService(): Promise<typeof import('@/lib/authz/selfService')> {
+  return {
+    requireSelfPermission: async (_request: unknown, _accountId: string, permission: PermissionId) => {
+      assertKnownPermission(permission)
+      return null
+    },
+  } as unknown as typeof import('@/lib/authz/selfService')
+}

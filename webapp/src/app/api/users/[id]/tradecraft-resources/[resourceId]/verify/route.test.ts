@@ -25,6 +25,7 @@ const mockFindFirst = vi.fn()
 const mockUpdate = vi.fn()
 const mockUserSettingsFindUnique = vi.fn()
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn().mockResolvedValue(null), isInternalRequest: vi.fn().mockReturnValue(false) }))
 
 vi.mock('@/lib/prisma', () => ({

@@ -19,6 +19,7 @@ const mockUpdate = vi.fn()
 const fetchMock = vi.fn()
 
 const mockIsInternal = vi.hoisted(() => vi.fn(() => false))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: vi.fn().mockResolvedValue(null),
   isInternalRequest: mockIsInternal,

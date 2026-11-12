@@ -16,6 +16,7 @@ const mockRequireUserAccess = vi.fn()
 const mockUserSettingsFindUnique = vi.fn()
 const mockFetch = vi.fn()
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => mockRequireUserAccess(...a),
   requireSession: async () => ({ userId: 'u1', role: 'admin' }),

@@ -6,6 +6,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { MAX_SKILLS_PER_BATCH } from '@/lib/userSkills'
 import { requireOwnBrowserRequest } from '@/lib/userSkillRouteGuard'
 import { checkNames, isNameTaken, nameProblem, normalizeName, suggestVersionName } from '@/lib/userSkillNames'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -25,6 +26,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const qs = request.nextUrl.searchParams
     const normalized = normalizeName(qs.get('name') ?? '')
     const exceptId = qs.get('exceptId') || undefined
@@ -64,6 +67,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const eff = await requireOwnBrowserRequest(request, id)
     if (eff instanceof NextResponse) return eff
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
     const names = parsed.body.names

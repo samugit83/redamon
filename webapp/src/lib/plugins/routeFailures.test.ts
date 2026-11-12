@@ -12,6 +12,7 @@ import { NextRequest } from 'next/server'
 const SECRET = 'SELECT value FROM plugin_data WHERE key = target.example'
 
 const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, resetCommits: false }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', async (orig) => {
   const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')
@@ -96,10 +97,10 @@ async function read(res: Response) {
 
 describe('a route without a catch of its own answers {error, code} on a database failure', () => {
   test.each<[string, () => Promise<Response>, string]>([
-    ['GET /api/plugins', () => pluginsPage(), 'The Plugins page could not be read; see the webapp log.'],
+    ['GET /api/plugins', () => pluginsPage(new NextRequest('http://localhost/api/plugins')), 'The Plugins page could not be read; see the webapp log.'],
     ['GET /api/plugins/[id]', () => pluginDetail(get('/api/plugins/echo'), ctx({ pluginId: 'echo' })), "The plugin's details could not be read; see the webapp log."],
-    ['GET contributions', () => contributions(), 'The plugin items could not be read; see the webapp log.'],
-    ['GET llm-features', () => llmFeatures(), 'The plugin model features could not be read; see the webapp log.'],
+    ['GET contributions', () => contributions(new NextRequest('http://localhost/api/plugins')), 'The plugin items could not be read; see the webapp log.'],
+    ['GET llm-features', () => llmFeatures(new NextRequest('http://localhost/api/plugins')), 'The plugin model features could not be read; see the webapp log.'],
     ['GET a job', () => jobRead(get(`/api/plugins/jobs/${JOB}`), ctx({ jobId: JOB })), 'The job could not be read; see the webapp log.'],
     ['POST cancel', () => jobCancel(post(`/api/plugins/jobs/${JOB}/cancel`), ctx({ jobId: JOB })), 'The job could not be cancelled; see the webapp log.'],
     [

@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   effective: '',
   agent: null as unknown as (path: string) => Promise<Response>,
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', () => ({ getSession: async () => ({ userId: h.effective, role: 'standard' }), getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null) }))
 vi.mock('@/lib/agentFetch', () => {

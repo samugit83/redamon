@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { requireEffectiveUser } from '@/lib/access'
 import { isValidPluginId } from '@/lib/plugins/ids'
 import { loadPluginIcon } from '@/lib/plugins/pluginIcon'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/[pluginId]/icon: the plugin's avatar for any signed-in user, served from this
@@ -12,6 +13,8 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ pluginId: string }> }) {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const user = await requireEffectiveUser()
   if (user instanceof NextResponse) return user
   const { pluginId } = await params

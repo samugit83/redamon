@@ -11,7 +11,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, ownerScope } from '@/lib/access'
+import { ownerScope } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { readJsonBody } from '@/lib/jsonBody'
 import { coerceDoc } from '@/lib/nodeFilters/model'
 import { parsePresetText, presetSummary } from '@/lib/nodeFilters/presets'
@@ -22,9 +23,10 @@ const ROW_SELECT = {
   id: true, name: true, description: true, mode: true, rules: true, createdAt: true, updatedAt: true,
 } as const
 
-export const GET = withRouteErrors('Failed to load the presets', async () => {
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
+export const GET = withRouteErrors('Failed to load the presets', async (request: NextRequest) => {
+  const auth = await requirePermission(request, 'self:presets')
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const rows = await prisma.userMuteRulesPreset.findMany({
     where: ownerScope(eff),
     orderBy: { updatedAt: 'desc' },
@@ -34,10 +36,11 @@ export const GET = withRouteErrors('Failed to load the presets', async () => {
 })
 
 export const POST = withRouteErrors('Failed to save the preset', async (request: NextRequest) => {
+  const auth = await requirePermission(request, 'self:presets')
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
 
   const { name, description, mode, rules } = parsed.body
   const text = parsePresetText(name, description)

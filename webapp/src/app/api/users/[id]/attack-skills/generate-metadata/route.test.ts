@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   agentFetch: vi.fn(),
   audits: [] as Record<string, unknown>[],
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({
   default: { userSettings: { findUnique: (...a: unknown[]) => h.settings(...a) } },
 }))

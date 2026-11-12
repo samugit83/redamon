@@ -25,6 +25,7 @@ import { renderOnboardingPack, type OnboardingOptions } from '@/lib/mcp/onboardi
 import { isLoopClient } from '@/lib/mcp/loopSkill'
 import { LOOP_PROFILE_ID, agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -62,6 +63,8 @@ export const POST = withRouteErrors('Could not generate the onboarding pack', as
   const { id } = await params
   const denied = await requireUserAccess(request, id, { mode: 'write' })
   if (denied) return denied
+  const selfRefused = await requireSelfPermission(request, id, 'self:mcp_tokens')
+  if (selfRefused) return selfRefused
 
   let body: Record<string, unknown>
   try {

@@ -26,6 +26,7 @@ import { buildJobs, trackedFields, type LlmProviderRow } from '@/lib/apiUsage/cr
 import { runJobs } from '@/lib/apiUsage/runner'
 import { COOLDOWN_MS, checksEnabled, lastFinishedAt, release, runningFor, setRunKeys, tryAcquire } from '@/lib/apiUsage/state'
 import type { ApiUsageReportV1, UserActivity } from '@/lib/apiUsage/types'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 export const dynamic = 'force-dynamic'
 
@@ -100,6 +101,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const auth = await authorize(request, id)
   if (auth instanceof NextResponse) return auth
+  const selfRefused = await requireSelfPermission(request, id, 'self:api_keys')
+  if (selfRefused) return selfRefused
   try {
     const row = await prisma.apiUsageReport.findUnique({ where: { userId: id } })
     let runBy: { id: string; name: string } | null = null
@@ -133,6 +136,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const auth = await authorize(request, id)
   if (auth instanceof NextResponse) return auth
+  const selfRefused = await requireSelfPermission(request, id, 'self:api_keys')
+  if (selfRefused) return selfRefused
   const { actorId } = auth
 
   if (!checksEnabled()) return json({ error: 'disabled' }, 409)

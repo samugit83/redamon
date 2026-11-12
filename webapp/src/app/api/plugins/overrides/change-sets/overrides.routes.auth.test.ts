@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   managed: new Set<string>(),
   agent: null as unknown as (path: string) => Promise<Response>,
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 // The account write rule (HD-23) over the session double: an admin acting as the owner
 // writes a user scope only while the owner is a passwordless managed account (h.managed).

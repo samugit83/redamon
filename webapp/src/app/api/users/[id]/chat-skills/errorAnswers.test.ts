@@ -20,6 +20,7 @@ const h = vi.hoisted(() => {
   return { down }
 })
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({ default: h.down }))
 vi.mock('@/lib/session', () => ({ requireUserAccess: async () => null }))
 

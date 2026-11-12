@@ -6,6 +6,7 @@ import { isJevProvider, jevPinnedConfig, type JevProviderType } from '@/lib/llmP
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 import { llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 import { restoreMaskedHeaders } from '@/lib/llmProviderMask'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -44,6 +45,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id, providerId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (selfRefused) return selfRefused
     const body = await request.json()
 
     let config: Record<string, unknown>

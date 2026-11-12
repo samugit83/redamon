@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   managed: new Set<string>(),
   audits: [] as Record<string, unknown>[],
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', async () => {
   const { accountWriteDouble } = await import('@/lib/plugins/__testing__/accountWriteDouble')

@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { isLoopModel } from '@/lib/agentInTheLoop'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -34,6 +35,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
 
     const resource = await prisma.userTradecraftResource.findFirst({
       where: { id: resourceId, userId: id },
@@ -58,6 +61,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
 
     const body = await request.json()
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -118,6 +123,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
 
     const existing = await prisma.userTradecraftResource.findFirst({
       where: { id: resourceId, userId: id },

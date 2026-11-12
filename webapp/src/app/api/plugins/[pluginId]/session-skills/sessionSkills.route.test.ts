@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   eff: null as { userId: string } | null,
   live: [] as string[] | null,
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', () => ({
   getEffectiveUser: async () => h.eff,

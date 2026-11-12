@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   denied: null as unknown,
   audits: [] as Record<string, unknown>[],
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: async () => h.denied,

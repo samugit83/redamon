@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { isChatProvider } from '@/lib/llmProviderKinds'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -13,8 +13,9 @@ const MODELS_TIMEOUT_MS = 60_000
 // Body-based (not query-string) so plaintext apiKey values never appear in access logs.
 export async function POST(request: NextRequest) {
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'self:llm_providers')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const { userId } = await request.json().catch(() => ({ userId: null }))
 

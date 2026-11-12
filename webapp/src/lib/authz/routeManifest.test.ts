@@ -82,9 +82,10 @@ const FORMER_LOGIN_ONLY = [
 const STRONGER_THAN_SESSION: Record<string, string> = {
   // Unmasked tunnel credentials: the agent's internal-key lookup only (HD-05, step 1.10).
   '/api/global/tunnel-config': 'internal',
-  // The shared agent's MCP reload is an admin's; the manifest is your own servers (HD-03, HD-15, step 1.9).
+  // The shared agent's MCP reload is an admin's (HD-03, HD-15, step 1.9).
   '/api/mcp/reload': 'admin-jwt',
-  '/api/mcp/manifest': 'effective-user',
+  // Your own servers, for whoever holds self:mcp_servers (requirePermission with no project, step 3.9).
+  '/api/mcp/manifest': 'session',
 }
 
 describe('the manifest and the route tree', () => {
@@ -179,6 +180,10 @@ describe('the manifest and the route tree', () => {
  */
 const CAPABILITY_ONLY: Record<string, string> = {
   '/api/agent/files agent:chat': 'the in-chat download of a file the agent wrote under /tmp, which names no project (older messages): the chat capability alone; with a projectId the route asks workspace:read on it (step 3.9)',
+  '/api/plugins/overrides/change-sets/[id] plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
+  '/api/plugins/overrides/change-sets/[id]/approve plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
+  '/api/plugins/overrides/change-sets/[id]/reject plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
+  '/api/plugins/overrides/reset plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
   '/api/nuclei-templates scan:custom_templates': 'a template belongs to an account, not a project: uploading or deleting one is the capability alone; selecting it for a project is the project PUT\'s check (templateSelectionRefusal, under project:settings) (step 3.8)',
   '/api/reports reports:read': 'the list of every report over the projects the account can see (visibleProjectsWhere): no one project to name; opening or deleting one asks on its project (step 3.9)',
 }

@@ -3,6 +3,7 @@ import { requireUserAccess } from '@/lib/session'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
 import { MAX_CHAT_SKILL_CONTENT_SIZE } from '@/lib/userSkills'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -14,6 +15,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:chat_skills')
+    if (selfRefused) return selfRefused
 
     const skills = await prisma.userChatSkill.findMany({
       where: { userId: id },
@@ -35,6 +38,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:chat_skills')
+    if (selfRefused) return selfRefused
     const body = await request.json()
 
     const { name, description, content, category } = body

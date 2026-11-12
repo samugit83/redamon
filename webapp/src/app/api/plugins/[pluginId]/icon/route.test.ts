@@ -8,6 +8,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest, NextResponse } from 'next/server'
 
 const h = vi.hoisted(() => ({ eff: null as unknown, icon: null as unknown, calls: [] as string[] }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: async () => h.eff }))
 vi.mock('@/lib/plugins/pluginIcon', () => ({
   loadPluginIcon: async (id: string) => {

@@ -10,6 +10,7 @@ import { NextRequest } from 'next/server'
 const mockFindFirst = vi.fn()
 const mockRequireUserAccess = vi.fn()
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({
   default: { userLlmProvider: { findFirst: (...a: unknown[]) => mockFindFirst(...a) } },
 }))

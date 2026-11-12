@@ -7,6 +7,7 @@
 import { test, expect, beforeEach, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, effective: '' }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/session', () => ({ getSession: async () => ({ userId: h.effective, role: 'standard' }), getEffectiveUser: async () => (h.effective ? { userId: h.effective } : null) }))
 vi.mock('@/lib/agentFetch', () => {

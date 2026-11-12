@@ -4,6 +4,7 @@ import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { agentAnswerLastError } from '../../agentLastError'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -19,6 +20,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id, resourceId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
 
     const existing = await prisma.userTradecraftResource.findFirst({
       where: { id: resourceId, userId: id },

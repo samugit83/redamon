@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   session: { userId: 'alice', role: 'standard' } as { userId: string; role: string } | null,
   batch: vi.fn(),
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({ default: {} }))
 vi.mock('@/lib/session', async () => {
   const { NextResponse } = await import('next/server')

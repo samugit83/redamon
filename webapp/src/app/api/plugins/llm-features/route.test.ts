@@ -6,9 +6,10 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
 const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, eff: null as unknown }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: async () => h.eff }))
 
@@ -43,7 +44,7 @@ beforeEach(() => {
 
 test('no session: 401', async () => {
   h.eff = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  expect((await GET()).status).toBe(401)
+  expect((await GET(new NextRequest('http://localhost/api/plugins/llm-features'))).status).toBe(401)
 })
 
 describe('the list', () => {
@@ -60,7 +61,7 @@ describe('the list', () => {
       row('nomanifest', { manifest: null }),
       row('available', { status: 'available', enabled: false }),
     ])
-    const res = await GET()
+    const res = await GET(new NextRequest('http://localhost/api/plugins/llm-features'))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([
       { featureId: 'plugin:skiller', pluginId: 'skiller', label: 'Skiller', description: 'skiller analyses sessions' },
@@ -69,6 +70,6 @@ describe('the list', () => {
   })
 
   test('none installed: an empty list', async () => {
-    expect(await (await GET()).json()).toEqual([])
+    expect(await (await GET(new NextRequest('http://localhost/api/plugins/llm-features'))).json()).toEqual([])
   })
 })

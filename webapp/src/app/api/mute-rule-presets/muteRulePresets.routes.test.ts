@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   del: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.eff(),
   ownerScope: (eff: { userId: string }) => ({ userId: eff.userId }),
@@ -63,7 +64,7 @@ beforeEach(() => {
 describe('GET /api/mute-rule-presets', () => {
   test('lists only the caller\'s presets, with counts and without the rules', async () => {
     h.findMany.mockResolvedValue([row()])
-    const res = await listPresets()
+    const res = await listPresets(new NextRequest('http://x/api/mute-rule-presets'))
     expect(res.status).toBe(200)
     expect(h.findMany.mock.calls[0][0].where).toEqual({ userId: ME })
     const [item] = await res.json()
@@ -74,7 +75,7 @@ describe('GET /api/mute-rule-presets', () => {
 
   test('an anonymous caller is refused before the database is read', async () => {
     h.eff.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-    expect((await listPresets()).status).toBe(401)
+    expect((await listPresets(new NextRequest('http://x/api/mute-rule-presets'))).status).toBe(401)
     expect(h.findMany).not.toHaveBeenCalled()
   })
 })
@@ -183,7 +184,7 @@ describe('a database that is down', () => {
     name: 'PrismaClientKnownRequestError', code: 'P1001',
   })
   const CASES: [string, () => Promise<Response>, string][] = [
-    ['GET the list', () => listPresets(), 'Failed to load the presets'],
+    ['GET the list', () => listPresets(new NextRequest('http://x/api/mute-rule-presets')), 'Failed to load the presets'],
     ['POST a preset', () => createPreset(json('http://x/api/mute-rule-presets', 'POST',
       { name: 'Quiet', mode: 'denylist', rules: RULES })), 'Failed to save the preset'],
     ['GET one preset', () => getPreset(new NextRequest('http://x/api/mute-rule-presets/p1'), params()), 'Failed to read the preset'],

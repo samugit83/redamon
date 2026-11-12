@@ -8,6 +8,7 @@ import { USER_SKILL_POINT } from '@/lib/plugins/overrides'
 import {
   USER_SKILL_SELECT, auditActorFor, createUserSkill, userSkillErrorResponse,
 } from '@/lib/userSkillWrites'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -26,6 +27,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
 
     const skills = await prisma.userAttackSkill.findMany({
       where: { userId: id },
@@ -65,6 +68,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') {
       return NextResponse.json({ error: 'The body must be a JSON object' }, { status: 400 })

@@ -3,6 +3,7 @@ import { getEffectiveUser } from '@/lib/session'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import { buildVersionsModel } from '@/lib/plugins/versionsModel'
 import { buildUserSkillVersionsModel } from '@/lib/plugins/userSkillVersionsModel'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/overrides/versions?point=skill.text&group=<skill>&projectId=<id>: the
@@ -17,6 +18,8 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export const GET = pluginRoute('override versions', 'The versions could not be read; see the webapp log.', async (request: NextRequest) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const eff = await getEffectiveUser()
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

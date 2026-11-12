@@ -8,7 +8,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { readJsonBody } from '@/lib/jsonBody'
 import { coerceDoc } from '@/lib/nodeFilters/model'
@@ -26,10 +26,11 @@ async function ownPreset(id: string, userId: string) {
   return row && ownsRow({ userId }, row.userId) ? row : null
 }
 
-export const GET = withRouteErrors('Failed to read the preset', async (_request: NextRequest, { params }: RouteParams) => {
+export const GET = withRouteErrors('Failed to read the preset', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
+  const auth = await requirePermission(request, 'self:presets')
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const row = await ownPreset(id, eff.userId)
   if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
   return NextResponse.json({ ...presetSummary(row), rules: coerceDoc(row.rules) })
@@ -37,10 +38,11 @@ export const GET = withRouteErrors('Failed to read the preset', async (_request:
 
 export const PATCH = withRouteErrors('Failed to rename the preset', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
+  const auth = await requirePermission(request, 'self:presets')
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
   const row = await ownPreset(id, eff.userId)
   if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
 
@@ -55,10 +57,11 @@ export const PATCH = withRouteErrors('Failed to rename the preset', async (reque
   return NextResponse.json(presetSummary(updated))
 })
 
-export const DELETE = withRouteErrors('Failed to delete the preset', async (_request: NextRequest, { params }: RouteParams) => {
+export const DELETE = withRouteErrors('Failed to delete the preset', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
+  const auth = await requirePermission(request, 'self:presets')
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const row = await ownPreset(id, eff.userId)
   if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
   await prisma.userMuteRulesPreset.delete({ where: { id } })

@@ -7,6 +7,7 @@ import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { buildReviewModel } from '@/lib/plugins/reviewModel'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/overrides/change-sets/[id]: the review model (lib/plugins/reviewModel.ts).
@@ -24,6 +25,8 @@ export const GET = pluginRoute('override review read', 'The proposal could not b
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const eff = await getEffectiveUser()
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
@@ -41,6 +44,8 @@ export const DELETE = pluginRoute('override delete', 'The version could not be d
   { params }: { params: Promise<{ id: string }> },
 ) => {
   if (!sameOrigin(request)) return crossOriginResponse(request)
+  const auth = await requirePermission(request, 'plugins:approve_overrides')
+  if (auth instanceof NextResponse) return auth
   const eff = await getEffectiveUser()
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params

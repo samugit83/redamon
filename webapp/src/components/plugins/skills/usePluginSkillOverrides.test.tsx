@@ -40,6 +40,20 @@ describe('usePluginSkillOverrides', () => {
     await waitFor(() => expect(result.current.error).toBeNull())
   })
 
+  test('refused for plugins:use: nothing shown and no error, a 403 for anything else still is one (step 3.9)', async () => {
+    const refused = (permission: string) => () => json(403, { error: `You do not hold the permission this action needs (${permission}).`, code: 'forbidden', permission })
+    stub(refused('plugins:use'), refused('plugins:use'))
+    const { result } = renderHook(() => usePluginSkillOverrides('p1'))
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    expect(result.current.error).toBeNull()
+    expect(result.current.bySkill.size).toBe(0)
+    expect(result.current.rowActions).toEqual([])
+
+    stub(refused('project:settings'), () => json(200, []))
+    act(() => result.current.reload())
+    await waitFor(() => expect(result.current.error).toMatch(/project:settings/))
+  })
+
   test('the contributions failing with no answer at all is named too', async () => {
     stub(() => json(200, { skills: [] }), () => {
       throw new TypeError('Failed to fetch')

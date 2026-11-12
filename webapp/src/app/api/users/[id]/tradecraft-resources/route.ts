@@ -5,6 +5,7 @@ import { agentFetch } from '@/lib/agentFetch'
 import { internalError, readUpstreamBody } from '@/lib/routeErrors'
 import { agentAnswerLastError, thrownLastError } from './agentLastError'
 import { isLoopModel } from '@/lib/agentInTheLoop'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -89,6 +90,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // requires a valid X-Internal-Key header (the agent), not ?internal=true.
     const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
     const internal = isInternalRequest(request) && request.nextUrl.searchParams.get('internal') === 'true'
 
     const resources = await prisma.userTradecraftResource.findMany({
@@ -116,6 +119,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
+    if (selfRefused) return selfRefused
 
     const body = await request.json()
     const skipVerify = request.nextUrl.searchParams.get('skipVerify') === 'true'

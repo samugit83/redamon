@@ -5,6 +5,7 @@ import { MAX_SKILL_BATCH_BYTES } from '@/lib/userSkills'
 import { requireOwnBrowserRequest } from '@/lib/userSkillRouteGuard'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { auditActorFor, createUserSkillsBatch, userSkillErrorResponse } from '@/lib/userSkillWrites'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -26,6 +27,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const eff = await requireOwnBrowserRequest(request, id)
     if (eff instanceof NextResponse) return eff
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
     const result = await createUserSkillsBatch(

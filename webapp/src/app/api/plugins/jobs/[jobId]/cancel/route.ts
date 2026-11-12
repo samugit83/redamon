@@ -5,6 +5,7 @@ import { cancelJobRow, findUserJob, isTerminal, jobView, refreshJob } from '@/li
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import { cancelJob } from '@/lib/plugins/runnerClient'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * POST /api/plugins/jobs/[jobId]/cancel: the owner stops an async plugin action. The job
@@ -20,6 +21,8 @@ export const POST = pluginRoute('job cancel', 'The job could not be cancelled; s
   { params }: { params: Promise<{ jobId: string }> },
 ) => {
   if (!sameOrigin(request)) return crossOriginResponse(request)
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const eff = await requireEffectiveUser()

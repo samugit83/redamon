@@ -7,6 +7,7 @@ import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugin
 import { internalErrorResponse, pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * POST /api/plugins/overrides/reset: the scope's active version of a skill becomes `cleared`,
@@ -23,6 +24,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 
 export const POST = pluginRoute('override reset', 'The skill could not be reset; see the webapp log.', async (request: NextRequest) => {
   if (!sameOrigin(request)) return crossOriginResponse(request)
+  const auth = await requirePermission(request, 'plugins:approve_overrides')
+  if (auth instanceof NextResponse) return auth
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const eff = await getEffectiveUser()

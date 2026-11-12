@@ -25,6 +25,7 @@ const mockTradecraftFindUnique = vi.fn()
 const mockTradecraftUpdate = vi.fn()
 const mockUserSettingsFindUnique = vi.fn()
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({
   default: {
     userTradecraftResource: {

@@ -5,18 +5,19 @@
  * loaded last. Same shape as the agent's answer (servers, errors, warnings,
  * system_server_ids), plus `stdioAllowed` (a member's stdio servers never run).
  */
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { SYSTEM_SERVER_IDS, type MCPServer } from '@/lib/mcp/schema'
 import { maskMcpServersForApi } from '@/lib/mcp/mask'
 import { ownerRunsStdio } from '@/lib/mcp/userServerAccess'
 import { internalError } from '@/lib/routeErrors'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'self:mcp_servers')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
     const settings = await prisma.userSettings.findUnique({
       where: { userId: eff.userId },
       select: { mcpServers: true },

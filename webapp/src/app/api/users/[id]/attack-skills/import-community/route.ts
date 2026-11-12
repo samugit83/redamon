@@ -9,6 +9,7 @@ import {
 } from '@/lib/userSkillWrites'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -35,6 +36,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
 
     let catalogRes: Response
     try {

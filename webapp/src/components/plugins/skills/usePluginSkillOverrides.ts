@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { fetchJson, settle } from '@/lib/apiError'
+import { fetchJson, settle, type ApiResult } from '@/lib/apiError'
+import { forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import type { ProjectSkillsRowContribution } from '@/lib/plugins/contributions'
 import type { SkillSummary, SummaryModel } from '@/lib/plugins/summaryModel'
 
@@ -18,6 +19,12 @@ interface Loaded {
 }
 
 const NONE = { bySkill: new Map<string, SkillSummary>(), rowActions: [] as ProjectSkillRowAction[] }
+
+/** A read's error to show; a person without `plugins:use` has no plugin facts, which is not a failure. */
+function failure(read: ApiResult<unknown>) {
+  if (read.ok || forbiddenPermission(read.error) === 'plugins:use') return null
+  return read.error
+}
 
 /**
  * The plugin facts the Agent Skills section needs for a saved project: the per-skill override
@@ -48,7 +55,7 @@ export function usePluginSkillOverrides(projectId: string | null | undefined) {
         if (!live) return
         const summary = summaryRead.ok ? summaryRead.value : null
         const contributions = contributionsRead.ok ? contributionsRead.value : null
-        const failed = !summaryRead.ok ? summaryRead.error : !contributionsRead.ok ? contributionsRead.error : null
+        const failed = failure(summaryRead) ?? failure(contributionsRead)
         const bySkill = new Map<string, SkillSummary>()
         if (summary && Array.isArray((summary as SummaryModel).skills)) {
           for (const s of (summary as SummaryModel).skills) bySkill.set(s.skillId, s)

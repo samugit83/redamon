@@ -4,15 +4,18 @@ import { isValidPluginId } from '@/lib/plugins/ids'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import { buildPluginDetail, viewerIsAdmin } from '@/lib/plugins/pageModel'
 import { getSession } from '@/lib/session'
+import { requirePermission } from '@/lib/authz/guards'
 
 /** GET /api/plugins/[pluginId]: one plugin's entry; versions on disk, data usage and rollback for an admin. */
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export const GET = pluginRoute('plugin details', "The plugin's details could not be read; see the webapp log.", async (
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ pluginId: string }> },
 ) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const user = await requireEffectiveUser()
   if (user instanceof NextResponse) return user
   const { pluginId } = await params

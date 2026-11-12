@@ -13,6 +13,7 @@ import { RunnerStatusBanner } from '@/components/plugins/RunnerStatusBanner'
 import { UninstallDialog } from '@/components/plugins/UninstallDialog'
 import { PluginApiError, usePluginAction, usePluginsPage } from '@/hooks/usePlugins'
 import { errorMessage } from '@/lib/apiError'
+import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import type { PluginEntry } from '@/lib/plugins/pageModel'
 import styles from './page.module.css'
 
@@ -105,6 +106,14 @@ export function PluginsPageClient() {
             <div key={i} className="skeleton skeletonCard" />
           ))}
         </div>
+      </div>
+    )
+  }
+  const refusedFor = forbiddenPermission(error)
+  if (refusedFor) {
+    return (
+      <div className={styles.page}>
+        <ForbiddenNotice permission={refusedFor} />
       </div>
     )
   }

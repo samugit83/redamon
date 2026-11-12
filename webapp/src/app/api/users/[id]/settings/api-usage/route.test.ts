@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   runJobs: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({
   default: {
     apiUsageReport: { findUnique: (...a: unknown[]) => h.reportFind(...a), upsert: (...a: unknown[]) => h.reportUpsert(...a) },

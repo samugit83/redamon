@@ -16,6 +16,7 @@ import {
 } from '@/lib/plugins/skillPartsRegistry'
 import { adoptUserSkillVersion } from '@/lib/plugins/userSkillAdoption'
 import { auditActorFor, userSkillErrorResponse } from '@/lib/userSkillWrites'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * POST /api/plugins/overrides/change-sets/[id]/approve: make a proposed version active
@@ -47,6 +48,8 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
   { params }: { params: Promise<{ id: string }> },
 ) => {
   if (!sameOrigin(request)) return crossOriginResponse(request)
+  const auth = await requirePermission(request, 'plugins:approve_overrides')
+  if (auth instanceof NextResponse) return auth
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const eff = await getEffectiveUser()

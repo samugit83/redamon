@@ -7,6 +7,7 @@ import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugin
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
+import { requirePermission } from '@/lib/authz/guards'
 
 /** POST /api/plugins/overrides/change-sets/[id]/reject: a pending proposal is rejected (design §6). */
 export const runtime = 'nodejs'
@@ -19,6 +20,8 @@ export const POST = pluginRoute('override reject', 'The proposal could not be re
   { params }: { params: Promise<{ id: string }> },
 ) => {
   if (!sameOrigin(request)) return crossOriginResponse(request)
+  const auth = await requirePermission(request, 'plugins:approve_overrides')
+  if (auth instanceof NextResponse) return auth
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const eff = await getEffectiveUser()

@@ -123,6 +123,15 @@ describe('plugin tiles', () => {
     await waitFor(() => expect(screen.queryByText(/Plugin items could not be loaded/)).toBeNull())
   })
 
+  test('refused for plugins:use: no plugin tile and no notice, the core tiles as before (step 3.9)', async () => {
+    pluginFeatures = { status: 403, body: { error: 'You do not hold the permission this action needs (plugins:use).', code: 'forbidden', permission: 'plugins:use' } }
+    renderSection()
+    await screen.findByText(LLM_FEATURES[0].label)
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => u === '/api/plugins/llm-features')).toBe(true))
+    expect(screen.queryByText(/Plugin items could not be loaded/)).toBeNull()
+    expect(document.querySelector('[data-feature="plugin:skiller"]')).toBeNull()
+  })
+
   test('a list that is not a list shows no notice: nothing failed', async () => {
     pluginFeatures = { status: 200, body: { features: [] } }
     renderSection()

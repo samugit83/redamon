@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import { requireEffectiveUser } from '@/lib/access'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import { PLUGIN_PLATFORM_VERSION } from '@/lib/plugins/platformVersion'
 import { RunnerError, RunnerUnavailableError, runnerHealth } from '@/lib/plugins/runnerClient'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/status: this webapp's platform version and what the plugin runner
@@ -12,7 +13,9 @@ import { RunnerError, RunnerUnavailableError, runnerHealth } from '@/lib/plugins
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export const GET = pluginRoute('status', 'The plugin status could not be read; see the webapp log.', async () => {
+export const GET = pluginRoute('status', 'The plugin status could not be read; see the webapp log.', async (request: NextRequest) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const user = await requireEffectiveUser()
   if (user instanceof NextResponse) return user
 

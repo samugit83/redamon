@@ -7,6 +7,7 @@ import { internalError } from '@/lib/routeErrors'
 import { llmProviderEndpointChange, llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { maskProvider, restoreMaskedHeaders } from '@/lib/llmProviderMask'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; providerId: string }>
@@ -33,6 +34,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // rows require a valid X-Internal-Key header, never the ?internal=true param.
     const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (selfRefused) return selfRefused
 
     const provider = await prisma.userLlmProvider.findFirst({
       where: { id: providerId, userId: id },
@@ -59,6 +62,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (selfRefused) return selfRefused
 
     const body = await request.json()
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -180,6 +185,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (selfRefused) return selfRefused
 
     const existing = await prisma.userLlmProvider.findFirst({
       where: { id: providerId, userId: id },

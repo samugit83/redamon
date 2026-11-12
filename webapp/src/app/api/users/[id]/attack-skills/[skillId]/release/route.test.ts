@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   session: null as { userId: string; role: string } | null,
   audits: [] as Record<string, unknown>[],
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 // requireUserAccess lets any admin through; the route must not rely on it.
 vi.mock('@/lib/session', () => ({

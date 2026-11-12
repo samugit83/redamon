@@ -6,6 +6,7 @@ import { internalError } from '@/lib/routeErrors'
 import {
   auditActorFor, deleteUserSkill, updateUserSkill, userSkillErrorResponse,
 } from '@/lib/userSkillWrites'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; skillId: string }>
@@ -17,6 +18,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id, skillId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'read' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
 
     const skill = await prisma.userAttackSkill.findFirst({
       where: { id: skillId, userId: id },
@@ -42,6 +45,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const { id, skillId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') {
       return NextResponse.json({ error: 'The body must be a JSON object' }, { status: 400 })
@@ -68,6 +73,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const { id, skillId } = await params
     const __denied = await requireUserAccess(request, id, { mode: 'write' })
     if (__denied) return __denied
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const actorId = (await signedInActor())?.id
     const result = await deleteUserSkill({ userId: id, skillId }, auditActorFor(actorId, id))
     return NextResponse.json({ success: true, ...result })

@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 const session = vi.hoisted(() => ({ current: { userId: 'u-member', role: 'standard' } as { userId: string; role: string } | null }))
 const mockRequireUserAccess = vi.hoisted(() => vi.fn())
 const mockIsInternal = vi.hoisted(() => vi.fn(() => false))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireSession: vi.fn(async () => session.current ?? NextResponse.json({ error: 'Unauthorized' }, { status: 401 })),
   getSession: vi.fn(async () => session.current),

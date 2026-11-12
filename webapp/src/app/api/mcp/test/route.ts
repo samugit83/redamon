@@ -14,6 +14,7 @@ import { MASK_PREFIX, isStdioServer, namesTokenEnvVar, type MCPServer } from '@/
 import { ownerRunsStdio, stdioRefusal, tokenEnvVarRefusal } from '@/lib/mcp/userServerAccess'
 import { internalError, readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 import { mcpServerSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 /** Every answer keeps the panel's shape: McpServersTab renders these fields unconditionally. */
 const EMPTY_RESULT = { discovered_tools: [], warnings: [], elapsed_ms: 0 }
@@ -51,6 +52,8 @@ export async function POST(request: NextRequest) {
     // write rule: an admin's read of another account never sends its token.
     const denied = await requireUserAccess(request, userId, { mode: 'write' })
     if (denied) return denied
+    const selfRefused = await requireSelfPermission(request, userId, 'self:mcp_servers')
+    if (selfRefused) return selfRefused
 
     if (namesTokenEnvVar(body)) return tokenEnvVarRefusal({ ok: false, ...EMPTY_RESULT })
     if (isStdioServer(body) && !(await ownerRunsStdio(userId))) {

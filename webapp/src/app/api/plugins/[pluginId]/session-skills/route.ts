@@ -9,6 +9,7 @@ import * as ov from '@/lib/plugins/overrides'
 import { findInstall, servesActions } from '@/lib/plugins/registry'
 import { pickableSessionSkills } from '@/lib/plugins/sessionPick'
 import { suggestedSkill } from '@/lib/plugins/sessionSkills'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/[pluginId]/session-skills?sessionId=&projectId= - the skill picker's
@@ -30,6 +31,8 @@ export const GET = pluginRoute('session skills', 'The skills of this session cou
   request: NextRequest,
   { params }: { params: Promise<{ pluginId: string }> },
 ) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const eff = await getEffectiveUser()
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { pluginId } = await params

@@ -7,9 +7,10 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
 const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, eff: null as unknown }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: async () => h.eff }))
 
@@ -67,13 +68,13 @@ beforeEach(() => {
 
 test('no session: 401', async () => {
   h.eff = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  expect((await GET()).status).toBe(401)
+  expect((await GET(new NextRequest('http://localhost/api/plugins/contributions'))).status).toBe(401)
 })
 
 describe('the list', () => {
   test('echo: every point, keyed, with llm/async pulled from the matching action', async () => {
     db.seed('pluginInstall', [row('echo', {}, echoManifest)])
-    const res = await GET()
+    const res = await GET(new NextRequest('http://localhost/api/plugins/contributions'))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([
       {
@@ -91,7 +92,7 @@ describe('the list', () => {
 
   test('skiller: an llm async action and a coreScreen item, icons kept', async () => {
     db.seed('pluginInstall', [row('skiller', {}, skillerManifest)])
-    const [c] = await (await GET()).json()
+    const [c] = await (await GET(new NextRequest('http://localhost/api/plugins/contributions'))).json()
     expect(c.nav).toBeUndefined()
     expect(c.projectSkillsRow).toEqual([])
     expect(c.chatSessionActions).toEqual([
@@ -110,7 +111,7 @@ describe('the list', () => {
       row('available', { status: 'available', enabled: false }, echoManifest),
       row('nomanifest', {}, null),
     ])
-    const list = await (await GET()).json()
+    const list = await (await GET(new NextRequest('http://localhost/api/plugins/contributions'))).json()
     expect(list.map((c: { pluginId: string }) => c.pluginId)).toEqual(['echo', 'skiller'])
     expect(list.find((c: { pluginId: string }) => c.pluginId === 'skiller').updating).toBe(true)
     expect(list.find((c: { pluginId: string }) => c.pluginId === 'echo').updating).toBe(false)
@@ -120,10 +121,10 @@ describe('the list', () => {
     db.seed('pluginInstall', [
       row('behaviouronly', {}, { id: 'behaviouronly', displayName: 'B', permissions: ['override:skill.text'], actions: [] }),
     ])
-    expect(await (await GET()).json()).toEqual([])
+    expect(await (await GET(new NextRequest('http://localhost/api/plugins/contributions'))).json()).toEqual([])
   })
 
   test('none installed: an empty list', async () => {
-    expect(await (await GET()).json()).toEqual([])
+    expect(await (await GET(new NextRequest('http://localhost/api/plugins/contributions'))).json()).toEqual([])
   })
 })

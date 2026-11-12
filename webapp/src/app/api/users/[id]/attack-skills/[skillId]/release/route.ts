@@ -3,6 +3,7 @@ import { getSession } from '@/lib/session'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { releaseUserSkill, userSkillErrorResponse } from '@/lib/userSkillWrites'
 import { internalError } from '@/lib/routeErrors'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 
 interface RouteParams {
   params: Promise<{ id: string; skillId: string }>
@@ -25,6 +26,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (session.userId !== id) {
       return NextResponse.json({ error: 'Only the owner of this skill can release it.', code: 'owner_only' }, { status: 403 })
     }
+    const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
+    if (selfRefused) return selfRefused
     const skill = await releaseUserSkill({ userId: id, skillId }, { actorId: session.userId, source: 'ui' })
     return NextResponse.json(skill)
   } catch (error) {

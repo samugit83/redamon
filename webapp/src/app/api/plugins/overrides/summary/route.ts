@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getEffectiveUser } from '@/lib/session'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import { buildSummaryModel } from '@/lib/plugins/summaryModel'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/overrides/summary?projectId=<id>: per built-in skill, the plugin version
@@ -13,6 +14,8 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export const GET = pluginRoute('override summary', 'The plugin skill versions could not be read; see the webapp log.', async (request: NextRequest) => {
+  const auth = await requirePermission(request, 'plugins:use')
+  if (auth instanceof NextResponse) return auth
   const eff = await getEffectiveUser()
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const projectId = new URL(request.url).searchParams.get('projectId')
