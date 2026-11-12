@@ -14,13 +14,15 @@ export interface InviteLink {
 
 /**
  * The link, once (step 2.9, ID-14): a read-only field with Copy, its expiry, and, while the
- * instance has no public address, the warning that only this computer can open it.
+ * instance has no public address, the warning that only this computer can open it. A reset link
+ * (step 2.10) is shown the same way.
  */
-export function InviteLinkPanel({ result, id }: { result: InviteLink; id: string }) {
+export function InviteLinkPanel({ result, id, kind = 'invite' }: { result: InviteLink; id: string; kind?: 'invite' | 'reset' }) {
+  const what = kind === 'invite' ? 'invite' : 'reset'
   return (
     <div className={styles.form}>
       <div className={styles.field}>
-        <label className={styles.label} htmlFor={id}>Invite link</label>
+        <label className={styles.label} htmlFor={id}>{kind === 'invite' ? 'Invite link' : 'Reset link'}</label>
         <div className={styles.actions}>
           <input
             id={id}
@@ -30,11 +32,13 @@ export function InviteLinkPanel({ result, id }: { result: InviteLink; id: string
             onFocus={(e) => e.currentTarget.select()}
             aria-describedby={`${id}-hint`}
           />
-          <CopyButton text={result.link} title="Copy the invite link" />
+          <CopyButton text={result.link} title={`Copy the ${what} link`} />
         </div>
         <span id={`${id}-hint`} className={styles.hint}>
           Expires {new Date(result.expiresAt).toLocaleString()}. This link is shown only once: send it to the person
-          now. It works once; Resend makes a new one and cancels this one.
+          now. {kind === 'invite'
+            ? 'It works once; Resend makes a new one and cancels this one.'
+            : 'It works once; a new reset cancels it.'}
         </span>
       </div>
       {result.localhostWarning && (

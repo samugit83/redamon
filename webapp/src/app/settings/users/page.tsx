@@ -12,6 +12,7 @@ import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/Acc
 import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
+import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import styles from './page.module.css'
@@ -21,6 +22,7 @@ type ModalState =
   | { type: 'create' }
   | { type: 'invite' }
   | { type: 'password'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
+  | { type: 'reset'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
   | { type: 'deleteAdmin'; userId: string; userName: string }
   | { type: 'changeOwn' }
@@ -52,6 +54,8 @@ export default function UsersPage() {
   const [stepUpPassword, setStepUpPassword] = useState('')
   // Identity switch on: a password set for someone else is temporary unless unticked (step 2.8).
   const [requireChange, setRequireChange] = useState(true)
+  // Identity switch on, someone else's password: a reset, whose reason the person reads (step 2.10).
+  const [reason, setReason] = useState('')
 
   const wantsPasswordChange = searchParams.get('changePassword') === 'true'
 
@@ -79,6 +83,7 @@ export default function UsersPage() {
     setCurrentPassword('')
     setStepUpPassword('')
     setRequireChange(true)
+    setReason('')
     setFormError('')
     setFormSuccess('')
   }
@@ -166,6 +171,7 @@ export default function UsersPage() {
               newPassword: password,
               ...(modal.targetIsAdmin ? { stepUpPassword } : {}),
               ...(authUser?.rbac?.identity === true ? { requirePasswordChange: requireChange } : {}),
+              ...(authUser?.rbac?.identity === true && reason.trim() ? { reason: reason.trim() } : {}),
             },
       })
       setFormSuccess('Password updated')
@@ -388,6 +394,18 @@ export default function UsersPage() {
                         Set Password
                       </button>
                     )}
+                    {identity && user.id !== authUser?.id && user.status !== 'invited' && (user.role !== 'admin' || confirmedRoot) && (
+                      <button
+                        className={styles.actionButton}
+                        aria-label={`Reset the credentials of ${user.name}`}
+                        onClick={() => openModal({
+                          type: 'reset', userId: user.id, userName: user.name, userEmail: user.email,
+                          targetIsAdmin: user.role === 'admin',
+                        })}
+                      >
+                        Reset credentials
+                      </button>
+                    )}
                     {user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
                       <button
                         className={`${styles.actionButton} ${styles.deleteButton}`}
@@ -419,6 +437,17 @@ export default function UsersPage() {
       )}
 
       <InviteUserModal isOpen={modal.type === 'invite'} onClose={closeModal} onInvited={() => void refetchUsers?.()} />
+
+      {modal.type === 'reset' && (
+        <ResetCredentialsModal
+          isOpen
+          user={{ id: modal.userId, name: modal.userName, email: modal.userEmail }}
+          targetIsAdmin={modal.targetIsAdmin}
+          policy={passwordPolicy}
+          onClose={closeModal}
+          onDone={() => void refetchUsers?.()}
+        />
+      )}
 
       {/* Create User Modal */}
       <Modal isOpen={modal.type === 'create'} onClose={closeModal} title="Create User">
@@ -562,6 +591,24 @@ export default function UsersPage() {
           </div>
           {identity && modal.type === 'password' && !setOwnRow && (
             <RequireChangeField id="set-password-require-change" checked={requireChange} onChange={setRequireChange} />
+          )}
+          {identity && modal.type === 'password' && !setOwnRow && (
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="set-password-reason">Reason</label>
+              <textarea
+                id="set-password-reason"
+                className={styles.input}
+                value={reason}
+                onChange={e => setReason(e.target.value)}
+                maxLength={500}
+                rows={2}
+                aria-describedby="set-password-reason-hint"
+              />
+              <span id="set-password-reason-hint" className={styles.hint}>
+                Setting someone&apos;s password resets their credentials: required once they have signed in before.
+                They will read it at their next sign-in.
+              </span>
+            </div>
           )}
           {setAnotherAdmin && (
             <div className={styles.field}>

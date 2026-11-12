@@ -100,6 +100,8 @@ export interface ChangePasswordData {
   stepUpPassword?: string
   /** Identity switch on, someone else's password: changed at the next sign-in (default true). */
   requirePasswordChange?: boolean
+  /** Identity switch on, someone else's password (a reset, step 2.10): shown to the person. */
+  reason?: string
 }
 
 async function changePassword(userId: string, data: ChangePasswordData): Promise<void> {
