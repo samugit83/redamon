@@ -1083,7 +1083,9 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 KITERUNNER_IGNORE_STATUS,
                 KITERUNNER_MATCH_STATUS,
                 KITERUNNER_MIN_CONTENT_LENGTH,
-                KITERUNNER_HEADERS
+                KITERUNNER_HEADERS,
+                settings=settings,
+                recon_data=recon_data,
             )
             return wordlist_name, wordlist_results
 

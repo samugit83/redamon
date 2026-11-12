@@ -362,6 +362,8 @@ def run_kiterunner(config: dict) -> None:
             KITERUNNER_MATCH_STATUS,
             KITERUNNER_MIN_CONTENT_LENGTH,
             KITERUNNER_HEADERS,
+            settings=settings,
+            recon_data=recon_data,
         )
 
     futures = {}

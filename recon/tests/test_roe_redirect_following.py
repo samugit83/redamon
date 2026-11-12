@@ -578,3 +578,91 @@ def test_resource_enum_ffuf_follows_no_redirect_under_roe_exclusions(monkeypatch
     assert cmds, "run_resource_enum never ran FFuf"
     for cmd in cmds:
         assert "-r" not in cmd
+
+
+# --------------------------------------------------------------------------
+# Kiterunner: kr follows up to 3 redirects to any host by default
+# --------------------------------------------------------------------------
+
+def _kr_cmds(monkeypatch, tmp_path, settings, recon_data=None) -> list:
+    """run_kiterunner_discovery with kr's process faked; returns every argv.
+    kr v1.0.2 (the release ensure_kiterunner_binary fetches) lists
+    `--max-redirects int  maximum number of redirects to follow (default 3)`;
+    `kr brute` against a loopback 302 to another host sent it a GET per
+    word by default and with --max-redirects 1, none with --max-redirects 0."""
+    from types import SimpleNamespace
+    from recon.helpers.resource_enum import kiterunner_helpers
+    kr = tmp_path / "kr"
+    kr.write_text("")
+    wordlist = tmp_path / "routes-small.kite"
+    wordlist.write_text("")
+    cmds = []
+
+    def run(cmd, **_k):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(kiterunner_helpers, "run_with_heartbeat", run)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    kiterunner_helpers.run_kiterunner_discovery(
+        [f"http://{ADMITTED_IP}"], str(kr), str(wordlist), "routes-small", 0, 3, 3, 60, 1,
+        [], [], 0, [], settings=settings, recon_data=recon_data)
+    assert cmds, "run_kiterunner_discovery never started kr"
+    return cmds
+
+
+def _max_redirects(cmd: list):
+    return cmd[cmd.index("--max-redirects") + 1] if "--max-redirects" in cmd else None
+
+
+@pytest.mark.parametrize("entry", [f"{EXCLUDED_IP}/32", EDGE])
+def test_kiterunner_follows_no_redirect_under_roe_exclusions(monkeypatch, tmp_path, capsys, entry):
+    for cmd in _kr_cmds(monkeypatch, tmp_path, _roe(entry), DOMAIN_RECON):
+        assert _max_redirects(cmd) == "0" and cmd.count("--max-redirects") == 1
+    assert "[*][Kiterunner] Redirects not followed" in capsys.readouterr().out
+
+
+def test_kiterunner_follows_no_redirect_in_ip_mode(monkeypatch, tmp_path):
+    recon = {"metadata": {"ip_mode": True, "expanded_ips": [ADMITTED_IP]}}
+    for cmd in _kr_cmds(monkeypatch, tmp_path, {}, recon):
+        assert _max_redirects(cmd) == "0"
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_kiterunner_argv_unchanged_without_an_exclusion(monkeypatch, tmp_path, settings):
+    for cmd in _kr_cmds(monkeypatch, tmp_path, settings, DOMAIN_RECON):
+        assert "--max-redirects" not in cmd
+
+
+def test_resource_enum_kiterunner_follows_no_redirect_under_roe_exclusions(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from recon.helpers.resource_enum import kiterunner_helpers
+    from recon.main_recon_modules import resource_enum
+    kr = tmp_path / "kr"
+    kr.write_text("")
+    wordlist = tmp_path / "routes-small.kite"
+    wordlist.write_text("")
+    cmds = []
+
+    def run(cmd, **_k):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    for name in ("pull_katana_docker_image", "pull_hakrawler_docker_image",
+                 "pull_gau_docker_image", "pull_zap_ajax_docker_image"):
+        monkeypatch.setattr(resource_enum, name, lambda *_a, **_k: True, raising=False)
+    monkeypatch.setattr(resource_enum, "is_docker_installed", lambda: True)
+    monkeypatch.setattr(resource_enum, "is_docker_running", lambda: True)
+    monkeypatch.setattr(resource_enum, "ensure_kiterunner_binary",
+                        lambda *_a, **_k: (str(kr), str(wordlist)))
+    monkeypatch.setattr(kiterunner_helpers, "run_with_heartbeat", run)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    resource_enum.run_resource_enum(copy.deepcopy(DOMAIN_RECON), settings=dict(
+        _roe(EDGE), KATANA_ENABLED=False, HAKRAWLER_ENABLED=False, JSLUICE_ENABLED=False,
+        FFUF_ENABLED=False, ZAP_AJAX_SPIDER_ENABLED=False, GAU_ENABLED=False,
+        PARAMSPIDER_ENABLED=False, KITERUNNER_ENABLED=True, KITERUNNER_WORDLISTS=["routes-small"],
+        KITERUNNER_DETECT_METHODS=False, OPENAPI_ENABLED=False, ARJUN_ENABLED=False))
+    kr_cmds = [c for c in cmds if c and c[0] == str(kr)]
+    assert kr_cmds, "run_resource_enum never ran kr"
+    for cmd in kr_cmds:
+        assert _max_redirects(cmd) == "0"

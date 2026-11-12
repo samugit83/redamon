@@ -18,7 +18,7 @@ from pathlib import Path
 from recon.helpers import request_pacer
 from recon.helpers.docker_helpers import run_tool_container
 from recon.helpers.subprocess_helpers import run_with_heartbeat
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse
 
 from .classification import classify_endpoint
@@ -220,6 +220,9 @@ def run_kiterunner_discovery(
     match_status: List[int],
     min_content_length: int,
     headers: List[str],
+    *,
+    settings: Optional[Mapping] = None,
+    recon_data: Optional[Mapping] = None,
 ) -> List[Dict]:
     """
     Run Kiterunner API endpoint bruteforcing.
@@ -244,6 +247,8 @@ def run_kiterunner_discovery(
         match_status: Status codes to match
         min_content_length: Minimum content length to include
         headers: Custom headers to send
+        settings, recon_data: the run's; under redirects_contained (RoE
+            exclusions, IP mode) kr follows no redirect
 
     Returns:
         List of discovered endpoint dictionaries with url, path, method, status
@@ -333,6 +338,14 @@ def run_kiterunner_discovery(
         # Custom headers
         for header in headers:
             cmd.extend(["-H", header])
+
+        from recon.helpers.resource_enum.katana_helpers import redirects_contained
+        if redirects_contained(settings, recon_data):
+            # kr v1.0.2 follows up to 3 redirects to any host by default, so an
+            # admitted target's 302 had each route sent on to a host the run
+            # refused; 0 stops the hop (checked on the release binary).
+            cmd.extend(["--max-redirects", "0"])
+            print("[*][Kiterunner] Redirects not followed: RoE exclusions or the IP target list are in force")
 
         # kr v1.0.2 cannot use the capture proxy: `scan` has no proxy flag (only
         # `kb replay` has one; cobra exits 1 on an unknown flag before any
