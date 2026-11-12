@@ -5,6 +5,7 @@ import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/
 import prisma from '@/lib/prisma'
 import { agentAnswerLastError, thrownLastError } from '../../agentLastError'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -41,6 +42,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       (existing.githubTokenOverride && existing.githubTokenOverride.length > 0)
         ? existing.githubTokenOverride
         : ((userSettings as unknown as Record<string, string> | null)?.githubAccessToken || '')
+    // The account's GitHub token stays with the account while someone acts as it (step 3.14).
+    if (tokenForFetch) {
+      const actingAs = await refuseWhileActingAsOn(id, 'use_github_token')
+      if (actingAs) return actingAs
+    }
 
     const agentResp = await agentFetch('/tradecraft/verify', {
       method: 'POST',

@@ -6,6 +6,8 @@ import { internalError, readUpstreamBody } from '@/lib/routeErrors'
 import { agentAnswerLastError, thrownLastError } from './agentLastError'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
+import { rbacFlags } from '@/lib/authz/flags'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -147,6 +149,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const v = validateUrl(body.url)
     if (!v.ok) {
       return NextResponse.json({ error: v.error }, { status: 400 })
+    }
+
+    // The crawl below would send the account's GitHub token, which stays with the account while
+    // someone acts as it (permissions switch on, step 3.14): refused before anything is written.
+    if (rbacFlags().permissions && !skipVerify && !body.githubTokenOverride) {
+      const settings = await prisma.userSettings.findUnique({ where: { userId: id }, select: { githubAccessToken: true } })
+      if (settings?.githubAccessToken) {
+        const actingAs = await refuseWhileActingAsOn(id, 'use_github_token')
+        if (actingAs) return actingAs
+      }
     }
 
     const slug = await uniqueSlug(id, slugify(body.name))

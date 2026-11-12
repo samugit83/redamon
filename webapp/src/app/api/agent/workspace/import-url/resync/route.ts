@@ -6,7 +6,7 @@ import { githubTokenForImport } from '@/lib/workspaceImport/githubToken'
 import { callAgent } from '../../../agentProxy'
 import { codedAgentError } from '../../codedAgentError'
 import { requirePermission } from '@/lib/authz/guards'
-import { importCaller, importProjectProblem } from '../importUrlRequest'
+import { githubTokenRefusal, importCaller, importProjectProblem } from '../importUrlRequest'
 
 const FAILED = 'Failed to start the re-sync'
 
@@ -40,6 +40,11 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   const facts = ((await props.res.json()) as { import?: ImportFacts }).import
   if (!facts) {
     return NextResponse.json({ error: 'This folder has no valid import record, so it cannot be re-synced.', code: 'not_imported' }, { status: 404 })
+  }
+  // While acting as the account (permissions switch on), its GitHub token is refused, as an import's.
+  if (isGithubFamilyHost(facts.host)) {
+    const refused = await githubTokenRefusal(auth, `https://${facts.host}/`)
+    if (refused) return refused
   }
   const token = !guard.actingAs && isGithubFamilyHost(facts.host)
     ? await githubTokenForImport(guard.userId, `https://${facts.host}/`)

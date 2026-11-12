@@ -55,6 +55,12 @@ vi.mock('@/lib/prisma', async () => {
       delete: async () => { throw new Error('chat skill written') },
     },
     project: { ...db.project, findUnique: async ({ where }: { where: { id: string } }) => (where.id === 'P-member-1' ? { id: 'P-member-1', userId: 'member-1' } : null) },
+    userTradecraftResource: {
+      findFirst: async () => ({ id: 'tc-1', userId: 'member-1', url: 'https://github.com/e2e-org/notes', githubTokenOverride: '', llmModel: 'openai/gpt-fake' }),
+      findMany: async () => [],
+      create: async () => { throw new Error('tradecraft written') },
+      update: async () => { throw new Error('tradecraft written') },
+    },
   })
   h.db = db
   return { default: db, prisma: db }
@@ -62,8 +68,21 @@ vi.mock('@/lib/prisma', async () => {
 const agentCalls = vi.hoisted(() => ({ n: 0 }))
 vi.mock('@/app/api/agent/agentProxy', async (orig) => ({
   ...(await orig<typeof import('@/app/api/agent/agentProxy')>()),
-  callAgent: async () => { agentCalls.n++; throw new Error('the agent was called') },
+  callAgent: async (path: string) => {
+    // A re-sync first reads the folder's import record: a GitHub import.
+    if (path.startsWith('/workspace/properties')) {
+      const facts = { import: { kind: 'git', host: 'github.com', sourcePath: '/e2e-org/private-repo' } }
+      return { ok: true, res: new Response(JSON.stringify(facts), { status: 200 }) }
+    }
+    agentCalls.n++
+    throw new Error('the agent was called')
+  },
 }))
+vi.mock('@/lib/agentFetch', async (orig) => ({
+  ...(await orig<typeof import('@/lib/agentFetch')>()),
+  agentFetch: async () => { agentCalls.n++; throw new Error('the agent was called') },
+}))
+vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: async () => ({ ok: true, closed: 0, stoppedRuns: 0 }) }))
 
 import bcrypt from 'bcryptjs'
 import type { AccountDb } from './__testing__/accountDb'
@@ -90,6 +109,10 @@ import { POST as addMcpServer } from '@/app/api/users/[id]/mcp/route'
 import { PUT as editMcpServer } from '@/app/api/users/[id]/mcp/[serverId]/route'
 import { POST as importUrl } from '@/app/api/agent/workspace/import-url/route'
 import { POST as resolveUrl } from '@/app/api/agent/workspace/import-url/resolve/route'
+import { POST as resyncImport } from '@/app/api/agent/workspace/import-url/resync/route'
+import { POST as createTradecraft } from '@/app/api/users/[id]/tradecraft-resources/route'
+import { POST as verifyTradecraft } from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/verify/route'
+import { POST as refreshTradecraft } from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/refresh/route'
 import { PUT as setPassword } from '@/app/api/users/[id]/password/route'
 import { POST as resetCredentials } from '@/app/api/users/[id]/reset-credentials/route'
 import { POST as mintToken } from '@/app/api/users/[id]/mcp-tokens/route'
@@ -318,6 +341,73 @@ describe("using the GitHub token of the account acted as (workspace import)", ()
     setFlagsForTests({ identity: true, permissions: false })
     await importUrl(req('POST', link)).catch(() => null)
     expect(agentCalls.n).toBe(2)
+    expect(refusals()).toEqual([])
+  })
+})
+
+describe('using the GitHub token of the account acted as (re-sync, tradecraft): refused, never silently dropped or sent', () => {
+  const resource = { params: Promise.resolve({ id: 'member-1', resourceId: 'tc-1' }) }
+  const tradecraft = (query = '') => new NextRequest(`http://redamon.test/api/users/member-1/tradecraft-resources${query}`, {
+    method: 'POST',
+    headers: { host: 'redamon.test', origin: 'http://redamon.test', 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'notes', url: 'https://github.com/e2e-org/notes', llmModel: 'openai/gpt-fake' }),
+  })
+  const created = (body: Record<string, unknown>, query = '') => createTradecraft(new NextRequest(`http://redamon.test/api/users/member-1/tradecraft-resources${query}`, {
+    method: 'POST',
+    headers: { host: 'redamon.test', origin: 'http://redamon.test', 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'notes', url: 'https://github.com/e2e-org/notes', llmModel: 'openai/gpt-fake', ...body }),
+  }), params('member-1'))
+
+  test('re-sync of a GitHub import: 403, the re-sync never reaches the agent', async () => {
+    agentCalls.n = 0
+    await as('admin-1', 'member-1')
+    await expectRefused(await resyncImport(req('POST', { projectId: 'P-member-1', path: 'repos/private-repo' })), 'use_github_token')
+    expect(agentCalls.n).toBe(0)
+  })
+
+  const crawls: Array<[string, () => Promise<Response>]> = [
+    ['create (verified at once)', () => createTradecraft(tradecraft(), params('member-1'))],
+    ['verify', () => verifyTradecraft(req('POST', {}), resource)],
+    ['refresh', () => refreshTradecraft(req('POST', {}), resource)],
+  ]
+
+  test.each(crawls)('tradecraft %s: 403, nothing written, the agent never called', async (_name, call) => {
+    agentCalls.n = 0
+    await as('admin-1', 'member-1')
+    await expectRefused(await call(), 'use_github_token')
+    expect(agentCalls.n).toBe(0)
+  })
+
+  test('a resource with its own token stored is the account\'s token too', async () => {
+    agentCalls.n = 0
+    await as('admin-1', 'member-1')
+    vi.spyOn(db().userSettings, 'findUnique').mockResolvedValue(null as never)
+    vi.spyOn(db().userTradecraftResource, 'findFirst').mockResolvedValue(
+      { id: 'tc-1', userId: 'member-1', url: 'https://github.com/e2e-org/notes', githubTokenOverride: 'ghp_fake_override', llmModel: 'm' } as never)
+    await expectRefused(await verifyTradecraft(req('POST', {}), resource), 'use_github_token')
+    expect(agentCalls.n).toBe(0)
+  })
+
+  test('no token to send, a create that skips the crawl, or a token typed now: not refused (they reach the write or the agent)', async () => {
+    agentCalls.n = 0
+    await as('admin-1', 'member-1')
+    expect((await created({}, '?skipVerify=true')).status).toBe(500)
+    expect((await created({ githubTokenOverride: 'ghp_typed_now' })).status).toBe(500)
+    vi.spyOn(db().userSettings, 'findUnique').mockResolvedValue({ githubAccessToken: '' } as never)
+    await verifyTradecraft(req('POST', {}), resource)
+    expect(agentCalls.n).toBe(1)
+    expect(refusals()).toEqual([])
+  })
+
+  test('the account itself and the switch off send the token as before', async () => {
+    agentCalls.n = 0
+    await as('member-1')
+    await verifyTradecraft(req('POST', {}), resource)
+    setFlagsForTests({ identity: true, permissions: false })
+    await as('admin-1', 'member-1')
+    await verifyTradecraft(req('POST', {}), resource)
+    await refreshTradecraft(req('POST', {}), resource)
+    expect(agentCalls.n).toBe(3)
     expect(refusals()).toEqual([])
   })
 })
