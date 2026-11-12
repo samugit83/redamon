@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
 import { readJsonBody } from '@/lib/jsonBody'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { getSession } from '@/lib/session'
+import { accountHolds } from '@/lib/authz/adminPermission'
 import { LifecycleError } from './lifecycleCommon'
 import { PluginConflictError } from './registry'
 import { crossOriginResponse, sameOrigin } from './sameOrigin'
@@ -54,14 +54,17 @@ export function pluginRoute<A extends unknown[]>(
   }
 }
 
+/**
+ * The signed-in person when they hold `platform:plugins`. The account is read again (fresh): a
+ * change of the person's role or profile reaches the next plugin action at once.
+ */
 export async function requirePluginAdmin(): Promise<{ userId: string } | NextResponse> {
   const session = await getSession()
   if (!session) return errorResponse(401, 'unauthorized', 'Sign in first.')
-  const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { id: true, role: true } })
-  if (!user || user.role !== 'admin') {
+  if (!(await accountHolds(session.userId, 'platform:plugins', { fresh: true }))) {
     return errorResponse(403, 'admin_required', 'Only an administrator can manage plugins.')
   }
-  return { userId: user.id }
+  return { userId: session.userId }
 }
 
 export function lifecycleErrorResponse(e: unknown, what: string): NextResponse {

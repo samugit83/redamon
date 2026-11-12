@@ -1,5 +1,6 @@
 import type { PluginInstall } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { accountHolds } from '@/lib/authz/adminPermission'
 import { compareVersions, parseVersion } from '@/lib/semver'
 import { CatalogError, chooseRelease, isRevoked, loadCatalog, type LoadedCatalog } from './catalog'
 import { likePrefix } from './dataStore'
@@ -223,9 +224,9 @@ function entryOf(
   return entry
 }
 
+/** Whether the viewer manages plugins (`platform:plugins`), on a fresh read of the account. */
 export async function viewerIsAdmin(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } })
-  return user?.role === 'admin'
+  return accountHolds(userId, 'platform:plugins', { fresh: true })
 }
 
 export async function buildPluginsPage(isAdmin: boolean): Promise<PluginsPage> {

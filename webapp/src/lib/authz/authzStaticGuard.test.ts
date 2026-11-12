@@ -39,6 +39,7 @@ const RULES: Record<string, RegExp> = {
 
 const ACCOUNT_TYPE = 'an account type (admin or member; Root is an admin), not a permission'
 const OWN_ACCOUNT = 'the account the path names is the signed-in one: an account check, not ownership'
+const PLUGINS_VIEWER = `the viewer manages plugins (pageModel.ts viewerIsAdmin, which asks platform:plugins): the isAdmin field of /api/plugins that PluginsPageClient.tsx and PluginCard.tsx read`
 const SHARED_TOOL = 'a shared-tool short-circuit before sharedToolAccess (sharedTools.ts); the platform permission replaces both with the platform routes'
 
 interface Allowed {
@@ -57,8 +58,8 @@ const ALLOWED: Record<string, Allowed> = {
   'src/app/api/mute-rule-presets/[id]/route.ts::owner_compare': { count: 1, reason: '', pending: true },
   'src/app/api/mute-rule-presets/route.ts::row_owner_helper': { count: 1, reason: "the caller's own mute-rule presets: a per-user row (rowOwner.ts)" },
   'src/app/api/nuclei-templates/route.ts::role_admin': { count: 1, reason: SHARED_TOOL },
-  'src/app/api/plugins/[pluginId]/route.ts::is_admin': { count: 2, reason: '', pending: true },
-  'src/app/api/plugins/route.ts::is_admin': { count: 2, reason: '', pending: true },
+  'src/app/api/plugins/[pluginId]/route.ts::is_admin': { count: 2, reason: PLUGINS_VIEWER },
+  'src/app/api/plugins/route.ts::is_admin': { count: 2, reason: PLUGINS_VIEWER },
   'src/app/api/presets/[id]/route.ts::row_owner_helper': { count: 2, reason: "a preset is its author's: a per-user row (rowOwner.ts)" },
   'src/app/api/presets/route.ts::row_owner_helper': { count: 1, reason: "the caller's own presets: a per-user row (rowOwner.ts)" },
   'src/app/api/projects/[id]/supply-chain-batch/route.ts::list_on_caller': { count: 1, reason: "the effective user's own GitHub token: a per-user row" },
@@ -86,9 +87,7 @@ const ALLOWED: Record<string, Allowed> = {
   'src/lib/mcp/presetTools.ts::list_on_caller': { count: 1, reason: "the token user's own presets, counted for the per-user cap: a per-user row" },
   'src/lib/mcp/tools.ts::list_on_caller': { count: 1, reason: 'MCP lists the projects its token user owns: every MCP project tool needs the owner level (mcpAuth.ts assertMcpProjectAccess)' },
   'src/lib/mcp/userServerAccess.ts::role_admin': { count: 1, reason: "whether a stdio server's owner runs it: the owner's admin account type until the platform routes check platform:agent_mcp" },
-  'src/lib/plugins/lifecycleRoutes.ts::role_admin': { count: 1, reason: '', pending: true },
-  'src/lib/plugins/pageModel.ts::is_admin': { count: 19, reason: '', pending: true },
-  'src/lib/plugins/pageModel.ts::role_admin': { count: 1, reason: '', pending: true },
+  'src/lib/plugins/pageModel.ts::is_admin': { count: 19, reason: PLUGINS_VIEWER },
   'src/lib/plugins/userSkillOverrideOps.ts::find_by_id_and_owner': { count: 1, reason: "the token user's own skill, re-read in the write's transaction: a per-user row" },
   'src/lib/reconPresets/server.ts::find_by_id_and_owner': { count: 1, reason: "the caller's own recon preset: a per-user row" },
   'src/lib/session.ts::owner_compare': { count: 2, reason: OWN_ACCOUNT },
