@@ -26,6 +26,7 @@ import type { RootGuardRefusal } from '@/lib/authz/adminSet'
 import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
 import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
+import { endOpenImpersonationsQuietly } from '@/lib/authz/actAs'
 import type { Session } from '@/lib/session'
 
 interface RouteParams {
@@ -591,6 +592,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       templatesReassigned = await prisma.$transaction(deleteAccount)
     }
     invalidatePrincipal(id)
+    // A deleted admin never sends its act-as cookie again: the impersonations it held end here,
+    // and what it opened acting closes (permissions switch on, step 3.14).
+    if (targetIsAdmin && rbacFlags().permissions) await endOpenImpersonationsQuietly(id, 'invalidated')
 
     await writeUserAudit(request, session, {
       action: 'user.delete',

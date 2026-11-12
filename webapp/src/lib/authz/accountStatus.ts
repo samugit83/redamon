@@ -30,6 +30,7 @@ import { invalidatePrincipal } from './principal'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import { rootProtectedAnswer } from './rootProtection'
+import { endOpenImpersonationsQuietly } from './actAs'
 
 export type StatusPermission = 'users:disable' | 'users:revoke_sessions'
 
@@ -154,8 +155,13 @@ async function stopAgentRuns(userId: string): Promise<{ stopped: number } | { er
  * socket of the four kinds that names it, an admin's act-as sockets as the account included
  * (`scope: 'account'`). Never throws; a failure is logged (`[rbac] agent-stop failed`,
  * `[rbac] socket-close failed user=<id>`) and reported in the answer.
+ *
+ * Every caller ends the account's sessions, so with the permissions switch on the impersonations
+ * it holds as an admin end here too, each with its `invalidated` end row (step 3.14): nothing
+ * else would write it (`[rbac] act-as end not recorded` when it cannot be).
  */
 export async function endAgentWork(userId: string, { stopRuns }: { stopRuns: boolean }): Promise<AgentWorkEnded> {
+  if (rbacFlags().permissions) await endOpenImpersonationsQuietly(userId, 'invalidated', { closeSockets: false })
   const out: AgentWorkEnded = { sockets: { closed: 0 } }
   if (stopRuns) out.runs = await stopAgentRuns(userId)
   const close = await closeAgentSockets({ userId, kinds: [...WS_SOCKETS], scope: 'account' })

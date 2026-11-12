@@ -325,13 +325,10 @@ export async function recordActAsEndQuietly(input: ActAsEndInput): Promise<void>
 // The newest rows read when settling: an admin's or an account's recent impersonations.
 const SETTLE_WINDOW = 50
 
-/**
- * Writes `expired` for every impersonation in the newest rows of an admin (or of an account acted
- * as) whose time limit has passed with no end row yet: the browser drops an act-as cookie when it
- * expires, so the expiry is otherwise never seen. Only impersonations started under this rule carry
- * a duration. Returns how many it ended.
- */
-export async function settleExpiredActAs(where: { adminId: string } | { targetUserId: string }): Promise<number> {
+type StartRow = { id: string; adminId: string; targetUserId: string; createdAt: Date; durationMinutes: number | null }
+
+/** The impersonations open in the newest rows of an admin (or of an account acted as): each pair whose latest row is a start. */
+async function openStarts(where: { adminId: string } | { targetUserId: string }): Promise<StartRow[]> {
   const rows = await prisma.actAsAudit.findMany({
     where,
     orderBy: { createdAt: 'desc' },
@@ -339,17 +336,62 @@ export async function settleExpiredActAs(where: { adminId: string } | { targetUs
     select: { id: true, adminId: true, targetUserId: true, event: true, createdAt: true, durationMinutes: true },
   })
   const seen = new Set<string>()
-  let ended = 0
+  const open: StartRow[] = []
   for (const row of rows) {
     const pair = `${row.adminId}\u0000${row.targetUserId}`
     if (seen.has(pair)) continue
     seen.add(pair)
-    if (row.event !== 'start' || !row.durationMinutes) continue
-    if (row.createdAt.getTime() + row.durationMinutes * 60_000 > now().getTime()) continue
+    if (row.event === 'start') open.push(row)
+  }
+  return open
+}
+
+/** Only impersonations started under this rule carry a duration. */
+function timeRanOut(row: StartRow): boolean {
+  return !!row.durationMinutes && row.createdAt.getTime() + row.durationMinutes * 60_000 <= now().getTime()
+}
+
+/**
+ * Writes `expired` for every impersonation in the newest rows of an admin (or of an account acted
+ * as) whose time limit has passed with no end row yet: the browser drops an act-as cookie when it
+ * expires, so the expiry is otherwise never seen. Returns how many it ended.
+ */
+export async function settleExpiredActAs(where: { adminId: string } | { targetUserId: string }): Promise<number> {
+  let ended = 0
+  for (const row of await openStarts(where)) {
+    if (!timeRanOut(row)) continue
     const binding = { startId: row.id }
     if (await recordActAsEnd({ adminId: row.adminId, targetUserId: row.targetUserId, endedBy: 'expired', binding })) ended += 1
   }
   return ended
+}
+
+/**
+ * Ends every impersonation the admin still holds open (`expired` for one whose time had already run
+ * out): its sessions ended (signed out everywhere, its version raised, disabled, deleted, the Root
+ * transfer), which clears or kills its act-as cookies without the request check that writes their
+ * end, and a disabled or deleted admin never sends them again. `closeSockets: false` when the caller
+ * closes the admin's sockets account-wide. Returns how many it ended.
+ */
+export async function endOpenImpersonations(adminId: string, endedBy: ActAsEnd, { closeSockets = true }: { closeSockets?: boolean } = {}): Promise<number> {
+  let ended = 0
+  for (const row of await openStarts({ adminId })) {
+    const input = {
+      adminId, targetUserId: row.targetUserId, endedBy: timeRanOut(row) ? 'expired' as const : endedBy,
+      binding: { startId: row.id }, closeSockets,
+    }
+    if (await recordActAsEnd(input)) ended += 1
+  }
+  return ended
+}
+
+/** endOpenImpersonations for a path whose own change already stands: a failure is logged, never thrown. */
+export async function endOpenImpersonationsQuietly(adminId: string, endedBy: ActAsEnd, opts: { closeSockets?: boolean } = {}): Promise<void> {
+  try {
+    await endOpenImpersonations(adminId, endedBy, opts)
+  } catch (err) {
+    console.error(`[rbac] act-as end not recorded admin=${adminId} ended-by=${endedBy} code=${safeErrorCode(err)}`)
+  }
 }
 
 /** settleExpiredActAs for a path that must not fail on it (logged with its code). */
