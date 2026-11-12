@@ -64,7 +64,8 @@ export async function requirePluginAdmin(): Promise<{ userId: string } | NextRes
   const session = await getSession()
   if (!session) return errorResponse(401, 'unauthorized', 'Sign in first.')
   if (!(await accountHolds(session.userId, 'platform:plugins', { fresh: true }))) {
-    return errorResponse(403, 'admin_required', 'Only an administrator can manage plugins.')
+    // `permission` as every permission refusal names it, so a client (and the live matrix) can tell which.
+    return errorResponse(403, 'admin_required', 'Only an administrator can manage plugins.', undefined, { permission: 'platform:plugins' })
   }
   return { userId: session.userId }
 }

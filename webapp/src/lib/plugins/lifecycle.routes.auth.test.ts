@@ -115,7 +115,7 @@ describe.each(POSTS)('POST /api/plugins/[pluginId]/%s', (name, route, body) => {
     h.eff = { userId: 'user-alice' }
     const res = await call()
     expect(res.status).toBe(403)
-    expect((await res.json()).code).toBe('admin_required')
+    expect(await res.json()).toMatchObject({ code: 'admin_required', permission: 'platform:plugins' })
     expect(h.calls).toEqual([])
   })
 
@@ -193,7 +193,10 @@ describe('GET export and logs', () => {
     h.session = null
     expect((await call()).status).toBe(401)
     h.session = { userId: 'user-alice', role: 'standard' }
-    expect((await call()).status).toBe(403)
+    const refused = await call()
+    expect(refused.status).toBe(403)
+    // The live matrix proves a refusal by the permission named in the body.
+    expect(await refused.json()).toMatchObject({ code: 'admin_required', permission: 'platform:plugins' })
     h.session = { userId: 'user-demoted', role: 'admin' }
     expect((await call()).status).toBe(403)
   })
