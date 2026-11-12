@@ -14,7 +14,8 @@
  *   deleted, and an account's deletion reads no project and hands over no template here;
  * - (step 2.9) the `user_invites` rows (deleted with their account, as the schema's cascade),
  *   `where` also matches `{gt}` / `{lt}` on dates, `user.deleteMany`, `project.count` (seeded
- *   by `seedProjects`), and the one raw read `emailTakenByAnother` sends.
+ *   by `seedProjects`), and the one raw read `emailTakenByAnother` sends;
+ * - (step 2.10) every account carries `pendingNotices` (`[]`, the schema default).
  */
 import { Prisma } from '@prisma/client'
 
@@ -30,6 +31,8 @@ export interface AccountSeed {
   sessionVersion?: number
   passwordOnHold?: string
   legacyGrants?: string[]
+  lastLoginAt?: Date | null
+  pendingNotices?: unknown[]
 }
 
 function matches(row: Row, where: Row = {}): boolean {
@@ -111,7 +114,7 @@ export function createAccountDb() {
       const r: Row = {
         id: `user-${state.users.length + 1}`, role: 'standard', password: '', status: 'active', sessionVersion: 0,
         passwordOnHold: '', mustChangePassword: false, adminProfileId: null, lastLoginAt: null, legacyGrants: [],
-        createdAt: new Date(), updatedAt: new Date(), ...a.data,
+        pendingNotices: [], createdAt: new Date(), updatedAt: new Date(), ...a.data,
       }
       state.users.push(r)
       return pick(r, a.select)
@@ -265,8 +268,8 @@ export function createAccountDb() {
         state.users.push({
           name: r.id, email: `${r.id}@e2e.local`, role: 'standard', password: '$2a$12$hash-of-' + r.id,
           status: 'active', sessionVersion: 0, passwordOnHold: '', mustChangePassword: false,
-          adminProfileId: null, lastLoginAt: null, legacyGrants: [], createdAt: new Date(0), updatedAt: new Date(0),
-          ...r,
+          adminProfileId: null, lastLoginAt: null, legacyGrants: [], pendingNotices: [], createdAt: new Date(0),
+          updatedAt: new Date(0), ...r,
         })
       }
     },

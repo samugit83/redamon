@@ -51,6 +51,7 @@ import { PUT as saveSettings } from '@/app/api/users/[id]/settings/route'
 import { POST as disableUser } from '@/app/api/users/[id]/disable/route'
 import { POST as enableUser } from '@/app/api/users/[id]/enable/route'
 import { POST as revokeUserSessions } from '@/app/api/users/[id]/revoke-sessions/route'
+import { POST as resetUserCredentials } from '@/app/api/users/[id]/reset-credentials/route'
 import { POST as revokeAllSessions } from '@/app/api/auth/sessions/revoke-all/route'
 import { GET as readRootTransfer, POST as offerRootTransfer } from '@/app/api/root/transfer/route'
 import { POST as acceptRootTransfer } from '@/app/api/root/transfer/accept/route'
@@ -138,6 +139,7 @@ describe('critical paths read the account fresh', () => {
     ['disabling an account', () => disableUser(req('POST', {}), params()), 'requireAdmin'],
     ['enabling an account', () => enableUser(req('POST', {}), params()), 'requireAdmin'],
     ['signing an account out everywhere', () => revokeUserSessions(req('POST', {}), params()), 'requireAdmin'],
+    ['resetting an account\'s credentials (step 2.10)', () => resetUserCredentials(req('POST', {}), params()), 'requireAdmin'],
     ['signing out everywhere (own account)', () => revokeAllSessions(req('POST', {})), 'requireSession'],
   ] as const)('%s', async (_name, call, helper) => {
     setFlagsForTests({ identity: true })

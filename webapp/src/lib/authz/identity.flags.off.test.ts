@@ -62,6 +62,12 @@
  *     redirect or 401 like any unknown path; signed in, the link and the API answer 404, read
  *     nothing and set no cookie, and the page does not exist.
  *
+ * Step 2.10 adds credentials resets (a reset link or a temporary password, with a reason and a
+ * notice to the person). With the switch off:
+ *   - /api/users/[id]/reset-credentials answers 404 to everyone and reads nothing;
+ *   - an admin setting someone else's password writes Phase 1's password alone: no reason asked,
+ *     no notice, no version raised, no socket closed.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -128,12 +134,17 @@ const IDENTITY_READERS: string[] = [
   // Step 2.8: an admin's reset flags the account and raises its version, an own change clears
   // the flag, only with the switch on; off, the Phase 1 write of the password alone.
   'src/app/api/users/[id]/password/route.ts',
+  // Step 2.10: reads the account's status and last sign-in after a 404 with the switch off.
+  'src/app/api/users/[id]/reset-credentials/route.ts',
   // Step 2.6: a role change raises the session version only with the switch on (its
   // identity path); off, the Phase 1 path writes the role alone.
   'src/app/api/users/[id]/route.ts',
   // Step 2.8: a new account with a temporary password is flagged only with the switch on.
   'src/app/api/users/route.ts',
   'src/lib/authz/accountEmail.ts',
+  // Step 2.10: the reset notices, written by a reset and handed over at a sign-in, both only with
+  // the switch on.
+  'src/lib/authz/accountNotices.ts',
   // Disable, enable, revoke sessions (step 2.3): reached only through routes that answer 404
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
@@ -150,6 +161,9 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/passwordPolicyInForce.ts',
   // Reads every identity field of the account; the cache only with the switch on.
   'src/lib/authz/principal.ts',
+  // Step 2.10: credentials resets, reached only with the switch on (the reset route answers 404
+  // without it; the password route takes its Phase 1 path).
+  'src/lib/authz/resetCredentials.ts',
   // Step 2.5: the Root, read only with the switch on (off: no Root, nothing read).
   'src/lib/authz/root.ts',
   // Step 2.6: the Root transfer, reached only through routes that answer 404 with the switch off.
@@ -486,6 +500,23 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.9): no public invite page', () => {
     for (const res of responses) {
       expect(res.status).toBe(404)
       expect(res.headers.getSetCookie()).toEqual([])
+    }
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.10)', () => {
+  test('reset-credentials answers 404 to an admin, a member and nobody, and reads nothing', async () => {
+    setFlagsForTests({ identity: false })
+    const { POST: resetCredentials } = await import('@/app/api/users/[id]/reset-credentials/route')
+    const post = () => new NextRequest('http://redamon.test/api/users/member-2/reset-credentials', {
+      method: 'POST', headers: { host: 'redamon.test', 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'link', reason: 'x' }),
+    })
+    const params = { params: Promise.resolve({ id: 'member-2' }) }
+    for (const cookie of [await createToken('admin-1', 'admin'), await createToken('member-1', 'standard'), undefined]) {
+      authCookie = cookie
+      expect((await resetCredentials(post(), params)).status).toBe(404)
     }
     expect(findUnique).not.toHaveBeenCalled()
   })

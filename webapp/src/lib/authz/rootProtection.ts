@@ -22,7 +22,8 @@ import { loadInstanceRoot } from './root'
 export const ROOT_PROTECTED_ACTION = 'rbac.root_protected_refused'
 
 export type RootProtectedAttempt =
-  | 'edit' | 'role_change' | 'delete' | 'reset_password' | 'disable' | 'enable' | 'revoke_sessions' | 'act_as'
+  | 'edit' | 'role_change' | 'delete' | 'reset_password' | 'reset_credentials' | 'disable' | 'enable' | 'revoke_sessions'
+  | 'act_as'
   | 'list_mcp_tokens' | 'edit_mcp_token' | 'delete_mcp_token'
 
 const OTHERS = 'This account is the instance\'s Root: no other account can change it, disable it, delete it, ' +

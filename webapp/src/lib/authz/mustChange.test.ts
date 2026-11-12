@@ -10,6 +10,9 @@
  *     without a bump, or cleared from another browser): it signs in again;
  * and with the switch off none of it: Phase 1's writes, no claim compared.
  *
+ * Since step 2.10 someone else's password is a credentials reset (resetCredentials.ts): it runs in
+ * an interactive transaction, and the version rises whether or not a change is required.
+ *
  * Real tokens and session helpers; Prisma, bcrypt and the audit writers are doubles.
  *
  * @vitest-environment node
@@ -55,14 +58,36 @@ vi.mock('@/lib/prisma', () => {
       instanceSettings: { findUnique: async () => ({ passwordMinLength: 12, passwordAskChangeIfShort: false }) },
       mcpAccessToken: { updateMany: () => ({ op: 'tokens' }) },
       $queryRaw: async () => [],
-      $transaction: async (ops: { op: string; where?: { id: string }; data?: Record<string, unknown> }[]) => ops.map((o) => {
+      $transaction: async (ops: { op: string; where?: { id: string }; data?: Record<string, unknown> }[] | ((tx: unknown) => unknown)) => {
+        // The reset of someone else's password (step 2.10): an interactive transaction.
+        if (typeof ops === 'function') {
+          return ops({
+            $executeRaw: async () => 1,
+            instanceSettings: { findUnique: async () => null },
+            user: {
+              findUnique: user.findUnique,
+              count: async () => 1,
+              updateMany: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+                h.updates.push({ where, data })
+                const row = h.accounts[where.id]
+                const inc = (data.sessionVersion as { increment?: number } | undefined)?.increment ?? 0
+                Object.assign(row, { ...data, sessionVersion: (row.sessionVersion as number) + inc })
+                return { count: 1 }
+              },
+            },
+            mcpAccessToken: { updateMany: async () => ({ count: 0 }) },
+            userInvite: { updateMany: async () => ({ count: 0 }) },
+          })
+        }
+        return ops.map((o) => {
         if (o.op !== 'update') return { count: 0 }
         h.updates.push({ where: o.where!, data: o.data! })
         const row = h.accounts[o.where!.id]
         const inc = (o.data!.sessionVersion as { increment?: number } | undefined)?.increment ?? 0
         Object.assign(row, { ...o.data, sessionVersion: (row.sessionVersion as number) + inc })
         return { ...row }
-      }),
+      })
+      },
     },
   }
 })
@@ -74,11 +99,13 @@ vi.mock('bcryptjs', async (orig) => {
 vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(), writeAuditTx: vi.fn() }))
 vi.mock('@/lib/userAudit', () => ({
   writeUserAudit: (...a: unknown[]) => h.userAudit(...a),
-  userAuditEntry: vi.fn(),
+  // The reset's row (step 2.10) is built here and written with writeAuditTx in its transaction.
+  userAuditEntry: (...a: unknown[]) => h.userAudit(...a),
   actingAsUserId: async () => null,
 }))
 vi.mock('@/lib/authz/rootProtection', () => ({ rootProtectedRefusal: async () => null }))
 vi.mock('@/lib/authz/rootPowers', () => ({ requireRootPower: async () => null }))
+vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: async () => ({ ok: true, closed: 0, stoppedRuns: 0 }) }))
 
 import { createToken, verifyToken } from '@/lib/auth'
 import { getSession } from '@/lib/session'
@@ -179,12 +206,12 @@ describe("an admin sets someone else's password", () => {
     const res = await put('member-1', { newPassword: 'Temporary-orchid-42' })
     expect(res.status).toBe(200)
     expect(h.updates).toEqual([{
-      where: { id: 'member-1' },
-      data: { password: 'hashed:Temporary-orchid-42', mustChangePassword: true, sessionVersion: { increment: 1 } },
+      where: expect.objectContaining({ id: 'member-1' }),
+      data: expect.objectContaining({ password: 'hashed:Temporary-orchid-42', mustChangePassword: true, sessionVersion: { increment: 1 } }),
     }])
     expect(h.accounts['member-1']).toMatchObject({ mustChangePassword: true, sessionVersion: 3 })
     expect(h.userAudit).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
-      action: 'user.credentials_reset', targetId: 'member-1', after: { revokedMcpTokens: 0, mustChangePassword: true },
+      action: 'user.credentials_reset', targetId: 'member-1', after: expect.objectContaining({ revokedMcpTokens: 0, mustChangePassword: true }),
     }))
     // The member's cookie from before the reset is refused: version and flag both moved.
     h.jar['redamon-auth'] = await createToken('member-1', 'standard', 2)
@@ -194,12 +221,15 @@ describe("an admin sets someone else's password", () => {
     expect(setCookie(res)).toBeNull()
   })
 
-  test('unticked: the password is set, the flag cleared, no bump', async () => {
+  // Step 2.10 (ID-18): unticked is still a reset, which ends every session of the account.
+  test('unticked: the password is set, the flag cleared; the version still rises (a reset)', async () => {
     h.accounts['member-1'].mustChangePassword = true
     await signIn('admin-1')
     await put('member-1', { newPassword: 'Temporary-orchid-42', requirePasswordChange: false })
-    expect(h.updates[0].data).toEqual({ password: 'hashed:Temporary-orchid-42', mustChangePassword: false })
-    expect(h.accounts['member-1'].sessionVersion).toBe(2)
+    expect(h.updates[0].data).toEqual(expect.objectContaining({
+      password: 'hashed:Temporary-orchid-42', mustChangePassword: false, sessionVersion: { increment: 1 },
+    }))
+    expect(h.accounts['member-1']).toMatchObject({ mustChangePassword: false, sessionVersion: 3 })
   })
 
   test('a requirePasswordChange that is not true or false is refused before anything is written', async () => {

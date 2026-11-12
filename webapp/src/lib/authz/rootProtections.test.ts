@@ -59,6 +59,7 @@ import { PUT as resetPassword } from '@/app/api/users/[id]/password/route'
 import { POST as disableUser } from '@/app/api/users/[id]/disable/route'
 import { POST as enableUser } from '@/app/api/users/[id]/enable/route'
 import { POST as revokeUserSessions } from '@/app/api/users/[id]/revoke-sessions/route'
+import { POST as resetCredentials } from '@/app/api/users/[id]/reset-credentials/route'
 import { POST as startActAs } from '@/app/api/auth/act-as/route'
 
 const db = () => h.db as AccountDb
@@ -122,6 +123,12 @@ const ATTEMPTS: Attempt[] = [
     name: 'sign out everywhere', attempted: 'revoke_sessions',
     call: () => revokeUserSessions(req('POST', {}), params(ROOT)),
     unchanged: () => expect(db().account(ROOT)!.sessionVersion).toBe(0),
+  },
+  {
+    // Step 2.10.
+    name: 'reset the credentials', attempted: 'reset_credentials',
+    call: () => resetCredentials(req('POST', { mode: 'link', reason: 'taken over' }), params(ROOT)),
+    unchanged: () => expect(db().account(ROOT)).toMatchObject({ password: '$2a$12$hash-of-root-1', sessionVersion: 0 }),
   },
   {
     name: 'act as', attempted: 'act_as',
@@ -309,6 +316,7 @@ describe('switch off: Phase 1 answers, the instance row never read', () => {
     disable: { status: 404 },
     enable: { status: 403, code: 'step_up_required' },
     'sign out everywhere': { status: 404 },
+    'reset the credentials': { status: 404 },
     'act as': { status: 403, code: 'step_up_required' },
   }
   for (const a of ATTEMPTS) {

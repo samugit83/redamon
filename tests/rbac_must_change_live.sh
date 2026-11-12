@@ -9,7 +9,9 @@
 # go to /account?changePassword=1, other APIs answer 403 must_change_password, while /account,
 # /api/auth/me and the password policy answer. Its own change clears the flag and re-issues
 # the cookie, which then reaches everything. An admin who unticks the choice sets a password
-# that is not temporary. Each reset has its audit row.
+# that is not temporary. Each reset has its audit row. Since step 2.10 an admin's reset of an
+# account that has signed in before carries a reason, and every reset, unticked or not, raises
+# the session version (a reset ends every session of the account).
 #
 # Switch off: the same reset flags nothing and raises no version, the member signs in into the
 # whole app, and the password policy route answers 404.
@@ -150,7 +152,7 @@ else
   fi
   echo "== A temporary password =="
   code="$(call "$C_OLD" GET /api/auth/me)"; ok=0; [ "$code" = 200 ] && ok=1; check "control: the member's cookie works -> $code" "$ok"
-  code="$(call "$ADMIN" PUT "/api/users/$C/password" "$(json_pw newPassword "$TEMP_PW")")"
+  code="$(call "$ADMIN" PUT "/api/users/$C/password" "$(json_pw newPassword "$TEMP_PW" reason "RBAC live check: temporary password")")"
   ok=0; [ "$code" = 200 ] && ok=1; check "an admin sets a temporary password (require a change: the default) -> $code" "$ok"
   ok=0; [ "$(account)" = 'true|+1' ] && ok=1; check "flagged, session version raised" "$ok" "got: $(account)"
   ok=0; [ "$(reset_rows)" = 1 ] && ok=1; check "one user.credentials_reset row by the admin says mustChangePassword" "$ok"
@@ -190,9 +192,9 @@ else
   check "and the pages -> $code" "$ok"
 
   echo "== Unticked: not temporary =="
-  code="$(call "$ADMIN" PUT "/api/users/$C/password" "$(json_pw newPassword "$TEMP2_PW" requirePasswordChange false)")"
-  ok=0; [ "$code" = 200 ] && [ "$(account)" = 'false|+1' ] && ok=1
-  check "an admin sets a password without the choice: no flag, no version raised -> $code" "$ok" "got: $(account)"
+  code="$(call "$ADMIN" PUT "/api/users/$C/password" "$(json_pw newPassword "$TEMP2_PW" requirePasswordChange false reason "RBAC live check: unticked")")"
+  ok=0; [ "$code" = 200 ] && [ "$(account)" = 'false|+2' ] && ok=1
+  check "an admin sets a password without the choice: no flag; the version rises (a reset) -> $code" "$ok" "got: $(account)"
   C2="$TMP/jar.c2"
   code="$(login "${SEED[MEMBER_C_EMAIL]}" "$TEMP2_PW" "$C2")"
   ok=0; [ "$code" = 200 ] && [ "$(field "'mustChangePassword' in b")" = False ] && ok=1

@@ -46,6 +46,7 @@ vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(), writeAuditTx: vi.fn() }))
 vi.mock('@/lib/userAudit', () => ({ writeUserAudit: vi.fn(), userAuditEntry: vi.fn() }))
 vi.mock('@/lib/authz/rootProtection', () => ({ rootProtectedRefusal: async () => null }))
 vi.mock('@/lib/authz/rootPowers', () => ({ requireRootPower: async () => null }))
+vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: async () => ({ ok: true, closed: 0, stoppedRuns: 0 }) }))
 vi.mock('@/lib/authz/stepUp', () => ({
   checkStepUp: async () => ({ outcome: 'ok' }),
   requireStepUp: async () => null,
@@ -73,12 +74,32 @@ beforeEach(() => {
   h.instanceRead.mockImplementation(async () => h.policyRow)
   h.accounts = {
     'admin-1': { id: 'admin-1', role: 'admin', email: 'rbac-admin-long@e2e.local', mustChangePassword: false, sessionVersion: 0 },
-    'member-1': { id: 'member-1', role: 'standard', email: 'rbac-member-long@e2e.local', mustChangePassword: false, sessionVersion: 0 },
+    // Step 2.10: an admin's reset reads the status and last sign-in, and writes conditionally on the password.
+    'member-1': {
+      id: 'member-1', role: 'standard', email: 'rbac-member-long@e2e.local', mustChangePassword: false, sessionVersion: 0,
+      status: 'active', lastLoginAt: null, password: 'old-hash', pendingNotices: [],
+    },
   }
   h.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'new-1', ...data }))
   h.update.mockReturnValue('UPDATE')
   h.tokens.mockReturnValue('TOKENS')
-  h.transaction.mockImplementation(async () => [{ id: 'member-1', role: 'standard', sessionVersion: 0 }, { count: 0 }])
+  h.transaction.mockImplementation(async (arg: unknown) => {
+    // Someone else's password is a credentials reset (step 2.10): an interactive transaction.
+    if (typeof arg === 'function') {
+      return arg({
+        $executeRaw: async () => 1,
+        instanceSettings: { findUnique: async () => null },
+        user: {
+          findUnique: async ({ where }: { where: { id: string } }) => h.accounts[where.id] ?? null,
+          count: async () => 1,
+          updateMany: async (a: unknown) => { h.update(a); return { count: 1 } },
+        },
+        mcpAccessToken: { updateMany: async () => ({ count: 0 }) },
+        userInvite: { updateMany: async () => ({ count: 0 }) },
+      })
+    }
+    return [{ id: 'member-1', role: 'standard', sessionVersion: 0 }, { count: 0 }]
+  })
 })
 afterEach(() => setFlagsForTests(null))
 
