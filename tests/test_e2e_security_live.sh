@@ -79,8 +79,14 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8015/tunnel/
 c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8015/health); chk "$c" 200 ":8015 /health open -> 200"
 c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8015/tunnel/status); chk "$c" 401 ":8015 /tunnel/status no token -> 401"
 
-body=$(curl -s -X POST http://localhost:3000/api/global/tunnel-config/sync)
-if echo "$body" | grep -q '"configured":false'; then chk 1 1 "boot sync forces tunnels down"; else chk 0 1 "boot sync forces down [$body]"; fi
+# F-23 (ID-33): the boot sync takes only the sandbox's tunnel bearer (read inline from the
+# webapp's environment, never printed or put on a command line).
+c=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/api/global/tunnel-config/sync)
+chk "$c" 401 "boot sync without the tunnel bearer -> 401"
+c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer not-the-tunnel-token' http://localhost:3000/api/global/tunnel-config/sync)
+chk "$c" 401 "boot sync with a wrong bearer -> 401"
+body=$(docker compose exec -T webapp printenv TUNNEL_AUTH_TOKEN | tr -d '\r\n' | sed 's/^/header = "Authorization: Bearer /; s/$/"/' | curl -s -K - -X POST http://localhost:3000/api/global/tunnel-config/sync)
+if echo "$body" | grep -q '"configured":false'; then chk 1 1 "boot sync (tunnel bearer) forces tunnels down"; else chk 0 1 "boot sync (tunnel bearer) forces down [$body]"; fi
 
 # HD-06: only an admin, the member holding the `tunnels` legacy grant, or a pre-upgrade
 # account under the escape hatch changes the shared tunnel. The activation checks run as a

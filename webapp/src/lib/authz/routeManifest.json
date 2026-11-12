@@ -92,7 +92,7 @@
   {"path":"/api/github-hunt/[projectId]/status","guard":"project","methods":["GET"]},
   {"path":"/api/github-hunt/[projectId]/stop","guard":"project","methods":["POST"]},
   {"path":"/api/global/tunnel-config","guard":"internal","methods":["GET"]},
-  {"path":"/api/global/tunnel-config/sync","guard":"public","methods":["POST"]},
+  {"path":"/api/global/tunnel-config/sync","guard":"public","methods":["POST"],"note":"sessionless at the middleware (PUBLIC_PATHS); the handler takes only the kali-sandbox: Authorization Bearer TUNNEL_AUTH_TOKEN compared in constant time, 401 when absent, wrong or the token unset (F-23, ID-33, step 2.4)"},
   {"path":"/api/graph","guard":"project","methods":["GET","DELETE"]},
   {"path":"/api/graph-views","guard":"project","methods":["GET","POST"]},
   {"path":"/api/graph-views/[id]","guard":"project","methods":["PUT","DELETE"]},

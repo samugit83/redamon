@@ -834,6 +834,8 @@ services:
       # (STRIDE I19/S14). Same inbound-validation category as MCP_AUTH_TOKEN, so
       # it does not violate the "worker holds no secrets" rule. When empty the
       # tunnel manager refuses every config push (fail-closed, with a warning).
+      # The boot sync presents it to the webapp too (F-23): it grants nothing the
+      # sandbox could not already do, since the sync only turns tunnels off.
       TUNNEL_AUTH_TOKEN: "${TUNNEL_AUTH_TOKEN:-}"
       # Webapp API for fetching tunnel config from Global Settings on boot
       WEBAPP_API_URL: http://webapp:3000
@@ -841,9 +843,10 @@ services:
       # worker is the least-trusted, target-facing component and must hold no
       # secrets (least privilege). No worker process reads this key. Tunnel
       # config is delivered by the webapp PUSHING to the worker's tunnel-manager
-      # (kali-sandbox:8015): on boot the worker calls the unauthenticated
-      # /api/global/tunnel-config/sync trigger, which makes the webapp push the
-      # saved config. The worker never pulls secrets itself. Do not re-add.
+      # (kali-sandbox:8015): on boot the worker calls the
+      # /api/global/tunnel-config/sync trigger with the tunnel bearer above, which
+      # makes the webapp push the stop config. The worker never pulls secrets
+      # itself. Do not re-add.
       # redagraph CLI queries the graph THROUGH THE AGENT (/graph/exec), so the
       # worker holds NO Neo4j credentials. The agent enforces read-only + tenant
       # scoping server-side. Do not re-add NEO4J_PASSWORD here: a compromised
@@ -1253,7 +1256,8 @@ services:
       # login cookies. Empty → no ticket minted, and the agent refuses the socket.
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
       # Bearer token the webapp presents when pushing tunnel config to the
-      # worker's tunnel-manager :8015 (STRIDE I19/S14). Empty in dev → no header.
+      # worker's tunnel-manager :8015 (STRIDE I19/S14), and checks on the worker's
+      # boot sync (F-23). Empty: the manager refuses the pushes, the webapp the sync.
       TUNNEL_AUTH_TOKEN: "${TUNNEL_AUTH_TOKEN:-}"
       # Backend services (server-side API routes → internal docker network)
       RECON_ORCHESTRATOR_URL: http://recon-orchestrator:8010

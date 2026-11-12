@@ -242,3 +242,12 @@ export async function writeInstanceSettings({ data, actor, tunnelVia }: Instance
     return row
   })
 }
+
+/** With the identity switch on, turns the instance's tunnel off (the boot sync); off, nothing. */
+export async function instanceTunnelDown(): Promise<void> {
+  if (!rbacFlags().identity) return
+  await prisma.instanceSettings.updateMany({
+    where: { id: INSTANCE_SETTINGS_ID, tunnelsEnabled: true },
+    data: { tunnelsEnabled: false },
+  })
+}
