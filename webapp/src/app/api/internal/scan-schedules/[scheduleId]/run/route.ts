@@ -54,6 +54,7 @@ import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { enqueueJob } from '@/lib/enqueueJob'
 import { writeAudit } from '@/lib/audit'
 import { checkAgentSessions, describeAgentSessionState } from '@/lib/agentSessions'
+import { inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
 
 export const runtime = 'nodejs'
 
@@ -90,6 +91,31 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         ...(schedule.mode === 'once' ? { enabled: false } : {}),
       },
     })
+
+    // A disabled person's schedule must not keep starting scans on their keys (DV-39). The
+    // occurrence is spent, unlike the `disabled` skip above: once the account is enabled the
+    // next occurrence fires, and the missed ones are not caught up.
+    const inactive = await inactiveScanAccount({ actorUserId: schedule.userId, projectId: schedule.projectId })
+    if (inactive) {
+      await advance()
+      const reason = inactiveScanReason(inactive, 'scheduled')
+      console.warn(`[rbac] schedule ${scheduleId} skipped: ${inactive.as} ${inactive.userId} is ${inactive.status}`)
+      await writeAudit({
+        actorId: null,
+        action: 'scan_schedule.skipped',
+        targetType: 'scanSchedule',
+        targetId: schedule.id,
+        after: {
+          reason: 'actor_inactive', projectId: schedule.projectId,
+          userId: inactive.userId, account: inactive.as, status: inactive.status,
+        },
+        source: 'system',
+      })
+      return NextResponse.json(
+        { ok: false, skipped: 'actor_inactive', error: `skipped: ${reason}`, nextRunAt },
+        { status: 200 },
+      )
+    }
 
     const agent = describeAgentSessionState(await checkAgentSessions(schedule.projectId))
     if (agent) {

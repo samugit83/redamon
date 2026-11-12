@@ -9,7 +9,7 @@
  *
  * @vitest-environment node
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const h = vi.hoisted(() => ({
@@ -25,6 +25,8 @@ const h = vi.hoisted(() => ({
   audit: vi.fn(),
   agent: vi.fn(),
   jqFindFirst: vi.fn(),
+  projectFindUnique: vi.fn(),
+  userFindMany: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -36,7 +38,11 @@ vi.mock('@/lib/prisma', () => ({
       update: (...a: unknown[]) => h.updateSchedule(...a),
     },
     scanJob: { count: (...a: unknown[]) => h.countJobs(...a) },
-    project: { findMany: (...a: unknown[]) => h.projectFindMany(...a) },
+    project: {
+      findMany: (...a: unknown[]) => h.projectFindMany(...a),
+      findUnique: (...a: unknown[]) => h.projectFindUnique(...a),
+    },
+    user: { findMany: (...a: unknown[]) => h.userFindMany(...a) },
     jobQueue: { findFirst: (...a: unknown[]) => h.jqFindFirst(...a) },
   },
 }))
@@ -357,3 +363,91 @@ describe('POST /run', () => {
   })
 })
 
+
+describe('a schedule of an account that is not active (step 2.3, DV-39)', () => {
+  const users = (statuses: Record<string, string>) =>
+    h.userFindMany.mockImplementation(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.filter((id) => id in statuses).map((id) => ({ id, status: statuses[id] })))
+  const runIt = async () => (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1')))
+
+  beforeEach(async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests({ identity: true })
+    h.projectFindUnique.mockResolvedValue({ userId: 'owner-1' })
+    users({ u1: 'active', 'owner-1': 'active' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests(null)
+    vi.restoreAllMocks()
+  })
+
+  test("a disabled actor's schedule is skipped and audited; the occurrence advances", async () => {
+    users({ u1: 'disabled', 'owner-1': 'active' })
+    const res = await runIt()
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({ ok: false, skipped: 'actor_inactive', error: 'skipped: the account that scheduled it is disabled' })
+    expect(body.nextRunAt).toBeTruthy()
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.agent).not.toHaveBeenCalled()
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.updateSchedule).toHaveBeenCalledTimes(1)
+    expect(h.updateSchedule.mock.calls[0][0].data.nextRunAt).toBeInstanceOf(Date)
+    expect(h.audit).toHaveBeenCalledWith({
+      actorId: null, action: 'scan_schedule.skipped', targetType: 'scanSchedule', targetId: 's1',
+      after: { reason: 'actor_inactive', projectId: 'p1', userId: 'u1', account: 'actor', status: 'disabled' },
+      source: 'system',
+    })
+  })
+
+  test("a disabled owner's schedule is skipped", async () => {
+    users({ u1: 'active', 'owner-1': 'disabled' })
+    const body = await (await runIt()).json()
+    expect(body).toMatchObject({ skipped: 'actor_inactive', error: "skipped: the project owner's account is disabled" })
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.audit.mock.calls[0][0].after).toMatchObject({ userId: 'owner-1', account: 'owner' })
+    expect(h.projectFindUnique).toHaveBeenCalledWith({ where: { id: 'p1' }, select: { userId: true } })
+  })
+
+  test('an account that no longer exists counts as not active', async () => {
+    users({ 'owner-1': 'active' })
+    expect((await (await runIt()).json()).skipped).toBe('actor_inactive')
+    expect(h.audit.mock.calls[0][0].after).toMatchObject({ userId: 'u1', status: 'deleted' })
+  })
+
+  test('the actor and the owner are read in one query', async () => {
+    await runIt()
+    expect(h.userFindMany).toHaveBeenCalledTimes(1)
+    expect(h.userFindMany.mock.calls[0][0]).toEqual({ where: { id: { in: ['u1', 'owner-1'] } }, select: { id: true, status: true } })
+  })
+
+  test('enabled again → the next occurrence fires', async () => {
+    users({ u1: 'disabled', 'owner-1': 'active' })
+    expect((await (await runIt()).json()).skipped).toBe('actor_inactive')
+    users({ u1: 'active', 'owner-1': 'active' })
+    const body = await (await runIt()).json()
+    expect(body.ok).toBe(true)
+    expect(h.start).toHaveBeenCalledTimes(1)
+    expect(h.start.mock.calls[0][0]).toMatchObject({ actorUserId: 'u1', trigger: 'scheduled' })
+  })
+
+  test('a schedule paused by a person is still refused first, without advancing', async () => {
+    users({ u1: 'disabled', 'owner-1': 'active' })
+    h.findSchedule.mockResolvedValue({ ...SCHEDULE, enabled: false })
+    expect((await runIt()).status).toBe(409)
+    expect(h.updateSchedule).not.toHaveBeenCalled()
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('switch off → today\'s behaviour: no account read, the scan starts', async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests({ identity: false })
+    users({ u1: 'disabled', 'owner-1': 'disabled' })
+    expect((await (await runIt()).json()).ok).toBe(true)
+    expect(h.start).toHaveBeenCalled()
+    expect(h.userFindMany).not.toHaveBeenCalled()
+    expect(h.projectFindUnique).not.toHaveBeenCalled()
+  })
+})

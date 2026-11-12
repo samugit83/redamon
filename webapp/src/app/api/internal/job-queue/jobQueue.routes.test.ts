@@ -30,6 +30,8 @@ const h = vi.hoisted(() => ({
   dispatchStart: vi.fn(),
   stopScan: vi.fn(),
   orchFetch: vi.fn(),
+  userFindMany: vi.fn(),
+  audit: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -48,8 +50,10 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: (...a: unknown[]) => h.sjUpdateMany(...a),
     },
     project: { findUnique: (...a: unknown[]) => h.projectFindUnique(...a) },
+    user: { findMany: (...a: unknown[]) => h.userFindMany(...a) },
   },
 }))
+vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
 vi.mock('@/lib/startScan', () => ({
   dispatchStart: (...a: unknown[]) => h.dispatchStart(...a),
   stopScan: (...a: unknown[]) => h.stopScan(...a),
@@ -757,5 +761,78 @@ describe('reconcile route - partial recon runs', () => {
     await reconcile(post('http://x/api/internal/job-queue/reconcile', { activeProjects: ['p1'] }))
     const runKeyed = h.sjFindMany.mock.calls.map(c => c[0].where).filter(w => w.kind.in.includes('partial_recon'))
     expect(runKeyed.some(w => w.projectId?.notIn?.includes('p1'))).toBe(true)
+  })
+})
+
+describe('dispatch: a job of an account that is not active (step 2.3, DV-39)', () => {
+  const users = (statuses: Record<string, string>) =>
+    h.userFindMany.mockImplementation(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.filter((id) => id in statuses).map((id) => ({ id, status: statuses[id] })))
+  const go = () => dispatch(post('http://x/api/internal/job-queue/j1/dispatch'), sp('j1'))
+
+  beforeEach(async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests({ identity: true })
+    h.jqFindUnique.mockResolvedValue(baseRow({ userId: 'admin-acting' }))
+    users({ 'admin-acting': 'active', u1: 'active' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests(null)
+    vi.restoreAllMocks()
+  })
+
+  test('a queued job of a disabled actor is cancelled, audited, and nothing starts', async () => {
+    users({ 'admin-acting': 'disabled', u1: 'active' })
+    const body = await (await go()).json()
+    expect(body).toEqual({ ok: false, canceled: true, blocked: 'actor_inactive', error: 'the account that queued it is disabled' })
+    expect(h.dispatchStart).not.toHaveBeenCalled()
+    const cancel = h.jqUpdateMany.mock.calls.find((c) => c[0].data.status === 'canceled')
+    expect(cancel?.[0]).toEqual({
+      where: { id: 'j1', status: 'dispatching' },
+      data: {
+        status: 'canceled', blockedCode: 'actor_inactive', blockedReason: 'the account that queued it is disabled',
+        finishedAt: expect.any(Date),
+      },
+    })
+    expect(h.audit).toHaveBeenCalledWith({
+      actorId: null, action: 'job_queue.cancelled', targetType: 'jobQueue', targetId: 'j1',
+      after: {
+        reason: 'actor_inactive', projectId: 'p1', kind: 'full_recon',
+        userId: 'admin-acting', account: 'actor', status: 'disabled',
+      },
+      source: 'system',
+    })
+  })
+
+  test("a disabled project owner cancels the job too, judged on the project already read", async () => {
+    users({ 'admin-acting': 'active', u1: 'disabled' })
+    const body = await (await go()).json()
+    expect(body).toMatchObject({ canceled: true, error: "the project owner's account is disabled" })
+    expect(h.dispatchStart).not.toHaveBeenCalled()
+    expect(h.projectFindUnique).toHaveBeenCalledTimes(1)
+    expect(h.userFindMany.mock.calls[0][0]).toEqual({ where: { id: { in: ['admin-acting', 'u1'] } }, select: { id: true, status: true } })
+  })
+
+  test('active accounts: the job starts as before, for the account that queued it', async () => {
+    expect((await (await go()).json()).ok).toBe(true)
+    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'admin-acting', payload: {} })
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('a deleted project still fails as before, without reading accounts', async () => {
+    h.projectFindUnique.mockResolvedValue(null)
+    expect((await (await go()).json()).error).toBe('project no longer exists')
+    expect(h.userFindMany).not.toHaveBeenCalled()
+  })
+
+  test("switch off → today's behaviour: no account read, the job starts", async () => {
+    const { setFlagsForTests } = await import('@/lib/authz/flags')
+    setFlagsForTests({ identity: false })
+    users({ 'admin-acting': 'disabled', u1: 'disabled' })
+    expect((await (await go()).json()).ok).toBe(true)
+    expect(h.dispatchStart).toHaveBeenCalled()
+    expect(h.userFindMany).not.toHaveBeenCalled()
   })
 })
