@@ -66,6 +66,8 @@ vi.mock('@/lib/prisma', () => ({
       },
     },
     auditLog: { findFirst: async () => null },
+    // The act-as log (step 3.14): no row, so a cookie from before the switch acts (IM-12).
+    actAsAudit: { findFirst: async () => null },
   },
 }))
 vi.mock('@/lib/authz/updateReview', () => ({ pendingLegacyGrantCount: async () => 0 }))

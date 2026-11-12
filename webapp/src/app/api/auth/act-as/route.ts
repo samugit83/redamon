@@ -15,7 +15,7 @@ import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
 import { PHASE1_ACT_AS_SECONDS, actAsLifetimeSeconds } from '@/lib/authz/sessionLifetime'
-import { endPresentedActAs, impersonationPolicy, mintImpersonationToken, parseActAsRequest } from '@/lib/authz/actAs'
+import { endPresentedActAs, impersonationPolicy, parseActAsRequest, startImpersonation } from '@/lib/authz/actAs'
 import { actedAsNotice, appendNotice } from '@/lib/authz/accountNotices'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
 import { loadPrincipal } from '@/lib/authz/principal'
@@ -132,19 +132,17 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
     return res
   }
 
-  // The impersonation the browser held until now ends here, and any whose time ran out.
-  await endPresentedActAs(admin.userId, presentedActAsToken(request), 'stopped')
   // The cookie lives the chosen duration, never longer than an admin session (or 12 h).
   const seconds = Math.min(asked.durationMinutes * 60, await actAsLifetimeSeconds())
   const durationMinutes = Math.ceil(seconds / 60)
   const actor = sessionPrincipal(admin) ?? (await loadPrincipal(admin.userId, { fresh: true }))
   if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const token = await mintImpersonationToken(actor, targetUserId, seconds)
-  // No start row, no impersonation: the row is how it is seen (IM-09).
-  await writeActAsAudit(
-    { adminId: admin.userId, targetUserId, event: 'start', reason: asked.reason, durationMinutes },
-    { strict: true },
-  )
+  // The impersonation the browser held ends and this one starts in one write: no start row, no
+  // impersonation (IM-09), and a failed start leaves the previous one running, as the log says.
+  const token = await startImpersonation({
+    admin: actor, targetUserId, seconds, reason: asked.reason, durationMinutes,
+    presentedToken: presentedActAsToken(request),
+  })
   if (policy!.notifyTarget) await noticeTarget(admin, targetUserId, asked.reason, durationMinutes)
   // The token's own expiry: the wall clock jose signs and checks it with.
   const endsAt = new Date(decodeJwt(token).exp! * 1000).toISOString()

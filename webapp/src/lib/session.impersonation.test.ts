@@ -54,9 +54,13 @@ async function signIn(userId: string) {
   h.jar.auth = await createToken(userId, String(row.role), Number(row.sessionVersion ?? 0))
 }
 
-/** A cookie minted under this step's rule: it carries the admin's session version. */
+/**
+ * A cookie minted under this step's rule: it carries the admin's session version and names its
+ * start row, which it writes (an impersonation acts only while its start is its pair's latest row).
+ */
 async function cookie(admin: string, target: string, { seconds = 3600, asv }: { seconds?: number; asv?: number } = {}) {
-  return createActAsToken(admin, target, seconds, { asv: asv ?? Number(db().account(admin)!.sessionVersion ?? 0) })
+  const jti = started(admin, target)
+  return createActAsToken(admin, target, seconds, { asv: asv ?? Number(db().account(admin)!.sessionVersion ?? 0), jti })
 }
 
 async function expiredCookie(admin: string, target: string) {
@@ -65,8 +69,12 @@ async function expiredCookie(admin: string, target: string) {
     .setIssuedAt(iat).setExpirationTime(iat + 3600).sign(new TextEncoder().encode('b'.repeat(64)))
 }
 
-function started(admin: string, target: string) {
-  db().seedActAs({ adminId: admin, targetUserId: target, event: 'start', createdAt: new Date(Date.now() - 60_000), durationMinutes: 60, reason: 'ticket #42' })
+let startSeq = 0
+/** The start row of an impersonation that began a minute ago; returns its id. */
+function started(admin: string, target: string): string {
+  const id = `start-${++startSeq}`
+  db().seedActAs({ id, adminId: admin, targetUserId: target, event: 'start', createdAt: new Date(Date.now() - 60_000), durationMinutes: 60, reason: 'ticket #42' })
+  return id
 }
 
 const ends = () => db().actAs().filter((r) => r.event === 'end')
@@ -210,7 +218,8 @@ describe('switch off: Phase 2 behaviour', () => {
     await db().user.update({ where: { id: 'member-1' }, data: { status: 'disabled' } })
     nextRequest()
     await signIn('admin-1')
-    h.jar.actAs = await cookie('admin-1', 'member-1', { asv: 0 })
+    // Its start row is not even in the log: with the switch off the log is not read.
+    h.jar.actAs = await createActAsToken('admin-1', 'member-1', 3600, { asv: 0, jti: 'start-unlogged' })
     expect(await getEffectiveUser()).toEqual({ userId: 'member-1' })
     expect(db().actAs()).toEqual([])
     expect(h.deleted).toEqual([])

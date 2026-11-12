@@ -6,7 +6,8 @@ import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Princip
 import { rememberSessionPrincipal, sessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
 import {
-  actAsRuleRefusal, actsAsOthers, endForRefusal, recordActAsEndQuietly, type ActAsActor, type ActAsEnd,
+  actAsBindingInForce, actAsRuleRefusal, actsAsOthers, bindingOf, endForRefusal, recordActAsEndQuietly,
+  type ActAsActor, type ActAsEnd,
 } from './authz/actAs'
 import { sessionHolds } from './authz/adminPermission'
 import { forbiddenResponse } from './authz/guards'
@@ -184,9 +185,12 @@ function forgetActAs(cookieStore: CookieStore): void {
 /**
  * Permissions switch on (step 3.14): the act-as cookie is judged again on every request. It is
  * this admin's, unexpired, minted at the admin's current session version (a cookie from before
- * the switch carries none and keeps its own expiry, IM-12), and the rule still allows the pair.
- * Otherwise the impersonation ends here: its end row is written once with how it ended, and the
- * cookie is cleared. A cookie another admin minted is ignored and records nothing.
+ * the switch carries none and keeps its own expiry, IM-12), the impersonation it names is still
+ * the one the act-as log shows running (authz/actAs.ts `ActAsBinding`: one indexed read), and the
+ * rule still allows the pair. Otherwise the impersonation ends here: its end row is written once
+ * with how it ended, and the cookie is cleared. A copy of a cookie whose impersonation already
+ * ended (a Stop, a sign-out, a newer act-as) is cleared and records nothing; so is a cookie
+ * another admin minted.
  */
 async function impersonation(session: Session, token: string, cookieStore: CookieStore, opts: SessionOptions): Promise<ActAsInForce | null> {
   const read = await readActAsToken(token)
@@ -194,13 +198,20 @@ async function impersonation(session: Session, token: string, cookieStore: Cooki
   const { claims } = read
   const actor = sessionPrincipal(session) ?? (await loadPrincipal(session.userId, opts))
   if (!actor) return null
+  const binding = bindingOf(claims)
   const end = async (endedBy: ActAsEnd): Promise<null> => {
-    await recordActAsEndQuietly({ adminId: actor.id, targetUserId: claims.act, endedBy, adminEmail: actor.email })
+    await recordActAsEndQuietly({ adminId: actor.id, targetUserId: claims.act, endedBy, adminEmail: actor.email, binding })
     forgetActAs(cookieStore)
     return null
   }
   if (read.expired) return end('expired')
   if (claims.asv !== undefined && claims.asv !== actor.sessionVersion) return end('invalidated')
+  // Minted under the rule before tokens named their start row: nothing tells a replay apart.
+  if ('open' in binding) return end('invalidated')
+  if (!(await actAsBindingInForce(actor.id, claims.act, binding))) {
+    forgetActAs(cookieStore)
+    return null
+  }
   const target = await loadPrincipal(claims.act, opts)
   if (!target) return end('target_deleted')
   const refusal = await actAsRuleRefusal(actor, target, opts)
@@ -208,16 +219,29 @@ async function impersonation(session: Session, token: string, cookieStore: Cooki
   return { target, expiresAt: read.expiresAt }
 }
 
+/** One act-as decision per session object, i.e. per request (switch on): `fresh` when it read the accounts fresh. */
+const judged = new WeakMap<Session, { fresh: boolean; decision: Promise<ActAsInForce | null> }>()
+
 /**
  * The impersonation an admin session carries: the act-as cookie must have been minted by this
  * admin and name an account that still exists, which the act-as rule allows. Null for anyone else.
+ * Permissions switch on: judged once per session object, so every check of a request (the effective
+ * user, can()'s intersection, the audit rows) follows one decision, and the act-as log is read
+ * once (DV-25); a fresh call over a decision made from cached accounts judges again.
  */
 export async function actAsInForce(session: Session, opts: SessionOptions = {}): Promise<ActAsInForce | null> {
   if (!actsAsOthers(session)) return null
+  const enforced = rbacFlags().permissions
+  const made = enforced ? judged.get(session) : undefined
+  if (made && (made.fresh || !opts.fresh)) return made.decision
   const cookieStore = await cookies()
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
   if (!actAsToken) return null
-  if (rbacFlags().permissions) return impersonation(session, actAsToken, cookieStore, opts)
+  if (enforced) {
+    const decision = impersonation(session, actAsToken, cookieStore, opts)
+    judged.set(session, { fresh: opts.fresh === true, decision })
+    return decision
+  }
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
   const target = await loadPrincipal(claims.act, opts)

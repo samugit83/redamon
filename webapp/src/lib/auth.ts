@@ -160,33 +160,42 @@ const ACT_AS_EXPIRY = '12h'
 /**
  * `seconds`: the lifetime the identity switch gives act-as (step 2.11); without it, 12 h. `asv`: the
  * admin's session version when the impersonation started (step 3.14, permissions switch on): a later
- * change of the admin's version ends it.
+ * change of the admin's version ends it. `jti`: the id of the impersonation's start row in the act-as
+ * log; the token acts only while that row is the latest of its pair (authz/actAs.ts `ActAsBinding`).
  */
 export async function createActAsToken(
   adminUserId: string,
   targetUserId: string,
   seconds?: number,
-  { asv }: { asv?: number } = {},
+  { asv, jti }: { asv?: number; jti?: string } = {},
 ): Promise<string> {
   if (asv !== undefined && !isSessionVersion(asv)) throw new Error('A session version is a whole number from 0')
-  const claims = { sub: adminUserId, act: targetUserId, ...(asv !== undefined ? { asv } : {}) }
+  if (jti !== undefined && !jti) throw new Error('An act-as token id is a non-empty string')
+  const claims = { sub: adminUserId, act: targetUserId, ...(asv !== undefined ? { asv } : {}), ...(jti ? { jti } : {}) }
   const jwt = new SignJWT(claims).setProtectedHeader({ alg: 'HS256' })
   if (seconds === undefined) return jwt.setIssuedAt().setExpirationTime(ACT_AS_EXPIRY).sign(getSecret())
   const iat = Math.floor(Date.now() / 1000)
   return jwt.setIssuedAt(iat).setExpirationTime(iat + seconds).sign(getSecret())
 }
 
-/** The claims of an act-as token; `asv` only on a token minted with the permissions switch on. */
+/** The claims of an act-as token; `asv` and `jti` only on a token minted with the permissions switch on. */
 export interface ActAsClaims {
   sub: string
   act: string
   asv?: number
+  jti?: string
 }
 
 function actAsClaims(payload: Record<string, unknown>): ActAsClaims | null {
   if (typeof payload.sub !== 'string' || !payload.sub || typeof payload.act !== 'string' || !payload.act) return null
-  if (payload.asv === undefined) return { sub: payload.sub, act: payload.act }
-  return isSessionVersion(payload.asv) ? { sub: payload.sub, act: payload.act, asv: payload.asv } : null
+  if (payload.asv !== undefined && !isSessionVersion(payload.asv)) return null
+  if (payload.jti !== undefined && (typeof payload.jti !== 'string' || !payload.jti)) return null
+  return {
+    sub: payload.sub,
+    act: payload.act,
+    ...(payload.asv !== undefined ? { asv: payload.asv } : {}),
+    ...(payload.jti !== undefined ? { jti: payload.jti } : {}),
+  }
 }
 
 export async function verifyActAsToken(token: string): Promise<ActAsClaims | null> {

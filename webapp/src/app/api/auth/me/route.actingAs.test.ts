@@ -44,9 +44,11 @@ import { GET } from './route'
 
 const db = () => h.db as AccountDb
 
+/** The cookie names the pair's start row the test seeded, as the act-as route mints it. */
 async function signIn(userId: string, actingAs?: string) {
   h.jar.auth = await createToken(userId, String(db().account(userId)!.role), 0)
-  h.jar.actAs = actingAs ? await createActAsToken(userId, actingAs, 2400, { asv: 0 }) : undefined
+  const start = db().actAs().filter((r) => r.adminId === userId && r.targetUserId === actingAs && r.event === 'start').at(-1)
+  h.jar.actAs = actingAs ? await createActAsToken(userId, actingAs, 2400, { asv: 0, jti: String(start?.id) }) : undefined
 }
 const me = async () => (await GET()).json() as Promise<Record<string, unknown>>
 

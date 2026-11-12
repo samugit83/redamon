@@ -13,15 +13,25 @@
  *     when the account acted as is disabled, deleted or promoted. Each end writes one `ActAsAudit`
  *     end row naming how it ended (`endedBy`), the first time it is noticed; a cookie from before the
  *     switch (no version claim) stays valid until its own expiry, but a pair the rule forbids ends at
- *     once with an `act_as.refused` row (IM-12).
+ *     once with an `act_as.refused` row (IM-12);
+ *   - the token names its start row (`jti`) and acts only while that row is the latest of its admin
+ *     and account in the log (`ActAsBinding`): the end row a Stop, a sign-out or a new act-as writes
+ *     ends every copy of the cookie, a saved one replayed included. A new act-as writes the previous
+ *     one's end and its own start in one transaction, so the log and the cookies never disagree.
  * With it off, Phase 2's rule: only an admin acts as anyone and nobody acts as Root (identity on).
  *
  * Reads: the instance settings row (the three impersonation settings), the act-as log and, through
  * capabilities.ts, the Root and the admin's sets. A failed read throws; a failed end-row write is
  * logged and the impersonation still ends.
+ *
+ * Every row of a pair is written under the per-admin lock with a `createdAt` after the pair's last
+ * row (`after`): Postgres gives every statement of a transaction the same `now()`, and "the pair's
+ * latest row" must never be a tie.
  */
+import { randomUUID } from 'node:crypto'
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { createActAsToken, readActAsToken } from '@/lib/auth'
+import { createActAsToken, readActAsToken, type ActAsClaims } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { rbacFlags } from './flags'
@@ -108,18 +118,6 @@ export function parseActAsRequest(body: Record<string, unknown>, policy: Imperso
   return { reason, durationMinutes: Math.min(wanted, policy.maxMinutes) }
 }
 
-/**
- * The act-as token of an impersonation that starts now: it expires with it, and it carries the
- * admin's session version, so signing the admin out everywhere ends it too.
- */
-export async function mintImpersonationToken(
-  admin: Pick<CapabilityPrincipal, 'id'> & { sessionVersion: number },
-  targetUserId: string,
-  seconds: number,
-): Promise<string> {
-  return createActAsToken(admin.id, targetUserId, seconds, { asv: admin.sessionVersion })
-}
-
 /** Only an admin acts as anyone: anyone else's act-as cookie is ignored (an account type). */
 export function actsAsOthers(account: { role: string }): boolean {
   return account.role === 'admin'
@@ -184,9 +182,63 @@ export function endForRefusal(refusal: ActAsRuleRefusal, mintedUnderTheRule: boo
   }
 }
 
-/** Serialises the end rows of one admin's impersonations across requests and webapp copies. */
+/**
+ * Which impersonation an act-as token names in the log, so that it acts only while that one is in
+ * force (fail closed: a token whose impersonation the log does not show running acts as nobody):
+ *   - `startId`: minted under the rule (`jti`), it names its start row, which must be its pair's
+ *     latest row; an end, or a newer start of the same pair, ends it;
+ *   - `legacy`: a token from before the switch (no `asv`, IM-12) keeps acting until its pair's log
+ *     shows an end or a start under the rule (one with a duration); Phase 2 wrote its start row best
+ *     effort, so a pair with no row at all does not refuse it;
+ *   - `open`: a token minted under the rule before it carried `jti`; it names whatever start of the
+ *     pair is open. The request path ends it at once; a Stop or a sign-out end the open one.
+ */
+export type ActAsBinding = { startId: string } | { legacy: true } | { open: true }
+
+export function bindingOf(claims: ActAsClaims): ActAsBinding {
+  if (claims.jti) return { startId: claims.jti }
+  return claims.asv === undefined ? { legacy: true } : { open: true }
+}
+
+type Db = Pick<Prisma.TransactionClient, 'actAsAudit'>
+type PairRow = { id: string; event: string; durationMinutes: number | null; createdAt: Date }
+
+/** The pair's latest row: one read on the `(admin_id, created_at)` index. */
+function latestOfPair(db: Db, adminId: string, targetUserId: string): Promise<PairRow | null> {
+  return db.actAsAudit.findFirst({
+    where: { adminId, targetUserId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, event: true, durationMinutes: true, createdAt: true },
+  })
+}
+
+function bindingInForce(latest: PairRow | null, binding: ActAsBinding): boolean {
+  if ('startId' in binding) return latest?.event === 'start' && latest.id === binding.startId
+  if ('legacy' in binding) return !latest || (latest.event === 'start' && latest.durationMinutes == null)
+  return latest?.event === 'start'
+}
+
+/** A row's time: now, but always after the pair's last row. */
+function after(latest: PairRow | null): Date {
+  const at = now().getTime()
+  return new Date(latest ? Math.max(at, latest.createdAt.getTime() + 1) : at)
+}
+
+/**
+ * Whether the impersonation `binding` names is still the one the log shows running for the pair:
+ * the per-request check of an act-as cookie (session.ts), one indexed read. A failed read throws.
+ */
+export async function actAsBindingInForce(adminId: string, targetUserId: string, binding: ActAsBinding): Promise<boolean> {
+  return bindingInForce(await latestOfPair(prisma, adminId, targetUserId), binding)
+}
+
+/** Serialises the rows of one admin's impersonations across requests and webapp copies. */
 function lockKey(adminId: string): string {
   return `rbac-act-as:${adminId}`
+}
+
+async function lockAdmin(tx: Prisma.TransactionClient, adminId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey(adminId)}))`
 }
 
 export interface ActAsEndInput {
@@ -195,27 +247,36 @@ export interface ActAsEndInput {
   endedBy: ActAsEnd
   /** The admin's email, for the `act_as.refused` row. */
   adminEmail?: string | null
+  /** The impersonation that ends; left out, whichever start of the pair is open. */
+  binding?: ActAsBinding
+}
+
+/** The end row, inside the caller's locked transaction, when the impersonation is still the running one. */
+async function endInTx(tx: Prisma.TransactionClient, { adminId, targetUserId, endedBy, binding = { open: true } }: ActAsEndInput): Promise<boolean> {
+  const latest = await latestOfPair(tx, adminId, targetUserId)
+  if (!bindingInForce(latest, binding)) return false
+  await tx.actAsAudit.create({ data: { adminId, targetUserId, event: 'end', source: 'api', endedBy, createdAt: after(latest) } })
+  return true
+}
+
+function loggedEnd({ adminId, targetUserId, endedBy }: ActAsEndInput): void {
+  console.info(`[audit] act-as.end admin=${adminId} target=${targetUserId} ended-by=${endedBy}`)
 }
 
 /**
  * Writes the end row of the admin's impersonation of `targetUserId`, once: under a lock per admin,
- * and only when the pair's last row is not already an end (a Stop, an expiry seen by another
- * request or another copy). A forbidden pair also writes `act_as.refused`. True when it wrote.
+ * and only while that impersonation is the one the log shows running (a Stop, an expiry seen by
+ * another request or another copy, a newer act-as already ended it). A forbidden pair also writes
+ * `act_as.refused`. True when it wrote.
  */
-export async function recordActAsEnd({ adminId, targetUserId, endedBy, adminEmail }: ActAsEndInput): Promise<boolean> {
+export async function recordActAsEnd(input: ActAsEndInput): Promise<boolean> {
+  const { adminId, targetUserId, endedBy, adminEmail } = input
   const wrote = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey(adminId)}))`
-    const last = await tx.actAsAudit.findFirst({
-      where: { adminId, targetUserId },
-      orderBy: { createdAt: 'desc' },
-      select: { event: true },
-    })
-    if (last?.event === 'end') return false
-    await tx.actAsAudit.create({ data: { adminId, targetUserId, event: 'end', source: 'api', endedBy } })
-    return true
+    await lockAdmin(tx, adminId)
+    return endInTx(tx, input)
   })
   if (!wrote) return false
-  console.info(`[audit] act-as.end admin=${adminId} target=${targetUserId} ended-by=${endedBy}`)
+  loggedEnd(input)
   if (endedBy === 'refused') {
     await writeAudit({
       actorId: adminId,
@@ -256,7 +317,7 @@ export async function settleExpiredActAs(where: { adminId: string } | { targetUs
     where,
     orderBy: { createdAt: 'desc' },
     take: SETTLE_WINDOW,
-    select: { adminId: true, targetUserId: true, event: true, createdAt: true, durationMinutes: true },
+    select: { id: true, adminId: true, targetUserId: true, event: true, createdAt: true, durationMinutes: true },
   })
   const seen = new Set<string>()
   let ended = 0
@@ -266,7 +327,8 @@ export async function settleExpiredActAs(where: { adminId: string } | { targetUs
     seen.add(pair)
     if (row.event !== 'start' || !row.durationMinutes) continue
     if (row.createdAt.getTime() + row.durationMinutes * 60_000 > now().getTime()) continue
-    if (await recordActAsEnd({ adminId: row.adminId, targetUserId: row.targetUserId, endedBy: 'expired' })) ended += 1
+    const binding = { startId: row.id }
+    if (await recordActAsEnd({ adminId: row.adminId, targetUserId: row.targetUserId, endedBy: 'expired', binding })) ended += 1
   }
   return ended
 }
@@ -280,17 +342,77 @@ export async function settleExpiredActAsQuietly(where: { adminId: string } | { t
   }
 }
 
+/** The admin's own act-as token as the browser sent it, read (an expired one included), or null. */
+async function presentedBy(adminId: string, token: string | null) {
+  const read = token ? await readActAsToken(token) : null
+  return read && read.claims.sub === adminId && read.claims.act !== adminId ? read : null
+}
+
 /**
- * The end of the impersonation an act-as token names, when it is this admin's (`expired` once the
- * token has, else `endedBy`), and `expired` for any of the admin's impersonations whose time ran out
- * with no cookie left to say so: a Stop, a new act-as, a sign-out. Written once each.
+ * The end of the impersonation an act-as token names, when it is this admin's and still the running
+ * one (`expired` once the token has, else `endedBy`), and `expired` for any of the admin's
+ * impersonations whose time ran out with no cookie left to say so: a Stop, a sign-out. Written once
+ * each; a stale copy of a cookie ends nothing.
  */
 export async function endPresentedActAs(adminId: string, token: string | null, endedBy: ActAsEnd): Promise<void> {
-  const read = token ? await readActAsToken(token) : null
-  if (read && read.claims.sub === adminId && read.claims.act !== adminId) {
-    await recordActAsEnd({ adminId, targetUserId: read.claims.act, endedBy: read.expired ? 'expired' : endedBy })
+  const read = await presentedBy(adminId, token)
+  if (read) {
+    const binding = bindingOf(read.claims)
+    await recordActAsEnd({ adminId, targetUserId: read.claims.act, endedBy: read.expired ? 'expired' : endedBy, binding })
   }
   await settleExpiredActAs({ adminId })
+}
+
+export interface ImpersonationStart {
+  admin: { id: string; sessionVersion: number }
+  targetUserId: string
+  /** The token's lifetime. */
+  seconds: number
+  reason: string | null
+  durationMinutes: number
+  /** The act-as token the browser sent: the impersonation it names ends here. */
+  presentedToken: string | null
+}
+
+/**
+ * Starts an impersonation and returns its act-as token: it expires with it, carries the admin's
+ * session version (signing the admin out everywhere ends it) and names its start row. In one
+ * transaction under the admin's lock: the impersonation the browser held ends (`stopped`, `expired`
+ * when its token has), so does one of the same account still open in another browser (one at a time
+ * per pair, so a token always names its pair's latest start), and the start row is written with its
+ * reason and duration. A failed write throws and writes nothing: no start row, no impersonation
+ * (IM-09), and the previous one runs on, as its unwritten end says.
+ */
+export async function startImpersonation(start: ImpersonationStart): Promise<string> {
+  const { admin, targetUserId, seconds, reason, durationMinutes } = start
+  await settleExpiredActAs({ adminId: admin.id })
+  const startId = randomUUID()
+  const token = await createActAsToken(admin.id, targetUserId, seconds, { asv: admin.sessionVersion, jti: startId })
+  const previous = await presentedBy(admin.id, start.presentedToken)
+  const ends: ActAsEndInput[] = []
+  if (previous) {
+    ends.push({
+      adminId: admin.id, targetUserId: previous.claims.act,
+      endedBy: previous.expired ? 'expired' : 'stopped', binding: bindingOf(previous.claims),
+    })
+  }
+  ends.push({ adminId: admin.id, targetUserId, endedBy: 'stopped' })
+  const ended = await prisma.$transaction(async (tx) => {
+    await lockAdmin(tx, admin.id)
+    const written: ActAsEndInput[] = []
+    for (const end of ends) if (await endInTx(tx, end)) written.push(end)
+    const latest = await latestOfPair(tx, admin.id, targetUserId)
+    await tx.actAsAudit.create({
+      data: {
+        id: startId, adminId: admin.id, targetUserId, event: 'start', source: 'api',
+        ...(reason ? { reason } : {}), durationMinutes, createdAt: after(latest),
+      },
+    })
+    return written
+  })
+  for (const end of ended) loggedEnd(end)
+  console.info(`[audit] act-as.start admin=${admin.id} target=${targetUserId}`)
+  return token
 }
 
 /** The reason and start of the admin's current impersonation of `targetUserId`, from its start row. */

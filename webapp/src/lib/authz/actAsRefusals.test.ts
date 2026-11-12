@@ -107,9 +107,16 @@ function req(method: string, body?: unknown): NextRequest {
 }
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
 
+/** Signed in as `userId`, acting as `actingAs` through a cookie that names its start row in the log. */
 async function as(userId: string, actingAs?: string) {
   h.jar.auth = await createToken(userId, String(db().account(userId)!.role), 0)
-  h.jar.actAs = actingAs ? await createActAsToken(userId, actingAs, 3600, { asv: 0 }) : undefined
+  if (!actingAs) {
+    h.jar.actAs = undefined
+    return
+  }
+  const jti = `start-${userId}-${actingAs}-${db().actAs().length + 1}`
+  db().seedActAs({ id: jti, adminId: userId, targetUserId: actingAs, event: 'start', createdAt: new Date(), durationMinutes: 60 })
+  h.jar.actAs = await createActAsToken(userId, actingAs, 3600, { asv: 0, jti })
 }
 
 const refusals = () => db().audit().filter((r) => r.action === 'act_as.refused')
