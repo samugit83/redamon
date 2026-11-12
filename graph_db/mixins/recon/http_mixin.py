@@ -392,11 +392,13 @@ class HttpMixin:
                             )
                             stats["relationships_created"] += 1
 
-                            # Also ensure Port node exists and is connected to Service
+                            # Also ensure Port node exists and is connected to Service.
+                            # httpx got an answer on it: an active hit, so a port
+                            # only a passive provider had reported is one no more.
                             session.run(
                                 """
                                 MERGE (p:Port {number: $port_number, protocol: 'tcp', ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
-                                SET p.state = 'open',
+                                SET p.state = 'open', p.passive_only = false,
                                     p.updated_at = datetime()
                                 WITH p
                                 MATCH (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})

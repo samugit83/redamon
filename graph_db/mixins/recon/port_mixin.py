@@ -343,7 +343,8 @@ class PortMixin:
         This function:
         - Creates Port (and Service) nodes for nmap_scan.new_open_ports, the open
           ports nmap confirmed that the port scan did not report
-        - Enriches existing Port nodes with product, version, CPE from Nmap -sV
+        - Enriches existing Port nodes with product, version, CPE from Nmap -sV,
+          and takes passive_only to false on each (nmap found it open)
         - Updates existing Service nodes with version info
         - Creates Vulnerability nodes from NSE script findings: a port script's
           AFFECTS its Port, a host script's (host_level, port 0) hangs off its
@@ -429,7 +430,9 @@ class PortMixin:
                         continue
 
                     try:
-                        # Enrich Port node
+                        # nmap lists only the ports it found open on this
+                        # address, so a passive provider's Port here is now an
+                        # active hit; a Port of the other protocol is not.
                         port_result = session.run(
                             """
                             MATCH (p:Port {number: $port_number, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
@@ -437,10 +440,12 @@ class PortMixin:
                                 p.version = $version,
                                 p.cpe = $cpe,
                                 p.nmap_scanned = true,
+                                p.passive_only = CASE WHEN p.protocol = $protocol THEN false ELSE p.passive_only END,
                                 p.updated_at = datetime()
                             RETURN count(p) AS matched
                             """,
                             port_number=port_number, ip_addr=ip_addr,
+                            protocol=pd.get("protocol") or "tcp",
                             product=product, version=version, cpe=cpe,
                             user_id=user_id, project_id=project_id
                         )
