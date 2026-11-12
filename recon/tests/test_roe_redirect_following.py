@@ -190,3 +190,95 @@ def test_takeover_nuclei_follows_same_host_redirects_only_under_roe_exclusions(m
 @pytest.mark.parametrize("settings", INACTIVE)
 def test_takeover_nuclei_unchanged_without_an_exclusion(monkeypatch, tmp_path, settings):
     assert _redirect_flags(_takeover_cmd(monkeypatch, tmp_path, settings)) == ["-follow-redirects"]
+
+
+# --------------------------------------------------------------------------
+# httpx: run_http_probe's command, and what it stores for an unfollowed 302
+# --------------------------------------------------------------------------
+
+def _httpx(monkeypatch, settings: dict, recon_data: dict = None) -> dict:
+    """run_http_probe up to the docker command; returns {'urls', 'cmd'}."""
+    from recon.main_recon_modules import http_probe
+    seen = {}
+    real_build = http_probe.build_httpx_command
+
+    def build(targets_file, output_file, *args, **kwargs):
+        seen["urls"] = Path(targets_file).read_text().split()
+        seen["cmd"] = real_build(targets_file, output_file, *args, **kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(http_probe, "build_httpx_command", build)
+    monkeypatch.setattr(http_probe, "is_docker_installed", lambda: True)
+    monkeypatch.setattr(http_probe, "is_docker_running", lambda: True)
+    monkeypatch.setattr(http_probe, "pull_httpx_docker_image", lambda *_a, **_k: True)
+    monkeypatch.setattr(http_probe, "system_resolvers", lambda: ["192.0.2.53"])
+    try:
+        http_probe.run_http_probe(copy.deepcopy(recon_data or DOMAIN_RECON), settings=dict(settings))
+    except _Stop:
+        pass
+    assert "cmd" in seen, "run_http_probe never built the httpx command"
+    return seen
+
+
+@pytest.mark.parametrize("entry", EXCLUSIONS)
+def test_httpx_follows_same_host_redirects_only_under_roe_exclusions(monkeypatch, entry):
+    seen = _httpx(monkeypatch, _roe(entry))
+    cmd = seen["cmd"]
+    assert "-fhr" in cmd and "-fr" not in cmd
+    assert cmd[cmd.index("-fhr") + 1:][:2] == ["-maxr", "10"]
+    # -tls-probe requests every name the certificate lists, an excluded one
+    # included; -tls-grab reads the certificate of the connection httpx made.
+    assert "-tls-probe" not in cmd and "-tls-grab" in cmd
+    assert seen["urls"] == [f"https://{WWW}"]
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_httpx_command_unchanged_without_an_exclusion(monkeypatch, settings):
+    cmd = _httpx(monkeypatch, settings)["cmd"]
+    assert "-fr" in cmd and "-fhr" not in cmd
+    assert "-tls-probe" in cmd
+
+
+def test_httpx_partial_run_reads_the_exclusions_from_the_recon_dict(monkeypatch):
+    recon = copy.deepcopy(DOMAIN_RECON)
+    recon["metadata"]["roe"] = _roe(f"{EXCLUDED_IP}/32")
+    cmd = _httpx(monkeypatch, {}, recon)["cmd"]
+    assert "-fhr" in cmd and "-fr" not in cmd and "-tls-probe" not in cmd
+
+
+def test_httpx_without_redirects_stays_without_them(monkeypatch):
+    cmd = _httpx(monkeypatch, dict(_roe(EXCLUDED_IP), HTTPX_FOLLOW_REDIRECTS=False))["cmd"]
+    assert not {"-fr", "-fhr", "-maxr"} & set(cmd)
+
+
+def test_httpx_ip_mode_argv_is_unchanged_by_exclusions():
+    from recon.main_recon_modules.http_probe import build_httpx_command
+    paths = ("/tmp/redamon/t/targets.txt", "/tmp/redamon/t/out.json")
+    assert (build_httpx_command(*paths, dict(_roe(EXCLUDED_IP), IP_MODE=True))
+            == build_httpx_command(*paths, {"IP_MODE": True}))
+
+
+def test_httpx_builder_reads_the_exclusions_from_its_settings():
+    from recon.main_recon_modules.http_probe import build_httpx_command
+    cmd = build_httpx_command("/tmp/redamon/t/targets.txt", "/tmp/redamon/t/out.json", _roe(EDGE))
+    assert "-fhr" in cmd and "-tls-probe" not in cmd
+
+
+def test_the_admitted_hosts_own_302_is_what_is_stored(tmp_path):
+    """The JSON httpx 1.x writes with -fhr for a 302 to another host (run
+    against two loopback servers): the 302 itself, no final_url, no page. The
+    probed URL keeps its own answer; nothing of the other host's page is
+    stored on it. With -fr the same probe reported status 200, the other host
+    as final_url and its title."""
+    from recon.main_recon_modules.http_probe import parse_httpx_output
+    out = tmp_path / "httpx.json"
+    out.write_text(
+        '{"url": "http://203.0.113.63", "input": "http://203.0.113.63", "status_code": 302,'
+        ' "location": "http://edge.example.com/", "host": "203.0.113.63", "webserver": "nginx"}\n')
+    by_url = parse_httpx_output(str(out), root_domain="example.com",
+                                run_addresses=(ADMITTED_IP,))["by_url"]
+    entry = by_url[f"http://{ADMITTED_IP}"]
+    assert entry["status_code"] == 302 and entry["first_status_code"] == 302
+    assert entry["final_url"] == f"http://{ADMITTED_IP}"
+    assert entry["redirected_off_host"] is False
+    assert entry["title"] is None

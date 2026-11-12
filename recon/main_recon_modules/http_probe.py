@@ -1018,12 +1018,17 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
             Its targets are addresses, so httpx stays on them: redirects only
             on the same host (-fhr), and no -tls-probe, which sends requests
             to the names a certificate lists (B-05, B-06).
+        Under RoE exclusions (``settings``) the same two limits as IP mode:
+        an admitted host's redirect, or its certificate's names, can lead to an
+        excluded host, and httpx requests it before any check (R-2).
 
     Returns:
         List of command arguments
     """
     if ip_mode is None:
         ip_mode = bool(settings.get('IP_MODE'))
+    from recon.helpers.target_admission import admission_context
+    roe_exclusions = bool(admission_context(settings).excluded)
     # Extract settings from passed dict
     HTTPX_DOCKER_IMAGE = settings.get('HTTPX_DOCKER_IMAGE', 'projectdiscovery/httpx:latest')
     HTTPX_THREADS = settings.get('HTTPX_THREADS', 50)
@@ -1124,7 +1129,7 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
     # names, so with a session attached -fhr (same-host only) keeps redirect
     # coverage without handing the credentials to an off-scope host.
     if HTTPX_FOLLOW_REDIRECTS:
-        cmd.append("-fhr" if _has_auth or ip_mode else "-fr")
+        cmd.append("-fhr" if _has_auth or ip_mode or roe_exclusions else "-fr")
         cmd.extend(["-maxr", str(HTTPX_MAX_REDIRECTS)])
 
     # Probing options
@@ -1156,7 +1161,7 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
         cmd.append("-cname")
 
     # TLS info
-    if HTTPX_PROBE_TLS_INFO and not ip_mode:
+    if HTTPX_PROBE_TLS_INFO and not ip_mode and not roe_exclusions:
         cmd.append("-tls-probe")
     if HTTPX_PROBE_TLS_GRAB:
         cmd.append("-tls-grab")
@@ -2209,6 +2214,13 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         # (a partial run's builder) decides it too.
         ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"))
         cmd_settings = {**settings, "IP_MODE": True} if ip_mode and not settings.get("IP_MODE") else settings
+        # A partial run's RoE can come in the recon dict (metadata.roe) only;
+        # the builder reads it from its settings.
+        from recon.helpers.target_admission import admission_context
+        excluded = admission_context(settings, recon_data).excluded
+        roe_exclusions = bool(excluded)
+        if roe_exclusions and not admission_context(cmd_settings).excluded:
+            cmd_settings = {**cmd_settings, "ROE_ENABLED": True, "ROE_EXCLUDED_HOSTS": list(excluded)}
         cmd = build_httpx_command(str(targets_file), str(httpx_output), cmd_settings,
                                   probe_hosts=_probe_hosts, container_name=httpx_container)
 
@@ -2219,6 +2231,8 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         print(f"[*][httpx] Timeout: {HTTPX_TIMEOUT}s")
         print(f"[*][httpx] Rate limit: {pacing['rate_limit'] if pacing else HTTPX_RATE_LIMIT} req/s")
         print(f"[*][httpx] Follow redirects: {HTTPX_FOLLOW_REDIRECTS}")
+        if HTTPX_FOLLOW_REDIRECTS and roe_exclusions:
+            print("[*][httpx] Redirects followed on the same host only: RoE exclusions are in force")
         if pacing:
             caveat = ("; its redirect hops take no token of httpx's limiter and can exceed it"
                       if HTTPX_FOLLOW_REDIRECTS else "")
@@ -2230,6 +2244,9 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
             print(f"[*][httpx] Technology detection: enabled")
         if HTTPX_PROBE_TLS_INFO and ip_mode:
             print(f"[-][httpx] TLS probing: off in IP mode (it would request the certificate's names)")
+        elif HTTPX_PROBE_TLS_INFO and roe_exclusions:
+            print("[-][httpx] TLS probing: off while RoE exclusions are in force "
+                  "(it would request the certificate's names)")
         elif HTTPX_PROBE_TLS_INFO:
             print(f"[*][httpx] TLS probing: enabled")
         if HTTPX_INCLUDE_RESPONSE:
