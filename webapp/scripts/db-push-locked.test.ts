@@ -174,7 +174,9 @@ describe('main', () => {
   })
 
   test('run as a file it exits with main\'s code', () => {
-    const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' }
+    // A bare env on purpose (no DATABASE_URL); Next's ProcessEnv type requires a NODE_ENV the child does not need.
+    const bare: Partial<NodeJS.ProcessEnv> = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' }
+    const env = bare as NodeJS.ProcessEnv
     const usage = spawnSync(process.execPath, ['scripts/db-push-locked.mjs', 'migrate', 'reset'], { cwd: WEBAPP, env, encoding: 'utf8' })
     expect(usage.status).toBe(2)
     expect(usage.stderr).toMatch(/\[db-push\] usage/)
