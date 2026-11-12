@@ -337,8 +337,33 @@ def build_naabu_command(targets_file: str, output_file: str, settings: dict,
 # Result Parsing
 # =============================================================================
 
+def _add_port_detail(entry: dict, port: int, protocol: str, ip: Optional[str] = None) -> bool:
+    """Add an open port to a by_host entry; False when it is already there.
+
+    With ``ip`` (a domain run) the detail names the address the port was found
+    on, and a port is listed once per address: a name's addresses can have
+    different ports open, and the graph writer puts each detail under its own
+    ``ip``, else under the entry's first address. Without it (IP mode, whose
+    by_host is keyed by address) a port is listed once per entry.
+    """
+    details = entry["port_details"]
+    if ip:
+        if any(d.get("port") == port and d.get("ip") == ip for d in details):
+            return False
+    elif port in entry["ports"]:
+        return False
+    if port not in entry["ports"]:
+        entry["ports"].append(port)
+    detail = {"port": port, "protocol": protocol, "service": get_service_name(port)}
+    if ip:
+        detail["ip"] = ip
+    details.append(detail)
+    return True
+
+
 def parse_naabu_output(output_file: str, settings: dict = None,
-                       ip_to_hostnames: Optional[Dict[str, list]] = None) -> Dict:
+                       ip_to_hostnames: Optional[Dict[str, list]] = None, *,
+                       ip_mode: bool = False) -> Dict:
     """
     Parse Naabu JSON Lines output into structured format.
 
@@ -357,6 +382,8 @@ def parse_naabu_output(output_file: str, settings: dict = None,
             every name that resolves to a scanned address takes that address's
             open ports: by_host is what httpx probes, and keyed by address alone
             no virtual host is ever probed.
+        ip_mode: an IP-mode run. A domain run tags every port detail with the
+            address it was found on (_add_port_detail); IP mode keeps its shape.
 
     Returns:
         Structured dictionary with by_host, by_ip, and summary sections
@@ -427,16 +454,8 @@ def parse_naabu_output(output_file: str, settings: dict = None,
                         "is_cdn": bool(cdn or cdn_name)
                     }
 
-                if port and port not in by_host[host_key]["ports"]:
-                    by_host[host_key]["ports"].append(port)
-
-                    # Determine service based on common port mappings
-                    service = get_service_name(port)
-                    by_host[host_key]["port_details"].append({
-                        "port": port,
-                        "protocol": "tcp",
-                        "service": service
-                    })
+                if port:
+                    _add_port_detail(by_host[host_key], port, "tcp", None if ip_mode else ip)
 
             # Organize by IP
             if ip:
@@ -460,11 +479,11 @@ def parse_naabu_output(output_file: str, settings: dict = None,
             if not isinstance(name, str) or not name or name in by_host:
                 continue
             by_host[name] = {
-                "host": name, "ip": ip, "ports": list(ip_entry["ports"]),
-                "port_details": [{"port": p, "protocol": "tcp", "service": get_service_name(p)}
-                                 for p in ip_entry["ports"]],
+                "host": name, "ip": ip, "ports": [], "port_details": [],
                 "cdn": ip_entry.get("cdn"), "is_cdn": ip_entry.get("is_cdn", False),
             }
+            for p in ip_entry["ports"]:
+                _add_port_detail(by_host[name], p, "tcp", None if ip_mode else ip)
             if name not in ip_entry["hostnames"]:
                 ip_entry["hostnames"].append(name)
 
@@ -762,6 +781,7 @@ def run_port_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         # Parse results
         print(f"[*][Naabu] Parsing results...")
         results = parse_naabu_output(str(naabu_output), settings=settings,
+                                     ip_mode=bool((recon_data.get("metadata") or {}).get("ip_mode")),
                                      ip_to_hostnames=ip_to_hostnames)
         if results.get("summary", {}).get("ai_ports_annotated"):
             print(f"[+][Naabu] AI port catalog matched {results['summary']['ai_ports_annotated']} port(s)")

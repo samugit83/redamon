@@ -24,13 +24,14 @@ import sys
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from helpers.iana_services import get_service_name_friendly as get_service_name
-
 # AI surface recon — reuse the port-catalogue annotator defined in port_scan.py.
 # Importing from there (instead of duplicating the helper) keeps the catalogue
 # rules single-sourced and means a future change (e.g. promoting an ambiguous
 # port via http-probe confirmation) only needs to land once.
 from main_recon_modules.port_scan import _annotate_ai_port_catalog
+
+# naabu's by_host detail builder: both scanners name a port's address alike.
+from main_recon_modules.port_scan import _add_port_detail
 
 
 # =============================================================================
@@ -160,9 +161,15 @@ def build_masscan_command(targets_file: str, output_file: str, settings: dict) -
 # Result Parsing
 # =============================================================================
 
-def parse_masscan_output(output_file: str, ip_to_hostnames: Dict[str, List[str]], settings: dict = None) -> Dict:
+def parse_masscan_output(output_file: str, ip_to_hostnames: Dict[str, List[str]], settings: dict = None,
+                         *, ip_mode: bool = False) -> Dict:
     """
     Parse Masscan NDJSON (-oD) output into the same structure as Naabu's parser.
+
+    A domain run keys by_host by name, so a name on two addresses holds both
+    addresses' ports: each port detail names the address it was found on
+    (_add_port_detail), else the graph writer puts it under the first one.
+    IP mode keys by_host by address and keeps its shape.
 
     AI surface recon: when ``settings`` is provided, ports matching the AI
     port catalogue receive an ``ai_service`` annotation on their port_details
@@ -243,14 +250,7 @@ def parse_masscan_output(output_file: str, ip_to_hostnames: Dict[str, List[str]]
                         "cdn": None,
                         "is_cdn": False,
                     }
-                if port not in by_host[hostname]["ports"]:
-                    by_host[hostname]["ports"].append(port)
-                    service = get_service_name(port)
-                    by_host[hostname]["port_details"].append({
-                        "port": port,
-                        "protocol": proto,
-                        "service": service,
-                    })
+                _add_port_detail(by_host[hostname], port, proto, None if ip_mode else ip)
 
             # If no hostname mapping, use the IP itself as the host key
             if not hostnames:
@@ -263,14 +263,7 @@ def parse_masscan_output(output_file: str, ip_to_hostnames: Dict[str, List[str]]
                         "cdn": None,
                         "is_cdn": False,
                     }
-                if port not in by_host[ip]["ports"]:
-                    by_host[ip]["ports"].append(port)
-                    service = get_service_name(port)
-                    by_host[ip]["port_details"].append({
-                        "port": port,
-                        "protocol": proto,
-                        "service": service,
-                    })
+                _add_port_detail(by_host[ip], port, proto, None if ip_mode else ip)
 
     # Sort ports
     for host_data in by_host.values():
@@ -436,7 +429,8 @@ def run_masscan_scan(recon_data: dict, output_file: Path = None, settings: dict 
 
         # Parse results
         print(f"[*][Masscan] Parsing results...")
-        results = parse_masscan_output(str(masscan_output), ip_to_hostnames, settings=settings)
+        results = parse_masscan_output(str(masscan_output), ip_to_hostnames, settings=settings,
+                                       ip_mode=bool(metadata.get("ip_mode")))
         if results.get("summary", {}).get("ai_ports_annotated"):
             print(f"[+][Masscan] AI port catalog matched {results['summary']['ai_ports_annotated']} port(s)")
 
