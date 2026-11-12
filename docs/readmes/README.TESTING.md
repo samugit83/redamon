@@ -194,7 +194,12 @@ runner waits that long after each of these SQL changes (it reads both values fro
 container and prints the wait once). A row tagged `identity:on` or `identity:off` runs only while
 the webapp's switch is so and is a SKIP otherwise: with the switch off a refused cookie is kept and
 `/api/auth/me` answers a bare 401, with it on the cookie is cleared and the 401 says
-`session_ended`. Every non-GET row sends the webapp's own `Origin`, as a browser does; a row tagged
+`session_ended`. `permissions:on` / `permissions:off` do the same for `RBAC_PERMISSIONS_ENABLED`,
+which reads off while the identity switch is off, as in the webapp; the equivalence check of the
+permission engine (PE-28) runs `baseline p1 p2` with the identity switch on, once with the
+permissions switch on and once off, and expects the same results. The runner's tag handling has a
+hermetic suite, `tests/rbac_matrix_runner_test.sh` (stubbed `docker` and `curl`, in the gate). Every
+non-GET row sends the webapp's own `Origin`, as a browser does; a row tagged
 `origin:<url>` sends that one instead, so `p2.tsv`'s `p2-xo-*` rows play a page of another site
 against the identity routes, which answer 403 `cross_origin`. The
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the

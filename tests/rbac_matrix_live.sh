@@ -29,7 +29,9 @@
 #   tags    space-separated: hole:<finding> (today's behaviour a later phase closes),
 #           req:<id>, probe:<how>, superseded-by:<file> (kept, never run again),
 #           identity:on | identity:off (run only while the webapp's RBAC_IDENTITY_ENABLED
-#           is so, read from the container; SKIP otherwise), origin:<url> (the Origin header
+#           is so, read from the container; SKIP otherwise), permissions:on | permissions:off
+#           (the same for RBAC_PERMISSIONS_ENABLED, which reads off while the identity
+#           switch is off, as in the webapp), origin:<url> (the Origin header
 #           the row sends instead of the webapp's own, e.g. a page of another site)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
 #
@@ -225,20 +227,26 @@ shift_session_version() { # user-id +1|-1 -> 0 when exactly that account's versi
   [ "$(printf "update users set session_version = session_version %s 1 where id = '%s' and session_version %s returning id;\n" \
     "${2:0:1}" "$1" "$([ "$2" = -1 ] && echo '> 0' || echo '>= 0')" | db_sql)" = "$1" ] && cache_settle
 }
-IDENTITY=""; CACHE_MS=""
-read_identity() { # the webapp's identity switch (IDENTITY=on|off) and cache bound, read once
+IDENTITY=""; PERMISSIONS=""; CACHE_MS=""
+switch_value() { # raw env value -> on|off, parsed as webapp/src/lib/authz/flags.ts does
+  case "$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in true|1|yes) echo on ;; *) echo off ;; esac
+}
+read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS = on|off) and cache bound, read once
   [ -n "$IDENTITY" ] && return
-  local env on
-  env="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
-  on="$(printf '%s' "${env%%|*}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-  CACHE_MS="${env#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
-  case "$on" in true|1|yes) IDENTITY=on ;; *) IDENTITY=off ;; esac
+  local env rest
+  env="$(cd "$ROOT" && docker compose exec -T webapp sh -c \
+    'printf "%s|%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
+  IDENTITY="$(switch_value "${env%%|*}")"; rest="${env#*|}"
+  PERMISSIONS="$(switch_value "${rest%%|*}")"
+  # flags.ts: the permissions switch requires the identity switch and reads off without it.
+  [ "$IDENTITY" = on ] || PERMISSIONS=off
+  CACHE_MS="${rest#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
 }
 CACHE_SETTLE=""
 cache_settle() { # waits out the webapp's account cache when the identity switch is on
   if [ -z "$CACHE_SETTLE" ]; then
     local ms
-    read_identity
+    read_switches
     ms="$CACHE_MS"
     if [ "$IDENTITY" = on ]; then
       [[ "$ms" =~ ^[0-9]+$ ]] || ms=5000
@@ -281,12 +289,16 @@ for line in "${ROWS[@]}"; do
   if [[ " $tags " == *" superseded-by:"* ]]; then
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
-  if [[ " $tags " =~ \ identity:(on|off)\  ]]; then
+  off_switch=""
+  for sw in identity permissions; do
+    [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
-    read_identity
-    if [ "$want" != "$IDENTITY" ]; then
-      echo "SKIP  $label  (identity switch $IDENTITY)  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
-    fi
+    read_switches
+    state="$IDENTITY"; [ "$sw" = permissions ] && state="$PERMISSIONS"
+    if [ "$want" != "$state" ]; then off_switch="$sw switch $state"; break; fi
+  done
+  if [ -n "$off_switch" ]; then
+    echo "SKIP  $label  ($off_switch)  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   url_path="$(subst "$path")"
   expect_s="$(subst "$expect")"
