@@ -186,9 +186,11 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
     }
     walk(src)
     // Step 1.18's admin banner: /api/auth/me tells admins whether the switch is on, and the banner
-    // names it; neither opens a tool.
+    // names it; neither opens a tool. Step 2.4's instance settings route names the switch in its
+    // doc comment only: the tunnel holder of OQ-R3 (a) is admitted through sharedToolAccess('tunnels').
     expect(readers.sort()).toEqual([
-      'app/api/auth/me/route.ts', 'components/admin/CompatBanner.tsx', 'lib/authz/flags.ts', 'lib/authz/sharedTools.ts',
+      'app/api/admin/instance-settings/route.ts', 'app/api/auth/me/route.ts', 'components/admin/CompatBanner.tsx',
+      'lib/authz/flags.ts', 'lib/authz/sharedTools.ts',
     ])
   })
 })
