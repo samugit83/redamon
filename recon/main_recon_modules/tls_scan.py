@@ -403,7 +403,8 @@ def _enrich_port_details(combined_result: dict, by_target: dict) -> None:
             port = _coerce_port(pd.get("port"))
             if port is None:
                 continue
-            cert = by_target.get(f"{ip}:{port}")
+            # A domain run's name on several addresses: the detail names its own.
+            cert = by_target.get(f"{pd.get('ip') or ip}:{port}")
             if not cert or not cert.get("probe_status"):
                 continue
             pd["tls"] = {

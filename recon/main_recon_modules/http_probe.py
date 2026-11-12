@@ -502,17 +502,26 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
     if not by_host:
         return {}
 
-    # Build target list for non-HTTP ports
+    # Build target list for non-HTTP ports. A domain run's name on several
+    # addresses lists every address's ports, each detail naming its own: the
+    # connect goes there, never to the name's first address. A detail with no
+    # `ip` (IP mode, older rows) is on the entry's address.
     targets = []
     for hostname, host_data in by_host.items():
         ip = host_data.get("ip", hostname)
-        ports = host_data.get("ports", [])
+        pairs = [(d.get("ip") or ip, d.get("port"))
+                 for d in host_data.get("port_details") or [] if isinstance(d, dict)]
+        if any(isinstance(d, dict) and d.get("ip") for d in host_data.get("port_details") or []):
+            listed = {port for _, port in pairs}
+            pairs += [(ip, port) for port in host_data.get("ports", []) if port not in listed]
+        else:
+            pairs = [(ip, port) for port in host_data.get("ports", [])]
 
-        for port in ports:
+        for address, port in pairs:
             # Web ports are httpx's; a plaintext connect there only waits.
             if port in BANNER_GRAB_SKIP_PORTS:
                 continue
-            targets.append((ip, port, hostname))
+            targets.append((address, port, hostname))
 
     targets = _admit_banner_targets(targets, recon_data, settings)
     ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode"))
@@ -590,10 +599,14 @@ def run_banner_grab(recon_data: dict, settings: dict = None) -> Dict:
             address = _canonical_ip(str(host_data.get("ip", host)))
             for port_detail in host_data["port_details"]:
                 port = port_detail.get("port")
+                own = _canonical_ip(str(port_detail["ip"])) if port_detail.get("ip") else None
                 for result in results:
+                    reached = _canonical_ip(str(result.get("ip") or result["host"]))
+                    if own is not None and reached != own:
+                        continue
                     if result["port"] == port and (
                             result["host"] == host
-                            or (ip_mode and _canonical_ip(str(result.get("ip") or result["host"])) == address)):
+                            or (ip_mode and reached == address)):
                         if result.get("banner"):
                             port_detail["banner"] = result["banner"]
                         if result.get("version"):
