@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, EffectiveUser } from './session'
 import { projectAccess } from './authz/projectAccess'
-import { ownsRow, rowOwnerFilter } from './authz/rowOwner'
+import { ownsRow, rowOwnerFilter, type RowOwnerFilter } from './authz/rowOwner'
 
 /**
  * Per-user authorization guards (BOLA remediation).
@@ -45,6 +45,10 @@ export function resetAccessEnforceWarningForTests(): void {
   ignoredWarned = false
 }
 
+// Checked as the guards load, so an operator who still sets the variable reads the warning with
+// the first request, not only when a cross-user request is refused (which may never happen).
+accessEnforced()
+
 /** The answer to a resource of another user: 404, as for one that does not exist (anti-enumeration). */
 function ownershipDenied(): NextResponse {
   accessEnforced()
@@ -70,8 +74,8 @@ export function assertOwner(eff: EffectiveUser, ownerId: string): NextResponse |
   return ownershipDenied()
 }
 
-/** Prisma where-fragment scoping a list query to the effective user. */
-export function ownerScope(eff: EffectiveUser): { userId: string } {
+/** Prisma where-fragment scoping a list query to the effective user (matches no row without an id). */
+export function ownerScope(eff: EffectiveUser): RowOwnerFilter {
   return rowOwnerFilter(eff)
 }
 

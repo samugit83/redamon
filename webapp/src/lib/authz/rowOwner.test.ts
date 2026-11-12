@@ -7,6 +7,7 @@
  */
 import { describe, test, expect } from 'vitest'
 import { ownsRow, rowOwnerFilter } from './rowOwner'
+import { createFakePrisma } from '@/lib/plugins/__testing__/fakePrisma'
 
 describe('ownsRow', () => {
   test('the owner owns the row', () => {
@@ -40,5 +41,29 @@ describe('rowOwnerFilter', () => {
   test('carries nothing but the user id', () => {
     const subject = { userId: 'u9', role: 'admin', realUserId: 'a1' } as { userId: string }
     expect(rowOwnerFilter(subject)).toEqual({ userId: 'u9' })
+  })
+
+  // Prisma drops a filter whose value is undefined, so `{userId: undefined}` would list every
+  // account's rows. A subject without an id must get a filter that matches nothing.
+  test.each([[''], [undefined], [null], [42]])('a subject without an id (%j) matches no row (fail closed)', (userId) => {
+    const filter = rowOwnerFilter({ userId } as unknown as { userId: string })
+    expect(filter).toEqual({ userId: { in: [] } })
+    const db = createFakePrisma()
+    db.seed('project', [
+      { id: 'p1', userId: 'u1', name: 'one' },
+      { id: 'p2', userId: 'u2', name: 'two' },
+      { id: 'p3', userId: '', name: 'blank owner' },
+    ])
+    return expect(db.project.findMany({ where: filter })).resolves.toEqual([])
+  })
+
+  test("an account's filter lists its own rows only", async () => {
+    const db = createFakePrisma()
+    db.seed('project', [
+      { id: 'p1', userId: 'u1', name: 'one' },
+      { id: 'p2', userId: 'u2', name: 'two' },
+    ])
+    const rows = (await db.project.findMany({ where: rowOwnerFilter({ userId: 'u1' }) })) as Array<{ id: string }>
+    expect(rows.map((r) => r.id)).toEqual(['p1'])
   })
 })

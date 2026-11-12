@@ -137,6 +137,33 @@ describe('no log-only (PE-24, step 3.5)', () => {
     expect(warn.mock.calls.flat().join(' ')).not.toContain('[BOLA]')
   })
 
+  // An operator who sets ACCESS_ENFORCE=0 must learn it is ignored when the guards load, not
+  // only at the first cross-user request (which may never come).
+  test.each(['0', 'false'])('ACCESS_ENFORCE=%s at load: one warning before any check runs, never repeated', async (v) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.ACCESS_ENFORCE = v
+    vi.resetModules()
+    const fresh = await import('./access')
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/^\[rbac\] access_enforce_ignored: ACCESS_ENFORCE is set but ignored/)
+    mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'victim' })
+    expect(((await fresh.requireProjectAccess({ userId: 'attacker' }, 'p1')) as NextResponse).status).toBe(404)
+    expect(fresh.assertOwner({ userId: 'attacker' }, 'victim')).toBeInstanceOf(NextResponse)
+    expect(fresh.accessEnforced()).toBe(true)
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  test('unset or empty at load: no warning at load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const v of [undefined, '', '  ']) {
+      if (v === undefined) delete process.env.ACCESS_ENFORCE
+      else process.env.ACCESS_ENFORCE = v
+      vi.resetModules()
+      await import('./access')
+    }
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   test('no warning while ACCESS_ENFORCE is unset or empty', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'victim' })
@@ -151,6 +178,10 @@ describe('no log-only (PE-24, step 3.5)', () => {
 describe('ownerScope', () => {
   test('scopes to the effective user id', () => {
     expect(ownerScope({ userId: 'u9' })).toEqual({ userId: 'u9' })
+  })
+  test('an effective user without an id lists nothing (never every user’s rows)', () => {
+    expect(ownerScope({ userId: '' })).toEqual({ userId: { in: [] } })
+    expect(ownerScope({} as { userId: string })).toEqual({ userId: { in: [] } })
   })
 })
 
