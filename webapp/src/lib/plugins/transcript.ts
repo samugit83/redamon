@@ -132,12 +132,23 @@ function phaseKey(data: unknown): string {
   return JSON.stringify(Object.entries(data).filter(([k]) => k !== 'iteration_count'))
 }
 
+/**
+ * A row's data without its top-level `actor`: the account that answered one of the agent's
+ * requests and, under act-as, the admin acting as it. Plugin code needs what was decided, not by
+ * whom; its call already names the user it runs for, and an act-as admin is a person it would
+ * otherwise never see.
+ */
+function withoutActor(data: unknown): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !('actor' in data)) return data
+  return Object.fromEntries(Object.entries(data).filter(([k]) => k !== 'actor'))
+}
+
 function toEvent(row: Pick<ChatMessage, 'sequenceNum' | 'type' | 'data' | 'createdAt'>): TranscriptEvent {
   const event: TranscriptEvent = {
     seq: row.sequenceNum,
     type: row.type,
     at: row.createdAt.toISOString(),
-    data: maskAndCut(row.data),
+    data: maskAndCut(withoutActor(row.data)),
   }
   if (jsonBytes(event) > EVENT_MAX_BYTES) {
     // Already masked; the preview is the start of its JSON text.
