@@ -288,11 +288,12 @@ after every run it asserts that the row count of every table and every `users` c
 unchanged, and diffs `checks.sql` then `checks_after.sql` (what the upgrade adds: legacy
 grants, Nuclei template owners, the identity columns at their defaults, the instance settings
 row and the Root the boot chose in it, the empty invite and permission tables, the legacy-grant
-conversion's marker) against `expected/<scenario>.after.out`, or against
+conversion's marker) against `expected/<scenario>.after.out`; against
+`expected/<scenario>.after.identity.out` when only `RBAC_IDENTITY_ENABLED` is on in the
+caller's environment (the instance settings marker records the switch on); against
 `expected/<scenario>.after.permissions.out` when `RBAC_IDENTITY_ENABLED` and
-`RBAC_PERMISSIONS_ENABLED` are both on in the caller's environment (the boot then records the
-identity switch on and converts the legacy grants: every held grant lapses, since no fixture
-holds a Keep decision).
+`RBAC_PERMISSIONS_ENABLED` are both on (the boot then records the identity switch on and
+converts the legacy grants: every held grant lapses, since no fixture holds a Keep decision).
 
 ```bash
 bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain

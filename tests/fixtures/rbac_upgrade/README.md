@@ -12,6 +12,7 @@ user, host, scan result or secret is in any file here.
 | `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, the instance settings row, the Root the boot chose, their markers, the identity columns and tables at their defaults, the empty permission tables, the legacy-grant conversion), run after every startup list only |
 | `expected/<scenario>.out` | what `checks.sql` prints on the scenario's dump |
 | `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list, the RBAC switches off |
+| `expected/<scenario>.after.identity.out` | the same with `RBAC_IDENTITY_ENABLED` on and `RBAC_PERMISSIONS_ENABLED` off (the harness picks it when only the identity switch reads on) |
 | `expected/<scenario>.after.permissions.out` | the same with `RBAC_IDENTITY_ENABLED` and `RBAC_PERMISSIONS_ENABLED` on (the harness picks it when both read on) |
 
 ## Scenarios
@@ -65,12 +66,14 @@ oldest of several (created_at, then id), automatic and unconfirmed, with one
 `system.rbac_root_assigned` row naming it, the rule and the candidate count; no Root and no
 row when no admin has a password; step 3.3: the three permission tables exist and are empty,
 so every account resolves to its account type's default; step 3.15: no conversion marker with
-the switches off). `expected/<scenario>.after.permissions.out` is the same statement for a boot
-with the identity and permissions switches on: the instance settings marker records the
-identity switch on, and the legacy-grant conversion writes one marker; no fixture holds a Keep
-decision, so every grant a member holds lapses and no override is written. A step that changes
-the upgrade by design appends its queries to `checks_after.sql`, its lines to every
-`.after.out` and `.after.permissions.out`, and the audit actions it writes to
+the switches off). `expected/<scenario>.after.identity.out` is the same statement for a boot with
+the identity switch on and the permissions switch off: it differs only in the instance settings
+marker, which records the identity switch on. `expected/<scenario>.after.permissions.out` is the
+statement for a boot with the identity and permissions switches on: the instance settings marker
+records the identity switch on, and the legacy-grant conversion writes one marker; no fixture
+holds a Keep decision, so every grant a member holds lapses and no override is written. A step
+that changes the upgrade by design appends its queries to `checks_after.sql`, its lines to every
+`.after.out`, `.after.identity.out` and `.after.permissions.out`, and the audit actions it writes to
 `UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count comparison, pinned by count in
 the markers section instead).
 

@@ -18,7 +18,8 @@
 #     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
 #     row, the Root the boot chose, their marker rows, the empty permission tables, the
 #     legacy-grant conversion), through psql, diffed against expected/<scenario>.after.out,
-#     or expected/<scenario>.after.permissions.out when RBAC_PERMISSIONS_ENABLED reads on
+#     expected/<scenario>.after.identity.out when RBAC_IDENTITY_ENABLED reads on alone, or
+#     expected/<scenario>.after.permissions.out when RBAC_PERMISSIONS_ENABLED reads on too
 #     (it needs RBAC_IDENTITY_ENABLED on, as src/lib/authz/flags.ts reads them). The fixture
 #     itself is checked with checks.sql against expected/<scenario>.out before the run.
 #
@@ -65,6 +66,7 @@
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-root bash tests/rbac_upgrade_live.sh failure
+#       RBAC_IDENTITY_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure
 #       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure
 #       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true \
 #         RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-overrides bash tests/rbac_upgrade_live.sh failure
@@ -222,10 +224,13 @@ switch_on() {
   v="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ "$v" == true || "$v" == 1 || "$v" == yes ]]
 }
-# With the permissions switch on the boot also records the identity switch on and converts the
-# legacy grants: those scenarios' expected state is its own file.
+# The boot records the identity switch in the instance settings marker, and with the permissions
+# switch on too it converts the legacy grants: each combination's expected state is its own file.
 AFTER_SUFFIX=after
-if switch_on RBAC_IDENTITY_ENABLED && switch_on RBAC_PERMISSIONS_ENABLED; then AFTER_SUFFIX=after.permissions; fi
+if switch_on RBAC_IDENTITY_ENABLED; then
+  AFTER_SUFFIX=after.identity
+  switch_on RBAC_PERMISSIONS_ENABLED && AFTER_SUFFIX=after.permissions
+fi
 
 start_infra() { # internal | public
   local net_flag=--internal
