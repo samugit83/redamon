@@ -12,7 +12,9 @@
 # member's password, email or deleting it, and adding an MCP server or an LLM provider to the
 # passwordless managed account, answer 403 not_while_acting_as with an act_as.refused row each; acting as rbac-admin-b is Root's (403 root_only); the User manager profile may not act
 # as anyone (403 users:impersonate); Stop, disabling the member and signing out each end it once
-# with their endedBy (stopped, target_disabled, logout); the member's next sign-in shows the notice.
+# with their endedBy (stopped, target_disabled, logout); a saved copy of the cookie replayed after
+# a sign-out, a newer act-as or a Stop acts as nobody and writes nothing; the member's next sign-in
+# shows the notice.
 #
 # Switch off: act-as answers as Phase 2 (no reason, no password for a member), /api/auth/me has
 # no `actingAs`, and nothing above is refused.
@@ -211,8 +213,34 @@ else
   check "the member is enabled again -> $code" "$ok"
 
   call "$ADMIN" POST /api/auth/act-as "$(act_as_body "$C" 'rbac live 3.14 c' "$MINUTES" pw)" >/dev/null
+  cp "$ADMIN" "$TMP/jar.before-logout"
   code="$(call "$ADMIN" POST /api/auth/logout '{}')"
   ok=0; [ "$code" = 200 ] && [ "$(ends logout)" = 1 ] && ok=1; check "signing out -> one end row, logout" "$ok"
+
+  # A copy of the act-as cookie saved before its impersonation ended (step 3.14 review, finding 1):
+  # the token names its start row, so it acts as nobody once the log shows the end.
+  echo "== A saved act-as cookie replayed after the end acts as nobody =="
+  acting_as() { # jar -> the id /api/auth/me says the admin acts as, or None
+    call "$1" GET /api/auth/me >/dev/null; field "(b.get('actingAs') or {}).get('id')"
+  }
+  code="$(login "${SEED[ADMIN_A_EMAIL]}" "$ADMIN")"
+  grep 'redamon-act-as' "$TMP/jar.before-logout" >> "$ADMIN" || true
+  ok=0; [ "$code" = 200 ] && [ "$(acting_as "$ADMIN")" = None ] && [ "$(ends logout)" = 1 ] && ok=1
+  check "after signing out and in again (the version did not move): the old cookie acts as nobody" "$ok"
+  end_rows() { printf "select count(*) from act_as_audit where admin_id = '%s' and target_user_id = '%s' and event = 'end';\n" "$A" "$C" | db_sql; }
+  call "$ADMIN" POST /api/auth/act-as "$(act_as_body "$C" 'rbac live 3.14 d' "$MINUTES" pw)" >/dev/null
+  cp "$ADMIN" "$TMP/jar.first"
+  call "$ADMIN" POST /api/auth/act-as "$(act_as_body "$C" 'rbac live 3.14 e' "$MINUTES" pw)" >/dev/null
+  before="$(end_rows)"
+  ok=0; [ "$(acting_as "$TMP/jar.first")" = None ] && [ "$(acting_as "$ADMIN")" = "$C" ] && ok=1
+  check "after a new act-as of the same member: only the newest cookie acts" "$ok"
+  ok=0; [ -n "$before" ] && [ "$(end_rows)" = "$before" ] && ok=1; check "that replay wrote no end row" "$ok"
+  cp "$ADMIN" "$TMP/jar.second"
+  code="$(call "$ADMIN" DELETE /api/auth/act-as)"
+  before="$(end_rows)"
+  ok=0; [ "$code" = 200 ] && [ "$(acting_as "$TMP/jar.second")" = None ] && ok=1
+  check "after Stop: the saved cookie acts as nobody" "$ok"
+  ok=0; [ -n "$before" ] && [ "$(end_rows)" = "$before" ] && ok=1; check "that replay wrote no end row" "$ok"
 
   if [ "$NOTIFY" = t ]; then
     code="$(login "${SEED[MEMBER_C_EMAIL]}" "$TMP/jar.c")"
