@@ -194,9 +194,13 @@ sign_in() { # actor jar -> fills the jar; prints why and returns 1 when it canno
     key="$(user_key "$who")" && tkey="$(user_key "$target")" || { echo "unknown actor"; return 1; }
     code="$(login_into "$key" "$jar")"
     [ "$code" = 200 ] || { echo "login as $who answered $code"; return 1; }
+    # The reason, duration and own password RBAC_PERMISSIONS_ENABLED asks (step 3.14); ignored with it
+    # off. In a file, so the password is never on a command line.
+    printf '{"targetUserId":"%s","reason":"rbac matrix row","durationMinutes":15,"stepUpPassword":"%s"}' \
+      "${SEED[${tkey}_ID]}" "${SEED[RBAC_PASSWORD]}" > "$TMP/actas.json"
     code="$(curl -s -m 30 -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" -X POST "$BASE/api/auth/act-as" \
       -H 'Content-Type: application/json' -H "Origin: $BASE" \
-      --data-binary "{\"targetUserId\":\"${SEED[${tkey}_ID]}\"}")"
+      --data-binary @"$TMP/actas.json")"
     [ "$code" = 200 ] || { echo "act-as $target answered $code"; return 1; }
   else
     key="$(user_key "$actor")" || { echo "unknown actor"; return 1; }

@@ -158,7 +158,9 @@ echo "== Admin scoping + impersonation =="
 check "admin (not simulating) reads A's project -> blocked (no see-all)" 404 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
 check "admin (not simulating) reads A's api-usage -> blocked" 403 "$(code "$TMP/admin.jar" GET "/api/users/$A_ID/settings/api-usage")"
 check "admin (not simulating) runs A's api-usage -> blocked"  403 "$(code "$TMP/admin.jar" POST "/api/users/$A_ID/settings/api-usage" '{"overwrite":true}')"
-check "admin acts-as A"                                    200 "$(code "$TMP/admin.jar" POST /api/auth/act-as "{\"targetUserId\":\"$A_ID\"}")"
+# With RBAC_PERMISSIONS_ENABLED on an impersonation takes a reason, a duration and the admin's own
+# password (step 3.14); with it off the extra fields are ignored.
+check "admin acts-as A"                                    200 "$(code "$TMP/admin.jar" POST /api/auth/act-as "{\"targetUserId\":\"$A_ID\",\"reason\":\"e2e BOLA run\",\"durationMinutes\":15,\"stepUpPassword\":\"e2epass123\"}")"
 check "admin simulating A reads A's project"              200 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
 check "admin simulating A pastes B's project -> BLOCKED"  404 "$(code "$TMP/admin.jar" GET "/api/projects/$PB_ID")"
 check "admin simulating A reads A's api-usage"            200 "$(code "$TMP/admin.jar" GET "/api/users/$A_ID/settings/api-usage")"
