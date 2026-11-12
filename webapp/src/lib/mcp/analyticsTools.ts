@@ -7,8 +7,8 @@
  * is how it inherits `scope_query`, the row and byte caps, the MCP concurrency
  * ceiling, the explicit timeout and the outbound tenant post-validation, for
  * free and with no change to the agent. The analytics routes behind the UI are
- * deliberately not reused: they authorise with the ACCESS_ENFORCE-aware browser
- * guard, scope on `project_id` alone rather than the full tenant key, run
+ * deliberately not reused: they authorise with the browser session's guard,
+ * scope on `project_id` alone rather than the full tenant key, run
  * outside every MCP bound, and each issues 7 to 11 separate queries - which
  * over this surface would be 7 to 11 round trips per call against a concurrency
  * ceiling of two.

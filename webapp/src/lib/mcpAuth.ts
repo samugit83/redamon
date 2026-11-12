@@ -5,14 +5,11 @@
  * this file exists to establish is WHICH USER a request is. Everything else -
  * ownership, scopes, budgets - hangs off that single resolved id.
  *
- * Three deliberate departures from the rest of the codebase, each because this
- * surface is programmatic, credentialed and internet-reachable:
+ * Deliberate choices, each because this surface is programmatic, credentialed
+ * and internet-reachable:
  *
- *  - `assertMcpProjectAccess` does NOT honour ACCESS_ENFORCE. The shared
- *    `requireProjectAccess` degrades an ownership violation to a logged warning
- *    and ALLOWS the request when ACCESS_ENFORCE=0. That log-only mode exists for
- *    a browser-rollout phase; here it would be a cross-tenant data breach
- *    toggled by an environment variable.
+ *  - `assertMcpProjectAccess` takes the token's user id, never a browser session
+ *    or the act-as cookie, and refuses a project of anyone else with a flat 404.
  *  - Scopes are checked on every call. A field that exists but is never read is
  *    fail-open by omission.
  *  - Expiry and revocation are re-checked on every call, not at connect, so both
@@ -367,8 +364,8 @@ export class McpAccessDenied extends Error {
 }
 
 /**
- * The hard variant of `requireProjectAccess`, with the same 404
- * anti-enumeration semantics but NO log-only mode.
+ * `requireProjectAccess` for a token's user id, with the same 404
+ * anti-enumeration semantics.
  *
  * A project that does not exist and a project owned by someone else are the
  * same answer, so a token holder cannot enumerate other users' project ids.
@@ -384,8 +381,6 @@ export async function assertMcpProjectAccess(
     where: { id: projectId },
     select: { id: true, userId: true },
   })
-  // Deliberately NOT ACCESS_ENFORCE-aware: on this surface a mismatch is always
-  // hard, whatever the environment says.
   if (!project || project.userId !== userId) throw new McpAccessDenied()
   return project
 }

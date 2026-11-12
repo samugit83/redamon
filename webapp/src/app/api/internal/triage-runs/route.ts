@@ -5,10 +5,9 @@
  * agent calls it BEFORE it reads anything, and refuses to start if the call
  * fails for any reason (network, 4xx, 5xx): fail closed.
  *
- * Ownership is re-checked here, strictly. The WebSocket ticket is minted by
- * `requireProjectAccess`, which honours the log-only `ACCESS_ENFORCE=0` mode;
- * that mode exists so an ownership fix can be rolled out in observe-mode, but a
- * run must never start on somebody else's project because of it (S9).
+ * Ownership is re-checked here, strictly: the WebSocket ticket was minted
+ * against the project earlier, and a run must never start on somebody else's
+ * project (S9).
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'

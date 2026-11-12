@@ -10,34 +10,39 @@ import { getEffectiveUser, EffectiveUser } from './session'
  * id unless they are simulating another user. These helpers turn "which user is
  * this?" (identity) into "may this user touch this resource?" (authorization).
  *
- * Rollout: ownership is ENFORCED by default (fail closed). An operator who wants
- * to observe first can set ACCESS_ENFORCE=0 (or false) to run a log-only phase -
- * violations are then logged with a `[BOLA]` marker and allowed. Genuinely missing
- * resources (404) and unauthenticated callers (401) are always hard.
+ * Ownership is always enforced: ACCESS_ENFORCE, which once allowed a log-only rollout,
+ * is ignored with one warning per process (PE-24).
  *
  * Anti-enumeration: a cross-user resource is reported as 404 (not 403) so the
  * distinction "exists but not yours" vs "does not exist" cannot be used to
  * enumerate other users' project/conversation ids (repo convention).
  *
- * Secret-exposure routes (A2) use requireUserAccess, which enforces immediately.
+ * Secret-exposure routes (A2) use requireUserAccess, which answers 403 instead.
  */
 
-export function accessEnforced(): boolean {
-  const v = process.env.ACCESS_ENFORCE
-  // Enforce by default; only an explicit opt-out disables it.
-  return !(v === '0' || v === 'false')
-}
+let ignoredWarned = false
 
 /**
- * Cross-user ownership-violation response. Returns a 404 (anti-enumeration) when
- * enforcing; otherwise logs `[BOLA]` and returns null (allow, opt-in log-only).
+ * Always true. ACCESS_ENFORCE once turned ownership into a log-only check; it is read only to
+ * tell an operator who still sets it that it is ignored.
  */
-function ownershipDenied(reason: string, detail: Record<string, unknown>): NextResponse | null {
-  if (accessEnforced()) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+export function accessEnforced(): boolean {
+  if (!ignoredWarned && (process.env.ACCESS_ENFORCE ?? '').trim() !== '') {
+    ignoredWarned = true
+    console.warn('[rbac] access_enforce_ignored: ACCESS_ENFORCE is set but ignored; ownership is always enforced')
   }
-  console.warn(`[BOLA] would-block: ${reason}`, JSON.stringify(detail))
-  return null
+  return true
+}
+
+/** Tests only. */
+export function resetAccessEnforceWarningForTests(): void {
+  ignoredWarned = false
+}
+
+/** The answer to a resource of another user: 404, as for one that does not exist (anti-enumeration). */
+function ownershipDenied(): NextResponse {
+  accessEnforced()
+  return NextResponse.json({ error: 'Not found' }, { status: 404 })
 }
 
 /** Resolve the effective user, or a 401 NextResponse the caller must return. */
@@ -47,19 +52,16 @@ export async function requireEffectiveUser(): Promise<EffectiveUser | NextRespon
   return eff
 }
 
-/**
- * Immediate (non-log-only) owner check. Use where a violation must always block -
- * notably the secret-exposure routes (A2). Returns 403 unless eff owns ownerId.
- */
+/** Owner check answering 403 (not the anti-enumeration 404) unless eff owns ownerId. */
 export function assertOwnerStrict(eff: EffectiveUser, ownerId: string): NextResponse | null {
   if (eff.userId === ownerId) return null
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 }
 
-/** Log-only-aware owner check for the bulk BOLA rollout. */
+/** Owner check for a per-user row: null when eff owns it, else 404. */
 export function assertOwner(eff: EffectiveUser, ownerId: string): NextResponse | null {
   if (eff.userId === ownerId) return null
-  return ownershipDenied('owner mismatch', { ownerId, eff: eff.userId })
+  return ownershipDenied()
 }
 
 /** Prisma where-fragment scoping a list query to the effective user. */
@@ -82,9 +84,8 @@ export async function guardProject(projectId: string): Promise<NextResponse | nu
 }
 
 /**
- * Load a Project and verify the effective user owns it. 404 when the project does
- * not exist (always hard); ownership violation is log-only-aware. On success (or
- * during the log-only phase) returns the project's id + owner.
+ * Load a Project and verify the effective user owns it: 404 when the project does not
+ * exist or is another user's. On success returns the project's id + owner.
  */
 export async function requireProjectAccess(
   eff: EffectiveUser,
@@ -100,14 +101,7 @@ export async function requireProjectAccess(
   if (!project) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  if (project.userId !== eff.userId) {
-    const denied = ownershipDenied('project owner mismatch', {
-      projectId,
-      owner: project.userId,
-      eff: eff.userId,
-    })
-    if (denied) return denied
-  }
+  if (project.userId !== eff.userId) return ownershipDenied()
   return { project }
 }
 
@@ -129,10 +123,7 @@ export async function requireProjectScopedResource(
   return { ok: true }
 }
 
-/**
- * Load a Conversation (which carries a direct userId) and verify ownership.
- * 404 when absent; ownership is log-only-aware.
- */
+/** Load a Conversation (which carries a direct userId) and verify ownership: 404 when absent or another user's. */
 export async function requireConversationAccess(
   eff: EffectiveUser,
   conversationId: string
@@ -144,20 +135,13 @@ export async function requireConversationAccess(
   if (!conversation) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  if (conversation.userId !== eff.userId) {
-    const denied = ownershipDenied('conversation owner mismatch', {
-      conversationId,
-      owner: conversation.userId,
-      eff: eff.userId,
-    })
-    if (denied) return denied
-  }
+  if (conversation.userId !== eff.userId) return ownershipDenied()
   return { conversation }
 }
 
 /**
- * Load a Conversation by its (unique) sessionId and verify ownership. Used by the
- * by-session/* routes. 404 when absent; ownership is log-only-aware.
+ * Load a Conversation by its (unique) sessionId and verify ownership: 404 when absent or
+ * another user's. Used by the by-session/* routes.
  */
 export async function requireConversationAccessBySession(
   eff: EffectiveUser,
@@ -170,13 +154,6 @@ export async function requireConversationAccessBySession(
   if (!conversation) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  if (conversation.userId !== eff.userId) {
-    const denied = ownershipDenied('conversation owner mismatch', {
-      sessionId,
-      owner: conversation.userId,
-      eff: eff.userId,
-    })
-    if (denied) return denied
-  }
+  if (conversation.userId !== eff.userId) return ownershipDenied()
   return { conversation }
 }

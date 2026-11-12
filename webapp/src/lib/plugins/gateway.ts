@@ -25,8 +25,8 @@ import { isStorableJson } from './storableText'
  * containers, its text storable); the install row (enabled, ready, not revoked, at the
  * token's version); the permission, granted by the admin AND declared by the stored
  * manifest; the user; the project and session, compared with the token's user directly.
- * Strict on purpose: never through requireProjectAccess, which only logs under
- * ACCESS_ENFORCE=0 (RV-33). The frame never reads cookies, the session, the effective
+ * Strict on purpose: never through requireProjectAccess, which reads the browser's
+ * effective user (RV-33). The frame never reads cookies, the session, the effective
  * user or X-Internal-Key: these routes are cookie-less in middleware.ts and plugin code
  * must not borrow a browser's identity.
  *

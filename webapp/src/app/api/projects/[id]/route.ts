@@ -666,8 +666,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const access = await requireProjectAccess(eff, id)
     if (access instanceof NextResponse) return access
 
-    // The teardown's tenant is the owner the access check read, not the caller:
-    // in log-only BOLA mode a non-owner gets this far.
+    // The teardown's tenant is the owner the access check read.
     const result = await teardownProject(
       { id, userId: access?.project.userId ?? eff.userId },
       { actorUserId: eff.userId },

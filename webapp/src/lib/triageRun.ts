@@ -10,9 +10,8 @@
  * `TriageRun` makes the run a row. Three rules follow from that:
  *
  * 1. **The agent authorises before it works.** The run is created through an
- *    internal route that re-checks ownership STRICTLY, ignoring the log-only
- *    `ACCESS_ENFORCE=0` mode, so a ticket minted in observe-mode cannot start a
- *    run on somebody else's project.
+ *    internal route that re-checks ownership STRICTLY, so a ticket cannot start
+ *    a run on somebody else's project.
  * 2. **A stale heartbeat stops blocking.** A crashed agent must not hold a
  *    project forever, so a run that has not checked in for ten minutes no
  *    longer counts as live, and the next create marks it failed.

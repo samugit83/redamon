@@ -12,7 +12,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
  * GET /api/plugins/overrides/change-sets/[id]: the review model (lib/plugins/reviewModel.ts).
  * DELETE /api/plugins/overrides/change-sets/[id]: deletes a non-active version.
  * Only the scope owner (or an admin acting as them) may read or delete; another user's set is
- * a 404, even under ACCESS_ENFORCE=0, because the check is the strict owner check (X9).
+ * a 404 (the strict owner check, X9).
  * Deleting a user-scope version also follows the account write rule (HD-23).
  */
 export const runtime = 'nodejs'

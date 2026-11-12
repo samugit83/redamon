@@ -8,10 +8,8 @@
  * entire attack-surface graph.
  *
  * There was nothing to reuse. The existing checks either inline the pattern in
- * a route while calling the session-based, ACCESS_ENFORCE-aware `guardProject`,
- * or take a browser `EffectiveUser`; neither is reachable from a bearer token,
- * and neither refuses in the mode where `ACCESS_ENFORCE=0` degrades an
- * ownership violation to a logged warning.
+ * a route while calling the session-based `guardProject`, or take a browser
+ * `EffectiveUser`; neither is reachable from a bearer token.
  *
  * So: one module, and no tool may reach a child row any other way. Each helper
  * proves the PARENT with `assertMcpProjectAccess` first, then re-resolves the

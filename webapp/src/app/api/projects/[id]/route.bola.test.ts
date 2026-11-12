@@ -7,7 +7,7 @@
  * (S15/E15), with an X-Internal-Key carve-out for the agent/orchestrator.
  *
  * Cross-user access is reported as 404 (anti-enumeration). Enforcement is ON by
- * default; the opt-out log-only path is covered in access.test.ts.
+ * default; access.test.ts proves no value of ACCESS_ENFORCE opts out.
  *
  * @vitest-environment node
  */

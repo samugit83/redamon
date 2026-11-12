@@ -24,9 +24,9 @@ import { actionMaxTimeoutSeconds } from './settings'
  * A plugin action started from the UI (README.PLUGINS.md §7.7): POST
  * /api/plugins/[pluginId]/actions/[actionId] with `{context: {projectId?, sessionId?},
  * params}`. The webapp decides everything the plugin may reach before the runner sees the
- * call: the effective user, the project and session (strictly theirs, never through the
- * log-only access helpers), the permissions both granted and declared, the timeout; then
- * it mints the call token the plugin's code will hold. A sync action answers its result;
+ * call: the effective user, the project and session (strictly theirs), the permissions
+ * both granted and declared, the timeout; then it mints the call token the plugin's code
+ * will hold. A sync action answers its result;
  * an async one becomes a job (jobs.ts) and answers 202 `{jobId}`.
  *
  * A result naming a change set to review (`reviewProposal`) is kept only when that change

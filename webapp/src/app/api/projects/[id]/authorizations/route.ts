@@ -8,8 +8,7 @@
  *
  * Tenant-scoped through `requireProjectAccess`, the canonical per-project
  * ownership guard for webapp routes. The MCP surface uses `assertMcpProjectAccess`
- * instead, deliberately: that one is not ACCESS_ENFORCE-aware, because on the
- * external surface a mismatch has to be hard whatever the environment says.
+ * instead, which takes the token's user rather than a browser session.
  */
 import { NextRequest, NextResponse } from 'next/server'
 

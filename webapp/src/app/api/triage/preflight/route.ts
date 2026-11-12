@@ -14,9 +14,8 @@
  *     (the dialog opens the model picker); budget 0 needs no model at all;
  *   whether anything is BLOCKING a run right now.
  *
- * Guarded by `requireProjectOwner`, which ignores the log-only ACCESS_ENFORCE=0
- * mode, for the same reason the mute routes do. The logic lives in
- * `lib/triage/preflight.ts`, shared with MCP `get_triage_status`.
+ * Guarded by `requireProjectOwner`, the strict owner check the mute routes use.
+ * The logic lives in `lib/triage/preflight.ts`, shared with MCP `get_triage_status`.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { requireProjectOwner } from '@/lib/triageClient'

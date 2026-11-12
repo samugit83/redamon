@@ -1,8 +1,8 @@
 /**
  * GET / PUT /api/projects/[id]/node-filters — the project's node-filter rules.
  *
- * Owner only, strictly (404 otherwise, whatever ACCESS_ENFORCE says): these
- * rules decide what the AI agent can see. PUT refuses any document the engine
+ * Owner only, strictly (404 otherwise): these rules decide what the AI agent
+ * can see. PUT refuses any document the engine
  * would not run as written, and a stale `revision` (409: someone saved in
  * between; resend with `force: true` to overwrite, which is audited as such).
  * PUT never arms or disarms: that is Apply's and Disarm's job.

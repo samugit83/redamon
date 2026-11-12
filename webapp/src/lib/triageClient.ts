@@ -3,13 +3,10 @@
  *
  * Two things every one of these routes must get right, so they live here once:
  *
- * 1. **Authorisation is hard-enforced.** `guardProject` honours the
- *    `ACCESS_ENFORCE=0` log-only escape hatch, which exists so an ownership fix
- *    can be rolled out in observe-mode first. Mute is not eligible for that:
- *    muting changes what the AGENT can see, project-wide, so a mis-scoped mute
- *    is a correctness failure and not just an information leak. These routes
- *    therefore re-check ownership themselves and 404 on a mismatch whatever the
- *    flag says.
+ * 1. **Authorisation is hard-enforced.** Muting changes what the AGENT can see,
+ *    project-wide, so a mis-scoped mute is a correctness failure and not just an
+ *    information leak. These routes check ownership themselves and 404 on a
+ *    mismatch.
  *
  * 2. **The tenant is never taken from the request body.** The caller sends a
  *    `projectId` and a `nodeId`; the user id is resolved server-side from the
@@ -30,7 +27,7 @@ export interface TriageCaller {
 }
 
 /**
- * Resolve the caller and prove they own the project, ignoring the log-only flag.
+ * Resolve the caller and prove they own the project.
  *
  * Returns the resolved tenant, or the NextResponse to send back. A project that
  * does not exist and a project owned by somebody else both return 404, so this
@@ -52,11 +49,9 @@ export async function requireProjectOwner(
   })
   if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Deliberately NOT ownershipDenied(): that helper honours ACCESS_ENFORCE=0
-  // and would let a mismatch through in log-only mode. There is no separate
-  // admin bypass to reproduce -- an admin acts on another user's project by
-  // simulating them, and getEffectiveUser has already resolved that, so the
-  // strict comparison is the same rule requireProjectAccess applies.
+  // There is no separate admin bypass to reproduce -- an admin acts on another
+  // user's project by simulating them, and getEffectiveUser has already resolved
+  // that, so the strict comparison is the same rule requireProjectAccess applies.
   if (project.userId !== eff.userId) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
