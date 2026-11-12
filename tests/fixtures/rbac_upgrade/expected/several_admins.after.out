@@ -51,3 +51,4 @@ upg-admin-c@e2e.local|f|automatic|f
 upg-admin-c|oldest_admin|3|
 == permission tables (sets, set assignments, overrides) [step 3.3]
 0|0|0
+== legacy grants conversion marker (converted, lapsed, already overridden, changed since, past their days), one line per marker row [step 3.15]

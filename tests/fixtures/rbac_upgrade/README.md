@@ -9,9 +9,10 @@ user, host, scan result or secret is in any file here.
 | `<scenario>.sql` | a full dump (schema and data, `pg_dump --no-owner`), loadable alone into an empty Postgres 16 database |
 | `seed/<scenario>.sql` | the synthetic rows of the scenario, the only hand-written part of its dump |
 | `checks.sql` | the scenario checks (`psql -At`, `\|` between fields), run on the fixture and after every startup list |
-| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, the instance settings row, the Root the boot chose, their markers, the identity columns and tables at their defaults, the empty permission tables), run after every startup list only |
+| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, the instance settings row, the Root the boot chose, their markers, the identity columns and tables at their defaults, the empty permission tables, the legacy-grant conversion), run after every startup list only |
 | `expected/<scenario>.out` | what `checks.sql` prints on the scenario's dump |
-| `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list |
+| `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list, the RBAC switches off |
+| `expected/<scenario>.after.permissions.out` | the same with `RBAC_IDENTITY_ENABLED` and `RBAC_PERMISSIONS_ENABLED` on (the harness picks it when both read on) |
 
 ## Scenarios
 
@@ -63,10 +64,15 @@ ids; step 2.5: the Root the boot chooses in that row, the only admin with a pass
 oldest of several (created_at, then id), automatic and unconfirmed, with one
 `system.rbac_root_assigned` row naming it, the rule and the candidate count; no Root and no
 row when no admin has a password; step 3.3: the three permission tables exist and are empty,
-so every account resolves to its account type's default). A step that changes the upgrade by
-design appends its queries to `checks_after.sql`, its lines to every `.after.out`, and the
-audit actions it writes to `UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count
-comparison, pinned by count in the markers section instead).
+so every account resolves to its account type's default; step 3.15: no conversion marker with
+the switches off). `expected/<scenario>.after.permissions.out` is the same statement for a boot
+with the identity and permissions switches on: the instance settings marker records the
+identity switch on, and the legacy-grant conversion writes one marker; no fixture holds a Keep
+decision, so every grant a member holds lapses and no override is written. A step that changes
+the upgrade by design appends its queries to `checks_after.sql`, its lines to every
+`.after.out` and `.after.permissions.out`, and the audit actions it writes to
+`UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count comparison, pinned by count in
+the markers section instead).
 
 ## The pinned 7.7.2 image
 

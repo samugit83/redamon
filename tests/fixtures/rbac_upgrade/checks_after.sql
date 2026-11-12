@@ -80,3 +80,11 @@ SELECT target_id, after->>'rule', after->>'candidateCount', after->>'previousRoo
 \echo == permission tables (sets, set assignments, overrides) [step 3.3]
 SELECT (SELECT count(*) FROM permission_sets), (SELECT count(*) FROM user_permission_sets),
        (SELECT count(*) FROM user_permission_overrides);
+
+-- The legacy-grant conversion (step 3.15) runs only with RBAC_PERMISSIONS_ENABLED on: with it
+-- off no marker (and no override, the line above). With it on, one marker: the fixtures hold
+-- no Keep decision (7.7.x had no review), so every grant a member holds lapses, no override is
+-- written, and a second run, or a second copy, writes nothing (expected/*.after.permissions.out).
+\echo == legacy grants conversion marker (converted, lapsed, already overridden, changed since, past their days), one line per marker row [step 3.15]
+SELECT after->>'converted', after->>'lapsed', after->>'overridden', after->>'superseded', after->>'expired'
+  FROM audit_log WHERE action = 'system.rbac_legacy_overrides_backfill' ORDER BY created_at;

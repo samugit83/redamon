@@ -281,8 +281,12 @@ on. It checks each fixture with `checks.sql` against `expected/<scenario>.out` b
 after every run it asserts that the row count of every table and every `users` column are
 unchanged, and diffs `checks.sql` then `checks_after.sql` (what the upgrade adds: legacy
 grants, Nuclei template owners, the identity columns at their defaults, the instance settings
-row and the Root the boot chose in it, the empty invite and permission tables) against
-`expected/<scenario>.after.out`.
+row and the Root the boot chose in it, the empty invite and permission tables, the legacy-grant
+conversion's marker) against `expected/<scenario>.after.out`, or against
+`expected/<scenario>.after.permissions.out` when `RBAC_IDENTITY_ENABLED` and
+`RBAC_PERMISSIONS_ENABLED` are both on in the caller's environment (the boot then records the
+identity switch on and converts the legacy grants: every held grant lapses, since no fixture
+holds a Keep decision).
 
 ```bash
 bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain
@@ -294,8 +298,9 @@ bash tests/rbac_upgrade_live.sh serve several_admins   # 127.0.0.1:3901 until Ct
 `failure` deletes a backfill's marker, holds a lock on the table it reads and re-runs only that
 backfill with a 2 s `lock_timeout`: it must log the failure, exit 0 and write no marker, and the
 next run completes it (`RBAC_UPGRADE_FAIL_BACKFILL` picks the backfill: `user-skill-toggles`,
-`rbac-legacy-grants`, `rbac-instance-settings` or `rbac-root`; the Root choice skips on its data,
-so that preset also clears the Root it chose). `serve` boots the server on the scenario database with fake secrets, the
+`rbac-legacy-grants`, `rbac-instance-settings`, `rbac-root`, or `rbac-legacy-overrides` with the
+permissions switch on; the Root choice skips on its data, so that preset also clears the Root it
+chose). `serve` boots the server on the scenario database with fake secrets, the
 disposable instance for checks that would move or sign out the dev stack's own admin. It needs
 Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine`, and
 prints `SKIP` without one (it never pulls or builds); as a `*_live.sh` it is never in the gate.

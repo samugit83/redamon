@@ -16,9 +16,11 @@
 #     table or users column the run added is printed as a NOTE;
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
 #     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
-#     row, the Root the boot chose, their marker rows, the empty permission tables),
-#     through psql, diffed against expected/<scenario>.after.out. The fixture itself is
-#     checked with checks.sql against expected/<scenario>.out before the run.
+#     row, the Root the boot chose, their marker rows, the empty permission tables, the
+#     legacy-grant conversion), through psql, diffed against expected/<scenario>.after.out,
+#     or expected/<scenario>.after.permissions.out when RBAC_PERMISSIONS_ENABLED reads on
+#     (it needs RBAC_IDENTITY_ENABLED on, as src/lib/authz/flags.ts reads them). The fixture
+#     itself is checked with checks.sql against expected/<scenario>.out before the run.
 #
 # Modes (several may be chained; each runs every scenario):
 #   all       the startup list once
@@ -48,7 +50,8 @@
 #   RBAC_UPGRADE_OLD_IMAGE  pinned 7.7.2 image (default redamon-webapp:rbac-7.7.2)
 #   RBAC_UPGRADE_SCENARIOS  scenario name regex (default: all)
 #   RBAC_UPGRADE_FAIL_BACKFILL  the backfill the failure mode breaks: user-skill-toggles
-#                           (default), rbac-legacy-grants, rbac-instance-settings or rbac-root
+#                           (default), rbac-legacy-grants, rbac-instance-settings, rbac-root or
+#                           rbac-legacy-overrides (runs only with the permissions switch on)
 #   RBAC_UPGRADE_FAIL_SCRIPT / _FAIL_MARKER / _FAIL_TABLE / _FAIL_LOG
 #                           override that choice: its script, its AuditLog marker action,
 #                           the table it reads inside the marker's transaction, and the
@@ -62,6 +65,9 @@
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-root bash tests/rbac_upgrade_live.sh failure
+#       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure
+#       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true \
+#         RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-overrides bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 #       bash tests/rbac_upgrade_live.sh serve several_admins
 set -uo pipefail
@@ -96,7 +102,12 @@ case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
     d_table=instance_settings; d_log='\[rbac\] could not recognise the Root'
     d_rows="SELECT least(count(*), 1) FROM users WHERE role = 'admin' AND password <> ''"
     d_undo="UPDATE instance_settings SET root_user_id = NULL, root_confirmed_at = NULL, root_assigned_by = NULL" ;;
-  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants, rbac-instance-settings or rbac-root" >&2; exit 2 ;;
+  rbac-legacy-overrides)
+    # Writes its marker only with the permissions switch on; the fixtures hold no Keep, so it
+    # writes no override to undo.
+    d_script=backfill-rbac-legacy-overrides.mjs; d_marker=system.rbac_legacy_overrides_backfill
+    d_table=users; d_log='\[rbac\] could not convert the legacy grants' ;;
+  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants, rbac-instance-settings, rbac-root or rbac-legacy-overrides" >&2; exit 2 ;;
 esac
 FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-$d_script}"
 FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-$d_marker}"
@@ -107,7 +118,7 @@ FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
 # instead, by count, in checks.sql's markers and by checks_after.sql.
 UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill
                        system.nuclei_template_owners_backfill system.rbac_instance_settings_backfill
-                       system.rbac_root_assigned)
+                       system.rbac_root_assigned system.rbac_legacy_overrides_backfill)
 UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
 UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 
@@ -204,6 +215,17 @@ switch_args() {
   done
 }
 mapfile -t SWITCH_ARGS < <(switch_args)
+
+# A switch as src/lib/authz/flags.ts reads it: true, 1 or yes, any case, spaces trimmed.
+switch_on() {
+  local v="${!1:-}"
+  v="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  [[ "$v" == true || "$v" == 1 || "$v" == yes ]]
+}
+# With the permissions switch on the boot also records the identity switch on and converts the
+# legacy grants: those scenarios' expected state is its own file.
+AFTER_SUFFIX=after
+if switch_on RBAC_IDENTITY_ENABLED && switch_on RBAC_PERMISSIONS_ENABLED; then AFTER_SUFFIX=after.permissions; fi
 
 start_infra() { # internal | public
   local net_flag=--internal
@@ -315,7 +337,7 @@ verify() { # scenario label: nothing else changed, scenario checks
   assert_same "$1 $2: row counts and users columns unchanged" "$TMP/before.txt" "$TMP/after.txt"
   note_additions
   run_checks_after "$TMP/checks.txt"
-  assert_same "$1 $2: checks.sql + checks_after.sql match expected/$1.after.out" "$FIX/expected/$1.after.out" "$TMP/checks.txt"
+  assert_same "$1 $2: checks.sql + checks_after.sql match expected/$1.$AFTER_SUFFIX.out" "$FIX/expected/$1.$AFTER_SUFFIX.out" "$TMP/checks.txt"
 }
 
 list_ok() { # scenario label log rc
