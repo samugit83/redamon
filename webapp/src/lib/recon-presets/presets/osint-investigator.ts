@@ -21,7 +21,7 @@ OSINT analysts, threat intelligence teams, or red team operators building a targ
 - ParamSpider for historical parameterized URLs
 - Arjun in passive mode for parameter inference
 - All 10 OSINT providers at maximum results:
-  - Shodan: host lookup, reverse DNS, domain DNS, passive CVEs
+  - Shodan: host lookup, reverse DNS, domain DNS, passive CVEs (on an IP project reverse DNS runs only when Hostnames on target IPs records names)
   - URLScan.io: 10000 results
   - OTX AlienVault: threat pulses, passive DNS, malware samples
   - Censys: host info, certificates, autonomous systems

@@ -114,7 +114,10 @@ export function VhostSniSection({ data, updateField, onRun }: VhostSniSectionPro
                   <div>
                     <div className={styles.toggleLabel}>Use graph candidates (recommended)</div>
                     <div className={styles.toggleDescription}>
-                      Pulls hostnames from existing Subdomain, ExternalDomain, TLS SAN list, CNAME targets and reverse-DNS PTR records resolving to each target IP. Highest signal source.
+                      Pulls the hostnames already known on each target IP: Subdomain, ExternalDomain, TLS SAN list and CNAME targets. Highest signal source.
+                      {data.ipMode === true && !graphCandidatesForced && (
+                        <> In this IP project they are the hostnames {IP_HOSTNAME_SECTION_LABEL} recorded on that IP (reverse DNS, certificates, passive DNS), tried on that IP only and never on a shared CDN edge.</>
+                      )}
                       {graphCandidatesForced && (
                         <> Off: forced by {IP_HOSTNAME_SECTION_LABEL} ({ipHostnameModeLabel(data.ipHostnameMode)}).</>
                       )}

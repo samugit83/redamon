@@ -613,9 +613,9 @@ may write:
 
 | Disposition | Count | What it means |
 | --- | --- | --- |
-| `settable` | 673 | write at any time through `update_recon_settings` |
-| `create_only` | 19 | the engagement scope: written once by `create_project`, refused by name afterwards |
-| `never` | 49 | not a pipeline parameter at all; refused with its class. 20 of these are the engagement RECORD (`engagement-record`); the record's uploaded RoE document and its parse are 5 more, `upload-managed` |
+| `settable` | 703 | write at any time through `update_recon_settings` |
+| `create_only` | 26 | the engagement scope: written once by `create_project`, refused by name by `update_recon_settings`; the 15 marked `rescope: true` (the target lists, below) move only through `update_project_scope` |
+| `never` | 53 | not a pipeline parameter at all; refused with its class. 20 of these are the engagement RECORD (`engagement-record`); the record's uploaded RoE document and its parse are 5 more, `upload-managed` |
 
 There used to be a fourth, `tighten_only`, holding the Rules of Engagement under
 a write-time direction rule. It is deleted rather than migrated. The rule bought
@@ -623,13 +623,15 @@ the appearance of a guarantee and not the guarantee: five of the fields it
 covered - the whole time window - accepted a WIDENING while reporting a
 tightening, because `narrow` has no machine-checkable direction.
 
-What replaced it is that the engagement splits in two. Its 15 LIMITS - the
+What replaced it is that the engagement splits in two. Its 14 LIMITS - the
 rate ceiling, the never-touch hosts, the scanning window, the agent's denylists -
-are ordinary `settable` fields in the `engagement_limits` group, reachable from
+are ordinary `settable` fields in the `engagement_limits` group (whose 15th
+field, `roeEnabled`, is derived from them and never written: `deny_reason: derived`), reachable from
 the project form and from `update_recon_settings` alike, in either direction.
 What makes them safe is that every one is ENFORCED at scan start whatever the
-setting says. Its 24 RECORD columns - the client, the contacts, the dates,
-the uploaded document - are `never`, with `deny_reason: engagement-record`: a
+setting says. Its 25 RECORD columns - the client, the contacts, the dates,
+the uploaded document - are `never`, with `deny_reason: engagement-record` (20)
+or `upload-managed` (the document and its parse, 5): a
 person writes them, a model reads them, nothing enforces them, and they carry a
 third party's personal data.
 

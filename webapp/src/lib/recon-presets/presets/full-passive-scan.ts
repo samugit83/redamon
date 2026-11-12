@@ -21,7 +21,7 @@ Red team operators in the pre-engagement phase, OSINT analysts building target p
 - GAU with all 4 providers (Wayback Machine, CommonCrawl, OTX, URLScan) at 10000 URL limit
 - ParamSpider for historical parameterized URLs from Wayback CDX
 - All 10 OSINT enrichment providers at maximum results:
-  - Shodan (host lookup, reverse DNS, passive CVEs)
+  - Shodan (host lookup, reverse DNS, passive CVEs; on an IP project reverse DNS runs only when Hostnames on target IPs records names)
   - URLScan.io (10000 results)
   - OTX AlienVault (threat intelligence, passive DNS, malware)
   - Censys (host info, certificates, autonomous systems)

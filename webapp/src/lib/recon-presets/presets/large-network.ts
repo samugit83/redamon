@@ -13,7 +13,7 @@ Scan large IP ranges and CIDR blocks at high speed. This preset is built for IP-
 Network security teams and pentesters who need to map large external perimeters (Class B/C networks, multiple CIDR blocks). Ideal for initial reconnaissance of enterprise networks, ISP ranges, or cloud provider IP blocks where speed matters more than stealth.
 
 ### What it enables
-- Subdomain discovery (all tools enabled for reverse DNS and hostname resolution)
+- Subdomain discovery tools enabled: on an IP project the enumerators do not run; crt.sh, HackerTarget and Subfinder serve only the passive search of Record + scan matching's *. filter domains
 - WHOIS and DNS lookups for IP attribution
 - Naabu SYN scan (top 1000 ports) with high rate (1500) and 50 threads for port verification
 - Masscan at 10,000 pps with banner capture for rapid initial port discovery
@@ -21,7 +21,7 @@ Network security teams and pentesters who need to map large external perimeters 
 - httpx with 75 threads and full fingerprinting probes (ASN, CDN, JARM, TLS info) -- response headers captured, response body and favicon skipped
 - Wappalyzer technology detection
 - Banner grabbing with 40 threads and large buffer (1500 bytes) for high-throughput service identification
-- Shodan enrichment (host lookup, reverse DNS, passive CVEs) and Censys for additional IP context
+- Shodan enrichment (host lookup, reverse DNS, passive CVEs) and Censys for additional IP context; Shodan's reverse DNS runs only when Hostnames on target IPs records names
 - CVE lookup (40 max, all CVSS scores) for comprehensive vulnerability mapping
 - MITRE CWE/CAPEC enrichment for vulnerability classification
 - All 27 security checks with 20 max workers for infrastructure exposure detection
@@ -37,7 +37,7 @@ Network security teams and pentesters who need to map large external perimeters 
 - OpenAPI import (fetches API specification documents from the target)
 
 ### How it works
-1. Subdomain discovery resolves hostnames and builds an IP inventory (useful even in IP mode for reverse DNS)
+1. Target CIDRs are expanded. Reverse DNS and the passive sources record the hostnames seen on the target IPs only when the project's Hostnames on target IPs setting allows it (the preset never sets it; the default, IP only, looks up no name). A name is scanned only in Record + scan matching or Record + scan all, and only when every address it resolves to is a target
 2. Masscan sweeps all target IPs at 10,000 pps for rapid port discovery with banner capture
 3. Naabu re-scans with SYN probes to verify open ports and filter false positives
 4. Nmap enriches confirmed ports with service version detection and NSE vulnerability scripts
@@ -57,7 +57,10 @@ Network security teams and pentesters who need to map large external perimeters 
 
     stealthMode: false,
 
-    // --- Subdomain Discovery: all tools enabled (reverse DNS useful in IP mode) ---
+    // --- Subdomain Discovery: all tools enabled. In IP mode the enumerators do
+    //     not run; the crt.sh, HackerTarget and Subfinder toggles gate
+    //     record_filter's passive search of the *. include domains. Reverse DNS
+    //     follows ipHostnameMode, which a preset never sets (D-17). ---
     subdomainDiscoveryEnabled: true,
     crtshEnabled: true,
     crtshMaxResults: 10000,

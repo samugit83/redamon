@@ -62,15 +62,15 @@ export const IP_HOSTNAME_MODES: readonly IpHostnameModeInfo[] = [
     mode: 'ip_only',
     label: LABELS.ip_only,
     badge: 'DEFAULT',
-    summary: 'Scan the addresses only. No hostname lookups.',
+    summary: 'Scan the addresses only. The scan looks up no hostname.',
     sentence:
-      'RedAmon scans your IP addresses and nothing else: it never looks up, records or uses hostnames.',
+      'RedAmon scans your IP addresses and nothing else: the scan never looks up, records or uses hostnames.',
     whenToUse: [
       'Network and infrastructure tests.',
       'The client gave you addresses only.',
       'Shared hosting, where the sites are not yours to test.',
       'Private ranges: reverse DNS and passive sources see nothing there anyway.',
-      'The fastest run, with no lookups about names at all.',
+      'The fastest run: the scan makes no lookup about names.',
     ],
     whenNotToUse: [
       'You need the websites hosted on the IP tested by name (an HTTPS site usually answers only to its ' +
@@ -89,11 +89,12 @@ export const IP_HOSTNAME_MODES: readonly IpHostnameModeInfo[] = [
     ],
     traffic: {
       targets: 'Packets go to your IPs only.',
-      lookups: 'No reverse DNS and no hostname lookups. VHost/SNI tries only the names of your own custom wordlist.',
+      lookups: 'The scan looks up no hostname: no reverse DNS, no passive DNS. The agent\'s target guardrail still ' +
+        'looks up the PTR names of your public IPs. VHost/SNI tries only the names of your own custom wordlist.',
     },
     guarantees: [
       'No packet leaves your target list.',
-      'No reverse DNS, no passive DNS call, and no hostname sent as SNI or Host.',
+      'The scan sends no reverse-DNS query, no passive DNS call, and no hostname as SNI or Host.',
       CREDENTIALS,
     ],
     example: {
@@ -107,7 +108,7 @@ export const IP_HOSTNAME_MODES: readonly IpHostnameModeInfo[] = [
       scanNames: null,
       graph: 'ip',
       graphCaption: 'IP + certificates only',
-      traffic: 'Packets → your IPs only. No hostname lookups.',
+      traffic: 'Packets → your IPs only. The scan looks up no hostname.',
       ariaLabel:
         'No hostname is discovered: the IP addresses are scanned by address only, and the graph holds the ' +
         'IPs and their certificates.',
@@ -306,7 +307,7 @@ export function ipHostnameModeInfo(mode: unknown): IpHostnameModeInfo {
 /** "Compare all four modes" (04_ui_spec.md §3.5), one row per question. */
 export const IP_HOSTNAME_COMPARISON: readonly { question: string; answers: Record<IpHostnameMode, string> }[] = [
   {
-    question: 'Looks up hostnames',
+    question: 'The scan looks up hostnames',
     answers: { ip_only: 'No', record_only: 'Yes', record_filter: 'Yes', scan_all: 'Yes' },
   },
   {

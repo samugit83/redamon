@@ -19,7 +19,7 @@ Network pentesters and infrastructure security teams mapping an external or inte
 - httpx with all fingerprinting probes for web service detection on discovered ports (headers captured, response body skipped)
 - Wappalyzer technology detection
 - Banner grabbing on all non-HTTP services (SSH, FTP, SMTP, MySQL, Redis, etc.) with large buffer
-- Shodan enrichment (host lookup, reverse DNS, passive CVEs)
+- Shodan enrichment (host lookup, reverse DNS, passive CVEs; on an IP project reverse DNS runs only when Hostnames on target IPs records names)
 - Censys enrichment for additional host context
 - CVE lookup with high max per service (40 CVEs) for comprehensive vulnerability mapping
 - MITRE CWE/CAPEC enrichment for vulnerability classification

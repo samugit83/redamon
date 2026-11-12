@@ -38,6 +38,19 @@ describe('ipHostnameModes', () => {
     for (const row of IP_HOSTNAME_COMPARISON) expect(Object.keys(row.answers)).toEqual([...RULE_MODES])
   })
 
+  test('IP only promises the scan sends nothing name-related, and names the guardrail exception (D-25)', () => {
+    // The agent's soft guardrail reverse-resolves the public target IPs in every
+    // mode, so a copy saying RedAmon does no reverse DNS at all would be false.
+    const ipOnly = ipHostnameModeInfo('ip_only')
+    expect(JSON.stringify(ipOnly)).not.toMatch(/No reverse DNS and no hostname lookups|: it never looks up|No hostname lookups|no lookups about names at all/)
+    expect(ipOnly.summary).toMatch(/The scan looks up no hostname/)
+    expect(ipOnly.diagram.traffic).toMatch(/The scan looks up no hostname/)
+    expect(ipOnly.sentence).toMatch(/the scan never looks up/)
+    expect(ipOnly.traffic.lookups).toMatch(/^The scan looks up no hostname/)
+    expect(ipOnly.traffic.lookups).toMatch(/guardrail still looks up the PTR names/)
+    expect(ipOnly.guarantees.some(g => g.startsWith('The scan sends no reverse-DNS query'))).toBe(true)
+  })
+
   test('no copy names a real target: documentation addresses and reserved names only', () => {
     const text = JSON.stringify(IP_HOSTNAME_MODES)
     for (const ip of text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []) {

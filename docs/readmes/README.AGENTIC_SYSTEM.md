@@ -641,7 +641,7 @@ The advantage of bundling analysis into the next think rather than splitting it 
 
 ### Three-Layer Guardrails (Hard, Soft, Scope)
 
-The agent enforces **three layered guardrails** on every target it might touch, each with a distinct purpose and a distinct override behaviour. The **Hard guardrail** is a deterministic regex + 200-domain set that blocks government, military, education, and intergovernmental organization domains (.gov, .mil, .edu, .int, country variants like .gov.uk and .ac.jp, plus exact matches for UN, NATO, EU agencies, World Bank, IMF, etc.). It is **non-disableable**, the safety floor of the entire platform, and is mirrored byte-for-byte in TypeScript so the frontend can pre-flight a target before it ever reaches the agent. The **Soft guardrail** is an LLM-based classifier that catches well-known commercial sites (tech giants, cloud providers, social media, banks, news/media) that a deterministic list cannot enumerate; it is configurable, includes auto-allow rules for private IPs and unresolvable hostnames, and supports an IP-mode that resolves public IPs to hostnames via reverse DNS before judging. The **Scope reminder** is a prompt-level injection that appears on every think iteration: "you must only operate against the project's configured target."
+The agent enforces **three layered guardrails** on every target it might touch, each with a distinct purpose and a distinct override behaviour. The **Hard guardrail** is a deterministic regex + 200-domain set that blocks government, military, education, and intergovernmental organization domains (.gov, .mil, .edu, .int, country variants like .gov.uk and .ac.jp, plus exact matches for UN, NATO, EU agencies, World Bank, IMF, etc.). It is **non-disableable**, the safety floor of the entire platform, and is mirrored byte-for-byte in TypeScript so the frontend can pre-flight a target before it ever reaches the agent. The **Soft guardrail** is an LLM-based classifier that catches well-known commercial sites (tech giants, cloud providers, social media, banks, news/media) that a deterministic list cannot enumerate; it is configurable, includes auto-allow rules for private IPs and unresolvable hostnames, and supports an IP-mode that resolves public IPs to hostnames via reverse DNS before judging, in every Hostnames on target IPs mode, `ip_only` included (the one name lookup an `ip_only` project makes; see [Soft Guardrail](#soft-guardrail-llm-judgment)). The **Scope reminder** is a prompt-level injection that appears on every think iteration: "you must only operate against the project's configured target."
 
 The three layers are **deliberately redundant**. Hard catches what soft might miss; soft catches what hard cannot enumerate; scope reminds the LLM at every step regardless of what the operator typed in chat. Even if a malicious operator deliberately disables the soft layer to scan a non-authorized target, the hard layer still blocks government/military domains, and even if neither blocks the target, the scope reminder pushes the LLM toward refusing prompts that try to redirect it.
 
@@ -3212,6 +3212,8 @@ blocked, reason = is_hard_blocked(domain)
 
 The list is mirrored byte-for-byte in `webapp/src/lib/hard-guardrail.ts` so the frontend can pre-flight a target before it ever reaches the agent.
 
+In IP mode an address is never hard-blocked, but a Hostnames on target IPs include entry names hosts a `record_filter` run scans under: `_run_scope_checks` in `initialize_node` runs `guardrail_names()` (the include entries) through `first_hard_blocked`, and one blocked entry refuses the session. Recon's copy (`recon_settings/hard_guardrail.py`) checks every candidate name again before it is scanned.
+
 ### Soft Guardrail, LLM Judgment
 
 Configurable check that asks the LLM whether a target is safe. Catches well-known commercial sites and infrastructure that hard rules can't enumerate.
@@ -3225,7 +3227,9 @@ Configurable check that asks the LLM whether a target is safe. Catches well-know
 **LLM mode:**
 
 - **Domain mode**, single prompt asking allow/block for one domain
-- **IP mode**, reverse-DNS resolves all public IPs, then asks allow/block based on the resolved hostnames (one batched call)
+- **IP mode**, `resolve_ips` reverse-resolves each public target entry (`socket.gethostbyaddr` in a worker thread; a range by its first address; private addresses skipped), then asks allow/block based on the resolved hostnames (one batched call). A `record_filter` project's include entries (`ip_soft_guardrail_names`) are judged in a second call, only when the IPs pass; both go through `_invoke_guardrail`, so a loop model's failure in either is raised at once, never retried
+
+> **The reverse-DNS lookups run in every hostname mode, `ip_only` included** (decision D-25). They happen at chat-session start (`_run_scope_guardrail` in `initialize_node`, while `AGENT_GUARDRAIL_ENABLED` is on) and whenever the webapp asks `POST /guardrail/check-target`: project creation (form and MCP `create_project`) and a save that changes an IP project's targets or hostname policy, while `targetGuardrailEnabled` is on. **Hostnames on target IPs** governs what the recon scan sends: in `ip_only` the scan sends nothing name-related (no PTR query, no passive-DNS call, no name as SNI or Host), and this safety check is the one documented exception. The queries go to the agent's resolver, never a packet to the target addresses, and the names they return are judged and discarded: never recorded in the graph, never scanned.
 
 The system prompt is intentionally lenient: "When in doubt, ALLOW. Only block domains you are absolutely certain belong to the categories listed above." It blocks tech giants (google, amazon, microsoft, apple, meta, netflix, oracle, salesforce, ibm, intel, nvidia, etc.), major clouds (aws, gcp, azure, cloudflare, akamai, fastly), social media (instagram, tiktok, linkedin, reddit, snapchat, youtube, twitch, discord, telegram, whatsapp), banks (paypal, stripe, visa, mastercard, jpmorgan, chase, etc.), e-commerce platforms, healthcare, news/media, and major OSS foundations (apache, mozilla, wikipedia).
 
@@ -3254,7 +3258,14 @@ This is belt-and-suspenders for prompt-injection scenarios where the operator pa
 |---|---|---|
 | `AGENT_GUARDRAIL_ENABLED` | `true` | Master switch for the **soft** layer and the prompt-level scope reminder. Hard guardrail ignores it |
 | `TARGET_DOMAIN` | `""` | Project's authorised target, the scope-guardrail prompt is built around this |
-| `IP_MODE` | `false` | Treat the project as IP-scoped (skips the domain hard-block check, runs the soft layer over IP→hostname resolution instead) |
+| `IP_MODE` | `false` | Treat the project as IP-scoped (the hard check covers the hostname include entries instead of a domain; the soft layer judges the reverse-DNS names of the public target IPs, then the include entries) |
+| `IP_HOSTNAME_MODE` | `ip_only` | Hostnames on target IPs. Sets what the scope text says a hostname is and, in `record_filter` / `scan_all`, lists the scanned names; it does not change the soft guardrail's reverse-DNS lookups |
+
+### IP mode: the scope the agent sees
+
+`compact_ip_scope_text` (`agentic/scope_groups.py`) writes an IP-mode project's scope as the target entries as configured (a CIDR stays one entry, at most 100 shown) and one line for the hostname mode: `ip_only` and `record_only` say no hostname is a target and none may be sent as `Host` or SNI (recorded names are ExternalDomain nodes for reference only); `record_filter` and `scan_all` list the names the last scan selected (`Subdomain {source: 'ip_hostname_selection', ip_hostname_reason: 'scanned'}` that the current policy still admits, re-checked with `normalize_name`, at most 50 shown) with the rule to `dig` each one before use and drop it if any address is not a target. Recorded names never reach the prompt: they are target-influenced text. `scope_signature` changes with the mode, the filters, the caps and the scanned set. Auth-profile credentials and the login-recording scope stay the target IPs in every mode.
+
+The agent's traffic replay and browser requests (`/traffic/replay`, `/traffic/browser`) check the origin host before preparing the request (`_ip_mode_send_refusal` in `agentic/api.py`): in an IP-mode project its live addresses must all be target IPs (`address_verdict`), and an RoE-excluded host is refused. Domain projects are unchanged. The check is always on; the shared capture proxy holds no project id or target list, so it lives here.
 
 ---
 
@@ -4683,8 +4694,8 @@ flowchart LR
 | `PRODUCTIVITY_AUDIT_WINDOW` | `6` | How many recent execution-trace steps the productivity loop detector considers |
 | `UNPRODUCTIVE_STREAK_THRESHOLD` | `3` | Count of unproductive steps (LLM verdict OR keyword failure) in the window that triggers Deep Think + pivot warning |
 | `STEALTH_MODE` | `false` | Prepend stealth-mode rules to system prompt (slow scans, low noise, IDS evasion) |
-| `AGENT_GUARDRAIL_ENABLED` | `true` | Soft LLM-based target guardrail + scope-reminder injection. Hard guardrail is non-disableable |
-| `IP_MODE` | `false` | Treat project as IP-scoped (skips domain hard-block, runs soft guardrail over IP→hostname resolution) |
+| `AGENT_GUARDRAIL_ENABLED` | `true` | Soft LLM-based target guardrail + scope-reminder injection (off, the session start also makes no IP-mode reverse-DNS lookup). Hard guardrail is non-disableable |
+| `IP_MODE` | `false` | Treat project as IP-scoped (the hard guardrail checks the hostname include entries, `guardrail_names()`, instead of a domain; the soft guardrail judges the reverse-DNS names of the public target IPs, in every hostname mode, then the include entries) |
 | `TARGET_DOMAIN` | `""` | Project's authorised target, drives the scope-guardrail prompt |
 | `PERSISTENT_CHECKPOINTER` | `true` | Use AsyncPostgresSaver for state checkpointing (prereq for `FIRETEAM_ENABLED`) |
 | `FIRETEAM_ENABLED` | `true` | Master switch for fireteam fan-out. When off, `deploy_fireteam` is stripped from the LLM action vocabulary |

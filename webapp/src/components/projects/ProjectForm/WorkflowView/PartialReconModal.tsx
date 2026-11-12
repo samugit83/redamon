@@ -117,7 +117,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   Tlsx:
     'Grabs the TLS certificate on each open non-HTTP port with a single handshake (SMTPS, IMAPS, LDAPS, and any odd TLS port). ' +
     'Targets are loaded from the graph (IPs + open ports from prior port scanning); you can also provide custom IPs and ports below. ' +
-    'Certificate nodes, IP HAS_CERTIFICATE edges, COVERS_HOST edges to in-scope SAN hostnames, and TLS posture on the Service are merged into the existing graph.',
+    'Certificate nodes, IP HAS_CERTIFICATE edges, COVERS_HOST edges to the SAN hostnames already in the graph as Subdomains, ' +
+    'and TLS posture on the Service are merged into the existing graph. This run adds no Subdomain: other SAN names stay on the certificate.',
   Httpx:
     'Probes HTTP services on discovered ports and subdomains using httpx. ' +
     'Detects live services, technologies, SSL/TLS certificates, and response metadata. ' +
@@ -228,8 +229,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     'Discovers hidden virtual hosts on every target IP using two crafted curl probes per candidate hostname: ' +
     'L7 (overrides the HTTP Host header) catches classic vhosts, L4 (uses --resolve to force the TLS SNI) catches ingress / k8s / Cloudflare routing. ' +
     'Each response is compared to a baseline (raw IP request) and anomalies become Vulnerability nodes with source="vhost_sni_enum". ' +
-    'Candidate hostnames come from the graph (Subdomains, ExternalDomains, TLS SANs, CNAMEs, PTR records resolving to the target IP) ' +
+    'Candidate hostnames come from the graph (Subdomains, ExternalDomains, TLS SANs and CNAMEs on the target IP) ' +
     'plus the bundled vhost-common.txt wordlist (~2,300 prefixes) and any custom wordlist set in the project. ' +
+    'In an IP-mode project they are the hostnames recorded on each target IP instead (never on a shared CDN edge, none in IP only), ' +
+    'and only the full hostnames of the custom wordlist join them. ' +
     'You can also provide custom subdomains (added as candidate hostnames) and IPs (added as extra targets) below.',
   GraphqlScan:
     'Active GraphQL security scanner. Discovers GraphQL endpoints from crawled BaseURLs + Endpoints + JS findings, ' +
@@ -247,6 +250,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   Shodan:
     'Passive OSINT enrichment using the Shodan API (or free InternetDB fallback). ' +
     'Enriches discovered IPs with geolocation, OS, ISP, open ports, service banners, reverse DNS hostnames, and known CVEs. ' +
+    'In an IP-mode project reverse DNS is off in IP only, and this run writes no hostname: a full run records them under Hostnames on target IPs. ' +
     'Targets are loaded from the graph (IPs from prior Subdomain Discovery). ' +
     'Port, Service, Subdomain, ExternalDomain, DNSRecord, Vulnerability, and CVE nodes are merged into the existing graph.',
   Urlscan:

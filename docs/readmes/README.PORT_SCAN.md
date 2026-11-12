@@ -859,7 +859,7 @@ The `masscan_scan.py` module integrates Robert David Graham's Masscan — the fa
 `run_masscan_scan()`:
 
 1. Skips when `MASSCAN_ENABLED` is off or `is_masscan_installed()` finds no binary.
-2. Picks the targets. In IP mode it takes `metadata.expanded_ips` (which may hold CIDRs) and `metadata.ip_to_hostname`, replacing each mock hostname (`10-0-0-1` for an IP with no PTR record, `_is_mock_hostname`) with the IP itself. Otherwise `resolve_targets_to_ips()` collects the IPs of the scan root (only when it is a target) and of every subdomain with records.
+2. Picks the targets. In IP mode it takes `metadata.expanded_ips` (which may hold CIDRs) and files every port under the address itself (`ip_to_hostnames = {ip: [ip]}`), whatever `metadata.ip_to_hostname` names it: neither a placeholder (`10-0-0-1`) nor a reverse-DNS name becomes a host key, so the address is always probed and no name reaches tlsx as an SNI. Otherwise `resolve_targets_to_ips()` collects the IPs of the scan root (only when it is a target) and of every subdomain with records.
 3. Writes `targets.txt` in a temp dir, runs the command from `build_masscan_command()` with a 30-minute timeout, and parses the NDJSON with `parse_masscan_output()`: only `status` records with `open` count, `banner` records are skipped, and each port is filed under every hostname mapped to its IP (or under the IP when there is none).
 4. Stores the result as `recon_data["masscan_scan"]`, with the same `by_host` / `by_ip` / `all_ports` / `ip_to_hostnames` / `summary` shape as Naabu (CDN fields are always empty) and a `scan_metadata` of `scanner`, `scan_timestamp`, `scan_duration_seconds`, `scan_type` (`syn`), `ports_config`, `rate_limit`, `banners_enabled` and `total_targets`.
 
@@ -899,7 +899,7 @@ MASSCAN_CUSTOM_PORTS = "8080-8090"     # Port range
 - **NDJSON output (`-oD`)** instead of `-oJ` to avoid Masscan's known trailing-comma JSON bug
 - **Native binary** (built from source in multi-stage Dockerfile) instead of Docker-in-Docker for simplicity
 - **Results merged** into existing `port_scan` key so all downstream modules work unchanged
-- **Mock hostname detection** prevents invalid URLs in IP mode (e.g., `10-0-0-1` replaced with `10.0.0.1`)
+- **IP mode keys every port by its address**, so no placeholder (`10-0-0-1`) or reverse-DNS name becomes a host or a URL
 - **Raw SYN packets** bypass the TCP stack for maximum scanning speed
 
 ---

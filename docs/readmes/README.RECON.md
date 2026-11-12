@@ -686,7 +686,9 @@ Output: `combined_result["ip_attribution"]["by_ip"]`, written by
 `update_graph_from_ip_attribution` to the existing IP (`ownership`,
 `ownership_reasons`, `default_cert_names`, `current_dns_names`, plus the CDN
 tag on a shared edge). Consumers read it through `shared_edge_ips()`:
-vhost/SNI (`_shared_edge_ips`, plan 07's CDN check as the fallback for an
+the IP-mode hostnames step (`scan_all` refuses a name seen on or resolving to a
+`shared_edge` IP, and every name when the step did not run or failed on its IP;
+`current_dns_names` is then the number of names recorded on the IP), vhost/SNI (`_shared_edge_ips`, plan 07's CDN check as the fallback for an
 untagged IP), origin discovery (`_cdn_flagged_ips`), the Shodan CVE write
 (`_write_shodan_cves`) and the Netlas write (`_write_netlas`, both held back
 until the step runs), and the Priority Board (`ip_ownership` fact). A partial
@@ -1054,8 +1056,85 @@ afterwards, and all three run the **same** pipeline.
 | Mode | Target | What differs |
 | --- | --- | --- |
 | **Single Domain** | one root domain plus optional subdomain prefixes | the default; full OSINT and subdomain discovery are available |
-| **IP / CIDR** | a list of addresses or ranges | skips domain ownership, subdomain enumeration and domain WHOIS; runs reverse DNS and IP WHOIS instead |
+| **IP / CIDR** | a list of addresses or ranges | skips domain ownership, subdomain enumeration and domain WHOIS; runs IP WHOIS, and reverse DNS only when its hostname mode records names (below) |
 | **Domain batch** | a list of hostnames spanning several domains | groups them by registrable domain and scans each group in turn, in one run; a `*.example.com` entry enumerates that domain instead of scanning it literally |
+
+### IP / CIDR: hostnames on target IPs
+
+Every scanner of an IP-mode run reads the expanded target IPs after the RoE
+filter (`metadata.expanded_ips`; the admission helpers in
+`recon/helpers/target_admission.py`), and each IP keeps its dashed placeholder
+(`recon/helpers/ip_placeholders.py`) in `dns.subdomains`, `subdomains`,
+`subdomain_filter` and `ip_to_hostname`, so no tool is handed a real name by
+GROUP 1. A reverse-DNS answer is evidence, never a scope entry: its own A/AAAA
+can point anywhere. httpx follows redirects with `-fhr` and no `-tls-probe`,
+nuclei with `-follow-host-redirects`, JS recon only to admitted hosts, origin
+discovery is skipped, GVM takes the IPs only, and nmap runs with `-n`. In IP mode
+the NSE vuln set leaves out `http-cross-domain-policy` (`--script "vuln and not
+http-cross-domain-policy"`), because that script follows a redirect off the
+target address on its own.
+
+What happens to the names seen on the IPs is the project's **Hostnames on target
+IPs** policy (`IP_HOSTNAME_MODE` and six more `IP_HOSTNAME_*` settings, validated
+by `_resolve_ip_hostname_policy` in `recon/project_settings.py`, which refuses an
+unconfirmed `scan_all` and a `record_filter` with no readable include entry):
+
+| Mode | GROUP 1 PTR | Name sources | Scanned names |
+| --- | --- | --- | --- |
+| `ip_only` (default) | off | none; Shodan rDNS and vhost graph candidates forced off | none |
+| `record_only` | every answer | all, recorded | none |
+| `record_filter` | every answer | all + passive search of the `*.x` include entries (`recon/helpers/ip_hostnames_expand.py`) | include − exclude, every address a target |
+| `scan_all` | every answer | all | every name not on a `shared_edge` IP, every address a target |
+
+`apply_ip_hostname_overrides` (after the stealth profile in `get_settings`)
+forces `TLSX_REV_PTR_SNI` off in every mode and `SHODAN_REVERSE_DNS` and
+`VHOST_SNI_USE_GRAPH_CANDIDATES` off in `ip_only`; `print_effective_settings`
+marks them `(forced by ...)`. The webapp copy is `webapp/src/lib/ipHostnameOverrides.ts`,
+pinned by `recon/tests/test_ip_hostname_overrides.py`.
+
+The **hostnames step** (`hostname_step` in `recon/helpers/ip_hostnames.py`, called
+by `_ip_hostnames_step` in `main.py` after IP attribution and the Shodan CVE write,
+before `should_skip_active_scans`) collects the candidates of every source bound
+to the target IP they were seen on (at most 500 per IP and 20,000 per run, live
+sources first, the rest counted as `truncated`), evaluates them with the one
+selection rule, `recon_settings/ip_hostnames.py` (`evaluate`, mirrored for the
+form preview by `webapp/src/lib/ipHostnameFilter.ts`, both pinned by
+`tests/fixtures/ip_hostname_vectors.json`), and in the scanning modes resolves
+the survivors (A and AAAA, the resolver breaker's canary armed first), keeps a
+name only when every address is a target (`address_verdict`), inserts the
+selected ones with their pinned answer and scans them through the IP-mode path of
+`recon/helpers/late_names.py` (`_scan_pinned`): the pinned answer only fills the
+recon dict's DNS block and attaches the ports the port scan found on those target
+IPs (no second naabu); httpx is handed the names and resolves them itself, with
+no `--resolve`. A post-probe guard drops a row whose address is not a target
+(`moved_during_scan`). `update_graph_from_ip_hostnames`
+(`graph_db/mixins/recon/ip_hostnames_mixin.py`) writes recorded names as
+`ExternalDomain` + `SEEN_ON` and scanned ones as `Subdomain` under their org
+`Domain {ip_hostname_org: true}`; `classify_host` admits only
+`metadata.ip_mode_hosts`. The log prints one `[*][IpNames]` line per IP and a
+total; the recon JSON carries `ip_hostnames.summary`. Names cut by the cap, DNS
+off or a resolver outage are noted degraded, so the prune keeps their findings.
+
+VHost & SNI (off by default) tries every recorded name on the target IP it was
+seen on, in all three recording modes, whatever the selection decided
+(`_ip_mode_names` with `may_send`): only `invalid_name`, `hard_blocked` and
+`roe_excluded` (`NEVER_SENT`) are withheld, and no name goes to a `shared_edge`
+IP. An exclude entry therefore stops a name from being scanned, not from being
+sent as `Host`/SNI to its own target IP; the RoE exclusions keep it off the wire.
+
+Residual risk: a name is checked right before its scan, but the tools resolve it
+again and nothing pins them to the checked address, so a DNS change inside that
+window of seconds can send a tool to a new address. The post-probe guard discards
+such a probe answer and the check repeats every run.
+
+The one name lookup outside this policy is the agent's soft guardrail, which
+reverse-resolves the public target addresses at session start and project save in
+every mode, `ip_only` included (README.AGENTIC_SYSTEM.md, "Soft Guardrail, LLM Judgment"). The
+recon run itself sends nothing name-related in `ip_only`.
+
+Partial recon follows the mode (`recon/partial_recon_modules/ip_hostname_scope.py`):
+each run computes the names it may scan once, from the graph with the current
+policy and live DNS, and refuses typed names in `ip_only` and `record_only`.
 
 ### Domain batch
 
@@ -1801,7 +1880,7 @@ flowchart TB
         IPs[IPs from port_scan + DNS]
         DefaultWL[Default wordlist<br/>2,471 entries]
         CustomWL[Custom wordlist setting]
-        GraphCands[Graph-derived candidates<br/>DNS subdomains, httpx hosts,<br/>TLS SANs, CNAME, PTR, co-resident]
+        GraphCands[Graph-derived candidates<br/>DNS subdomains, httpx hosts,<br/>TLS SANs, CNAME, co-resident<br/>IP mode: the names recorded on the IP]
     end
 
     subgraph CandidateSet["Candidate Set Build"]
@@ -1872,7 +1951,7 @@ flowchart TB
 | Layer | What It Does |
 |-------|--------------|
 | **IP target collection** | Merges (no fallback) every available IP source: `port_scan.by_host` (authoritative ports + per-port scheme overrides), then `dns.subdomains[*].ips.ipv4` and `dns.domain.ips.ipv4` get default 80/443 added. Per-IP port list deduped on `(port, scheme)`. |
-| **Candidate set build** | Six sources merged: default wordlist (2,471 entries shipped in-image), custom wordlist setting, DNS subdomains resolving to the IP, httpx-known hosts on the IP, TLS SAN list per-URL, and CNAME/PTR/co-resident external domains. UTF-8 BOM auto-handled for Windows-edited overrides. Hostname validation uses `\Z` to block newline-injected hostnames from corrupting `--resolve` syntax. |
+| **Candidate set build** | Six sources merged: default wordlist (2,471 entries shipped in-image), custom wordlist setting, DNS subdomains resolving to the IP, httpx-known hosts on the IP, TLS SAN list per-URL, and CNAME/co-resident external domains. In IP mode the graph sources are the hostnames the hostnames step recorded on that IP (`_ip_mode_names`: only on an IP they were seen on, never on a `shared_edge` IP, none without IP attribution, none in `ip_only`), and there is no apex, so neither the default wordlist nor a bare prefix is used. UTF-8 BOM auto-handled for Windows-edited overrides. Hostname validation uses `\Z` to block newline-injected hostnames from corrupting `--resolve` syntax. |
 | **Per-port baseline** | One raw-IP curl request per port. Status `0` (curl couldn't connect) is dropped as no-data instead of being recorded as a real probe. |
 | **L7 probing** | `-H "Host: <candidate>"` against `https://<ip>:<port>/`. Catches classic Apache / Nginx vhost routing. |
 | **L4 probing** | `--resolve <candidate>:<port>:<ip>` so the TLS handshake carries the candidate as SNI. Catches modern reverse proxies (NGINX ingress, Traefik, Cloudflare, k8s) that route at the TLS layer. Skipped when scheme is `http` (no SNI to set). |

@@ -15,7 +15,7 @@ Map an internal network or Active Directory environment reached over a VPN or fr
 Internal penetration testers and red teamers assessing a corporate LAN, a VPN-reachable segment, or an Active Directory domain from a foothold host. Use this when your targets are IP addresses or CIDR ranges on a private network rather than a public domain. It is the natural starting point when "Start from IP" is on and the addresses are internal.
 
 ### What it enables
-- Reverse DNS on every target IP to recover internal hostnames (via the internal resolver)
+- Internal hostnames from reverse DNS, when the project's Hostnames on target IPs setting records names (the preset never sets it; the default, IP only, looks up no name). The names are recorded on their IP, and scanned only in Record + scan matching or Record + scan all
 - Naabu SYN scan across the top 1000 ports PLUS an explicit Active Directory / internal-service port list (Kerberos 88, RPC 135, NetBIOS 139, LDAP 389/636, SMB 445, LDAP GC 3268/3269, RDP 3389, WinRM 5985/5986, and common DB/cache/monitoring ports)
 - Masscan at a LAN-safe 1500 pps (deliberately far below the external 10k default so it does not flood a switched network) with banner capture
 - Nmap with version detection (-sV), NSE script scan, T4 timing and extended timeouts -- this is where SMB/LDAP/RPC/RDP enumeration actually happens
@@ -37,7 +37,7 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
 - OpenAPI import (fetches API specification documents from the target)
 
 ### How it works
-1. Each target IP gets a reverse-DNS lookup to recover its internal hostname
+1. If Hostnames on target IPs records names, a reverse-DNS lookup of every target IP through the host's resolver records its internal hostnames (IP only skips this step)
 2. Masscan sweeps the range at a LAN-safe rate for a fast first pass of open ports
 3. Naabu re-scans with SYN probes across the top 1000 ports plus the explicit AD/internal-service list to confirm what is open
 4. Nmap enriches every confirmed port with service version detection and NSE scripts -- this is what enumerates SMB shares, LDAP naming contexts, RPC endpoints and RDP security settings
@@ -46,7 +46,9 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
 7. CVE lookup maps detected service versions to known vulnerabilities and MITRE classifies them
 8. Security checks flag the classic internal findings: exposed databases, no-auth Redis, open admin ports, exposed Kubernetes API and DNS zone transfers`,
   parameters: {
-    // Modules: domain_discovery (reverse DNS only) + port_scan + http_probe + vuln_scan.
+    // Modules: domain_discovery + port_scan + http_probe + vuln_scan. With WHOIS off,
+    // discovery in IP mode is reverse DNS only, and only when ipHostnameMode records
+    // names: a preset never sets that mode (it is scope, D-17).
     // No resource_enum, no js_recon -- this is a network/AD sweep, not a web crawl.
     scanModules: ['domain_discovery', 'port_scan', 'http_probe', 'vuln_scan'],
 
@@ -54,8 +56,8 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
 
     // --- Subdomain Discovery: OFF. Every source here queries the PUBLIC internet
     //     (certificate transparency, passive DNS), which has no record of RFC1918
-    //     hosts. Reverse DNS on the target IPs (run automatically in IP mode)
-    //     recovers internal hostnames instead. ---
+    //     hosts. Reverse DNS on the target IPs recovers internal hostnames
+    //     instead, when the project's hostname mode records names. ---
     subdomainDiscoveryEnabled: false,
     crtshEnabled: false,
     crtshMaxResults: 10000,
@@ -74,7 +76,8 @@ Internal penetration testers and red teamers assessing a corporate LAN, a VPN-re
     useBruteforceForSubdomains: false,
 
     // WHOIS is meaningless for a private IP (no registrar record). DNS stays on
-    // for reverse lookups against the internal resolver.
+    // for the reverse lookups a recording hostname mode makes, which only the
+    // internal resolver can answer for a private range.
     whoisEnabled: false,
     dnsEnabled: true,
     dnsMaxWorkers: 50,

@@ -143,7 +143,7 @@ finding prune for that run.
 
 | Parameter | Type | Default | httpx Flag | Description |
 |-----------|------|---------|------------|-------------|
-| `HTTPX_FOLLOW_REDIRECTS` | `bool` | `True` | `-fr` | Follow HTTP 301/302/307/308 redirects. Essential for modern web apps. With session headers attached, `-fhr` (same host only) is used instead, so the session never follows a redirect to another host. |
+| `HTTPX_FOLLOW_REDIRECTS` | `bool` | `True` | `-fr` | Follow HTTP 301/302/307/308 redirects. Essential for modern web apps. With session headers attached, `-fhr` (same host only) is used instead, so the session never follows a redirect to another host. An IP-mode run always uses `-fhr`, so a redirect never takes httpx off the target IPs. |
 | `HTTPX_MAX_REDIRECTS` | `int` | `10` | `-maxr` | Maximum redirect chain length. Prevents infinite redirect loops. |
 
 **Why Follow Redirects?**
@@ -274,7 +274,7 @@ These options extract basic HTTP response information with **minimal performance
 
 | Parameter | Type | Default | httpx Flag | What It Does | Speed Impact |
 |-----------|------|---------|------------|--------------|--------------|
-| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Basic TLS info: version, cipher suite | ⚡ **Medium** |
+| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Basic TLS info: version, cipher suite. Not passed in IP mode, where it would request the certificate's names (`[-][httpx] TLS probing: off in IP mode`); `-tls-grab` (its own setting) still reads the certificate | ⚡ **Medium** |
 | `HTTPX_PROBE_TLS_GRAB` | `bool` | `True` | `-tls-grab` | Full certificate extraction | ⚠️ **SLOW** |
 
 **TLS_INFO extracts:**
@@ -921,7 +921,7 @@ HTTP_PORTS  = {80, 8080, 8000, 8888, 8008, 3000, 5000, 9000}  # -> http://host:p
 # Any other port -> try both http:// and https://
 ```
 
-`build_targets_from_dns()` (the fallback) probes each resolved host (the root only when it is a target): with `NAABU_CUSTOM_PORTS` set, exactly those ports; otherwise ports 80 and 443 plus 8080, 8000, 8888, 3000, 5000, 9000 over HTTP and 8443, 4443, 9443 over HTTPS. In IP mode a mock hostname is replaced by its IP.
+`build_targets_from_dns()` (the fallback) probes each resolved host (the root only when it is a target): with `NAABU_CUSTOM_PORTS` set, exactly those ports; otherwise ports 80 and 443 plus 8080, 8000, 8888, 3000, 5000, 9000 over HTTP and 8443, 4443, 9443 over HTTPS. In IP mode a placeholder name (`10-0-0-1`) is replaced by its IP, and no reverse-DNS name is ever a target here: the hostnames an IP-mode run scans are probed later, by the hostnames step (README.RECON.md, "IP / CIDR: hostnames on target IPs"), on their target IPs only.
 
 ### RoE admission of the target list
 

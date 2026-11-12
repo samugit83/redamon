@@ -1057,7 +1057,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - vhostSniTestL4: boolean - Run the TLS SNI trick via curl --resolve (catches modern reverse proxies, k8s ingress, Cloudflare). Default true.
 - vhostSniInjectDiscovered: boolean - When a hidden vhost is confirmed, create a BaseURL node so a follow-up partial recon (Katana, Nuclei) can scan it. Default true.
 - vhostSniUseDefaultWordlist: boolean - Use the bundled vhost-common.txt wordlist (~2,300 admin/dev/staging/internal/modern-stack prefixes, expanded as {prefix}.{target_apex}). Default true.
-- vhostSniUseGraphCandidates: boolean - Pull hostnames from existing Subdomain, ExternalDomain, TLS SAN list, CNAME targets and reverse-DNS PTR records resolving to each target IP. Highest signal source. Default true.
+- vhostSniUseGraphCandidates: boolean - Pull hostnames already known on each target IP (Subdomain, ExternalDomain, TLS SAN list, CNAME targets). In an IP-mode project they are the hostnames the run recorded on that IP (reverse DNS, certificates, passive DNS), never tried on a shared CDN edge IP, and none when Hostnames on target IPs is ip_only (forced off). Highest signal source. Default true.
 - vhostSniMaxCandidatesPerIp: integer - Hard cap on candidates per IP to bound run time. Default 2000.
 - tlsxEnabled: boolean - Master switch for the tlsx TLS certificate grab (GROUP 3.6). One TLS handshake per open non-HTTP port. Active but quiet; net-zero on the 5 SSL ports httpx already dials. Default TRUE. Passive/zero-packet presets MUST set this false.
 - tlsxScanMode: string - TLS stack: ctls|ztls|openssl|auto. Default auto.
@@ -1069,7 +1069,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - tlsxDelay: string - Optional -delay between connections (e.g. "200ms"); stealth only. Default "".
 - tlsxIncludeHttpPorts: boolean - Also grab certs on HTTP/HTTPS ports httpx already covers (duplicate handshakes). Default false.
 - tlsxInjectHostnames: boolean - Merge in-scope certificate SAN hostnames into dns.subdomains as new probe targets. Default true.
-- tlsxRevPtrSni: boolean - Reverse-PTR to derive an SNI for bare IPs (extra DNS lookups). Default false.
+- tlsxRevPtrSni: boolean - Reverse-PTR to derive an SNI for bare IPs (extra DNS lookups). Forced off in every IP-mode project: a PTR name there is a recorded hostname, never an SNI. Default false.
 - tlsxMaxHostnamesPerIp: integer - When one IP serves several known hostnames, how many to scan (each may present a different cert). Default 1.
 - tlsxProbeJarm: boolean - Compute JARM + JA3 fingerprints (~10 extra handshakes per target, loud). Default false.
 - tlsxVersionEnum: boolean - Enumerate every supported TLS version (extra connections per target). Default false.
@@ -1208,7 +1208,7 @@ These do not run as part of the recon pipeline and are not gated by scanModules.
 - osintEnrichmentEnabled: boolean - Master switch for OSINT enrichment
 - shodanEnabled: boolean - Shodan lookups
 - shodanHostLookup: boolean
-- shodanReverseDns: boolean
+- shodanReverseDns: boolean - Names Shodan knows for each IP. In an IP-mode project forced off when Hostnames on target IPs is ip_only; in the other modes the names are recorded on their IP and scanned only if the mode selects them. A preset never sets that mode
 - shodanDomainDns: boolean
 - shodanPassiveCves: boolean - Passive CVE lookup via Shodan
 - shodanWorkers: integer - Parallel IP lookup workers

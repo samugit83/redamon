@@ -36,7 +36,7 @@ and one guardrail fixture, `lab-agency.gov`, that only the lab DNS ever answers.
 | File | What |
 |---|---|
 | `up.sh` / `down.sh` | start (render, recon-image `is_global` check, urlscan fixture check, compose, intra address, routing gate, smoke checks from inside the lab network, capture check) / stop (refuses while an orchestrator hook aims at this lab; reverts the host DNS only if the bridge still carries it) |
-| `host_dns_enable.sh` / `host_dns_disable.sh` | route the five lab zones to `192.88.98.53` on the lab bridge link only (systemd-resolved; NetworkManager told to leave the bridge alone) / revert. **Needs the maintainer's OK**: while it is in force the whole host resolves `lab-agency.gov` from the lab |
+| `host_dns_enable.sh` / `host_dns_disable.sh` | route the five lab zones to `192.88.98.53` on the lab bridge link only (systemd-resolved; NetworkManager told to leave the bridge alone) / revert. **Needs the maintainer's OK**: while it is in force the whole host resolves `lab-agency.gov` from the lab. Runs without a password prompt once the polkit rule of [the lab host DNS setup](../README.md#lab-host-dns-one-time-setup) is installed |
 | `set_moved.sh` | swap `moved.example-a.test` (E8, E21) |
 | `gen_lab.py` | renders `generated/`: certificates (host `openssl`), zones from `dns/*.db`, urlscan fixtures; state in `generated/lab.json` |
 | `smoke.sh` | the smoke checks `up.sh` runs in an `iphn-tools` container at `192.88.98.250` |
@@ -50,15 +50,23 @@ and one guardrail fixture, `lab-agency.gov`, that only the lab DNS ever answers.
 capture, `prepared.json` (projects created ahead by `--prepare`), `runs/<row>-<stamp>/<step>/`
 (meta, recon JSON, recon log, sliced hits, CoreDNS log, capture, `checks.json`), `RESULTS.md`.
 
-Deferred: `probe_hook.py` (06_testing.md §4.6, the middle-tier helper) imports
-`recon.helpers.ip_hostnames`, which step P3 creates. It is written with P3.
+There is no middle-tier helper that calls the hostnames step against the lab: the step is
+covered by its unit tests (`recon/tests/test_ip_hostnames_*.py`) and, end to end, by the
+driver's rows. The rows that need the CDN-like edge or the urlscan stub use two lab-only
+orchestrator hooks: `--prepare --rows <rows>` creates their projects ahead (ids kept in
+`generated/prepared.json`) and prints one restart command, built by `iphn_lab.hook_command`:
+`URLSCAN_API_BASE=http://192.88.98.30/api/v1` for a urlscan row (E4),
+`REDAMON_LAB_CDN_PREFIXES=192.88.98.40/32` for a CDN row (E5, E6), and always
+`REDAMON_LAB_PROJECT_IDS=<the prepared ids>`, then `docker compose up -d --no-deps
+recon-orchestrator`. The hooks reach only the listed projects' scans, and a row that needs
+one refuses to run until it was prepared.
 
 ## Run it
 
 ```bash
 cd testing/guinea_pigs/ip_hostnames_lab
 ./up.sh                                   # prints the bridge name; leaves the host DNS alone
-./host_dns_enable.sh                      # maintainer's OK first (see above)
+./host_dns_enable.sh                      # maintainer's OK first (see above); no prompt with the polkit rule
 python3 validate_ip_hostnames.py --self-test
 python3 e2e_ip_hostnames.py --plan        # rows, gates, settings; contacts nothing
 python3 e2e_ip_hostnames.py --check-settings --rows E0   # the server validates the settings, creates nothing

@@ -14599,7 +14599,7 @@
    "group": "not-tuning",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Pull hostnames from existing Subdomain, ExternalDomain, TLS SAN list, CNAME targets and reverse-DNS PTR records resolving to each target IP. Highest signal source. Default true.",
+   "meaning": "Pull hostnames already known on each target IP (Subdomain, ExternalDomain, TLS SAN list, CNAME targets). In an IP-mode project they are the hostnames the run recorded on that IP (reverse DNS, certificates, passive DNS), never tried on a shared CDN edge IP, and none when Hostnames on target IPs is ip_only (forced off). Highest signal source. Default true.",
    "optional": false,
    "phase": "http_probe",
    "prisma_type": "Boolean",

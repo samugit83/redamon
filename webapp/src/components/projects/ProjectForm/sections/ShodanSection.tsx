@@ -133,6 +133,9 @@ export function ShodanSection({ data, updateField, onRun }: ShodanSectionProps) 
                 <span className={styles.toggleLabel}>Reverse DNS</span>
                 <p className={styles.toggleDescription}>
                   Discover hostnames that resolve to known IPs. Can reveal additional subdomains not found by standard enumeration.
+                  {data.ipMode === true && !reverseDnsForced && (
+                    <> In this IP project the names are recorded on their IP and scanned only if {IP_HOSTNAME_SECTION_LABEL} selects them.</>
+                  )}
                   {noKey && <em> (InternetDB fallback)</em>}
                   {reverseDnsForced && (
                     <> Off: forced by {IP_HOSTNAME_SECTION_LABEL} ({ipHostnameModeLabel(data.ipHostnameMode)}).</>

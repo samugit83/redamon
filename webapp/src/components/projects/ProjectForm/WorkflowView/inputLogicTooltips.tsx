@@ -330,6 +330,9 @@ const Tlsx = (
     <p style={paraStyle}>
       When an IP has a known hostname, tlsx sends it as the SNI so a shared frontend returns the right certificate instead of its default one. Custom IPs and ports from the partial recon modal merge with the graph data.
     </p>
+    <p style={paraStyle}>
+      In an IP-mode project a reverse-DNS answer is never sent as SNI: tlsx handshakes the target IPs, and only a name that <strong>Hostnames on target IPs</strong> selected for scanning can be an SNI, when every address it resolves to is a target. The certificate names it finds are not fed back as probe targets: in IP only they stay on the Certificate node, in the other modes they are recorded on their IP and scanned only if the mode selects them.
+    </p>
 
     <div style={sectionTitleStyle}>How output transforms the graph</div>
     <p style={paraStyle}>
@@ -337,7 +340,7 @@ const Tlsx = (
     </p>
     <ul style={listStyle}>
       <li>The Certificate is linked to its IP via <span style={codeStyle}>HAS_CERTIFICATE</span>.</li>
-      <li>For each in-scope SAN hostname the certificate names, a <span style={codeStyle}>COVERS_HOST</span> edge is created to that Subdomain, making the SAN list traversable.</li>
+      <li>For each in-scope SAN hostname the certificate names that the graph already holds as a <strong>Subdomain</strong>, a <span style={codeStyle}>COVERS_HOST</span> edge is created to it, making the SAN list traversable. A certificate never creates a Subdomain: the names the scan admits are written by its late-name step, and every other name stays on the certificate&apos;s SAN list.</li>
       <li>The Service on that port is enriched with the negotiated TLS version, cipher and a service hint. Its name is never changed.</li>
       <li>In-scope SAN hostnames are also fed back into the scan as new probe targets. Foreign names are recorded but never scanned.</li>
     </ul>
@@ -954,6 +957,7 @@ const VhostSni = (
       <li>CNAME targets recorded in <strong>DNSRecord</strong> entries.</li>
       <li>The default wordlist (~2,300 admin / dev / staging / internal / modern-stack prefixes), expanded as <span style={codeStyle}>{`{prefix}.{scan_root}`}</span> for an enumerated scope group; a listed group gets no wordlist, and a shared CDN edge IP (flagged by naabu, httpx or tlsx with an edge CDN name, or inside a CDN&apos;s published edge ranges) gets none either: it would only find the CDN. That skip shows in the report&apos;s Coverage Limitations.</li>
       <li>Any custom wordlist provided in the section settings (newline-separated, prefixes or full hostnames).</li>
+      <li>In an IP-mode project the graph sources are the hostnames <strong>Hostnames on target IPs</strong> recorded on that IP (reverse DNS, certificates, passive DNS), tried on that IP only: none in IP only, none on a shared CDN edge IP, none when IP attribution did not run. With no scan root, the default wordlist and bare prefixes are skipped; full hostnames from the custom wordlist are tried.</li>
     </ul>
     <p style={paraStyle}>
       Each candidate is tested at two layers: the <strong>L7 test</strong> sends an HTTP request to the bare IP with an overridden <span style={codeStyle}>Host:</span> header (catches classic Apache/Nginx vhosts). The <strong>L4 test</strong> uses curl <span style={codeStyle}>--resolve</span> to force the TLS handshake to carry the candidate as SNI while still hitting the IP (catches modern reverse-proxy and ingress routing). Each response is compared to a baseline obtained by curling the IP with no overrides at all.
@@ -969,7 +973,7 @@ const VhostSni = (
       <li>The Vulnerability is attached to the discovered <strong>Subdomain</strong> via <span style={codeStyle}>HAS_VULNERABILITY</span>. For host-header-bypass findings the <strong>IP</strong> also gets the same Vulnerability so it surfaces in IP-level dashboards.</li>
       <li>Every probed Subdomain is enriched in place with <em>vhost_tested</em>, <em>vhost_hidden</em>, <em>vhost_routing_layer</em>, <em>vhost_status_code</em>, <em>vhost_size_delta</em>, and <em>sni_routed</em>.</li>
       <li>Every probed IP is enriched with <em>vhost_baseline_status</em>, <em>vhost_baseline_size</em>, <em>hosts_hidden_vhosts</em>, <em>hidden_vhost_count</em>, and <em>is_reverse_proxy</em>.</li>
-      <li>For every confirmed hidden vhost, a <strong>BaseURL</strong> is created (with <em>discovery_source = vhost_sni_enum</em>) and linked to the Subdomain via <span style={codeStyle}>HAS_BASE_URL</span>, so a follow-up partial recon can route the new URL through Katana and Nuclei.</li>
+      <li>For every confirmed hidden vhost, a <strong>BaseURL</strong> is created (with <em>discovery_source = vhost_sni_enum</em>) and linked to the Subdomain via <span style={codeStyle}>HAS_BASE_URL</span>, so a follow-up partial recon can route the new URL through Katana and Nuclei. In an IP-mode project a hidden vhost is reported on its IP and never added as a BaseURL.</li>
     </ul>
     <p style={{ ...paraStyle, margin: 0 }}>
       Findings are deduplicated per <em>(hostname + IP + port + layer)</em>. Re-running refreshes <em>last_seen</em> rather than creating duplicates.

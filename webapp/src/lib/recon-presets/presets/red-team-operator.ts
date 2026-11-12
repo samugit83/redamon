@@ -23,7 +23,7 @@ Red team operators running authorized engagements where some active probing is a
 - Arjun in passive mode -- parameter discovery without sending requests
 - Nuclei limited to critical severity only, 5 req/s, concurrency 3, excludes dos/fuzz/intrusive tags
 - CVE lookup and MITRE enrichment for vulnerability context
-- OSINT enrichment via Shodan (host lookup, reverse DNS, passive CVEs), URLScan, OTX, and Censys
+- OSINT enrichment via Shodan (host lookup, reverse DNS, passive CVEs; on an IP project reverse DNS runs only when Hostnames on target IPs records names), URLScan, OTX, and Censys
 
 ### What it disables
 - Masscan (generates massive packet volume, easily detected)

@@ -39,7 +39,7 @@ describe('per mode, the elements of §4', () => {
       decide: 'off', decideText: 'Nothing to decide', confirmedChip: null,
       scanNames: null,
       graph: 'ip', graphNodes: ['Certificate', 'IP'], graphEdges: ['link'],
-      traffic: 'TrafficPackets → your IPs only. No hostname lookups.',
+      traffic: 'TrafficPackets → your IPs only. The scan looks up no hostname.',
     })
   })
 

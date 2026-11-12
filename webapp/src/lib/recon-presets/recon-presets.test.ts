@@ -30,6 +30,7 @@ import { SECRET_HUNTER } from './presets/secret-hunter'
 import { PARAMETER_INJECTION } from './presets/parameter-injection'
 import { DNS_EMAIL_SECURITY } from './presets/dns-email-security'
 import { LARGE_NETWORK } from './presets/large-network'
+import { IP_PRESETS_RELYING_ON_HOSTNAMES } from './targeting'
 import type { ReconPreset } from './types'
 import { RECON_PARAMETER_CATALOG, reconPresetSchema } from '../recon-preset-schema'
 import { applyPresetSettings } from '../project-preset-utils'
@@ -4037,5 +4038,44 @@ describe('js_recon is not a scan module', () => {
 
   test('an old project that still lists js_recon passes the save validator', () => {
     expect(validateValue('scanModules', field('scanModules')!, OLD)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostnames on target IPs: an IP project looks up a target's reverse DNS only
+// when its hostname mode records names, and a preset never sets that mode
+// (D-17). The texts said reverse DNS ran on every target IP automatically,
+// which a user of the default mode (ip_only) then waited for in vain.
+// ---------------------------------------------------------------------------
+
+describe('presets describe reverse DNS as the hostname mode runs it', () => {
+  const OLD_CLAIMS = [
+    /reverse[- ]DNS on every target IP/i,
+    /each target IP gets a reverse[- ]DNS lookup/i,
+    /useful even in IP mode for reverse DNS/i,
+    /run automatically in IP mode/i,
+    /all tools enabled for reverse DNS/i,
+  ]
+
+  test.each(RECON_PRESETS.map(p => [p.id, p] as const))('%s makes no old reverse-DNS claim', (_id, preset) => {
+    for (const claim of OLD_CLAIMS) {
+      expect(preset.shortDescription).not.toMatch(claim)
+      expect(preset.fullDescription).not.toMatch(claim)
+    }
+  })
+
+  test('the IP presets that count on hostnames name the setting that decides', () => {
+    expect(IP_PRESETS_RELYING_ON_HOSTNAMES.size).toBeGreaterThan(0)
+    for (const id of IP_PRESETS_RELYING_ON_HOSTNAMES) {
+      expect(getPresetById(id)!.fullDescription, id).toContain('Hostnames on target IPs')
+    }
+  })
+
+  test('the catalog the preset generator reads matches the IP-mode overrides', () => {
+    const line = (key: string) => RECON_PARAMETER_CATALOG.split('\n').find(l => l.startsWith(`- ${key}:`))!
+    expect(line('vhostSniUseGraphCandidates')).not.toMatch(/reverse-DNS PTR records/)
+    expect(line('vhostSniUseGraphCandidates')).toMatch(/ip_only \(forced off\)/)
+    expect(line('tlsxRevPtrSni')).toMatch(/Forced off in every IP-mode project/)
+    expect(line('shodanReverseDns')).toMatch(/forced off when Hostnames on target IPs is ip_only/)
   })
 })

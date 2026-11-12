@@ -86,6 +86,55 @@ Some labs claim the same fixed address or host port, so start only one of each g
 - Host port 9091: `web-cache-poisoning` and `skiller_sqli_csrf`.
 - Host port 8080: `apache_2.4.25`, `apache_2.4.49` and `node_serialize_1.0.0`.
 
+## Lab host DNS (one-time setup)
+
+`nested_wildcard_lab`, `urlscan_lab` and `ip_hostnames_lab` answer their own zones
+from a CoreDNS on the lab bridge. Recon and its scan containers run with
+`network_mode="host"` and resolve through the host's systemd-resolved, so each of
+these labs has a `host_dns_enable.sh` that routes only its zones to the lab DNS on
+the lab bridge link (`resolvectl dns`, `domain`, `default-route false`, `dnssec no`)
+and a `host_dns_disable.sh` that undoes it (`resolvectl revert`). Neither touches
+any other link or the host's default resolvers, and neither ever calls `sudo`.
+
+systemd-resolved asks polkit before it changes a link. On a desktop, polkit then
+opens a password dialog that the script cannot answer, and the call fails (for
+example `Failed to set DNS configuration: Connection timed out`). Over SSH there is
+no dialog at all and the change needs `sudo`. The fix is a polkit rule, installed
+once with `sudo`, that lets your own user make exactly these five changes without
+a password. Replace `<your-user>` with your login name (`id -un`):
+
+```bash
+sudo tee /etc/polkit-1/rules.d/50-redamon-lab-dns.rules >/dev/null <<'EOF'
+polkit.addRule(function(action, subject) {
+    var ids = [
+        "org.freedesktop.resolve1.set-dns-servers",
+        "org.freedesktop.resolve1.set-domains",
+        "org.freedesktop.resolve1.set-default-route",
+        "org.freedesktop.resolve1.set-dnssec",
+        "org.freedesktop.resolve1.revert"
+    ];
+    if (subject.user == "<your-user>" && ids.indexOf(action.id) >= 0) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+```
+
+polkit reads the rules directory again when it changes, so nothing needs a
+restart. The rule lets that one user change the DNS servers and search domains of
+any link without a password, not only the lab bridges; delete the file to take it
+back. After a reboot (or anything that recreates a lab's network), start the lab
+and route its zones again, with no prompt:
+
+```bash
+cd testing/guinea_pigs/ip_hostnames_lab && ./up.sh && ./host_dns_enable.sh
+# urlscan_lab: the same; nested_wildcard_lab: ./setup.sh && ./host_dns_enable.sh
+```
+
+While a lab's routing is in force the whole host resolves its zones from the lab
+(`ip_hostnames_lab` includes the `.gov` guardrail fixture `lab-agency.gov`): run
+`./host_dns_disable.sh`, or the lab's `down.sh` where it calls it, when you are done.
+
 ## Recon harness gotchas
 
 Each of these made a working pipeline look broken:

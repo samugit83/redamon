@@ -8,9 +8,10 @@
 # Recon and its scan containers use network_mode=host and resolve through the
 # host's systemd-resolved stub (127.0.0.53); dnspython ignores /etc/hosts. The
 # per-link setting is lost when the bridge is recreated: run this again after
-# every ./up.sh that recreated the network. polkit lets the user of an active
-# local session change per-link DNS without sudo; over SSH it needs sudo, which
-# this script never tries on its own.
+# every ./up.sh that recreated the network. systemd-resolved asks polkit, whose
+# password prompt this script cannot answer: it runs without one only after the
+# one-time polkit rule in testing/guinea_pigs/README.md ("Lab host DNS"). It
+# never tries sudo on its own.
 set -euo pipefail
 
 if ! ip route get 192.88.98.10 | grep -q ' dev br-'; then

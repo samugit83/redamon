@@ -299,7 +299,7 @@ targeting modes (`PIPELINE_HEADER_PHASES` in `container_manager.py`; pinned by
 
 | Phase | Header (`[*][Pipeline] ...`) | Label |
 |-------|------------------------------|-------|
-| 1 | `GROUP 1:` | Domain Discovery (IP mode: reverse DNS, DNS, IP WHOIS) |
+| 1 | `GROUP 1:` | Domain Discovery (IP mode: IP WHOIS, plus reverse DNS when Hostnames on target IPs records names) |
 | 2 | `GROUP 3:`, `GROUP 3.5:`, `GROUP 3.6:`, `GROUP 3b:` | Port Scanning |
 | 3 | `GROUP 4:` | HTTP Probing |
 | 4 | `GROUP 5:` | Resource Enumeration |
@@ -453,6 +453,19 @@ address it resolves to is excluded, since the tools are handed the name. Each
 dropped entry is logged; a run that typed targets, kept none and reads no graph
 targets is refused with 400. The recon container runs its own copy of the filter
 again on its own settings.
+
+In IP mode (`ip_mode` projects) a typed address, URL host or CIDR host must be
+one of the project's target IPs, compared as addresses (CIDR-aware, any IPv6
+spelling); a typed CIDR keeps only its target hosts. A typed hostname follows
+the project's Hostnames on target IPs policy (`ip_typed_name_refusal`): refused
+in `ip_only` and `record_only`, matched against the include and exclude entries
+in `record_filter`, any name in `scan_all`, and every typed name through the hard
+guardrail and the RoE. The live half (every address the name resolves to is a
+target) runs in the container. The full and partial starts also hard-guardrail
+an IP project's include entries (`guardrail_targets` returns their base names;
+the addresses themselves are never hard-blocked). The job queue and the
+scheduler reach this filter without the modal, so it is a control, not a
+convenience.
 
 The two copies differ in one place, on purpose. This service resolves from the
 compose network and the scan from the host's resolver (a lab or split-horizon
