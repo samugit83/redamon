@@ -1,4 +1,5 @@
 [
+  {"path":"/api/admin/instance-settings","guard":"session","methods":["GET","PUT"],"note":"getSession (fresh for the PUT) reads the signed-in account, never the act-as one; 404 with RBAC_IDENTITY_ENABLED off; an admin reads and changes everything, the tunnels legacy holder or a compat account only the tunnel (sharedToolAccess tunnels, HD-06, OQ-R3 (a)), anyone else 403 instance:settings; PUT same-origin JSON only (ID-32, step 2.4)"},
   {"path":"/api/admin/legacy-grants","guard":"admin-jwt","methods":["GET","POST"]},
   {"path":"/api/admin/whats-new","guard":"admin-jwt","methods":["GET","POST"]},
   {"path":"/api/agent/command-whisperer","guard":"project","methods":["POST"]},

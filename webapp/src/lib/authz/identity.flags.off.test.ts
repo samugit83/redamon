@@ -27,6 +27,12 @@
  *     restored (a member is refused, as on every admin route);
  *   - schedules and queued jobs start whatever their account's status: nothing is read.
  *
+ * Step 2.4 moves the tunnel and the TrafficMind capture policy into the instance settings.
+ * With the switch off:
+ *   - /api/admin/instance-settings answers 404 to everyone, as before it existed;
+ *   - the readers read no instance row (the user rows, as after Phase 1); the boot backfill
+ *     still fills the row, so it is ready the day the switch goes on.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -238,5 +244,25 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.3)', () => {
     const { inactiveScanAccount } = await import('./scanActor')
     expect(await inactiveScanAccount({ actorUserId: 'member-1', projectId: 'p1' })).toBeNull()
     expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.4)', () => {
+  // The Prisma double has no instanceSettings table: a read of it would throw (a 500 here).
+  test('the instance settings route answers 404 to an admin and reads nothing', async () => {
+    setFlagsForTests({ identity: false })
+    authCookie = await createToken('admin-1', 'admin')
+    const { GET, PUT } = await import('@/app/api/admin/instance-settings/route')
+    const url = 'http://redamon.test/api/admin/instance-settings'
+    const headers = { host: 'redamon.test', 'content-type': 'application/json' }
+    expect((await GET(new NextRequest(url, { headers }))).status).toBe(404)
+    expect((await PUT(new NextRequest(url, { method: 'PUT', headers, body: '{"tunnelsEnabled":true}' }))).status).toBe(404)
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+
+  test('the shared settings readers read no instance row', async () => {
+    setFlagsForTests({ identity: false })
+    const { instanceSettingsInForce } = await import('@/lib/sharedInstanceSettings')
+    expect(await instanceSettingsInForce()).toBeNull()
   })
 })

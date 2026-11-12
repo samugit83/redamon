@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest, isScannerRequest, requireUserAccess } from '@/lib/session'
-import { orchestratorFetch } from '@/lib/orchestrator'
 import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { isValidGithubHost } from '@/lib/github/ownerTarget'
 import { ROTATION_TOOL_NAMES } from '@/lib/rotationTools'
@@ -18,7 +17,10 @@ import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { scannerJobRefusalForLiveProject } from '@/lib/authz/jobCredential'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
-import { followUpWarning, type SaveWarning } from './saveWarnings'
+import { type SaveWarning } from './saveWarnings'
+import { rbacFlags } from '@/lib/authz/flags'
+import { changedCaptureFields, changedTunnelFields, parseCapturePatch } from '@/lib/sharedInstanceSettings'
+import { CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy, type CaptureValues } from '@/lib/sharedSettingsEffects'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -30,28 +32,11 @@ function maskSecret(value: string): string {
   return '••••••••' + value.slice(-4)
 }
 
-const TUNNEL_FIELDS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
-
 const TUNNELS_ADMIN_ONLY =
   'The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
 
-/**
- * The tunnel settings this PUT would change. A masked secret keeps the stored value and
- * an unchanged value is no change, so the Global Settings page's full-form save, which
- * sends all four every time, changes nothing.
- */
-function changedTunnelFields(existing: Record<string, unknown> | null, body: Record<string, unknown>): string[] {
-  const changed: string[] = TUNNEL_FIELDS.filter((f) => {
-    if (!(f in body)) return false
-    const stored = (existing?.[f] as string | undefined) ?? ''
-    const sent = body[f]
-    const next = typeof sent === 'string' && sent.startsWith('••••') && existing ? stored : sent
-    return next !== stored
-  })
-  const storedEnabled = (existing?.tunnelsEnabled as boolean | undefined) ?? false
-  if ('tunnelsEnabled' in body && Boolean(body.tunnelsEnabled) !== storedEnabled) changed.push('tunnelsEnabled')
-  return changed
-}
+const MOVED_TO_INSTANCE_SETTINGS =
+  'The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
 
 /**
  * Whether the signed-in account may change the instance tunnel (HD-06, F-05): an admin,
@@ -72,9 +57,12 @@ async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolea
 
 /**
  * Tells a browser whether to offer the tunnel controls. Only a hint: a failed read leaves
- * it out, the page then keeps the controls, and the PUT still decides.
+ * it out, the page then keeps the controls, and the PUT still decides. With the identity
+ * switch on these settings live in the instance settings (step 2.4): this row's controls
+ * are off and `sharedSettingsAt` sends the page to /api/admin/instance-settings.
  */
-async function tunnelControlsHint(): Promise<{ canManageTunnels?: boolean }> {
+async function tunnelControlsHint(): Promise<{ canManageTunnels?: boolean; sharedSettingsAt?: 'instance' }> {
+  if (rbacFlags().identity) return { canManageTunnels: false, sharedSettingsAt: 'instance' }
   try {
     return { canManageTunnels: (await tunnelAccess(false)).access.allowed }
   } catch (err) {
@@ -355,7 +343,31 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // settings; the capture fields are simply ignored, so the shared guard cannot be
     // changed by a direct API call. The scanner key grants nothing on a write: sent
     // beside a member's cookie it made that member a capture admin (NF-02).
-    const captureAdminOK = isInternalRequest(request) || (await getSession())?.role === 'admin'
+    // If a masked value is sent back, preserve the existing value
+    const existing = await prisma.userSettings.findUnique({
+      where: { userId: id },
+    })
+
+    // With the identity switch on the tunnel and capture settings live in the instance
+    // settings (step 2.4): a real change of one is refused here, before anything is
+    // written. Unchanged and masked values pass, since the Global Settings page and the
+    // API-keys template send the tunnel fields with every save.
+    if (rbacFlags().identity) {
+      const existingRow = existing as Record<string, unknown> | null
+      const moved = [
+        ...changedTunnelFields(existingRow, body),
+        ...changedCaptureFields(existingRow, parseCapturePatch(body, sanitizeBodyRules), body),
+      ]
+      if (moved.length) {
+        return NextResponse.json(
+          { error: MOVED_TO_INSTANCE_SETTINGS, code: 'moved_to_instance_settings', fields: moved },
+          { status: 409 },
+        )
+      }
+    }
+
+    // A fresh read: a demoted admin must not change the instance's capture policy (T3).
+    const captureAdminOK = isInternalRequest(request) || (await getSession({ fresh: true }))?.role === 'admin'
     // Named in the answer, so a non-admin's TrafficMind save does not read as applied.
     const ignoredFields: string[] = []
     if (!captureAdminOK) {
@@ -366,11 +378,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         }
       }
     }
-
-    // If a masked value is sent back, preserve the existing value
-    const existing = await prisma.userSettings.findUnique({
-      where: { userId: id },
-    })
 
     // The tunnel is one listener for the whole instance (HD-06): changing it is refused
     // here, before any check of the request's values and before anything is written.
@@ -442,50 +449,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       ? Boolean(body.tunnelsEnabled)
       : (existing?.tunnelsEnabled ?? false)
 
-    // HTTP Traffic Capture (Phase 1) global config. Booleans/ints, so - like
-    // tunnelsEnabled - they cannot ride the string `data` loop above.
-    const captureBoolFields = ['captureProxyStoreBodies', 'captureProxyRedactSecrets', 'captureProxyPassiveDetect',
-      // Granular body-storage direction toggles (Body storage sub-panel).
-      'captureProxyStoreReqBodies', 'captureProxyStoreRespBodies',
-      // Egress-guard toggles (Global Settings > TrafficMind). All default true (block).
-      'captureEgressBlockEmptyHost', 'captureEgressBlockHardGuardrail', 'captureEgressFailClosed',
-      'captureEgressBlockUnresolvable', 'captureEgressBlockPrivate', 'captureEgressBlockLoopback',
-      'captureEgressBlockLinkLocal', 'captureEgressBlockCgnat', 'captureEgressBlockReserved',
-      'captureEgressBlockMulticast', 'captureEgressBlockUnspecified'] as const
-    const captureIntFields = ['captureProxyPort', 'captureProxyMaxBodyKb', 'captureProxyRetentionDays',
-      'captureProxyMaxStoreMb'] as const
-    const captureData: Record<string, boolean | number | string | Record<string, string>> = {}
-    for (const f of captureBoolFields) if (f in body) captureData[f] = Boolean(body[f])
-    // Sane lower bounds - a retentionDays <= 0 would make maintenance delete ALL
-    // traffic; port/maxBodyKb must be positive. maxStoreMb may be 0 (= unlimited).
-    const captureIntMin: Record<string, number> = {
-      captureProxyPort: 1, captureProxyMaxBodyKb: 1, captureProxyRetentionDays: 1,
-      captureProxyMaxStoreMb: 0,
-    }
-    for (const f of captureIntFields) if (f in body) {
-      const n = parseInt(String(body[f]), 10)
-      if (Number.isFinite(n)) captureData[f] = Math.max(captureIntMin[f] ?? 0, n)
-    }
-    if ('captureProxyScope' in body && ['recon', 'agent', 'both'].includes(body.captureProxyScope)) {
-      captureData.captureProxyScope = body.captureProxyScope
-    }
-    // Body-storage policy map (family -> policy). Sanitized against allowlists so a
-    // bad key/value can never reach the proxy env; unknown pairs are dropped.
-    if ('captureProxyBodyRules' in body) {
-      captureData.captureProxyBodyRules = sanitizeBodyRules(body.captureProxyBodyRules)
-    }
-    // Incident-match ignore list (A1). Sanitized to hostname-ish tokens because
-    // it is forwarded to a spawned container as env: a comma-separated list is
-    // the only shape either matcher understands, and anything else is dropped
-    // rather than passed through.
-    if ('scaIntelIgnoreSuffixes' in body) {
-      captureData.scaIntelIgnoreSuffixes = String(body.scaIntelIgnoreSuffixes ?? '')
-        .split(/[,\s]+/)
-        .map(s => s.trim().toLowerCase().replace(/^\.+/, ''))
-        .filter(s => s && s.length <= 253 && /^[a-z0-9.-]+$/.test(s))
-        .slice(0, 50)
-        .join(',')
-    }
+    // HTTP Traffic Capture global config (booleans/ints, clamped; the master switch below).
+    const captureData = parseCapturePatch(body, sanitizeBodyRules)
     const captureEnabledProvided = 'captureProxyEnabled' in body
     const captureDesiredEnabled = captureEnabledProvided
       ? Boolean(body.captureProxyEnabled)
@@ -508,66 +473,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       },
     })
 
-    // Reconcile the capture proxy container with the desired state (plan §8.4):
-    // flipping the master toggle, or changing a runtime knob while enabled, drives
-    // the orchestrator capture-proxy/{start,stop}. Best-effort: a save must not
-    // fail because the orchestrator is briefly unreachable, but it says so in
-    // `warnings` rather than reading as applied.
+    // The capture proxy container follows the master toggle and the spawn-time knobs.
     const warnings: SaveWarning[] = []
-    const captureEnabledChanged = captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true)
-    // Egress toggles + body-storage policy are applied LIVE by the proxy's config-file
-    // hot-reload (DB -> /spool/.capture-config.json -> proxy, within seconds), so a
-    // save that touches ONLY those must NOT restart the proxy. A container recreate is
-    // required solely for knobs baked in at spawn time: the listen port (proxy command)
-    // and redact-secrets (the ingest container's env). Everything else is either
-    // hot-reloaded or enforced outside the container (scope routing, retention cron).
-    const RECREATE_FIELDS = ['captureProxyPort', 'captureProxyRedactSecrets'] as const
     const existingRow = existing as Record<string, unknown> | null
-    const changedRecreateField = RECREATE_FIELDS.some(
-      (k) => k in captureData && captureData[k] !== existingRow?.[k],
-    )
-    if (captureEnabledChanged || (settings.captureProxyEnabled && changedRecreateField)) {
-      const orchUrl = process.env.RECON_ORCHESTRATOR_URL || 'http://recon-orchestrator:8010'
-      const warning = settings.captureProxyEnabled
-        ? await followUpWarning('orchestrator', 'The capture proxy was not started', () =>
-          orchestratorFetch(`${orchUrl}/capture-proxy/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              port: settings.captureProxyPort,
-              maxBodyKb: settings.captureProxyMaxBodyKb,
-              storeBodies: settings.captureProxyStoreBodies,
-              redactSecrets: settings.captureProxyRedactSecrets,
-              scope: settings.captureProxyScope,
-              // Granular body-storage policy -> CAPTURE_* env at proxy spawn.
-              storeReqBodies: settings.captureProxyStoreReqBodies,
-              storeRespBodies: settings.captureProxyStoreRespBodies,
-              maxStoreMb: settings.captureProxyMaxStoreMb,
-              bodyRules: JSON.stringify(settings.captureProxyBodyRules ?? {}),
-              // Egress-guard toggles -> CAPTURE_EGRESS_* env at proxy spawn.
-              egressBlockEmptyHost: settings.captureEgressBlockEmptyHost,
-              egressBlockHardGuardrail: settings.captureEgressBlockHardGuardrail,
-              egressFailClosed: settings.captureEgressFailClosed,
-              egressBlockUnresolvable: settings.captureEgressBlockUnresolvable,
-              egressBlockPrivate: settings.captureEgressBlockPrivate,
-              egressBlockLoopback: settings.captureEgressBlockLoopback,
-              egressBlockLinkLocal: settings.captureEgressBlockLinkLocal,
-              egressBlockCgnat: settings.captureEgressBlockCgnat,
-              egressBlockReserved: settings.captureEgressBlockReserved,
-              egressBlockMulticast: settings.captureEgressBlockMulticast,
-              egressBlockUnspecified: settings.captureEgressBlockUnspecified,
-            }),
-          }))
-        : await followUpWarning('orchestrator', 'The capture proxy was not stopped', () =>
-          orchestratorFetch(`${orchUrl}/capture-proxy/stop`, { method: 'POST' }))
-      if (warning) warnings.push(warning)
-    }
+    const captureWarning = await reconcileCaptureProxy(settings as CaptureValues, {
+      enabledChanged: captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true),
+      recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((k) => k in captureData && captureData[k] !== existingRow?.[k]),
+    })
+    if (captureWarning) warnings.push(captureWarning)
 
-    // Push tunnel config to kali-sandbox when the enabled state OR a tunnel
-    // credential changed. STRIDE I19: tunnels activate ONLY when the operator has
-    // explicitly enabled them; otherwise we push an empty (stop) config so a
-    // credential edit alone can never bring a tunnel up. The request carries the
-    // TUNNEL_AUTH_TOKEN so a rogue container can't drive :8015 (S14).
+    // Push tunnel config to kali-sandbox when the enabled state OR a tunnel credential changed.
     if (tunnelChanges.length) {
       // Which fields changed and through what right, never their values.
       await writeAudit({
@@ -577,22 +492,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         targetId: id,
         after: { fields: tunnelChanges, via: tunnelVia },
       })
-      const config = settings.tunnelsEnabled
-        ? {
-            ngrokAuthtoken: settings.ngrokAuthtoken,
-            chiselServerUrl: settings.chiselServerUrl,
-            chiselAuth: settings.chiselAuth,
-          }
-        : { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      const token = process.env.TUNNEL_AUTH_TOKEN
-      if (token) headers['Authorization'] = `Bearer ${token}`
-      const warning = await followUpWarning('kali_sandbox', 'The tunnel configuration was not applied', () =>
-        fetch('http://kali-sandbox:8015/tunnel/configure', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(config),
-        }))
+      const warning = await pushTunnelConfig(settings)
       if (warning) warnings.push(warning)
     }
 

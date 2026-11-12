@@ -166,6 +166,7 @@ describe('the backfill script', () => {
     expect(TUNNEL_CANDIDATE_WHERE).toEqual(lib.TUNNEL_CANDIDATE_WHERE)
     expect(TUNNEL_FIELDS).toEqual([...lib.TUNNEL_FIELDS])
     expect(CAPTURE_FIELDS).toEqual([...lib.CAPTURE_FIELDS])
+    expect(CAPTURE_DEFAULTS).toEqual(lib.CAPTURE_DEFAULTS)
     expect(CAPTURE_ROW_ORDER).toEqual([{ updatedAt: 'desc' }, { id: 'asc' }])
   })
 
