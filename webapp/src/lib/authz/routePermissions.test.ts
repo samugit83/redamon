@@ -37,9 +37,10 @@ const WEBAPP = join(__dirname, '..', '..', '..')
 const NO_PERSON = new Set(['public', 'internal', 'scanner', 'plugin-token'])
 
 /**
- * `<METHOD> <path>` of the handlers that answer every signed-in account, and why (`permission: null`).
- * Some ask a permission inside to decide a scope or a hint, which the reader below would read as
- * the route's: they are listed here so it is not.
+ * `<METHOD> <path>` of the handlers no permission of their own gates, and why (`permission: null`):
+ * they answer every signed-in account, or only the route's account rule decides (the reason says
+ * which). Some ask a permission inside to decide a scope or a hint, which the reader below would
+ * read as the route's: they are listed here so it is not.
  */
 const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/gvm/available': 'whether this install runs the GVM stack: an instance fact the scan tab reads to show or hide itself, no project data',
@@ -66,20 +67,15 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/agent/emergency-stop-all': 'the scope a press would have: every account stops its own runs; platform:emergency_stop decides the global scope inside (sharedToolAccess)',
   'POST /api/agent/emergency-stop-all': 'every account stops its own runs (a safety stop is never refused); platform:emergency_stop decides the global scope inside (sharedToolAccess)',
   'GET /api/users/[id]/settings': "the account's own settings, secrets masked, which every screen reads (feature models, which keys are set); the tunnel hint inside is not a gate; storing them is self:api_keys",
+  'GET /api/users/[id]/mcp-tokens': "the account's own MCP tokens (another's under users:read, requireUserAccess read): seeing which credentials exist is never refused, so a person who lost self:mcp_tokens still finds and revokes theirs; minting is self:mcp_tokens",
+  'DELETE /api/users/[id]/mcp-tokens/[tokenId]': 'revoking a token: the account itself, or users:revoke_sessions on another (requireUserAccess revoke); taking access away is never refused',
 }
 
 /**
  * `<METHOD> <path>` of the handlers whose permission is not wired yet, and why. They name no
  * permission in the manifest until then.
  */
-const LATER: Readonly<Record<string, string>> = {
-  'GET /api/users/[id]/llm-providers': 'self:llm_providers: the route file is held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-  'POST /api/users/[id]/llm-providers': 'self:llm_providers: the route file is held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-  'GET /api/users/[id]/mcp-tokens': 'self:mcp_tokens: the route files are held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-  'POST /api/users/[id]/mcp-tokens': 'self:mcp_tokens: the route files are held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-  'PATCH /api/users/[id]/mcp-tokens/[tokenId]': 'self:mcp_tokens: the route files are held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-  'DELETE /api/users/[id]/mcp-tokens/[tokenId]': 'self:mcp_tokens: the route files are held by the review fix of step 3.7 (step 3.9 BLOCKED overlap); requireSelfPermission once it lands',
-}
+const LATER: Readonly<Record<string, string>> = {}
 
 /**
  * `<METHOD> <path>` of the handlers whose permission a helper asks without naming it to the reader,
@@ -105,7 +101,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'traffic:delete': 'deleting captured traffic acts; route-tested (traffic.permissions.test.ts)',
   'workspace:write': 'every request that passes the route\'s own checks writes the agent\'s workspace',
   'workspace:import': 'every request that passes the route\'s own checks fetches from the network into the workspace',
-  'self:mcp_tokens': 'the onboarding pack mints a token for the account; route-tested (selfService.permissions.test.ts)',
+  'self:mcp_tokens': 'every request that passes the route\'s own checks mints or widens a credential (the onboarding pack mints one too); route-tested (selfService.permissions.test.ts)',
   'platform:agent_mcp': 'the reload acts on the shared agent; platformOverrideHolders.test.ts proves who holds it',
   'platform:tunnels': 'every administrator account opens the instance settings (the security policy), so no admin is refused there for lacking it; a member is refused with the switch either way; route-tested',
   'users:read': 'no seeded admin lacks it (User manager holds it); p2.tsv and the route tests cover the directory',

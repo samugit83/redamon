@@ -40,17 +40,19 @@ export async function requireSelfPermission(
   request: NextRequest,
   accountId: string,
   permission: PermissionId,
+  { fresh = false }: { fresh?: boolean } = {},
 ): Promise<NextResponse | null> {
   assertSelfService(permission)
   if (isInternalRequest(request) || isScannerRequest(request)) return null
   let identity: AuthzIdentity | null
   try {
-    identity = await getAuthzIdentity()
+    identity = await getAuthzIdentity(fresh ? { fresh: true } : {})
   } catch (err) {
     return internalError(err, 'Could not read the signed-in account')
   }
   if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (accountId !== identity.principal.id && accountId !== identity.actingAs?.id) return null
-  const auth = await requirePermission(request, permission)
+  // `fresh`: a critical path (minting a credential) reads both accounts, the sets and the Root again.
+  const auth = fresh ? await requirePermission(request, permission, { fresh: true }) : await requirePermission(request, permission)
   return auth instanceof NextResponse ? auth : null
 }

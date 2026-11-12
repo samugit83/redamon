@@ -8,6 +8,7 @@ import { internalError } from '@/lib/routeErrors'
 import { maskProvider } from '@/lib/llmProviderMask'
 import { sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
@@ -27,6 +28,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
     const internalReq = isInternalRequest(request)
     const wantUnmasked = request.nextUrl.searchParams.get('internal') === 'true'
+
+    // The person's own list is self:llm_providers (§5.3); another account's is the read rule's alone.
+    const refused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (refused) return refused
 
     // The read rule (requireUserAccess `read`): browser/JWT callers must own the
     // account, act as it, or hold the user directory (users:read), and they never get
@@ -69,6 +74,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // provider (and thus a harvestable secret) to an arbitrary account.
     const denied = await requireAccountWrite(id)
     if (denied) return denied
+    const refused = await requireSelfPermission(request, id, 'self:llm_providers')
+    if (refused) return refused
     // A new provider decides where the account's keys and prompts go: never while acting as it (§4.7).
     const actingAs = await refuseWhileActingAsOn(id, 'change_llm_endpoint')
     if (actingAs) return actingAs

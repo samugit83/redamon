@@ -2,8 +2,11 @@
  * The self-service catalogs ask their permission (step 3.9; §5.3, PE-19, PE-22): an account's
  * attack and chat skills `self:attack_skills` / `self:chat_skills`, tradecraft `self:tradecraft`,
  * MCP servers (the account's list, the test call, the manifest) `self:mcp_servers`, LLM providers
- * and the model list `self:llm_providers`, the API usage report `self:api_keys`, the onboarding
- * pack `self:mcp_tokens`, mute-rule presets `self:presets`. Each is a capability with no project.
+ * (the list, a new one, a row, its test) and the model list `self:llm_providers`, the API usage
+ * report `self:api_keys`, the onboarding pack, minting an MCP token and widening one
+ * `self:mcp_tokens` (read fresh), mute-rule presets `self:presets`. Each is a capability with no
+ * project. Listing one's MCP tokens, narrowing and revoking them never ask it: taking access away
+ * is never refused.
  *
  * The `/api/users/[id]/**` routes ask it through requireSelfPermission after their account rule
  * (requireUserAccess, doubled here as admitting): only for the person's own data, so another
@@ -64,6 +67,12 @@ const tradeOne = () => import('./tradecraft-resources/[resourceId]/route')
 const mcp = () => import('./mcp/route')
 const mcpOne = () => import('./mcp/[serverId]/route')
 const llmOne = () => import('./llm-providers/[providerId]/route')
+const llmList = () => import('./llm-providers/route')
+const tokens = () => import('./mcp-tokens/route')
+const tokenOne = () => import('./mcp-tokens/[tokenId]/route')
+/** The token row a PATCH reads before it knows the edit widens the token. */
+const TOKEN_ROW = { id: 't1', userId: OWNER, name: 'tok', scopes: ['recon:read'], profile: null, expiresAt: null, revokedAt: null, tokenPrefix: 'rdm_x', lastUsedAt: null, createdAt: new Date(0) }
+const withToken = (h0: { models: Record<string, unknown> }) => { h0.models.mcpAccessToken = { findFirst: async () => ({ ...TOKEN_ROW }), findUnique: async () => ({ ...TOKEN_ROW }) } }
 const usage = () => import('./settings/api-usage/route')
 const presets = () => import('@/app/api/mute-rule-presets/route')
 const presetOne = () => import('@/app/api/mute-rule-presets/[id]/route')
@@ -106,6 +115,10 @@ describeRoutePermissions('self-service catalogs', [
   at('DELETE /api/users/[id]/mcp/[serverId]', mcpOne, 'self:mcp_servers', { ...own, serverId: 'srv1' }),
   at('POST /api/mcp/test', () => import('@/app/api/mcp/test/route'), 'self:mcp_servers', {}, MCP_DRAFT),
   at('GET /api/mcp/manifest', () => import('@/app/api/mcp/manifest/route'), 'self:mcp_servers', {}),
+  at('GET /api/users/[id]/llm-providers', llmList, 'self:llm_providers'),
+  at('POST /api/users/[id]/llm-providers', llmList, 'self:llm_providers', own, { providerType: 'openai', name: 'x' }),
+  { ...at('POST /api/users/[id]/mcp-tokens', tokens, 'self:mcp_tokens', own, { name: 'x', scopes: ['recon:read'] }), fresh: true },
+  { ...at('PATCH /api/users/[id]/mcp-tokens/[tokenId]', tokenOne, 'self:mcp_tokens', { ...own, tokenId: 't1' }, { scopes: ['recon:read', 'recon:scan'] }), fresh: true, arrange: withToken },
   at('GET /api/users/[id]/llm-providers/[providerId]', llmOne, 'self:llm_providers', { ...own, providerId: 'p1' }),
   at('PUT /api/users/[id]/llm-providers/[providerId]', llmOne, 'self:llm_providers', { ...own, providerId: 'p1' }, { name: 'x' }),
   at('DELETE /api/users/[id]/llm-providers/[providerId]', llmOne, 'self:llm_providers', { ...own, providerId: 'p1' }),
@@ -184,6 +197,20 @@ describe('self-service: whose data the permission is asked for (step 3.9)', () =
     expect(res.status).not.toBe(403)
     expect(h.identity).not.toHaveBeenCalled()
     expect(await guardCalls()).toEqual([])
+  })
+
+  test('listing, narrowing and revoking one\'s own MCP tokens never ask self:mcp_tokens: taking access away is never refused', async () => {
+    signedIn(denying(OWNER, 'self:mcp_tokens'))
+    withToken(h)
+    const list = await (await tokens()).GET(req('GET', `/api/users/${OWNER}/mcp-tokens`), params({ id: OWNER }))
+    const narrow = await (await tokenOne()).PATCH(req('PATCH', `/api/users/${OWNER}/mcp-tokens/t1`, {}, { scopes: [] }), params({ id: OWNER, tokenId: 't1' }))
+    const revoke = await (await tokenOne()).DELETE(req('DELETE', `/api/users/${OWNER}/mcp-tokens/t1`), params({ id: OWNER, tokenId: 't1' }))
+    for (const res of [list, narrow, revoke]) {
+      expect(res.status).not.toBe(403)
+      expect(JSON.stringify(await res.json())).not.toContain('self:mcp_tokens')
+    }
+    expect(await guardCalls()).toEqual([])
+    delete h.models.mcpAccessToken
   })
 
   test('the account rule still answers first: its refusal is returned and no permission is asked', async () => {

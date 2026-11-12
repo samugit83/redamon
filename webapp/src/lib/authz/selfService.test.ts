@@ -119,6 +119,14 @@ describe('requireSelfPermission', () => {
     expect(requirePermission).toHaveBeenCalledTimes(1)
   })
 
+  test('fresh: both reads are asked fresh (minting a credential), and the answer is the same', async () => {
+    signedIn(denying(MEMBER, 'self:mcp_tokens'))
+    const res = await requireSelfPermission(req(), MEMBER, 'self:mcp_tokens', { fresh: true })
+    expect(res?.status).toBe(403)
+    expect(h.identity).toHaveBeenCalledWith({ fresh: true })
+    expect(vi.mocked(requirePermission).mock.calls[0].slice(1)).toEqual(['self:mcp_tokens', { fresh: true }])
+  })
+
   test('a No access member is refused its own catalogs', async () => {
     signedIn(principal(MEMBER, { permissionSets: ['builtin:no-access'] }))
     expect((await requireSelfPermission(req(), MEMBER, 'self:tradecraft'))?.status).toBe(403)

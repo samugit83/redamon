@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getSession, requireUserAccess } from '@/lib/session'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 import { checkStepUp } from '@/lib/authz/stepUp'
 import { writeAudit } from '@/lib/audit'
 import {
@@ -80,6 +81,10 @@ export const POST = withRouteErrors('Could not create the token', async (request
       { status: 403 }
     )
   }
+  // Minting is self:mcp_tokens (§5.3; off with MCP_SERVER_ENABLED off once the permissions switch
+  // is on), on a fresh read like the step-up below. Listing and revoking one's tokens stay open.
+  const refused = await requireSelfPermission(request, id, 'self:mcp_tokens', { fresh: true })
+  if (refused) return refused
 
   // Same-origin JSON whatever the identity switch (ID-26, step 2.12): a token is a credential.
   if (!sameOrigin(request)) return crossOriginResponse(request)

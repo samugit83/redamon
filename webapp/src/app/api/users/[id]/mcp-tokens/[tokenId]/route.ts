@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getSession, requireUserAccess } from '@/lib/session'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 import { checkStepUp } from '@/lib/authz/stepUp'
 import { writeAudit } from '@/lib/audit'
 import {
@@ -171,6 +172,9 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
         { status: 403 }
       )
     }
+    // Adding power is the mint's permission (self:mcp_tokens, fresh); taking it away never asks it.
+    const refused = await requireSelfPermission(request, id, 'self:mcp_tokens', { fresh: true })
+    if (refused) return refused
     // The shared step-up: one attempt budget with the mint and every other
     // step-up route. This route keeps its own answers (401 + passwordRequired).
     const proof = await checkStepUp(request, body.password)
