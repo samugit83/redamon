@@ -4,7 +4,8 @@ import prisma from '@/lib/prisma'
 import { readFeatureModel } from '@/lib/featureModels'
 import { readJsonBody } from '@/lib/jsonBody'
 import { pluginFeatureId } from '@/lib/llmFeatures'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { auditActor } from '@/lib/auditActor'
+import { getEffectiveUser } from '@/lib/session'
 import { CallTokenConfigError, mintCallToken } from './callToken'
 import { now } from './clock'
 import { isValidPluginId } from './ids'
@@ -241,8 +242,9 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
     return refuse(409, 'model_required', 'Choose a model for this plugin in Models by feature.', { featureId: pluginFeatureId(pluginId) })
   }
 
-  const session = await getSession()
-  const actor = session && session.userId !== eff.userId ? session.userId : undefined
+  // The admin behind an act-as call, recorded in the call token as `act`.
+  const real = await auditActor(eff)
+  const actor = real.onBehalfOfUserId ? real.actorId ?? undefined : undefined
   const timeoutSeconds = Math.min(action.timeoutSeconds, actionMaxTimeoutSeconds())
   const tokenBase = {
     pluginId,

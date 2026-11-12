@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/session'
+import { signedInActor } from '@/lib/auditActor'
 import { readJsonBody } from '@/lib/jsonBody'
 import { writeAudit } from '@/lib/audit'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
@@ -110,7 +110,7 @@ async function generateMetadata(request: NextRequest, { params }: RouteParams): 
   const model = await readFeatureModel(eff.userId, 'skill_metadata')
   if (!model) return featureModelErrorResponse('model_required', 'skill_metadata')
   // Read now: the agent call can outlast the session, and the audit row must still name the caller.
-  const actor = auditActorFor((await getSession())?.userId, id)
+  const actor = auditActorFor((await signedInActor())?.id, id)
 
   const agent = await callFeatureAgent({
     featureId: 'skill_metadata',

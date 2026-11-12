@@ -19,7 +19,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
-import { getSession } from '@/lib/session'
+import { signedInActor } from '@/lib/auditActor'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
@@ -71,8 +71,7 @@ export async function requireProjectOwner(
  */
 export async function realActorUserId(): Promise<string | null> {
   try {
-    const session = await getSession()
-    return session?.userId ?? null
+    return (await signedInActor())?.id ?? null
   } catch {
     // No request scope (a unit test, a background caller): the audit row then
     // records the effective user alone, as every route did before.

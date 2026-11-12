@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { readJsonBody } from '@/lib/jsonBody'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { auditActor } from '@/lib/auditActor'
+import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
 import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
@@ -62,12 +63,12 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
 
   if (set.point === ov.USER_SKILL_POINT) {
     const body = parsed.body
-    const session = await getSession()
+    const skillActor = (await auditActor(eff)).actorId ?? eff.userId
     try {
       const saved = await adoptUserSkillVersion({
         changeSetId: id,
         ownerId: eff.userId,
-        actor: { ...auditActorFor(session?.userId ?? eff.userId, eff.userId), actorId: session?.userId ?? eff.userId },
+        actor: { ...auditActorFor(skillActor, eff.userId), actorId: skillActor },
         name: body.name,
         description: body.description,
         projectId: typeof body.projectId === 'string' && body.projectId ? body.projectId : null,
@@ -116,9 +117,9 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
     throw e
   }
 
-  const session = await getSession()
   // decidedBy is the audit actor: the real session user, even when an admin acts as the owner.
-  const actor = session?.userId ?? eff.userId
+  const real = await auditActor(eff)
+  const actor = real.actorId ?? eff.userId
   let result: ov.ApproveResult
   try {
     result = await ov.approve(id, actor, hashes, undefined, texts)
@@ -145,7 +146,7 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
       scope: set.scope.type,
       scopeId: set.scope.id,
       revision: result.revision,
-      ...(session && session.userId !== eff.userId ? { onBehalfOf: eff.userId } : {}),
+      ...(real.onBehalfOfUserId ? { onBehalfOf: real.onBehalfOfUserId } : {}),
       ...(result.replaced ? { replaced: result.replaced } : {}),
     },
     source: 'ui',

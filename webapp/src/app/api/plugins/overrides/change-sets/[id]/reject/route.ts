@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { readJsonBody } from '@/lib/jsonBody'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { auditActor } from '@/lib/auditActor'
+import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
 import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
@@ -32,8 +33,8 @@ export const POST = pluginRoute('override reject', 'The proposal could not be re
   const notAccountWriter = await userScopeWriteRefusal(set.scope)
   if (notAccountWriter) return notAccountWriter
 
-  const session = await getSession()
-  const actor = session?.userId ?? eff.userId
+  const real = await auditActor(eff)
+  const actor = real.actorId ?? eff.userId
   try {
     await ov.reject(id, actor)
   } catch (e) {
@@ -56,7 +57,7 @@ export const POST = pluginRoute('override reject', 'The proposal could not be re
       targetGroup: set.targetGroup,
       scope: set.scope.type,
       scopeId: set.scope.id,
-      ...(session && session.userId !== eff.userId ? { onBehalfOf: eff.userId } : {}),
+      ...(real.onBehalfOfUserId ? { onBehalfOf: real.onBehalfOfUserId } : {}),
     },
     source: 'ui',
   })

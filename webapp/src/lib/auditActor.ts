@@ -13,7 +13,7 @@
  */
 import type { AuditEntry } from '@/lib/audit'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
-import { getEffectiveUser, getSession, type EffectiveUser } from '@/lib/session'
+import { getEffectiveUser, getSession, type EffectiveUser, type Session } from '@/lib/session'
 
 export interface AuditActor {
   actorId: string | null
@@ -34,11 +34,15 @@ export function auditActorOf(
   }
 }
 
+/** The real account of a session a writer already read, with its email when getSession read it. */
+export function sessionActor(session: Session): { id: string; email: string | null } {
+  return { id: session.userId, email: sessionPrincipal(session)?.email ?? null }
+}
+
 /** The person signed in, with their email when the session read returned it. A failed read throws. */
 export async function signedInActor(): Promise<{ id: string; email: string | null } | null> {
   const session = await getSession()
-  if (!session) return null
-  return { id: session.userId, email: sessionPrincipal(session)?.email ?? null }
+  return session ? sessionActor(session) : null
 }
 
 /**

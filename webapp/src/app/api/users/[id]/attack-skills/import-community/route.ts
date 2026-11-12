@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession, requireUserAccess } from '@/lib/session'
+import { requireUserAccess } from '@/lib/session'
+import { signedInActor } from '@/lib/auditActor'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { DESCRIPTION_MAX_CHARS, UserSkillError } from '@/lib/userSkills'
@@ -97,8 +98,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return out
     }, { timeout: 30_000 })
 
-    const session = await getSession()
-    const actor = auditActorFor(session?.userId, id)
+    const actor = auditActorFor((await signedInActor())?.id, id)
     for (const s of created) {
       await writeAudit({
         actorId: actor.actorId,

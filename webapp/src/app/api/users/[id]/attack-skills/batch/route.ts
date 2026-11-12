@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/session'
+import { signedInActor } from '@/lib/auditActor'
 import { readJsonBody } from '@/lib/jsonBody'
 import { MAX_SKILL_BATCH_BYTES } from '@/lib/userSkills'
 import { requireOwnBrowserRequest } from '@/lib/userSkillRouteGuard'
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (parsed instanceof NextResponse) return parsed
     const result = await createUserSkillsBatch(
       { userId: id, items: parsed.body.items, enableInProjectId: parsed.body.enableInProjectId },
-      auditActorFor((await getSession())?.userId, id),
+      auditActorFor((await signedInActor())?.id, id),
     )
     return NextResponse.json(result, { status: 201 })
   } catch (error) {

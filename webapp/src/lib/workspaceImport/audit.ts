@@ -1,19 +1,18 @@
 /**
  * Audit rows for workspace uploads and imports, written once the agent accepted
  * the job. The actor is the SESSION user, so under act-as it is the real admin;
- * the simulated user is recorded beside it. The facts come from the agent's
+ * the simulated user is recorded beside it (`onBehalfOfUserId`, and
+ * `after.actingAsUserId` as before that column existed). The facts come from the agent's
  * answer (read from its own session), never from the browser's body.
  *
  * Server-side only.
  */
 import { writeAudit } from '@/lib/audit'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { actorFields, auditActor } from '@/lib/auditActor'
 
 /** The simulated user's id when an admin is acting as someone else, else undefined. */
 export async function actingAsUserId(): Promise<string | undefined> {
-  const [session, eff] = await Promise.all([getSession(), getEffectiveUser()])
-  if (!session || !eff) return undefined
-  return eff.userId !== session.userId ? eff.userId : undefined
+  return (await auditActor()).onBehalfOfUserId ?? undefined
 }
 
 export async function auditWorkspaceAction(
@@ -21,10 +20,10 @@ export async function auditWorkspaceAction(
   projectId: string,
   after: Record<string, unknown>,
 ): Promise<void> {
-  const session = await getSession()
-  const actingAs = await actingAsUserId()
+  const actor = await auditActor()
+  const actingAs = actor.onBehalfOfUserId
   await writeAudit({
-    actorId: session?.userId ?? null,
+    ...actorFields(actor),
     action,
     targetType: 'project',
     targetId: projectId,

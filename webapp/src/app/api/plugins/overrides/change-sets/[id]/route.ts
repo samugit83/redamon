@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { auditActor } from '@/lib/auditActor'
+import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
 import { ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
@@ -56,9 +57,9 @@ export const DELETE = pluginRoute('override delete', 'The version could not be d
     if (e instanceof ov.PluginOverrideError && e.code === 'not_found') return notFound()
     throw e
   }
-  const session = await getSession()
+  const real = await auditActor(eff)
   await auditPlugin('plugin.override.delete', {
-    actorId: session?.userId ?? eff.userId,
+    actorId: real.actorId ?? eff.userId,
     pluginId: set.pluginId,
     targetType: 'plugin_change_set',
     targetId: id,
@@ -68,7 +69,7 @@ export const DELETE = pluginRoute('override delete', 'The version could not be d
       scope: set.scope.type,
       scopeId: set.scope.id,
       revision: set.revision,
-      ...(session && session.userId !== eff.userId ? { onBehalfOf: eff.userId } : {}),
+      ...(real.onBehalfOfUserId ? { onBehalfOf: real.onBehalfOfUserId } : {}),
     },
     source: 'ui',
   })

@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server'
 import type { Prisma, UserAttackSkill } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
+import { auditActorOf } from '@/lib/auditActor'
 import {
   DESCRIPTION_MAX_CHARS, MAX_CONTENT_SIZE, MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_BATCH,
   MAX_SKILLS_PER_USER, UserSkillError, normalizeUserToggleMap, type BatchItemRefusal,
@@ -49,10 +50,11 @@ export interface AuditActor {
 }
 
 export function auditActorFor(sessionUserId: string | null | undefined, ownerId: string, source: AuditActor['source'] = 'ui'): AuditActor {
+  const actor = auditActorOf(sessionUserId ? { id: sessionUserId } : null, ownerId)
   return {
-    actorId: sessionUserId ?? null,
-    ...(sessionUserId && sessionUserId !== ownerId ? { onBehalfOf: ownerId } : {}),
-    source: sessionUserId ? source : 'system',
+    actorId: actor.actorId,
+    ...(actor.onBehalfOfUserId ? { onBehalfOf: actor.onBehalfOfUserId } : {}),
+    source: actor.actorId ? source : 'system',
   }
 }
 
