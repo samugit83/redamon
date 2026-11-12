@@ -172,7 +172,7 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  test('only flags.ts, sharedTools.ts and the admin banner read the switch in the webapp source', () => {
+  test('only flags.ts, sharedTools.ts, the admin banner and the terminal tab read the switch in the webapp source', () => {
     const src = path.resolve(__dirname, '..', '..')
     const readers: string[] = []
     const walk = (dir: string) => {
@@ -188,9 +188,16 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
     // Step 1.18's admin banner: /api/auth/me tells admins whether the switch is on, and the banner
     // names it; neither opens a tool. Step 2.4's instance settings route names the switch in its
     // doc comment only: the tunnel holder of OQ-R3 (a) is admitted through sharedToolAccess('tunnels').
+    // Step 3.12's terminal tab is shown while the switch is on, because an older account may still
+    // open the terminal through it; the tab opens nothing: the ticket route decides, through
+    // sharedToolAccess('kali_terminal').
     expect(readers.sort()).toEqual([
-      'app/api/admin/instance-settings/route.ts', 'app/api/auth/me/route.ts', 'components/admin/CompatBanner.tsx',
-      'lib/authz/flags.ts', 'lib/authz/sharedTools.ts',
+      'app/api/admin/instance-settings/route.ts', 'app/api/auth/me/route.ts', 'app/graph/components/ViewTabs/ViewTabs.tsx',
+      'components/admin/CompatBanner.tsx', 'lib/authz/flags.ts', 'lib/authz/sharedTools.ts',
     ])
+    // A screen learns the switch from /api/auth/me's flags (useRbacFlags), never from the environment.
+    for (const screen of ['app/graph/components/ViewTabs/ViewTabs.tsx', 'components/admin/CompatBanner.tsx']) {
+      expect(readFileSync(path.join(src, screen), 'utf8'), screen).not.toMatch(/process\.env/)
+    }
   })
 })
