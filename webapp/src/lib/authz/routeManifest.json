@@ -293,6 +293,8 @@
   {"path":"/api/users/[id]/chat-skills/import-community","guard":"user","methods":["POST"]},
   {"path":"/api/users/[id]/disable","guard":"admin-jwt","methods":["POST"]},
   {"path":"/api/users/[id]/enable","guard":"admin-jwt","methods":["POST"]},
+  {"path":"/api/users/[id]/invite/cancel","guard":"admin-jwt","methods":["POST"],"note":"404 with RBAC_IDENTITY_ENABLED off; requireAdmin (fresh), same-origin JSON; removes an invited account that never signed in and owns no project, with its links, audited user.invite_cancelled in the same transaction; an invited admin is the confirmed Root's with step-up (ID-14, step 2.9)"},
+  {"path":"/api/users/[id]/invite/resend","guard":"admin-jwt","methods":["POST"],"note":"404 with RBAC_IDENTITY_ENABLED off; requireAdmin (fresh), same-origin JSON; a new link for an invited account (the open one cancelled), answered once with no-store, audited user.invite_resent; an invited admin is the confirmed Root's with step-up (ID-14, step 2.9)"},
   {"path":"/api/users/[id]/llm-providers","guard":"user","methods":["GET","POST"],"note":"GET: inline read rule, the session user or an admin (masked), or the internal key; POST: requireAccountWrite, no internal key"},
   {"path":"/api/users/[id]/llm-providers/[providerId]","guard":"user","methods":["GET","PUT","DELETE"]},
   {"path":"/api/users/[id]/llm-providers/[providerId]/test","guard":"user","methods":["POST"]},
@@ -308,6 +310,7 @@
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]","guard":"user","methods":["GET","PUT","DELETE"]},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/refresh","guard":"user","methods":["POST"]},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/verify","guard":"user","methods":["POST"]},
+  {"path":"/api/users/invite","guard":"admin-jwt","methods":["POST"],"note":"404 with RBAC_IDENTITY_ENABLED off; requireAdmin (fresh), same-origin JSON; creates a member (never an admin, whatever the body) with status invited and no password, and answers its link once with no-store, audited user.invite (ID-14, ID-36, step 2.9)"},
   {"path":"/api/version/check","guard":"public","methods":["GET"]},
   {"path":"/api/ws","guard":"session","methods":["GET"]}
 ]

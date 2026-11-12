@@ -56,6 +56,9 @@
  *     middleware lets a `pwc` cookie (minted while the switch was on) go anywhere, and the
  *     session helpers compare neither the claim nor the flag.
  *
+ * Step 2.9 adds invite links and the public page that accepts them. With the switch off:
+ *   - the admin invite routes (invite, resend, cancel) answer 404 to everyone and read nothing;
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -421,5 +424,26 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.8): no must-change', () => {
     expect(await getSession()).toEqual({ userId: 'member-1', role: 'standard' })
     expect(clearedCookies).toEqual([])
     findUnique.mockImplementation(anyAccount)
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.9)', () => {
+  test('the admin invite routes answer 404 to an admin, a member and nobody, and read nothing', async () => {
+    setFlagsForTests({ identity: false })
+    const { POST: invite } = await import('@/app/api/users/invite/route')
+    const { POST: resend } = await import('@/app/api/users/[id]/invite/resend/route')
+    const { POST: cancel } = await import('@/app/api/users/[id]/invite/cancel/route')
+    const post = () => new NextRequest('http://redamon.test/api/users/invite', {
+      method: 'POST', headers: { host: 'redamon.test', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Nina', email: 'nina@e2e.local' }),
+    })
+    const params = { params: Promise.resolve({ id: 'member-2' }) }
+    for (const cookie of [await createToken('admin-1', 'admin'), await createToken('member-1', 'standard'), undefined]) {
+      authCookie = cookie
+      expect((await invite(post())).status).toBe(404)
+      expect((await resend(post(), params)).status).toBe(404)
+      expect((await cancel(post(), params)).status).toBe(404)
+    }
+    expect(findUnique).not.toHaveBeenCalled()
   })
 })

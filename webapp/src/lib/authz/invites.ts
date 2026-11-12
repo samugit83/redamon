@@ -19,9 +19,15 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
+import { NextResponse, type NextRequest } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { writeAuditTx } from '@/lib/audit'
+import { userAuditEntry } from '@/lib/userAudit'
+import type { Session } from '@/lib/session'
+import { emailTakenByAnother, normalizeEmail } from './accountEmail'
 import { now } from './clock'
+import { invalidatePrincipal } from './principal'
 import { INSTANCE_SETTINGS_ROW } from './root'
 
 export type LinkKind = 'invite' | 'reset'
@@ -207,4 +213,125 @@ export async function readInviteCookie(value: string | null | undefined): Promis
   } catch {
     return null
   }
+}
+
+// --- The admin side (switch on): invite a member, resend its link, cancel the invite ---------
+
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } as const
+
+/** An answer that carries a link (or reads one): never cached, never sent on as a referrer. */
+export function privateJson(body: unknown, status = 200): NextResponse {
+  return NextResponse.json(body, { status, headers: NO_STORE_HEADERS })
+}
+
+/** `requireAdmin`'s 403, coded with the permission inviting needs (master §9.8); any other answer as is. */
+export function forbiddenToInvite(res: NextResponse): NextResponse {
+  if (res.status !== 403) return res
+  return NextResponse.json(
+    { error: 'Only an administrator can invite people or manage their invites.', code: 'forbidden', permission: 'users:invite' },
+    { status: 403 },
+  )
+}
+
+export const ROOT_ONLY_INVITE = "Only Root can manage an admin account's invite."
+
+const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
+const USER_NOT_FOUND = () => NextResponse.json({ error: 'User not found', code: 'user_not_found' }, { status: 404 })
+const NOT_INVITED = () => NextResponse.json(
+  { error: 'This account is not waiting for an invite: it was never invited, or it has already signed in.', code: 'not_invited' },
+  { status: 409 },
+)
+const HAS_PROJECTS = () => NextResponse.json(
+  { error: 'This invited account owns projects: delete the account instead, which also removes its projects.', code: 'has_projects' },
+  { status: 409 },
+)
+const ACCOUNT_CHANGED = () => NextResponse.json(
+  { error: 'The account changed while this request ran. Reload the list and try again.', code: 'account_changed' },
+  { status: 409 },
+)
+
+const MAX_NAME = 200
+const MAX_EMAIL = 320
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+$/
+
+function invalidField(field: 'name' | 'email', error: string): NextResponse {
+  return NextResponse.json({ error, code: 'invalid_field', field }, { status: 400 })
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'P2002')
+}
+
+/**
+ * POST /api/users/invite: a MEMBER account (whatever the body says: §7.1 "invited as member
+ * only"), `invited`, with no password, and its link, answered once. The account, the link and
+ * `user.invite` commit together.
+ */
+export async function inviteMember(request: NextRequest, session: Session, body: Record<string, unknown>): Promise<NextResponse> {
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  if (!name || name.length > MAX_NAME) return invalidField('name', `A name is required (at most ${MAX_NAME} characters).`)
+  const typed = typeof body.email === 'string' ? body.email.trim() : ''
+  if (!typed || typed.length > MAX_EMAIL || !EMAIL_SHAPE.test(typed)) return invalidField('email', 'A valid email address is required.')
+  // Stored lowercase; an older account may hold the same address in other capitals.
+  const email = normalizeEmail(typed)
+  if (await emailTakenByAnother(email)) return NextResponse.json(EMAIL_TAKEN, { status: 409 })
+  try {
+    const { user, made } = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: { name, email, role: 'standard', status: 'invited', password: '' },
+        select: { id: true, name: true, email: true, role: true, status: true },
+      })
+      const made = await createLink(tx, { userId: user.id, kind: 'invite', createdById: session.userId })
+      await writeAuditTx(tx, await userAuditEntry(request, session, {
+        action: 'user.invite',
+        targetId: user.id,
+        after: { email, role: 'standard', status: 'invited', expiresAt: made.expiresAt.toISOString() },
+      }))
+      return { user, made }
+    })
+    return privateJson({
+      ...user, link: made.link, expiresAt: made.expiresAt.toISOString(), localhostWarning: made.localhostWarning,
+    }, 201)
+  } catch (err) {
+    if (isUniqueViolation(err)) return NextResponse.json(EMAIL_TAKEN, { status: 409 })
+    throw err
+  }
+}
+
+/** POST /api/users/[id]/invite/resend: a new link for an invited account; the open one is cancelled. */
+export async function resendInvite(request: NextRequest, session: Session, userId: string): Promise<NextResponse> {
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true } })
+    if (!user) return USER_NOT_FOUND()
+    if (user.status !== 'invited') return NOT_INVITED()
+    const made = await createLink(tx, { userId, kind: 'invite', createdById: session.userId })
+    const expiresAt = made.expiresAt.toISOString()
+    await writeAuditTx(tx, await userAuditEntry(request, session, {
+      action: 'user.invite_resent', targetId: userId, after: { expiresAt, cancelledLinks: made.cancelledLinks },
+    }))
+    return privateJson({ id: userId, link: made.link, expiresAt, localhostWarning: made.localhostWarning })
+  })
+}
+
+/**
+ * POST /api/users/[id]/invite/cancel: removes an invited account that never signed in, with its
+ * links. One that owns projects (an admin acting as it made them) is refused: the users DELETE
+ * removes it with its projects' teardown.
+ */
+export async function cancelInvite(request: NextRequest, session: Session, userId: string): Promise<NextResponse> {
+  const refused = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { email: true, status: true, lastLoginAt: true } })
+    if (!user) return USER_NOT_FOUND()
+    if (user.status !== 'invited' || user.lastLoginAt) return NOT_INVITED()
+    if ((await tx.project.count({ where: { userId } })) > 0) return HAS_PROJECTS()
+    const { count } = await tx.user.deleteMany({ where: { id: userId, status: 'invited', lastLoginAt: null } })
+    if (count !== 1) return ACCOUNT_CHANGED()
+    await writeAuditTx(tx, await userAuditEntry(request, session, {
+      action: 'user.invite_cancelled', targetId: userId, before: { email: user.email, status: 'invited' },
+    }))
+    return null
+  })
+  if (refused) return refused
+  invalidatePrincipal(userId)
+  return NextResponse.json({ id: userId, cancelled: true })
 }
