@@ -307,6 +307,16 @@ class ReloadRecordsTheSet(_Loading):
         asyncio.run(main())
         self.assertIsNone(self.guard.loaded_hash)
 
+    def test_a_failed_load_counts_only_the_servers_it_tried_to_load(self):
+        # A disabled server is never part of the load (server_set_hash leaves it out),
+        # so the warning names only the enabled servers that did not load.
+        orch = self._orch()
+        orch._mcp_manager.down = {"srv-b"}
+        disabled = {**SRV_A, "id": "srv-c", "name": "C", "tools": [_tool("list_issues")], "enabled": False}
+        with self.assertLogs("orchestrator", "WARNING") as logs:
+            self._reload(orch, [disabled, SRV_B], "owner-b")
+        self.assertIn("MCP manifest reload failed: 1 user server(s) not loaded", "\n".join(logs.output))
+
     def test_a_failed_load_with_the_system_servers_down_leaves_no_mcp_tool(self):
         orch = self._orch()
         self._reload(orch, [SRV_A], "owner-a")

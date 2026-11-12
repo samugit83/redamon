@@ -467,8 +467,10 @@ class AgentOrchestrator:
                         force=True,
                     )
                 self.tool_executor.register_mcp_tools(system_tools or [], declared_tool_names=set())
+                # A disabled server was never part of this load, so it is not a failed one.
+                tried = sum(1 for s in user_servers if s.enabled)
                 logger.warning(
-                    f"MCP manifest reload failed: {len(user_servers)} user server(s) not loaded; "
+                    f"MCP manifest reload failed: {tried} user server(s) not loaded; "
                     f"no user MCP tool is registered, {len(system_tools or [])} system tool(s). "
                     "The next run loads the set again."
                 )
