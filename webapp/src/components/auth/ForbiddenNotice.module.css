@@ -1,0 +1,23 @@
+.notice {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.title {
+  margin: 0 0 var(--space-1);
+  font-weight: var(--font-semibold);
+}
+
+.body {
+  margin: 0;
+}
+
+.id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}

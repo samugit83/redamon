@@ -1,7 +1,10 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react'
+import { useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
+import type { PermissionId } from '@/lib/authz/permissions'
+import type { RbacFlags } from '@/lib/authz/flags'
+import { AuthContext } from './authContext'
 
 /** The instance's Root as the header's Root banner shows it (identity switch on). */
 export interface RootNotice {
@@ -30,13 +33,24 @@ export interface AuthUser {
   role: 'admin' | 'standard'
   /** Identity switch on: root, admin or member; absent when off. */
   accountType?: 'root' | 'admin' | 'member'
+  /**
+   * What the person may use now, in registry order (step 3.12): under act-as what the admin may use
+   * while acting. Null when the server could not resolve it; absent in the login answer.
+   */
+  capabilities?: PermissionId[] | null
+  /** The RBAC switch states (every account). */
+  flags?: RbacFlags
   rbac?: AdminNotices
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   user: AuthUser | null
   isLoading: boolean
+  /** @deprecated The account type is not a permission: use `useCan` (hooks/useCan.ts). */
   isAdmin: boolean
+  /** `user.capabilities` as a set; empty until read, and when the server could not resolve it. */
+  capabilities: ReadonlySet<PermissionId>
+  flags: Readonly<RbacFlags> | null
   /**
    * Why the session could not be read when the cause was not "signed out": a
    * 5xx (database down) or no answer. Null for a 401, which is a plain sign-out.
@@ -44,9 +58,12 @@ interface AuthContextValue {
   sessionError: ApiError | null
   login: (email: string, password: string) => Promise<{ error?: string }>
   logout: () => Promise<void>
+  /**
+   * Reads /api/auth/me again, after a change of what the person may use: an act-as switch changes
+   * the capabilities. A failed read keeps what was shown.
+   */
+  refresh: () => Promise<void>
 }
-
-const AuthContext = createContext<AuthContextValue | null>(null)
 
 /** Pages a signed-out browser may stay on: the middleware's public pages (`/invite`: step 2.9). */
 const SIGNED_OUT_PAGES = ['/login', '/invite']
@@ -87,6 +104,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setIsLoading(false))
   }, [])
 
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/me', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data?.id) setUser(data)
+    } catch {
+      // The next page load reads the session again; what is shown stays until then.
+    }
+  }, [])
+
   const login = useCallback(async (email: string, password: string) => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
@@ -100,8 +128,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const data = await res.json()
     setUser(data)
+    // The login answer carries the account, not what it may use.
+    await refresh()
     return {}
-  }, [])
+  }, [refresh])
 
   const logout = useCallback(async () => {
     await fetch('/api/auth/logout', { method: 'POST' })
@@ -109,15 +139,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = '/login'
   }, [])
 
+  const capabilities = useMemo(() => new Set<PermissionId>(user?.capabilities ?? []), [user])
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isLoading,
         isAdmin: user?.role === 'admin',
+        capabilities,
+        flags: user?.flags ?? null,
         sessionError,
         login,
         logout,
+        refresh,
       }}
     >
       {children}
