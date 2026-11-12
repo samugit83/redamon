@@ -23,6 +23,10 @@ import type { ChatItem, Message, FileDownloadItem, Phase, FireteamItem, Fireteam
 import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem } from '../AgentTimeline'
 import { findToolCardIndex, settleRunningTools } from './toolCardState'
 import { agentErrorText, isPersistFailedNotice, reopensPendingRequest, type AgentErrorPayload } from './agentErrorText'
+import {
+  fireteamUndoKey, permissionRefusalText, refusedAnswer, withFireteamWaveRestored, withItemRestored, withoutItem,
+  type AnswerUndo, type RefusedAnswer,
+} from './answerUndo'
 import { endsRateLimitWait, rateLimitWaitFromPayload, type RateLimitWait } from './rateLimitWait'
 import { stampLoopStatus, type LoopStatusView } from './loopStatus'
 import {
@@ -70,6 +74,7 @@ interface WebSocketHandlerDeps {
   isProcessingToolConfirmation: React.MutableRefObject<boolean>
   pendingApprovalToolId: React.MutableRefObject<string | null>
   pendingApprovalWaveId: React.MutableRefObject<string | null>
+  answerUndo: React.MutableRefObject<AnswerUndo>
   // Fired after events that may have written new nodes to the graph DB
   // (TOOL_COMPLETE, FIRETEAM_TOOL_COMPLETE, TASK_COMPLETE, FIRETEAM_COMPLETED).
   // Debounced internally so concurrent wave tools coalesce into one refetch.
@@ -91,7 +96,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
     awaitingApprovalRef, isProcessingApproval,
     awaitingQuestionRef, isProcessingQuestion,
     awaitingToolConfirmationRef, isProcessingToolConfirmation,
-    pendingApprovalToolId, pendingApprovalWaveId,
+    pendingApprovalToolId, pendingApprovalWaveId, answerUndo,
     onGraphMutation, setLoopStatus, setRateLimitWait,
   } = deps
 
@@ -114,6 +119,55 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
   useEffect(() => () => {
     if (graphRefetchTimerRef.current) clearTimeout(graphRefetchTimerRef.current)
   }, [])
+
+  /**
+   * The agent refused an answer for a missing permission and keeps waiting (answerUndo.ts): put
+   * back the card the answer hid, drop the optimistic decision line, and say which permission
+   * the answer needed. A Fireteam answer never paused the run, so its spinner stays as it is.
+   */
+  const restoreRefusedAnswer = useCallback((refused: RefusedAnswer) => {
+    const undo = answerUndo.current
+    let restore = (items: ChatItem[]) => items
+    if (refused.answer === 'approval' && undo.approval) {
+      const { request, messageId } = undo.approval
+      undo.approval = null
+      awaitingApprovalRef.current = true
+      isProcessingApproval.current = false
+      setApprovalRequest(request)
+      setAwaitingApproval(true)
+      restore = (items) => withoutItem(items, messageId)
+    } else if (refused.answer === 'tool_confirmation' && undo.toolConfirmation) {
+      const { request, item, toolId, waveId } = undo.toolConfirmation
+      undo.toolConfirmation = null
+      awaitingToolConfirmationRef.current = true
+      isProcessingToolConfirmation.current = false
+      pendingApprovalToolId.current = toolId
+      pendingApprovalWaveId.current = waveId
+      setToolConfirmationRequest(request)
+      setAwaitingToolConfirmation(true)
+      if (item) restore = (items) => withItemRestored(items, item)
+    } else if (refused.answer === 'fireteam_member_confirmation') {
+      const key = fireteamUndoKey(refused.waveId, refused.memberId)
+      const entry = undo.fireteam[key]
+      if (entry) {
+        delete undo.fireteam[key]
+        isProcessingToolConfirmation.current = false
+        restore = (items) => withFireteamWaveRestored(items, refused.waveId, refused.memberId, entry)
+      }
+    }
+    const notice: Message = {
+      type: 'message',
+      id: `error-${Date.now()}`,
+      role: 'assistant',
+      content: 'Your answer was not applied.',
+      error: permissionRefusalText(refused.permission),
+      timestamp: new Date(),
+    }
+    setChatItems(prev => [...restore(prev), notice])
+    if (refused.answer !== 'fireteam_member_confirmation') setIsLoading(false)
+  }, [answerUndo, awaitingApprovalRef, isProcessingApproval, setApprovalRequest, setAwaitingApproval,
+      awaitingToolConfirmationRef, isProcessingToolConfirmation, pendingApprovalToolId, pendingApprovalWaveId,
+      setToolConfirmationRequest, setAwaitingToolConfirmation, setChatItems, setIsLoading])
 
   const handleWebSocketMessage = useCallback((message: ServerMessage) => {
     if (endsRateLimitWait(message.type)) setRateLimitWait?.(null)
@@ -832,6 +886,11 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             error: agentErrorText(payload),
             timestamp: new Date(),
           } as Message])
+          break
+        }
+        const refused = refusedAnswer(payload)
+        if (refused) {
+          restoreRefusedAnswer(refused)
           break
         }
         if (reopensPendingRequest(payload)) {

@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import type { ApprovalRequestPayload, QuestionRequestPayload, ToolConfirmationRequestPayload } from '@/lib/websocket-types'
+import { emptyAnswerUndo, type AnswerUndo } from './answerUndo'
 
 export function useInteractionState() {
   // Approval state
@@ -26,6 +27,8 @@ export function useInteractionState() {
   const awaitingToolConfirmationRef = useRef(false)
   const pendingApprovalToolId = useRef<string | null>(null)
   const pendingApprovalWaveId = useRef<string | null>(null)
+  // What an answer hid, put back if the agent refuses it for a missing permission.
+  const answerUndo = useRef<AnswerUndo>(emptyAnswerUndo())
 
   function resetInteractionState() {
     setAwaitingApproval(false)
@@ -44,6 +47,7 @@ export function useInteractionState() {
     isProcessingToolConfirmation.current = false
     pendingApprovalToolId.current = null
     pendingApprovalWaveId.current = null
+    answerUndo.current = emptyAnswerUndo()
   }
 
   return {
@@ -77,6 +81,7 @@ export function useInteractionState() {
     awaitingToolConfirmationRef,
     pendingApprovalToolId,
     pendingApprovalWaveId,
+    answerUndo,
     // Reset
     resetInteractionState,
   }

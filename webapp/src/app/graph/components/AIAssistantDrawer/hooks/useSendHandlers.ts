@@ -5,6 +5,7 @@ import type { PlanWaveItem } from '../AgentTimeline'
 import { saveProjectSession } from '../sessionMemory'
 import { wrapNodeContextQuery } from '@/lib/agentQueryEnvelope'
 import { fetchJson, formatApiError, toApiError } from '@/lib/apiError'
+import { fireteamUndoKey, type AnswerUndo } from './answerUndo'
 
 interface ChatSkillSummary {
   id: string
@@ -41,6 +42,7 @@ interface SendHandlersDeps {
   // Interaction state
   awaitingApproval: boolean
   setAwaitingApproval: (v: boolean) => void
+  approvalRequest: ApprovalRequestPayload | null
   setApprovalRequest: (v: ApprovalRequestPayload | null) => void
   modificationText: string
   setModificationText: (v: string) => void
@@ -54,6 +56,7 @@ interface SendHandlersDeps {
   setSelectedOptions: (v: string[]) => void
   awaitingToolConfirmation: boolean
   setAwaitingToolConfirmation: (v: boolean) => void
+  toolConfirmationRequest: ToolConfirmationRequestPayload | null
   setToolConfirmationRequest: (v: ToolConfirmationRequestPayload | null) => void
   // Refs
   isProcessingApproval: React.MutableRefObject<boolean>
@@ -64,6 +67,7 @@ interface SendHandlersDeps {
   awaitingToolConfirmationRef: React.MutableRefObject<boolean>
   pendingApprovalToolId: React.MutableRefObject<string | null>
   pendingApprovalWaveId: React.MutableRefObject<string | null>
+  answerUndo: React.MutableRefObject<AnswerUndo>
   // WebSocket senders
   sendQuery: (q: string) => void
   sendGuidance: (m: string) => void
@@ -92,14 +96,14 @@ export function useSendHandlers(deps: SendHandlersDeps) {
     isLoading, setIsLoading, setIsStopped, setIsStopping,
     setChatItems, chatItems,
     activeSkill, setActiveSkill,
-    awaitingApproval, setAwaitingApproval, setApprovalRequest, modificationText, setModificationText,
+    awaitingApproval, setAwaitingApproval, approvalRequest, setApprovalRequest, modificationText, setModificationText,
     awaitingQuestion, setAwaitingQuestion, questionRequest, setQuestionRequest,
     answerText, setAnswerText, selectedOptions, setSelectedOptions,
-    awaitingToolConfirmation, setAwaitingToolConfirmation, setToolConfirmationRequest,
+    awaitingToolConfirmation, setAwaitingToolConfirmation, toolConfirmationRequest, setToolConfirmationRequest,
     isProcessingApproval, awaitingApprovalRef,
     isProcessingQuestion, awaitingQuestionRef,
     isProcessingToolConfirmation, awaitingToolConfirmationRef,
-    pendingApprovalToolId, pendingApprovalWaveId,
+    pendingApprovalToolId, pendingApprovalWaveId, answerUndo,
     sendQuery, sendGuidance, sendSkillInject, sendApproval, sendToolConfirmation, sendFireteamMemberConfirmation, sendAnswer, sendStop, sendResume, sendToolStop,
     conversationId, setConversationId, projectId, userId, sessionId,
     createConversation, saveMessage, updateConvMeta,
@@ -444,6 +448,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
         : 'Aborted phase transition',
       timestamp: new Date(),
     }
+    answerUndo.current.approval = approvalRequest ? { request: approvalRequest, messageId: decisionMessage.id } : null
     setChatItems(prev => [...prev, decisionMessage])
 
     try {
@@ -456,7 +461,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
     } finally {
       setTimeout(() => { isProcessingApproval.current = false }, 1000)
     }
-  }, [modificationText, sendApproval, awaitingApproval,
+  }, [modificationText, sendApproval, awaitingApproval, approvalRequest, answerUndo,
       setAwaitingApproval, setApprovalRequest, setIsLoading, setChatItems, setModificationText])
 
   const handleTimelineToolConfirmation = useCallback((itemId: string, decision: 'approve' | 'reject') => {
@@ -492,6 +497,21 @@ export function useSendHandlers(deps: SendHandlersDeps) {
           }
           break
         }
+      }
+    }
+
+    if (fireteamHit) {
+      const ft = chatItems[fireteamHit.fireteamIdx] as FireteamItem
+      answerUndo.current.fireteam[fireteamUndoKey(fireteamHit.fireteamId, fireteamHit.memberId)] = {
+        wave: ft.members[fireteamHit.memberIdx].planWaves[fireteamHit.waveIdx],
+        waveIdx: fireteamHit.waveIdx,
+      }
+    } else {
+      answerUndo.current.toolConfirmation = {
+        request: toolConfirmationRequest,
+        item: decision === 'reject' ? chatItems.find((it: ChatItem) => it.id === itemId) ?? null : null,
+        toolId: pendingApprovalToolId.current,
+        waveId: pendingApprovalWaveId.current,
       }
     }
 
@@ -594,7 +614,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
     } finally {
       setTimeout(() => { isProcessingToolConfirmation.current = false }, 1000)
     }
-  }, [chatItems, sendToolConfirmation, sendFireteamMemberConfirmation,
+  }, [chatItems, sendToolConfirmation, sendFireteamMemberConfirmation, toolConfirmationRequest, answerUndo,
       setAwaitingToolConfirmation, setToolConfirmationRequest, setIsLoading, setChatItems])
 
   const handleAnswer = useCallback(() => {
