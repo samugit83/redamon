@@ -1200,6 +1200,14 @@ class AgentState(TypedDict):
     _lats_reset_streak: Optional[int]
 
 
+# A request the agent raises starts with no answer. An answer stored before it (a stray one,
+# sent when nothing was pending) would hide the request from the drawer (the stream skips a
+# request that already has an answer) and let the next message apply it, unchecked. Merged
+# into the update of every node that raises a request of its kind.
+NO_APPROVAL_ANSWER = {"user_approval_response": None, "user_modification": None}
+NO_TOOL_CONFIRMATION_ANSWER = {"tool_confirmation_response": None, "tool_confirmation_modification": None}
+
+
 # =============================================================================
 # RESPONSE MODELS
 # =============================================================================

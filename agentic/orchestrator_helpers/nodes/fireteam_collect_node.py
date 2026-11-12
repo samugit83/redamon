@@ -18,7 +18,7 @@ from typing import Iterable, Optional
 
 from langchain_core.messages import SystemMessage
 
-from state import AgentState
+from state import NO_TOOL_CONFIRMATION_ANSWER, AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +297,7 @@ async def fireteam_collect_node(
         # Hand off to the existing tool confirmation machinery by setting the
         # same flags await_tool_confirmation uses.
         update["awaiting_tool_confirmation"] = True
+        update.update(NO_TOOL_CONFIRMATION_ANSWER)
         update["tool_confirmation_pending"] = pending
         update["_tool_confirmation_mode"] = "fireteam_escalation"
         logger.info(

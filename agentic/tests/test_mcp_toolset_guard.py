@@ -478,7 +478,8 @@ class RunAdmission(_Runs):
             await asyncio.wait_for(run_a, BOUND_S)
             run_b, _ = self._owner_run(orch, "owner-b", [SRV_B], _Graph(release=True))
             await asyncio.wait_for(run_b, BOUND_S)
-            graph = _Graph(orch, release=True, state={"awaiting_tool_confirmation": True})
+            graph = _Graph(orch, release=True, state={"awaiting_tool_confirmation": True,
+                                                      "tool_confirmation_pending": _PENDING})
             self._as_owner(orch, "owner-a", [SRV_A], graph)
             cb = _Callback()
             await asyncio.wait_for(orch.resume_after_tool_confirmation_with_streaming(

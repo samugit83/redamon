@@ -13,6 +13,8 @@ from state import (
     DeepThinkResult,
     ExecutionStep,
     LLMDecision,
+    NO_APPROVAL_ANSWER,
+    NO_TOOL_CONFIRMATION_ANSWER,
     PhaseHistoryEntry,
     PhaseTransitionRequest,
     TargetInfo,
@@ -2031,6 +2033,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 risks=phase_transition.risks if phase_transition else [],
             ).model_dump()
             updates["awaiting_user_approval"] = True
+            updates.update(NO_APPROVAL_ANSWER)
         else:
             logger.info(f"[{user_id}/{project_id}/{session_id}] Auto-approving phase transition (approval not required): {phase} → {to_phase}")
             updates["current_phase"] = to_phase
@@ -2229,6 +2232,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         action = decision.action
         if action == "use_tool" and is_dangerous_call(decision.tool_name, decision.tool_args):
             updates["awaiting_tool_confirmation"] = True
+            updates.update(NO_TOOL_CONFIRMATION_ANSWER)
             updates["tool_confirmation_pending"] = ToolConfirmationRequest(
                 mode="single",
                 tools=[{
@@ -2253,6 +2257,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             ]
             if dangerous:
                 updates["awaiting_tool_confirmation"] = True
+                updates.update(NO_TOOL_CONFIRMATION_ANSWER)
                 updates["tool_confirmation_pending"] = ToolConfirmationRequest(
                     mode="plan",
                     tools=dangerous,

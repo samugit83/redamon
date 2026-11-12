@@ -17,6 +17,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from state import (
+    NO_APPROVAL_ANSWER,
+    NO_TOOL_CONFIRMATION_ANSWER,
     AgentState,
     InvokeResponse,
     summarize_trace_for_response,
@@ -69,6 +71,16 @@ checkpointer = MemorySaver()
 set_checkpointer(checkpointer)
 
 logger = logging.getLogger(__name__)
+
+NO_PENDING_REQUEST_MESSAGE = (
+    "Nothing is waiting for this answer: the request was already answered, or a newer "
+    "message replaced it. Your answer was not applied."
+)
+
+# A new message never approves or confirms anything. Set to None in its graph input, so an
+# answer left in a checkpoint beside a request can never be applied by the next message
+# (initialize resumes on "answer + request"), with no permission check and no audit row.
+_NO_ANSWER = {**NO_APPROVAL_ANSWER, **NO_TOOL_CONFIRMATION_ANSWER}
 
 # Base URL for session manager (kali-sandbox HTTP server on port 8013)
 _SESSION_MANAGER_BASE = os.environ.get(
@@ -1032,6 +1044,29 @@ class AgentOrchestrator:
             await resend(kind, pending)
         return InvokeResponse(error=MCP_TOOLSET_BUSY_RESUME_MESSAGE)
 
+    async def _refuse_stray_answer(self, config, session_id: str, field: str, kind: str,
+                                   streaming_callback) -> Optional[InvokeResponse]:
+        """Refuse an answer whose request (`field` of the run's state) is no longer pending.
+
+        Another tab answered it, or a newer message dropped it. Stored, such an answer would
+        hide the next request of its kind (the stream skips a request that already has an
+        answer) and the next message would apply it, unchecked and unaudited. Called before
+        the resume registers its callback, so a live run of the session keeps its own, and
+        before on_admitted, so nothing is saved or audited. An empty session, or a read that
+        fails, is left to the resume's own read, which reports it.
+        """
+        try:
+            state = await self.graph.aget_state(config)
+        except Exception:
+            return None
+        values = state.values if state else None
+        if not values or values.get(field):
+            return None
+        logger.warning("[%s] %s answer refused: no pending request", session_id, kind)
+        await streaming_callback.on_error(
+            NO_PENDING_REQUEST_MESSAGE, recoverable=True, code="no_pending_request", answer=kind)
+        return InvokeResponse(error=NO_PENDING_REQUEST_MESSAGE)
+
     # =========================================================================
     # STREAMING PUBLIC API
     # =========================================================================
@@ -1135,7 +1170,8 @@ class AgentOrchestrator:
             config = create_config(user_id, project_id, session_id)
             input_data = clear_stale_streaming_state({
                 # A node-scoped question carries scanner text: fenced (B20).
-                "messages": [HumanMessage(content=fence_node_context(question))]
+                "messages": [HumanMessage(content=fence_node_context(question))],
+                **_NO_ANSWER,
             })
 
             # Stream graph execution
@@ -1192,6 +1228,12 @@ class AgentOrchestrator:
             return await self._report_llm_unavailable(streaming_callback, user_id, project_id, session_id)
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming approval: {decision}")
+
+        refusal = await self._refuse_stray_answer(
+            create_config(user_id, project_id, session_id), session_id,
+            "phase_transition_pending", "approval", streaming_callback)
+        if refusal is not None:
+            return refusal
 
         self._streaming_callbacks[session_id] = streaming_callback
         self._guidance_queues[session_id] = guidance_queue
@@ -1346,6 +1388,12 @@ class AgentOrchestrator:
             return await self._report_llm_unavailable(streaming_callback, user_id, project_id, session_id)
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming tool confirmation: {decision}")
+
+        refusal = await self._refuse_stray_answer(
+            create_config(user_id, project_id, session_id), session_id,
+            "tool_confirmation_pending", "tool_confirmation", streaming_callback)
+        if refusal is not None:
+            return refusal
 
         self._streaming_callbacks[session_id] = streaming_callback
         self._guidance_queues[session_id] = guidance_queue
