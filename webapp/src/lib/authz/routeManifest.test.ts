@@ -7,29 +7,42 @@
  * (from webapp/) brings the manifest back in line for review. The generator's
  * own rules are tested on synthetic sources below the tree checks.
  */
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import ts from 'typescript'
-import { beforeAll, describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test, vi } from 'vitest'
 import manifestJson from './routeManifest.json'
 import { GUARD_CLASSES, ROUTE_MANIFEST, type RouteManifestEntry } from './routeManifest'
+import { actsOnProject as canActsOnProject } from './can'
+import { PERMISSION_IDS } from './permissions'
 import {
   GUARD_PRECEDENCE,
+  actsOnProject,
   calledGuards,
   classify,
   exportedMethods,
   mergeManifest,
   parseManifestSource,
+  permissionCallProblems,
+  permissionGuardCalls,
   readMiddlewarePaths,
+  readPermissions,
   renderJson,
   renderManifestSource,
+  run,
   scanRoutes,
 } from '../../../scripts/gen-route-manifest.mjs'
+
+// can.ts is imported for its pure actsOnProject only: nothing here may reach a database or a session.
+vi.mock('@/lib/prisma', () => ({ default: {}, prisma: {} }))
+vi.mock('@/lib/session', () => ({ mayActAs: vi.fn() }))
 
 const WEBAPP = join(__dirname, '..', '..', '..')
 const FIX = 'cd webapp && node scripts/gen-route-manifest.mjs, then review the changes it prints'
 
-type Scanned = { path: string; file: string; methods: string[]; auto: string }
+type PermissionCall = { helper: string; permission: string | null; project: boolean; line: number }
+type Scanned = { path: string; file: string; methods: string[]; auto: string; permissionCalls: PermissionCall[]; problems: string[] }
 let scanned: Scanned[]
 let byPath: Map<string, RouteManifestEntry>
 
@@ -145,7 +158,35 @@ describe('the manifest and the route tree', () => {
     const jsonOnDisk = readFileSync(join(__dirname, 'routeManifest.json'), 'utf8')
     expect(jsonOnDisk === renderJson(ROUTE_MANIFEST), `routeManifest.json is not the generator's output: ${FIX}`).toBe(true)
   })
+
+  test('every permission guard call names a registered permission literally, and a project only for a permission that acts on one', () => {
+    const problems = scanned.flatMap(r => r.problems.map(p => `${r.file} ${p}`))
+    expect(problems, 'the manifest classes a route from these calls: fix each call').toEqual([])
+  })
+
+  test('a permission that acts on a project is checked with no project only where CAPABILITY_ONLY says why', () => {
+    const found = capabilityOnlyChecks(scanned)
+    expect(found.filter(k => !Object.hasOwn(CAPABILITY_ONLY, k)), 'pass the projectId, or list the call in CAPABILITY_ONLY with the reason').toEqual([])
+    expect(Object.keys(CAPABILITY_ONLY).filter(k => !found.includes(k)), 'stale CAPABILITY_ONLY entries').toEqual([])
+  })
 })
+
+/**
+ * `<path> <permission>`: a route that checks a permission acting on a project without naming the
+ * project, so can() checks the capability alone and no project access or level (can.ts), with why
+ * that is right. A missing `projectId` otherwise reads as a forgotten one: the manifest classes the
+ * call `session`, and the route checks no project.
+ */
+const CAPABILITY_ONLY: Record<string, string> = {}
+
+/** The `<path> <permission>` of each permission guard call that acts on a project and names none. */
+function capabilityOnlyChecks(routes: Pick<Scanned, 'path' | 'permissionCalls'>[]): string[] {
+  const permissions = readPermissions(WEBAPP)
+  const keys = routes.flatMap(r => r.permissionCalls
+    .filter(c => !c.project && c.permission !== null && Object.hasOwn(permissions, c.permission) && actsOnProject(permissions[c.permission]))
+    .map(c => `${r.path} ${c.permission}`))
+  return [...new Set(keys)]
+}
 
 /**
  * Every route that changes identity, permissions or instance settings accepts only same-origin
@@ -374,6 +415,128 @@ describe('the generator', () => {
     expect(classify('/api/x', calledGuards("export async function GET(r: Request) { return requirePermission(r, 'recon:read', { projectId }) }"), middleware))
       .toBe('project')
     expect(classify('/api/x', new Set(['requirePermission', 'isInternalRequest']), middleware)).toBe('session')
+  })
+
+  test('a permission guard is a project guard only when its permission acts on a project', () => {
+    const calls = (body: string) => [...calledGuards(body)]
+    const klass = (body: string) => classify('/api/x', calledGuards(body), middleware)
+    // can() ignores the id for a permission that acts on no project: such a call checks no project.
+    for (const p of ['plugins:use', 'self:api_keys', 'project:create', 'preset:write', 'users:read', 'platform:plugins']) {
+      expect([p, calls(`export async function POST(r: Request) { return requirePermission(r, '${p}', { projectId }) }`)]).toEqual([p, ['requirePermission']])
+      expect([p, klass(`export async function POST(r: Request) { return requirePermission(r, '${p}', { projectId }) }`)]).toEqual([p, 'session'])
+      expect([p, calls(`export const GET = withPermission('${p}', handler, { projectId: fromParams })`)]).toEqual([p, ['withPermission']])
+    }
+    // An instance permission that needs a level checks the project it is given (project:share, plugins:approve_overrides).
+    expect(calls("export async function POST(r: Request) { return requirePermission(r, 'project:share', { projectId }) }"))
+      .toEqual(['requirePermission({projectId})'])
+    expect(klass("export const POST = withPermission('plugins:approve_overrides', handler, { projectId: fromBody })")).toBe('project')
+    expect(calls("export const GET = withPermission(('recon:read' as const), handler, { projectId: fromParams })")).toEqual(['withPermission({projectId})'])
+    // A permission the scan cannot read, or one the registry does not hold, is never a project guard.
+    expect(calls('export async function POST(r: Request) { return requirePermission(r, permission, { projectId }) }')).toEqual(['requirePermission'])
+    expect(calls('export async function POST(r: Request) { return requirePermission(r, `recon:${verb}`, { projectId }) }')).toEqual(['requirePermission'])
+    expect(calls("export async function POST(r: Request) { return requirePermission(r, cond ? 'recon:read' : 'recon:scan', { projectId }) }")).toEqual(['requirePermission'])
+    expect(calls("export async function POST(r: Request) { return requirePermission(r, 'recon:nope', { projectId }) }")).toEqual(['requirePermission'])
+    expect(calls('export const GET = withPermission(PERMISSION, handler, { projectId: fromParams })')).toEqual(['withPermission'])
+  })
+
+  test('each permission guard call is read with its permission, its project option and its line', () => {
+    const src = [
+      'export async function GET(r: Request) {',
+      "  await requirePermission(r, 'recon:read', { projectId, fresh: true })",
+      "  return authz.requirePermission(r, 'users:read')",
+      '}',
+      "export const POST = withPermission('recon:scan', handler, { projectId: fromParams })",
+      'export const PUT = withPermission(permission, handler)',
+      "// requirePermission(r, 'plugins:use', { projectId })",
+    ].join('\n')
+    expect(permissionGuardCalls(src)).toEqual([
+      { helper: 'requirePermission', permission: 'recon:read', project: true, line: 2 },
+      { helper: 'requirePermission', permission: 'users:read', project: false, line: 3 },
+      { helper: 'withPermission', permission: 'recon:scan', project: true, line: 5 },
+      { helper: 'withPermission', permission: null, project: false, line: 6 },
+    ])
+  })
+
+  test('the generator reads the registry can() decides with, and the same project rule', () => {
+    const permissions = readPermissions(WEBAPP)
+    expect(Object.keys(permissions).sort()).toEqual([...PERMISSION_IDS].sort())
+    const differ = PERMISSION_IDS.filter(p => actsOnProject(permissions[p]) !== canActsOnProject(p))
+    expect(differ, 'gen-route-manifest.mjs actsOnProject must answer as can.ts actsOnProject').toEqual([])
+    expect(PERMISSION_IDS.filter(p => !canActsOnProject(p)).length).toBeGreaterThan(0)
+    expect(PERMISSION_IDS.filter(p => canActsOnProject(p)).length).toBeGreaterThan(0)
+  })
+
+  test('a permission guard call the manifest cannot class is a problem, named with its line', () => {
+    const problems = (body: string) => permissionCallProblems(permissionGuardCalls(body))
+    expect(problems("export async function POST(r: Request) {\n  return requirePermission(r, 'plugins:use', { projectId })\n}"))
+      .toEqual([expect.stringMatching(/^line 2: requirePermission\('plugins:use', \{projectId\}\): .*no project/)])
+    expect(problems("export const GET = withPermission('self:llm_providers', handler, { projectId: fromParams })"))
+      .toEqual([expect.stringMatching(/^line 1: withPermission\('self:llm_providers', \{projectId\}\)/)])
+    expect(problems('export async function POST(r: Request) { return requirePermission(r, permission, { projectId }) }'))
+      .toEqual([expect.stringMatching(/^line 1: requirePermission\(\) .*string literal/)])
+    expect(problems('export async function GET(r: Request) { return requirePermission(r, permission) }'))
+      .toEqual([expect.stringMatching(/^line 1: requirePermission\(\) .*string literal/)])
+    expect(problems("export async function GET(r: Request) { return requirePermission(r, 'recon:nope') }"))
+      .toEqual([expect.stringMatching(/^line 1: requirePermission\('recon:nope'\): .*registry/)])
+    // Calls the manifest classes as can() decides them: no problem (a project permission with no
+    // project is the tree test's CAPABILITY_ONLY rule, not the generator's).
+    expect(problems([
+      "export async function GET(r: Request) { return requirePermission(r, 'recon:read', { projectId }) }",
+      "export async function PUT(r: Request) { return requirePermission(r, 'roles:manage', { fresh: true }) }",
+      "export async function POST(r: Request) { return requirePermission(r, 'recon:scan') }",
+      "export const DELETE = withPermission('project:share', handler, { projectId: fromParams })",
+    ].join('\n'))).toEqual([])
+  })
+
+  test('a problem fails the run, with or without --check, and nothing is written', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'route-manifest-'))
+    const put = (file: string, text: string) => {
+      mkdirSync(dirname(join(dir, file)), { recursive: true })
+      writeFileSync(join(dir, file), text)
+    }
+    try {
+      put('src/middleware.ts', "const PUBLIC_PATHS = ['/api/health']\nconst TOKEN_AUTH_PREFIXES = ['/api/plugin-gateway/v1/']\n")
+      put('src/lib/authz/permissionCatalog.json', readFileSync(join(__dirname, 'permissionCatalog.json'), 'utf8'))
+      const manifestTs = [
+        'export const ROUTE_MANIFEST = [',
+        "  { path: '/api/x', guard: 'session', methods: ['POST'] },",
+        "  { path: '/api/y', guard: 'project', methods: ['GET'] },",
+        ']',
+        '',
+      ].join('\n')
+      put('src/lib/authz/routeManifest.ts', manifestTs)
+      put('src/lib/authz/routeManifest.json', renderJson(parseManifestSource(manifestTs)))
+      put('src/app/api/x/route.ts', "export async function POST(r: Request) { return requirePermission(r, 'plugins:use', { projectId: 'p' }) }\n")
+      put('src/app/api/y/route.ts', "export async function GET(r: Request) { return requirePermission(r, 'recon:read', { projectId: 'p' }) }\n")
+      const read = () => readFileSync(join(dir, 'src/lib/authz/routeManifest.ts'), 'utf8')
+      // Listed and up to date but for the call: --check fails on the problem alone.
+      const lines: string[] = []
+      expect(run(['--check'], dir, (l: string) => lines.push(l))).toBe(1)
+      expect(lines.join('\n')).toMatch(/problem\s+src\/app\/api\/x\/route\.ts line 1: requirePermission\('plugins:use', \{projectId\}\)/)
+      // A new route the write would add: the write refuses while the problem stands.
+      put('src/app/api/z/route.ts', "export async function GET(r: Request) { return requirePermission(r, 'users:read') }\n")
+      expect(run([], dir, () => {})).toBe(1)
+      expect(read()).toBe(manifestTs)
+      put('src/app/api/x/route.ts', "export async function POST(r: Request) { return requirePermission(r, 'plugins:use') }\n")
+      expect(run([], dir, () => {})).toBe(0)
+      expect(parseManifestSource(read())).toEqual([
+        { path: '/api/x', guard: 'session', methods: ['POST'] },
+        { path: '/api/y', guard: 'project', methods: ['GET'] },
+        { path: '/api/z', guard: 'session', methods: ['GET'] },
+      ])
+      expect(run(['--check'], dir, () => {})).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the CAPABILITY_ONLY rule finds each permission that acts on a project and is checked with none', () => {
+    const call = (permission: string | null, project: boolean) => ({ helper: 'requirePermission', permission, project, line: 1 })
+    const routes = [
+      { path: '/api/a', permissionCalls: [call('recon:read', false), call('recon:read', false), call('recon:scan', true), call('users:read', false)] },
+      { path: '/api/b', permissionCalls: [call('plugins:approve_overrides', false), call('plugins:use', false), call(null, false)] },
+    ]
+    expect(capabilityOnlyChecks(routes)).toEqual(['/api/a recon:read', '/api/b plugins:approve_overrides'])
   })
 
   test('public and plugin-token come from the path, whatever the handler calls', () => {

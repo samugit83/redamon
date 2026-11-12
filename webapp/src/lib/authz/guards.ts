@@ -15,8 +15,10 @@
  * coded 500 (`internalError`) when a read fails, never a pass.
  *
  * Name the project in the options whenever the route acts on one: the route manifest classes a
- * call with a literal `projectId` option as a project guard (scripts/gen-route-manifest.mjs). The
- * key decides, not its value: `{projectId: undefined}` is a project named but empty (400).
+ * call as a project guard when it passes the permission as a string literal, the permission acts
+ * on a project, and a literal options object has a `projectId` key (scripts/gen-route-manifest.mjs
+ * refuses a `projectId` given with any other permission: can() ignores it). The key decides, not
+ * its value: `{projectId: undefined}` is a project named but empty (400).
  */
 import { NextResponse } from 'next/server'
 import { getAuthzIdentity, type AuthzIdentity, type EffectiveUser } from '@/lib/session'

@@ -25,7 +25,8 @@ export const GUARD_CLASSES = [
   'scanner',
   /**
    * The caller must own the project (`guardProject`, `requireProjectAccess`, `requireProjectOwner`, ...,
-   * `requirePermission` / `withPermission` naming a `projectId`: the entry's permission too).
+   * `requirePermission` / `withPermission` naming a `projectId` with a permission that acts on a
+   * project, can.ts `actsOnProject`: the entry's permission too).
    */
   'project',
   /** The caller must own the conversation (`requireConversationAccess`, `...BySession`). */
@@ -44,7 +45,10 @@ export const GUARD_CLASSES = [
   'effective-user',
   /**
    * Reads the login session (`getSession`, `requireSession`), no ownership check; with
-   * `requirePermission` / `withPermission` and no project, the entry's permission as well.
+   * `requirePermission` / `withPermission` and no project, the entry's permission as well. The
+   * generator refuses a `projectId` given with a permission that acts on no project (can() ignores
+   * it), and `routeManifest.test.ts` one that acts on a project checked with no project, unless
+   * its CAPABILITY_ONLY list says why.
    */
   'session',
   /** Only the middleware's JWT check: the handler reads no session at all. */

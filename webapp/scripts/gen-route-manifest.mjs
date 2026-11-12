@@ -10,6 +10,9 @@
  * a string does not count (agent/emergency-stop-all names INTERNAL_API_KEY in a
  * comment and guards nothing). `public` and `plugin-token` come from the middleware's
  * PUBLIC_PATHS and TOKEN_AUTH_PREFIXES instead, since those routes carry no session.
+ * A requirePermission / withPermission call is a project guard only when can() checks the
+ * project it names, which depends on its permission: the generator reads the literal in the
+ * registry, and a call it cannot class that way fails the run (permissionCallProblems).
  *
  * The manifest is reviewed and kept by hand. On a run the generator keeps every
  * listed entry's fields, refreshes its methods, re-derives the class of an entry
@@ -59,16 +62,19 @@ export const GUARD_HELPERS = {
   requireSession: 'session',
   isScannerRequest: 'scanner',
   isInternalRequest: 'internal',
-  // authz/guards.ts: the session, then can(). A call whose options object names `projectId`
-  // also checks the caller's access to that project (see calledGuards).
+  // authz/guards.ts: the session, then can(). A call that names `projectId` with a permission that
+  // acts on a project also checks the caller's access to that project (see calledGuards).
   requirePermission: 'session',
   withPermission: 'session',
   'requirePermission({projectId})': 'project',
   'withPermission({projectId})': 'project',
 }
 
-/** Permission guards and the index of their options argument. */
-const PERMISSION_GUARD_OPTIONS = { requirePermission: 2, withPermission: 2 }
+/** Permission guards: the index of their permission argument and of their options argument. */
+const PERMISSION_GUARD_ARGS = {
+  requirePermission: { permission: 1, options: 2 },
+  withPermission: { permission: 0, options: 2 },
+}
 
 export const GUARD_PRECEDENCE = [
   'public',
@@ -89,38 +95,124 @@ export const GUARD_PRECEDENCE = [
 const WEBAPP = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MANIFEST_TS = join('src', 'lib', 'authz', 'routeManifest.ts')
 const MANIFEST_JSON = join('src', 'lib', 'authz', 'routeManifest.json')
+// The JSON copy of permissions.ts that builtinSets.test.ts keeps equal to it: an .mjs cannot import the registry.
+const PERMISSION_CATALOG = join('src', 'lib', 'authz', 'permissionCatalog.json')
 const API_DIR = join('src', 'app', 'api')
 
 function parse(file, source) {
   return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
 }
 
-/** Whether a permission guard call passes a literal options object with a `projectId` key. */
-function namesProject(name, call) {
-  const options = call.arguments[PERMISSION_GUARD_OPTIONS[name]]
+/** The permission registry: id -> its entry (`scope`, `level`, ...). */
+export function readPermissions(webappDir = WEBAPP) {
+  return JSON.parse(readFileSync(join(webappDir, PERMISSION_CATALOG), 'utf8')).permissions
+}
+
+let defaultPermissions = null
+const registry = () => (defaultPermissions ??= readPermissions())
+
+/**
+ * can.ts `actsOnProject`, on a registry entry: whether can() checks the project a call names.
+ * For any other permission it ignores the id, so the call checks no project.
+ */
+export function actsOnProject(meta) {
+  return meta.scope === 'project' || meta.level !== null
+}
+
+function callName(call) {
+  const callee = call.expression
+  return ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : null
+}
+
+/** A string literal argument, through `as const` and parentheses; null for anything else. */
+function stringLiteral(node) {
+  while (node && (ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node))) {
+    node = node.expression
+  }
+  return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : null
+}
+
+/** Whether the options argument is an object literal with a `projectId` key. */
+function namesProject(options) {
   if (!options || !ts.isObjectLiteralExpression(options)) return false
   return options.properties.some(p =>
     (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p))
     && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'projectId')
 }
 
-/**
- * The guard helpers the source calls, as `f(...)` or `x.f(...)`, anywhere in the file. A
- * permission guard that names the project counts as `name({projectId})`.
- */
-export function calledGuards(source) {
-  const found = new Set()
+function permissionCall(sf, name, call) {
+  const args = PERMISSION_GUARD_ARGS[name]
+  return {
+    helper: name,
+    permission: stringLiteral(call.arguments[args.permission]),
+    project: namesProject(call.arguments[args.options]),
+    line: sf.getLineAndCharacterOfPosition(call.getStart(sf)).line + 1,
+  }
+}
+
+/** Whether can() checks the project this permission guard call names. */
+function checksProject(call, permissions) {
+  return call.project && call.permission !== null && Object.hasOwn(permissions, call.permission)
+    && actsOnProject(permissions[call.permission])
+}
+
+function visitCalls(source, onCall) {
+  const sf = parse('route.ts', source)
   const visit = node => {
     if (ts.isCallExpression(node)) {
-      const callee = node.expression
-      const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : null
-      if (name && Object.hasOwn(GUARD_HELPERS, name)) {
-        found.add(Object.hasOwn(PERMISSION_GUARD_OPTIONS, name) && namesProject(name, node) ? `${name}({projectId})` : name)
-      }
+      const name = callName(node)
+      if (name && Object.hasOwn(GUARD_HELPERS, name)) onCall(name, node, sf)
     }
     ts.forEachChild(node, visit)
   }
-  visit(parse('route.ts', source))
+  visit(sf)
+}
+
+/**
+ * Each requirePermission / withPermission call of the source, in order: `{helper, permission,
+ * project, line}`, `permission` being the string literal it passes (null when it passes anything
+ * else) and `project` whether its options object literal has a `projectId` key.
+ */
+export function permissionGuardCalls(source) {
+  const calls = []
+  visitCalls(source, (name, node, sf) => {
+    if (Object.hasOwn(PERMISSION_GUARD_ARGS, name)) calls.push(permissionCall(sf, name, node))
+  })
+  return calls
+}
+
+/**
+ * The permission guard calls the manifest cannot class as can() decides them, one line each: a
+ * permission that is not a string literal (the class depends on it), one the registry does not
+ * hold, and a `projectId` given with a permission that acts on no project (can() ignores the id,
+ * so a `project` class would claim a check the route does not make).
+ */
+export function permissionCallProblems(calls, permissions = registry()) {
+  const problems = []
+  for (const c of calls) {
+    const at = `line ${c.line}: ${c.helper}`
+    if (c.permission === null) {
+      problems.push(`${at}() takes its permission as a string literal, which the manifest reads to class the route`)
+    } else if (!Object.hasOwn(permissions, c.permission)) {
+      problems.push(`${at}('${c.permission}'): not in the permission registry (permissions.ts)`)
+    } else if (c.project && !actsOnProject(permissions[c.permission])) {
+      problems.push(`${at}('${c.permission}', {projectId}): the permission acts on no project, so can() ignores the id and the route checks no project; drop projectId, or check the project with a permission that acts on one`)
+    }
+  }
+  return problems
+}
+
+/**
+ * The guard helpers the source calls, as `f(...)` or `x.f(...)`, anywhere in the file. A
+ * permission guard counts as `name({projectId})` only when can() checks the project it names: a
+ * `projectId` key with a literal permission that acts on a project.
+ */
+export function calledGuards(source, permissions = registry()) {
+  const found = new Set()
+  visitCalls(source, (name, node, sf) => {
+    const project = Object.hasOwn(PERMISSION_GUARD_ARGS, name) && checksProject(permissionCall(sf, name, node), permissions)
+    found.add(project ? `${name}({projectId})` : name)
+  })
   return found
 }
 
@@ -185,19 +277,26 @@ function byPath(a, b) {
   return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
 }
 
-/** Every route file: `{path, file, methods, auto}`, `auto` being the class its calls give. */
+/**
+ * Every route file: `{path, file, methods, auto, permissionCalls, problems}`, `auto` being the
+ * class its calls give and `problems` the permissionCallProblems lines of its permission guards.
+ */
 export function scanRoutes(webappDir = WEBAPP) {
   const middleware = readMiddlewarePaths(webappDir)
+  const permissions = readPermissions(webappDir)
   const appDir = join(webappDir, 'src', 'app')
   return routeFiles(join(webappDir, API_DIR))
     .map(full => {
       const source = readFileSync(full, 'utf8')
       const path = '/' + relative(appDir, dirname(full)).split(sep).join('/')
+      const permissionCalls = permissionGuardCalls(source)
       return {
         path,
         file: relative(webappDir, full).split(sep).join('/'),
         methods: exportedMethods(source),
-        auto: classify(path, calledGuards(source), middleware),
+        auto: classify(path, calledGuards(source, permissions), middleware),
+        permissionCalls,
+        problems: permissionCallProblems(permissionCalls, permissions),
       }
     })
     .sort(byPath)
@@ -314,33 +413,45 @@ export function renderJson(entries) {
   return `[\n${entries.map(e => `  ${JSON.stringify(ordered(e))}`).join(',\n')}\n]\n`
 }
 
-function main(argv) {
+/**
+ * The command line, on the webapp at `webappDir`; answers the exit code. A permission guard call
+ * the manifest cannot class fails both modes and nothing is written: the class it would write
+ * could claim a check the route does not make.
+ */
+export function run(argv, webappDir = WEBAPP, log = console.log) {
   const check = argv.includes('--check')
-  const tsFile = join(WEBAPP, MANIFEST_TS)
-  const jsonFile = join(WEBAPP, MANIFEST_JSON)
+  const tsFile = join(webappDir, MANIFEST_TS)
+  const jsonFile = join(webappDir, MANIFEST_JSON)
+  const routes = scanRoutes(webappDir)
+  const problems = routes.flatMap(r => r.problems.map(p => `problem  ${r.file} ${p}`))
+  if (problems.length) {
+    for (const line of problems) log(line)
+    log('Fix these permission guard calls first: the manifest classes the route from them. Nothing was written.')
+    return 1
+  }
   const source = readFileSync(tsFile, 'utf8')
-  const { entries, changes } = mergeManifest(parseManifestSource(source), scanRoutes(WEBAPP))
+  const { entries, changes } = mergeManifest(parseManifestSource(source), routes)
   const nextTs = renderManifestSource(source, entries)
   const nextJson = renderJson(entries)
   const jsonStale = !existsSync(jsonFile) || readFileSync(jsonFile, 'utf8') !== nextJson
-  for (const line of changes) console.log(line)
+  for (const line of changes) log(line)
   if (check) {
-    if (jsonStale) console.log(`stale    ${MANIFEST_JSON} (it must equal ${MANIFEST_TS})`)
+    if (jsonStale) log(`stale    ${MANIFEST_JSON} (it must equal ${MANIFEST_TS})`)
     if (changes.length || jsonStale) {
-      console.log('The route manifest is out of date: run `node scripts/gen-route-manifest.mjs` from webapp/ and review it.')
+      log('The route manifest is out of date: run `node scripts/gen-route-manifest.mjs` from webapp/ and review it.')
       return 1
     }
-    console.log(`route manifest up to date: ${entries.length} routes`)
+    log(`route manifest up to date: ${entries.length} routes`)
     return 0
   }
   if (nextTs !== source) writeFileSync(tsFile, nextTs)
   if (jsonStale) writeFileSync(jsonFile, nextJson)
   const loginOnly = entries.filter(e => e.guard === 'login-only').length
-  console.log(`route manifest: ${entries.length} routes, ${changes.length} change(s), ${loginOnly} login-only`)
-  if (changes.length) console.log('Review the changes: give a class its calls do not give a `note` saying why.')
+  log(`route manifest: ${entries.length} routes, ${changes.length} change(s), ${loginOnly} login-only`)
+  if (changes.length) log('Review the changes: give a class its calls do not give a `note` saying why.')
   return 0
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = main(process.argv.slice(2))
+  process.exitCode = run(process.argv.slice(2))
 }
