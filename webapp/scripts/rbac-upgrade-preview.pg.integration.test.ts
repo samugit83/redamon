@@ -1,12 +1,14 @@
 /**
  * The upgrade preview of the RBAC hardening (HD-31, DV-32) on a real Postgres: its one
  * transaction is read-only, it leaves every row as it found it, it reads no secret, it runs
- * on the 7.7.x schema (no `users.legacy_grants`), and the grants it lists are the ones the
- * legacy-grants backfill then writes.
+ * on the 7.7.x schema (no `users.legacy_grants`, no `instance_settings`), the grants it lists
+ * are the ones the legacy-grants backfill then writes, and it names Root from the instance
+ * settings row (step 2.13).
  *
  * Needs a DISPOSABLE database holding the webapp schema (`prisma db push`); it empties
- * `audit_log`, `user_settings` and `users` (CASCADE) between tests and drops and re-adds
- * `users.legacy_grants` in one of them. Run:
+ * `audit_log`, `user_settings`, `users` (CASCADE) and `instance_settings` between tests, drops and
+ * re-adds `users.legacy_grants` in one of them and renames `instance_settings` away and back in
+ * another. Run:
  *   PLUGINS_PG_TEST_URL=postgresql://... npx vitest run --no-file-parallelism scripts/rbac-upgrade-preview.pg.integration.test.ts
  * Without the variable it is skipped. It refuses a database that already holds users
  * unless that database carries the pg-integration marker table.
@@ -37,6 +39,7 @@ async function snapshot() {
     `SELECT 'u' || row_to_json(u)::text AS t FROM users u
      UNION ALL SELECT 's' || row_to_json(s)::text FROM user_settings s
      UNION ALL SELECT 'a' || row_to_json(a)::text FROM audit_log a
+     UNION ALL SELECT 'i' || row_to_json(i)::text FROM instance_settings i
      ORDER BY 1`,
   )
 }
@@ -55,7 +58,7 @@ describe.skipIf(!URL)('the RBAC upgrade preview on a real Postgres (PLUGINS_PG_T
 
   beforeEach(async () => {
     await db.$executeRawUnsafe(`ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_grants text[] NOT NULL DEFAULT '{}'`)
-    await db.$executeRawUnsafe('TRUNCATE audit_log, user_settings, users CASCADE')
+    await db.$executeRawUnsafe('TRUNCATE audit_log, user_settings, users, instance_settings CASCADE')
     await user('admin', 'admin', PW)
     await user('alice', 'standard', PW)
     await user('tunnel', 'standard', PW)
@@ -78,6 +81,9 @@ describe.skipIf(!URL)('the RBAC upgrade preview on a real Postgres (PLUGINS_PG_T
 
   afterAll(async () => {
     await db?.$executeRawUnsafe(`ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_grants text[] NOT NULL DEFAULT '{}'`)
+    await db?.$executeRawUnsafe(
+      `DO $$ BEGIN IF to_regclass('instance_settings_hidden') IS NOT NULL THEN ALTER TABLE instance_settings_hidden RENAME TO instance_settings; END IF; END $$`,
+    )
     await db?.$disconnect()
   })
 
@@ -95,6 +101,7 @@ describe.skipIf(!URL)('the RBAC upgrade preview on a real Postgres (PLUGINS_PG_T
   })
 
   test('leaves every row as it found it', async () => {
+    await db.$executeRawUnsafe(`INSERT INTO instance_settings (id, root_user_id, updated_at) VALUES ('instance', 'admin', now())`)
     const before = await snapshot()
     await previewRbacUpgrade(db, { env: ENV, templateFiles: 0 })
     expect(await snapshot()).toEqual(before)
@@ -128,5 +135,25 @@ describe.skipIf(!URL)('the RBAC upgrade preview on a real Postgres (PLUGINS_PG_T
     const again = await previewRbacUpgrade(db, { env: ENV, templateFiles: 0 })
     expect(again.applied).toBe(true)
     expect(again.review).toBe(false)
+  })
+
+  test('names Root and the instance settings sources, from instance_settings and without that table', async () => {
+    const before = await previewRbacUpgrade(db, { env: ENV, templateFiles: 0 })
+    expect(before.text).toMatch(/Root: admin@example\.invalid, the only admin with a password, chosen automatically/)
+    expect(before.text).toMatch(/tunnel\s+tunnel@example\.invalid \(member\), saved \d{4}-\d{2}-\d{2}/)
+    expect(before.text).toMatch(/TrafficMind, egress, SCA\s+admin@example\.invalid, saved/)
+
+    await db.$executeRawUnsafe(
+      `INSERT INTO instance_settings (id, root_user_id, root_confirmed_at, updated_at) VALUES ('instance', 'admin', now(), now())`,
+    )
+    expect((await previewRbacUpgrade(db, { env: ENV, templateFiles: 0 })).text).toMatch(/Root: admin@example\.invalid \(confirmed\)\./)
+
+    await db.$executeRawUnsafe('ALTER TABLE instance_settings RENAME TO instance_settings_hidden')
+    try {
+      const old = await previewRbacUpgrade(db, { env: ENV, templateFiles: 0 })
+      expect(old.text).toMatch(/Root: admin@example\.invalid, the only admin with a password/)
+    } finally {
+      await db.$executeRawUnsafe('ALTER TABLE instance_settings_hidden RENAME TO instance_settings')
+    }
   })
 })

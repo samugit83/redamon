@@ -16,6 +16,8 @@
  *
  * The legacy grants are computed with the backfill's own planLegacyGrants, on the same
  * rows, so the list is what scripts/backfill-rbac-legacy-grants.mjs writes at the next boot.
+ * Root and the instance settings sources follow the rules of backfill-rbac-root.mjs and
+ * backfill-rbac-instance-settings.mjs the same way (their candidate orders, imported).
  *
  * Each SECTIONS and MEMBER_CHANGES entry names the step whose behaviour it reports: a step
  * that changes that behaviour updates its entry.
@@ -32,12 +34,15 @@ import { pathToFileURL } from 'node:url'
 // Fed on stdin the module has no file of its own: its relative imports would resolve from
 // the working directory (/app), not from scripts/.
 const FROM_STDIN = process.argv[1] === '-'
+const sibling = (name) => (FROM_STDIN ? pathToFileURL(path.join(process.cwd(), 'scripts', name)).href : `./${name}`)
 const {
   CUTOFF_ACTION, LEGACY_GRANTS, MARKER_ACTION, REMOVE_ACTION,
   existedAtCutoff, planLegacyGrants, recordedGrants, removedGrantKeys,
-} = await import(FROM_STDIN
-  ? pathToFileURL(path.join(process.cwd(), 'scripts', 'backfill-rbac-legacy-grants.mjs')).href
-  : './backfill-rbac-legacy-grants.mjs')
+} = await import(sibling('backfill-rbac-legacy-grants.mjs'))
+const { CANDIDATE_ORDER, SINGLETON_ID, chooseRoot } = await import(sibling('backfill-rbac-root.mjs'))
+const {
+  CAPTURE_ROW_ORDER, MARKER_ACTION: INSTANCE_MARKER_ACTION, TUNNEL_ROW_ORDER, identitySwitchOn,
+} = await import(sibling('backfill-rbac-instance-settings.mjs'))
 
 export const READ_ONLY_SQL = 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'
 export const NOTHING_CHANGES_EXIT = 0
@@ -46,7 +51,11 @@ export const REVIEW_EXIT = 10
 /** Columns a release adds that the preview reads; absent on the schema it upgrades from. */
 export const NEW_COLUMNS = [
   { table: 'users', column: 'legacy_grants', step: '1.8' },
+  { table: 'instance_settings', column: 'root_user_id', step: '2.1' },
+  { table: 'instance_settings', column: 'root_confirmed_at', step: '2.1' },
+  { table: 'instance_settings', column: 'updated_by_id', step: '2.1' },
 ]
+const INSTANCE_COLUMNS = NEW_COLUMNS.filter((c) => c.table === 'instance_settings').map((c) => `${c.table}.${c.column}`)
 
 const GRANT_LABELS = { kali_terminal: 'Kali terminal', shell_sessions: 'all shell sessions', tunnels: 'tunnel settings' }
 
@@ -66,6 +75,7 @@ export async function readUpgradeState(prisma) {
       ...wanted,
     )).map((r) => `${r.table_name}.${r.column_name}`))
     const hasLegacyGrants = present.has('users.legacy_grants')
+    const hasInstanceSettings = INSTANCE_COLUMNS.every((c) => present.has(c))
 
     const users = (await tx.$queryRawUnsafe(
       `SELECT id, email, role, password <> '' AS has_password, created_at${hasLegacyGrants ? ', legacy_grants' : ''}
@@ -102,11 +112,23 @@ export async function readUpgradeState(prisma) {
 
     const audit = (await tx.$queryRawUnsafe(
       `SELECT action, target_id, after, created_at FROM audit_log
-        WHERE action IN ($1, $2, $3) ORDER BY created_at, id`,
-      CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION,
+        WHERE action IN ($1, $2, $3, $4) ORDER BY created_at, id`,
+      CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, INSTANCE_MARKER_ACTION,
     )).map((a) => ({ action: a.action, targetId: a.target_id, after: a.after, createdAt: a.created_at }))
 
-    return { now, columns: [...present].sort(), users, settings, mcpServers, audit }
+    // The Root and whether an admin saved the row; never the tunnel or capture values.
+    const [row] = hasInstanceSettings
+      ? await tx.$queryRawUnsafe(
+        `SELECT root_user_id, root_confirmed_at, updated_by_id IS NOT NULL AS admin_saved
+           FROM instance_settings WHERE id = $1`,
+        SINGLETON_ID,
+      )
+      : []
+    const instance = row
+      ? { rootUserId: row.root_user_id ?? null, rootConfirmedAt: row.root_confirmed_at ?? null, adminSaved: row.admin_saved === true }
+      : null
+
+    return { now, columns: [...present].sort(), users, settings, mcpServers, audit, instance }
   }, { timeout: 60_000, maxWait: 10_000 })
 }
 
@@ -124,6 +146,28 @@ const pad = (rows) => {
   const width = Math.max(...rows.map((r) => r[0].length))
   return rows.map(([a, b]) => `    ${a.padEnd(width)}  ${b}`.trimEnd())
 }
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** Rows in the order of a Prisma `orderBy` list (the backfills' own), over non-null fields. */
+function orderedBy(rows, order) {
+  const keys = order.flatMap((o) => Object.entries(o))
+  const value = (v) => (v instanceof Date ? v.getTime() : typeof v === 'boolean' ? Number(v) : v)
+  return [...rows].sort((a, b) => {
+    for (const [k, dir] of keys) {
+      const x = value(a[k])
+      const y = value(b[k])
+      const c = x < y ? -1 : x > y ? 1 : 0
+      if (c !== 0) return dir === 'desc' ? -c : c
+    }
+    return 0
+  })
+}
+
+// redamon.sh's _confirm_root runs only with the identity switch on.
+const ROOT_WAITS = [
+  '    Nothing changes while RBAC_IDENTITY_ENABLED is off. With it on, ./redamon.sh update confirms Root;',
+  '    ./redamon.sh set-root <email> picks another admin.',
+]
 
 /** What the backfill does on these rows: nothing (`done`), or each account's grants after it. */
 function legacyGrantsPlan(state) {
@@ -145,7 +189,9 @@ function legacyGrantsPlan(state) {
 /**
  * The report's sections, in print order. `render(ctx)` returns null when the section has
  * nothing to say, else `{affects, lines}`: `affects` is true when what it reports changes
- * something for an account or needs the operator, which makes the update ask.
+ * something for an account or needs the operator, which makes the update ask. An `always`
+ * section is printed even when nothing changes for the accounts (§14.12 "who will be Root,
+ * and why"; "which instance settings values will be copied, and from where").
  */
 export const SECTIONS = [
   {
@@ -157,6 +203,48 @@ export const SECTIONS = [
       return {
         affects: false,
         lines: [`  Accounts: ${plural(admins, 'admin', 'admins')}, ${plural(members, 'member who can sign in', 'members who can sign in')}, ${passwordless} without a password.`],
+      }
+    },
+  },
+  {
+    // Root acts only with the identity switch on, and the update confirms it after the
+    // restart, so it never makes the update ask here.
+    id: 'root', step: '2.5', always: true,
+    render: ({ state, env, email }) => {
+      const switchOn = identitySwitchOn(env)
+      const recorded = state.instance?.rootUserId ?? null
+      const current = recorded ? state.users.find((u) => u.id === recorded) : null
+      if (current && isAdmin(current)) {
+        if (state.instance.rootConfirmedAt) return { affects: false, lines: [`  Root: ${email(current.id)} (confirmed).`] }
+        return {
+          affects: false,
+          lines: [
+            `  Root: ${email(current.id)}, chosen automatically, not confirmed yet.`,
+            ...(switchOn ? ['    After the restart this update confirms it, or asks which admin to confirm.'] : ROOT_WAITS),
+          ],
+        }
+      }
+      const candidates = orderedBy(state.users.filter((u) => isAdmin(u) && canSignIn(u)), CANDIDATE_ORDER)
+      const choice = chooseRoot(candidates)
+      const stale = recorded ? [`  The Root recorded (account ${clean(recorded)}) is no longer an admin: Root is chosen again.`] : []
+      if (!choice) {
+        return {
+          affects: false,
+          lines: [...stale, '  Root: none yet (no admin has a password); ./redamon.sh create-admin makes one, and it becomes Root.'],
+        }
+      }
+      const why = choice.rule === 'only_admin' ? 'the only admin with a password' : `the oldest of ${choice.candidateCount} admins with a password`
+      const next = choice.rule === 'only_admin'
+        ? ['    After the restart this update confirms it.']
+        : ['    After the restart this update asks which admin to confirm (a non-interactive one: the admin ADMIN_EMAIL names).']
+      return {
+        affects: false,
+        lines: [
+          ...stale,
+          `  Root: ${email(choice.userId)}, ${why}, chosen automatically at the next start.`,
+          ...(choice.rule === 'only_admin' ? [] : pad(candidates.map((u) => [email(u.id), u.id === choice.userId ? '<- proposed' : '']))),
+          ...(switchOn ? next : ROOT_WAITS),
+        ],
       }
     },
   },
@@ -198,6 +286,46 @@ export const SECTIONS = [
               + `${s.tunnelsEnabled ? 'enabled' : 'disabled'}  saved ${day(s.updatedAt)}${i === 0 ? "  <- the agent's tunnel" : ''}`,
           ])),
           '    After the upgrade only admins and members keeping the tunnel grant change it.',
+        ],
+      }
+    },
+  },
+  {
+    // Step 2.4's backfill copies the tunnel and the TrafficMind capture, egress and SCA
+    // settings from these rows; their values are never read here.
+    id: 'instance_settings', step: '2.4', always: true,
+    render: ({ state, env, email, role }) => {
+      const switchOn = identitySwitchOn(env)
+      const marker = state.audit.filter((a) => a.action === INSTANCE_MARKER_ACTION).at(-1)
+      const filledWithSwitchOn = isPlainObject(marker?.after) && marker.after.identity === true
+      if (switchOn && state.instance && (filledWithSwitchOn || state.instance.adminSaved)) {
+        return {
+          affects: false,
+          lines: [
+            '  Instance settings (tunnel, TrafficMind capture and egress, SCA ignore list): in force; admins change them in Global Settings.',
+            "    The accounts' settings are not copied again.",
+          ],
+        }
+      }
+      const tunnels = orderedBy(state.settings.filter((s) => s.hasNgrok || s.hasChiselUrl), TUNNEL_ROW_ORDER)
+      const captures = orderedBy(state.settings.filter((s) => role(s.userId) === 'admin'), CAPTURE_ROW_ORDER)
+      const [tunnel] = tunnels
+      const [capture] = captures
+      return {
+        affects: false,
+        lines: [
+          "  Instance settings, copied at the next start from the accounts' settings (which stay):",
+          ...pad([
+            ['tunnel', tunnel
+              ? `${email(tunnel.userId)} (${role(tunnel.userId)}), saved ${day(tunnel.updatedAt)}${tunnels.length > 1 ? `; ${tunnels.length} accounts hold one` : ''}`
+              : 'none saved (off)'],
+            ['TrafficMind, egress, SCA', capture
+              ? `${email(capture.userId)}, saved ${day(capture.updatedAt)}${captures.length > 1 ? `, the latest of ${captures.length} admin rows` : ''}`
+              : 'none saved (the defaults)'],
+          ]),
+          switchOn
+            ? '    With RBAC_IDENTITY_ENABLED on this copy is the one in force; admins change it in Global Settings.'
+            : "    While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force; each start copies them again.",
         ],
       }
     },
@@ -307,29 +435,33 @@ export function buildReport(state, { env = {}, templateFiles = 0 } = {}) {
   const plan = legacyGrantsPlan(state)
   const grants = plan.accounts.filter((a) => a.grants.length > 0)
   const header = 'RBAC upgrade preview (read-only: nothing has been changed)'
+  const ctx = { state, env, templateFiles, grants, email, role, full: true }
+  const asSection = ({ s, out }) => ({ id: s.id, step: s.step, lines: out.lines })
+  const always = SECTIONS.filter((s) => s.always).map((s) => ({ s, out: s.render(ctx) })).filter((x) => x.out)
+  const alwaysLines = always.flatMap(({ out }) => ['', ...out.lines])
+  const alwaysAffects = always.some((x) => x.out.affects)
 
   if (plan.done) {
     const scanner = SECTIONS.find((s) => s.id === 'scanner_key').render({ env, full: false })
-    const lines = [header, `  The RBAC hardening is already in place (since ${day(plan.cutoff)}): nothing changes for existing accounts.`]
+    const lines = [header, `  The RBAC hardening is already in place (since ${day(plan.cutoff)}): nothing changes for existing accounts.`, ...alwaysLines]
     if (scanner) lines.push('', ...scanner.lines)
     return {
-      applied: true, review: Boolean(scanner?.affects), grants: [],
-      sections: scanner ? [{ id: 'scanner_key', step: '1.16', lines: scanner.lines }] : [],
+      applied: true, review: Boolean(scanner?.affects) || alwaysAffects, grants: [],
+      sections: [...always.map(asSection), ...(scanner ? [{ id: 'scanner_key', step: '1.16', lines: scanner.lines }] : [])],
       text: `${lines.join('\n')}\n`,
     }
   }
 
-  const ctx = { state, env, templateFiles, grants, email, role, full: true }
   const rendered = SECTIONS.map((s) => ({ s, out: s.render(ctx) })).filter((x) => x.out)
   const review = rendered.some((x) => x.out.affects)
   if (!review) {
     const reason = state.users.some(canSignIn) ? ' (every account that can sign in is an admin)' : ''
     return {
-      applied: false, review: false, grants, sections: [],
-      text: `${header}\n  Nothing changes for existing accounts${reason}.\n`,
+      applied: false, review: false, grants, sections: always.map(asSection),
+      text: `${[header, `  Nothing changes for existing accounts${reason}.`, ...alwaysLines].join('\n')}\n`,
     }
   }
-  const sections = rendered.map(({ s, out }) => ({ id: s.id, step: s.step, lines: out.lines }))
+  const sections = rendered.map(asSection)
   return {
     applied: false, review: true, grants, sections,
     text: `${[header, ...sections.flatMap((s) => ['', ...s.lines])].join('\n')}\n`,

@@ -20,6 +20,10 @@ import { setNowForTests } from '@/lib/plugins/clock'
 import {
   CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, backfillRbacLegacyGrants,
 } from './backfill-rbac-legacy-grants.mjs'
+import { CANDIDATE_ORDER, CANDIDATE_WHERE, chooseRoot } from './backfill-rbac-root.mjs'
+import {
+  CAPTURE_ROW_ORDER, MARKER_ACTION as INSTANCE_MARKER_ACTION, deriveInstanceValues,
+} from './backfill-rbac-instance-settings.mjs'
 import {
   MEMBER_CHANGES, NEW_COLUMNS, NOTHING_CHANGES_EXIT, READ_ONLY_SQL, REVIEW_EXIT, SECTIONS,
   buildReport, previewRbacUpgrade, readUpgradeState,
@@ -37,10 +41,13 @@ const SCANNER_SET = { SCANNER_API_KEY: 'a'.repeat(64) }
 
 let db: FakePrisma
 let t = T0
+// The instance settings row (step 2.1's table; the fake Prisma has no such model).
+let instanceRow: { rootUserId?: string | null; rootConfirmedAt?: Date | null; adminSaved?: boolean } | null = null
 
 beforeEach(() => {
   db = createFakePrisma()
   t = T0
+  instanceRow = null
   setNowForTests(() => new Date(t))
 })
 afterEach(() => setNowForTests(null))
@@ -66,8 +73,9 @@ const http = (id: string, auth?: Row) => ({ id, name: id, transport: 'sse', url:
  * A transaction over the fake's rows, answering the preview's SQL with the rows the SQL
  * selects. A statement naming a column the schema lacks fails as Postgres would.
  */
-function sqlDb(opts: { legacyColumn?: boolean } = {}) {
+function sqlDb(opts: { legacyColumn?: boolean; instanceTable?: boolean } = {}) {
   const legacyColumn = opts.legacyColumn ?? true
+  const instanceTable = opts.instanceTable ?? true
   const calls: string[] = []
   let transactions = 0
   const answer = (sql: string, params: unknown[]): Row[] => {
@@ -76,8 +84,18 @@ function sqlDb(opts: { legacyColumn?: boolean } = {}) {
     if (/information_schema\.columns/.test(sql)) {
       return NEW_COLUMNS
         .filter((c: { table: string; column: string }) => legacyColumn || `${c.table}.${c.column}` !== 'users.legacy_grants')
+        .filter((c: { table: string }) => instanceTable || c.table !== 'instance_settings')
         .filter((c: { table: string; column: string }) => params.includes(`${c.table}.${c.column}`))
         .map((c: { table: string; column: string }) => ({ table_name: c.table, column_name: c.column }))
+    }
+    if (/\binstance_settings\b/.test(sql)) {
+      if (!instanceTable) throw new Error('relation "instance_settings" does not exist')
+      if (!/FROM instance_settings WHERE id = \$1/.test(sql) || params[0] !== 'instance') throw new Error(`unexpected SQL: ${sql}`)
+      return instanceRow ? [{
+        root_user_id: instanceRow.rootUserId ?? null,
+        root_confirmed_at: instanceRow.rootConfirmedAt ?? null,
+        admin_saved: instanceRow.adminSaved === true,
+      }] : []
     }
     if (/jsonb_array_elements/.test(sql)) {
       return db.rows('userSettings').flatMap((s) => ((s.mcpServers as Row[]) ?? []).map((srv) => {
@@ -123,12 +141,15 @@ function sqlDb(opts: { legacyColumn?: boolean } = {}) {
   return { prisma, calls, transactions: () => transactions }
 }
 
-async function report(opts: { legacyColumn?: boolean; env?: Record<string, string | undefined>; templateFiles?: number } = {}) {
+async function report(opts: { legacyColumn?: boolean; instanceTable?: boolean; env?: Record<string, string | undefined>; templateFiles?: number } = {}) {
   const { prisma } = sqlDb(opts)
   return previewRbacUpgrade(prisma, { env: opts.env ?? SCANNER_SET, templateFiles: opts.templateFiles ?? 0 })
 }
 
 /** What the preview says each account holds after the backfill, by id. */
+/** A backfill's Prisma `orderBy` list (plain JS, typed loosely) as the fake's type. */
+const asOrderBy = (order: unknown) => order as Record<string, 'asc' | 'desc'>[]
+
 const predicted = (r: { grants: { id: string; grants: string[] }[] }) =>
   Object.fromEntries(r.grants.map((a) => [a.id, a.grants]))
 
@@ -186,7 +207,19 @@ describe('works when the new columns are absent (the 7.7.x schema)', () => {
 
   test('the column check is data-driven: each new column names the step that adds it', () => {
     expect(NEW_COLUMNS).toContainEqual({ table: 'users', column: 'legacy_grants', step: '1.8' })
+    for (const column of ['root_user_id', 'root_confirmed_at', 'updated_by_id']) {
+      expect(NEW_COLUMNS).toContainEqual({ table: 'instance_settings', column, step: '2.1' })
+    }
     for (const c of NEW_COLUMNS) expect(c.step).toMatch(/^\d+\.\d+$/)
+  })
+
+  test('no instance_settings table: no statement names it, and Root and the sources are still reported', async () => {
+    user('admin', { role: 'admin' })
+    settings('admin', { updatedAt: new Date('2026-04-01T09:00:00Z') })
+    user('alice')
+    const r = await report({ legacyColumn: false, instanceTable: false })
+    expect(r.text).toMatch(/Root: admin@e2e\.local, the only admin with a password/)
+    expect(r.text).toMatch(/TrafficMind, egress, SCA\s+admin@e2e\.local, saved 2026-04-01/)
   })
 })
 
@@ -280,14 +313,17 @@ describe('lists grants exactly as the backfill would', () => {
 })
 
 describe('the report', () => {
-  test('a single-operator install: one line, nothing to confirm', async () => {
+  test('a single-operator install: nothing changes, nothing to confirm; only who will be Root and where the instance settings come from', async () => {
     user('root', { role: 'admin' })
     settings('root', { mcpServers: [stdio('admin-tool')] })
     user('managed-admin', { role: 'admin', password: '' })
     const r = await report()
     expect(r.review).toBe(false)
-    expect(r.text.trim().split('\n')).toHaveLength(2)
-    expect(r.text).toMatch(/nothing changes for existing accounts/i)
+    const [header, verdict, ...rest] = r.text.trim().split('\n')
+    expect(header).toMatch(/^RBAC upgrade preview/)
+    expect(verdict).toMatch(/nothing changes for existing accounts/i)
+    expect(r.sections.map((s: { id: string }) => s.id)).toEqual(['root', 'instance_settings'])
+    expect(rest.filter((l) => l.trim() !== '')).toEqual(r.sections.flatMap((s: { lines: string[] }) => s.lines))
   })
 
   test('members: the grants by email, what changes for them, and the escape hatch', async () => {
@@ -373,13 +409,16 @@ describe('the report', () => {
     expect(r.text).not.toContain(SCANNER_SET.SCANNER_API_KEY)
   })
 
-  test('the hardening already in place: one line, unless the scanner key is missing', async () => {
+  test('the hardening already in place: one line besides Root and the instance settings, unless the scanner key is missing', async () => {
     user('alice')
     settings('alice', { mcpServers: [stdio('scraper')] })
     await backfillRbacLegacyGrants(db)
     const quiet = await report()
     expect(quiet.review).toBe(false)
-    expect(quiet.text.trim().split('\n')).toHaveLength(2)
+    const [, verdict, ...rest] = quiet.text.trim().split('\n')
+    expect(verdict).toMatch(/already in place/)
+    expect(quiet.sections.map((s: { id: string }) => s.id)).toEqual(['root', 'instance_settings'])
+    expect(rest.filter((l) => l.trim() !== '')).toEqual(quiet.sections.flatMap((s: { lines: string[] }) => s.lines))
     const missing = await report({ env: {} })
     expect(missing.review).toBe(true)
     expect(missing.text).toMatch(/SCANNER_API_KEY is not set/)
@@ -395,7 +434,8 @@ describe('the report', () => {
 
   test('each section and each member-visible change names the step whose behaviour it reports', () => {
     expect(SECTIONS.map((s: { id: string }) => s.id)).toEqual([
-      'accounts', 'legacy_grants', 'tunnel_rows', 'stdio_mcp', 'mcp_token_env_var', 'scanner_key', 'member_changes',
+      'accounts', 'root', 'legacy_grants', 'tunnel_rows', 'instance_settings', 'stdio_mcp', 'mcp_token_env_var',
+      'scanner_key', 'member_changes',
     ])
     for (const s of [...SECTIONS, ...MEMBER_CHANGES]) expect(s.step).toMatch(/^\d+\.\d+(-\d+\.\d+)?$/)
   })
@@ -407,6 +447,145 @@ describe('the report', () => {
     const a = buildReport(state, { env: SCANNER_SET, templateFiles: 1 })
     const b = buildReport(state, { env: SCANNER_SET, templateFiles: 1 })
     expect(a).toEqual(b)
+  })
+})
+
+describe('who will be Root, and where the instance settings come from (HD-31 Root part, ID-34)', () => {
+  const lines = (r: { sections: { id: string; lines: string[] }[] }, id: string) =>
+    r.sections.find((s) => s.id === id)?.lines ?? []
+  const SWITCH_ON = { ...SCANNER_SET, RBAC_IDENTITY_ENABLED: 'true' }
+
+  test('the only admin with a password is Root; a passwordless admin never is; switch off: nothing changes yet', async () => {
+    user('admin', { role: 'admin' })
+    user('managed-admin', { role: 'admin', password: '', createdAt: new Date('2020-01-01T00:00:00Z') })
+    user('alice')
+    const root = lines(await report(), 'root').join('\n')
+    expect(root).toMatch(/Root: admin@e2e\.local, the only admin with a password, chosen automatically at the next start/)
+    expect(root).not.toMatch(/managed-admin/)
+    expect(root).toMatch(/Nothing changes while RBAC_IDENTITY_ENABLED is off/)
+  })
+
+  test('several admins: the oldest is proposed and every candidate is listed in the Root backfill\'s order', async () => {
+    const SAME = new Date('2026-01-01T00:00:00Z')
+    user('zed', { role: 'admin', createdAt: SAME })
+    user('amy', { role: 'admin', createdAt: SAME })
+    user('old', { role: 'admin', createdAt: new Date('2025-06-01T00:00:00Z') })
+    user('nopw', { role: 'admin', password: '', createdAt: new Date('2024-01-01T00:00:00Z') })
+    user('member', { createdAt: new Date('2023-01-01T00:00:00Z') })
+    const order = (await db.user.findMany({ where: CANDIDATE_WHERE, orderBy: asOrderBy(CANDIDATE_ORDER), select: { id: true } }))
+      .map((u) => u.id as string)
+    expect(order).toEqual(['old', 'amy', 'zed'])
+    expect(chooseRoot(order.map((id) => ({ id })))).toMatchObject({ userId: 'old', rule: 'oldest_admin', candidateCount: 3 })
+
+    const root = lines(await report(), 'root')
+    expect(root[0]).toMatch(/Root: old@e2e\.local, the oldest of 3 admins with a password, chosen automatically/)
+    const listed = root.filter((l) => /^ {4}\S+@e2e\.local/.test(l)).map((l) => l.trim().split(/\s+/)[0])
+    expect(listed).toEqual(order.map((id) => `${id}@e2e.local`))
+    expect(root.find((l) => l.includes('old@e2e.local') && l.trim().startsWith('old'))).toMatch(/<- proposed/)
+  })
+
+  test('with the identity switch on: the update confirms the only admin, or asks among several', async () => {
+    user('admin', { role: 'admin' })
+    expect(lines(await report({ env: SWITCH_ON }), 'root').join('\n')).toMatch(/After the restart this update confirms it\./)
+    user('second', { role: 'admin', createdAt: new Date(T0 - 3_600_000) })
+    const root = lines(await report({ env: SWITCH_ON }), 'root').join('\n')
+    expect(root).toMatch(/asks which admin to confirm/)
+    expect(root).toMatch(/ADMIN_EMAIL/)
+  })
+
+  test('a Root already recorded is named, confirmed or not; one that is no longer an admin is chosen again', async () => {
+    user('admin', { role: 'admin' })
+    user('older', { role: 'admin', createdAt: new Date('2025-01-01T00:00:00Z') })
+    instanceRow = { rootUserId: 'admin', rootConfirmedAt: new Date('2026-11-01T00:00:00Z') }
+    expect(lines(await report(), 'root')).toEqual(['  Root: admin@e2e.local (confirmed).'])
+
+    instanceRow = { rootUserId: 'admin', rootConfirmedAt: null }
+    const unconfirmed = lines(await report({ env: SWITCH_ON }), 'root').join('\n')
+    expect(unconfirmed).toMatch(/Root: admin@e2e\.local, chosen automatically, not confirmed yet/)
+    expect(unconfirmed).not.toMatch(/older@/)
+
+    instanceRow = { rootUserId: 'gone', rootConfirmedAt: new Date('2026-11-01T00:00:00Z') }
+    const stale = lines(await report(), 'root').join('\n')
+    expect(stale).toMatch(/The Root recorded \(account gone\) is no longer an admin/)
+    expect(stale).toMatch(/Root: older@e2e\.local, the oldest of 2 admins/)
+  })
+
+  test('no admin with a password: no Root yet, and the command that makes one', async () => {
+    user('managed-admin', { role: 'admin', password: '' })
+    user('alice')
+    expect(lines(await report(), 'root').join('\n'))
+      .toMatch(/Root: none yet \(no admin has a password\); \.\/redamon\.sh create-admin makes one/)
+  })
+
+  test('instance settings: the rows the instance settings backfill copies, with their candidates, never a value', async () => {
+    user('admin', { role: 'admin' })
+    user('admin2', { role: 'admin' })
+    user('alice')
+    user('bob')
+    settings('admin', { chiselAuth: 'fake-user:fake-pass', updatedAt: new Date('2026-04-01T09:00:00Z') })
+    settings('admin2', { updatedAt: new Date('2026-03-01T09:00:00Z') })
+    settings('alice', { tunnelsEnabled: true, ngrokAuthtoken: SECRET_NGROK, updatedAt: new Date('2026-02-01T09:00:00Z') })
+    settings('bob', { chiselServerUrl: 'https://chisel.example.invalid:8443', updatedAt: new Date('2026-05-01T09:00:00Z') })
+    const derived = await deriveInstanceValues(db)
+    expect(derived.data.tunnelSourceUserId).toBe('alice')
+    // The capture pick by the backfill's own order; the fake reads deriveInstanceValues'
+    // `userId: {in}` as a compound unique key, so the same admin filter is spelled with OR.
+    const adminIds = (await db.user.findMany({ where: { role: 'admin' }, select: { id: true } })).map((u) => u.id as string)
+    const [capture] = await db.userSettings.findMany({ where: { OR: adminIds.map((userId) => ({ userId })) }, orderBy: asOrderBy(CAPTURE_ROW_ORDER) })
+    expect(capture.userId).toBe('admin')
+
+    const r = await report()
+    expect(r.review).toBe(true)
+    const text = lines(r, 'instance_settings').join('\n')
+    expect(text).toMatch(/tunnel\s+alice@e2e\.local \(member\), saved 2026-02-01; 2 accounts hold one/)
+    expect(text).toMatch(/TrafficMind, egress, SCA\s+admin@e2e\.local, saved 2026-04-01, the latest of 2 admin rows/)
+    expect(text).toMatch(/While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force/)
+    expect(r.text).not.toContain(SECRET_NGROK)
+    expect(r.text).not.toContain('fake-pass')
+  })
+
+  test('nothing saved in any account: the defaults', async () => {
+    user('admin', { role: 'admin' })
+    const text = lines(await report(), 'instance_settings').join('\n')
+    expect(text).toMatch(/tunnel\s+none saved \(off\)/)
+    expect(text).toMatch(/TrafficMind, egress, SCA\s+none saved \(the defaults\)/)
+  })
+
+  test('switch on: the copy becomes the one in force; once filled with the switch on, or saved by an admin, it is not copied again', async () => {
+    user('admin', { role: 'admin' })
+    settings('admin')
+    instanceRow = { rootUserId: 'admin', rootConfirmedAt: new Date('2026-11-01T00:00:00Z') }
+    expect(lines(await report({ env: SWITCH_ON }), 'instance_settings').join('\n'))
+      .toMatch(/With RBAC_IDENTITY_ENABLED on this copy is the one in force/)
+
+    db.seed('auditLog', [{ action: INSTANCE_MARKER_ACTION, targetType: 'system', source: 'system', after: { identity: false } }])
+    expect(lines(await report({ env: SWITCH_ON }), 'instance_settings').join('\n')).toMatch(/copied at the next start/)
+
+    t += 60_000
+    db.seed('auditLog', [{ action: INSTANCE_MARKER_ACTION, targetType: 'system', source: 'system', after: { identity: true } }])
+    const inForce = lines(await report({ env: SWITCH_ON }), 'instance_settings').join('\n')
+    expect(inForce).toMatch(/Instance settings .* in force; admins change them in Global Settings/s)
+    expect(inForce).not.toMatch(/copied at the next start/)
+    // Switch off again: the accounts' rows are the truth again, so each start copies them.
+    expect(lines(await report(), 'instance_settings').join('\n')).toMatch(/copied at the next start/)
+  })
+
+  test('an admin saved the instance settings: in force with the switch on, even without a marker', async () => {
+    user('admin', { role: 'admin' })
+    instanceRow = { rootUserId: null, adminSaved: true }
+    expect(lines(await report({ env: SWITCH_ON }), 'instance_settings').join('\n')).toMatch(/in force; admins change them/)
+  })
+
+  test('Root and the instance settings never make the update ask', async () => {
+    user('a', { role: 'admin', createdAt: new Date('2025-01-01T00:00:00Z') })
+    user('b', { role: 'admin' })
+    settings('a', { updatedAt: new Date('2026-04-01T09:00:00Z') })
+    settings('b', { updatedAt: new Date('2026-05-01T09:00:00Z') })
+    for (const env of [SCANNER_SET, SWITCH_ON]) {
+      const r = await report({ env })
+      expect(r.review).toBe(false)
+      expect(r.sections.map((s: { id: string }) => s.id)).toEqual(['root', 'instance_settings'])
+    }
   })
 })
 
