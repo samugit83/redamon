@@ -12,6 +12,9 @@
 3. Follows the recon container's log into <dir>/recon.log.
 4. Polls get_recon_status every --poll seconds until the run ends.
 5. Snapshots the graph and recon JSON into <dir> (snapshot_graph.py).
+6. With --watch-argv, records the command line of every scanner process the
+   run starts (host processes: the tools' containers share the host's PID
+   view) into <dir>/argv.jsonl, for argv assertions.
 
 Exit 0 when the run completed, 1 otherwise. Stdlib only.
 """
@@ -22,6 +25,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -40,6 +44,32 @@ def routing_gate() -> None:
     if dns.returncode != 0 or "192.88.99.60" not in dns.stdout:
         sys.exit("routing gate FAILED: v1.api.nwlab.test does not resolve through the host. Not scanning.")
     print(f"[gate] ok: {route.splitlines()[0]}")
+
+
+# Command prefixes of the scanner processes worth recording (each tool's
+# entrypoint as `ps` shows it).
+_TOOLS = ("httpx ", "nuclei ", "nmap ", "naabu ", "katana ", "hakrawler", "tlsx ", "subjack ", "/wcvs ")
+
+
+def _is_tool(cmd: str) -> bool:
+    # Arjun is a Python script: its name is the interpreter's first argument.
+    return cmd.startswith(_TOOLS) or any(t.rsplit("/", 1)[-1] == "arjun" for t in cmd.split()[:3])
+
+
+def watch_argv(path: Path, stop: threading.Event) -> None:
+    """Every scanner process seen while the run lasts: first/last seen and its argv."""
+    seen: dict = {}
+    while not stop.is_set():
+        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True).stdout
+        now = time.time()
+        for ln in out.splitlines():
+            pid, _, cmd = ln.strip().partition(" ")
+            if _is_tool(cmd):
+                seen.setdefault(pid + cmd[:40], {"pid": pid, "cmd": cmd, "first": now})["last"] = now
+        time.sleep(0.5)
+    with path.open("w") as fh:
+        for row in seen.values():
+            fh.write(json.dumps(row) + "\n")
 
 
 def follow_logs(project_id: str, log_path: Path) -> subprocess.Popen | None:
@@ -76,6 +106,8 @@ def main() -> int:
     ap.add_argument("--user-id", required=True)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--poll", type=int, default=60)
+    ap.add_argument("--watch-argv", action="store_true",
+                    help="record every scanner process's argv into <out>/argv.jsonl")
     ap.add_argument("--resume", action="store_true",
                     help="do not start a scan: follow the one already running, then snapshot it")
     a = ap.parse_args()
@@ -85,6 +117,11 @@ def main() -> int:
         print("[start] resuming: following the scan already running")
     else:
         start_scan(a.project_id)
+    stop = threading.Event()
+    watcher = None
+    if a.watch_argv:
+        watcher = threading.Thread(target=watch_argv, args=(a.out / "argv.jsonl", stop), daemon=True)
+        watcher.start()
     tail = follow_logs(a.project_id, a.out / "recon.log")
 
     status: dict = {}
@@ -102,6 +139,9 @@ def main() -> int:
         if not running and last.get("status") in _DONE:
             break
 
+    stop.set()
+    if watcher:
+        watcher.join(timeout=10)
     if tail:
         time.sleep(3)
         tail.terminate()

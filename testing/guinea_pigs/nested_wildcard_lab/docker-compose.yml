@@ -13,7 +13,7 @@
 #   web4    192.88.99.63   plain (HTTP only); its bare-IP root 302s to edge
 #   web5    192.88.99.64   two (X: 80, 443); its bare-IP :80 root 302s off the project
 #   web6    192.88.99.65   two (Y: 443, 8443, banner on 21); bare-IP :443 302s to 169.254.169.254
-#   pcap2..pcap5           every packet web2..web5 receive, in out/pcap/ (check_lab_traffic.py)
+#   pcap1..pcap5           every packet web1..web5 receive, in out/pcap/ (check_lab_traffic.py)
 #
 # WHY 192.88.99.0/24: recon's Python SSRF guard (is_url_safe_to_probe,
 # recon/main_recon_modules/ip_filter.py) rejects loopback, RFC1918 and every
@@ -156,6 +156,13 @@ services:
               "mv -f /pcap/$$CAP.pcap /pcap/$$CAP.prev.pcap 2>/dev/null; exec tcpdump -i eth0 -p -Q in -U -n -s 1024 -Z root -w /pcap/$$CAP.pcap not arp"]
     volumes:
       - ./out/pcap:/pcap
+
+  pcap1:
+    <<: *pcap
+    container_name: redamon-nwlab-pcap1
+    network_mode: "service:web1"
+    depends_on: [web1]
+    environment: { CAP: web1 }
 
   pcap3:
     <<: *pcap

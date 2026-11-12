@@ -20,7 +20,7 @@ and on `192.88.99.50-79`. **Scan nothing else from this harness.**
 | `web4` (nginx) | `192.88.99.63` | `plain.nwlab.test`, **HTTP only** (nothing on 443); its bare-IP root 302s to `edge` |
 | `web5` (nginx) | `192.88.99.64` | X of `two.nwlab.test` (80, 443); its bare-IP :80 root 302s to `www.nwlab-two.test` |
 | `web6` (nginx) | `192.88.99.65` | Y of `two.nwlab.test` (443, 8443, an FTP-style banner on 21); its bare-IP :443 root 302s to `169.254.169.254` |
-| `pcap2`..`pcap5` (tcpdump) | web2..web5's network namespace | every IPv4 packet web2..web5 receive, in `out/pcap/` |
+| `pcap1`..`pcap5` (tcpdump) | web1..web5's network namespace | every IPv4 packet web1..web5 receive, in `out/pcap/` |
 
 Every vhost returns `<h1>{host}</h1>` from a fixed map (never from the Host
 header), so httpx results are per host and no host-header reflection appears.

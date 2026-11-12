@@ -359,7 +359,27 @@ scenarios:
         cypher: "MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint) WHERE b.host IN ['shop.nwlab.test','edge.nwlab.test','mixed.nwlab.test','192.88.99.62'] RETURN b.host + e.path AS v"
         count: 0
       - id: no_finding_names_an_excluded_host
-        cypher: "MATCH (v) WHERE (v:Vulnerability OR v:Secret OR v:JsReconFinding) WITH v, [k IN keys(v) WHERE k IN ['url','host','hostname','target','target_ip','matched_at','base_url','source_url','ip','domain'] | toString(v[k])] AS f WHERE any(x IN f WHERE x CONTAINS 'shop.nwlab.test' OR x CONTAINS 'edge.nwlab.test' OR x CONTAINS 'mixed.nwlab.test' OR x CONTAINS '192.88.99.62') RETURN v.id AS v"
+        cypher: "MATCH (v:Vulnerability) WITH v, [k IN keys(v) WHERE k IN ['url','host','hostname','target','target_ip','matched_ip','matched_at','base_url','source_url','final_url','ip','domain'] | toString(v[k])] AS f WHERE any(x IN f WHERE x CONTAINS 'shop.nwlab.test' OR x CONTAINS 'edge.nwlab.test' OR x CONTAINS 'mixed.nwlab.test' OR x CONTAINS '192.88.99.62') RETURN v.id AS v"
+        count: 0
+      # A redirect to a host the run may not touch is recorded, never followed
+      # (B-SECCHK-ROE): to the excluded edge, to a name outside the run, to the
+      # cloud metadata address.
+      - id: direct_ip_redirects_recorded_not_followed
+        cypher: "MATCH (v:Vulnerability {source:'security_check'}) WHERE v.type STARTS WITH 'direct_ip' AND v.url IN ['http://192.88.99.63','http://192.88.99.64','https://192.88.99.65'] RETURN v.url + ' ' + v.evidence AS v"
+        equals:
+          - "http://192.88.99.63 HTTP 302 redirect → http://edge.nwlab.test/ (1 redirect(s))"
+          - "http://192.88.99.64 HTTP 302 redirect → http://www.nwlab-two.test/ (1 redirect(s))"
+          - "https://192.88.99.65 HTTPS 302 redirect to http://169.254.169.254/latest/meta-data/"
+      # B-TLSXSAN: a certificate name the RoE refuse becomes no Subdomain, yet
+      # the certificate still lists it
+      - id: no_subdomain_for_an_excluded_san
+        cypher: "MATCH (s:Subdomain {name:'shop.nwlab.test'}) RETURN s.name AS v"
+        count: 0
+      - id: the_certificate_still_lists_the_excluded_san
+        cypher: "MATCH (c:Certificate) UNWIND coalesce(c.san, []) AS n WITH n WHERE n = 'shop.nwlab.test' RETURN DISTINCT n AS v"
+        equals: [shop.nwlab.test]
+      - id: no_answer_from_the_excluded_host_stored
+        cypher: "MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint) WHERE coalesce(e.final_url, '') CONTAINS 'edge.nwlab.test' OR coalesce(e.title, '') CONTAINS 'web3' RETURN b.url + ' -> ' + coalesce(e.final_url, '') + ' ' + coalesce(e.title, '') AS v"
         count: 0
       - id: no_certificate_from_the_excluded_address
         cypher: "MATCH (c:Certificate) WHERE any(n IN coalesce(c.san, []) WHERE n IN ['edge.nwlab.test','mixed.nwlab.test']) OR coalesce(c.subject_cn,'') = 'edge.nwlab.test' RETURN c.cert_key AS v"
@@ -398,8 +418,12 @@ scenarios:
       - id: plain_basic_auth_over_http_found
         cypher: "MATCH (v:Vulnerability {source:'security_check', type:'basic_auth_no_tls'}) RETURN v.url AS v"
         superset: ["http://plain.nwlab.test/"]
+      # plain's :80 is live (naabu, httpx), so no module may list plain as a
+      # skipped host: a bare entry reads as "the whole host not re-checked"
+      # and keeps its findings forever. (A refusal of edge/mixed is not a cut
+      # of the port evidence.)
       - id: plain_never_skipped_as_unreachable
-        cypher: "MATCH (d:Domain {name:'nwlab.test'}) UNWIND coalesce(d.recon_skipped_hosts, []) AS h WITH h WHERE h STARTS WITH 'plain.nwlab.test' OR h STARTS WITH '192.88.99.63' RETURN h AS v"
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) UNWIND coalesce(d.recon_skipped_hosts, []) AS h WITH h WHERE h STARTS WITH 'plain.nwlab.test' OR h = '192.88.99.63' OR h = '192.88.99.63:80' RETURN h AS v"
         count: 0
       - id: self_signed_hosts_still_get_security_checks
         cypher: "MATCH (v:Vulnerability {source:'security_check'}) WHERE v.url STARTS WITH 'https://' AND v.url CONTAINS '.nwlab.test' RETURN v.url AS v"
@@ -408,6 +432,16 @@ scenarios:
         cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'TLS certificate refused' AS v"
         "true": true
     common: true
+
+  FULL-RUN2:
+    title: >-
+      FULL again after `lab_toggle.sh plain-fixed` (B-SECCHK-ROE run 2): plain
+      no longer asks for Basic auth, and the RoE refusals of edge/mixed are no
+      cut of plain's port evidence, so its finding is pruned.
+    checks:
+      - id: the_fixed_plain_finding_is_pruned
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'basic_auth_no_tls'}) RETURN v.url AS v"
+        count: 0
 
   SECDNS:
     title: >-
