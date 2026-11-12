@@ -41,6 +41,7 @@ import { internalError, withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
+import { ownsRow } from '@/lib/authz/rowOwner'
 
 interface RouteParams {
   params: Promise<{ id: string; tokenId: string }>
@@ -64,7 +65,7 @@ async function loadOwned(userId: string, tokenId: string) {
     where: { id: tokenId },
     select: { ...SELECT, userId: true },
   })
-  if (!token || token.userId !== userId) return null
+  if (!token || !ownsRow({ userId }, token.userId)) return null
   return token
 }
 

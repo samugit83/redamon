@@ -1,16 +1,17 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
+import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
 import { internalError } from '@/lib/routeErrors'
 
-/** GET /api/reports - List the effective user's reports (scoped by project owner). */
+/** GET /api/reports - List the reports of the projects the effective user sees. */
 export async function GET() {
   try {
     const eff = await requireEffectiveUser()
     if (eff instanceof NextResponse) return eff
 
     const reports = await prisma.report.findMany({
-      where: { project: { userId: eff.userId } },
+      where: { project: visibleProjectsWhere(eff) },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,

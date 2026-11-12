@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
+import { ownsRow } from '@/lib/authz/rowOwner'
 import { readJsonBody } from '@/lib/jsonBody'
 import { coerceDoc } from '@/lib/nodeFilters/model'
 import { parsePresetText, presetSummary } from '@/lib/nodeFilters/presets'
@@ -22,7 +23,7 @@ const NOT_FOUND = { error: 'Preset not found' }
 
 async function ownPreset(id: string, userId: string) {
   const row = await prisma.userMuteRulesPreset.findUnique({ where: { id } })
-  return row && row.userId === userId ? row : null
+  return row && ownsRow({ userId }, row.userId) ? row : null
 }
 
 export const GET = withRouteErrors('Failed to read the preset', async (_request: NextRequest, { params }: RouteParams) => {

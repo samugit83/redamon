@@ -3,7 +3,8 @@ import { internalKeyHeaders } from '@/lib/agentAuth'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
-import { requireEffectiveUser, ownerScope } from '@/lib/access'
+import { requireEffectiveUser } from '@/lib/access'
+import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
@@ -35,7 +36,7 @@ export async function GET() {
     if (eff instanceof NextResponse) return eff
 
     const projects = await prisma.project.findMany({
-      where: ownerScope(eff),
+      where: visibleProjectsWhere(eff),
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,

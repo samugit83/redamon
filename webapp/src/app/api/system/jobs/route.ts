@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
+import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 
@@ -196,20 +197,20 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
       prisma.jobQueue.count({
         where: { userId: { not: eff.userId }, status: 'needs_review' },
       }),
-      // Scoped by PROJECT OWNERSHIP, not by initiator: a scan the agent or a
-      // schedule started has no initiator, and it is still this operator's scan.
+      // Scoped by the projects the operator sees, not by initiator: a scan the agent
+      // or a schedule started has no initiator, and it is still this operator's scan.
       prisma.scanJob.findMany({
-        where: { status: 'running', project: { userId: eff.userId } },
+        where: { status: 'running', project: visibleProjectsWhere(eff) },
         orderBy: { startedAt: 'desc' },
         select: SCAN_SELECT,
       }),
       prisma.scanJob.count({
-        where: { status: 'running', project: { userId: { not: eff.userId } } },
+        where: { status: 'running', project: { NOT: visibleProjectsWhere(eff) } },
       }),
       // Which projects are mine, so a live scan can be attributed without a second
       // round trip per row.
       prisma.project.findMany({
-        where: { userId: eff.userId },
+        where: visibleProjectsWhere(eff),
         select: { id: true, name: true },
       }),
       // Every kind the orchestrator is holding right now. Best effort: if it is

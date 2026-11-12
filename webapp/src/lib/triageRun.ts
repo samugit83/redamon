@@ -21,6 +21,7 @@
  */
 import prisma from '@/lib/prisma'
 import { isActivationInProgress } from '@/lib/activationLock'
+import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 import { MCP_RUN_COOLDOWN_MS, MCP_RUNS_PER_DAY } from '@/lib/triage/limits'
 
 /** Statuses in which a run still intends to write. */
@@ -268,13 +269,11 @@ export async function refuseTriageStart(
   projectId: string,
   actorUserId: string,
 ): Promise<StartRefusal | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, userId: true },
-  })
-  // A project that does not exist and one owned by somebody else are the same
-  // answer, so this cannot be used to enumerate project ids.
-  if (!project || project.userId !== actorUserId) {
+  // A project that does not exist and one the actor cannot see are the same
+  // answer, so this cannot be used to enumerate project ids. The owner's level:
+  // no route permission backs this internal start.
+  const access = await projectAccess({ userId: actorUserId }, projectId)
+  if (!access || !meetsLevel(access, 'O')) {
     return { reason: 'Not found' }
   }
 

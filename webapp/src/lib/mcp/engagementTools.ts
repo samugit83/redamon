@@ -60,6 +60,7 @@ import {
 import { describeScanWriters } from '@/lib/graphWriters'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
 import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { ownsRow } from '@/lib/authz/rowOwner'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 import { settingsFingerprint } from '@/lib/jobQueue'
@@ -221,7 +222,7 @@ async function findByIdempotencyKey(ctx: McpContext, key: string) {
     select: { projectId: true, project: { select: { userId: true, name: true } } },
   })
   if (!existing) return null
-  if (existing.project.userId !== ctx.token.userId) {
+  if (!ownsRow({ userId: ctx.token.userId }, existing.project.userId)) {
     throw new McpToolError(
       'That idempotency key belongs to another account\'s project.',
       'access_denied'

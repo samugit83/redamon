@@ -45,8 +45,6 @@ const SHARED_TOOL = 'a shared-tool short-circuit before sharedToolAccess (shared
 interface Allowed {
   count: number
   reason: string
-  /** Converted by the change set that adds this test; gone when it is done. */
-  pending?: true
 }
 
 const ALLOWED: Record<string, Allowed> = {
@@ -55,7 +53,6 @@ const ALLOWED: Record<string, Allowed> = {
   'src/app/api/auth/me/route.ts::role_admin': { count: 2, reason: `the caller's ${ACCOUNT_TYPE}: /api/auth/me reports it, and the Root block is shown to admins only` },
   'src/app/api/mcp/manifest/route.ts::list_on_caller': { count: 1, reason: "the caller's own MCP servers: a per-user row" },
   'src/app/api/models/route.ts::list_on_caller': { count: 1, reason: "the caller's own LLM providers: a per-user row" },
-  'src/app/api/mute-rule-presets/[id]/route.ts::owner_compare': { count: 1, reason: '', pending: true },
   'src/app/api/mute-rule-presets/route.ts::row_owner_helper': { count: 1, reason: "the caller's own mute-rule presets: a per-user row (rowOwner.ts)" },
   'src/app/api/nuclei-templates/route.ts::role_admin': { count: 1, reason: SHARED_TOOL },
   'src/app/api/plugins/[pluginId]/route.ts::is_admin': { count: 2, reason: PLUGINS_VIEWER },
@@ -63,15 +60,13 @@ const ALLOWED: Record<string, Allowed> = {
   'src/app/api/presets/[id]/route.ts::row_owner_helper': { count: 2, reason: "a preset is its author's: a per-user row (rowOwner.ts)" },
   'src/app/api/presets/route.ts::row_owner_helper': { count: 1, reason: "the caller's own presets: a per-user row (rowOwner.ts)" },
   'src/app/api/projects/[id]/supply-chain-batch/route.ts::list_on_caller': { count: 1, reason: "the effective user's own GitHub token: a per-user row" },
-  'src/app/api/projects/route.ts::row_owner_helper': { count: 1, reason: '', pending: true },
-  'src/app/api/reports/route.ts::list_on_caller': { count: 1, reason: '', pending: true },
-  'src/app/api/system/jobs/route.ts::list_on_caller': { count: 4, reason: '', pending: true },
+  'src/app/api/system/jobs/route.ts::list_on_caller': { count: 2, reason: "the caller's own queue rows (JobQueue.userId is the actor who queued them): a per-user row; the running scans go by the projects the caller sees (visibleProjects.ts)" },
   'src/app/api/traffic/[projectId]/[id]/route.ts::row_owner_helper': { count: 1, reason: 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard' },
   'src/app/api/traffic/[projectId]/facets/route.ts::row_owner_helper': { count: 1, reason: 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard' },
   'src/app/api/traffic/[projectId]/route.ts::row_owner_helper': { count: 1, reason: 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard' },
   'src/app/api/users/[id]/attack-skills/[skillId]/release/route.ts::owner_compare': { count: 1, reason: OWN_ACCOUNT },
   'src/app/api/users/[id]/llm-providers/route.ts::owner_compare': { count: 1, reason: `${OWN_ACCOUNT}; another account needs users:read` },
-  'src/app/api/users/[id]/mcp-tokens/[tokenId]/route.ts::owner_compare': { count: 2, reason: '', pending: true },
+  'src/app/api/users/[id]/mcp-tokens/[tokenId]/route.ts::owner_compare': { count: 1, reason: OWN_ACCOUNT },
   'src/app/api/users/[id]/mcp-tokens/route.ts::owner_compare': { count: 1, reason: OWN_ACCOUNT },
   'src/app/api/users/[id]/password/route.ts::owner_compare': { count: 1, reason: OWN_ACCOUNT },
   'src/app/api/users/[id]/password/route.ts::role_admin': { count: 1, reason: `the target's ${ACCOUNT_TYPE}: resetting another admin is Root's (rootPowers.ts)` },
@@ -83,7 +78,6 @@ const ALLOWED: Record<string, Allowed> = {
   'src/app/api/users/[id]/settings/route.ts::role_admin': { count: 1, reason: SHARED_TOOL },
   'src/app/api/users/route.ts::role_admin': { count: 2, reason: `the requested ${ACCOUNT_TYPE}: creating an admin is Root's (rootPowers.ts)` },
   'src/lib/access.ts::row_owner_helper': { count: 3, reason: 'the definitions of the per-user row helpers, which delegate to rowOwner.ts' },
-  'src/lib/mcp/engagementTools.ts::owner_compare': { count: 1, reason: '', pending: true },
   'src/lib/mcp/presetTools.ts::list_on_caller': { count: 1, reason: "the token user's own presets, counted for the per-user cap: a per-user row" },
   'src/lib/mcp/tools.ts::list_on_caller': { count: 1, reason: 'MCP lists the projects its token user owns: every MCP project tool needs the owner level (mcpAuth.ts assertMcpProjectAccess)' },
   'src/lib/mcp/userServerAccess.ts::role_admin': { count: 1, reason: "whether a stdio server's owner runs it: the owner's admin account type until the platform routes check platform:agent_mcp" },
@@ -92,9 +86,8 @@ const ALLOWED: Record<string, Allowed> = {
   'src/lib/reconPresets/server.ts::find_by_id_and_owner': { count: 1, reason: "the caller's own recon preset: a per-user row" },
   'src/lib/session.ts::owner_compare': { count: 2, reason: OWN_ACCOUNT },
   'src/lib/session.ts::role_admin': { count: 3, reason: `${ACCOUNT_TYPE}: the act-as rule (only an admin acts as anyone, nobody as Root) and requireAdmin, the administrator-account gate each caller follows with its permission` },
-  'src/lib/triageRun.ts::owner_compare': { count: 1, reason: '', pending: true },
   'src/lib/userAudit.ts::role_admin': { count: 1, reason: 'the act-as rule (only an admin acts as anyone), as session.ts mayActAs reads it, for the audit row' },
-  'src/lib/userSkillWrites.ts::find_by_id_and_owner': { count: 4, reason: '', pending: true },
+  'src/lib/userSkillWrites.ts::find_by_id_and_owner': { count: 4, reason: "the skill owner's rows inside the per-user lock's transaction: its user skills, and the project whose toggles name them (toggles hold the owner's own skills, so that project is the owner's, not any project the person sees)" },
 }
 
 function sources(dir: string, out: string[] = []): string[] {
@@ -155,7 +148,7 @@ describe('no inline owner or admin check outside lib/authz', () => {
   })
 
   test('every entry gives its reason', () => {
-    expect(Object.entries(ALLOWED).filter(([, a]) => !a.pending && a.reason.trim().length < 20).map(([k]) => k)).toEqual([])
+    expect(Object.entries(ALLOWED).filter(([, a]) => a.reason.trim().length < 20).map(([k]) => k)).toEqual([])
   })
 
   test('the rules catch the shapes they name, and not their look-alikes', () => {
