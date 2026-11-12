@@ -306,3 +306,24 @@ describe('the route itself', () => {
     expect(db().account('invited-1')).toMatchObject({ status: 'invited', password: '' })
   })
 })
+
+describe("the cookie's maxAge equals the token lifetime on invite accept (step 2.11, ID-24)", () => {
+  function issued(res: Response): { lifetime: number; maxAge: number } {
+    const line = setCookies(res).find((c) => c.startsWith('redamon-auth='))!
+    const [, body] = line.slice('redamon-auth='.length).split(';')[0].split('.')
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as Record<string, number>
+    return { lifetime: claims.exp - claims.iat, maxAge: Number(/Max-Age=(\d+)/i.exec(line)?.[1]) }
+  }
+
+  test("a member's accept: the instance member lifetime", async () => {
+    db().seedInstance({ inviteTtlHours: 168, resetTtlHours: 4, passwordMinLength: 16, memberSessionTtlHours: 24 })
+    const link = await openLink('invited-1')
+    expect(issued(await accept(link.linkId))).toEqual({ lifetime: 24 * 3600, maxAge: 24 * 3600 })
+  })
+
+  test('an admin\'s reset link: the admin lifetime (12 h when the row holds none)', async () => {
+    db().seedUsers([{ id: 'admin-9', role: 'admin', email: 'admin-9@e2e.local' }])
+    const link = await openLink('admin-9', 'reset')
+    expect(issued(await accept(link.linkId))).toEqual({ lifetime: 12 * 3600, maxAge: 12 * 3600 })
+  })
+})

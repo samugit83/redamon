@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose'
 import bcrypt from 'bcryptjs'
 import type { WsSocket } from './wsTicket'
+import { lifetimeClaimsValid } from './authz/sessionIdle'
 
 export const AUTH_COOKIE_NAME = 'redamon-auth'
 const BCRYPT_ROUNDS = 12
@@ -35,24 +36,53 @@ function isSessionVersion(v: unknown): v is number {
 }
 
 /**
+ * How long a login token lives (identity switch on, step 2.11; lib/authz/sessionLifetime.ts
+ * decides it). An admin's token says so (`adm: 1`) and, with `idleMinutes`, carries its idle
+ * limit `idl` and its last activity `lat`, which the middleware checks and moves forward.
+ */
+export interface TokenLifetime {
+  seconds: number
+  admin?: boolean
+  idleMinutes?: number | null
+}
+
+/**
  * The login token. `sv` is the account's session version when it signed in: the session
  * helpers refuse the token once the account's version moves on, which signs it out of
  * every browser at once. `pwc: 1` (identity switch on) says the account must change its
  * password: the middleware holds the browser on the change page without a database read.
+ * Without `lifetime` the token is the Phase 1 one: 7 days, no lifetime claim.
  */
-export async function createToken(userId: string, role: string, sv = 0, { pwc = false }: { pwc?: boolean } = {}): Promise<string> {
+export async function createToken(
+  userId: string,
+  role: string,
+  sv = 0,
+  { pwc = false, lifetime }: { pwc?: boolean; lifetime?: TokenLifetime } = {},
+): Promise<string> {
   if (!isSessionVersion(sv)) throw new Error('A session version is a whole number from 0')
-  return new SignJWT({ sub: userId, role, sv, ...(pwc ? { pwc: 1 } : {}) })
+  const claims = { sub: userId, role, sv, ...(pwc ? { pwc: 1 } : {}) }
+  if (!lifetime) {
+    return new SignJWT(claims)
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime(TOKEN_EXPIRY)
+      .sign(getSecret())
+  }
+  // jose checks `exp` against the wall clock, so the token's times come from it too.
+  const iat = Math.floor(Date.now() / 1000)
+  const idle = lifetime.admin && lifetime.idleMinutes ? { idl: lifetime.idleMinutes, lat: iat } : {}
+  return new SignJWT({ ...claims, ...(lifetime.admin ? { adm: 1 } : {}), ...idle })
     .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime(TOKEN_EXPIRY)
+    .setIssuedAt(iat)
+    .setExpirationTime(iat + lifetime.seconds)
     .sign(getSecret())
 }
 
 /**
  * The claims of a valid login token. A token minted before the session version existed
  * (and the Playwright helper's `{sub, role}`) is version 0; a version that is present but
- * not a whole number from 0 makes the token invalid, and so does a `pwc` other than 1.
+ * not a whole number from 0 makes the token invalid, and so does a `pwc` other than 1 or a
+ * malformed lifetime claim.
  */
 export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number; pwc?: true } | null> {
   try {
@@ -61,6 +91,7 @@ export async function verifyToken(token: string): Promise<{ sub: string; role: s
     const sv = payload.sv === undefined ? 0 : payload.sv
     if (!isSessionVersion(sv)) return null
     if (payload.pwc !== undefined && payload.pwc !== 1) return null
+    if (!lifetimeClaimsValid(payload)) return null
     return { sub: payload.sub, role: payload.role as string, sv, ...(payload.pwc === 1 ? { pwc: true as const } : {}) }
   } catch {
     return null
@@ -120,12 +151,12 @@ export async function createWsTicket(
 export const ACT_AS_COOKIE_NAME = 'redamon-act-as'
 const ACT_AS_EXPIRY = '12h'
 
-export async function createActAsToken(adminUserId: string, targetUserId: string): Promise<string> {
-  return new SignJWT({ sub: adminUserId, act: targetUserId })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime(ACT_AS_EXPIRY)
-    .sign(getSecret())
+/** `seconds`: the lifetime the identity switch gives act-as (step 2.11); without it, 12 h. */
+export async function createActAsToken(adminUserId: string, targetUserId: string, seconds?: number): Promise<string> {
+  const jwt = new SignJWT({ sub: adminUserId, act: targetUserId }).setProtectedHeader({ alg: 'HS256' })
+  if (seconds === undefined) return jwt.setIssuedAt().setExpirationTime(ACT_AS_EXPIRY).sign(getSecret())
+  const iat = Math.floor(Date.now() / 1000)
+  return jwt.setIssuedAt(iat).setExpirationTime(iat + seconds).sign(getSecret())
 }
 
 export async function verifyActAsToken(token: string): Promise<{ sub: string; act: string } | null> {

@@ -70,6 +70,16 @@
  *   - a sign-in answers no notice, marks none shown and writes no `auth.login.after_reset` row
  *     (login/route.resetNotice.test.ts), whatever notices a reset made while the switch was on.
  *
+ * Step 2.11 adds the email change, the session lifetimes and the My account page. With the switch
+ * off:
+ *   - changing a sign-in email takes no password and writes Phase 1's `user.update` row, no notice
+ *     (users/[id]/route.emailChange.test.ts);
+ *   - every login token lives 7 days with `{sub, role, sv, iat, exp}` only (no `adm`, `idl`, `lat`),
+ *     an act-as cookie 12 h, and no instance row is read for them (sessionLifetime.test.ts,
+ *     login/route.lifetime.test.ts, act-as/route.test.ts);
+ *   - the middleware ends no session for idleness and refreshes none, whatever claims a token
+ *     minted while the switch was on carries (middleware.sessionIdle.test.ts).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -130,9 +140,6 @@ const IDENTITY_READERS: string[] = [
   // Login: the session version it signs (compared whatever the switch) and the last-login
   // time it writes whatever the switch; status and must-change (pwc) only with the switch on.
   'src/app/api/auth/login/route.ts',
-  // Step 2.9: signs the person in with the session version the accept left, after a 404 with
-  // the switch off.
-  'src/app/api/invite/accept/route.ts',
   // Step 2.8: an admin's reset flags the account and raises its version, an own change clears
   // the flag, only with the switch on; off, the Phase 1 write of the password alone.
   'src/app/api/users/[id]/password/route.ts',
@@ -170,6 +177,8 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/root.ts',
   // Step 2.6: the Root transfer, reached only through routes that answer 404 with the switch off.
   'src/lib/authz/rootTransfer.ts',
+  // Step 2.11: the session lifetimes, read only with the switch on (off: Phase 1's 7 days and 12 h).
+  'src/lib/authz/sessionLifetime.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the
@@ -520,6 +529,23 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.10)', () => {
       authCookie = cookie
       expect((await resetCredentials(post(), params)).status).toBe(404)
     }
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.11)', () => {
+  test('a sign-in token is Phase 1\'s: 7 days, {sub, role, sv, iat, exp}, nothing read', async () => {
+    setFlagsForTests({ identity: false })
+    const { decodeJwt } = await import('jose')
+    const { issueLoginToken, actAsLifetimeSeconds } = await import('./sessionLifetime')
+    for (const role of ['admin', 'standard']) {
+      const { token, maxAge } = await issueLoginToken({ id: `${role}-1`, role, sessionVersion: 0 }, { pwc: true })
+      const claims = decodeJwt(token)
+      expect(Object.keys(claims).sort()).toEqual(['exp', 'iat', 'role', 'sub', 'sv'])
+      expect(claims.exp! - claims.iat!).toBe(7 * 24 * 3600)
+      expect(maxAge).toBe(7 * 24 * 3600)
+    }
+    expect(await actAsLifetimeSeconds()).toBe(12 * 3600)
     expect(findUnique).not.toHaveBeenCalled()
   })
 })

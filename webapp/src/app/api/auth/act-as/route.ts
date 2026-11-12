@@ -10,20 +10,23 @@ import { presentedActAs } from '@/lib/userAudit'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
+import { PHASE1_ACT_AS_SECONDS, actAsLifetimeSeconds } from '@/lib/authz/sessionLifetime'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
 // effective user is derived server-side from this signed httpOnly cookie, and it
 // is only ever consulted when the signed-in caller is an admin in the database.
 
-// S12: `secure` is decided per-request (see cookieOpts); base opts hold the rest.
-function cookieOpts(request: NextRequest) {
+// S12: `secure` is decided per-request (see cookieOpts); base opts hold the rest. The cookie
+// lives as long as its token: 12 h, or with the identity switch on an admin session's length
+// capped at 12 h (step 2.11).
+function cookieOpts(request: NextRequest, maxAge = PHASE1_ACT_AS_SECONDS) {
   return {
     httpOnly: true,
     sameSite: 'lax' as const,
     secure: isSecureRequest(request),
     path: '/',
-    maxAge: 12 * 60 * 60, // 12h
+    maxAge,
   }
 }
 
@@ -66,10 +69,12 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
     if (refusal) return refusal
   }
 
-  const token = await createActAsToken(admin.userId, targetUserId)
+  const identity = rbacFlags().identity
+  const seconds = identity ? await actAsLifetimeSeconds() : undefined
+  const token = await createActAsToken(admin.userId, targetUserId, seconds)
   await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'start' })
   const res = NextResponse.json({ actingAs: targetUserId })
-  res.cookies.set(ACT_AS_COOKIE_NAME, token, cookieOpts(request))
+  res.cookies.set(ACT_AS_COOKIE_NAME, token, cookieOpts(request, seconds))
   return res
 })
 

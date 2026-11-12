@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { jwtVerify } from 'jose'
+import { SignJWT, jwtVerify, type JWTPayload } from 'jose'
 import { constantTimeEqual } from './lib/constantTimeEqual'
 import { rbacFlags } from './lib/authz/flags'
+import { now } from './lib/authz/clock'
+import { isSecureRequest } from './lib/cookieSecurity'
 import { MUST_CHANGE_CODE, MUST_CHANGE_MESSAGE, MUST_CHANGE_PAGE, mustChangeAllows } from './lib/authz/mustChangeGate'
+import { SESSION_IDLE_CODE, SESSION_IDLE_MESSAGE, idleVerdict, lifetimeClaimsValid } from './lib/authz/sessionIdle'
 
 const AUTH_COOKIE_NAME = 'redamon-auth'
 
@@ -155,18 +158,30 @@ function getSecret() {
   return new TextEncoder().encode(secret)
 }
 
-async function verifyJwt(token: string): Promise<{ sub: string; role: string; pwc: boolean } | null> {
+async function verifyJwt(token: string): Promise<{ sub: string; role: string; pwc: boolean; claims: JWTPayload } | null> {
   try {
     const secret = getSecret()
     if (!secret) return null
     const { payload } = await jwtVerify(token, secret)
     if (!payload.sub || !payload.role) return null
-    // As lib/auth.ts verifyToken: a must-change claim other than 1 makes the token invalid.
+    // As lib/auth.ts verifyToken: a must-change claim other than 1, or a malformed lifetime
+    // claim, makes the token invalid.
     if (payload.pwc !== undefined && payload.pwc !== 1) return null
-    return { sub: payload.sub, role: payload.role as string, pwc: payload.pwc === 1 }
+    if (!lifetimeClaimsValid(payload)) return null
+    return { sub: payload.sub, role: payload.role as string, pwc: payload.pwc === 1, claims: payload }
   } catch {
     return null
   }
+}
+
+/**
+ * The same login token with its last activity moved to `nowSeconds`: same claims, same expiry,
+ * so activity never stretches a session past the lifetime it was signed with.
+ */
+async function withActivity(claims: JWTPayload, nowSeconds: number): Promise<string | null> {
+  const secret = getSecret()
+  if (!secret) return null
+  return new SignJWT({ ...claims, lat: nowSeconds }).setProtectedHeader({ alg: 'HS256' }).sign(secret)
 }
 
 export async function middleware(request: NextRequest) {
@@ -255,9 +270,22 @@ export async function middleware(request: NextRequest) {
     return response
   }
 
+  // Step 2.11 (identity switch on): an admin's token idle longer than its limit ends here; the
+  // API answer's code sends the browser to sign-in (AuthProvider), as for any ended session.
+  const identity = rbacFlags().identity
+  const nowSeconds = Math.floor(now().getTime() / 1000)
+  const idle = identity ? idleVerdict(payload.claims, nowSeconds) : 'none'
+  if (idle === 'idle') {
+    const response = pathname.startsWith('/api/')
+      ? NextResponse.json({ error: SESSION_IDLE_MESSAGE, code: SESSION_IDLE_CODE }, { status: 401 })
+      : NextResponse.redirect(new URL('/login', request.url))
+    response.cookies.delete(AUTH_COOKIE_NAME)
+    return response
+  }
+
   // Step 2.8 (identity switch on): an account whose password must change reaches only the
   // change page and what it needs. The handlers compare the claim with the account (session.ts).
-  if (payload.pwc && rbacFlags().identity && !mustChangeAllows(request.method, pathname, payload.sub)) {
+  if (payload.pwc && identity && !mustChangeAllows(request.method, pathname, payload.sub)) {
     if (pathname.startsWith('/api/')) {
       return NextResponse.json({ error: MUST_CHANGE_MESSAGE, code: MUST_CHANGE_CODE }, { status: 403 })
     }
@@ -271,6 +299,19 @@ export async function middleware(request: NextRequest) {
 
   const response = NextResponse.next({ request: { headers: requestHeaders } })
   if (isPluginPage(pathname)) response.headers.set('Content-Security-Policy', pluginPagesCsp())
+  if (idle === 'refresh' && typeof payload.claims.exp === 'number') {
+    const refreshed = await withActivity(payload.claims, nowSeconds)
+    if (refreshed) {
+      // The attributes of lib/loginCookie.ts setLoginCookie, which this module cannot import.
+      response.cookies.set(AUTH_COOKIE_NAME, refreshed, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: isSecureRequest(request),
+        path: '/',
+        maxAge: Math.max(payload.claims.exp - nowSeconds, 0),
+      })
+    }
+  }
   return response
 }
 

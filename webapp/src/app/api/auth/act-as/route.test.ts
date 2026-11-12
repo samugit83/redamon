@@ -19,8 +19,13 @@ vi.mock('@/lib/session', () => ({
 }))
 
 const mockUserFindUnique = vi.fn()
+// The instance settings row (identity switch on): no Root here, the session lifetimes of step 2.11.
+const mockInstanceFindUnique = vi.fn()
 vi.mock('@/lib/prisma', () => ({
-  default: { user: { findUnique: (a: unknown) => mockUserFindUnique(a) } },
+  default: {
+    user: { findUnique: (a: unknown) => mockUserFindUnique(a) },
+    instanceSettings: { findUnique: (a: unknown) => mockInstanceFindUnique(a) },
+  },
 }))
 
 const mockWriteActAsAudit = vi.fn().mockResolvedValue(undefined)
@@ -30,8 +35,11 @@ vi.mock('@/lib/audit', () => ({
 }))
 
 import bcrypt from 'bcryptjs'
+import { decodeJwt } from 'jose'
 import { __resetThrottle } from '@/lib/loginThrottle'
 import { createActAsToken } from '@/lib/auth'
+import { setFlagsForTests } from '@/lib/authz/flags'
+import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
 import { POST, DELETE } from './route'
 
 function req(body?: unknown): NextRequest {
@@ -223,5 +231,41 @@ describe('acting as an admin needs step-up', () => {
   test('an unknown target is still a 404, before any password check', async () => {
     const res = await POST(req({ targetUserId: 'ghost', stepUpPassword: 'whatever' }))
     expect(res.status).toBe(404)
+  })
+})
+
+describe("the cookie's maxAge equals the token lifetime on act-as (step 2.11, ID-24)", () => {
+  function issued(res: Response): { lifetime: number; maxAge: number } {
+    const line = res.headers.getSetCookie().find((c) => c.startsWith('redamon-act-as='))!
+    const c = decodeJwt(line.slice('redamon-act-as='.length).split(';')[0])
+    return { lifetime: c.exp! - c.iat!, maxAge: Number(/Max-Age=(\d+)/i.exec(line)?.[1]) }
+  }
+
+  beforeEach(() => {
+    mockRequireAdmin.mockResolvedValue({ userId: 'admin-1', role: 'admin' })
+    mockUserFindUnique.mockResolvedValue({ id: 'user-X', role: 'standard' })
+    clearInstanceRootCacheForTests()
+  })
+
+  test('identity switch on: as long as an admin session (12 h by default)', async () => {
+    setFlagsForTests({ identity: true })
+    try {
+      mockInstanceFindUnique.mockResolvedValue({ rootUserId: null, adminSessionTtlHours: 12 })
+      expect(issued(await POST(req({ targetUserId: 'user-X' })))).toEqual({ lifetime: 12 * 3600, maxAge: 12 * 3600 })
+      mockInstanceFindUnique.mockResolvedValue({ rootUserId: null, adminSessionTtlHours: 2 })
+      expect(issued(await POST(req({ targetUserId: 'user-X' })))).toEqual({ lifetime: 2 * 3600, maxAge: 2 * 3600 })
+    } finally {
+      setFlagsForTests(null)
+    }
+  })
+
+  test('switch off: today\'s 12 h, no instance row read', async () => {
+    setFlagsForTests({ identity: false })
+    try {
+      expect(issued(await POST(req({ targetUserId: 'user-X' })))).toEqual({ lifetime: 12 * 3600, maxAge: 12 * 3600 })
+      expect(mockInstanceFindUnique).not.toHaveBeenCalled()
+    } finally {
+      setFlagsForTests(null)
+    }
   })
 })

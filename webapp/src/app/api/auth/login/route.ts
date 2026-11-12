@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyPassword, createToken, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
+import { verifyPassword, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
 import { findSignInAccount, recordSignIn } from '@/lib/authz/accountEmail'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rbacFlags } from '@/lib/authz/flags'
@@ -7,6 +7,7 @@ import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
 import { setLoginCookie } from '@/lib/loginCookie'
+import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { flagShortPasswordAtSignIn } from '@/lib/authz/mustChange'
 import { afterResetEntry, firstSignInAfterReset, handOverNotices, type NoticeView } from '@/lib/authz/accountNotices'
 import { internalError } from '@/lib/routeErrors'
@@ -104,8 +105,9 @@ export async function POST(request: NextRequest) {
     invalidatePrincipal(user.id)
 
     // The token carries the version the account holds now: raising it later signs this
-    // browser out, together with every other one.
-    const token = await createToken(user.id, user.role, sessionVersion, { pwc: mustChange })
+    // browser out, together with every other one. With the identity switch on it lives as long
+    // as the instance gives this kind of account (step 2.11), and so does its cookie.
+    const { token, maxAge } = await issueLoginToken({ id: user.id, role: user.role, sessionVersion }, { pwc: mustChange })
 
     const response = NextResponse.json({
       id: user.id,
@@ -115,7 +117,7 @@ export async function POST(request: NextRequest) {
       ...(mustChange ? { mustChangePassword: true } : {}),
       ...(notices.length ? { notices } : {}),
     })
-    setLoginCookie(response, request, token)
+    setLoginCookie(response, request, token, maxAge)
 
     return response
   } catch (error) {

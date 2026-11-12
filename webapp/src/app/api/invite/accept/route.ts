@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ACT_AS_COOKIE_NAME, createToken, hashPassword } from '@/lib/auth'
+import { ACT_AS_COOKIE_NAME, hashPassword } from '@/lib/auth'
 import { readJsonBody } from '@/lib/jsonBody'
 import { setLoginCookie } from '@/lib/loginCookie'
+import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rbacFlags } from '@/lib/authz/flags'
 import { routeNotFound } from '@/lib/authz/accountStatus'
@@ -63,7 +64,8 @@ export const POST = withInviteErrors('invite accept', 'Could not set the passwor
     id: account.id, name: account.name, email: account.email, role: account.role,
     ...(account.notices.length ? { notices: account.notices } : {}),
   })
-  setLoginCookie(res, request, await createToken(account.id, account.role, account.sessionVersion))
+  const { token, maxAge } = await issueLoginToken(account)
+  setLoginCookie(res, request, token, maxAge)
   clearInviteCookie(res, request)
   // A previous admin session's act-as cookie means nothing for this account.
   if (request.cookies.get(ACT_AS_COOKIE_NAME)) res.cookies.set(ACT_AS_COOKIE_NAME, '', { path: '/', maxAge: 0 })

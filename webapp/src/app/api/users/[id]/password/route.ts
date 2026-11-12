@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { createToken, hashPassword } from '@/lib/auth'
+import { hashPassword } from '@/lib/auth'
 import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
@@ -13,6 +13,7 @@ import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
 import { setLoginCookie } from '@/lib/loginCookie'
+import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { parseReason, reasonRequired, resetCredentials, resetStatusRefusal } from '@/lib/authz/resetCredentials'
 
 interface RouteParams {
@@ -168,7 +169,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // so the person goes on without signing in again; any other cookie with the claim now
     // disagrees with the account and signs in again (session.ts).
     if (isSelf && account?.mustChangePassword) {
-      setLoginCookie(response, request, await createToken(id, session.role, account.sessionVersion))
+      const { token, maxAge } = await issueLoginToken({ id, role: session.role, sessionVersion: account.sessionVersion })
+      setLoginCookie(response, request, token, maxAge)
     }
     return response
   } catch (error) {

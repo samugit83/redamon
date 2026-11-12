@@ -309,3 +309,31 @@ describe('creating an account with a temporary password', () => {
     expect(h.creates[0]).not.toHaveProperty('mustChangePassword')
   })
 })
+
+describe("the cookie's maxAge equals the token lifetime on password change (step 2.11, ID-24)", () => {
+  function issued(res: Response): { lifetime: number; maxAge: number; claims: Record<string, unknown> } {
+    const line = res.headers.getSetCookie().find((c) => c.startsWith('redamon-auth='))!
+    const [, body] = line.slice('redamon-auth='.length).split(';')[0].split('.')
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as Record<string, number>
+    return { lifetime: claims.exp - claims.iat, maxAge: Number(/Max-Age=(\d+)/i.exec(line)?.[1]), claims }
+  }
+
+  test('a member re-issued after its forced change: 168 h (the instance row holds no other value here)', async () => {
+    h.accounts['member-1'].mustChangePassword = true
+    await signIn('member-1', { pwc: true })
+    const { lifetime, maxAge, claims } = issued(await put('member-1', { newPassword: 'My-own-orchid-77', currentPassword: 'temp' }))
+    expect(lifetime).toBe(168 * 3600)
+    expect(maxAge).toBe(lifetime)
+    expect(claims).not.toHaveProperty('idl')
+  })
+
+  test('an admin: 12 h with its idle claims', async () => {
+    h.accounts['admin-1'].mustChangePassword = true
+    await signIn('admin-1', { pwc: true })
+    const { lifetime, maxAge, claims } = issued(await put('admin-1', { newPassword: 'Admin-own-orchid-9', currentPassword: 'temp' }))
+    expect(lifetime).toBe(12 * 3600)
+    expect(maxAge).toBe(lifetime)
+    expect(claims).toMatchObject({ adm: 1, idl: 60 })
+    expect(claims).not.toHaveProperty('pwc')
+  })
+})
