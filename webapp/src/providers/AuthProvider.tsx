@@ -3,6 +3,15 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 
+/** The instance's Root as the header's Root banner shows it (identity switch on). */
+export interface RootNotice {
+  email: string
+  /** Confirmed by the install, the host or a transfer; an automatic choice is not. */
+  confirmed: boolean
+  /** When an unconfirmed Root was chosen (ISO), null when unknown or confirmed. */
+  chosenAt: string | null
+}
+
 /** What the header's admin banners show; /api/auth/me sends it to admins only. */
 export interface AdminNotices {
   compat: boolean
@@ -10,6 +19,8 @@ export interface AdminNotices {
   legacyGrantsPending: number | null
   /** Present (true) only while RBAC_IDENTITY_ENABLED is on: disable and sign-out are offered. */
   identity?: true
+  /** Identity switch on: the Root, null when the instance has none; absent when off or unread. */
+  root?: RootNotice | null
 }
 
 export interface AuthUser {
@@ -17,6 +28,8 @@ export interface AuthUser {
   name: string
   email: string
   role: 'admin' | 'standard'
+  /** Identity switch on: root, admin or member; absent when off. */
+  accountType?: 'root' | 'admin' | 'member'
   rbac?: AdminNotices
 }
 

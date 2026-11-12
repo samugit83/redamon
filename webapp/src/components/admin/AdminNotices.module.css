@@ -26,6 +26,12 @@
   border-bottom: 1px solid var(--status-warning);
 }
 
+.rootNotice {
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
+  border-bottom: 1px solid var(--status-info);
+}
+
 .bannerLink {
   color: inherit;
   font-weight: var(--font-semibold);

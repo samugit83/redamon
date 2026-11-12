@@ -4,7 +4,44 @@ import { getSession } from '@/lib/session'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { rbacFlags } from '@/lib/authz/flags'
 import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
-import type { AdminNotices } from '@/providers/AuthProvider'
+import { accountTypeOf, loadInstanceRoot, type AccountType, type InstanceRoot } from '@/lib/authz/root'
+import type { AdminNotices, RootNotice } from '@/providers/AuthProvider'
+
+// The boot backfill's row (scripts/backfill-rbac-root.mjs): when an automatic Root was chosen.
+const ROOT_ASSIGNED_ACTION = 'system.rbac_root_assigned'
+
+interface RootView {
+  accountType: AccountType
+  /** Admins only. */
+  root?: RootNotice | null
+}
+
+/**
+ * The account type and, for an admin, the Root its banner shows (step 2.5); identity switch
+ * on only. A member is never Root (Root is an admin), so its answer reads nothing. A failed
+ * read leaves both out and is logged: the session, which the whole app reads, never fails.
+ */
+async function rootView(user: { id: string; role: string }): Promise<RootView | null> {
+  if (!rbacFlags().identity) return null
+  if (user.role !== 'admin') return { accountType: 'member' }
+  try {
+    const root = await loadInstanceRoot()
+    return { accountType: accountTypeOf(user, root), root: root && await rootNotice(root) }
+  } catch (err) {
+    console.error(`[rbac] could not read the Root: ${safeErrorCode(err)}`)
+    return null
+  }
+}
+
+async function rootNotice(root: InstanceRoot): Promise<RootNotice> {
+  if (root.confirmed) return { email: root.email, confirmed: true, chosenAt: null }
+  const chosen = await prisma.auditLog.findFirst({
+    where: { action: ROOT_ASSIGNED_ACTION, targetId: root.userId },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  })
+  return { email: root.email, confirmed: false, chosenAt: chosen?.createdAt.toISOString() ?? null }
+}
 
 /**
  * What the header's admin banners show (step 1.18). Never fails the session, which the
@@ -42,9 +79,12 @@ export async function GET() {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
+    const root = await rootView(user)
+    const account = root ? { ...user, accountType: root.accountType } : user
     // The real signed-in account's role, read from the database: only admins see the switch.
-    if (session.role !== 'admin') return NextResponse.json(user)
-    return NextResponse.json({ ...user, rbac: await adminNotices() })
+    if (session.role !== 'admin') return NextResponse.json(account)
+    const rbac = await adminNotices()
+    return NextResponse.json({ ...account, rbac: root && 'root' in root ? { ...rbac, root: root.root } : rbac })
   } catch (error) {
     return internalError(error, 'Internal server error', { log: 'Auth me error' })
   }
