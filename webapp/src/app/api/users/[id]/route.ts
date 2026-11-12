@@ -16,6 +16,8 @@ import { rootProtectedAnswer, rootProtectedRefusal } from '@/lib/authz/rootProte
 import { rbacFlags } from '@/lib/authz/flags'
 import { lockedInstanceRoot } from '@/lib/authz/root'
 import { requireRootPower, rootOnlyRefusal } from '@/lib/authz/rootPowers'
+import { emailChangedNotice, withNotice } from '@/lib/authz/accountNotices'
+import { now } from '@/lib/authz/clock'
 import type { RootGuardRefusal } from '@/lib/authz/adminSet'
 import type { Session } from '@/lib/session'
 
@@ -24,6 +26,18 @@ interface RouteParams {
 }
 
 const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
+const ACCOUNT_CHANGED = {
+  error: 'The account changed while this request ran. Reload it and try again.',
+  code: 'account_changed',
+} as const
+
+/** Thrown inside the write's transaction when the address moved since it was read: all rolls back. */
+class AccountChanged extends Error {
+  constructor() {
+    super('account changed')
+    this.name = 'AccountChanged'
+  }
+}
 
 const USER_SELECT = {
   id: true,
@@ -42,16 +56,19 @@ type AuditedFields = { name?: string | null; email?: string | null; role?: strin
  * `user.update` (name, email) and `user.role_changed`, each only for the fields this
  * request wrote that really changed. The remembered model defaults are preferences
  * the project form saves often, not account administration: no row. A role change that
- * raised the session version (identity switch on) records the new version.
+ * raised the session version (identity switch on) records the new version. With
+ * `emailRow` (identity switch on, step 2.11) a changed email has its own
+ * `user.email_changed` row instead of a field of `user.update`.
  */
 function userEditRows(
   id: string,
   written: Record<string, string>,
   before: AuditedFields | null,
   after: AuditedFields & { sessionVersion?: number },
+  { emailRow = false }: { emailRow?: boolean } = {},
 ): UserAuditFields[] {
   const changed = (k: keyof AuditedFields) => k in written && (before?.[k] ?? null) !== (after[k] ?? null)
-  const fields = (['name', 'email'] as const).filter(changed)
+  const fields = (emailRow ? ['name'] as const : ['name', 'email'] as const).filter(changed)
   const rows: UserAuditFields[] = []
   if (fields.length > 0) {
     rows.push({
@@ -60,6 +77,9 @@ function userEditRows(
       before: Object.fromEntries(fields.map(k => [k, before?.[k] ?? null])),
       after: Object.fromEntries(fields.map(k => [k, after[k] ?? null])),
     })
+  }
+  if (emailRow && changed('email')) {
+    rows.push({ action: 'user.email_changed', targetId: id, before: { email: before?.email ?? null }, after: { email: after.email ?? null } })
   }
   if (changed('role')) {
     rows.push({
@@ -115,23 +135,38 @@ function publicUser<T extends { sessionVersion?: number }>(user: T): Omit<T, 'se
  * rule). A role change raises the account's session version in the same transaction as the role
  * and its audit rows (written fail closed), so the role a cookie was signed for never outlives
  * it; the transaction holds the Root lock and checks Root again.
+ *
+ * The sign-in email (step 2.11, ID-30, ID-25): changing one's own takes the current password,
+ * an admin changing a member's takes the admin's own (another admin's is Root's, above). Only
+ * then is the address checked against the other accounts, so a cookie without the password
+ * learns nothing about which addresses exist. The change, its `user.email_changed` row and a
+ * notice to the account commit together.
  */
 async function updateWithIdentity(
-  request: NextRequest, session: Session, id: string, data: Record<string, string>, stepUpPassword: unknown,
+  request: NextRequest, session: Session, id: string, data: Record<string, string>,
+  { stepUpPassword, currentPassword }: { stepUpPassword: unknown; currentPassword: unknown },
 ): Promise<NextResponse> {
-  const target = await prisma.user.findUnique({ where: { id }, select: { role: true } })
+  const target = await prisma.user.findUnique({ where: { id }, select: { role: true, email: true } })
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  const self = id === session.userId
   const roleChange = 'role' in data && data.role !== target.role
-  const otherAdmin = id !== session.userId && target.role === 'admin'
+  const emailChange = 'email' in data && data.email !== target.email
+  const otherAdmin = !self && target.role === 'admin'
   const needsRoot = otherAdmin || (roleChange && data.role === 'admin')
   if (needsRoot) {
     const refusal = await requireRootPower(request, session, stepUpPassword, ROOT_ONLY_EDIT)
     if (refusal) return refusal
+  } else if (emailChange) {
+    const refusal = await requireStepUp(request, self ? currentPassword : stepUpPassword)
+    if (refusal) return refusal
+  }
+  if (emailChange && await emailTakenByAnother(data.email, id)) {
+    return NextResponse.json(EMAIL_TAKEN, { status: 409 })
   }
   const select = { ...USER_SELECT, sessionVersion: true } as const
   const attempted = roleChange ? 'role_change' : 'edit'
 
-  if (!roleChange && !needsRoot) {
+  if (!roleChange && !needsRoot && !emailChange) {
     const before = ('name' in data || 'email' in data)
       ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
       : null
@@ -143,38 +178,57 @@ async function updateWithIdentity(
 
   const writeEdit = async (tx: Prisma.TransactionClient, before: AuditedFields | null) => {
     const bump = 'role' in data && data.role !== before?.role
-    const user = await tx.user.update({
-      where: { id }, data: (bump ? { ...data, sessionVersion: { increment: 1 } } : data) as Prisma.UserUpdateInput, select,
-    })
-    for (const row of userEditRows(id, data, before, bump ? user : publicUser(user))) {
+    const fields = (bump ? { ...data, sessionVersion: { increment: 1 } } : { ...data }) as Prisma.UserUpdateInput
+    let user
+    if (emailChange) {
+      // Conditional on the address read here: another change in between refuses this one.
+      const held = await tx.user.findUnique({ where: { id }, select: { email: true, pendingNotices: true } })
+      if (!held) throw new AccountChanged()
+      const actor = await tx.user.findUnique({ where: { id: session.userId }, select: { name: true, email: true } })
+      const by = { id: session.userId, name: actor?.name ?? '', email: actor?.email ?? '' }
+      const notice = emailChangedNotice({ by, at: now(), from: held.email, to: data.email, self })
+      fields.pendingNotices = withNotice(held.pendingNotices, notice) as unknown as Prisma.InputJsonValue
+      const moved = await tx.user.updateMany({ where: { id, email: held.email }, data: fields as Prisma.UserUpdateManyMutationInput })
+      if (moved.count !== 1) throw new AccountChanged()
+      user = await tx.user.findUnique({ where: { id }, select })
+      if (!user) throw new AccountChanged()
+    } else {
+      user = await tx.user.update({ where: { id }, data: fields, select })
+    }
+    for (const row of userEditRows(id, data, before, bump ? user : publicUser(user), { emailRow: true })) {
       await writeAuditTx(tx, await userAuditEntry(request, session, row))
     }
     return user
   }
 
-  if (roleChange && data.role === 'standard') {
-    const result = await withLastAdminGuard(id, (tx, before) => writeEdit(tx, before), rootRecheck(session, needsRoot))
-    if (!result.ok) {
-      if (result.refused) return rootGuardAnswer(request, session, id, result.refused, attempted)
-      return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+  try {
+    if (roleChange && data.role === 'standard') {
+      const result = await withLastAdminGuard(id, (tx, before) => writeEdit(tx, before), rootRecheck(session, needsRoot))
+      if (!result.ok) {
+        if (result.refused) return rootGuardAnswer(request, session, id, result.refused, attempted)
+        return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      }
+      invalidatePrincipal(id)
+      return NextResponse.json(publicUser(result.value))
     }
-    invalidatePrincipal(id)
-    return NextResponse.json(publicUser(result.value))
-  }
 
-  type Outcome = { refused: RootGuardRefusal } | { missing: true } | { user: Awaited<ReturnType<typeof writeEdit>> }
-  const result = await prisma.$transaction(async (tx): Promise<Outcome> => {
-    const root = await lockedInstanceRoot(tx)
-    if (root && root.userId === id && id !== session.userId) return { refused: 'root_protected' }
-    if (needsRoot && !(root && root.userId === session.userId && root.confirmed)) return { refused: 'root_only' }
-    const before = await tx.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
-    if (!before) return { missing: true }
-    return { user: await writeEdit(tx, before) }
-  })
-  if ('refused' in result) return rootGuardAnswer(request, session, id, result.refused, attempted)
-  if ('missing' in result) return NextResponse.json({ error: 'User not found' }, { status: 404 })
-  invalidatePrincipal(id)
-  return NextResponse.json(publicUser(result.user))
+    type Outcome = { refused: RootGuardRefusal } | { missing: true } | { user: Awaited<ReturnType<typeof writeEdit>> }
+    const result = await prisma.$transaction(async (tx): Promise<Outcome> => {
+      const root = await lockedInstanceRoot(tx)
+      if (root && root.userId === id && id !== session.userId) return { refused: 'root_protected' }
+      if (needsRoot && !(root && root.userId === session.userId && root.confirmed)) return { refused: 'root_only' }
+      const before = await tx.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
+      if (!before) return { missing: true }
+      return { user: await writeEdit(tx, before) }
+    })
+    if ('refused' in result) return rootGuardAnswer(request, session, id, result.refused, attempted)
+    if ('missing' in result) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    invalidatePrincipal(id)
+    return NextResponse.json(publicUser(result.user))
+  } catch (err) {
+    if (err instanceof AccountChanged) return NextResponse.json(ACCOUNT_CHANGED, { status: 409 })
+    throw err
+  }
 }
 
 /** Another admin's account changes hands only with the acting admin's own password. */
@@ -292,13 +346,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (typeof defaultAgentModel === 'string') data.defaultAgentModel = defaultAgentModel
     if (typeof defaultAiPipelineModel === 'string') data.defaultAiPipelineModel = defaultAiPipelineModel
 
+    // With the identity switch on the address is checked after the password it takes (step 2.11).
+    if (rbacFlags().identity) {
+      return await updateWithIdentity(request, session, id, data, { stepUpPassword, currentPassword: body?.currentPassword })
+    }
+
     // Another account may hold the address in other capitals (stored before
     // emails were lowercased), which the unique index cannot see.
     if (data.email && await emailTakenByAnother(data.email, id)) {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
-
-    if (rbacFlags().identity) return await updateWithIdentity(request, session, id, data, stepUpPassword)
 
     if (data.role !== 'standard') {
       const before = ('name' in data || 'email' in data || 'role' in data)

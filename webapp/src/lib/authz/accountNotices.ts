@@ -3,7 +3,8 @@
  * is takeover-equivalent, whoever issued it can use it first, so the person is told. The reset
  * writes a notice into the account's `pendingNotices`; the next sign-in hands the pending ones
  * to the person once and marks them shown. The account keeps them, the newest NOTICE_LIMIT, for
- * its activity list (step 2.11).
+ * its activity list (step 2.11). A change of the sign-in email is told the same way (step 2.11,
+ * ID-30): whoever changes it can then reset the password through it.
  *
  * The first sign-in after a reset is the one whose account last signed in before the latest
  * reset notice; only that sign-in records its address and browser (DV-11).
@@ -30,17 +31,39 @@ export interface CredentialsResetNotice {
   shownAt?: string
 }
 
-export type AccountNotice = CredentialsResetNotice
+export interface EmailChangedNotice {
+  id: string
+  type: 'email_changed'
+  at: string
+  /** Who changed it: the account itself (`self`), or the real signed-in admin. */
+  by: { id: string; name: string; email: string }
+  from: string
+  to: string
+  self: boolean
+  shownAt?: string
+}
+
+export type AccountNotice = CredentialsResetNotice | EmailChangedNotice
 
 /** What the person is shown: the notice without the admin's account id. */
-export interface NoticeView {
-  id: string
-  type: 'credentials_reset'
-  at: string
-  by: { name: string; email: string }
-  reason: string | null
-  mode: ResetMode
-}
+export type NoticeView =
+  | {
+    id: string
+    type: 'credentials_reset'
+    at: string
+    by: { name: string; email: string }
+    reason: string | null
+    mode: ResetMode
+  }
+  | {
+    id: string
+    type: 'email_changed'
+    at: string
+    by: { name: string; email: string }
+    from: string
+    to: string
+    self: boolean
+  }
 
 const text = (v: unknown): v is string => typeof v === 'string'
 
@@ -48,10 +71,14 @@ function isNotice(v: unknown): v is AccountNotice {
   if (!v || typeof v !== 'object') return false
   const n = v as Record<string, unknown>
   const by = n.by as Record<string, unknown> | null | undefined
-  return n.type === 'credentials_reset' && text(n.id) && text(n.at) && !Number.isNaN(Date.parse(n.at))
-    && (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || text(n.reason))
+  const common = text(n.id) && text(n.at) && !Number.isNaN(Date.parse(n.at))
     && !!by && typeof by === 'object' && text(by.id) && text(by.name) && text(by.email)
     && (n.shownAt === undefined || text(n.shownAt))
+  if (!common) return false
+  if (n.type === 'credentials_reset') {
+    return (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || text(n.reason))
+  }
+  return n.type === 'email_changed' && text(n.from) && text(n.to) && typeof n.self === 'boolean'
 }
 
 /** The notices a stored value holds; anything else (a row from before this step, a bad entry) is none. */
@@ -63,6 +90,12 @@ export function credentialsResetNotice(
   { by, at, reason, mode }: { by: CredentialsResetNotice['by']; at: Date; reason: string | null; mode: ResetMode },
 ): CredentialsResetNotice {
   return { id: randomUUID(), type: 'credentials_reset', at: at.toISOString(), by, reason, mode }
+}
+
+export function emailChangedNotice(
+  { by, at, from, to, self }: { by: EmailChangedNotice['by']; at: Date; from: string; to: string; self: boolean },
+): EmailChangedNotice {
+  return { id: randomUUID(), type: 'email_changed', at: at.toISOString(), by, from, to, self }
 }
 
 /** `stored` with `notice` appended, keeping the newest NOTICE_LIMIT. */
@@ -115,7 +148,9 @@ export function afterResetEntry(
 }
 
 export function noticeView(n: AccountNotice): NoticeView {
-  return { id: n.id, type: n.type, at: n.at, by: { name: n.by.name, email: n.by.email }, reason: n.reason, mode: n.mode }
+  const by = { name: n.by.name, email: n.by.email }
+  if (n.type === 'email_changed') return { id: n.id, type: n.type, at: n.at, by, from: n.from, to: n.to, self: n.self }
+  return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, mode: n.mode }
 }
 
 /** `stored` with every pending notice marked shown now. */

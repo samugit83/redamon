@@ -4,26 +4,44 @@ import { useCallback } from 'react'
 import { useOptionalAlertModal } from '@/components/ui'
 
 /** A notice as the sign-in answers it (lib/authz/accountNotices.ts NoticeView). */
-export interface AccountNoticeView {
-  id: string
-  type: 'credentials_reset'
-  at: string
-  by: { name: string; email: string }
-  reason: string | null
-  mode: 'link' | 'temporary'
-}
+export type AccountNoticeView =
+  | {
+    id: string
+    type: 'credentials_reset'
+    at: string
+    by: { name: string; email: string }
+    reason: string | null
+    mode: 'link' | 'temporary'
+  }
+  | {
+    id: string
+    type: 'email_changed'
+    at: string
+    by: { name: string; email: string }
+    from: string
+    to: string
+    /** The account changed it itself. */
+    self: boolean
+  }
 
 type Alerts = ReturnType<typeof useOptionalAlertModal>
 
-const TITLE = 'Your password was reset'
+const TITLES: Record<AccountNoticeView['type'], string> = {
+  credentials_reset: 'Your password was reset',
+  email_changed: 'Your sign-in email was changed',
+}
 
 function isView(v: unknown): v is AccountNoticeView {
   if (!v || typeof v !== 'object') return false
   const n = v as Record<string, unknown>
   const by = n.by as Record<string, unknown> | null | undefined
-  return n.type === 'credentials_reset' && typeof n.id === 'string' && typeof n.at === 'string'
-    && (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || typeof n.reason === 'string')
+  const common = typeof n.id === 'string' && typeof n.at === 'string'
     && !!by && typeof by === 'object' && typeof by.name === 'string' && typeof by.email === 'string'
+  if (!common) return false
+  if (n.type === 'credentials_reset') {
+    return (n.mode === 'link' || n.mode === 'temporary') && (n.reason === null || typeof n.reason === 'string')
+  }
+  return n.type === 'email_changed' && typeof n.from === 'string' && typeof n.to === 'string' && typeof n.self === 'boolean'
 }
 
 /** The notices a sign-in answer carries; anything else in it is ignored. */
@@ -36,9 +54,16 @@ export function readNoticeViews(value: unknown): AccountNoticeView[] {
  * names who did it and when, and says what to do if it was not expected (feature document §7.1).
  */
 export function noticeMessage(n: AccountNoticeView): string {
+  const when = new Date(n.at).toLocaleString()
+  if (n.type === 'email_changed') {
+    // Whoever changes the sign-in email can then have a reset link or password sent their way.
+    const who = n.self ? 'You changed your sign-in email' : `${n.by.name} (${n.by.email}) changed your sign-in email`
+    return `${who} from ${n.from} to ${n.to} on ${when}. `
+      + 'If you did not ask for this, tell your administrator: you now sign in with the new address.'
+  }
   const how = n.mode === 'link' ? 'with a reset link' : 'with a temporary password'
   const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'
-  return `${n.by.name} (${n.by.email}) reset your password ${how} on ${new Date(n.at).toLocaleString()}. ${why} `
+  return `${n.by.name} (${n.by.email}) reset your password ${how} on ${when}. ${why} `
     + 'If you did not ask for this, tell your administrator: whoever resets a password can sign in with it before you do.'
 }
 
@@ -49,7 +74,7 @@ export function noticeMessage(n: AccountNoticeView): string {
  */
 export async function showPendingNotices(alerts: Alerts, value: unknown): Promise<void> {
   if (!alerts) return
-  for (const n of readNoticeViews(value)) await alerts.alertWarning(noticeMessage(n), TITLE)
+  for (const n of readNoticeViews(value)) await alerts.alertWarning(noticeMessage(n), TITLES[n.type])
 }
 
 /** `showPendingNotices` bound to the app's dialog: for the pages that sign a person in (step 2.10). */

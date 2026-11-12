@@ -17,12 +17,16 @@ vi.mock('@/lib/prisma', () => ({
 import {
   NOTICE_LIMIT,
   credentialsResetNotice,
+  emailChangedNotice,
   firstSignInAfterReset,
+  latestReset,
+  noticeView,
   handOverNotices,
   pendingNotices,
   readNotices,
   withNotice,
 } from './accountNotices'
+import type { CredentialsResetNotice } from './accountNotices'
 import { setNowForTests } from './clock'
 
 const BY = { id: 'admin-1', name: 'Laura', email: 'laura@e2e.local' }
@@ -54,7 +58,7 @@ describe('the credentials reset notice', () => {
   test('joins the list; only the newest are kept', () => {
     let list: unknown = []
     for (let i = 0; i < NOTICE_LIMIT + 5; i++) list = withNotice(list, reset({ reason: `r${i}` }))
-    const kept = readNotices(list)
+    const kept = readNotices(list) as CredentialsResetNotice[]
     expect(kept).toHaveLength(NOTICE_LIMIT)
     expect(kept[0].reason).toBe('r5')
     expect(kept.at(-1)!.reason).toBe(`r${NOTICE_LIMIT + 4}`)
@@ -130,5 +134,49 @@ describe('handing the pending notices over at a sign-in', () => {
   test("the person never sees the admin's account id", async () => {
     const [shown] = await handOverNotices('u1', [reset()])
     expect(JSON.stringify(shown)).not.toContain('admin-1')
+  })
+})
+
+describe('the email change notice (step 2.11, ID-30)', () => {
+  const changed = (self = false) =>
+    emailChangedNotice({ by: BY, at: AT, from: 'old@e2e.local', to: 'new@e2e.local', self })
+
+  test('names who, when, the old and the new address, and whether the account made it itself', () => {
+    expect(changed()).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      type: 'email_changed',
+      at: '2026-11-12T10:00:00.000Z',
+      by: BY,
+      from: 'old@e2e.local',
+      to: 'new@e2e.local',
+      self: false,
+    })
+    expect(changed(true).self).toBe(true)
+  })
+
+  test('is read, kept and handed over like a reset notice, without the admin id', async () => {
+    const list = withNotice([reset()], changed())
+    expect(readNotices(list).map((n) => n.type)).toEqual(['credentials_reset', 'email_changed'])
+    expect(pendingNotices(list)).toHaveLength(2)
+    const view = noticeView(readNotices(list)[1])
+    expect(view).toEqual({
+      id: expect.any(String), type: 'email_changed', at: '2026-11-12T10:00:00.000Z',
+      by: { name: 'Laura', email: 'laura@e2e.local' }, from: 'old@e2e.local', to: 'new@e2e.local', self: false,
+    })
+    const shown = await handOverNotices('u1', list)
+    expect(shown.map((n) => n.type)).toEqual(['credentials_reset', 'email_changed'])
+    expect(JSON.stringify(shown)).not.toContain('admin-1')
+  })
+
+  test('a malformed one reads as none', () => {
+    const good = changed()
+    for (const bad of [{ ...good, from: 3 }, { ...good, to: undefined }, { ...good, self: 'yes' }, { ...good, by: null }]) {
+      expect(readNotices([bad])).toEqual([])
+    }
+  })
+
+  test('it is no reset: the first sign-in after a reset ignores it', () => {
+    expect(latestReset([changed()])).toBeNull()
+    expect(firstSignInAfterReset(null, [changed()])).toBe(false)
   })
 })

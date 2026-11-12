@@ -90,3 +90,38 @@ describe('shown once, after sign-in, in the app dialog', () => {
     await expect(showPendingNotices(null, [notice()])).resolves.toBeUndefined()
   })
 })
+
+describe('the email change notice (step 2.11, ID-30)', () => {
+  const changed = (over: Record<string, unknown> = {}) => ({
+    id: 'e1', type: 'email_changed', at: '2026-11-12T10:00:00.000Z',
+    by: { name: 'Laura', email: 'laura@e2e.local' }, from: 'old@e2e.local', to: 'new@e2e.local', self: false, ...over,
+  })
+
+  test('who changed the sign-in address, from what to what, and what to do if unexpected', () => {
+    const [view] = readNoticeViews([changed()])
+    const text = noticeMessage(view)
+    expect(text).toContain('Laura (laura@e2e.local)')
+    expect(text).toContain('old@e2e.local')
+    expect(text).toContain('new@e2e.local')
+    expect(text).toMatch(/tell your administrator/i)
+  })
+
+  test('a change the account made itself says so', () => {
+    const text = noticeMessage(readNoticeViews([changed({ self: true })])[0])
+    expect(text).toMatch(/^You changed your sign-in email/)
+    expect(text).not.toContain('Laura')
+  })
+
+  test('only well-formed ones are read', () => {
+    expect(readNoticeViews([changed({ from: 1 }), changed({ self: 'no' }), changed()])).toHaveLength(1)
+  })
+
+  test('shown in the app dialog under its own title', async () => {
+    const onDone = vi.fn()
+    render(<AlertProvider><Harness notices={[changed()]} onDone={onDone} /></AlertProvider>)
+    const dialog = await screen.findByRole('dialog', { name: 'Your sign-in email was changed' })
+    expect(dialog).toHaveTextContent('new@e2e.local')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+})
