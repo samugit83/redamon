@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest'
 import {
-  admitsPartialHost, discoveryDomains, graphDomainOf, graphHostInScope, graphScopeParams, ipModeRefusal,
-  ipTargetMatcher, partialScopeFields, resolveProjectRoots,
+  IP_MODE_NAME_ONLY_TOOLS, admitsPartialHost, discoveryDomains, graphDomainOf, graphHostInScope, graphScopeParams,
+  ipModeRefusal, ipModeScopeParams, ipTargetMatcher, partialScopeFields, resolveProjectRoots, typedHostnameRefusal,
 } from './partialReconScope'
 
 const PID = 'p1'
@@ -174,5 +174,67 @@ describe('IP mode (B-19..B-22)', () => {
     expect(targets.outside('2001:db8::/126')).toMatch(/2 of the 3 addresses/)
     expect(targets.outside('nonsense')).toMatch(/not an address or CIDR/)
     expect(targets.outside('203.0.113.0/40')).toMatch(/not an address or CIDR/)
+  })
+})
+
+describe('IP mode per hostname mode', () => {
+  test('the name-only tools are refused where no hostname is a target', () => {
+    for (const tool of Object.keys(IP_MODE_NAME_ONLY_TOOLS)) {
+      for (const mode of ['ip_only', 'record_only', undefined, 'bogus']) {
+        expect(ipModeRefusal(tool, true, mode)).toMatch(/no hostname is a target/)
+      }
+      expect(ipModeRefusal(tool, true, 'record_filter')).toBeNull()
+      expect(ipModeRefusal(tool, true, 'scan_all')).toBeNull()
+      expect(ipModeRefusal(tool, false, 'ip_only')).toBeNull()
+    }
+    expect(ipModeRefusal('Gau', true, 'record_only')).toMatch(/set to Record hostnames/)
+    // The tools refused in every IP mode stay refused in the scanning ones.
+    expect(ipModeRefusal('Urlscan', true, 'scan_all')).toMatch(/urlscan/)
+    expect(ipModeRefusal('Httpx', true, 'ip_only')).toBeNull()
+  })
+
+  test('a typed name: none in the recording modes', () => {
+    for (const mode of ['ip_only', 'record_only', null]) {
+      expect(typedHostnameRefusal('app.example.com', { mode })).toMatch(/no typed hostname is scanned/)
+    }
+  })
+
+  test('a typed name in Record + scan matching follows include and exclude, exclude winning', () => {
+    const policy = { mode: 'record_filter', include: ['*.example.com'], exclude: ['old.example.com'] }
+    expect(typedHostnameRefusal('App.Example.com.', policy)).toBeNull()
+    expect(typedHostnameRefusal('old.example.com', policy)).toMatch(/exclude entry of the hostname filter \(old\.example\.com\)/)
+    expect(typedHostnameRefusal('shop.example.net', policy)).toMatch(/matches no include entry/)
+    expect(typedHostnameRefusal('example.com', policy)).toMatch(/matches no include entry/)
+    expect(typedHostnameRefusal('app.example.com', { mode: 'record_filter', include: null, exclude: [] }))
+      .toMatch(/cannot be read/)
+    expect(typedHostnameRefusal('app.example.com', { mode: 'record_filter', include: ['*.*'], exclude: [] }))
+      .toMatch(/cannot be read/)
+  })
+
+  test('a typed name in Record + scan all: any name, never a hard-blocked or malformed one', () => {
+    expect(typedHostnameRefusal('shop.example.net', { mode: 'scan_all' })).toBeNull()
+    expect(typedHostnameRefusal('www.example.gov', { mode: 'scan_all' })).toMatch(/blocked/)
+    expect(typedHostnameRefusal('not a name', { mode: 'scan_all' })).toMatch(/is not a hostname/)
+    expect(typedHostnameRefusal('203.0.113.9', { mode: 'scan_all' })).toMatch(/is not a hostname/)
+  })
+
+  test('the route scope: target labels and addresses, plus the names the policy admits', () => {
+    const targets = ipTargetMatcher(['203.0.113.0/30', '2001:db8::1'])
+    const params = ipModeScopeParams(targets,
+      ['203-0-113-1', '203-0-113-9', 'host1.provider.example', '2001-db8--1'],
+      ['203.0.113.2', '[2001:db8::1]', '198.51.100.7', 'App.Example.com', 'gone.example.com'],
+      ['App.Example.com'])
+    expect(params.ipSubs).toEqual(['203-0-113-1', '2001-db8--1', 'app.example.com'])
+    expect(params.ipHosts).toEqual(['203.0.113.2', '[2001:db8::1]', 'app.example.com'])
+    expect(ipModeScopeParams(targets, [], [], [])).toEqual({ ipSubs: [], ipHosts: [] })
+  })
+
+  test("the org Domain of a name the policy scans is not stale; another Domain is", () => {
+    const scope = resolveProjectRoots({ ipMode: true }, PID)
+    const graph = [{ name: 'ip-targets.p1', hasData: true }, { name: 'example.com', hasData: true },
+      { name: 'example.net', hasData: true }]
+    expect(partialScopeFields(scope, graph, ['Example.com']).stale_domains).toEqual(['example.net'])
+    expect(partialScopeFields(scope, graph).stale_domains).toEqual(['example.com', 'example.net'])
+    expect(partialScopeFields(scope, graph, ['example.com']).domains).toEqual(['ip-targets.p1'])
   })
 })

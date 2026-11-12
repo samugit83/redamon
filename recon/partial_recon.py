@@ -42,6 +42,7 @@ if __name__ == "__main__":
 
 from recon.project_settings import get_settings
 from recon.helpers import request_pacer
+from recon.helpers.ip_hostnames import hostname_mode
 from recon.helpers.roe_scope import _is_roe_excluded
 from recon.partial_recon_modules.helpers import (
     _classify_ip,
@@ -270,7 +271,10 @@ def _refusal_reason(root: str, settings: dict, project_roots: list):
 def _prepare_scope(config: dict, settings: dict, project_id: str):
     """Refuse roots and write the scope the modules read.
 
-    Returns {root: reason} for each refused root, for the report.
+    Returns {root: reason} for each refused root, for the report. In IP mode
+    also the run's hostnames (S), computed once here with the current policy
+    and live DNS (ip_hostname_scope); the report then lists each typed name it
+    refused and each name an earlier run scanned that it refuses now.
     """
     project_roots = settings_project_roots(settings, project_id)
     refused, kept = {}, []
@@ -292,6 +296,7 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     # Before the typed-input filter and every builder: both keep to this list.
     set_run_ip_targets(settings)
     config["ip_mode"] = bool(settings.get("IP_MODE"))
+    config["ip_hostname_mode"] = hostname_mode(settings) if config["ip_mode"] else None
     config["batch_mode"] = bool(settings.get("DOMAIN_BATCH_MODE"))
     config["settings_overrides"] = _allowlist_overrides(config.get("settings_overrides"))
     config["_settings"] = settings
@@ -300,6 +305,11 @@ def _prepare_scope(config: dict, settings: dict, project_id: str):
     dropped = filter_partial_user_input(config, settings)
     for item in dropped:
         print(f"[!][Partial Recon] Not using typed input outside the scope: {item}")
+    if config["ip_mode"]:
+        # After the typed-input filter: a typed name reaches the live check
+        # only once its pattern, the guardrail and the RoE admitted it.
+        from recon.partial_recon_modules.ip_hostname_scope import run_hostname_scope
+        refused.update(run_hostname_scope(config, settings, os.environ.get("USER_ID", ""), project_id))
     if typed and not _typed_anything(config) and not config.get("include_graph_targets", True):
         print("[!][Partial Recon] No typed target is in this project's scope.")
         for root in kept:
@@ -490,7 +500,8 @@ def _dispatch(tool_id: str, config: dict):
     """Run one tool. Loop tools return {root: status}; the rest return None."""
     # main() refuses these before the scope pass; this holds for any other
     # caller that dispatches an IP-mode config.
-    ip_refusal = ip_mode_refusal(tool_id, {"IP_MODE": config.get("ip_mode")})
+    ip_refusal = ip_mode_refusal(tool_id, {"IP_MODE": config.get("ip_mode"),
+                                           "IP_HOSTNAME_MODE": config.get("ip_hostname_mode")})
     if ip_refusal:
         print(f"[!][Partial Recon] Refusing to run {tool_id}: {ip_refusal}")
         return {root: ip_refusal for root in scope_roots(config)}

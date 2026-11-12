@@ -7,7 +7,10 @@
  * and refuses anything else. This is a mirror of it, used only to decide what
  * the modal shows and sends.
  */
-import { GRAPH_DOMAIN_IS_ORG, type ScopeGroup, admitsHost, resolveScopeGroups } from '@/lib/scopeGroups'
+import { GRAPH_DOMAIN_IS_ORG, type ScopeGroup, admitsHost, ipHostnameModeOf, resolveScopeGroups } from '@/lib/scopeGroups'
+import { type IpHostnameMode, matches, normalizeName, parseEntries } from '@/lib/ipHostnameFilter'
+import { ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
+import { isHardBlockedDomain } from '@/lib/hard-guardrail'
 
 const ROOT_CHARSET = /^[a-z0-9.-]+$/
 
@@ -118,11 +121,14 @@ export function graphDomainOf(scope: ProjectRoots, root: string): string {
  * the roots are then offered as they are, and the orchestrator still decides.
  * A tool not yet able to cover several roots is offered only the first.
  * Domain nodes are orgs: a scan root is "in the graph" when its org Domain is,
- * and a Domain no current scan root hangs off is stale.
+ * and a Domain no current scan root hangs off is stale. `currentDomains` names
+ * the other Domains that are not stale: in IP mode, the org Domains of the names
+ * the current hostname policy still scans, which no scan root ever names.
  */
 export function partialScopeFields(
   scope: ProjectRoots,
   graph: GraphDomainRow[] | null,
+  currentDomains: readonly string[] = [],
 ): PartialScopeFields {
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
   const inGraph = (root: string) => (graph ?? []).some(row => same(row.name, graphDomainOf(scope, root)))
@@ -134,7 +140,8 @@ export function partialScopeFields(
   current.sort(byName)
 
   const domains = current
-  const graphNames = new Set(scope.roots.map(root => graphDomainOf(scope, root)))
+  const graphNames = new Set([...scope.roots.map(root => graphDomainOf(scope, root)),
+    ...currentDomains.map(d => d.toLowerCase())])
   const stale = (graph ?? [])
     .map(row => row.name)
     .filter(name => !graphNames.has(name.toLowerCase()))
@@ -241,9 +248,89 @@ export const IP_MODE_REFUSED_TOOLS: Readonly<Record<string, string>> = {
   OriginDiscovery: 'Origin discovery probes candidate origin addresses, which are not targets.',
 }
 
-/** Why an IP-mode project cannot run `toolId` as a partial recon, or null. */
-export function ipModeRefusal(toolId: string | null | undefined, ipMode: boolean): string | null {
-  return ipMode && toolId ? IP_MODE_REFUSED_TOOLS[toolId] ?? null : null
+/**
+ * The tools that work on hostnames only (recon helpers.py
+ * IP_MODE_NAME_ONLY_TOOLS). With Hostnames on target IPs set to IP only or
+ * Record hostnames no hostname is a target, so the container refuses them; in
+ * the scanning modes they scan the names the policy admits.
+ */
+export const IP_MODE_NAME_ONLY_TOOLS: Readonly<Record<string, string>> = {
+  Gau: 'It asks web archives about hostnames',
+  ParamSpider: 'It asks web archives about hostnames',
+  SubdomainTakeover: 'It checks hostnames for dangling DNS records',
+}
+
+const SCANNING_MODES: readonly IpHostnameMode[] = ['record_filter', 'scan_all']
+
+/** Why an IP-mode project cannot run `toolId` as a partial recon, or null.
+ *  `hostnameMode` is the saved Hostnames on target IPs mode; an unknown one
+ *  reads as IP only, as the container reads it. */
+export function ipModeRefusal(toolId: string | null | undefined, ipMode: boolean,
+  hostnameMode?: unknown): string | null {
+  if (!ipMode || !toolId) return null
+  if (IP_MODE_REFUSED_TOOLS[toolId]) return IP_MODE_REFUSED_TOOLS[toolId]
+  const mode = ipHostnameModeOf(hostnameMode)
+  if (IP_MODE_NAME_ONLY_TOOLS[toolId] && !SCANNING_MODES.includes(mode)) {
+    return `${IP_MODE_NAME_ONLY_TOOLS[toolId]}, and with Hostnames on target IPs set to `
+      + `${ipHostnameModeLabel(mode)} no hostname is a target.`
+  }
+  return null
+}
+
+/** The saved hostname policy, as far as a typed name goes. */
+export interface TypedHostnamePolicy {
+  mode?: unknown
+  include?: readonly unknown[] | null
+  exclude?: readonly unknown[] | null
+}
+
+/**
+ * Why a hostname typed for an IP-mode partial run is refused, or null: the
+ * pattern half of the hostname rule (recon helpers.py typed_name_refusal and
+ * batch_scope.ip_typed_name_refusal, which are the control). None in IP only
+ * and Record hostnames; the include/exclude entries in Record + scan matching
+ * (exclude wins, an unreadable list admits nothing); any name in Record + scan
+ * all; the hard guardrail on each. Every address the name resolves to must
+ * still be a target: the container checks that at run time.
+ */
+export function typedHostnameRefusal(name: string, policy: TypedHostnamePolicy): string | null {
+  const mode = ipHostnameModeOf(policy.mode)
+  if (!SCANNING_MODES.includes(mode)) {
+    return `Hostnames on target IPs is ${ipHostnameModeLabel(mode)}: no typed hostname is scanned`
+  }
+  const canonical = normalizeName(name)
+  if (canonical === null) return `${name} is not a hostname`
+  const guard = isHardBlockedDomain(canonical)
+  if (guard.blocked) return guard.reason
+  if (mode === 'record_filter') {
+    if (!Array.isArray(policy.include) || !Array.isArray(policy.exclude)) return 'The hostname filter cannot be read'
+    const include = parseEntries(policy.include)
+    const exclude = parseEntries(policy.exclude)
+    if (include.invalid.length || exclude.invalid.length) return 'The hostname filter cannot be read'
+    const verdict = matches(canonical, include.patterns, exclude.patterns)
+    if (verdict.excluded) return `${canonical} matches an exclude entry of the hostname filter (${verdict.matchedBy})`
+    if (!verdict.included) return `${canonical} matches no include entry of the hostname filter`
+  }
+  return null
+}
+
+/**
+ * The graph-inputs route's IP-mode scope (the `$ipSubs` / `$ipHosts` of its
+ * Cypher): the target labels and target addresses the graph holds, plus the
+ * names the project's current policy admits among those a run scanned
+ * (`names`, from admittedByCurrentPolicy). Lower-cased, deduplicated. The
+ * container re-checks those names on live DNS, so a count built on them is
+ * what the run may touch at most.
+ */
+export function ipModeScopeParams(
+  targets: IpTargetMatcher, labels: readonly string[], hosts: readonly string[], names: readonly string[],
+): { ipSubs: string[]; ipHosts: string[] } {
+  const lower = (values: readonly string[]) => values.filter(v => typeof v === 'string' && v).map(v => v.toLowerCase())
+  const admitted = lower(names)
+  return {
+    ipSubs: [...new Set([...lower(labels).filter(l => targets.isLabel(l)), ...admitted])],
+    ipHosts: [...new Set([...lower(hosts).filter(h => targets.has(h)), ...admitted])],
+  }
 }
 
 // Target membership as recon_settings/ip_hostnames.py TargetSet means it: an

@@ -368,13 +368,14 @@ def test_graph_target_hosts_drop_an_apex_resolving_into_an_excluded_range(monkey
 
 
 def test_graph_target_hosts_in_ip_mode_stay_on_the_targets(monkeypatch):
-    """P0c's IP-mode rule is untouched: a name only when every address it
-    resolves to is a target, never the synthetic root."""
+    """IP mode: the archive hosts are the run's hostnames (S), never the
+    synthetic root; the RoE still applies."""
     from recon.partial_recon_modules.graph_builders import graph_target_hosts
     monkeypatch.setattr("graph_db.Neo4jClient", _Client)
     settings = {"IP_MODE": True, "TARGET_IPS": [MIXED_OK, WWW_IP], **_roe(EXCLUDED_RANGE)}
     partial_helpers.set_run_roe(settings)
     partial_helpers.set_run_ip_targets(settings)
+    partial_helpers.set_run_ip_hostnames({WWW: APEX})
     assert graph_target_hosts("u1", "p1", [APEX], None, include_root_domain=True) == [WWW]
 
 

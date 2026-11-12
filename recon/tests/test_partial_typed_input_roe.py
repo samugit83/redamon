@@ -47,11 +47,14 @@ TARGET_IPS = ["192.0.2.10", "192.0.2.11"]
 RoE = "Rules of Engagement"
 
 
-def _settings(excluded, ip_mode=False):
+def _settings(excluded, ip_mode=False, hostname=None):
     base = {"IP_MODE": ip_mode, "DOMAIN_BATCH_MODE": False,
             "ROE_ENABLED": bool(excluded), "ROE_EXCLUDED_HOSTS": list(excluded)}
     if ip_mode:
-        return dict(base, TARGET_IPS=TARGET_IPS)
+        policy = hostname or {}
+        return dict(base, TARGET_IPS=TARGET_IPS, IP_HOSTNAME_MODE=policy.get("mode", "ip_only"),
+                    IP_HOSTNAME_INCLUDE=list(policy.get("include", [])),
+                    IP_HOSTNAME_EXCLUDE=list(policy.get("exclude", [])))
     return dict(base, TARGET_DOMAIN="example.com", SUBDOMAIN_LIST=["."], SCOPE_GROUPS=[GROUP])
 
 
@@ -103,7 +106,7 @@ def test_the_table_is_real():
 @pytest.mark.parametrize("v", VECTORS, ids=[v["name"] for v in VECTORS])
 def test_vector(v, dns):
     dns.table = dict(v.get("resolved") or {})
-    settings = _settings(v["excluded"], v.get("ip_mode", False))
+    settings = _settings(v["excluded"], v.get("ip_mode", False), v.get("hostname"))
     config = _config(settings, v["typed"])
     refused = filter_partial_user_input(config, settings)
     got = dict(config["user_targets"], user_inputs=config["user_inputs"])

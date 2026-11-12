@@ -21,6 +21,7 @@ from recon.partial_recon_modules.helpers import (
     partial_settings,
     root_for_host,
     scope_roots,
+    typed_host_domain,
     typed_ip_attach_to,
 )
 from recon.partial_recon_modules.graph_builders import (
@@ -29,8 +30,38 @@ from recon.partial_recon_modules.graph_builders import (
 )
 
 
+def _scanned_addresses(recon_data: dict) -> list:
+    """The addresses a port scan of ``recon_data`` was handed: IP mode's
+    declared targets, else every address in its DNS block."""
+    metadata = recon_data.get("metadata") or {}
+    if metadata.get("ip_mode"):
+        return sorted({str(ip) for ip in metadata.get("expanded_ips") or () if ip})
+    dns = recon_data.get("dns") or {}
+    found = set()
+    for entry in [dns.get("domain") or {}, *((dns.get("subdomains") or {}).values())]:
+        ips = (entry or {}).get("ips") or {}
+        found.update(a for a in (ips.get("ipv4") or []) + (ips.get("ipv6") or []) if a)
+    return sorted(found)
+
+
+def _scanner_failed(roots: list, label: str, recon_data: dict) -> dict:
+    """The scanner gave no result at all (it failed to start, exited with an
+    error before writing output, or timed out): nothing is written, the
+    addresses it was handed are noted not checked, so the coverage record
+    says so and no prune reads their old ports as gone, and every root is
+    reported failed rather than "completed successfully"."""
+    from recon.helpers import circuit_breaker
+    source = label.lower()
+    hosts = _scanned_addresses(recon_data)
+    circuit_breaker.note_degraded(source, hosts=hosts, host_source=source, source_only_hosts=True,
+                                  reason=f"{label} produced no result (see its log)")
+    print(f"[!][Partial Recon] {label} produced no result: nothing written, "
+          f"{len(hosts)} address(es) noted as not scanned")
+    return {root: f"failed: {label} produced no result" for root in roots}
+
+
 def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
-                      pre_settings: dict = None, normalize_fn=None) -> None:
+                      pre_settings: dict = None, normalize_fn=None, ran=None):
     """
     Shared logic for port-scanner partial recon (Naabu, Masscan, etc.).
 
@@ -41,6 +72,9 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
         label: Display label for log messages.
         pre_settings: Settings to force before calling scan_fn (e.g. MASSCAN_ENABLED).
         normalize_fn: Optional post-scan normalizer -- receives recon_data, mutates in place.
+        ran: Optional ``ran(result) -> bool``: False when the scanner gave no
+            result at all; the run then ends failed ({root: status}) with the
+            addresses noted not scanned (_scanner_failed). None otherwise.
     """
     import ipaddress as _ipaddress
 
@@ -162,7 +196,9 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                         driver = graph_client.driver
                         with driver.session() as session:
                             for hostname, ips in resolved_hostnames.items():
-                                # MERGE Subdomain node
+                                # MERGE Subdomain node. The source is provenance:
+                                # a name another writer made keeps its own (an
+                                # IP-mode typed name is the hostname writer's).
                                 session.run(
                                     """
                                     MERGE (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})
@@ -170,7 +206,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                                         s.status = coalesce(s.status, 'resolved'),
                                         s.discovered_at = coalesce(s.discovered_at, datetime()),
                                         s.updated_at = datetime(),
-                                        s.source = 'partial_recon_user_input'
+                                        s.source = coalesce(s.source, 'partial_recon_user_input')
                                     """,
                                     name=hostname, uid=user_id, pid=project_id,
                                 )
@@ -183,7 +219,7 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
                                     MERGE (s)-[:BELONGS_TO]->(d)
                                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                     """,
-                                    domain=attach_org(root_for_host(hostname, roots)), sub=hostname,
+                                    domain=typed_host_domain(hostname, roots), sub=hostname,
                                     uid=user_id, pid=project_id,
                                 )
                                 # MERGE IP nodes + RESOLVES_TO relationships
@@ -292,6 +328,8 @@ def _run_port_scanner(config: dict, tool_id: str, scan_fn, label: str,
     # Run scan (same function as full pipeline)
     print(f"[*][Partial Recon] Running {label} port scan...")
     result = scan_fn(recon_data, output_file=None, settings=settings)
+    if ran is not None and not ran(result):
+        return _scanner_failed(roots, label, result)
 
     # Normalize scan results if needed (e.g. masscan_scan -> port_scan)
     if normalize_fn:
@@ -391,13 +429,19 @@ def run_naabu(config: dict) -> None:
     _run_port_scanner(config, tool_id="Naabu", scan_fn=run_port_scan, label="Naabu")
 
 
-def run_masscan(config: dict) -> None:
-    """Run partial port scanning using Masscan (run_masscan_scan from masscan_scan.py)."""
+def run_masscan(config: dict):
+    """Run partial port scanning using Masscan (run_masscan_scan from masscan_scan.py).
+
+    run_masscan_scan returns the dict unchanged, with no masscan_scan section,
+    when masscan fails (no default interface, no raw socket, not installed, a
+    timeout): that is a failed run, never "completed successfully".
+    """
     from recon.main_recon_modules.masscan_scan import run_masscan_scan
-    _run_port_scanner(
+    return _run_port_scanner(
         config, tool_id="Masscan", scan_fn=run_masscan_scan, label="Masscan",
         pre_settings={"MASSCAN_ENABLED": True},
         normalize_fn=_normalize_masscan_result,
+        ran=lambda result: "masscan_scan" in result,
     )
 
 

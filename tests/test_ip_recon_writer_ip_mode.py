@@ -5,7 +5,9 @@ IP mode stored a PTR name's forward answer in place of the listed address
 listed one was missing whenever the PTR name did not resolve back to it. Now
 every target IP gets its node from its label's ``actual_ip``, and when the
 recon dict declares ``metadata.expanded_ips`` no address outside that list is
-written. A dict that declares no list (an older file) is written as before.
+written. Every IP-mode builder declares the list, so an IP-mode dict that
+declares none fails closed and writes no IP at all; a dict that does not say
+IP mode is written as before.
 
 The Neo4j session is a fake that records each query and its parameters.
 Documentation ranges (RFC 5737 / RFC 3849) and reserved names only.
@@ -100,10 +102,18 @@ class TestIpReconWriterIpMode(unittest.TestCase):
         writer = _write(_recon({"203-0-113-1": _mock(T1)}, expanded=()))
         self.assertEqual(writer.ip_nodes(), [])
 
-    def test_a_dict_without_a_target_list_is_written_as_before(self):
-        subs = {"www.example.com": {"has_records": True, "ips": {"ipv4": [FOREIGN], "ipv6": []}}}
+    def test_an_ip_mode_dict_without_a_target_list_writes_no_ip(self):
+        subs = {"203-0-113-1": _mock(T1),
+                "www.example.com": {"has_records": True, "ips": {"ipv4": [FOREIGN], "ipv6": []}}}
         writer = _write(_recon(subs, expanded=None))
-        self.assertEqual(writer.ip_nodes(), [FOREIGN])
+        self.assertEqual(writer.ip_nodes(), [])
+        self.assertEqual(writer.resolves_to(), [])
+
+    def test_a_dict_that_does_not_say_ip_mode_is_written_as_before(self):
+        subs = {"www.example.com": {"has_records": True, "ips": {"ipv4": [FOREIGN], "ipv6": []}}}
+        recon = _recon(subs, expanded=None)
+        del recon["metadata"]["ip_mode"]
+        self.assertEqual(_write(recon).ip_nodes(), [FOREIGN])
 
     def test_every_ip_merge_stays_tenant_scoped(self):
         writer = _write(_recon({"203-0-113-1": _mock(T1), "203-0-113-2": _mock(T2)}))

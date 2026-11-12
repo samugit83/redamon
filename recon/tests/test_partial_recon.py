@@ -3219,8 +3219,18 @@ class TestIsHostInScope(unittest.TestCase):
     def test_ip_mode_cidr_membership_accepted(self):
         s = {"IP_MODE": True, "TARGET_IPS": ["10.0.0.0/24"]}
         self.assertTrue(self._f("10.0.0.5", s))
-        self.assertTrue(self._f("10.0.0.255", s))
+        self.assertTrue(self._f("10.0.0.254", s))
+        # The expanded list: a CIDR is its hosts(), as the pipeline scans
+        # it, so its network and broadcast addresses are no target.
+        self.assertFalse(self._f("10.0.0.255", s))
+        self.assertFalse(self._f("10.0.0.0", s))
         self.assertFalse(self._f("10.0.1.5", s))
+
+    def test_ip_mode_an_roe_excluded_target_is_out(self):
+        s = {"IP_MODE": True, "TARGET_IPS": ["10.0.0.0/30"], "ROE_ENABLED": True,
+             "ROE_EXCLUDED_HOSTS": ["10.0.0.2"]}
+        self.assertTrue(self._f("10.0.0.1", s))
+        self.assertFalse(self._f("10.0.0.2", s))
 
     def test_ip_mode_cidr_handles_invalid_gracefully(self):
         s = {"IP_MODE": True, "TARGET_IPS": ["not-a-cidr/99", "127.0.0.1"]}
@@ -3238,17 +3248,19 @@ class TestIsHostInScope(unittest.TestCase):
         self.assertTrue(self._f("127.0.0.1:9105", s))
         self.assertTrue(self._f("localhost:9105", s))
 
-    # ----- IP mode without TARGET_IPS (graph already pre-filtered) -----
-    def test_ip_mode_no_targets_accepts_localhost(self):
+    # ----- IP mode without TARGET_IPS: fail closed -----
+    # A graph row is no proof of scope: with no target list nothing is in
+    # scope, whatever the address looks like (private, loopback or public).
+    def test_ip_mode_no_targets_rejects_localhost(self):
         s = {"IP_MODE": True, "TARGET_IPS": []}
-        self.assertTrue(self._f("localhost", s))
+        self.assertFalse(self._f("localhost", s))
 
-    def test_ip_mode_no_targets_accepts_private_ips(self):
+    def test_ip_mode_no_targets_rejects_private_ips(self):
         s = {"IP_MODE": True, "TARGET_IPS": []}
-        self.assertTrue(self._f("10.0.0.1", s))
-        self.assertTrue(self._f("192.168.1.1", s))
-        self.assertTrue(self._f("172.20.0.5", s))
-        self.assertTrue(self._f("127.0.0.1", s))
+        self.assertFalse(self._f("10.0.0.1", s))
+        self.assertFalse(self._f("192.168.1.1", s))
+        self.assertFalse(self._f("172.20.0.5", s))
+        self.assertFalse(self._f("127.0.0.1", s))
 
     def test_ip_mode_no_targets_rejects_public_ips(self):
         s = {"IP_MODE": True, "TARGET_IPS": []}
@@ -3299,10 +3311,10 @@ class TestIsHostInScope(unittest.TestCase):
         s = {"IP_MODE": True, "TARGET_IPS": ["2001:db8::1"]}
         self.assertTrue(self._f("[2001:db8::1]:443", s))
 
-    def test_ipv6_loopback_accepted_when_no_targets(self):
-        """No TARGET_IPS configured → loopback IPv6 is in scope via .is_loopback."""
+    def test_ipv6_loopback_rejected_when_no_targets(self):
+        """No TARGET_IPS configured: nothing is in scope (fail closed)."""
         s = {"IP_MODE": True, "TARGET_IPS": []}
-        self.assertTrue(self._f("::1", s))
+        self.assertFalse(self._f("::1", s))
 
     def test_ipv6_public_rejected_when_no_targets(self):
         """Truly global IPv6 (not loopback/private/link-local/documentation) must be rejected."""
@@ -3315,9 +3327,9 @@ class TestIsHostInScope(unittest.TestCase):
         # Python's ipaddress module (RFC 6890 reserved-for-documentation),
         # so it is intentionally permitted under the "no targets" rule.
 
-    def test_ipv6_link_local_accepted_when_no_targets(self):
+    def test_ipv6_link_local_rejected_when_no_targets(self):
         s = {"IP_MODE": True, "TARGET_IPS": []}
-        self.assertTrue(self._f("fe80::1", s))
+        self.assertFalse(self._f("fe80::1", s))
 
     def test_ipv6_in_targets_rejects_unrelated_ipv6(self):
         s = {"IP_MODE": True, "TARGET_IPS": ["2001:db8::1"]}

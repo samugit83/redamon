@@ -5,7 +5,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from recon.partial_recon_modules.helpers import _resolve_hostname, attach_org, root_for_host, scope_roots
+from recon.partial_recon_modules.helpers import (
+    _resolve_hostname, attach_org, is_run_ip_hostname, run_is_ip_mode, scope_roots, typed_host_domain,
+)
 
 
 def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, project_id: str) -> None:
@@ -14,18 +16,25 @@ def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, pro
     `domain` is one root, or the run's roots (a list): each subdomain then
     attaches to the root it sits under, so a batch does not hang every host off
     the first root's Domain.
+
+    IP mode: only a name the run may scan (S), under its org Domain and on the
+    answer it was selected on; never under the synthetic root, which is no
+    parent of a real name, and never re-resolved.
     """
     from graph_db import Neo4jClient
     roots = scope_roots({"domains": domain}) if isinstance(domain, list) else [domain]
+    ip_mode = run_is_ip_mode()
+    if ip_mode:
+        subdomains = [sub for sub in subdomains if is_run_ip_hostname(sub)]
     with Neo4jClient() as graph_client:
         if not graph_client.verify_connection():
             return
         driver = graph_client.driver
         with driver.session() as session:
             for sub in subdomains:
-                root = root_for_host(sub, roots) or roots[0]
-                # Resolve the subdomain to get IPs
                 ips = _resolve_hostname(sub)
+                # Outside IP mode a host under no root keeps the first root's org.
+                attach = typed_host_domain(sub, roots) or (None if ip_mode else attach_org(roots[0]))
                 # Create Subdomain node attached to its root's Domain
                 session.run(
                     """
@@ -36,7 +45,7 @@ def _create_user_subdomains_in_graph(domain, subdomains: list, user_id: str, pro
                     MERGE (s)-[:BELONGS_TO]->(d)
                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                     """,
-                    domain=attach_org(root), sub=sub, uid=user_id, pid=project_id,
+                    domain=attach, sub=sub, uid=user_id, pid=project_id,
                 )
                 # Create IP nodes and RESOLVES_TO relationships
                 for bucket in ("ipv4", "ipv6"):

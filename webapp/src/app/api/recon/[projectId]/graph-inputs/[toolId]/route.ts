@@ -6,10 +6,14 @@ import {
   discoveryDomains,
   graphHostInScopeCypher,
   graphScopeParams,
+  ipModeScopeParams,
+  ipTargetMatcher,
   partialScopeFields,
   resolveProjectRoots,
   type GraphDomainRow,
 } from '@/lib/partialReconScope'
+import { admittedByCurrentPolicy } from '@/lib/ipHostnamePolicy'
+import { IP_HOSTNAME_SELECT } from '@/lib/scopeGroups'
 import { findLegacyDomains } from '@/lib/legacyGraph'
 import { notQuarantined } from '@/lib/graph/requestTargets'
 import { currentDns } from '@/lib/graph/forwardDns'
@@ -79,6 +83,18 @@ const BY_DOMAIN_NAME: ScopeCypher = {
   domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains`,
   subPath: tail => `OPTIONAL MATCH (d)-[:HAS_SUBDOMAIN]->(s:Subdomain)${tail}${dnsTail(tail, ' WHERE ')}`,
   hostOk: notUnderOtherDomain,
+}
+
+// IP mode: a Subdomain counts when it is a target's label or a name
+// the current hostname policy admits among those a run scanned ($ipSubs), and a
+// URL host when it is a target address or such a name ($ipHosts), as the
+// container decides (helpers._GraphScope, graph_url_scope). Both lists are
+// built in TypeScript (ipModeScopeParams): Cypher cannot test CIDR membership.
+const BY_IP_TARGETS: ScopeCypher = {
+  domains: `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid}) WHERE d.name IN $domains`,
+  subPath: tail => `OPTIONAL MATCH (s:Subdomain {user_id: $uid, project_id: $pid})${tail}
+    WHERE toLower(s.name) IN $ipSubs${dnsTail(tail, ' AND ')}`,
+  hostOk: host => `${host} IN $ipHosts`,
 }
 
 const SUBDOMAIN_COUNT = (q: ScopeCypher) => `${q.domains}
@@ -379,6 +395,46 @@ const TOOL_QUERIES: Record<string, ToolQuery> = {
   },
 }
 
+// IP mode: what ipModeScopeParams is built from. The names a run scanned, with
+// the Domain each hangs off (an org Domain is not stale while the policy admits
+// one of its names); the labels under the synthetic root; every URL host the
+// BaseURL and Endpoint counts test.
+const IP_MODE_SCANNED = `MATCH (s:Subdomain {user_id: $uid, project_id: $pid, source: 'ip_hostname_selection'})
+  WHERE s.ip_hostname_reason = 'scanned'
+  OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(s)
+  RETURN s.name AS name, collect(DISTINCT d.name) AS orgs`
+
+const IP_MODE_LABELS = `OPTIONAL MATCH (d:Domain {user_id: $uid, project_id: $pid})-[:HAS_SUBDOMAIN]->(s:Subdomain)
+  WHERE d.name IN $domains
+  RETURN collect(DISTINCT s.name) AS labels`
+
+const IP_MODE_HOSTS = `OPTIONAL MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
+  WITH collect(DISTINCT ${BASEURL_HOST}) AS hosts
+  OPTIONAL MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+  RETURN hosts, collect(DISTINCT toLower(${hostOfUrl('e.baseurl')})) AS endpointHosts`
+
+type GraphReader = { run: (q: string, p: Record<string, unknown>) => Promise<{ records: Neo4jRecord[] }> }
+
+type IpProjectRow = Parameters<typeof admittedByCurrentPolicy>[1] & { targetIps?: readonly string[] | null }
+
+/** The IP-mode Cypher parameters, and the org Domains of the names the
+ *  project's current policy still scans (design §6.3: the graph's
+ *  `scanned` reason alone is never trusted). */
+async function ipModeScope(session: GraphReader, uid: string, pid: string, roots: string[],
+  project: IpProjectRow): Promise<{ ipSubs: string[]; ipHosts: string[]; orgs: string[] }> {
+  const orgsOf = new Map<string, string[]>()
+  for (const r of (await session.run(IP_MODE_SCANNED, { uid, pid })).records) {
+    const name = r.get('name')
+    if (typeof name === 'string' && name) orgsOf.set(name.toLowerCase(), strings(r, 'orgs'))
+  }
+  const names = admittedByCurrentPolicy([...orgsOf.keys()], project)
+  const labels = strings((await session.run(IP_MODE_LABELS, { uid, pid, domains: roots })).records[0], 'labels')
+  const hosts = (await session.run(IP_MODE_HOSTS, { uid, pid })).records[0]
+  const params = ipModeScopeParams(ipTargetMatcher(project.targetIps ?? []), labels,
+    [...strings(hosts, 'hosts'), ...strings(hosts, 'endpointHosts')], names)
+  return { ...params, orgs: [...new Set(names.flatMap(n => orgsOf.get(n) ?? []))] }
+}
+
 // One read of the project's Domain nodes: which roots exist, which have recon
 // data, and which Domain nodes are left over from roots the project dropped.
 const GRAPH_DOMAINS = `MATCH (d:Domain {user_id: $uid, project_id: $pid})
@@ -401,7 +457,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       where: { id: projectId },
       select: {
         userId: true, targetDomain: true, ipMode: true, subdomainList: true,
-        domainBatchMode: true, domainBatchHosts: true,
+        domainBatchMode: true, domainBatchHosts: true, targetIps: true, ...IP_HOSTNAME_SELECT,
       },
     })
 
@@ -426,14 +482,20 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
           const graph: GraphDomainRow[] = domainRows.records
             .map((r: Neo4jRecord) => ({ name: String(r.get('name') ?? ''), hasData: r.get('hasData') === true }))
             .filter((row: GraphDomainRow) => row.name)
-          const fields = partialScopeFields(scope, graph)
+          const ipScope = scope.mode === 'ip'
+            ? await ipModeScope(session, uid, projectId, scope.roots, project)
+            : null
+          const fields = partialScopeFields(scope, graph, ipScope?.orgs ?? [])
 
-          // Domain projects test hosts against the scope groups; IP mode (and a
-          // row whose groups cannot be derived) matches the Domain by name.
+          // Domain projects test hosts against the scope groups; IP mode
+          // against its targets and current names; a row whose groups cannot
+          // be derived matches the Domain by name.
           const byScope = scope.groups.length > 0
-          const result = await session.run(tool.cypher(byScope ? BY_GRAPH_SCOPE : BY_DOMAIN_NAME), {
+          const scopeCypher = ipScope ? BY_IP_TARGETS : byScope ? BY_GRAPH_SCOPE : BY_DOMAIN_NAME
+          const result = await session.run(tool.cypher(scopeCypher), {
             uid, pid: projectId, domains: fields.domains,
             ...(byScope ? graphScopeParams(scope, fields.domains) : {}),
+            ...(ipScope ? { ipSubs: ipScope.ipSubs, ipHosts: ipScope.ipHosts } : {}),
           })
           // Old-model Domain nodes (§4.11.6): the modal shows a banner and
           // disables Run, as the partial route refuses the start.

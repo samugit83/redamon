@@ -9,7 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from recon.helpers.ip_placeholders import is_placeholder
 from recon.partial_recon_modules.helpers import (
     _classify_ip, allowed_hosts_for, include_root_for, ip_mode_recon, org_for_root, project_scan_roots,
-    roe_excluded, root_for_host, run_ip_targets, run_is_ip_mode,
+    is_run_ip_hostname, roe_excluded, root_for_host, run_ip_hostnames, run_ip_targets, run_is_ip_mode,
 )
 
 #: A path known only from an API specification is requested with GET or HEAD
@@ -289,6 +289,11 @@ class _GraphScope:
     Without scope groups (IP mode, whose hosts are dashed addresses under the
     synthetic root, or a caller not yet migrated) the Domain names are the
     roots, as before, and only a literal group's list narrows.
+
+    IP mode also reads the org Domains of the run's hostnames (S), and keeps a
+    target's label (the builders' rows keep it on its own address only) or a
+    name in S; any other name, an older run's PTR name under the synthetic
+    root or a name of an org Domain the policy no longer admits, is no target.
     """
 
     def __init__(self, roots: list, domain_groups, include_root_domain: bool):
@@ -296,7 +301,12 @@ class _GraphScope:
         self.apex_roots, self.allowed = _root_scope(roots, domain_groups, include_root_domain)
         self.scoped = bool(domain_groups) and all(
             isinstance(g, dict) and "scanRoot" in g for g in domain_groups)
-        if self.scoped:
+        self.ip_names = set(run_ip_hostnames()) if run_is_ip_mode() else None
+        if self.ip_names is not None:
+            orgs = sorted({org.lower() for org in run_ip_hostnames().values()} - {r.lower() for r in roots})
+            self.orgs = list(roots) + orgs
+            self.project_roots = []
+        elif self.scoped:
             self.orgs = list(dict.fromkeys(org_for_root(r, domain_groups).lower() for r in roots))
             self._selected = {r.lower(): r for r in roots}
             self.project_roots = sorted({*self._selected, *project_scan_roots()}, key=len, reverse=True)
@@ -325,6 +335,9 @@ class _GraphScope:
     def keeps(self, host, record_root=None) -> bool:
         if roe_excluded(host):
             return False
+        if self.ip_names is not None:
+            h = (host or "").strip().strip(".").lower()
+            return is_placeholder(h) or h in self.ip_names
         if not self.scoped:
             # A host under no root (IP mode's dashed names) was always kept.
             root = record_root or root_for_host(host, self.roots)
@@ -372,7 +385,7 @@ def graph_scope_subdomains(session, user_id: str, project_id: str, roots: list,
     """The run's Subdomain names for a writer's scope list: every name under
     the run's org Domains that belongs to one of its scan roots (the roots
     themselves included). Without scope groups, every Subdomain under the
-    roots, as before."""
+    roots, as before. IP mode: the target labels and the run's names (S)."""
     scope = _GraphScope(roots, domain_groups, include_root_domain=False)
     record = session.run(
         """
@@ -383,6 +396,8 @@ def graph_scope_subdomains(session, user_id: str, project_id: str, roots: list,
         domains=scope.orgs, uid=user_id, pid=project_id,
     ).single()
     subs = (record["subdomains"] if record else None) or []
+    if scope.ip_names is not None:
+        return [sub for sub in subs if scope.keeps(sub)]
     if not scope.scoped:
         return subs
     return [sub for sub in subs if scope.root_of(sub, apex=False) is not None]
@@ -513,19 +528,22 @@ def _ip_mode_names(names: dict) -> tuple:
 def _ip_mode_rows(rows, host_key: str, ip_key: str):
     """IP mode: the Subdomain -> IP rows that stay targets.
 
-    The graph holds, under the synthetic root, each target's label and the
-    PTR names a full run kept, with source-less RESOLVES_TO edges: an older
-    run (B-01) or a typed attach (B-20) may have left one on an address that
-    is no target. A label keeps only its target address; a name is kept
-    whole only when every address it resolves to is a target, the rule the
-    full run applies to a PTR name. Outside IP mode the rows pass as they are.
+    The graph holds, under the synthetic root, each target's label (and the
+    PTR names an older full run kept), and under their org Domains the names
+    a run selected, with source-less RESOLVES_TO edges: an older run (B-01)
+    or a typed attach (B-20) may have left one on an address that is no
+    target. A label keeps only its target address; a name is kept only when
+    it is one of the run's hostnames (S, judged on live DNS at the run's
+    start) and every address the graph resolves it to is a target. Outside
+    IP mode the rows pass as they are.
     """
     if not run_is_ip_mode():
         return rows
     rows = list(rows)
     answers: dict = {}
     for row in rows:
-        answers.setdefault(row[host_key], []).append(row[ip_key])
+        if is_placeholder(row[host_key]) or is_run_ip_hostname(row[host_key]):
+            answers.setdefault(row[host_key], []).append(row[ip_key])
     names, addresses = _ip_mode_names(answers)
     return [row for row in rows
             if row[host_key] in names or (is_placeholder(row[host_key]) and row[ip_key] in addresses)]
@@ -540,50 +558,25 @@ def _ip_mode_kept_host(recon_data: dict, host) -> bool:
     return host in ((recon_data.get("dns") or {}).get("subdomains") or {})
 
 
-def _ip_mode_url_scope(session, user_id: str, project_id: str, orgs: list):
+def _ip_mode_url_scope():
     """IP mode: ``keeps(host)`` for a graph URL's host, or None outside IP
-    mode. The forward answers under the run's roots are read and judged once,
-    and only when a host is a name: an address-only run never queries."""
+    mode: a target address (T), or a name the run may scan (S, every address
+    it resolves to a target when the run started). Nothing is queried."""
     gate = _ip_mode_gate()
     if gate is None:
         return None
     import ipaddress
     from recon.helpers.target_admission import ip_mode_targets, is_target
     targets = ip_mode_targets(gate)
-    admitted: dict = {}
 
     def keeps(host: str) -> bool:
         try:
             ipaddress.ip_address(host.strip("[]"))
             return is_target(host, targets)
         except ValueError:
-            pass
-        if "names" not in admitted:
-            admitted["names"], _ = _ip_mode_names(_forward_answers(session, user_id, project_id, orgs))
-        return host in admitted["names"]
+            return is_run_ip_hostname(host)
 
     return keeps
-
-
-def _forward_answers(session, user_id: str, project_id: str, orgs: list) -> dict:
-    """{name (lower case): [addresses]} from the forward-DNS edges of the
-    Subdomains under ``orgs``."""
-    answers: dict = {}
-    for record in session.run(
-        """
-        MATCH (d:Domain {user_id: $uid, project_id: $pid})
-              -[:HAS_SUBDOMAIN]->(s:Subdomain)-[r:RESOLVES_TO]->(i:IP)
-        WHERE toLower(d.name) IN $domains AND """ + FORWARD_DNS + """
-        RETURN s.name AS subdomain, i.address AS address
-        """,
-        domains=[str(o).lower() for o in orgs], uid=user_id, pid=project_id,
-    ):
-        name, address = record["subdomain"], record["address"]
-        if isinstance(name, str) and address:
-            holders = answers.setdefault(name.strip().rstrip(".").lower(), [])
-            if address not in holders:
-                holders.append(address)
-    return answers
 
 
 def graph_url_scope(session, user_id: str, project_id: str, domains, domain_groups,
@@ -600,10 +593,10 @@ def graph_url_scope(session, user_id: str, project_id: str, domains, domain_grou
     A host the scope keeps must also pass the RoE admission gate on every
     address the graph resolved it to (_graph_address_gate).
 
-    IP mode (B-21) keeps a host only when it is a target address, or a name
-    under the run's roots whose every forward address is a target. A host
-    under no Domain (a redirect target, a third party, a co-hosted vhost name)
-    and a label are never kept.
+    IP mode (B-21) keeps a host only when it is a target address (T) or one of
+    the run's hostnames (S), under its org Domain or under none (a recorded
+    name the policy admits now). A host under an org Domain but outside S, a
+    third party, a co-hosted vhost name and a label are never kept.
     """
     roots = _as_roots(domains)
     scope = _GraphScope(roots, domain_groups, include_root_domain)
@@ -621,7 +614,7 @@ def graph_url_scope(session, user_id: str, project_id: str, domains, domain_grou
         return co_hosted_cache["set"]
 
     admits = _graph_address_gate(session, user_id, project_id)
-    ip_mode_keeps = _ip_mode_url_scope(session, user_id, project_id, scope.orgs)
+    ip_mode_keeps = _ip_mode_url_scope()
 
     def keep(host) -> bool:
         host = (host or "").strip().lower()
@@ -731,20 +724,12 @@ def graph_target_hosts(user_id: str, project_id: str, domains, domain_groups,
 
 
 def _ip_mode_target_hosts(user_id: str, project_id: str, roots: list, include_graph: bool) -> list:
-    """IP mode: the names an archive may be asked about (S-6). Never the
-    synthetic root, which is the project id, nor a label, which no archive
-    knows; a name only when every address it resolves to is a target."""
+    """IP mode: the names an archive may be asked about (S-6): the run's
+    hostnames (S), judged on live DNS at its start. Never the synthetic root,
+    which is the project id, nor a label, which no archive knows."""
     if not include_graph or not roots:
         return []
-    from graph_db import Neo4jClient
-    with Neo4jClient() as graph_client:
-        if not graph_client.verify_connection():
-            print("[!][Partial Recon] Neo4j not reachable, cannot fetch graph subdomains")
-            return []
-        with graph_client.driver.session() as session:
-            answers = _forward_answers(session, user_id, project_id, roots)
-    names, _ = _ip_mode_names(answers)
-    return sorted(name for name in names if not roe_excluded(name))
+    return sorted(name for name in run_ip_hostnames() if not roe_excluded(name))
 
 
 def _recon_data_ips(recon_data: dict) -> list:
@@ -775,15 +760,24 @@ def attach_graph_ownership(recon_data: dict, user_id: str, project_id: str) -> N
             if not graph_client.verify_connection():
                 return
             with graph_client.driver.session() as session:
+                # The reasons ride along: an IP whose attribution failed is
+                # tagged "unknown", and only its reasons say so (vhost/SNI
+                # tries no recorded hostname there).
                 rows = session.run(
                     """
                     MATCH (i:IP {user_id: $uid, project_id: $pid})
                     WHERE i.address IN $ips AND i.ownership IS NOT NULL
-                    RETURN i.address AS ip, i.ownership AS ownership
+                    RETURN i.address AS ip, i.ownership AS ownership, i.ownership_reasons AS reasons
                     """,
                     ips=ips, uid=user_id, pid=project_id,
                 )
-                by_ip = {r["ip"]: {"ownership": r["ownership"]} for r in rows if r["ip"]}
+                by_ip = {}
+                for r in rows:
+                    if r["ip"]:
+                        entry = {"ownership": r["ownership"]}
+                        if r.get("reasons"):
+                            entry["ownership_reasons"] = list(r["reasons"])
+                        by_ip[r["ip"]] = entry
     except Exception as e:  # noqa: BLE001 - no tag only means the CDN fallbacks apply
         print(f"[!][Partial Recon] Could not read the IP attribution tags: {type(e).__name__}")
         return

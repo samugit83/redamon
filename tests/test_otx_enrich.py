@@ -42,9 +42,14 @@ from otx_enrich import (
 # ---------------------------------------------------------------------------
 
 def _combined_result(ip_mode: bool = False) -> dict:
+    # An IP-mode run always declares its target list (run_ip_recon); a dict
+    # without one asks OTX about no address at all (fail closed).
+    metadata = {"ip_mode": ip_mode, "modules_executed": []}
+    if ip_mode:
+        metadata["expanded_ips"] = ["1.2.3.4"]
     return {
         "domain": "example.com",
-        "metadata": {"ip_mode": ip_mode, "modules_executed": []},
+        "metadata": metadata,
         "dns": {"domain": {"ips": {"ipv4": ["1.2.3.4"]}}, "subdomains": {}},
     }
 

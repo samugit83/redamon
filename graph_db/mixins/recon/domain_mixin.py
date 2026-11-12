@@ -602,9 +602,11 @@ class DomainMixin:
 
             # 2. Create Subdomain nodes, IP nodes, and relationships
             subdomains_dns = dns_data.get("subdomains", {})
-            # A dict that declares no target list (an older file) is written as is.
+            # Every IP-mode builder declares the target list, so an IP-mode
+            # dict without one writes no IP (fail closed); only a dict that
+            # does not say IP mode is written as is.
             targets = ({_canonical_address(ip) for ip in metadata.get("expanded_ips") or [] if ip}
-                       if "expanded_ips" in metadata else None)
+                       if "expanded_ips" in metadata or metadata.get("ip_mode") else None)
 
             for subdomain_name in subdomains:
                 try:

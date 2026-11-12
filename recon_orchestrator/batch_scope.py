@@ -464,6 +464,50 @@ def _is_target_label(value, targets) -> bool:
     return False
 
 
+_IP_HOSTNAME_MODE_LABELS = {'ip_only': 'IP only', 'record_only': 'Record hostnames',
+                            'record_filter': 'Record + scan matching', 'scan_all': 'Record + scan all'}
+
+
+def ip_typed_name_refusal(project: dict, name: str) -> str | None:
+    """Why an IP-mode project refuses a hostname typed for a partial run, or None.
+
+    The pattern half of the hostname rule, read from the project row: no name
+    in ip_only or record_only (or an unknown mode); in record_filter the
+    include and exclude entries decide (exclude wins, an unreadable list
+    admits nothing); in scan_all any name. The hard guardrail applies to each
+    typed name: accepting names here widens what partial recon takes, and no
+    guardrailed root sits above them. The live DNS half (every address a
+    target) runs in the container, which resolves from the scan's network.
+    Mirrors typed_name_refusal in recon/partial_recon_modules/helpers.py.
+    """
+    from hard_guardrail import is_hard_blocked
+    from recon_settings.ip_hostnames import MODES, matches, normalize_name, parse_entries
+    mode = project.get('ipHostnameMode')
+    mode = mode if mode in MODES else 'ip_only'
+    if mode not in ('record_filter', 'scan_all'):
+        return f'Hostnames on target IPs is {_IP_HOSTNAME_MODE_LABELS[mode]}: no typed hostname is scanned'
+    canonical = normalize_name(name)
+    if canonical is None:
+        return 'not a hostname'
+    blocked, why = is_hard_blocked(canonical)
+    if blocked:
+        return f'hard guardrail: {why}'
+    if mode == 'record_filter':
+        include, exclude = project.get('ipHostnameInclude'), project.get('ipHostnameExclude')
+        if not isinstance(include, list) or not isinstance(exclude, list):
+            return 'the hostname filter cannot be read'
+        include_patterns, include_invalid = parse_entries(include)
+        exclude_patterns, exclude_invalid = parse_entries(exclude)
+        if include_invalid or exclude_invalid:
+            return 'the hostname filter cannot be read'
+        verdict = matches(canonical, include_patterns, exclude_patterns)
+        if verdict.excluded:
+            return f'matches an exclude entry of the hostname filter: {verdict.matched_by}'
+        if not verdict.included:
+            return 'matches no include entry of the hostname filter'
+    return None
+
+
 def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user_targets, *,
                               dns_budget_s: float = 5.0):
     """The operator-typed inputs a partial run may use, and those it may not.
@@ -489,8 +533,12 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
     IP mode (B-20, B-22): a typed address, URL host or CIDR host must be one of
     the project's targets, by address (CIDR-aware, any IPv6 spelling); a typed
     CIDR keeps only its target hosts, and IPs attach only to a target's own
-    label. The job queue and the scheduler reach this without the modal
-    (webapp startScan.ts), so this is a control, not a convenience.
+    label. A typed name (host or URL host) passes ip_typed_name_refusal (none
+    in ip_only / record_only, the filter in record_filter, any name in
+    scan_all, the hard guardrail on each) and the RoE; the container then
+    keeps it only when every address it resolves to is a target. The job
+    queue and the scheduler reach this without the modal (webapp
+    startScan.ts), so this is a control, not a convenience.
     Returns (user_inputs, user_targets, refused).
     """
     import ipaddress
@@ -517,7 +565,8 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
         except ValueError:
             return False
 
-    # IP mode admits no name (host_ok), so its typed input is never resolved.
+    # IP mode resolves no typed name here: the container checks each one
+    # against the targets, which the RoE already took its addresses from.
     check_addresses = bool(excluded) and not ip_mode and any(
         entry and (_roe_is_network(entry) or is_address(entry))
         for entry in (_roe_normalize_entry(e) for e in excluded))
@@ -550,10 +599,24 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
         worker.join(left)
         return [] if worker.is_alive() else list(found)
 
-    def host_ok(host: str) -> bool:
+    def host_refusal(host: str):
+        """None when the scope admits ``host`` (lower-cased), else what the
+        refusal line adds after the value ('' for the plain scope refusal)."""
         if ip_mode:
-            return host.strip('[]') in ip_targets
-        return admits_partial_host(groups, host) and not is_hard_blocked(host)[0]
+            h = host.strip().rstrip('.')
+            if is_address(h) or '/' in h:
+                return None if h.strip('[]') in ip_targets else ''
+            why = ip_typed_name_refusal(project, h)
+            return None if why is None else f' ({why})'
+        return None if admits_partial_host(groups, host) and not is_hard_blocked(host)[0] else ''
+
+    def typed_host(value: str) -> str:
+        """An IP-mode name in the rule's canonical spelling, as the container's S holds it."""
+        host = value.strip().lower()
+        if ip_mode and not is_address(host):
+            from recon_settings.ip_hostnames import normalize_name
+            return normalize_name(host) or host
+        return host
 
     def keep_targets(ip: str, hosts: list[str]) -> list[str]:
         """IP mode: the target addresses among what ``ip`` stands for (itself,
@@ -592,12 +655,13 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
     def keep_hosts(values, label):
         kept = []
         for v in values if isinstance(values, list) else []:
-            if not (isinstance(v, str) and host_ok(v.strip().lower())):
-                refused.append(f'{label} {v!r}')
+            why = host_refusal(v.strip().lower()) if isinstance(v, str) else ''
+            if why is not None:
+                refused.append(f'{label} {v!r}{why}')
             elif roe_out(v):
                 refuse_roe(f'{label} {v!r}')
             elif not address_refused(f'{label} {v!r}', v):
-                kept.append(v.strip().lower())
+                kept.append(typed_host(v))
         return kept
 
     inputs = keep_hosts(user_inputs, 'subdomain')
@@ -609,8 +673,9 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
         if 'urls' in targets:
             kept = []
             for u in targets['urls'] if isinstance(targets['urls'], list) else []:
-                if not (isinstance(u, str) and host_ok(_url_host(u))):
-                    refused.append(f'url {u!r}')
+                why = host_refusal(_url_host(u)) if isinstance(u, str) else ''
+                if why is not None:
+                    refused.append(f'url {u!r}{why}')
                 elif roe_out(_url_host(u)):
                     refuse_roe(f'url {u!r}')
                 elif not address_refused(f'url {u!r}', _url_host(u)):
@@ -660,7 +725,7 @@ def filter_partial_user_input(project: dict, roots: list[str], user_inputs, user
                 refused.append(f"{key} {value!r} (not a target's own label)")
                 targets[key] = None
             elif value and not ip_mode and not (
-                    isinstance(value, str) and host_ok(host_of(value).strip().lower())):
+                    isinstance(value, str) and host_refusal(host_of(value).strip().lower()) is None):
                 refused.append(f'{key} {value!r}')
                 targets[key] = None
             elif value and isinstance(value, str) and roe_out(host_of(value)):

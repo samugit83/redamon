@@ -65,6 +65,14 @@ def test_gvm_ip_mode_targets_an_ipv6_address_and_skips_a_blank():
     assert ips == {"203.0.113.1", "2001:db8::1"} and hostnames == set()
 
 
+def test_gvm_ip_mode_without_a_target_list_scans_nothing():
+    # Every IP-mode builder declares the list, so an IP-mode file without one
+    # fails closed rather than falling back to the DNS answers.
+    meta = {k: v for k, v in IP_MODE_RECON["metadata"].items() if k != "expanded_ips"}
+    ips, hostnames = gvm_mod.extract_targets_from_recon(dict(IP_MODE_RECON, metadata=meta))
+    assert ips == set() and hostnames == set()
+
+
 def test_gvm_domain_mode_targets_are_unchanged():
     recon = {"domain": "example.com",
              "metadata": {"ip_mode": False, "root_domain": "example.com",

@@ -52,9 +52,13 @@ TARGET_IPS = ["192.0.2.10", "192.0.2.11"]
 RoE = "Rules of Engagement"
 
 
-def _project(excluded, ip_mode=False):
+def _project(excluded, ip_mode=False, hostname=None):
     if ip_mode:
-        return {"ipMode": True, "targetIps": TARGET_IPS, "roeExcludedHosts": list(excluded)}
+        policy = hostname or {}
+        return {"ipMode": True, "targetIps": TARGET_IPS, "roeExcludedHosts": list(excluded),
+                "ipHostnameMode": policy.get("mode", "ip_only"),
+                "ipHostnameInclude": list(policy.get("include", [])),
+                "ipHostnameExclude": list(policy.get("exclude", []))}
     return {"targetDomain": "example.com", "scopeGroups": [GROUP], "roeExcludedHosts": list(excluded)}
 
 
@@ -106,7 +110,8 @@ def test_matcher_vector(v):
 @pytest.mark.parametrize("v", _FILTER, ids=[v["name"] for v in _FILTER])
 def test_filter_vector(v, dns):
     dns.table = dict(v.get("resolved") or {})
-    inputs, targets, refused = _filter(_project(v["excluded"], v.get("ip_mode", False)), v["typed"])
+    inputs, targets, refused = _filter(_project(v["excluded"], v.get("ip_mode", False), v.get("hostname")),
+                                       v["typed"])
     got = dict(targets, user_inputs=inputs)
     # Only where the table says so does this copy's verdict differ from the
     # container's: a name with no answer here is the container's to refuse.

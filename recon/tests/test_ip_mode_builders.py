@@ -266,9 +266,12 @@ def test_osint_ip_list_is_the_target_list_in_ip_mode(tool):
     module = importlib.import_module(f"recon.main_recon_modules.{tool}_enrich")
     recon = _ip_recon(names={NAME: [FOREIGN]})
     assert module._extract_ips_from_recon(recon) == [T1, T2]
-    # A dict that declares no target list keeps the DNS addresses.
+    # Every IP-mode builder declares the list, so a dict that declares none
+    # fails closed: no address, rather than the DNS answers a PTR name gave.
     legacy = {"metadata": {"ip_mode": True}, "dns": recon["dns"]}
-    assert FOREIGN in module._extract_ips_from_recon(legacy)
+    assert module._extract_ips_from_recon(legacy) == []
+    domain = {"metadata": {"ip_mode": False}, "dns": recon["dns"]}
+    assert FOREIGN in module._extract_ips_from_recon(domain)
 
 
 def test_security_checks_get_target_literals_and_target_names_only():

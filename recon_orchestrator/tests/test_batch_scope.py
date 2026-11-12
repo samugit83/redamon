@@ -238,3 +238,106 @@ class TestPartialUserInput:
                 'ips': ['192.0.2.10'], 'ip_attach_to': name})
             assert targets['ip_attach_to'] is None, name
             assert refused == [f"ip_attach_to {name!r} (not a target's own label)"]
+
+
+class TestIpModeTypedHostnames:
+    """A name typed for an IP-mode partial run, per hostname mode.
+
+    ip_only / record_only refuse every typed name; record_filter takes one its
+    include entries admit and no exclude entry names; scan_all any name; the
+    hard guardrail refuses a blocked one in every mode. Only the pattern half
+    runs here: the container keeps a name only when every address it resolves
+    to is a target. The job queue and the scheduler start partial runs
+    through webapp/src/lib/startScan.ts without the modal, so the last case
+    sends that body's shape.
+    """
+    IP = {'ipMode': True, 'targetIps': ['192.0.2.10', '192.0.2.11'],
+          'ipHostnameInclude': ['*.example.com'], 'ipHostnameExclude': ['old.example.com']}
+
+    def _filter(self, mode, inputs=None, targets=None, **project):
+        from batch_scope import filter_partial_user_input
+        row = {**self.IP, 'ipHostnameMode': mode, **project}
+        return filter_partial_user_input(row, ['ip-targets.p1'], inputs or [], targets)
+
+    def test_the_recording_modes_refuse_every_typed_name(self):
+        for mode in ('ip_only', 'record_only', None, 'bogus'):
+            inputs, targets, refused = self._filter(mode, ['app.example.com'], {
+                'subdomains': ['app.example.com'], 'urls': ['https://app.example.com/', 'http://192.0.2.10/']})
+            assert inputs == [] and targets['subdomains'] == [], mode
+            assert targets['urls'] == ['http://192.0.2.10/'], mode
+            assert len(refused) == 3 and all('no typed hostname is scanned' in r for r in refused), mode
+
+    def test_record_filter_matches_the_include_and_exclude_entries(self):
+        inputs, targets, refused = self._filter('record_filter', ['App.Example.com.'], {
+            'subdomains': ['api.example.com', 'old.example.com', 'shop.example.net'],
+            'urls': ['https://api.example.com/x', 'https://shop.example.net/']})
+        assert inputs == ['app.example.com']
+        assert targets['subdomains'] == ['api.example.com']
+        assert targets['urls'] == ['https://api.example.com/x']
+        assert sorted(refused) == sorted([
+            "subdomain 'old.example.com' (matches an exclude entry of the hostname filter: old.example.com)",
+            "subdomain 'shop.example.net' (matches no include entry of the hostname filter)",
+            "url 'https://shop.example.net/' (matches no include entry of the hostname filter)",
+        ])
+
+    def test_record_filter_with_an_unreadable_filter_admits_no_name(self):
+        for bad in ({'ipHostnameInclude': None}, {'ipHostnameExclude': 'x'}, {'ipHostnameInclude': ['*.*']}):
+            _, targets, refused = self._filter('record_filter', targets={'subdomains': ['app.example.com']}, **bad)
+            assert targets['subdomains'] == [], bad
+            assert refused == ["subdomain 'app.example.com' (the hostname filter cannot be read)"], bad
+
+    def test_scan_all_takes_any_name(self):
+        _, targets, refused = self._filter('scan_all', targets={'subdomains': ['shop.example.net', 'not a name']})
+        assert targets['subdomains'] == ['shop.example.net']
+        assert refused == ["subdomain 'not a name' (not a hostname)"]
+
+    def test_the_hard_guardrail_refuses_a_blocked_name_in_every_selecting_mode(self):
+        for mode, name in (('scan_all', 'www.example.gov'), ('record_filter', 'portal.example.com')):
+            extra = {'ipHostnameInclude': ['*.example.com', 'portal.example.com']} if mode == 'record_filter' else {}
+            from unittest import mock
+            with mock.patch('hard_guardrail.is_hard_blocked',
+                            side_effect=lambda n: (n in ('www.example.gov', 'portal.example.com'), f'{n} blocked')):
+                _, targets, refused = self._filter(mode, targets={'subdomains': [name]}, **extra)
+            assert targets['subdomains'] == [], mode
+            assert refused == [f"subdomain {name!r} (hard guardrail: {name} blocked)"], mode
+        # The real guardrail, unpatched, blocks a government name.
+        _, targets, refused = self._filter('scan_all', targets={'urls': ['https://www.example.gov/']})
+        assert targets['urls'] == [] and 'hard guardrail' in refused[0]
+
+    def test_the_roe_refuses_a_typed_name_it_excludes_without_resolving_it(self):
+        from unittest import mock
+        with mock.patch('socket.getaddrinfo', side_effect=AssertionError('resolved')):
+            _, targets, refused = self._filter('record_filter', targets={'subdomains': ['app.example.com']},
+                                               roeEnabled=True, roeExcludedHosts=['app.example.com', '192.0.2.0/24'])
+        assert targets['subdomains'] == []
+        assert refused == ["subdomain 'app.example.com' (excluded by the Rules of Engagement)"]
+
+    def test_a_typed_address_and_the_label_attach_are_unchanged(self):
+        _, targets, refused = self._filter('scan_all', targets={
+            'ips': ['192.0.2.10', '192.0.2.99'], 'ip_attach_to': 'app.example.com'})
+        assert targets['ips'] == ['192.0.2.10'] and targets['ip_attach_to'] is None
+        assert len(refused) == 2
+
+    def test_a_start_scan_shaped_request_gets_the_same_refusals_as_the_modal(self):
+        # The body webapp/src/lib/startScan.ts posts for a queued or scheduled
+        # partial run: user_inputs as a list, user_targets with every key the
+        # modal can fill, and nothing the modal checked first.
+        body = {
+            'tool_id': 'Httpx', 'graph_inputs': {}, 'include_graph_targets': True, 'settings_overrides': {},
+            'user_inputs': ['shop.example.net', 'app.example.com'],
+            'user_targets': {'subdomains': ['old.example.com', 'api.example.com', 'www.example.gov'],
+                             'ips': ['192.0.2.11', '198.51.100.7'], 'ports': [443, 70000],
+                             'urls': ['https://api.example.com/', 'https://shop.example.net/'],
+                             'ip_attach_to': 'api.example.com', 'url_attach_to': None},
+        }
+        for mode, kept_inputs, kept_subs in (
+                ('record_only', [], []),
+                ('record_filter', ['app.example.com'], ['api.example.com']),
+                ('scan_all', ['shop.example.net', 'app.example.com'], ['old.example.com', 'api.example.com'])):
+            inputs, targets, refused = self._filter(mode, body['user_inputs'], body['user_targets'])
+            assert inputs == kept_inputs, mode
+            assert targets['subdomains'] == kept_subs, mode
+            assert targets['ips'] == ['192.0.2.11'] and targets['ports'] == [443], mode
+            assert targets['ip_attach_to'] is None, mode
+            assert any("'www.example.gov'" in r for r in refused), mode
+            assert not any('192.0.2.11' in r for r in refused), mode

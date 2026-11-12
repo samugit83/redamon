@@ -22,7 +22,9 @@ from recon.partial_recon_modules.helpers import (
     partial_settings,
     root_for_host,
     scope_roots,
+    typed_host_domain,
     typed_ip_attach_to,
+    keep_selected_names,
 )
 from recon.partial_recon_modules.graph_builders import _build_port_scan_data_from_graph
 from recon.partial_recon_modules.port_scanning import measured_port_data
@@ -204,6 +206,9 @@ def run_httpx(config: dict) -> None:
                         driver = graph_client.driver
                         with driver.session() as session:
                             for hostname, ips in resolved_hostnames.items():
+                                # The source is provenance: a name another writer
+                                # made keeps its own (an IP-mode typed name is the
+                                # hostname writer's, and S is read by that source).
                                 session.run(
                                     """
                                     MERGE (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})
@@ -211,7 +216,7 @@ def run_httpx(config: dict) -> None:
                                         s.status = coalesce(s.status, 'resolved'),
                                         s.discovered_at = coalesce(s.discovered_at, datetime()),
                                         s.updated_at = datetime(),
-                                        s.source = 'partial_recon_user_input'
+                                        s.source = coalesce(s.source, 'partial_recon_user_input')
                                     """,
                                     name=hostname, uid=user_id, pid=project_id,
                                 )
@@ -222,7 +227,7 @@ def run_httpx(config: dict) -> None:
                                     MERGE (s)-[:BELONGS_TO]->(d)
                                     MERGE (d)-[:HAS_SUBDOMAIN]->(s)
                                     """,
-                                    domain=attach_org(root_for_host(hostname, roots)), sub=hostname,
+                                    domain=typed_host_domain(hostname, roots), sub=hostname,
                                     uid=user_id, pid=project_id,
                                 )
                                 for ip_version in ("ipv4", "ipv6"):
@@ -441,6 +446,9 @@ def run_httpx(config: dict) -> None:
     # scope guard — otherwise a project-level custom-port setting could drop the
     # ports the user picked for this specific partial run.
     settings["HTTPX_ENFORCE_CUSTOM_PORT_SCOPE"] = False
+    # IP mode: the run's hostnames (S) are probed by name and their rows kept,
+    # as the full run keeps its selected names.
+    keep_selected_names(recon_data)
     print(f"[*][Partial Recon] Running httpx HTTP probing...")
     result = _run_http_probe(recon_data, output_file=None, settings=settings)
 

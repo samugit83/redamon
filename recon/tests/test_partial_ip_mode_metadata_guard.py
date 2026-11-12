@@ -19,6 +19,11 @@ This is an AST check over recon/partial_recon_modules/ and partial_recon.py:
 2. Nothing assigns ``<dict>["metadata"] = ...``: that would drop the stamp.
    Merge into it (``setdefault("metadata", {}).update(...)``).
 3. Every graph builder (``_build_*_from_graph``) calls ``ip_mode_recon``.
+4. No module picks a typed host's Domain with ``attach_org(...)`` over a
+   ``root_for_host(...)``: in IP mode the only root is the synthetic one, no
+   parent of a real name, so that left an orphan Subdomain (or one under the
+   synthetic root). ``helpers.typed_host_domain`` is the one place that
+   decides it (in IP mode, the org Domain of a name in S).
 
 The runtime half (each builder and each module's own dict really carries the
 expanded list) is the SELF_BUILT sweep in
@@ -38,6 +43,16 @@ STAMP = "ip_mode_recon"
 RECON_NAMES = {"recon_data", "combined_result"}
 RECON_SECTIONS = {"domains", "dns", "metadata", "subdomains", "http_probe", "port_scan",
                   "resource_enum", "js_recon", "urlscan"}
+
+
+ATTACH_HELPER = "typed_host_domain"
+
+
+def _called(node, name: str) -> bool:
+    func = getattr(node, "func", None)
+    return isinstance(node, ast.Call) and (
+        (isinstance(func, ast.Name) and func.id == name)
+        or (isinstance(func, ast.Attribute) and func.attr == name))
 
 
 def _is_stamp_call(node) -> bool:
@@ -81,6 +96,13 @@ def violations(source: str, filename: str) -> list:
               and node.name.startswith("_build_") and node.name.endswith("_from_graph")):
             if not any(_is_stamp_call(inner) for inner in ast.walk(node)):
                 found.append(f"{name}:{node.lineno} builder {node.name}() never calls {STAMP}()")
+        if _called(node, "attach_org") and any(
+                _called(inner, "root_for_host") for arg in node.args for inner in ast.walk(arg)):
+            owner = parent.get(node)
+            while owner is not None and not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                owner = parent.get(owner)
+            if owner is None or owner.name != ATTACH_HELPER:
+                found.append(f"{name}:{node.lineno} attaches a typed host without {ATTACH_HELPER}()")
     return found
 
 
@@ -117,6 +139,10 @@ def test_the_guard_scans_the_builders_and_the_modules():
      "replaces metadata"),
     ('def _build_x_from_graph(roots):\n    return dict(domain=roots[0])\n', "never calls"),
     ('def run(s):\n    recon_data = other({"domain": "r", "dns": {}})\n', "recon dict built without"),
+    ('def run(h, roots):\n    session.run(q, domain=attach_org(root_for_host(h, roots)))\n',
+     "without typed_host_domain"),
+    ('def run(h, roots):\n    d = helpers.attach_org(root_for_host(h, roots) or roots[0])\n',
+     "without typed_host_domain"),
 ])
 def test_the_guard_catches_each_broken_shape(source, why):
     found = violations(source, "broken_module.py")
@@ -133,6 +159,9 @@ def test_the_guard_catches_each_broken_shape(source, why):
     'def run(r):\n    r.setdefault("metadata", {}).update({"scope_mode": "exact"})\n',
     'def _build_x_from_graph(roots, s):\n    recon_data = ip_mode_recon({"domain": roots[0]}, s)\n'
     '    recon_data["metadata"]["roe"] = {}\n    return recon_data\n',
+    # The one place that may, and an org that comes from no host.
+    'def typed_host_domain(host, roots):\n    return attach_org(root_for_host(host, roots))\n',
+    'def run(h, roots):\n    session.run(q, domain=typed_host_domain(h, roots) or attach_org(roots[0]))\n',
 ])
 def test_the_guard_accepts_a_stamped_dict(source):
     assert violations(source, "good_module.py") == []
@@ -153,7 +182,9 @@ def test_the_stamp_declares_the_expanded_targets_in_ip_mode(helpers):
     settings = {"IP_MODE": True, "TARGET_IPS": ["203.0.113.0/30", "203.0.113.9", "2001:db8::1/128"]}
     data = helpers.ip_mode_recon({"domain": "ip-targets.p1", "metadata": {"roe": {}}}, settings)
     assert data["metadata"] == {"roe": {}, "ip_mode": True,
-                                "expanded_ips": ["203.0.113.1", "203.0.113.2", "203.0.113.9", "2001:db8::1"]}
+                                "expanded_ips": ["203.0.113.1", "203.0.113.2", "203.0.113.9", "2001:db8::1"],
+                                "ip_to_hostname": {"203.0.113.1": "203-0-113-1", "203.0.113.2": "203-0-113-2",
+                                                   "203.0.113.9": "203-0-113-9", "2001:db8::1": "2001-db8--1"}}
 
 
 def test_the_stamp_leaves_a_domain_dict_untouched(helpers):
@@ -166,7 +197,19 @@ def test_the_stamp_leaves_a_domain_dict_untouched(helpers):
 def test_the_stamp_without_settings_uses_the_runs_list(helpers):
     helpers.set_run_ip_targets({"IP_MODE": True, "TARGET_IPS": ["203.0.113.9"]})
     assert helpers.ip_mode_recon({"domain": "ip-targets.p1"})["metadata"] == {
-        "ip_mode": True, "expanded_ips": ["203.0.113.9"]}
+        "ip_mode": True, "expanded_ips": ["203.0.113.9"], "ip_to_hostname": {"203.0.113.9": "203-0-113-9"}}
+
+
+def test_the_stamp_maps_each_target_to_its_label_and_each_selected_name_to_itself(helpers):
+    # httpx keys a target's row by its address, the graph holds the label: the
+    # HTTP writer translates through this map (L-18). Any spelling of the address.
+    helpers.set_run_ip_targets({"IP_MODE": True, "TARGET_IPS": ["2001:DB8:0::1", "203.0.113.9"]})
+    helpers.set_run_ip_hostnames({"app.example.com": "example.com"})
+    mapping = helpers.ip_mode_recon({"domain": "ip-targets.p1"})["metadata"]["ip_to_hostname"]
+    assert mapping == {"2001:DB8:0::1": "2001-DB8-0--1", "2001:db8::1": "2001-DB8-0--1",
+                       "203.0.113.9": "203-0-113-9", "app.example.com": "app.example.com"}
+    # Built once per list and shared by every dict of the run.
+    assert helpers.ip_mode_recon({"domain": "ip-targets.p1"})["metadata"]["ip_to_hostname"] is mapping
 
 
 def test_the_expanded_list_drops_the_roe_exclusions_and_is_built_once(helpers, monkeypatch):

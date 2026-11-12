@@ -7,6 +7,11 @@ IPs, the refused name-only tools, the graph readers (Subdomain -> IP rows, the
 BaseURL scope, the archive hosts) and the modules' last clamps. Neo4j, DNS and
 the tools are fakes.
 
+A real name is a target only when it is one of the run's hostnames
+(S, computed once at the run's start: test_partial_ip_hostnames.py), and the
+graph readers still drop one whose graph addresses leave the targets. The
+tests that keep a name put it in S first (the ``ip_names`` fixture).
+
 Documentation addresses (RFC 5737, RFC 3849) and reserved names only.
 """
 import sys
@@ -60,6 +65,17 @@ def _fresh_run():
 @pytest.fixture
 def ip_run():
     helpers.set_run_ip_targets(SETTINGS)
+
+
+@pytest.fixture
+def ip_names(ip_run):
+    """Every name of ROWS in S: each is then judged on its graph rows alone."""
+    helpers.set_run_ip_hostnames({GOOD_NAME: "example.com", SPLIT_NAME: "example.com",
+                                  FOREIGN_NAME: "example.com"})
+
+
+def _only_good_name():
+    helpers.set_run_ip_hostnames({GOOD_NAME: "example.com"})
 
 
 class _Result(list):
@@ -286,12 +302,18 @@ def test_rows_pass_unchanged_outside_ip_mode():
     assert gb._ip_mode_rows(rows, "subdomain", "address") is rows
 
 
-def test_rows_keep_a_labels_target_address_and_names_wholly_on_targets(ip_run, capsys):
+def test_rows_keep_a_labels_target_address_and_names_in_s_wholly_on_targets(ip_names, capsys):
     kept = gb._ip_mode_rows(iter(_rows()), "subdomain", "address")
     assert [(r["subdomain"], r["address"]) for r in kept] == [
         (LABEL, "203.0.113.2"), (LABEL_V6, "2001:db8::1"),
         (GOOD_NAME, "203.0.113.1"), (GOOD_NAME, "203.0.113.9")]
     assert "outside the IP target list" in capsys.readouterr().out
+
+
+def test_rows_drop_a_name_wholly_on_targets_that_is_not_in_s(ip_run):
+    kept = gb._ip_mode_rows(iter(_rows()), "subdomain", "address")
+    assert [(r["subdomain"], r["address"]) for r in kept] == [
+        (LABEL, "203.0.113.2"), (LABEL_V6, "2001:db8::1")]
 
 
 def test_a_name_left_out_of_the_rows_leaves_the_flat_list_too(ip_run):
@@ -301,7 +323,7 @@ def test_a_name_left_out_of_the_rows_leaves_the_flat_list_too(ip_run):
     assert gb._ip_mode_kept_host(data, SPLIT_NAME)
 
 
-def test_the_port_builder_keys_a_label_by_its_address(graph, ip_run):
+def test_the_port_builder_keys_a_label_by_its_address(graph, ip_names):
     data = gb._build_port_scan_data_from_graph([ROOT], "u1", PID, domain_groups=[])
     ps = data["port_scan"]
     assert sorted(ps["by_host"]) == sorted(["203.0.113.2", "2001:db8::1", GOOD_NAME])
@@ -319,24 +341,24 @@ def test_the_port_builder_keeps_domain_rows_by_name(graph):
     assert "ip_mode" not in data["metadata"]
 
 
-def test_the_flat_subdomain_list_drops_a_name_with_a_foreign_address(graph, ip_run):
+def test_the_flat_subdomain_list_drops_a_name_with_a_foreign_address(graph, ip_names):
     data = gb._build_http_probe_data_from_graph([ROOT], "u1", PID, domain_groups=[])
     assert sorted(data["subdomains"]) == sorted([LABEL, LABEL_V6, GOOD_NAME])
     data = gb._build_vuln_scan_data_from_graph([ROOT], "u1", PID, domain_groups=[])
     assert sorted(data["subdomains"]) == sorted([LABEL, LABEL_V6, GOOD_NAME])
 
 
-def test_the_url_scope_keeps_target_addresses_and_names_wholly_on_targets(graph, ip_run):
+def test_the_url_scope_keeps_target_addresses_and_the_runs_names(graph, ip_run):
+    _only_good_name()
     session = _Session(graph.log)
     keep = gb.graph_url_scope(session, "u1", PID, [ROOT], [])
     assert keep("203.0.113.2") and keep("[2001:db8::1]") and keep("2001:DB8::1") and keep("")
     assert not keep(FOREIGN) and not keep("203.0.113.3")
-    # Address hosts never query the forward answers.
-    assert not any("RESOLVES_TO" in q for q in graph.log)
     assert keep(GOOD_NAME) and keep(GOOD_NAME.upper())
     for host in (SPLIT_NAME, FOREIGN_NAME, LABEL, "cdn.third-party.test"):
         assert not keep(host), host
-    assert sum("RESOLVES_TO" in q for q in graph.log) == 1   # read once, then cached
+    # S was judged on live DNS at the run's start: the graph's answers are not read.
+    assert not any("RESOLVES_TO" in q for q in graph.log)
 
 
 def test_the_url_scope_applies_the_roe_in_ip_mode(graph, ip_run):
@@ -346,6 +368,7 @@ def test_the_url_scope_applies_the_roe_in_ip_mode(graph, ip_run):
 
 
 def test_the_crawler_builder_drops_baseurls_off_the_targets(graph, ip_run):
+    _only_good_name()
     graph.baseurls = (("http://203.0.113.2", "203.0.113.2"), (f"https://{GOOD_NAME}", GOOD_NAME),
                       (f"https://{SPLIT_NAME}", SPLIT_NAME), (f"http://{FOREIGN}", FOREIGN),
                       ("http://[2001:db8::1]:8080", "2001:db8::1"), (f"http://{LABEL}", LABEL))
@@ -354,7 +377,8 @@ def test_the_crawler_builder_drops_baseurls_off_the_targets(graph, ip_run):
         ["http://203.0.113.2", f"https://{GOOD_NAME}", "http://[2001:db8::1]:8080"])
 
 
-def test_the_archive_hosts_are_names_wholly_on_targets(graph, ip_run):
+def test_the_archive_hosts_are_the_runs_names(graph, ip_run):
+    _only_good_name()
     assert gb.graph_target_hosts("u1", PID, [ROOT], []) == [GOOD_NAME]
     assert gb.graph_target_hosts("u1", PID, [ROOT], [], include_graph=False) == []
     assert gb.graph_target_hosts("u1", PID, [], []) == []
@@ -362,17 +386,17 @@ def test_the_archive_hosts_are_names_wholly_on_targets(graph, ip_run):
     assert gb.graph_target_hosts("u1", PID, [ROOT], []) == []
 
 
-def test_the_archive_hosts_fail_closed_without_the_graph(graph, ip_run, capsys):
-    graph.reachable = False
+def test_the_archive_hosts_are_none_without_s(graph, ip_run):
+    # S is empty when the graph could not be read at the run's start.
     assert gb.graph_target_hosts("u1", PID, [ROOT], []) == []
-    assert "Neo4j not reachable" in capsys.readouterr().out
+    assert graph.log == []
 
 
 # ---------------------------------------------------------------------------
 # The modules' last clamps
 # ---------------------------------------------------------------------------
 
-def test_gau_searches_only_names_wholly_on_targets_and_stamps_its_write(graph, monkeypatch):
+def test_gau_searches_only_the_runs_names_and_stamps_its_write(graph, monkeypatch):
     import recon.partial_recon as pr
     import recon.helpers.resource_enum as resource_enum
     searched, written = [], []
@@ -385,7 +409,9 @@ def test_gau_searches_only_names_wholly_on_targets_and_stamps_its_write(graph, m
     monkeypatch.setenv("USER_ID", "u1")
     monkeypatch.setenv("PROJECT_ID", PID)
     cfg = {"tool_id": "Gau", "domains": [ROOT], "include_graph_targets": True}
-    pr._prepare_scope(cfg, dict(SETTINGS, GAU_VERIFY_URLS=False, GAU_DETECT_METHODS=False), PID)
+    pr._prepare_scope(cfg, dict(SETTINGS, GAU_VERIFY_URLS=False, GAU_DETECT_METHODS=False,
+                                IP_HOSTNAME_MODE="record_filter"), PID)
+    _only_good_name()      # what the run's start selected (the fake graph records no name)
     pr._dispatch("Gau", cfg)
     assert searched == [[GOOD_NAME]]
     assert written and written[0]["metadata"]["ip_mode"] is True
@@ -399,7 +425,8 @@ def test_paramspider_skips_an_ip_mode_run_with_no_name_on_the_targets(graph, mon
     monkeypatch.setattr(paramspider_helpers, "run_paramspider_discovery",
                         lambda *_a, **_k: pytest.fail("the archive was searched"))
     cfg = {"tool_id": "ParamSpider", "domains": [ROOT], "include_graph_targets": True}
-    pr._prepare_scope(cfg, dict(SETTINGS), PID)
+    # ip_only and record_only refuse ParamSpider outright (test_partial_ip_hostnames.py).
+    pr._prepare_scope(cfg, dict(SETTINGS, IP_HOSTNAME_MODE="record_filter"), PID)
     pr._dispatch("ParamSpider", cfg)
     assert "[-][ParamSpider] IP mode: no hostname" in capsys.readouterr().out
 
@@ -456,14 +483,7 @@ def test_the_name_rule_answers_nothing_outside_ip_mode():
     assert gb._ip_mode_names({GOOD_NAME: ["203.0.113.1"]}) == (None, None)
 
 
-def test_forward_answers_skip_junk_rows_and_repeat_no_address(graph):
-    graph.rows = [(GOOD_NAME, "203.0.113.1"), (GOOD_NAME + ".", "203.0.113.1"),
-                  (None, "203.0.113.2"), (LABEL, None), (GOOD_NAME.upper(), "203.0.113.9")]
-    answers = gb._forward_answers(_Session(graph.log, graph.rows), "u1", PID, [ROOT.upper()])
-    assert answers == {GOOD_NAME: ["203.0.113.1", "203.0.113.9"]}
-
-
-def test_a_label_on_an_address_a_name_already_holds_adds_no_hostname(graph, ip_run):
+def test_a_label_on_an_address_a_name_already_holds_adds_no_hostname(graph, ip_names):
     graph.rows = [(GOOD_NAME, "203.0.113.1"), ("203-0-113-1", "203.0.113.1")]
     ps = gb._build_port_scan_data_from_graph([ROOT], "u1", PID, domain_groups=[])["port_scan"]
     assert ps["by_ip"]["203.0.113.1"]["hostnames"] == [GOOD_NAME]
