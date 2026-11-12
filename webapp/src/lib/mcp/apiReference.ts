@@ -328,6 +328,8 @@ function renderAuthentication(): string {
     'The token is checked again on every call, so revoking it or letting it expire takes effect on the very next request, not at the next reconnect. The token list in the tab shows which tokens are revoked or expired: an expired one can be extended with **Edit**, a revoked one has to be replaced.',
     '',
     `Being authenticated is not the same as being allowed. A valid token that lacks a permission gets a normal response whose tool result is an error, \`${new McpScopeError('<permission>' as McpScope).message}\`, and a project that does not exist or belongs to someone else is always \`Project not found\`.`,
+    '',
+    'A token never does more than the person who owns it. With per-person permissions switched on (`RBAC_PERMISSIONS_ENABLED`), each permission ticked on a token works only while its owner holds the RedAmon permissions it maps to: one the owner loses (a permission set changed, a permission denied, the account disabled) fails with that same error from the next call, and works again when the permission comes back. The token itself is not changed; the token screen marks such a permission as limited by your permissions.',
   ].join('\n')
 }
 
