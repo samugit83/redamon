@@ -1345,12 +1345,18 @@ _capture_start_post() {
         -o /dev/null 2>/dev/null
 }
 
-# True (0) if the HTTP Traffic Capture master switch is on for any user. The proxy
-# is a global singleton, so one enabled operator means it should run.
+# True (0) if the HTTP Traffic Capture master switch is on for any user, or in the
+# instance settings row, where it lives with RBAC_IDENTITY_ENABLED on (step 2.4). The
+# proxy is a global singleton, so one enabled operator means it should run. Before the
+# webapp's first boot on this version the table does not exist: psql fails, nothing is
+# printed, and the user rows decide alone. stdin stays with the caller.
 _capture_master_switch_on() {
     local v
     v="$(docker compose exec -T postgres psql -U redamon -d redamon -tAc \
-        "SELECT bool_or(capture_proxy_enabled) FROM user_settings;" 2>/dev/null | tr -d '[:space:]')"
+        "SELECT bool_or(capture_proxy_enabled) FROM user_settings;" </dev/null 2>/dev/null | tr -d '[:space:]')"
+    [ "$v" = "t" ] && return 0
+    v="$(docker compose exec -T postgres psql -U redamon -d redamon -tAc \
+        "SELECT capture_proxy_enabled FROM instance_settings WHERE id = 'instance';" </dev/null 2>/dev/null | tr -d '[:space:]')"
     [ "$v" = "t" ]
 }
 

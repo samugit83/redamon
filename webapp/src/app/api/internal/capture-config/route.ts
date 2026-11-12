@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { activeRecordingBlock } from '@/lib/recordingConfig'
+import { instanceSettingsInForce } from '@/lib/sharedInstanceSettings'
 
 export const runtime = 'nodejs'
 
@@ -14,7 +15,9 @@ export const runtime = 'nodejs'
 // the credential-free, target-facing proxy hot-reloads that file and never touches
 // the DB itself.
 //
-// "Global" = the admin operator's UserSettings row. Capture config is an admin-only,
+// "Global" = the instance settings row with the identity switch on (step 2.4, written
+// by PUT /api/admin/instance-settings). With the switch off, and until the boot backfill
+// fills that row, the admin operator's UserSettings row: capture config is an admin-only,
 // single-shared-proxy setting; the UI writes the acting admin's row, so the most
 // recently updated admin row is authoritative ("last admin save wins").
 export async function GET(request: NextRequest) {
@@ -22,14 +25,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin' }, select: { id: true } })
-    const adminIds = admins.map((a) => a.id)
-    const s = adminIds.length
-      ? await prisma.userSettings.findFirst({
-          where: { userId: { in: adminIds } },
-          orderBy: { updatedAt: 'desc' },
-        })
-      : null
+    const instance = await instanceSettingsInForce()
+    const s = instance ?? await adminCaptureRow()
 
     // Fail-safe default: with no configured row, hand back the block-EVERYTHING
     // egress posture so the proxy stays locked down until an operator configures it.
@@ -80,11 +77,23 @@ export async function GET(request: NextRequest) {
       // so it rides this config the way the egress policy already does. Empty
       // means "use the shipped provider list" on both sides.
       sca_intel_ignore_suffixes: s?.scaIntelIgnoreSuffixes ?? '',
-      source: s ? 'db' : 'default-block',
+      source: instance ? 'instance' : s ? 'db' : 'default-block',
     })
   } catch {
     // On a DB/read error, DO NOT return a relaxed policy. Signal failure so the
     // orchestrator keeps the last-good file instead of opening the guard.
     return NextResponse.json({ error: 'capture-config unavailable' }, { status: 503 })
   }
+}
+
+/** The capture settings before the identity switch: the admin row saved last. */
+async function adminCaptureRow() {
+  const admins = await prisma.user.findMany({ where: { role: 'admin' }, select: { id: true } })
+  const adminIds = admins.map((a) => a.id)
+  return adminIds.length
+    ? prisma.userSettings.findFirst({
+        where: { userId: { in: adminIds } },
+        orderBy: { updatedAt: 'desc' },
+      })
+    : null
 }

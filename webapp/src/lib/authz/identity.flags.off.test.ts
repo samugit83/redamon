@@ -91,6 +91,9 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/principal.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
+  // Step 2.4: the tunnel and capture readers read the instance settings row only with the
+  // switch on; off, they read the user rows as before.
+  'src/lib/sharedInstanceSettings.ts',
 ]
 
 const IDENTITY_NAMES = new RegExp(

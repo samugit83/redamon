@@ -6,6 +6,8 @@
  * row, which scripts/backfill-rbac-instance-settings.mjs fills with the values these rules
  * pick (a test holds its copies of the rules equal to these).
  */
+import prisma from '@/lib/prisma'
+import { rbacFlags } from '@/lib/authz/flags'
 
 /** The user rows that configure a tunnel: an ngrok token or a chisel URL (chisel runs without auth). */
 export const TUNNEL_CANDIDATE_WHERE = {
@@ -40,3 +42,16 @@ export const CAPTURE_FIELDS = [
   'captureEgressBlockMulticast', 'captureEgressBlockUnspecified',
   'scaIntelIgnoreSuffixes',
 ] as const
+
+/** The one instance settings row (InstanceSettings, `@default("instance")`). */
+export const INSTANCE_SETTINGS_ID = 'instance'
+
+/**
+ * The instance settings row when the identity switch is on and the row exists, else null:
+ * the readers then pick a user row as before the switch. Off, nothing is read here. The row
+ * is missing only until the boot backfill first fills it (a failure is retried each boot).
+ */
+export async function instanceSettingsInForce() {
+  if (!rbacFlags().identity) return null
+  return prisma.instanceSettings.findUnique({ where: { id: INSTANCE_SETTINGS_ID } })
+}
