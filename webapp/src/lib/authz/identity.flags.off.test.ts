@@ -82,6 +82,14 @@
  *   - /api/account/activity answers 404 to everyone and reads nothing, and the My account page is
  *     step 2.8's password form alone (account/page.myAccount.test.tsx).
  *
+ * Step 2.12 makes the identity routes accept only same-origin JSON. Whatever the switch, like the
+ * session-version comparison: it is a security fix of the Phase 1 routes (creating, editing and
+ * deleting accounts, passwords, act-as, MCP tokens, the user settings) and of enable and the
+ * legacy-grant review, which run with the switch off too; a page of this app sends the same
+ * request as before, so only a request from another site or a non-JSON body is refused
+ * (identitySameOrigin.test.ts and settings/sameOrigin.test.ts run each route with the switch off
+ * and on). The Phase 2 routes answer 404 before it with the switch off.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */

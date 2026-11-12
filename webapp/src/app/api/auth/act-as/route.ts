@@ -5,6 +5,8 @@ import { createActAsToken, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeActAsAudit } from '@/lib/audit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { withRouteErrors } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { presentedActAs } from '@/lib/userAudit'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
@@ -36,8 +38,13 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
   const admin = await requireAdmin({ fresh: true })
   if (admin instanceof NextResponse) return admin
 
-  const body = await request.json().catch(() => ({}))
-  const targetUserId = body?.targetUserId
+  // Same-origin JSON whatever the identity switch (ID-26, step 2.12): acting as someone is
+  // taking over their data.
+  if (!sameOrigin(request)) return crossOriginResponse(request)
+  const parsed = await readJsonBody(request)
+  if (parsed instanceof NextResponse) return parsed
+  const body = parsed.body
+  const targetUserId = body.targetUserId
   if (!targetUserId || typeof targetUserId !== 'string') {
     return NextResponse.json({ error: 'targetUserId is required' }, { status: 400 })
   }
@@ -64,8 +71,8 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
   // Root may, until Phase 3's impersonation rules (step 2.6).
   if (target.role === 'admin') {
     const refusal = rbacFlags().identity
-      ? await requireRootPower(request, admin, body?.stepUpPassword, 'Only Root can act as another admin.')
-      : await requireStepUp(request, body?.stepUpPassword)
+      ? await requireRootPower(request, admin, body.stepUpPassword, 'Only Root can act as another admin.')
+      : await requireStepUp(request, body.stepUpPassword)
     if (refusal) return refusal
   }
 
@@ -82,6 +89,8 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
 export const DELETE = withRouteErrors('Could not stop switching user', async (request: NextRequest) => {
   const admin = await requireAdmin()
   if (admin instanceof NextResponse) return admin
+  // No body to check: a browser form cannot send a DELETE.
+  if (!sameOrigin(request)) return crossOriginResponse(request)
 
   // The cookie is decoded before it is cleared, so the end row names the target.
   // No cookie of this admin's means nothing was being acted as: the browser sends

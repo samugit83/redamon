@@ -139,7 +139,7 @@ describe('the PUT answer masks the MCP servers like the GET', () => {
   test('a save returns the row with every MCP secret masked', async () => {
     h.auth = await createToken('member', 'standard')
     const res = await PUT(new NextRequest('http://x/api/users/member/settings', {
-      method: 'PUT', body: JSON.stringify({ shodanApiKey: 'shodan-typed-key' }),
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ shodanApiKey: 'shodan-typed-key' }),
     }), params)
     expect(res.status).toBe(200)
     const text = await res.text()

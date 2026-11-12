@@ -69,7 +69,7 @@ function baseRow(featureModels: Record<string, string> = {}): Row {
 
 function put(body: unknown, id = USER) {
   return PUT(
-    new NextRequest(`http://x/api/users/${id}/settings`, { method: 'PUT', body: JSON.stringify(body) }),
+    new NextRequest(`http://x/api/users/${id}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
     { params: Promise.resolve({ id }) },
   )
 }

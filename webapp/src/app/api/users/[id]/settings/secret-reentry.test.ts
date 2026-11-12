@@ -56,7 +56,7 @@ const STORED = {
   tunnelsEnabled: true, tavilyApiKey: 'tvly-stored',
 }
 const put = (body: unknown) =>
-  PUT(new NextRequest('http://x', { method: 'PUT', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'u1' }) })
+  PUT(new NextRequest('http://x', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'u1' }) })
 
 beforeEach(() => {
   vi.clearAllMocks()

@@ -38,6 +38,8 @@ import {
 } from '@/lib/mcpAuth'
 import { validateProfile, type ProfileId } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
@@ -79,12 +81,11 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
   const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'edit_mcp_token')
   if (denied) return denied
 
-  let body: Record<string, unknown>
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
-  }
+  // Same-origin JSON whatever the identity switch (ID-26, step 2.12).
+  if (!sameOrigin(request)) return crossOriginResponse(request)
+  const parsed = await readJsonBody(request)
+  if (parsed instanceof NextResponse) return parsed
+  const body = parsed.body
 
   const existing = await loadOwned(id, tokenId)
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -239,6 +240,8 @@ export const DELETE = withRouteErrors('Could not delete the token', async (reque
   // incident (HD-23's one exception), never Root's. The audit row names the real admin.
   const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'delete_mcp_token')
   if (denied) return denied
+  // No body to check: a browser form cannot send a DELETE.
+  if (!sameOrigin(request)) return crossOriginResponse(request)
 
   const existing = await loadOwned(id, tokenId)
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })

@@ -37,7 +37,7 @@ describe('PUT response masking', () => {
   test('a save that sends masked values back returns every credential masked', async () => {
     const masked = Object.fromEntries(TRUFFLEHOG_KEY_FIELDS.map(f => [f.name, '••••••••xxxx']))
     const res = await PUT(
-      new NextRequest('http://x', { method: 'PUT', body: JSON.stringify({ ...masked, shodanApiKey: '••••••••9999' }) }),
+      new NextRequest('http://x', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...masked, shodanApiKey: '••••••••9999' }) }),
       { params: Promise.resolve({ id: 'u1' }) },
     )
     expect(res.status).toBe(200)

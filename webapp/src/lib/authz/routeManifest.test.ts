@@ -9,6 +9,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import ts from 'typescript'
 import { beforeAll, describe, expect, test } from 'vitest'
 import manifestJson from './routeManifest.json'
 import { GUARD_CLASSES, ROUTE_MANIFEST, type RouteManifestEntry } from './routeManifest'
@@ -146,8 +147,148 @@ describe('the manifest and the route tree', () => {
   })
 })
 
+/**
+ * Every route that changes identity, permissions or instance settings accepts only same-origin
+ * JSON (ID-26, T14, step 2.12): its manifest entry says `sameOrigin: true`, and each of its
+ * write handlers calls `sameOrigin`, then `readJsonBody` when it takes a body. A DELETE takes
+ * none (a member's deletion, stopping act-as, revoking a token): a browser form cannot send one.
+ */
+const SAME_ORIGIN_ROUTES = [
+  '/api/admin/instance-settings',
+  '/api/admin/legacy-grants',
+  '/api/auth/act-as',
+  '/api/auth/sessions/revoke-all',
+  '/api/invite/accept',
+  '/api/root/transfer',
+  '/api/root/transfer/accept',
+  '/api/root/transfer/cancel',
+  '/api/users',
+  '/api/users/[id]',
+  '/api/users/[id]/disable',
+  '/api/users/[id]/enable',
+  '/api/users/[id]/invite/cancel',
+  '/api/users/[id]/invite/resend',
+  '/api/users/[id]/mcp-tokens',
+  '/api/users/[id]/mcp-tokens/[tokenId]',
+  '/api/users/[id]/password',
+  '/api/users/[id]/reset-credentials',
+  '/api/users/[id]/revoke-sessions',
+  '/api/users/[id]/settings',
+  '/api/users/invite',
+]
+
+/** The families a new route joins the list from: accounts, credentials, sessions, Root, instance and access policy. */
+const SAME_ORIGIN_FAMILIES = [
+  /^\/api\/users(\/invite)?$/,
+  /^\/api\/users\/\[id\](\/(password|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?))?$/,
+  /^\/api\/auth\/(act-as|sessions\/.+)$/,
+  /^\/api\/root\//,
+  /^\/api\/admin\/(instance-settings|legacy-grants)$/,
+  /^\/api\/invite\//,
+  /^\/api\/account\//,
+]
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+/**
+ * The functions each exported write handler calls, its own body and the same-file functions it
+ * reaches (a local `guard(request)` counts), by name.
+ */
+function handlerCalls(source: string): Map<string, Set<string>> {
+  const sf = ts.createSourceFile('route.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const local = new Map<string, ts.Node>()
+  const exported = new Map<string, ts.Node>()
+  const isExported = (n: ts.Node) => ts.getModifiers(n as ts.HasModifiers)?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      local.set(stmt.name.text, stmt)
+      if (isExported(stmt)) exported.set(stmt.name.text, stmt)
+    }
+    if (ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations) {
+        if (!ts.isIdentifier(d.name) || !d.initializer) continue
+        local.set(d.name.text, d.initializer)
+        if (isExported(stmt)) exported.set(d.name.text, d.initializer)
+      }
+    }
+  }
+  const calledIn = (root: ts.Node) => {
+    const names = new Set<string>()
+    const seen = new Set<ts.Node>()
+    const walk = (node: ts.Node) => {
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression
+        const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : null
+        if (name) {
+          names.add(name)
+          const fn = local.get(name)
+          if (fn && !seen.has(fn)) {
+            seen.add(fn)
+            walk(fn)
+          }
+        }
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(root)
+    return names
+  }
+  const out = new Map<string, Set<string>>()
+  for (const [name, node] of exported) if (WRITE_METHODS.has(name)) out.set(name, calledIn(node))
+  return out
+}
+
+describe('same-origin JSON on identity, permission and instance routes (ID-26, step 2.12)', () => {
+  test('rbac routes same-origin: every listed route is flagged, and every write route of their families is listed', () => {
+    const unflagged = SAME_ORIGIN_ROUTES.filter(p => byPath.get(p)?.sameOrigin !== true)
+    expect(unflagged, 'add sameOrigin: true to these manifest entries').toEqual([])
+    const unlisted = ROUTE_MANIFEST
+      .filter(e => SAME_ORIGIN_FAMILIES.some(re => re.test(e.path)))
+      .filter(e => e.methods.some(m => WRITE_METHODS.has(m)))
+      .map(e => e.path)
+      .filter(p => !SAME_ORIGIN_ROUTES.includes(p))
+    expect(unlisted, 'a route that changes identity, permissions or instance settings checks the origin (T14)').toEqual([])
+  })
+
+  test('flagged routes call sameOrigin: each write handler, and readJsonBody when it takes a body', () => {
+    const flagged = ROUTE_MANIFEST.filter(e => e.sameOrigin === true)
+    expect(flagged.map(e => e.path).sort()).toEqual([...SAME_ORIGIN_ROUTES].sort())
+    const missing: string[] = []
+    for (const entry of flagged) {
+      const route = scanned.find(r => r.path === entry.path)!
+      const calls = handlerCalls(readFileSync(join(WEBAPP, route.file), 'utf8'))
+      expect(calls.size, `${route.file} exports no write handler`).toBeGreaterThan(0)
+      for (const [method, names] of calls) {
+        if (!names.has('sameOrigin')) missing.push(`${route.file} ${method}: no sameOrigin(request)`)
+        if (method !== 'DELETE' && !names.has('readJsonBody')) missing.push(`${route.file} ${method}: no readJsonBody(request)`)
+      }
+    }
+    expect(missing).toEqual([])
+  })
+
+  test('the check reaches a call in a local helper, not one in a comment', () => {
+    const src = [
+      '// sameOrigin(request) is checked by the proxy',
+      'async function guard(r: Request) { return sameOrigin(r) }',
+      'export const POST = withRouteErrors("x", async (r: Request) => { await guard(r); return readJsonBody(r) })',
+      'export async function DELETE() { return ok() }',
+    ].join('\n')
+    const calls = handlerCalls(src)
+    expect(calls.get('POST')?.has('sameOrigin')).toBe(true)
+    expect(calls.get('POST')?.has('readJsonBody')).toBe(true)
+    expect(calls.get('DELETE')?.has('sameOrigin')).toBe(false)
+  })
+})
+
 describe('the generator', () => {
   const middleware = { publicPaths: ['/api/auth/login', '/api/health'], tokenPrefixes: ['/api/plugin-gateway/v1/'] }
+
+  test('sameOrigin is written after the methods and the permission, before the note', () => {
+    const entry = { note: 'why', sameOrigin: true, methods: ['POST'], guard: 'admin-jwt', path: '/api/a', permission: 'users:create' }
+    const written = renderManifestSource('export const ROUTE_MANIFEST = []', [entry])
+    expect(written).toContain("{ path: '/api/a', guard: 'admin-jwt', methods: ['POST'], permission: 'users:create', sameOrigin: true, note: 'why' }")
+    expect(renderJson([entry])).toContain('{"path":"/api/a","guard":"admin-jwt","methods":["POST"],"permission":"users:create","sameOrigin":true,"note":"why"}')
+  })
 
   test('reads the public paths and token prefixes from the middleware', () => {
     const paths = readMiddlewarePaths(WEBAPP)

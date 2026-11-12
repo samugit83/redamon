@@ -48,7 +48,8 @@ import { __resetThrottle } from '@/lib/loginThrottle'
 import { PUT } from './route'
 
 const params = (id = 'owner') => ({ params: Promise.resolve({ id }) })
-const req = (body: unknown) => ({ json: async () => body }) as never
+// The route takes only same-origin JSON (step 2.12): the double carries the JSON content type.
+const req = (body: unknown) => ({ headers: new Headers({ 'content-type': 'application/json' }), json: async () => body }) as never
 
 beforeEach(() => {
   vi.clearAllMocks()

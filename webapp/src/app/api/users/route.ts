@@ -3,6 +3,8 @@ import prisma from '@/lib/prisma'
 import { hashPassword } from '@/lib/auth'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
@@ -73,7 +75,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const body = await request.json()
+    // Same-origin JSON whatever the identity switch (ID-26, step 2.12): a page on another site
+    // cannot create an account with this admin's cookie.
+    if (!sameOrigin(request)) return crossOriginResponse(request)
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    const body = parsed.body as {
+      name?: string; email?: unknown; password?: string | null; role?: unknown
+      stepUpPassword?: unknown; requirePasswordChange?: unknown
+    }
     const { name, email, password, role } = body
 
     // Identity switch on: an admin account is the confirmed Root's to create, with its password.

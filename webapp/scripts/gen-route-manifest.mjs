@@ -180,7 +180,7 @@ export function scanRoutes(webappDir = WEBAPP) {
     .sort(byPath)
 }
 
-const KEY_ORDER = ['path', 'guard', 'methods', 'permission', 'note']
+const KEY_ORDER = ['path', 'guard', 'methods', 'permission', 'sameOrigin', 'note']
 
 function ordered(entry) {
   const keys = [...KEY_ORDER.filter(k => k in entry), ...Object.keys(entry).filter(k => !KEY_ORDER.includes(k))]

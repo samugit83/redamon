@@ -59,7 +59,7 @@ function plugin(pluginId: string, over: Record<string, unknown> = {}, manifest: 
 }
 
 function put(featureModels: unknown) {
-  return PUT(new NextRequest(`http://x/api/users/${USER}/settings`, { method: 'PUT', body: JSON.stringify({ featureModels }) }), {
+  return PUT(new NextRequest(`http://x/api/users/${USER}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ featureModels }) }), {
     params: Promise.resolve({ id: USER }),
   })
 }

@@ -4,6 +4,8 @@ import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { teardownProject } from '@/lib/projectTeardown'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
@@ -307,8 +309,6 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const body = await request.json()
-    const { name, email, role, defaultAgentModel, defaultAiPipelineModel, stepUpPassword } = body
 
     // Check permissions. S2/E2: internal-key no longer bypasses -- updating a
     // user (esp. role escalation) requires a real session.
@@ -316,6 +316,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // Same-origin JSON whatever the identity switch (ID-26, step 2.12).
+    if (!sameOrigin(request)) return crossOriginResponse(request)
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    const body = parsed.body as {
+      name?: string; email?: unknown; role?: unknown; defaultAgentModel?: unknown
+      defaultAiPipelineModel?: unknown; stepUpPassword?: unknown; currentPassword?: unknown
+    }
+    const { name, email, role, defaultAgentModel, defaultAiPipelineModel, stepUpPassword } = body
 
     // Standard users can only update their own name/email
     if (session.role !== 'admin' && session.userId !== id) {
@@ -408,6 +418,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (!session || session.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+    // Whatever the identity switch (ID-26, step 2.12). No JSON check: a member's DELETE has no
+    // body, and a browser form cannot send a DELETE.
+    if (!sameOrigin(request)) return crossOriginResponse(request)
 
     // Prevent self-deletion
     if (session.userId === id) {

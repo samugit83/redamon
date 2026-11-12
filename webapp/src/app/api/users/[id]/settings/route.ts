@@ -12,6 +12,8 @@ import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
 import { maskMcpServersForApi } from '@/lib/mcp/mask'
 import type { MCPServer } from '@/lib/mcp/schema'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { normalizeGithubHost, secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
@@ -310,7 +312,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
 
-    const body = await request.json()
+    // Same-origin JSON whatever the identity switch (ID-26, step 2.12): the row holds this
+    // account's keys and, with the switch off, the instance's tunnel and capture policy.
+    if (!sameOrigin(request)) return crossOriginResponse(request)
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    const body = parsed.body as Record<string, any>
 
     // A feature's model decides whose provider keys that feature spends, so it
     // is the person's own choice: no service key extends to it. Refused or

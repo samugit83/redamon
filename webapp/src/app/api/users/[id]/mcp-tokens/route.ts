@@ -25,6 +25,8 @@ import {
 } from '@/lib/mcpAuth'
 import { validateProfile } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 
@@ -79,12 +81,11 @@ export const POST = withRouteErrors('Could not create the token', async (request
     )
   }
 
-  let body: Record<string, unknown>
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
-  }
+  // Same-origin JSON whatever the identity switch (ID-26, step 2.12): a token is a credential.
+  if (!sameOrigin(request)) return crossOriginResponse(request)
+  const parsed = await readJsonBody(request)
+  if (parsed instanceof NextResponse) return parsed
+  const body = parsed.body
 
   const name = sanitizeTokenName(body.name)
   if (!name) return NextResponse.json({ error: 'A token name is required' }, { status: 400 })

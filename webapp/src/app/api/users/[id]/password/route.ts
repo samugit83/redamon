@@ -4,6 +4,8 @@ import { hashPassword } from '@/lib/auth'
 import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
+import { readJsonBody } from '@/lib/jsonBody'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
@@ -30,9 +32,15 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { newPassword, currentPassword, stepUpPassword, requirePasswordChange, reason: rawReason } = await request.json()
+    // Same-origin JSON whatever the identity switch (ID-26, step 2.12).
+    if (!sameOrigin(request)) return crossOriginResponse(request)
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    const { newPassword: rawNewPassword, currentPassword, stepUpPassword, requirePasswordChange, reason: rawReason } = parsed.body
+    // Anything but a string is the empty password, which the floor refuses.
+    const newPassword = typeof rawNewPassword === 'string' ? rawNewPassword : ''
 
-    const check = validateNewPassword(typeof newPassword === 'string' ? newPassword : '')
+    const check = validateNewPassword(newPassword)
     if (!check.ok) {
       return NextResponse.json({ error: check.message, code: check.code }, { status: 400 })
     }
