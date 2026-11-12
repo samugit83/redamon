@@ -1149,6 +1149,10 @@ services:
       RBAC_SHARING_ENABLED: ${RBAC_SHARING_ENABLED:-false}
       RBAC_SHARING_WRITE_ENABLED: ${RBAC_SHARING_WRITE_ENABLED:-false}
       RBAC_GOVERNANCE_ENABLED: ${RBAC_GOVERNANCE_ENABLED:-false}
+      # How long a webapp process trusts an account it read (role, status, session
+      # version) while RBAC_IDENTITY_ENABLED is on: a revoke made by another copy or
+      # a host command lands within it. Blank -> the code default (5000 ms).
+      RBAC_AUTHZ_CACHE_MS: ${RBAC_AUTHZ_CACHE_MS:-}
       # Scan Timeline (versioned recon graphs). All pass through EMPTY so unset
       # keeps the safe code defaults in webapp/src/lib/scan*.ts. Wired here for the
       # same reason as the knob above: the webapp has NO env_file, so a value set

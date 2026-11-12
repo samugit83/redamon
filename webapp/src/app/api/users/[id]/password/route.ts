@@ -7,6 +7,7 @@ import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
 import { writeUserAudit } from '@/lib/userAudit'
+import { invalidatePrincipal } from '@/lib/authz/principal'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -16,7 +17,7 @@ interface RouteParams {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const session = await getSession()
+    const session = await getSession({ fresh: true })
 
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -80,6 +81,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         data: { revokedAt: new Date() },
       }),
     ])
+    invalidatePrincipal(id)
 
     if (revoked.count > 0) {
       await writeAudit({

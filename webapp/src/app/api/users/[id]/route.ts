@@ -10,6 +10,7 @@ import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
 import { writeUserAudit } from '@/lib/userAudit'
+import { invalidatePrincipal } from '@/lib/authz/principal'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -144,7 +145,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Check permissions. S2/E2: internal-key no longer bypasses -- updating a
     // user (esp. role escalation) requires a real session.
-    const session = await getSession()
+    const session = await getSession({ fresh: true })
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
@@ -184,6 +185,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
         : null
       const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
+      invalidatePrincipal(id)
       await auditUserEdit(request, session, id, data, before, user)
       return NextResponse.json(user)
     }
@@ -198,6 +200,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       user: await tx.user.update({ where: { id }, data, select: USER_SELECT }),
     }))
     if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    invalidatePrincipal(id)
     await auditUserEdit(request, session, id, data, result.value.before, result.value.user)
     return NextResponse.json(result.value.user)
   } catch (error: unknown) {
@@ -221,7 +224,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const { id } = await params
 
     // S2/E2: deleting a user requires an admin session; no internal bypass.
-    const session = await getSession()
+    const session = await getSession({ fresh: true })
     if (!session || session.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
@@ -310,6 +313,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     } else {
       templatesReassigned = await prisma.$transaction(deleteAccount)
     }
+    invalidatePrincipal(id)
 
     await writeUserAudit(request, session, {
       action: 'user.delete',

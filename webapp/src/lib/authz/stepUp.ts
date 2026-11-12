@@ -40,7 +40,7 @@ function clientIp(request: { headers?: Headers }): string | null {
  * deleted since the caller read it, is `wrong`.
  */
 export async function checkStepUp(request: { headers?: Headers }, password: unknown): Promise<StepUpResult> {
-  const session = await getSession()
+  const session = await getSession({ fresh: true })
   if (!session) return { outcome: 'wrong' }
   const key = stepUpThrottleKey(session.userId)
   const ip = clientIp(request)

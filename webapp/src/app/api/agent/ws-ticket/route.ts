@@ -28,7 +28,7 @@ const TERMINAL_REFUSED =
 // REAL signed-in account must hold it, so an admin's act-as never borrows a
 // member's grant and a member never gets it by being the effective user.
 export const POST = withRouteErrors('Could not issue a ticket for the agent connection', async (request: NextRequest) => {
-  const eff = await getEffectiveUser()
+  const eff = await getEffectiveUser({ fresh: true })
   if (!eff) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
@@ -62,7 +62,7 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
     const signedIn = await signedInActor()
     actor = signedIn?.id
     actorEmail = signedIn?.email ?? null
-    const real = actor ? await loadPrincipal(actor) : null
+    const real = actor ? await loadPrincipal(actor, { fresh: true }) : null
     if (!real) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }

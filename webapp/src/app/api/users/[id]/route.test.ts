@@ -26,6 +26,7 @@ const mockCount = vi.fn()
 const mockExecuteRaw = vi.fn()
 const mockTransaction = vi.fn()
 const mockProjectDelete = vi.fn()
+const mockInvalidate = vi.fn()
 
 vi.mock('@/lib/prisma', () => {
   const db: Record<string, unknown> = {
@@ -70,6 +71,10 @@ vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn()
 vi.mock('@/lib/session', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   isInternalRequest: (...args: unknown[]) => mockIsInternal(...args),
+}))
+vi.mock('@/lib/authz/principal', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/principal')>()),
+  invalidatePrincipal: (...args: unknown[]) => mockInvalidate(...args),
 }))
 
 import bcrypt from 'bcryptjs'
@@ -613,5 +618,56 @@ describe('the last admin and admin-on-admin step-up', () => {
     expect(res.status).toBe(200)
     expect(table.has('member-1')).toBe(false)
     expect(mockExecuteRaw).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The principal cache (step 2.2): a write drops the account it changed
+// ---------------------------------------------------------------------------
+
+describe('a write drops the changed account from the principal cache', () => {
+  beforeEach(() => {
+    mockInvalidate.mockReset()
+    mockUpdate.mockImplementation(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({ id: where.id, ...data }))
+  })
+
+  test('an edit of name or email', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    mockFindUnique.mockResolvedValue({ name: 'Old', email: 'old@x', role: 'standard' })
+    expect((await PUT(putReq({ name: 'New Name' }), makeParams('user-1'))).status).toBe(200)
+    expect(mockInvalidate).toHaveBeenCalledWith('user-1')
+  })
+
+  test('a promotion', async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockFindUnique.mockResolvedValue({ name: 'M', email: 'm@x', role: 'standard' })
+    expect((await PUT(putReq({ role: 'admin' }), makeParams('member-1'))).status).toBe(200)
+    expect(mockInvalidate).toHaveBeenCalledWith('member-1')
+  })
+
+  test('a demotion, after the guarded write', async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockFindUnique.mockResolvedValue({ name: 'M', email: 'm@x', role: 'standard', password: '' })
+    mockUpdate.mockImplementation(async () => {
+      expect(mockInvalidate).not.toHaveBeenCalled()
+      return { id: 'member-1', role: 'standard' }
+    })
+    expect((await PUT(putReq({ role: 'standard' }), makeParams('member-1'))).status).toBe(200)
+    expect(mockInvalidate).toHaveBeenCalledWith('member-1')
+  })
+
+  test('a deletion', async () => {
+    mockGetSession.mockResolvedValue(makeSession('admin-1', 'admin'))
+    mockFindUnique.mockResolvedValue({ email: 'm@x', role: 'standard' })
+    mockDelete.mockResolvedValue({})
+    const res = await DELETE(new Request('http://localhost/api/users/member-1', { method: 'DELETE' }) as never, makeParams('member-1'))
+    expect(res.status).toBe(200)
+    expect(mockInvalidate).toHaveBeenCalledWith('member-1')
+  })
+
+  test('a refused write drops nothing', async () => {
+    mockGetSession.mockResolvedValue(makeSession('user-1'))
+    expect((await PUT(putReq({ name: 'x' }), makeParams('user-2'))).status).toBe(403)
+    expect(mockInvalidate).not.toHaveBeenCalled()
   })
 })

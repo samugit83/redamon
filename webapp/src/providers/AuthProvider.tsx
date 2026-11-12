@@ -33,6 +33,13 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+/** Pages a signed-out browser may stay on: the middleware's public pages. */
+const SIGNED_OUT_PAGES = ['/login']
+
+function onSignedOutPage(pathname: string): boolean {
+  return SIGNED_OUT_PAGES.some(p => pathname === p || pathname.startsWith(p + '/'))
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -48,6 +55,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then(async res => {
         if (res.ok) return res.json()
         if (res.status >= 500) setSessionError(await readApiError(res, 'Could not read your session'))
+        // The middleware checks only the cookie's signature, so a revoked, disabled or
+        // deleted account still loads pages while every API answers 401: go to sign-in
+        // rather than leave a signed-in shell that can do nothing.
+        if (res.status === 401 && !onSignedOutPage(window.location.pathname)) window.location.replace('/login')
         return null
       })
       .then(data => {

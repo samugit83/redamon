@@ -45,6 +45,8 @@ import {
   REMOVE_ACTION as BACKFILL_REMOVE_ACTION, backfillRbacLegacyGrants,
 } from '../../../../../scripts/backfill-rbac-legacy-grants.mjs'
 import { GET, POST } from './route'
+import { setFlagsForTests } from '@/lib/authz/flags'
+import { clearPrincipalCacheForTests, loadPrincipal } from '@/lib/authz/principal'
 
 const db = () => h.db as FakePrisma
 const UPDATED = new Date('2026-03-01T09:00:00.000Z')
@@ -424,5 +426,29 @@ describe('remove_all and keep_all', () => {
     await POST(post({ action: 'remove', userId: 'member-1', grant: 'kali_terminal' }))
     expect(grantsOf('member-1')).toEqual(['shell_sessions'])
     expect(closeCalls()).toHaveLength(1)
+  })
+})
+
+describe('a decision reaches the member at once (step 2.2: the writer drops the cached account)', () => {
+  beforeEach(() => {
+    clearPrincipalCacheForTests()
+    setFlagsForTests({ identity: true })
+  })
+  afterEach(() => setFlagsForTests(null))
+
+  test('remove: the member\'s cached account loses the grant on its next read', async () => {
+    expect((await loadPrincipal('member-2'))?.legacyGrants).toContain('tunnels')
+    await signIn('admin-1')
+    expect((await POST(post({ action: 'remove', userId: 'member-2', grant: 'tunnels' }))).status).toBe(200)
+    expect((await loadPrincipal('member-2'))?.legacyGrants).toEqual(['kali_terminal', 'shell_sessions', 'future_grant'])
+  })
+
+  test('remove_all: every reviewed account', async () => {
+    expect((await loadPrincipal('member-1'))?.legacyGrants).toEqual(['kali_terminal', 'shell_sessions'])
+    expect((await loadPrincipal('member-2'))?.legacyGrants).toContain('kali_terminal')
+    await signIn('admin-1')
+    expect((await POST(post({ action: 'remove_all' }))).status).toBe(200)
+    expect((await loadPrincipal('member-1'))?.legacyGrants).toEqual([])
+    expect((await loadPrincipal('member-2'))?.legacyGrants).toEqual(['future_grant'])
   })
 })

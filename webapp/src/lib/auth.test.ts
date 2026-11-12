@@ -11,6 +11,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 // Mock environment before importing
 vi.stubEnv('AUTH_SECRET', 'a'.repeat(64))
 
+import { SignJWT, decodeJwt } from 'jose'
 import { hashPassword, verifyPassword, createToken, verifyToken, AUTH_COOKIE_NAME } from './auth'
 
 /* ------------------------------------------------------------------ */
@@ -98,6 +99,41 @@ describe('createToken / verifyToken', () => {
   test('rejects garbage string', async () => {
     const payload = await verifyToken('not.a.jwt')
     expect(payload).toBeNull()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Session version (step 2.2, ID-21, ID-23, UP-14)                    */
+/* ------------------------------------------------------------------ */
+
+describe('the session version in the login token', () => {
+  const sign = (claims: Record<string, unknown>) =>
+    new SignJWT(claims).setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('1h')
+      .sign(new TextEncoder().encode('a'.repeat(64)))
+
+  test('the token carries {sub, role, sv, iat, exp}, sv being the version it was issued with', async () => {
+    const token = await createToken('user-123', 'admin', 4)
+    expect(Object.keys(decodeJwt(token)).sort()).toEqual(['exp', 'iat', 'role', 'sub', 'sv'])
+    expect(await verifyToken(token)).toEqual({ sub: 'user-123', role: 'admin', sv: 4 })
+  })
+
+  test('without a version the token is version 0', async () => {
+    expect(decodeJwt(await createToken('user-123', 'admin')).sv).toBe(0)
+  })
+
+  test('a token minted before the version existed reads as version 0', async () => {
+    expect(await verifyToken(await sign({ sub: 'user-123', role: 'standard' }))).toEqual({ sub: 'user-123', role: 'standard', sv: 0 })
+  })
+
+  test.each([['a string', '1'], ['a negative number', -1], ['a fraction', 1.5], ['null', null]])(
+    'a token whose version is %s is refused', async (_label, sv) => {
+      expect(await verifyToken(await sign({ sub: 'user-123', role: 'admin', sv }))).toBeNull()
+    },
+  )
+
+  test('a version that is not a whole number is never signed', async () => {
+    await expect(createToken('user-123', 'admin', -1)).rejects.toThrow()
+    await expect(createToken('user-123', 'admin', 0.5)).rejects.toThrow()
   })
 })
 

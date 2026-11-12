@@ -217,6 +217,13 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     }
   })
 
+  test('the grant is judged on a fresh read of the signed-in account (step 2.2)', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    expect((await POST(terminal())).status).toBe(200)
+    expect(mockGetEffectiveUser).toHaveBeenCalledWith({ fresh: true })
+    expect(mockLoadPrincipal).toHaveBeenCalledWith('admin-1', { fresh: true })
+  })
+
   test('a grant for another shared tool does not open the terminal', async () => {
     signedIn(principal('member-tunnels', 'standard', ['tunnels', 'shell_sessions']))
     expect((await POST(terminal())).status).toBe(403)
@@ -228,8 +235,9 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     signedIn(principal('former-admin', 'standard'), 'member-old')
     const res = await POST(terminal())
     expect(res.status).toBe(403)
-    expect(mockLoadPrincipal).toHaveBeenCalledWith('former-admin')
-    expect(mockLoadPrincipal).not.toHaveBeenCalledWith('member-old')
+    // Read fresh (step 2.2), and only the real account is ever read.
+    expect(mockLoadPrincipal).toHaveBeenCalledWith('former-admin', { fresh: true })
+    expect(mockLoadPrincipal.mock.calls.map(c => c[0])).toEqual(['former-admin'])
     expect(mockCreateWsTicket).not.toHaveBeenCalled()
   })
 

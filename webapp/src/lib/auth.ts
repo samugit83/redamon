@@ -30,19 +30,36 @@ export async function verifyPassword(plain: string, hash: string): Promise<boole
   return bcrypt.compare(plain, hash)
 }
 
-export async function createToken(userId: string, role: string): Promise<string> {
-  return new SignJWT({ sub: userId, role })
+function isSessionVersion(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+}
+
+/**
+ * The login token. `sv` is the account's session version when it signed in: the session
+ * helpers refuse the token once the account's version moves on, which signs it out of
+ * every browser at once.
+ */
+export async function createToken(userId: string, role: string, sv = 0): Promise<string> {
+  if (!isSessionVersion(sv)) throw new Error('A session version is a whole number from 0')
+  return new SignJWT({ sub: userId, role, sv })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(TOKEN_EXPIRY)
     .sign(getSecret())
 }
 
-export async function verifyToken(token: string): Promise<{ sub: string; role: string } | null> {
+/**
+ * The claims of a valid login token. A token minted before the session version existed
+ * (and the Playwright helper's `{sub, role}`) is version 0; a version that is present but
+ * not a whole number from 0 makes the token invalid.
+ */
+export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number } | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret())
     if (!payload.sub || !payload.role) return null
-    return { sub: payload.sub, role: payload.role as string }
+    const sv = payload.sv === undefined ? 0 : payload.sv
+    if (!isSessionVersion(sv)) return null
+    return { sub: payload.sub, role: payload.role as string, sv }
   } catch {
     return null
   }

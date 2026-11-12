@@ -27,7 +27,7 @@ function cookieOpts(request: NextRequest) {
 // POST /api/auth/act-as  { targetUserId }  -> begin simulating targetUserId.
 // Acting as self clears the cookie (equivalent to "stop simulating").
 export const POST = withRouteErrors('Could not switch user', async (request: NextRequest) => {
-  const admin = await requireAdmin()
+  const admin = await requireAdmin({ fresh: true })
   if (admin instanceof NextResponse) return admin
 
   const body = await request.json().catch(() => ({}))

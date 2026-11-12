@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyPassword, createToken, AUTH_COOKIE_NAME, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
-import { findSignInAccount } from '@/lib/authz/accountEmail'
+import { findSignInAccount, recordSignIn } from '@/lib/authz/accountEmail'
+import { invalidatePrincipal } from '@/lib/authz/principal'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
@@ -66,7 +67,12 @@ export async function POST(request: NextRequest) {
       after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
     })
 
-    const token = await createToken(user.id, user.role)
+    await recordSignIn(user.id)
+    invalidatePrincipal(user.id)
+
+    // The token carries the version the account holds now: raising it later signs this
+    // browser out, together with every other one.
+    const token = await createToken(user.id, user.role, user.sessionVersion)
 
     const response = NextResponse.json({
       id: user.id,

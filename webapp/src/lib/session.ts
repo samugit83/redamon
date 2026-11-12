@@ -2,8 +2,9 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
-import { loadPrincipal, type Principal } from './authz/principal'
+import { loadPrincipal, principalCacheTtl, type LoadPrincipalOptions, type Principal } from './authz/principal'
 import { rememberSessionPrincipal } from './authz/sessionPrincipal'
+import { rbacFlags } from './authz/flags'
 import { internalError } from './routeErrors'
 
 export interface Session {
@@ -20,20 +21,56 @@ export interface EffectiveUser {
   userId: string
 }
 
+/** `fresh`: read the account from the database even when this process holds it (critical paths). */
+export type SessionOptions = LoadPrincipalOptions
+
+type CookieStore = Awaited<ReturnType<typeof cookies>>
+
+/**
+ * Whether the account still accepts this login token. The session version is compared
+ * strictly whatever the identity switch (a token without one is version 0), so raising it
+ * signs the account out everywhere; the status counts only with the switch on.
+ */
+function tokenAccepted(sv: number, principal: Principal): boolean {
+  if (sv !== principal.sessionVersion) return false
+  return !rbacFlags().identity || principal.status === 'active'
+}
+
+/**
+ * A refused cookie can never become valid again, and the Edge middleware, which cannot
+ * read the database, would keep loading pages with it while every API answers 401: clear
+ * it on this answer, so the next page goes to /login. Route handlers can write cookies;
+ * a read-only store (a Server Component) still refuses, it just cannot clear.
+ */
+function refuse(cookieStore: CookieStore): null {
+  try {
+    cookieStore.delete(AUTH_COOKIE_NAME)
+  } catch {
+    // read-only cookie store: the refusal stands
+  }
+  return null
+}
+
 /**
  * The signed-in account, or null (the caller answers 401). The login JWT proves who
- * signed in; whether that account still exists and its role are read from the
- * database, so the role claim in the token is never trusted. A failed database
- * read throws: it never reads as signed in.
+ * signed in; whether that account still exists, its role, its session version and its
+ * status are read from the database, so the role claim in the token is never trusted.
+ * A refused cookie is cleared. A failed database read throws: it never reads as signed
+ * in, and it keeps the cookie.
  */
-export async function getSession(): Promise<Session | null> {
+export async function getSession({ fresh = false }: SessionOptions = {}): Promise<Session | null> {
   const cookieStore = await cookies()
   const token = cookieStore.get(AUTH_COOKIE_NAME)?.value
   if (!token) return null
   const payload = await verifyToken(token)
-  if (!payload) return null
-  const principal = await loadPrincipal(payload.sub)
-  if (!principal) return null
+  if (!payload) return refuse(cookieStore)
+  let principal = await loadPrincipal(payload.sub, { fresh })
+  // A cached account may predate the change that made this token valid (a sign-in after a
+  // version bump in another process, an account enabled again): refuse only on a fresh read.
+  if (principal && !tokenAccepted(payload.sv, principal) && !fresh && principalCacheTtl() > 0) {
+    principal = await loadPrincipal(payload.sub, { fresh: true })
+  }
+  if (!principal || !tokenAccepted(payload.sv, principal)) return refuse(cookieStore)
   const session = { userId: principal.id, role: principal.role }
   rememberSessionPrincipal(session, principal)
   return session
@@ -52,10 +89,10 @@ export async function getSession(): Promise<Session | null> {
  * database (getSession); the act-as cookie can only ever narrow an admin to a
  * single other user, never grant a standard user cross-user access.
  */
-export async function getEffectiveUser(): Promise<EffectiveUser | null> {
-  const session = await getSession()
+export async function getEffectiveUser(opts: SessionOptions = {}): Promise<EffectiveUser | null> {
+  const session = await getSession(opts)
   if (!session) return null
-  const target = await actAsTarget(session)
+  const target = await actAsTarget(session, opts)
   return { userId: target ? target.id : session.userId }
 }
 
@@ -63,14 +100,14 @@ export async function getEffectiveUser(): Promise<EffectiveUser | null> {
  * The account an admin session is acting as: the act-as cookie must have been minted
  * by this admin and name an account that still exists. Null for anyone else.
  */
-async function actAsTarget(session: Session): Promise<Principal | null> {
+async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise<Principal | null> {
   if (session.role !== 'admin') return null
   const cookieStore = await cookies()
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
   if (!actAsToken) return null
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
-  return loadPrincipal(claims.act)
+  return loadPrincipal(claims.act, opts)
 }
 
 /**
@@ -78,10 +115,10 @@ async function actAsTarget(session: Session): Promise<Principal | null> {
  * read). Caller must check and return the response.
  * Usage: const result = await requireSession(); if (result instanceof NextResponse) return result;
  */
-export async function requireSession(): Promise<Session | NextResponse> {
+export async function requireSession(opts: SessionOptions = {}): Promise<Session | NextResponse> {
   let session: Session | null
   try {
-    session = await getSession()
+    session = await getSession(opts)
   } catch (err) {
     return internalError(err, 'Could not read the signed-in account')
   }
@@ -95,8 +132,8 @@ export async function requireSession(): Promise<Session | NextResponse> {
  * Returns admin session or a 401/403 NextResponse. Caller must check and return the response.
  * Usage: const result = await requireAdmin(); if (result instanceof NextResponse) return result;
  */
-export async function requireAdmin(): Promise<Session | NextResponse> {
-  const result = await requireSession()
+export async function requireAdmin(opts: SessionOptions = {}): Promise<Session | NextResponse> {
+  const result = await requireSession(opts)
   if (result instanceof NextResponse) return result
   if (result.role !== 'admin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

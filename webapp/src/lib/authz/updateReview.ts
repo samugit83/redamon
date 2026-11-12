@@ -17,6 +17,7 @@ import prisma from '@/lib/prisma'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { isStdioServer } from '@/lib/mcp/schema'
 import { legacyCutoff } from './sharedTools'
+import { invalidatePrincipal } from './principal'
 
 /** The backfill's LEGACY_GRANTS, LOCK_KEY and REMOVE_ACTION (a test keeps them equal). */
 export const LEGACY_GRANTS = ['kali_terminal', 'shell_sessions', 'tunnels'] as const
@@ -185,6 +186,7 @@ export async function decideLegacyGrant(
     const row = await writeDecision(tx, actor, KEEP_ACTION, userId, grant, false)
     return { result: { ok: true, changed: true } as const, rows: [row] }
   })
+  if (action === 'remove' && result.ok && result.changed) invalidatePrincipal(userId)
   logAudit(rows)
   return result
 }
@@ -204,7 +206,7 @@ export interface BulkDecisionResult {
 export async function decideAllLegacyGrants(
   actor: DecisionActor, action: 'keep_all' | 'remove_all',
 ): Promise<BulkDecisionResult> {
-  const { result, rows } = await prisma.$transaction(async (tx) => {
+  const { result, rows, updated } = await prisma.$transaction(async (tx) => {
     await lock(tx)
     const rows: AuditLine[] = []
     if (action === 'keep_all') {
@@ -213,7 +215,7 @@ export async function decideAllLegacyGrants(
           if (g.state === 'pending') rows.push(await writeDecision(tx, actor, KEEP_ACTION, holder.id, g.grant, true))
         }
       }
-      return { result: { changed: rows.length, terminalLost: [] }, rows }
+      return { result: { changed: rows.length, terminalLost: [] }, rows, updated: [] as string[] }
     }
     const users = await tx.user.findMany({
       where: REVIEWED,
@@ -230,8 +232,9 @@ export async function decideAllLegacyGrants(
       for (const g of removed) rows.push(await writeDecision(tx, actor, REMOVE_ACTION, user.id, g, true))
       if (removed.includes('kali_terminal')) terminalLost.push(user.id)
     }
-    return { result: { changed: rows.length, terminalLost }, rows }
+    return { result: { changed: rows.length, terminalLost }, rows, updated: users.map(u => u.id) }
   })
+  for (const id of updated) invalidatePrincipal(id)
   logAudit(rows)
   return result
 }

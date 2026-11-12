@@ -7,10 +7,12 @@ import type { BrowserContext } from '@playwright/test'
  * A session cookie minted directly from AUTH_SECRET.
  *
  * Logging in through the form would mean holding a real password in the test
- * harness. The app's own token is an HS256 JWT over `{ sub, role }`
+ * harness. The app's own token is an HS256 JWT over `{ sub, role, sv }`
  * (webapp/src/lib/auth.ts), so it can be signed here from the same secret the
  * server verifies with - no credentials, and no dependency on the login page's
- * markup staying put.
+ * markup staying put. Without `sv` the token is session version 0, which an
+ * account holds until something signs it out everywhere (a revoke, a host
+ * password reset): after that, sign in through the form.
  */
 
 const AUTH_COOKIE_NAME = 'redamon-auth'

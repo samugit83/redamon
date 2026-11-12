@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   updateUser: vi.fn(),
   updateManyTokens: vi.fn(),
   transaction: vi.fn(),
+  invalidate: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -38,6 +39,10 @@ vi.mock('@/lib/auth', () => ({
   verifyPassword: (...a: unknown[]) => h.verifyPassword(...a),
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+vi.mock('@/lib/authz/principal', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/principal')>()),
+  invalidatePrincipal: (...a: unknown[]) => h.invalidate(...a),
+}))
 
 import { __resetThrottle } from '@/lib/loginThrottle'
 import { PUT } from './route'
@@ -271,5 +276,27 @@ describe('admin-on-admin resets and own changes prove the real password', () => 
     expect((await locked.json()).code).toBe('step_up_locked')
     expect(h.verifyPassword).not.toHaveBeenCalled()
     expect(h.transaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('a password write drops the account from the principal cache (step 2.2)', () => {
+  test('an own change and an admin reset, after the write', async () => {
+    h.transaction.mockImplementation(async () => {
+      expect(h.invalidate).not.toHaveBeenCalled()
+      return [{}, { count: 0 }]
+    })
+    expect((await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'old' }), params('owner'))).status).toBe(200)
+    expect(h.invalidate).toHaveBeenCalledWith('owner')
+    h.invalidate.mockClear()
+    h.getSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+    h.findUser.mockResolvedValue({ role: 'standard' })
+    expect((await PUT(req({ newPassword: 'reset-by-admin' }), params('victim'))).status).toBe(200)
+    expect(h.invalidate).toHaveBeenCalledWith('victim')
+  })
+
+  test('a refused change drops nothing', async () => {
+    h.verifyPassword.mockResolvedValue(false)
+    expect((await PUT(req({ newPassword: 'brand-new-passphrase', currentPassword: 'wrong' }), params('owner'))).status).toBe(401)
+    expect(h.invalidate).not.toHaveBeenCalled()
   })
 })

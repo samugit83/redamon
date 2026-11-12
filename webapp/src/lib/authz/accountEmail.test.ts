@@ -1,17 +1,24 @@
 /**
  * Account emails compared ignoring case (NF-09): the sign-in lookup and the
- * "already taken" check of the user routes.
+ * "already taken" check of the user routes. The sign-in row also carries the account
+ * state the login needs (step 2.2: the session version it signs into the token, and the
+ * status, must-change flag and last sign-in its later checks read), still one query; the
+ * last sign-in time is written after a successful one.
  *
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
-const h = vi.hoisted(() => ({ queryRaw: vi.fn() }))
+const h = vi.hoisted(() => ({ queryRaw: vi.fn(), executeRaw: vi.fn() }))
 vi.mock('@/lib/prisma', () => ({
-  default: { $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => h.queryRaw(strings, ...values) },
+  default: {
+    $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => h.queryRaw(strings, ...values),
+    $executeRaw: (strings: TemplateStringsArray, ...values: unknown[]) => h.executeRaw(strings, ...values),
+  },
 }))
 
-import { normalizeEmail, findSignInAccount, emailTakenByAnother } from './accountEmail'
+import { normalizeEmail, findSignInAccount, emailTakenByAnother, recordSignIn } from './accountEmail'
+import { setNowForTests } from './clock'
 
 const row = (id: string, email: string, password = '$2a$12$hash') => ({ id, name: id, email, password, role: 'standard' })
 
@@ -57,8 +64,16 @@ describe('findSignInAccount', () => {
     expect(sql).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
     expect(sql).not.toMatch(/like/i)
     expect(h.queryRaw.mock.calls[0].slice(1)).toEqual(['a_min%@x'])
-    // The row carries what the sign-in needs and nothing else.
-    expect(sql).toMatch(/SELECT id, name, email, password, role FROM users/)
+    // The row carries what the sign-in needs and nothing else, in camelCase.
+    expect(sql).toMatch(
+      /SELECT id, name, email, password, role, status, session_version AS "sessionVersion", must_change_password AS "mustChangePassword", last_login_at AS "lastLoginAt" FROM users/,
+    )
+  })
+
+  test('the row carries the account state as the database holds it', async () => {
+    const last = new Date('2026-11-01T08:00:00Z')
+    h.queryRaw.mockResolvedValue([{ ...row('u1', 'a@x'), status: 'active', sessionVersion: 3, mustChangePassword: false, lastLoginAt: last }])
+    expect(await findSignInAccount('a@x')).toMatchObject({ id: 'u1', status: 'active', sessionVersion: 3, mustChangePassword: false, lastLoginAt: last })
   })
 
   test('a failed read throws (the route answers a coded 500)', async () => {
@@ -92,5 +107,33 @@ describe('emailTakenByAnother', () => {
     expect(sqlOf()).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
     expect(sqlOf()).not.toMatch(/like/i)
     expect(h.queryRaw.mock.calls[0].slice(1)).toEqual(['Bob_1@x'])
+  })
+})
+
+describe('recordSignIn', () => {
+  test('writes the last sign-in time from the authorization clock, bound as UTC, nothing else', async () => {
+    setNowForTests(() => new Date('2026-11-12T10:11:12.345Z'))
+    try {
+      h.executeRaw.mockResolvedValue(1)
+      await recordSignIn('u1')
+      expect(h.executeRaw).toHaveBeenCalledTimes(1)
+      const sql = (h.executeRaw.mock.calls[0][0] as string[]).join('$')
+      // Raw, so the account's updated_at (its last administrative change) does not move.
+      expect(sql).toMatch(/^\s*UPDATE users SET last_login_at = \(\$::timestamptz AT TIME ZONE 'UTC'\) WHERE id = \$\s*$/)
+      expect(h.executeRaw.mock.calls[0].slice(1)).toEqual(['2026-11-12T10:11:12.345Z', 'u1'])
+    } finally {
+      setNowForTests(null)
+    }
+  })
+
+  test('a failed write never fails the sign-in: logged with its code only', async () => {
+    h.executeRaw.mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED 10.0.0.5'), { code: 'P1001' }))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(recordSignIn('u1')).resolves.toBeUndefined()
+      expect(err).toHaveBeenCalledWith('[rbac] last-login write failed user=u1 code=P1001')
+    } finally {
+      err.mockRestore()
+    }
   })
 })

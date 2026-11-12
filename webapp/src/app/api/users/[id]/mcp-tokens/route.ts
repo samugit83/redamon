@@ -64,7 +64,7 @@ export const GET = withRouteErrors('Could not load tokens', async (request: Next
 
 export const POST = withRouteErrors('Could not create the token', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const session = await getSession()
+  const session = await getSession({ fresh: true })
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // Self-only, on the REAL identity. Not requireUserAccess: even its write rule
