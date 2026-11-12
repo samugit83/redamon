@@ -9,7 +9,9 @@
  *   already run one at a time here);
  * - `where` matches equality, `{not}`, `{in}` and `null`; `data` applies `{increment}`;
  *   `update` of a missing row raises P2025; `@updatedAt` moves on every update;
- * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would.
+ * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would;
+ * - (step 2.6) the instance row is written by `update` / `updateMany`, accounts are created and
+ *   deleted, and an account's deletion reads no project and hands over no template here.
  */
 import { Prisma } from '@prisma/client'
 
@@ -67,10 +69,12 @@ export function createAccountDb() {
     users: [] as Row[],
     tokens: [] as Row[],
     audit: [] as Row[],
+    actAs: [] as Row[],
     instance: null as Row | null,
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
+  const rawValues: unknown[][] = []
   let queue: Promise<unknown> = Promise.resolve()
   let transactions = 0
 
@@ -93,12 +97,49 @@ export function createAccountDb() {
       for (const r of rows) apply(r, a.data)
       return { count: rows.length }
     },
+    create: async (a: { data: Row; select?: Row }) => {
+      if (state.users.some((u) => u.email === a.data.email)) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'fake' })
+      }
+      const r: Row = {
+        id: `user-${state.users.length + 1}`, role: 'standard', password: '', status: 'active', sessionVersion: 0,
+        passwordOnHold: '', mustChangePassword: false, adminProfileId: null, lastLoginAt: null, legacyGrants: [],
+        createdAt: new Date(), updatedAt: new Date(), ...a.data,
+      }
+      state.users.push(r)
+      return pick(r, a.select)
+    },
+    delete: async (a: { where: Row }) => {
+      const i = state.users.findIndex((u) => matches(u, a.where))
+      if (i < 0) throw notFound()
+      const [r] = state.users.splice(i, 1)
+      return r
+    },
   }
+  const project = { findMany: async () => [] as Row[] }
+  const nucleiTemplate = { updateMany: async () => ({ count: 0 }) }
   const mcpAccessToken = {
     updateMany: async (a: { where?: Row; data: Row }) => {
       const rows = state.tokens.filter((t) => matches(t, a.where))
       for (const r of rows) Object.assign(r, a.data)
       return { count: rows.length }
+    },
+    findMany: async (a: { where?: Row; select?: Row } = {}) =>
+      state.tokens.filter((t) => matches(t, a.where)).map((t) => pick(t, a.select)),
+    findUnique: async (a: { where: Row; select?: Row }) => {
+      const r = state.tokens.find((t) => matches(t, a.where))
+      return r ? pick(r, a.select) : null
+    },
+    update: async (a: { where: Row; data: Row; select?: Row }) => {
+      const r = state.tokens.find((t) => matches(t, a.where))
+      if (!r) throw notFound()
+      Object.assign(r, a.data)
+      return pick(r, a.select)
+    },
+    delete: async (a: { where: Row }) => {
+      const i = state.tokens.findIndex((t) => matches(t, a.where))
+      if (i < 0) throw notFound()
+      return state.tokens.splice(i, 1)[0]
     },
   }
   const auditLog = {
@@ -108,19 +149,38 @@ export function createAccountDb() {
       return a.data
     },
   }
-  const $executeRaw = async (strings: TemplateStringsArray) => {
+  const actAsAudit = {
+    create: async (a: { data: Row }) => {
+      state.actAs.push({ ...a.data })
+      return a.data
+    },
+  }
+  const $executeRaw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?')
     rawCalls.push(sql)
+    rawValues.push(values)
     if (!/pg_advisory_xact_lock/.test(sql)) throw new Error(`accountDb: raw SQL not supported: ${sql}`)
     return 1
   }
   const instanceSettings = {
     findUnique: async (a: { where: Row; select?: Row }) =>
       state.instance && matches(state.instance, a.where) ? pick(state.instance, a.select) : null,
+    update: async (a: { where: Row; data: Row; select?: Row }) => {
+      if (!state.instance || !matches(state.instance, a.where)) throw notFound()
+      apply(state.instance, a.data)
+      return pick(state.instance, a.select)
+    },
+    updateMany: async (a: { where?: Row; data: Row }) => {
+      if (!state.instance || !matches(state.instance, a.where)) return { count: 0 }
+      apply(state.instance, a.data)
+      return { count: 1 }
+    },
   }
-  const client = { user, mcpAccessToken, auditLog, instanceSettings, $executeRaw }
+  const client = { user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, $executeRaw }
 
-  async function $transaction<T>(fn: (tx: typeof client) => Promise<T>): Promise<T> {
+  async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
+    // The array form: its writes already started, in order, as Prisma's batch would send them.
+    if (Array.isArray(fn)) return Promise.all(fn) as Promise<T>
     const run = queue.then(async () => {
       transactions++
       const snapshot = structuredClone(state)
@@ -130,6 +190,7 @@ export function createAccountDb() {
         state.users = snapshot.users
         state.tokens = snapshot.tokens
         state.audit = snapshot.audit
+        state.actAs = snapshot.actAs
         state.instance = snapshot.instance
         throw e
       }
@@ -151,11 +212,18 @@ export function createAccountDb() {
         })
       }
     },
-    /** The instance settings row (null: none), its Root columns empty unless given. */
+    /** The instance settings row (null: none), its Root and transfer columns empty unless given. */
     seedInstance(row: Row | null) {
-      state.instance = row && { id: 'instance', rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, ...row }
+      state.instance = row && {
+        id: 'instance', rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null,
+        pendingRootTransferTo: null, pendingRootTransferExpires: null, ...row,
+      }
     },
-    seedToken(row: { id: string; userId: string; revokedAt?: Date | null }) {
+    /** The instance row as it is now (a copy), or null. */
+    instance(): Row | null {
+      return state.instance && { ...state.instance }
+    },
+    seedToken(row: { id: string; userId: string; revokedAt?: Date | null } & Row) {
       state.tokens.push({ revokedAt: null, ...row })
     },
     account(id: string): Row | undefined {
@@ -164,6 +232,7 @@ export function createAccountDb() {
     },
     tokens: () => state.tokens.map((t) => ({ ...t })),
     audit: () => state.audit.map((a) => ({ ...a })),
+    actAs: () => state.actAs.map((a) => ({ ...a })),
     failAudit(action: string | null) {
       failing.clear()
       if (action) failing.add(action)
@@ -172,12 +241,16 @@ export function createAccountDb() {
       state.users = []
       state.tokens = []
       state.audit = []
+      state.actAs = []
       state.instance = null
       failing.clear()
       rawCalls.length = 0
+      rawValues.length = 0
       transactions = 0
     },
     rawCalls,
+    /** The bound values of each raw call, in order (the advisory lock's key). */
+    rawValues,
     get transactions() { return transactions },
   }
 }

@@ -15,11 +15,19 @@
  * Root-only power reads it `fresh`.
  */
 import prisma from '@/lib/prisma'
+import type { Prisma } from '@prisma/client'
 import { rbacFlags } from './flags'
 import { now } from './clock'
 import { principalCacheTtl } from './principal'
 
 export const INSTANCE_SETTINGS_ROW = 'instance'
+
+/**
+ * The advisory lock every writer of the Root takes: the boot backfill, the host's set-root and
+ * create-admin, the Root transfer, and (switch on) every write that could leave the Root naming
+ * an account that is no longer an active admin. `hashtext('rbac-root')`, per database.
+ */
+export const ROOT_LOCK = 'rbac-root'
 
 export interface InstanceRoot {
   userId: string
@@ -47,13 +55,15 @@ export async function loadInstanceRoot({ fresh = false }: { fresh?: boolean } = 
   return root
 }
 
-async function readInstanceRoot(): Promise<InstanceRoot | null> {
-  const row = await prisma.instanceSettings.findUnique({
+type RootReader = Pick<Prisma.TransactionClient, 'instanceSettings' | 'user'>
+
+async function readInstanceRoot(db: RootReader = prisma): Promise<InstanceRoot | null> {
+  const row = await db.instanceSettings.findUnique({
     where: { id: INSTANCE_SETTINGS_ROW },
     select: { rootUserId: true, rootConfirmedAt: true, rootAssignedBy: true },
   })
   if (!row?.rootUserId) return null
-  const account = await prisma.user.findUnique({ where: { id: row.rootUserId }, select: { email: true, role: true } })
+  const account = await db.user.findUnique({ where: { id: row.rootUserId }, select: { email: true, role: true } })
   if (!account || account.role !== 'admin') return null
   return Object.freeze({
     userId: row.rootUserId,
@@ -61,6 +71,15 @@ async function readInstanceRoot(): Promise<InstanceRoot | null> {
     confirmed: row.rootConfirmedAt !== null,
     assignedBy: row.rootAssignedBy ?? null,
   })
+}
+
+/**
+ * Inside a transaction: takes the Root lock, then reads the Root as committed now (never the
+ * cache), so no other writer of the Root can move it before this transaction ends.
+ */
+export async function lockedInstanceRoot(tx: Prisma.TransactionClient): Promise<InstanceRoot | null> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ROOT_LOCK}))`
+  return readInstanceRoot(tx)
 }
 
 /** Whether `userId` is the Root (always false with the identity switch off). */

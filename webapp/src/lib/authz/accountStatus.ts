@@ -27,6 +27,8 @@ import type { Session } from '@/lib/session'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from './adminSet'
 import { invalidatePrincipal } from './principal'
 import { now } from './clock'
+import { rbacFlags } from './flags'
+import { rootProtectedAnswer } from './rootProtection'
 
 export type StatusPermission = 'users:disable' | 'users:revoke_sessions'
 
@@ -159,6 +161,8 @@ export async function endAgentWork(userId: string, { stopRuns }: { stopRuns: boo
  * Disable `targetId`: status `disabled`, the password on hold, the session version raised and
  * every MCP token revoked, with the `user.disable` row, in the last-admin guard's transaction;
  * then the account's agent runs and sockets end. An account already disabled is left as it is.
+ * With the identity switch on the transaction also holds the Root lock and reads the Root again:
+ * a disabled Root could not sign in, and an admin target is Root's power (`adminTarget`).
  */
 export async function disableAccount(
   request: NextRequest, session: Session, targetId: string, opts: StatusOptions = {},
@@ -187,9 +191,13 @@ export async function disableAccount(
       after: { status: 'disabled', sessionVersion: row.sessionVersion + 1, tokensRevoked },
     })
     return { kind: 'disabled', tokensRevoked }
-  }))
+  }, rbacFlags().identity ? { root: { actorId: session.userId, needsRoot: !!opts.adminTarget } } : {}))
   if (result instanceof NextResponse) return result
-  if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+  if (!result.ok) {
+    if (result.refused === 'root_protected') return rootProtectedAnswer(request, session, targetId, 'disable')
+    if (result.refused === 'root_only') return ROOT_ONLY()
+    return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+  }
   const outcome = result.value
   switch (outcome.kind) {
     case 'missing': return USER_NOT_FOUND()

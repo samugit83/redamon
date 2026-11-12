@@ -11,7 +11,8 @@ import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
 import { writeUserAudit } from '@/lib/userAudit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
-import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
+import { rootProtectedAnswer, rootProtectedRefusal } from '@/lib/authz/rootProtection'
+import { rbacFlags } from '@/lib/authz/flags'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -63,6 +64,14 @@ async function auditUserEdit(
       after: { role: after.role ?? null },
     })
   }
+}
+
+/**
+ * Identity switch on: the guard's transaction also takes the Root lock and reads the Root
+ * again, so a Root chosen or moved since this request's check is never demoted or deleted.
+ */
+function rootRecheck(session: { userId: string }) {
+  return rbacFlags().identity ? { root: { actorId: session.userId } } : {}
 }
 
 /** Another admin's account changes hands only with the acting admin's own password. */
@@ -204,8 +213,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const result = await withLastAdminGuard(id, async (tx, before) => ({
       before,
       user: await tx.user.update({ where: { id }, data, select: USER_SELECT }),
-    }))
-    if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    }), rootRecheck(session))
+    if (!result.ok) {
+      if (result.refused) return rootProtectedAnswer(request, session, id, 'role_change')
+      return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    }
     invalidatePrincipal(id)
     await auditUserEdit(request, session, id, data, result.value.before, result.value.user)
     return NextResponse.json(result.value.user)
@@ -258,8 +270,11 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     // The teardown below cannot be undone, so a deletion the last-admin rule
     // refuses is refused before it; the delete itself checks again under the lock.
     if (targetIsAdmin) {
-      const allowed = await withLastAdminGuard(id, async () => undefined)
-      if (!allowed.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      const allowed = await withLastAdminGuard(id, async () => undefined, rootRecheck(session))
+      if (!allowed.ok) {
+        if (allowed.refused) return rootProtectedAnswer(request, session, id, 'delete')
+        return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      }
     }
 
     // Each project goes through the project-delete teardown first (HD-11): the
@@ -316,8 +331,11 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (targetIsAdmin) {
       // The deleter is an admin, but a concurrent demotion of the deleter could
       // leave nobody: the same locked check as a demotion.
-      const result = await withLastAdminGuard(id, deleteAccount)
-      if (!result.ok) return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      const result = await withLastAdminGuard(id, deleteAccount, rootRecheck(session))
+      if (!result.ok) {
+        if (result.refused) return rootProtectedAnswer(request, session, id, 'delete')
+        return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+      }
       templatesReassigned = result.value
     } else {
       templatesReassigned = await prisma.$transaction(deleteAccount)

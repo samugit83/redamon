@@ -42,6 +42,20 @@ export async function rootProtectedRefusal(
   if (own && !self) return null
   const root = await loadInstanceRoot({ fresh: true })
   if (!root || root.userId !== targetId) return null
+  return rootProtectedAnswer(request, session, targetId, attempted)
+}
+
+/**
+ * The refusal itself, with its row: also for a write whose transaction found its target to be
+ * Root after the check above passed (adminSet.ts `root`), so the answer is the same either way.
+ */
+export async function rootProtectedAnswer(
+  request: NextRequest,
+  session: Session,
+  targetId: string,
+  attempted: RootProtectedAttempt,
+): Promise<NextResponse> {
   await writeUserAudit(request, session, { action: ROOT_PROTECTED_ACTION, targetId, after: { attempted } })
+  const own = targetId === session.userId
   return NextResponse.json({ error: own ? SELF : OTHERS, code: 'root_protected' }, { status: 403 })
 }
