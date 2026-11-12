@@ -174,6 +174,9 @@ const IDENTITY_READERS: string[] = [
   // Step 2.12: the Users page shows the last sign-in whatever the switch, a password that must
   // change only with it on; the hook only types the list's fields.
   'src/app/settings/users/page.tsx',
+  // Step 3.13: the permission panel reads and sends an admin's profile through the permissions
+  // API, which answers 404 with the permissions switch off (the page shows the panel only with it on).
+  'src/components/admin/permissionModel.ts',
   'src/hooks/useUsers.ts',
   // Step 2.11: My activity reads the account's notices, reached only through a route that answers
   // 404 with the switch off.

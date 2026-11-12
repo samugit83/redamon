@@ -1,0 +1,125 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sectionTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5, var(--space-2));
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.permission {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.description {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.because {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.deny {
+  color: var(--status-error);
+}
+
+.area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.areaTitle {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.choice input {
+  margin-top: 3px;
+}
+
+.refusal {
+  font-size: var(--text-xs);
+  color: var(--status-warning-text, var(--text-secondary));
+}
+
+.tag {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  color: var(--text-secondary);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-2);
+}
+
+.scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: var(--space-1);
+}
