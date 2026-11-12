@@ -6522,8 +6522,10 @@ fields:
       -follow-redirects; same host only (-follow-host-redirects) in IP mode and
       while roeExcludedHosts is non-empty, in both vuln-scan passes and the
       takeover templates, and when a session is attached. The same-host flag also
-      holds a template that sets its own redirects: true. Off, no flag is passed,
-      and such a template still follows its redirects to any host.
+      holds a template that sets its own redirects: true. Off, -disable-redirects
+      is passed in IP mode, while roeExcludedHosts is non-empty and when a
+      session is attached, since such a template would otherwise still follow
+      its redirects to any host; otherwise no flag is passed.
   nucleiHeadless:
     tool: nuclei
     runtime_key: "NUCLEI_HEADLESS"

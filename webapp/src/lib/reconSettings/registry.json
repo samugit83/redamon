@@ -8674,7 +8674,7 @@
    "group": "not-tuning",
    "has_default": true,
    "mcp": "settable",
-   "meaning": "Follows a redirect while running a template rather than matching on the redirect itself. A template that expects its payload to land on the final page needs this; one matching a redirect header does not. nuclei -follow-redirects; same host only (-follow-host-redirects) in IP mode and while roeExcludedHosts is non-empty, in both vuln-scan passes and the takeover templates, and when a session is attached. The same-host flag also holds a template that sets its own redirects: true. Off, no flag is passed, and such a template still follows its redirects to any host.",
+   "meaning": "Follows a redirect while running a template rather than matching on the redirect itself. A template that expects its payload to land on the final page needs this; one matching a redirect header does not. nuclei -follow-redirects; same host only (-follow-host-redirects) in IP mode and while roeExcludedHosts is non-empty, in both vuln-scan passes and the takeover templates, and when a session is attached. The same-host flag also holds a template that sets its own redirects: true. Off, -disable-redirects is passed in IP mode, while roeExcludedHosts is non-empty and when a session is attached, since such a template would otherwise still follow its redirects to any host; otherwise no flag is passed.",
    "optional": false,
    "phase": "vuln_scan",
    "prisma_type": "Boolean",
