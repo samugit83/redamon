@@ -24,6 +24,8 @@ interface Props {
   selfId: string | undefined
   /** RBAC_IDENTITY_ENABLED is on (`rbac.identity` of /api/auth/me): disable and sign-out exist. */
   identity: boolean
+  /** The viewer is the confirmed Root (switch on): another admin's row is its to act on, with its password. */
+  manageAdmins?: boolean
   buttonClassName: string
   dangerClassName: string
   /** The list must be read again: a status changed. */
@@ -55,16 +57,23 @@ function agentUnconfirmed(answer: StatusAnswer): string | null {
 /**
  * Disable, Enable and "Sign out everywhere" on a Users page row (step 2.3, ID-13, ID-21).
  * What is offered follows the server's rules, which still decide: admins act on members;
- * another admin's status and sessions are Root's (step 2.6), so no button is shown for them;
- * the own row offers "Sign out everywhere" for this account. Enable is offered on a disabled
- * row whatever the identity switch; with the switch off, enabling another admin asks for
- * the admin's own password (step-up). Every action is confirmed first; outside the app
- * shell there is no dialog to ask with, and nothing is done.
+ * another admin's status and sessions are the confirmed Root's (step 2.6), so only Root sees
+ * buttons there, each asking for Root's password (step-up); the own row offers "Sign out
+ * everywhere" for this account. Enable is offered on a disabled row whatever the identity
+ * switch; with the switch off, enabling another admin asks for the admin's own password.
+ * Every action is confirmed first; outside the app shell there is no dialog to ask with, and
+ * nothing is done.
  */
-export function AccountStatusActions({ user, selfId, identity, buttonClassName, dangerClassName, onChanged }: Props) {
+const STEP_UP: Record<Exclude<Action, 'revoke-all'>, { title: string; label: string }> = {
+  disable: { title: 'Disable an admin', label: 'Disable' },
+  enable: { title: 'Enable an admin', label: 'Enable' },
+  revoke: { title: 'Sign an admin out everywhere', label: 'Sign out everywhere' },
+}
+
+export function AccountStatusActions({ user, selfId, identity, manageAdmins = false, buttonClassName, dangerClassName, onChanged }: Props) {
   const alerts = useOptionalAlertModal()
   const [busy, setBusy] = useState(false)
-  const [stepUp, setStepUp] = useState(false)
+  const [stepUp, setStepUp] = useState<Exclude<Action, 'revoke-all'> | null>(null)
   const status = user.status ?? 'active'
   const self = user.id === selfId
   const admin = user.role === 'admin'
@@ -125,10 +134,13 @@ export function AccountStatusActions({ user, selfId, identity, buttonClassName, 
     danger: true,
   })
 
-  const showEnable = status === 'disabled' && !self && !(identity && admin)
-  const showRevoke = identity && status === 'active' && (self || !admin)
-  const showDisable = identity && status === 'active' && !self && !admin
-  const enableNeedsStepUp = !identity && admin
+  // Another admin: Root's with the switch on; with it off only Enable exists, under Phase 1's step-up.
+  const rootRow = identity && admin && !self
+  const actsOnRow = !rootRow || manageAdmins
+  const showEnable = status === 'disabled' && !self && actsOnRow
+  const showRevoke = identity && status === 'active' && (self || actsOnRow)
+  const showDisable = identity && status === 'active' && !self && actsOnRow
+  const needsStepUp = (action: Exclude<Action, 'revoke-all'>) => (rootRow ? manageAdmins : !identity && admin && action === 'enable')
 
   return (
     <>
@@ -138,35 +150,36 @@ export function AccountStatusActions({ user, selfId, identity, buttonClassName, 
           className={buttonClassName}
           disabled={busy}
           aria-label={`Enable ${user.name}`}
-          onClick={() => (enableNeedsStepUp ? setStepUp(true) : void enable())}
+          onClick={() => (needsStepUp('enable') ? setStepUp('enable') : void enable())}
         >
           Enable
         </button>
       )}
       {showRevoke && (
-        <button type="button" className={buttonClassName} disabled={busy} aria-label={`Sign ${self ? 'your account' : user.name} out everywhere`} onClick={() => void revoke()}>
+        <button type="button" className={buttonClassName} disabled={busy} aria-label={`Sign ${self ? 'your account' : user.name} out everywhere`} onClick={() => (!self && needsStepUp('revoke') ? setStepUp('revoke') : void revoke())}>
           Sign out everywhere
         </button>
       )}
       {showDisable && (
-        <button type="button" className={`${buttonClassName} ${dangerClassName}`} disabled={busy} aria-label={`Disable ${user.name}`} onClick={() => void disable()}>
+        <button type="button" className={`${buttonClassName} ${dangerClassName}`} disabled={busy} aria-label={`Disable ${user.name}`} onClick={() => (needsStepUp('disable') ? setStepUp('disable') : void disable())}>
           Disable
         </button>
       )}
-      {enableNeedsStepUp && (
+      {admin && !self && (
         <StepUpModal
-          isOpen={stepUp}
-          title="Enable an admin"
-          message={`Enable ${user.name}, an admin account? Confirm with your own password.`}
-          confirmLabel="Enable"
+          isOpen={stepUp !== null}
+          title={stepUp ? STEP_UP[stepUp].title : ''}
+          message={`${stepUp === 'disable' ? 'Disable' : stepUp === 'revoke' ? 'Sign out everywhere' : 'Enable'} ${user.name}, an admin account? Confirm with your own password.`}
+          confirmLabel={stepUp ? STEP_UP[stepUp].label : ''}
           onConfirm={async (pw) => {
+            if (!stepUp) return
             try {
-              await send('enable', { stepUpPassword: pw })
+              await send(stepUp, { stepUpPassword: pw })
             } finally {
               onChanged()
             }
           }}
-          onClose={() => setStepUp(false)}
+          onClose={() => setStepUp(null)}
         />
       )}
     </>

@@ -9,6 +9,7 @@ import { StepUpModal } from '@/components/auth/StepUpModal'
 import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
 import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
 import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
+import { RoleControl } from '@/components/admin/RoleControl'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
@@ -100,12 +101,20 @@ export default function UsersPage() {
       return
     }
 
+    // With the identity switch on only Root creates an admin, with its own password.
+    const rootCreatesAdmin = authUser?.rbac?.identity === true && role === 'admin'
+    if (rootCreatesAdmin && !stepUpPassword) {
+      setFormError('Enter your password to create an admin')
+      return
+    }
+
     try {
       await createUser.mutateAsync({
         name,
         email,
         password: password || undefined,
         role,
+        ...(rootCreatesAdmin ? { stepUpPassword } : {}),
       })
       closeModal()
     } catch (err: unknown) {
@@ -256,6 +265,11 @@ export default function UsersPage() {
 
   const setOwnRow = modal.type === 'password' && modal.userId === authUser?.id
   const setAnotherAdmin = modal.type === 'password' && !setOwnRow && modal.targetIsAdmin
+  // Identity switch on: other admins' accounts are the confirmed Root's, with its password (step 2.6).
+  const identity = authUser?.rbac?.identity === true
+  const confirmedRoot = identity && authUser?.accountType === 'root' && authUser?.rbac?.root?.confirmed === true
+  const manageAdmins = !identity || confirmedRoot
+  const createsAdminWithPassword = identity && role === 'admin'
 
   return (
     <div className={styles.page}>
@@ -299,9 +313,18 @@ export default function UsersPage() {
                   <span className={styles.email}>{user.email}</span>
                 </td>
                 <td className={styles.td}>
-                  <span className={`${styles.badge} ${user.role === 'admin' ? styles.badgeAdmin : styles.badgeStandard}`}>
-                    {user.role}
-                  </span>
+                  {manageAdmins && user.id !== authUser?.id ? (
+                    <RoleControl
+                      user={user}
+                      identity={identity}
+                      className={styles.select}
+                      onChanged={() => void refetchUsers?.()}
+                    />
+                  ) : (
+                    <span className={`${styles.badge} ${user.role === 'admin' ? styles.badgeAdmin : styles.badgeStandard}`}>
+                      {user.role}
+                    </span>
+                  )}
                 </td>
                 <td className={styles.td}>
                   {user.hasPassword ? (
@@ -313,15 +336,17 @@ export default function UsersPage() {
                 <td className={styles.td}>{user._count?.projects ?? 0}</td>
                 <td className={styles.td}>
                   <div className={styles.actions}>
-                    <button
-                      className={styles.actionButton}
-                      onClick={() => openModal({
-                        type: 'password', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin',
-                      })}
-                    >
-                      Set Password
-                    </button>
-                    {user.id !== authUser?.id && (
+                    {(user.id === authUser?.id || user.role !== 'admin' || manageAdmins) && (
+                      <button
+                        className={styles.actionButton}
+                        onClick={() => openModal({
+                          type: 'password', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin',
+                        })}
+                      >
+                        Set Password
+                      </button>
+                    )}
+                    {user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
                       <button
                         className={`${styles.actionButton} ${styles.deleteButton}`}
                         onClick={() => openModal({
@@ -334,7 +359,8 @@ export default function UsersPage() {
                     <AccountStatusActions
                       user={user}
                       selfId={authUser?.id}
-                      identity={authUser?.rbac?.identity === true}
+                      identity={identity}
+                      manageAdmins={confirmedRoot}
                       buttonClassName={styles.actionButton}
                       dangerClassName={styles.deleteButton}
                       onChanged={() => void refetchUsers?.()}
@@ -352,8 +378,9 @@ export default function UsersPage() {
         <div className={styles.form}>
           {formError && <div className={styles.error}>{formError}</div>}
           <div className={styles.field}>
-            <label className={styles.label}>Name *</label>
+            <label className={styles.label} htmlFor="create-user-name">Name *</label>
             <input
+              id="create-user-name"
               className={styles.input}
               value={name}
               onChange={e => setName(e.target.value)}
@@ -362,8 +389,9 @@ export default function UsersPage() {
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.label}>Email *</label>
+            <label className={styles.label} htmlFor="create-user-email">Email *</label>
             <input
+              id="create-user-email"
               type="email"
               className={styles.input}
               value={email}
@@ -394,12 +422,27 @@ export default function UsersPage() {
             </div>
           )}
           <div className={styles.field}>
-            <label className={styles.label}>Role</label>
-            <select className={styles.select} value={role} onChange={e => setRole(e.target.value)}>
+            <label className={styles.label} htmlFor="create-user-role">Role</label>
+            <select id="create-user-role" className={styles.select} value={role} onChange={e => setRole(e.target.value)}>
               <option value="standard">Standard</option>
-              <option value="admin">Admin</option>
+              {manageAdmins && <option value="admin">Admin</option>}
             </select>
+            {!manageAdmins && <span className={styles.hint}>Only Root creates admin accounts.</span>}
           </div>
+          {createsAdminWithPassword && (
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="create-user-step-up">Your password</label>
+              <input
+                id="create-user-step-up"
+                type="password"
+                className={styles.input}
+                value={stepUpPassword}
+                onChange={e => setStepUpPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+              <span className={styles.hint}>Creating an admin is Root&apos;s action: confirm it with your own password.</span>
+            </div>
+          )}
           <div className={styles.modalActions}>
             <button className={styles.actionButton} onClick={closeModal}>Cancel</button>
             <button

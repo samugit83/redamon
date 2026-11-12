@@ -38,8 +38,19 @@ async function fetchUser(userId: string): Promise<UserWithProjects> {
   return fetchJson<UserWithProjects>(`/api/users/${userId}`, undefined, 'Failed to fetch user')
 }
 
+/**
+ * Creating an admin with the identity switch on carries Root's own password (step-up, step 2.6).
+ */
+export interface CreateUserData {
+  name: string
+  email: string
+  password?: string
+  role?: string
+  stepUpPassword?: string
+}
+
 // Create a new user
-async function createUser(data: { name: string; email: string; password?: string; role?: string }): Promise<User> {
+async function createUser(data: CreateUserData): Promise<User> {
   return fetchJson<User>('/api/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -47,8 +58,14 @@ async function createUser(data: { name: string; email: string; password?: string
   }, 'Failed to create user')
 }
 
+/**
+ * A role change of another admin, and with the identity switch on any change Root makes to
+ * another admin or a promotion, carries the acting admin's own password (step-up).
+ */
+export type UpdateUserData = Partial<{ name: string; email: string; role: string; stepUpPassword: string }>
+
 // Update a user
-async function updateUser(userId: string, data: Partial<{ name: string; email: string; role: string }>): Promise<User> {
+async function updateUser(userId: string, data: UpdateUserData): Promise<User> {
   return fetchJson<User>(`/api/users/${userId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -123,7 +140,7 @@ export function useUpdateUser() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ userId, data }: { userId: string; data: Partial<{ name: string; email: string; role: string }> }) =>
+    mutationFn: ({ userId, data }: { userId: string; data: UpdateUserData }) =>
       updateUser(userId, data),
     onSuccess: (user) => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
