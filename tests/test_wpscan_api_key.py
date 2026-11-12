@@ -34,10 +34,15 @@ class TestPrismaSchemaWPScanToken(unittest.TestCase):
 
     def test_field_in_tool_keys_section(self):
         """wpscanApiToken must be in the Tool API Keys section (near other keys)."""
+        # Scoped to UserSettings: model InstanceSettings, earlier in the file,
+        # carries its own ngrokAuthtoken.
+        match = re.search(r'^model UserSettings \{\n(.*?)^\}', self.content, re.M | re.S)
+        self.assertIsNotNone(match, 'model UserSettings block not found')
+        block = match.group(1)
         # Should be near driftnetApiKey (the previous key in the list)
-        driftnet_pos = self.content.index('driftnetApiKey')
-        wpscan_pos = self.content.index('wpscanApiToken')
-        ngrok_pos = self.content.index('ngrokAuthtoken')
+        driftnet_pos = block.index('driftnetApiKey')
+        wpscan_pos = block.index('wpscanApiToken')
+        ngrok_pos = block.index('ngrokAuthtoken')
         # wpscan should be between driftnet and ngrok (tunneling section)
         self.assertGreater(wpscan_pos, driftnet_pos)
         self.assertLess(wpscan_pos, ngrok_pos)
