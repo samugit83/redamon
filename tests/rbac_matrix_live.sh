@@ -11,6 +11,9 @@
 #   since   the step that recorded the row (0.5 = the untouched baseline)
 #   actor   anon | internal | scanner | admin_a | admin_b | member_a | member_b |
 #           member_c (owner_a / owner_b are aliases of member_a / member_b) |
+#           operator | analyst | noaccess (members on the built-in sets Recon operator,
+#           Read-only analyst and No access, each owning a project) | usermgr (an admin on the
+#           User manager profile); the sets count only with RBAC_PERMISSIONS_ENABLED on |
 #           <actor>_as_<user> (signed in as <actor>, then POST /api/auth/act-as <user>,
 #           e.g. admin_a_as_member_a; <user> may also be "managed") |
 #           <admin>_demoted, <admin>_as_<user>_demoted (admin_a or admin_b signed in, and
@@ -174,7 +177,7 @@ declare -A ACTOR_ERR=()
 user_key() { # actor name -> seed key prefix (MEMBER_A, ...)
   case "$1" in
     owner_a) echo MEMBER_A ;; owner_b) echo MEMBER_B ;;
-    admin_a|admin_b|member_a|member_b|member_c|managed|deleted) echo "${1^^}" ;;
+    admin_a|admin_b|member_a|member_b|member_c|managed|deleted|operator|analyst|noaccess|usermgr) echo "${1^^}" ;;
     *) return 1 ;;
   esac
 }

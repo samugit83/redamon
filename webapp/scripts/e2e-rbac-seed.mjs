@@ -34,6 +34,12 @@ const USERS = [
   // Owns nothing: the matrix signs it in, deletes it by SQL and replays its cookie. A fixed
   // id, because the cleanup can no longer find it by address to remove the rows it left.
   { key: 'DELETED', id: 'rbac-deleted-fixture', email: 'rbac-deleted@e2e.local', name: 'RBAC Deleted', role: 'standard', login: true },
+  // One account per built-in set the Phase 3 rows sign in with (p3_generated.tsv). The sets count only
+  // with RBAC_PERMISSIONS_ENABLED on; with it off each is a plain member (or admin), as today.
+  { key: 'OPERATOR', email: 'rbac-operator@e2e.local', name: 'RBAC Recon Operator', role: 'standard', login: true, sets: ['builtin:recon-operator'] },
+  { key: 'ANALYST', email: 'rbac-analyst@e2e.local', name: 'RBAC Read-only Analyst', role: 'standard', login: true, sets: ['builtin:read-only-analyst'] },
+  { key: 'NOACCESS', email: 'rbac-noaccess@e2e.local', name: 'RBAC No Access', role: 'standard', login: true, sets: ['builtin:no-access'] },
+  { key: 'USERMGR', email: 'rbac-usermgr@e2e.local', name: 'RBAC User Manager', role: 'admin', login: true, adminProfileId: 'builtin:user-manager' },
 ]
 
 // The two throwaway projects exist to be deleted by the matrix: one by the owner,
@@ -44,6 +50,11 @@ const PROJECTS = [
   { key: 'PADM', owner: 'ADMIN_A', name: 'rbac-PADM' },
   { key: 'PA_TMP1', owner: 'MEMBER_A', name: 'rbac-PA-tmp1' },
   { key: 'PA_TMP2', owner: 'MEMBER_A', name: 'rbac-PA-tmp2' },
+  { key: 'POPERATOR', owner: 'OPERATOR', name: 'rbac-POPERATOR' },
+  { key: 'PANALYST', owner: 'ANALYST', name: 'rbac-PANALYST' },
+  { key: 'PNOACCESS', owner: 'NOACCESS', name: 'rbac-PNOACCESS' },
+  { key: 'POPERATOR_TMP', owner: 'OPERATOR', name: 'rbac-POPERATOR-tmp' },
+  { key: 'PANALYST_TMP', owner: 'ANALYST', name: 'rbac-PANALYST-tmp' },
 ]
 
 const FAKES = {
@@ -58,11 +69,23 @@ const prisma = new PrismaClient()
 
 async function upsertUser(u, hash) {
   const password = u.login ? hash : ''
+  const adminProfileId = u.adminProfileId ?? null
   return prisma.user.upsert({
     where: { email: u.email },
-    update: { password, role: u.role, name: u.name },
-    create: { ...(u.id ? { id: u.id } : {}), email: u.email, name: u.name, password, role: u.role },
+    update: { password, role: u.role, name: u.name, adminProfileId },
+    create: { ...(u.id ? { id: u.id } : {}), email: u.email, name: u.name, password, role: u.role, adminProfileId },
   })
+}
+
+/** Exactly the account's sets (none: never assigned, the instance default), and no override. */
+async function assignSets(userId, sets) {
+  await prisma.userPermissionOverride.deleteMany({ where: { userId } })
+  await prisma.userPermissionSet.deleteMany({ where: { userId, setId: { notIn: sets } } })
+  for (const setId of sets) {
+    await prisma.userPermissionSet.upsert({
+      where: { userId_setId: { userId, setId } }, update: {}, create: { userId, setId },
+    })
+  }
 }
 
 async function findOrCreate(model, where, data) {
@@ -73,6 +96,7 @@ try {
   const hash = await bcrypt.hash(PASSWORD, 12)
   const ids = {}
   for (const u of USERS) ids[u.key] = (await upsertUser(u, hash)).id
+  for (const u of USERS) await assignSets(ids[u.key], u.sets ?? [])
 
   for (const p of PROJECTS) {
     const userId = ids[p.owner]

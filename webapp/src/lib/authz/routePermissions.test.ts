@@ -9,7 +9,7 @@
  *
  * Whether each permission is enforced is proved by the families' `*.permissions.test.ts`, which run
  * the real guard; this file keeps the manifest, which the live matrix rows are generated from
- * (scripts/gen-rbac-matrix-rows.mjs), equal to the code.
+ * (scripts/gen-rbac-matrix-rows.mjs), equal to the code, and the generated rows equal to the manifest.
  * Handlers whose permission a later step wires are in LATER, with the step.
  */
 import { readFileSync } from 'node:fs'
@@ -18,6 +18,7 @@ import ts from 'typescript'
 import { describe, expect, test } from 'vitest'
 import { ROUTE_MANIFEST, type HttpMethod, type RouteManifestEntry } from './routeManifest'
 import { PERMISSION_IDS } from './permissions'
+import { REPRESENTATIVES, run as runMatrixRows } from '../../../scripts/gen-rbac-matrix-rows.mjs'
 
 const WEBAPP = join(__dirname, '..', '..', '..')
 
@@ -131,6 +132,13 @@ describe('route permissions, wave A: projects, recon, scans (step 3.8)', () => {
   test('the permissions named are registry ids', () => {
     const named = family.flatMap(e => (typeof e.permission === 'string' ? [e.permission] : Object.values(e.permission ?? {})))
     expect(named.filter(p => !(PERMISSION_IDS as readonly string[]).includes(p))).toEqual([])
+  })
+
+  test('every permission the families name has generated live rows, and p3_generated.tsv is up to date', () => {
+    const named = new Set(family.flatMap(e => (typeof e.permission === 'string' ? [e.permission] : Object.values(e.permission ?? {}))))
+    expect([...named].filter(p => !Object.hasOwn(REPRESENTATIVES, p)).sort(), 'add a representative to gen-rbac-matrix-rows.mjs').toEqual([])
+    const out: string[] = []
+    expect(runMatrixRows(['--check'], WEBAPP, (line: string) => out.push(line)), out.join('\n')).toBe(0)
   })
 
   test('the reader of handler permissions finds each handler and only its own calls', () => {
