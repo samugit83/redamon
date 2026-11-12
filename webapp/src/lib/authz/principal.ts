@@ -10,6 +10,9 @@
  * request sees the change; another process (a second webapp copy, a host command) sees
  * it within the bound. An action a stale account must never allow reads with `fresh`.
  * With the switch off nothing is cached: one indexed read by primary key per call.
+ *
+ * With the permissions switch on, the same read also brings the account's permission sets and
+ * overrides (step 3.4), for capabilities.ts; off, the query and the principal are Phase 2's.
  */
 import prisma from '@/lib/prisma'
 import { rbacFlags } from './flags'
@@ -33,6 +36,21 @@ export interface Principal {
   lastLoginAt: Date | null
   /** The shared tools the account kept at the RBAC upgrade (authz/sharedTools.ts). */
   legacyGrants: readonly string[]
+  /**
+   * The permission set ids assigned to the account (none = never assigned). Present only when
+   * the account was read with the permissions switch on.
+   */
+  permissionSets?: readonly string[]
+  /** Every override row, expired ones included: capabilities.ts judges expiry on the clock. */
+  permissionOverrides?: readonly PermissionOverrideRow[]
+}
+
+export interface PermissionOverrideRow {
+  permission: string
+  /** grant | deny */
+  effect: string
+  expiresAt: Date | null
+  reason: string | null
 }
 
 export interface LoadPrincipalOptions {
@@ -105,7 +123,9 @@ export async function loadPrincipal(userId: string, { fresh = false }: LoadPrinc
 export function cachedPrincipal(userId: string): Principal | null {
   if (principalCacheTtl() <= 0) return null
   const hit = cache.get(userId)
-  return hit && hit.expiresAt > now().getTime() ? hit.principal : null
+  if (!hit || hit.expiresAt <= now().getTime()) return null
+  // Read under the other permissions switch state, it lacks (or carries) the assignments.
+  return (hit.principal.permissionSets !== undefined) === rbacFlags().permissions ? hit.principal : null
 }
 
 /** A writer in this process changed the account: its next read goes to the database. */
@@ -130,7 +150,27 @@ function remember(principal: Principal, ttl: number): void {
   cache.set(principal.id, { principal, expiresAt: at + ttl })
 }
 
+const PERMISSION_ROWS = {
+  permissionSets: { select: { setId: true } },
+  permissionOverrides: { select: { permission: true, effect: true, expiresAt: true, reason: true } },
+} as const
+
+interface PermissionRows {
+  permissionSets?: Array<{ setId: string }>
+  permissionOverrides?: Array<{ permission: string; effect: string; expiresAt: Date | null; reason: string | null }>
+}
+
+function permissionFields(row: PermissionRows): Pick<Principal, 'permissionSets' | 'permissionOverrides'> {
+  return {
+    permissionSets: Object.freeze((row.permissionSets ?? []).map((r) => r.setId)),
+    permissionOverrides: Object.freeze((row.permissionOverrides ?? []).map((r) => Object.freeze({
+      permission: r.permission, effect: r.effect, expiresAt: r.expiresAt ?? null, reason: r.reason ?? null,
+    }))),
+  }
+}
+
 async function readPrincipal(userId: string): Promise<Principal | null> {
+  const withPermissions = rbacFlags().permissions
   // Prisma cannot select `password <> ''`, so the hash is read and reduced to a
   // boolean here; it never leaves this function.
   const row = await prisma.user.findUnique({
@@ -138,6 +178,7 @@ async function readPrincipal(userId: string): Promise<Principal | null> {
     select: {
       id: true, email: true, name: true, role: true, password: true, createdAt: true, legacyGrants: true,
       status: true, sessionVersion: true, mustChangePassword: true, adminProfileId: true, lastLoginAt: true,
+      ...(withPermissions ? PERMISSION_ROWS : {}),
     },
   })
   if (!row) return null
@@ -156,5 +197,6 @@ async function readPrincipal(userId: string): Promise<Principal | null> {
     createdAt: row.createdAt,
     lastLoginAt: row.lastLoginAt ?? null,
     legacyGrants: Object.freeze(Array.isArray(row.legacyGrants) ? [...row.legacyGrants] : []),
+    ...(withPermissions ? permissionFields(row as PermissionRows) : {}),
   })
 }

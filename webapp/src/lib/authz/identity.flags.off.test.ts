@@ -183,6 +183,9 @@ const IDENTITY_READERS: string[] = [
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
   'src/lib/authz/accountStatus.ts',
+  // Step 3.4: reads an admin's profile and the instance default set only with the permissions
+  // switch on, which needs this switch; off, the account type's default (no Root, nothing read).
+  'src/lib/authz/capabilities.ts',
   // Step 2.9: invite and reset links, reached only through routes that answer 404 with the
   // switch off.
   'src/lib/authz/invites.ts',

@@ -494,3 +494,82 @@ describe('the cache seen from the session (identity switch on)', () => {
     expect(await getSession()).toEqual({ userId: 'u1', role: 'admin' })
   })
 })
+
+describe('the permission assignments (step 3.4, permissions switch on)', () => {
+  const BASE_SELECT = {
+    id: true, email: true, name: true, role: true, password: true, createdAt: true, legacyGrants: true,
+    status: true, sessionVersion: true, mustChangePassword: true, adminProfileId: true, lastLoginAt: true,
+  }
+  const UNTIL = new Date('2026-12-01T00:00:00Z')
+
+  beforeEach(() => setFlagsForTests({ identity: true, permissions: true }))
+
+  test('the same one read also selects the sets and overrides of the account (PE-01, DV-25)', async () => {
+    findUnique.mockResolvedValue(null)
+    await loadPrincipal('u1')
+    expect(findUnique).toHaveBeenCalledTimes(1)
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'u1' },
+      select: {
+        ...BASE_SELECT,
+        permissionSets: { select: { setId: true } },
+        permissionOverrides: { select: { permission: true, effect: true, expiresAt: true, reason: true } },
+      },
+    })
+  })
+
+  test('the principal carries them as the rows hold them, expired ones included, frozen', async () => {
+    findUnique.mockResolvedValue(row({
+      role: 'standard',
+      permissionSets: [{ setId: 'builtin:read-only-analyst' }, { setId: 'set-custom' }],
+      permissionOverrides: [
+        { permission: 'recon:scan', effect: 'grant', expiresAt: UNTIL, reason: 'ACME engagement' },
+        { permission: 'graph:cypher', effect: 'deny', expiresAt: new Date(0), reason: null },
+      ],
+    }))
+    const p = await loadPrincipal('u1')
+    // Expiry is the resolution's to judge (capabilities.ts, on the clock): a cached account
+    // must not keep a grant past its end, so nothing is dropped here.
+    expect(p?.permissionSets).toEqual(['builtin:read-only-analyst', 'set-custom'])
+    expect(p?.permissionOverrides).toEqual([
+      { permission: 'recon:scan', effect: 'grant', expiresAt: UNTIL, reason: 'ACME engagement' },
+      { permission: 'graph:cypher', effect: 'deny', expiresAt: new Date(0), reason: null },
+    ])
+    expect(Object.isFrozen(p?.permissionSets)).toBe(true)
+    expect(Object.isFrozen(p?.permissionOverrides)).toBe(true)
+    expect(Object.isFrozen(p?.permissionOverrides?.[0])).toBe(true)
+  })
+
+  test('none on the row reads as never assigned and no override', async () => {
+    findUnique.mockResolvedValue(row({ permissionSets: [], permissionOverrides: [] }))
+    expect(await loadPrincipal('u1')).toMatchObject({ permissionSets: [], permissionOverrides: [] })
+    findUnique.mockResolvedValue(row())
+    expect(await loadPrincipal('u1')).toMatchObject({ permissionSets: [], permissionOverrides: [] })
+  })
+
+  test('with the permissions switch off the principal carries neither (the Phase 2 shape)', async () => {
+    setFlagsForTests({ identity: true, permissions: false })
+    findUnique.mockResolvedValue(row({ permissionSets: [{ setId: 'x' }], permissionOverrides: [] }))
+    const p = await loadPrincipal('u1')
+    expect(p).not.toHaveProperty('permissionSets')
+    expect(p).not.toHaveProperty('permissionOverrides')
+  })
+
+  test('an account this process read under the other permissions switch state is read again', async () => {
+    db.set('u1', row({ permissionSets: [{ setId: 'builtin:no-access' }], permissionOverrides: [] }))
+    setFlagsForTests({ identity: true, permissions: false })
+    await loadPrincipal('u1')
+    findUnique.mockClear()
+    setFlagsForTests({ identity: true, permissions: true })
+    expect((await loadPrincipal('u1'))?.permissionSets).toEqual(['builtin:no-access'])
+    expect(findUnique).toHaveBeenCalledTimes(1)
+    // Warm under this state: no query.
+    findUnique.mockClear()
+    jar.auth = await createToken('u1', 'admin')
+    expect(await getSession()).toEqual({ userId: 'u1', role: 'admin' })
+    expect(findUnique).not.toHaveBeenCalled()
+    setFlagsForTests({ identity: true, permissions: false })
+    expect(await loadPrincipal('u1')).not.toHaveProperty('permissionSets')
+    expect(findUnique).toHaveBeenCalledTimes(1)
+  })
+})

@@ -31,6 +31,7 @@ import { writeAudit } from '@/lib/audit'
 import { resolveMcpUser, type McpAuthFailure } from '@/lib/mcpAuth'
 import { buildMcpServer } from '@/lib/mcp/server'
 import { buildInstructions } from '@/lib/mcp/instructions'
+import { mcpServerEnabled } from '@/lib/mcpServerEnabled'
 
 export const runtime = 'nodejs'
 /** The tools read live data; a cached MCP response would be actively wrong. */
@@ -105,11 +106,7 @@ export function __resetAuthAuditThrottle(): void {
   authAuditSeen.clear()
 }
 
-export function mcpServerEnabled(): boolean {
-  // Default OFF. A new authenticated inbound surface must be switched on
-  // deliberately, not inherited by upgrading.
-  return process.env.MCP_SERVER_ENABLED === 'true' || process.env.MCP_SERVER_ENABLED === '1'
-}
+export { mcpServerEnabled }
 
 /**
  * What a disabled deployment answers, to every caller alike.
