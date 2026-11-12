@@ -204,6 +204,8 @@ class _RunCtx:
         self.budget = _SearchBudget(int(settings.get("ORIGIN_DISCOVERY_MAX_SEARCH_CALLS", 50) or 50))
         self.roe_enabled = bool(settings.get("ROE_ENABLED"))
         self.roe_excluded = settings.get("ROE_EXCLUDED_HOSTS", []) or []
+        from recon.helpers.target_admission import admission_context
+        self.redirect_hops_admitted = bool(admission_context(settings).excluded)
         self._cache: Dict[Tuple[str, str], List[str]] = {}
         self._cache_lock = threading.Lock()
         self._misses = 0
@@ -964,6 +966,34 @@ def _pace_each_hop(ctx: _RunCtx):
     return hook
 
 
+def _get_admitted_hops(url: str, headers: dict, ctx: _RunCtx):
+    """The reference GET under RoE exclusions: requests would follow the
+    fronted host's redirect into an excluded host unchecked, so every hop, the
+    first URL included, is checked against the RoE before it is sent
+    (hop_guard; R-2). None when a hop is refused: the host then has no
+    reference and keeps its earlier findings. Each hop waits like the first:
+    the module's rate here, the RoE clock in fetch_hop_by_hop."""
+    from recon.helpers.js_recon.hop_guard import fetch_hop_by_hop
+
+    def send(_method, hop_url, *, timeout, headers, allow_redirects):
+        ctx.rate.wait()
+        return requests.get(hop_url, timeout=timeout, verify=False, allow_redirects=False,
+                            headers=headers, stream=True)
+
+    refusal: dict = {}
+    # The SSRF guard stays what it was for this fetch: none (the fronted host
+    # is in scope); only the RoE is added.
+    resp = fetch_hop_by_hop("GET", url, timeout=ctx.timeout, headers=headers,
+                            settings={"ROE_ENABLED": ctx.roe_enabled,
+                                      "ROE_EXCLUDED_HOSTS": ctx.roe_excluded},
+                            url_guard=lambda _url: True, refusal=refusal, send=send,
+                            module="origin_discovery")
+    if resp is None:
+        _log("-", f"reference fetch stopped at redirect hop {refusal.get('hop')} "
+                  f"({refusal.get('reason')}): the host keeps its earlier findings")
+    return resp
+
+
 def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = False) -> Optional[dict]:
     """GET url (optionally with a forged Host), returning text/headers/status.
 
@@ -972,7 +1002,8 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
     internal or cloud-metadata host the G11 IP filter never saw, turning the
     probe into an SSRF pivot. The trusted reference fetch (the in-scope fronted
     host) passes allow_redirects=True so a canonical 301 (apex->www, http->https)
-    doesn't collapse its body and destroy the HTML-similarity signal.
+    doesn't collapse its body and destroy the HTML-similarity signal; under
+    RoE exclusions only through hops the RoE admits (_get_admitted_hops).
 
     That trusted reference fetch also returns the raw page (its ``<script
     src>`` are where the site's own file is found) and the URL it ended on,
@@ -983,9 +1014,14 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
         headers["Host"] = host_header
     extra = {"hooks": {"response": _pace_each_hop(ctx)}} if allow_redirects else {}
     try:
-        ctx.pace()
-        resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=allow_redirects,
-                            headers=headers, stream=True, **extra)
+        if allow_redirects and ctx.redirect_hops_admitted:
+            resp = _get_admitted_hops(url, headers, ctx)
+            if resp is None:
+                return None
+        else:
+            ctx.pace()
+            resp = requests.get(url, timeout=ctx.timeout, verify=False,
+                                allow_redirects=allow_redirects, headers=headers, stream=True, **extra)
         _back_off_if_throttled(resp)
         body = resp.raw.read(_MAX_HTML_BYTES, decode_content=True) or b""
         status = resp.status_code

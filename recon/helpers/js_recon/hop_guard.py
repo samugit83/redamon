@@ -118,7 +118,8 @@ def fetch_hop_by_hop(method: str, url: str, *, timeout: float,
                      max_redirects: int = MAX_REDIRECTS,
                      refusal: Optional[dict] = None,
                      send: Optional[Callable[..., requests.Response]] = None,
-                     verify: bool = False) -> Optional[requests.Response]:
+                     verify: bool = False,
+                     module: str = _ADMISSION_MODULE) -> Optional[requests.Response]:
     """Send ``method`` to ``url`` and follow its redirects by hand, checking
     every hop, the first URL included, before it is sent. The first check a
     hop fails names the refusal:
@@ -150,14 +151,15 @@ def fetch_hop_by_hop(method: str, url: str, *, timeout: float,
     slot of the process-wide RoE pacer (``request_pacer``, inert with no
     ceiling); a refused hop takes none, and a 429 backs off every in-process
     requester. A 303 turns the method into GET (HEAD stays HEAD); credential
-    headers are dropped on a hop to another host.
+    headers are dropped on a hop to another host. ``module`` is the caller an
+    RoE refusal is logged and noted under (hop_refusal).
     """
     method = method.upper()
     current = url
     headers = dict(headers or {})
     for hop in range(max_redirects + 1):
         reason = hop_refusal(current, settings=settings, in_scope=in_scope, admit=admit,
-                             url_guard=url_guard)
+                             url_guard=url_guard, module=module)
         if reason:
             if refusal is not None:
                 refusal.update(reason=reason, url=current, hop=hop)
