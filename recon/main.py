@@ -586,6 +586,36 @@ def _gate_injected_hosts(extra_hosts, known: list, target_info: dict, root_domai
     return {h: picked[h] for h in kept}
 
 
+def _roe_refused_discoveries(hosts, resolved: dict, root_domain: str, listed: set,
+                             injected: dict, settings: dict) -> set:
+    """The discovered names (urlscan's included) the admission gate refuses
+    on the addresses discovery's DNS pass resolved (no new query), under RoE
+    IP or CIDR entries: any excluded address refuses the name whole, never
+    narrowed, as a late name is (target_helpers._admit_late_names). Each
+    refusal is noted roe_excluded under the source that found the name.
+
+    A name with no address is not judged here: the builders refuse it as not
+    checked. The root and the operator's listed hosts are left to the
+    builders' gate, as for the SSRF guard: what the operator named is theirs.
+    """
+    from recon.helpers.target_admission import admission_context, admit_targets
+    if not admission_context(settings).ip_rules:
+        return set()
+    by_source: dict = {}
+    for host in hosts:
+        if host == root_domain or host in listed:
+            continue
+        ips = (resolved.get(host) or {}).get("ips") or {}
+        addresses = [a for a in list(ips.get("ipv4") or []) + list(ips.get("ipv6") or []) if a]
+        if addresses:
+            by_source.setdefault(injected.get(host) or "domain_recon", {})[host] = addresses
+    refused = set()
+    for source, names in by_source.items():
+        admission = admit_targets(settings, None, names=names, module=source, resolves_names=True)
+        refused.update(h for h in names if h not in admission.names)
+    return refused
+
+
 def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
                       settings: dict, dns_enabled: bool = True,
                       resolver=None, extra_hosts=None, wildcard_filter=None) -> dict:
@@ -703,6 +733,18 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
                   f"loopback/link-local/multicast is never a scan target")
         discovered_subs = kept
         for host, _ in dropped:
+            resolved.pop(host, None)
+        discovered_dns["subdomains"] = resolved
+
+    # D2 on the addresses: the RoE checks above are by name, and a discovered
+    # name in an excluded range would be written as a Subdomain with
+    # RESOLVES_TO to the excluded address. Ahead of the injected names' guard,
+    # so its joined count is what joined.
+    refused = _roe_refused_discoveries(discovered_subs, resolved, root_domain, listed,
+                                       injected, settings)
+    if refused:
+        discovered_subs = [h for h in discovered_subs if h not in refused]
+        for host in refused:
             resolved.pop(host, None)
         discovered_dns["subdomains"] = resolved
 
