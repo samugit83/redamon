@@ -16,6 +16,11 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/session', async (orig) => ({
   ...(await orig<typeof import('@/lib/session')>()),
   getAuthzIdentity: (...a: unknown[]) => h.identity(...a),
+  // The routes read the effective user again after the guard: the same account the identity names.
+  getEffectiveUser: async () => {
+    const id = await h.identity()
+    return id ? { userId: (id.actingAs ?? id.principal).id } : null
+  },
 }))
 vi.mock('@/lib/prisma', async () => ({ default: (await import('@/lib/authz/__testing__/routePermissionCases')).authPrisma(h) }))
 vi.mock('@/lib/authz/guards', async (orig) => {

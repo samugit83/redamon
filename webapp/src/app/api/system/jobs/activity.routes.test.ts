@@ -47,6 +47,7 @@ vi.mock('@/lib/prisma', () => ({
     projectAuthProfile: { findUnique: (...a: unknown[]) => h.authProfileFindUnique(...a) },
   },
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.effectiveUser(),
   guardProject: (...a: unknown[]) => h.guardProject(...a),

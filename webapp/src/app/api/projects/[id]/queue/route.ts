@@ -2,12 +2,14 @@
  * Scan Queue - enqueue a scan for this project (Scan Queue plan Phase 3).
  *
  * The refusal modal calls this when the operator chooses "Add to queue" after a
- * temporary start failure. Project-scoped, so guardProject runs FIRST (Section 4:
+ * temporary start failure. Project-scoped, so the project check runs FIRST (Section 4:
  * a JobQueue id must never be sufficient; object-level authz is the guard, not the
- * row). Queueing is always the operator's explicit choice (R3).
+ * row): recon:schedule, plus the permission that starts the queued kind
+ * (queuedJobPermissions). Queueing is always the operator's explicit choice (R3).
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requireAlso, requirePermission } from '@/lib/authz/guards'
+import { queuedJobPermissions } from '@/lib/authz/queuedJobPermissions'
 import { getEffectiveUser } from '@/lib/session'
 import { enqueueJob } from '@/lib/enqueueJob'
 import { internalError } from '@/lib/routeErrors'
@@ -21,8 +23,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id: projectId } = await params
-    const denied = await guardProject(projectId)
-    if (denied) return denied
+    const auth = await requirePermission(request, 'recon:schedule', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const eff = await getEffectiveUser()
     if (!eff?.userId) {
@@ -32,6 +34,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const body = await request.json().catch(() => ({}))
     const kind = typeof body?.kind === 'string' ? body.kind : ''
     const payload = body?.payload && typeof body.payload === 'object' ? body.payload : {}
+    for (const permission of queuedJobPermissions(kind, payload)) {
+      const refused = requireAlso(auth, permission)
+      if (refused) return refused
+    }
 
     const result = await enqueueJob({
       projectId,

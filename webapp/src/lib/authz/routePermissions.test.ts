@@ -23,6 +23,8 @@ const WEBAPP = join(__dirname, '..', '..', '..')
 /** The families of step 3.8: projects, recon and scans. */
 const WAVE_A: readonly RegExp[] = [
   /^\/api\/recon\//,
+  /^\/api\/job-queue\//,
+  /^\/api\/projects\/\[id\]\/(queue|schedules)(\/|$)/,
 ]
 
 /** Routes of these families that answer every signed-in account, and why (3.9 gives them `permission: null`). */

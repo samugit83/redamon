@@ -5,8 +5,8 @@
  * POST /api/projects/[id]/schedules   create a schedule (validated + RAM-checked)
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requireAlso, requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import {
   validateSchedule,
@@ -26,12 +26,10 @@ interface RouteParams {
 // finished queue jobs) is capped, then merged and re-capped newest-first.
 const JOB_HISTORY_LIMIT = 1000
 
-export const GET = withRouteErrors('Failed to list schedules', async (_request: NextRequest, { params }: RouteParams) => {
+export const GET = withRouteErrors('Failed to list schedules', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
 
   try {
     const [schedules, jobs, queueHistory] = await Promise.all([
@@ -125,12 +123,15 @@ export const GET = withRouteErrors('Failed to list schedules', async (_request: 
 
 export const POST = withRouteErrors('Failed to create the schedule', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:schedule', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   const body = await request.json().catch(() => null)
+  // A schedule starts a full recon later, as its author: the author must be able to start one.
+  const refused = requireAlso(auth, 'recon:scan')
+    ?? ((body as { scanMode?: unknown } | null)?.scanMode === 'overwrite' ? requireAlso(auth, 'recon:overwrite') : null)
+  if (refused) return refused
 
   let validated
   try {

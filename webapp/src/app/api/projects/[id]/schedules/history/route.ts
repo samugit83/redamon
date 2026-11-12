@@ -10,8 +10,8 @@
  * liveness); a deleted in-flight row simply stops appearing in the table.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 
@@ -21,10 +21,9 @@ interface RouteParams {
 
 export const DELETE = withRouteErrors('Failed to clear run history', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'scan:versions_delete', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   const body = await request.json().catch(() => ({}))
   const rawIds = (body as { ids?: unknown })?.ids

@@ -18,6 +18,7 @@ vi.mock('@/lib/prisma', () => ({
     project: { findUnique: async () => ({ id: 'p1' }) },
   },
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: async () => null }))
 vi.mock('@/lib/jobFingerprint', () => ({ currentFingerprintFor: async () => 'new-hash' }))
 

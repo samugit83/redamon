@@ -5,8 +5,8 @@
  * DELETE remove the schedule (its ScanJob history survives, schedule_id -> NULL)
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requireAlso, requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import {
   validateSchedule,
@@ -34,15 +34,18 @@ const NOT_FOUND = () => NextResponse.json({ error: 'Not found' }, { status: 404 
 
 export const PATCH = withRouteErrors('Failed to update the schedule', async (request: NextRequest, { params }: RouteParams) => {
   const { id, scheduleId } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:schedule', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   const existing = await loadOwnedSchedule(id, scheduleId)
   if (!existing) return NOT_FOUND()
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+  // Turning a schedule on lets it start full recons as its author; overwrite mode replaces the graph.
+  const refused = (body.enabled === true ? requireAlso(auth, 'recon:scan') : null)
+    ?? (body.scanMode === 'overwrite' ? requireAlso(auth, 'recon:overwrite') : null)
+  if (refused) return refused
 
   // A schedule paused because its saved scope is no longer valid would fail
   // again on its next tick: the scope is fixed first, then the schedule.
@@ -185,12 +188,11 @@ export const PATCH = withRouteErrors('Failed to update the schedule', async (req
   }
 })
 
-export const DELETE = withRouteErrors('Failed to delete the schedule', async (_request: NextRequest, { params }: RouteParams) => {
+export const DELETE = withRouteErrors('Failed to delete the schedule', async (request: NextRequest, { params }: RouteParams) => {
   const { id, scheduleId } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:schedule', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   const existing = await loadOwnedSchedule(id, scheduleId)
   if (!existing) return NOT_FOUND()
