@@ -1,5 +1,6 @@
 /**
- * Route guards over the policy function (master plan §9.8): the session first, then `can()`.
+ * Route guards over the policy function (master plan §9.8): the session first, then the route's
+ * project id, then `can()`.
  *
  *   const auth = await requirePermission(request, 'recon:scan', { projectId })
  *   if (auth instanceof NextResponse) return auth
@@ -14,7 +15,8 @@
  * coded 500 (`internalError`) when a read fails, never a pass.
  *
  * Name the project in the options whenever the route acts on one: the route manifest classes a
- * call with a literal `projectId` option as a project guard (scripts/gen-route-manifest.mjs).
+ * call with a literal `projectId` option as a project guard (scripts/gen-route-manifest.mjs). The
+ * key decides, not its value: `{projectId: undefined}` is a project named but empty (400).
  */
 import { NextResponse } from 'next/server'
 import { getAuthzIdentity, type AuthzIdentity, type EffectiveUser } from '@/lib/session'
@@ -57,28 +59,24 @@ export function forbiddenResponse(permission: PermissionId): NextResponse {
   )
 }
 
-export async function requirePermission(
-  _request: Request,
-  permission: PermissionId,
-  opts: RequirePermissionOptions = {},
-): Promise<PermissionContext | NextResponse> {
-  assertKnownPermission(permission)
-  const fresh = opts.fresh === true
-  let identity: AuthzIdentity | null
+/** The session check every guard makes first: 401 without one, a coded 500 when it cannot be read. */
+async function signedIn(fresh: boolean): Promise<AuthzIdentity | NextResponse> {
   try {
-    identity = await getAuthzIdentity({ fresh })
+    return (await getAuthzIdentity({ fresh })) ?? NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   } catch (err) {
     return internalError(err, 'Could not read the signed-in account')
   }
-  if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+}
 
+async function decide(
+  identity: AuthzIdentity,
+  permission: PermissionId,
+  project: Pick<RequirePermissionOptions, 'projectId'>,
+  fresh: boolean,
+): Promise<PermissionContext | NextResponse> {
   let decision: CanDecision
   try {
-    decision = await can(identity.principal, permission, {
-      ...('projectId' in opts ? { projectId: opts.projectId } : {}),
-      actingAs: identity.actingAs,
-      fresh,
-    })
+    decision = await can(identity.principal, permission, { ...project, actingAs: identity.actingAs, fresh })
   } catch (err) {
     return internalError(err, 'Could not check the permission')
   }
@@ -96,10 +94,43 @@ export async function requirePermission(
   return forbiddenResponse(permission)
 }
 
+export async function requirePermission(
+  _request: Request,
+  permission: PermissionId,
+  opts: RequirePermissionOptions = {},
+): Promise<PermissionContext | NextResponse> {
+  assertKnownPermission(permission)
+  const fresh = opts.fresh === true
+  const identity = await signedIn(fresh)
+  if (identity instanceof NextResponse) return identity
+  return decide(identity, permission, 'projectId' in opts ? { projectId: opts.projectId } : {}, fresh)
+}
+
+type ProjectIdExtractor<C> = (request: Request, context: C) => string | null | undefined | Promise<string | null | undefined>
+
 export interface WithPermissionOptions<C> {
-  /** The project the route acts on, from its request or params. */
-  projectId?: (request: Request, context: C) => string | null | undefined | Promise<string | null | undefined>
+  /**
+   * The project the route acts on, from its request or params. It runs after the session check,
+   * on a copy of the request, so reading the body leaves it to the handler; a throw propagates
+   * (wrap the route in `withRouteErrors`). The key decides: present without a function is a
+   * project named but empty (400).
+   */
+  projectId?: ProjectIdExtractor<C>
   fresh?: boolean
+}
+
+/**
+ * Runs the extractor on a copy of the request. A copy it leaves unread is cancelled, so the body is
+ * not buffered twice (an upload); not awaited, since a branch's cancel settles only when the
+ * handler has read the other one.
+ */
+async function projectIdOf<C>(extract: ProjectIdExtractor<C>, request: Request, context: C): Promise<string | null | undefined> {
+  const copy = request.clone()
+  try {
+    return await extract(copy, context)
+  } finally {
+    if (copy.body && !copy.bodyUsed) copy.body.cancel().catch(() => {})
+  }
 }
 
 /**
@@ -112,11 +143,14 @@ export function withPermission<C = unknown, R extends Request = Request>(
   opts: WithPermissionOptions<C> = {},
 ): (request: R, context: C) => Promise<Response> {
   assertKnownPermission(permission)
+  const fresh = opts.fresh === true
+  const namesProject = 'projectId' in opts
+  const extract = opts.projectId
   return async (request: R, context: C) => {
-    const auth = await requirePermission(request, permission, {
-      ...(opts.projectId ? { projectId: await opts.projectId(request, context) } : {}),
-      fresh: opts.fresh,
-    })
+    const identity = await signedIn(fresh)
+    if (identity instanceof NextResponse) return identity
+    const project = namesProject ? { projectId: extract ? await projectIdOf(extract, request, context) : undefined } : {}
+    const auth = await decide(identity, permission, project, fresh)
     if (auth instanceof NextResponse) return auth
     return handler(request, context, auth)
   }

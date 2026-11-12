@@ -4,7 +4,8 @@
  * route returns: 401 without a session (checked first), 404 for a project the caller cannot see
  * (the same body as a project that does not exist), 403 `{error, code: 'forbidden', permission}`
  * otherwise, a coded 500 when a read fails (never allowed). `withPermission(permission, handler)`
- * wraps a handler with it.
+ * wraps a handler with it: the session first, then the route's project id (from a copy of the
+ * request), then `can()`.
  *
  * `getAuthzIdentity` is a double (the act-as rule `mayActAs` is the real one); Prisma is a double;
  * the policy, the resolution and the registry are the real ones, with RBAC_PERMISSIONS_ENABLED on.
@@ -60,6 +61,7 @@ function signedIn(p: Principal, actingAs: Principal | null = null) {
   h.getAuthzIdentity.mockResolvedValue({ session: { userId: p.id, role: p.role }, principal: p, actingAs })
 }
 const request = () => new NextRequest('http://localhost:3000/api/x')
+const post = (raw: string) => new NextRequest('http://localhost:3000/api/x', { method: 'POST', body: raw, headers: { 'content-type': 'application/json' } })
 const body = async (res: unknown) => (res as NextResponse).json()
 
 beforeEach(() => {
@@ -272,6 +274,54 @@ describe('withPermission', () => {
     signedIn(principal('alice'))
     expect((await route(request(), {})).status).toBe(403)
     expect(handler).not.toHaveBeenCalled()
+  })
+
+  test('a projectId key without an extractor, or an extractor that finds no id: 400, and the handler never runs', async () => {
+    signedIn(principal('alice'))
+    const handler = vi.fn(async () => NextResponse.json({}))
+    const noExtractor = withPermission('recon:read', handler, { projectId: undefined })
+    const res = await noExtractor(request(), {})
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'projectId is required' })
+    for (const id of [undefined, null, '']) {
+      const route = withPermission('recon:read', handler, { projectId: async () => id })
+      expect((await route(request(), {})).status).toBe(400)
+    }
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  test('the session is checked before the project extractor runs: an anonymous POST whose body is not JSON answers 401', async () => {
+    h.getAuthzIdentity.mockResolvedValue(null)
+    const extract = vi.fn(async (r: Request) => ((await r.json()) as { projectId: string }).projectId)
+    const handler = vi.fn(async () => NextResponse.json({}))
+    const route = withPermission('recon:read', handler, { projectId: extract })
+    const res = await route(post('not json'), {})
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'Unauthorized' })
+    expect(extract).not.toHaveBeenCalled()
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  test('an extractor that reads the body leaves it to the handler (it reads a copy)', async () => {
+    signedIn(principal('alice'))
+    const route = withPermission('recon:read', async (r: NextRequest) => NextResponse.json({ got: await r.json() }), {
+      projectId: async (r) => ((await r.json()) as { projectId: string }).projectId,
+    })
+    const res = await route(post(JSON.stringify({ projectId: 'P-alice', note: 'n' })), {})
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ got: { projectId: 'P-alice', note: 'n' } })
+    const other = await route(post(JSON.stringify({ projectId: 'P-bob' })), {})
+    expect(other.status).toBe(404)
+  })
+
+  test('an extractor that leaves the body unread does not hold the handler up', async () => {
+    signedIn(principal('alice'))
+    type Ctx = { params: Promise<{ id: string }> }
+    const route = withPermission('recon:read', async (r: NextRequest) => NextResponse.json({ got: await r.json() }), {
+      projectId: async (_r: Request, { params }: Ctx) => (await params).id,
+    })
+    const res = await route(post(JSON.stringify({ a: 1 })), { params: Promise.resolve({ id: 'P-alice' }) })
+    expect(await res.json()).toEqual({ got: { a: 1 } })
   })
 
   test('an actingAs the act-as rule refuses never runs the handler', async () => {
