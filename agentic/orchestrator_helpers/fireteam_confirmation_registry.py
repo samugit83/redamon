@@ -133,6 +133,11 @@ def register(session_id: str, wave_id: str, member_id: str, meta: Optional[dict]
     return entry
 
 
+def applied_decision(decision: str) -> str:
+    """The decision `resolve` gives the member: `approve`, or `reject` for any other word."""
+    return "approve" if decision == "approve" else "reject"
+
+
 def resolve(session_id: str, wave_id: str, member_id: str, decision: str, modifications: Optional[dict] = None) -> bool:
     """Record the operator's decision and wake the awaiting member.
 
@@ -151,7 +156,7 @@ def resolve(session_id: str, wave_id: str, member_id: str, decision: str, modifi
         logger.warning(
             "[confirmation_registry] invalid decision=%s for %s; treating as reject", decision, k,
         )
-        decision = "reject"
+    decision = applied_decision(decision)
     entry.decision = decision
     entry.modifications = modifications
     entry.event.set()

@@ -1554,11 +1554,14 @@ class WebSocketHandler:
         self.orchestrator = orchestrator
         self.ws_manager = ws_manager
 
-    async def _refused_without(self, connection: WebSocketConnection, *permissions: str) -> bool:
+    async def _refused_without(self, connection: WebSocketConnection, *permissions: str,
+                               answer: str, **request) -> bool:
         """Refuse a decision the connection's person may not take (step 3.9b).
 
         Checked before anything runs or is saved, so the agent's prompt stays open for
-        someone who holds the permission. True when refused (the frame is sent).
+        someone who holds the permission. The frame names the refused `answer` (and the
+        Fireteam wave and member in `request`), so the drawer puts back the card it hid for
+        it. True when refused (the frame is sent).
         """
         missing = next((p for p in permissions if not connection.holds(p)), None)
         if missing is None:
@@ -1569,6 +1572,8 @@ class WebSocketHandler:
                        "The agent keeps waiting for someone who does.",
             "code": "permission_required",
             "permission": missing,
+            "answer": answer,
+            **request,
             "recoverable": True,
         })
         return True
@@ -1807,7 +1812,7 @@ class WebSocketHandler:
                     "recoverable": False
                 })
                 return
-            if await self._refused_without(connection, "agent:approve_phase"):
+            if await self._refused_without(connection, "agent:approve_phase", answer="approval"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -1948,10 +1953,12 @@ class WebSocketHandler:
                 "recoverable": False,
             })
             return
-        if await self._refused_without(connection, "agent:fireteam", "agent:approve_dangerous"):
+        if await self._refused_without(connection, "agent:fireteam", "agent:approve_dangerous",
+                                       answer="fireteam_member_confirmation",
+                                       wave_id=msg.wave_id, member_id=msg.member_id):
             return
 
-        from orchestrator_helpers.fireteam_confirmation_registry import resolve as _resolve
+        from orchestrator_helpers.fireteam_confirmation_registry import applied_decision, resolve as _resolve
         ok = _resolve(
             session_id=connection.session_id,
             wave_id=msg.wave_id,
@@ -1979,12 +1986,13 @@ class WebSocketHandler:
             )
         except Exception:
             logger.exception("fireteam_member_confirmation: persist failed")
-        # Only an answer that reached a waiting member decided anything.
+        # Only an answer that reached a waiting member decided anything, and the audit row
+        # names what the member was given, never the raw word.
         if ok:
             asyncio.create_task(post_agent_decision(
                 kind="fireteam_member_confirmation", session_id=connection.session_id,
                 project_id=connection.project_id, user_id=connection.user_id,
-                actor_id=connection.actor_id, decision=msg.decision,
+                actor_id=connection.actor_id, decision=applied_decision(msg.decision),
                 wave_id=msg.wave_id, member_id=msg.member_id))
 
     async def handle_tool_confirmation(self, connection: WebSocketConnection, payload: dict):
@@ -1999,7 +2007,7 @@ class WebSocketHandler:
                     "recoverable": False
                 })
                 return
-            if await self._refused_without(connection, "agent:approve_dangerous"):
+            if await self._refused_without(connection, "agent:approve_dangerous", answer="tool_confirmation"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)

@@ -286,6 +286,29 @@ class Decisions(unittest.TestCase):
                                              user_id="uB", actor_id="admin-1", decision="approve",
                                              wave_id="w1", member_id="m1")
 
+    def test_a_refusal_names_the_answer_it_refused(self):
+        """The drawer puts back the card it hid for exactly that answer (review finding 3)."""
+        for method, payload, cap, expected in (
+                ("handle_approval", {"decision": "approve"}, frozenset(), {"answer": "approval"}),
+                ("handle_tool_confirmation", {"decision": "reject"}, frozenset(), {"answer": "tool_confirmation"}),
+                ("handle_fireteam_member_confirmation", self.FT, frozenset({"agent:fireteam"}),
+                 {"answer": "fireteam_member_confirmation", "wave_id": "w1", "member_id": "m1"})):
+            with self.subTest(method=method):
+                conn, _, _ = self._answer(method, payload, cap=cap)
+                [err] = _errors(conn)
+                self.assertEqual({k: err.get(k) for k in expected}, expected)
+                if method != "handle_fireteam_member_confirmation":
+                    self.assertNotIn("wave_id", err)
+
+    def test_the_fireteam_audit_posts_the_decision_the_registry_applied(self):
+        """The registry applies any word but `approve` as a reject (review finding 4)."""
+        for word, applied in (("approve", "approve"), ("reject", "reject"), ("abort", "reject"),
+                              ("Approve", "reject"), ("yes please", "reject")):
+            with self.subTest(word=word):
+                self.posted.reset_mock()
+                self._answer("handle_fireteam_member_confirmation", {**self.FT, "decision": word}, cap=ALL)
+                self.assertEqual(self.posted.await_args.kwargs["decision"], applied)
+
     def test_a_fireteam_answer_that_resolved_nothing_is_saved_but_not_audited(self):
         self.resolve.return_value = False
         self._answer("handle_fireteam_member_confirmation", self.FT, cap=ALL)
@@ -341,6 +364,23 @@ class Decisions(unittest.TestCase):
         asyncio.run(main())
         self.posted.assert_awaited_once()
         self.assertEqual(self.posted.await_args.kwargs["actor_id"], "admin-1")
+
+
+@unittest.skipUnless(_HAVE, "agent deps unavailable (run in-container)")
+class FireteamAppliedDecision(unittest.TestCase):
+    """What the handler posts is what the real registry gives the waiting member."""
+
+    def test_applied_decision_is_what_resolve_applies(self):
+        from orchestrator_helpers import fireteam_confirmation_registry as reg
+        for word in ("approve", "reject", "abort", "Approve", "", "yes please"):
+            with self.subTest(word=word):
+                entry = reg.register("s-applied", "w1", "m1")
+                try:
+                    self.assertTrue(reg.resolve("s-applied", "w1", "m1", word))
+                    self.assertEqual(entry.decision, reg.applied_decision(word))
+                finally:
+                    reg.drop("s-applied", "w1", "m1")
+        self.assertEqual({reg.applied_decision(w) for w in ("approve", "x")}, {"approve", "reject"})
 
 
 @unittest.skipUnless(_HAVE, "agent deps unavailable (run in-container)")
