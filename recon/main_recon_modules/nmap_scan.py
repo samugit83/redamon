@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import sys
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -206,7 +206,14 @@ def build_nmap_targets(recon_data: dict, settings: dict) -> Tuple[List[str], str
 # Command Builder
 # =============================================================================
 
-def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: dict) -> List[str]:
+#: The vuln scripts, less the one that follows a redirect to any host:
+#: http-cross-domain-policy passes http.get a redirect_ok of its own (three
+#: hops, no host rule). Every other vuln script keeps http.lua's default rule.
+NSE_SCRIPTS_SAME_HOST = "vuln and not http-cross-domain-policy"
+
+
+def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: dict,
+                       roe_exclusions: Optional[bool] = None) -> List[str]:
     """
     Build nmap CLI command for a single target IP.
 
@@ -215,10 +222,18 @@ def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: d
         ports: Comma-separated port list (e.g. '21,22,80,3306')
         output_file: Path for XML output (-oX)
         settings: Settings dictionary
+        roe_exclusions: the Rules of Engagement exclude hosts (default: from
+            ``settings``). The NSE http scripts then follow a redirect only on
+            the target address, as in IP mode: an admitted address's 302 can
+            name an excluded host (R-2).
 
     Returns:
         List of command arguments
     """
+    if roe_exclusions is None:
+        from recon.helpers.target_admission import admission_context
+        roe_exclusions = bool(admission_context(settings).excluded)
+    same_host = bool(settings.get('IP_MODE')) or roe_exclusions
     VERSION_DETECTION = settings.get('NMAP_VERSION_DETECTION', True)
     SCRIPT_SCAN = settings.get('NMAP_SCRIPT_SCAN', True)
     TIMING = settings.get('NMAP_TIMING_TEMPLATE', 'T3')
@@ -232,7 +247,7 @@ def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: d
 
     # NSE vulnerability scripts
     if SCRIPT_SCAN:
-        cmd.extend(["--script", "vuln"])
+        cmd.extend(["--script", NSE_SCRIPTS_SAME_HOST if same_host else "vuln"])
 
     # XML output
     cmd.extend(["-oX", output_file])
@@ -268,7 +283,11 @@ def build_nmap_command(target_ip: str, ports: str, output_file: str, settings: d
     # IP mode asks nothing about names unless its hostname mode records them,
     # and then only through the hostnames hook: without -n nmap sends a PTR
     # query for every target that answers. Its hostnames are not parsed.
-    if settings.get('IP_MODE'):
+    # Under RoE exclusions -n is what keeps NSE on the address: http.lua lets a
+    # redirect reach any host in the domain of the target's PTR name, and only
+    # with no name does it allow nothing but the same IP (nmap 7.93; --exclude
+    # does not bind NSE).
+    if same_host:
         cmd.append("-n")
 
     # Without -6 nmap skips an IPv6 target ("you have to use the -6 option"),
@@ -593,6 +612,13 @@ def run_nmap_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     else:
         print(f"[*][Nmap] Parallelism: {nmap_parallelism} concurrent IPs")
 
+    # A partial run's RoE can come in the recon dict (metadata.roe) only.
+    from recon.helpers.target_admission import admission_context
+    roe_exclusions = bool(admission_context(settings, recon_data).excluded)
+    if roe_exclusions and NMAP_SCRIPT_SCAN:
+        print("[*][Nmap] NSE redirects kept on the target address (-n, no http-cross-domain-policy): "
+              "RoE exclusions are in force")
+
     scan_id = uuid.uuid4().hex[:12]
     scan_temp_dir = Path(f"/tmp/redamon/.nmap_scan_{scan_id}")
     scan_temp_dir.mkdir(parents=True, exist_ok=True)
@@ -605,7 +631,8 @@ def run_nmap_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         """
         xml_output = str(output_dir / f"nmap_{idx}_{target_ip.replace(':', '_')}.xml")
 
-        cmd = build_nmap_command(target_ip, port_string, xml_output, settings)
+        cmd = build_nmap_command(target_ip, port_string, xml_output, settings,
+                                 roe_exclusions=roe_exclusions)
 
         print(f"[*][Nmap] Scanning {target_ip} ({idx}/{total})...")
 

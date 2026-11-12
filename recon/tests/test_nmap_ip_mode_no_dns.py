@@ -25,6 +25,16 @@ def test_ip_mode_asks_no_reverse_dns(target, mode):
     assert cmd.index("-n") < len(cmd) - 1
 
 
+@pytest.mark.parametrize("mode", ["ip_only", "record_only", "record_filter", "scan_all"])
+def test_ip_mode_nse_follows_no_redirect_off_the_address(mode):
+    """-n leaves NSE's http.lua rule nothing but the target IP to redirect to
+    (I-1); http-cross-domain-policy brings its own rule, which follows a
+    redirect to any host, so it is left out (R-2, nmap 7.93)."""
+    cmd = build_nmap_command("203.0.113.10", "22,443", "/tmp/o.xml",
+                             dict(BASE, IP_MODE=True, IP_HOSTNAME_MODE=mode))
+    assert cmd[cmd.index("--script") + 1] == "vuln and not http-cross-domain-policy"
+
+
 @pytest.mark.parametrize("settings", [dict(BASE), dict(BASE, IP_MODE=False)])
 def test_domain_mode_command_is_unchanged(settings):
     assert build_nmap_command("203.0.113.10", "22,443", "/tmp/o.xml", settings) == [

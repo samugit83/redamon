@@ -282,3 +282,82 @@ def test_the_admitted_hosts_own_302_is_what_is_stored(tmp_path):
     assert entry["final_url"] == f"http://{ADMITTED_IP}"
     assert entry["redirected_off_host"] is False
     assert entry["title"] is None
+
+
+# --------------------------------------------------------------------------
+# nmap: the NSE scripts run_nmap_scan asks for, and -n
+# --------------------------------------------------------------------------
+
+_EMPTY_NMAP_XML = '<?xml version="1.0"?><nmaprun scanner="nmap" version="7.93"></nmaprun>'
+
+
+class _NmapProc:
+    returncode = 0
+
+    def communicate(self, timeout=None):
+        return "", ""
+
+
+def _nmap_cmds(monkeypatch, settings: dict, recon_data: dict = None) -> list:
+    from recon.main_recon_modules import nmap_scan
+    cmds = []
+
+    def popen(cmd, **_k):
+        cmds.append(cmd)
+        Path(cmd[cmd.index("-oX") + 1]).write_text(_EMPTY_NMAP_XML)
+        return _NmapProc()
+
+    monkeypatch.setattr(nmap_scan, "is_nmap_installed", lambda: True)
+    monkeypatch.setattr(nmap_scan.subprocess, "Popen", popen)
+    nmap_scan.run_nmap_scan(copy.deepcopy(recon_data or DOMAIN_RECON),
+                            settings=dict(settings, NMAP_PARALLELISM=1))
+    assert cmds, "run_nmap_scan never started nmap"
+    return cmds
+
+
+def _script(cmd: list):
+    return cmd[cmd.index("--script") + 1] if "--script" in cmd else None
+
+
+@pytest.mark.parametrize("entry", EXCLUSIONS)
+def test_nse_stays_on_the_address_under_roe_exclusions(monkeypatch, capsys, entry):
+    """Proved on the recon image's nmap 7.93 (a loopback target whose PTR is
+    a.<lab> answering 302 to b.<lab>): http.lua's default rule follows a
+    redirect to any host in the PTR name's domain, --exclude does not bind
+    NSE, and -n (no name: same-IP redirects only) stops it for every vuln
+    script but http-cross-domain-policy, whose own redirect_ok follows any
+    host."""
+    cmds = _nmap_cmds(monkeypatch, _roe(entry))
+    for cmd in cmds:
+        assert _script(cmd) == "vuln and not http-cross-domain-policy"
+        assert cmd.count("-n") == 1 and cmd.index("-n") < len(cmd) - 1
+    assert sorted(cmd[-1] for cmd in cmds) == ["203.0.113.11", ADMITTED_IP]
+    assert "[*][Nmap] NSE redirects kept on the target address" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_nmap_command_unchanged_without_an_exclusion(monkeypatch, settings):
+    from recon.main_recon_modules.nmap_scan import build_nmap_command
+    for cmd in _nmap_cmds(monkeypatch, settings):
+        assert _script(cmd) == "vuln" and "-n" not in cmd
+        assert cmd == build_nmap_command(cmd[-1], cmd[cmd.index("-p") + 1],
+                                         cmd[cmd.index("-oX") + 1], {})
+
+
+def test_nmap_partial_run_reads_the_exclusions_from_the_recon_dict(monkeypatch):
+    recon = copy.deepcopy(DOMAIN_RECON)
+    recon["metadata"]["roe"] = _roe(f"{EXCLUDED_IP}/32")
+    for cmd in _nmap_cmds(monkeypatch, {}, recon):
+        assert _script(cmd) == "vuln and not http-cross-domain-policy" and "-n" in cmd
+
+
+def test_nmap_without_scripts_still_skips_reverse_dns_under_exclusions(monkeypatch):
+    for cmd in _nmap_cmds(monkeypatch, dict(_roe(EDGE), NMAP_SCRIPT_SCAN=False)):
+        assert "--script" not in cmd and cmd.count("-n") == 1
+
+
+def test_nmap_ip_mode_argv_is_unchanged_by_exclusions():
+    from recon.main_recon_modules.nmap_scan import build_nmap_command
+    settings = {"IP_MODE": True, "NMAP_TIMING_TEMPLATE": "T3", "NMAP_HOST_TIMEOUT": 300}
+    assert (build_nmap_command(ADMITTED_IP, "80", "/tmp/o.xml", settings, roe_exclusions=True)
+            == build_nmap_command(ADMITTED_IP, "80", "/tmp/o.xml", settings))
