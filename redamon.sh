@@ -3635,8 +3635,9 @@ _map_tool_changes() {
     # ai-attack-surface: heavy build-only image (Node + promptfoo + per-tool venvs).
     # The adapter .py files are volume-mounted into the scan container at spawn
     # (hot-reload, no rebuild); ONLY the baked-in toolchain — the Dockerfile or any
-    # requirements file — needs a rebuild.
-    if echo "$changed_files" | grep -qE "^scanners/ai_attack_surface_scan/(Dockerfile|.*requirements)"; then
+    # requirements file — needs a rebuild. It also COPYs recon_settings/ (the IP-mode
+    # hostname rule its target loader admits names with), which nothing mounts there.
+    if echo "$changed_files" | grep -qE "^(scanners/ai_attack_surface_scan/(Dockerfile|.*requirements)|recon_settings/)"; then
         rebuild_tools+=(ai-attack-surface)
     fi
     # codefix-sandbox: the isolated CodeFix build sandbox (T6/E10). Build-only
