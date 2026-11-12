@@ -6,6 +6,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rbacFlags } from '@/lib/authz/flags'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { enableAccount, forbiddenAs, isAdminAccount } from '@/lib/authz/accountStatus'
+import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -25,6 +26,8 @@ export const POST = withRouteErrors('Could not enable the account', async (reque
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const { id } = await params
+  const rootRefusal = await rootProtectedRefusal(request, session, id, 'enable')
+  if (rootRefusal) return rootRefusal
   const identity = rbacFlags().identity
   if (!identity && id !== session.userId && await isAdminAccount(id)) {
     const refusal = await requireStepUp(request, parsed.body.stepUpPassword)

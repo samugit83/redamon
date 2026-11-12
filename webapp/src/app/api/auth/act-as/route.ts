@@ -7,6 +7,7 @@ import { isSecureRequest } from '@/lib/cookieSecurity'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { presentedActAs } from '@/lib/userAudit'
+import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -51,6 +52,8 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
   if (!target) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }
+  const rootRefusal = await rootProtectedRefusal(request, admin, targetUserId, 'act_as')
+  if (rootRefusal) return rootRefusal
   // Acting as another admin borrows that admin's account: the acting admin's own
   // password first, like a reset of it.
   if (target.role === 'admin') {

@@ -5,6 +5,7 @@ import { constantTimeEqual } from './constantTimeEqual'
 import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Principal } from './authz/principal'
 import { rememberSessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
+import { isRootAccount } from './authz/root'
 import { internalError } from './routeErrors'
 
 export interface Session {
@@ -110,7 +111,11 @@ async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise
   if (!actAsToken) return null
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
-  return loadPrincipal(claims.act, opts)
+  const target = await loadPrincipal(claims.act, opts)
+  // Nobody acts as Root (identity switch on). A cookie minted before it was Root, or before
+  // the switch, acts for nobody; Root is an admin, so a member target costs no instance read.
+  if (target && target.role === 'admin' && target.id !== session.userId && await isRootAccount(target.id, opts)) return null
+  return target
 }
 
 /**

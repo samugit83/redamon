@@ -5,6 +5,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rbacFlags } from '@/lib/authz/flags'
 import { disableAccount, forbiddenAs, ownAccountRefusal, routeNotFound } from '@/lib/authz/accountStatus'
+import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -23,5 +24,7 @@ export const POST = withRouteErrors('Could not disable the account', async (requ
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
   const { id } = await params
-  return ownAccountRefusal(session, id, 'disable') ?? disableAccount(request, session, id)
+  return ownAccountRefusal(session, id, 'disable')
+    ?? await rootProtectedRefusal(request, session, id, 'disable')
+    ?? disableAccount(request, session, id)
 })

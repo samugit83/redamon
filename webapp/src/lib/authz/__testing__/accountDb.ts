@@ -1,7 +1,7 @@
 /**
  * An in-memory stand-in for the Prisma client, for the account-status tests (step 2.3): the
- * `users`, `mcp_access_tokens` and `audit_log` rows those routes touch, with the semantics
- * they rely on:
+ * `users`, `mcp_access_tokens` and `audit_log` rows those routes touch, and the instance
+ * settings row whose Root the Root protections read (step 2.5), with the semantics they rely on:
  *
  * - `$transaction(fn)` runs one at a time and rolls back every write of `fn` when it throws
  *   (state restored from a snapshot), so "the audit write failed, so nothing changed" is real;
@@ -67,6 +67,7 @@ export function createAccountDb() {
     users: [] as Row[],
     tokens: [] as Row[],
     audit: [] as Row[],
+    instance: null as Row | null,
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -113,7 +114,11 @@ export function createAccountDb() {
     if (!/pg_advisory_xact_lock/.test(sql)) throw new Error(`accountDb: raw SQL not supported: ${sql}`)
     return 1
   }
-  const client = { user, mcpAccessToken, auditLog, $executeRaw }
+  const instanceSettings = {
+    findUnique: async (a: { where: Row; select?: Row }) =>
+      state.instance && matches(state.instance, a.where) ? pick(state.instance, a.select) : null,
+  }
+  const client = { user, mcpAccessToken, auditLog, instanceSettings, $executeRaw }
 
   async function $transaction<T>(fn: (tx: typeof client) => Promise<T>): Promise<T> {
     const run = queue.then(async () => {
@@ -125,6 +130,7 @@ export function createAccountDb() {
         state.users = snapshot.users
         state.tokens = snapshot.tokens
         state.audit = snapshot.audit
+        state.instance = snapshot.instance
         throw e
       }
     })
@@ -145,6 +151,10 @@ export function createAccountDb() {
         })
       }
     },
+    /** The instance settings row (null: none), its Root columns empty unless given. */
+    seedInstance(row: Row | null) {
+      state.instance = row && { id: 'instance', rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, ...row }
+    },
     seedToken(row: { id: string; userId: string; revokedAt?: Date | null }) {
       state.tokens.push({ revokedAt: null, ...row })
     },
@@ -162,6 +172,7 @@ export function createAccountDb() {
       state.users = []
       state.tokens = []
       state.audit = []
+      state.instance = null
       failing.clear()
       rawCalls.length = 0
       transactions = 0

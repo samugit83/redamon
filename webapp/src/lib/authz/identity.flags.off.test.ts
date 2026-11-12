@@ -33,6 +33,12 @@
  *   - the readers read no instance row (the user rows, as after Phase 1); the boot backfill
  *     still fills the row, so it is ready the day the switch goes on.
  *
+ * Step 2.5 recognises one Root and protects it. With the switch off:
+ *   - there is no Root: nothing reads the instance row for it, no route refuses
+ *     `root_protected` (rootProtections.test.ts runs each route), an act-as cookie naming
+ *     another admin acts as after Phase 1; the boot backfill still chooses the Root;
+ *   - /api/auth/me carries no account type and no Root.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -98,6 +104,8 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/accountStatus.ts',
   // Reads every identity field of the account; the cache only with the switch on.
   'src/lib/authz/principal.ts',
+  // Step 2.5: the Root, read only with the switch on (off: no Root, nothing read).
+  'src/lib/authz/root.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the
@@ -267,5 +275,35 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.4)', () => {
     setFlagsForTests({ identity: false })
     const { instanceSettingsInForce } = await import('@/lib/sharedInstanceSettings')
     expect(await instanceSettingsInForce()).toBeNull()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.5)', () => {
+  // The Prisma double has no instanceSettings table: a read of it would throw.
+  test('there is no Root and nothing reads the instance row for one', async () => {
+    setFlagsForTests({ identity: false })
+    const { loadInstanceRoot, isRootAccount } = await import('./root')
+    expect(await loadInstanceRoot()).toBeNull()
+    expect(await loadInstanceRoot({ fresh: true })).toBeNull()
+    expect(await isRootAccount('admin-1', { fresh: true })).toBe(false)
+  })
+
+  test('an act-as cookie naming another admin acts as after Phase 1', async () => {
+    setFlagsForTests({ identity: false })
+    authCookie = await createToken('admin-1', 'admin')
+    actAsCookie = await createActAsToken('admin-1', 'admin-2')
+    const { getEffectiveUser } = await import('@/lib/session')
+    expect(await getEffectiveUser()).toEqual({ userId: 'admin-2' })
+  })
+
+  test('no route answers root_protected: the protection reads nothing and refuses nothing', async () => {
+    setFlagsForTests({ identity: false })
+    const { rootProtectedRefusal } = await import('./rootProtection')
+    const request = new NextRequest('http://redamon.test/api/x', { method: 'POST' })
+    for (const attempted of ['edit', 'role_change', 'delete', 'reset_password', 'disable', 'enable', 'revoke_sessions', 'act_as'] as const) {
+      expect(await rootProtectedRefusal(request, { userId: 'admin-1', role: 'admin' }, 'admin-2', attempted)).toBeNull()
+    }
+    expect(await rootProtectedRefusal(request, { userId: 'admin-1', role: 'admin' }, 'admin-1', 'role_change', { self: true })).toBeNull()
+    expect(findUnique).not.toHaveBeenCalled()
   })
 })

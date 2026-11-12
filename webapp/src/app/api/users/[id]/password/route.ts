@@ -8,6 +8,7 @@ import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
 import { writeUserAudit } from '@/lib/userAudit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
+import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -55,6 +56,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         )
       }
     } else {
+      const rootRefusal = await rootProtectedRefusal(request, session, id, 'reset_password')
+      if (rootRefusal) return rootRefusal
       // An admin resetting another admin takes over that account: the acting
       // admin's own password first. A member's reset needs none.
       const target = await prisma.user.findUnique({ where: { id }, select: { role: true } })

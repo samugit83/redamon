@@ -11,6 +11,7 @@ import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
 import { writeUserAudit } from '@/lib/userAudit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
+import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -160,6 +161,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
+    // Identity switch on: nobody else edits Root, and Root keeps the admin role.
+    const demotion = role === 'standard'
+    const rootRefusal = await rootProtectedRefusal(request, session, id, demotion ? 'role_change' : 'edit', { self: demotion })
+    if (rootRefusal) return rootRefusal
+
     const data: Record<string, string> = {}
     if (name) data.name = name
     if (typeof email === 'string' && email) data.email = normalizeEmail(email)
@@ -239,6 +245,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
     // Self-deletion is refused above, so an admin target is another admin.
     const target = await prisma.user.findUnique({ where: { id }, select: { email: true, role: true } })
+    // Before the step-up and the teardown: a refused deletion tears nothing down.
+    const rootRefusal = await rootProtectedRefusal(request, session, id, 'delete')
+    if (rootRefusal) return rootRefusal
     const targetIsAdmin = target?.role === 'admin'
     if (targetIsAdmin) {
       const body = await request.json().catch(() => null)
