@@ -84,7 +84,7 @@ from recon.helpers import (
 )
 from recon.helpers.security_checks import page_content_enabled
 from recon.helpers.isolated_result import TopLevelKeys
-from recon.helpers.target_admission import admit_urls
+from recon.helpers.target_admission import admission_context, admit_urls
 
 # Every top-level key run_vuln_scan writes; the security checks nest inside
 # vuln_scan. technology_cves exists only when the CVE lookup ran.
@@ -587,6 +587,12 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
     if run_nuclei:
         # IP mode keeps Nuclei's redirects on the host it was given (B-07).
         nuclei_ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode") or settings.get("IP_MODE"))
+        # The target list is admitted, but a target's redirect is not: under
+        # RoE exclusions an admitted host's 302 into an excluded one would be
+        # followed by every template (R-2).
+        nuclei_roe_exclusions = bool(admission_context(settings, recon_data).excluded)
+        if nuclei_roe_exclusions and NUCLEI_FOLLOW_REDIRECTS:
+            print("[*][Nuclei] Redirects followed on the same host only: RoE exclusions are in force")
 
         # Initialize the per-scan AI context for the false-positive response
         # filter. Consumed by is_false_positive() in _execute_nuclei_pass().
@@ -826,6 +832,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     container_name=detection_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
                     ip_mode=nuclei_ip_mode,
+                    roe_exclusions=nuclei_roe_exclusions,
                 )
                 d_findings, d_fps, d_duration, d_rc = _execute_nuclei_pass(
                     detection_cmd, detection_output_file, label="DETECTION",
@@ -860,6 +867,7 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
                     container_name=dast_container,
                     max_host_error=NUCLEI_MAX_HOST_ERROR,
                     ip_mode=nuclei_ip_mode,
+                    roe_exclusions=nuclei_roe_exclusions,
                 )
                 b_findings, b_fps, b_duration, b_rc = _execute_nuclei_pass(
                     dast_cmd, dast_output_file, label="DAST",

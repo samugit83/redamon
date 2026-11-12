@@ -68,6 +68,7 @@ def build_nuclei_command(
     container_name: str = None,
     max_host_error: int = 0,
     ip_mode: bool = False,
+    roe_exclusions: bool = False,
 ) -> List[str]:
     """
     Build nuclei Docker command with all configured parameters.
@@ -83,6 +84,10 @@ def build_nuclei_command(
         ip_mode: the run's targets are addresses, so a redirect is followed
             only on the same host (B-07): a cross-host Location can name any
             address on the internet.
+        roe_exclusions: the Rules of Engagement exclude hosts, so a redirect
+            is followed only on the same host too: an admitted target's
+            Location can name an excluded host, and nuclei follows it before
+            any scope check (R-2).
         ... (configuration parameters)
 
     Returns:
@@ -255,7 +260,9 @@ def build_nuclei_command(
         # A cross-host redirect (an SSO hop, an attacker-controlled Location)
         # re-sends the -H session to whatever host it names. -follow-host-redirects
         # keeps redirect coverage but confines it to the host we scope-checked.
-        cmd.extend(["-follow-host-redirects" if _has_auth or ip_mode else "-follow-redirects"])
+        # The CLI flag also overrides a template's own `redirects: true`.
+        cmd.extend(["-follow-host-redirects" if _has_auth or ip_mode or roe_exclusions
+                    else "-follow-redirects"])
         if max_redirects > 0:
             cmd.extend(["-max-redirects", str(max_redirects)])
 
