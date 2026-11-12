@@ -113,7 +113,7 @@ eq "admin PUT capture -> 200" "${out##*$'\n'}" 200
 cfg="$(internal_get /api/internal/capture-config)"
 has "the proxy config follows: block_private false" "$cfg" '"block_private":false'
 eq "instance row written, by admin B" \
-  "$(sql "SELECT capture_egress_block_private, capture_proxy_retention_days, (SELECT email FROM users WHERE id = updated_by_id) FROM instance_settings")" \
+  "$(sql "SELECT capture_egress_block_private, capture_proxy_retention_days, (SELECT email FROM users WHERE id = instance_settings.updated_by_id) FROM instance_settings")" \
   "f|21|upg-admin-b@e2e.local"
 eq "mirrored into the capture source row (admin B), as a 7.7.x reader would read it" \
   "$(sql "SELECT s.capture_egress_block_private, s.capture_proxy_retention_days FROM user_settings s JOIN users u ON u.id = s.user_id WHERE u.email = 'upg-admin-b@e2e.local'")" \
