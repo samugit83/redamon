@@ -236,9 +236,11 @@ rows:
       main:
         policy: {ipHostnameMode: ip_only}
     checks:
+      # 192.88.98.1 is the host's own address on the lab bridge; a host process looks its PTR
+      # up now and then, with or without a scan running, so only the lab's other addresses count.
       - id: no_ptr_query
         dnslog: coredns
-        where: {qtype: PTR}
+        where: {qtype: PTR, ptr_ip: {not: 192.88.98.1}}
         count: 0
       - id: dns_queries_seen
         dnslog: coredns
@@ -655,9 +657,11 @@ rows:
         hits: all
         where: {sni: "*"}
         count: 0
+      # 192.88.98.1 is the host's own address on the lab bridge; a host process looks its PTR
+      # up now and then, with or without a scan running, so only the lab's other addresses count.
       - id: no_ptr_query
         dnslog: coredns
-        where: {qtype: PTR}
+        where: {qtype: PTR, ptr_ip: {not: 192.88.98.1}}
         count: 0
 
   # ------------------------------------------------------------------ E10: private target
@@ -724,12 +728,18 @@ rows:
       - {id: m2_httpx_ip_literals_only, step: m2-httpx, hits: all, where: {sni: "*"}, count: 0}
       - {id: m2_nuclei_accepted, step: m2-nuclei, result: accepted, "true": true}
       - {id: m2_katana_accepted, step: m2-katana, result: accepted, "true": true}
-      - {id: m2_subdomain_discovery_refused, step: m2-subdomain-discovery, result: refused, "true": true}
+      # The tool gate sits in the container's dispatch (03 matrix row 110), not the API: the API
+      # starts the run, the container prints the refusal and exits 1, and nothing is sent.
+      - {id: m2_subdomain_discovery_refused, step: m2-subdomain-discovery, result: final_status, contains: [error]}
+      - {id: m2_subdomain_discovery_sent_nothing, step: m2-subdomain-discovery, hits: all, count: 0}
+      - {id: m2_subdomain_discovery_no_dns, step: m2-subdomain-discovery, dnslog: coredns, where: {ptr_ip: {not: 192.88.98.1}}, count: 0}
       - {id: m2_typed_name_refused, step: m2-typed-name, result: refused, "true": true}
       - {id: m2_typed_outsider_ip_refused, step: m2-typed-outsider-ip, result: refused, "true": true}
       - {id: m2_typed_url_accepted, step: m2-typed-url, result: accepted, "true": true}
       - {id: m3_httpx_ip_literals_only, step: m3-httpx, hits: all, where: {sni: "*"}, count: 0}
-      - {id: m3_subdomain_discovery_refused, step: m3-subdomain-discovery, result: refused, "true": true}
+      - {id: m3_subdomain_discovery_refused, step: m3-subdomain-discovery, result: final_status, contains: [error]}
+      - {id: m3_subdomain_discovery_sent_nothing, step: m3-subdomain-discovery, hits: all, count: 0}
+      - {id: m3_subdomain_discovery_no_dns, step: m3-subdomain-discovery, dnslog: coredns, where: {ptr_ip: {not: 192.88.98.1}}, count: 0}
       - {id: m3_typed_name_refused, step: m3-typed-name, result: refused, "true": true}
       - {id: m3_typed_outsider_ip_refused, step: m3-typed-outsider-ip, result: refused, "true": true}
       - {id: m3_typed_url_accepted, step: m3-typed-url, result: accepted, "true": true}
@@ -956,10 +966,12 @@ rows:
         step: edit_while_partial
         result: refused
         "true": true
+      # The MCP transport hands the client the message, not the `busy` code (pinned in
+      # scopeTools' unit tests), so the message's own words are checked.
       - id: edit_refusal_says_busy
         step: edit_while_partial
         result: text
-        contains: [busy]
+        contains: ["partial recon run is active", "wait for it to finish"]
       - id: activation_and_readers
         step: edit_while_partial
         manual: "activate the version saved before the narrowing (Scan Timeline): the names stay out of every reader (preview scanned list, partial-recon S, agent prompt unit check)"
