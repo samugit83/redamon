@@ -163,7 +163,7 @@ flag it manages. Control KB with `ENABLE_KB` only.
 ### First admin (required for init)
 | Key | Purpose |
 |---|---|
-| `ADMIN_NAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | The first admin user, created automatically during `init`. There is **no** app-layer login lockout, so use a strong password (nginx `limit_req` is the only brute-force brake). |
+| `ADMIN_NAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | The first admin user, created automatically during `init`; it is the instance's Root. Use a strong password: the app locks an email for 15 minutes after 5 failed sign-ins, and nginx `limit_req` brakes the login route. With `RBAC_IDENTITY_ENABLED=true` in the app `.env` on the server, every `update` confirms the admin `ADMIN_EMAIL` names as Root when there are several (see Update and rollback). |
 
 ### Optional app config (appended to the server .env)
 | Key | Purpose |
@@ -493,6 +493,16 @@ at `$HOME/.redamon-deploy` (outside the checkout, so it never blocks `git pull -
 sets `NEXT_PUBLIC_AGENT_WS_URL=wss://<host>/ws/agent` as the webapp build-arg. The deploy works
 even if `tooling/deploy/single-host/` is not committed to the cloned branch (committing it is still fine
 and makes the overlay part of the repo history).
+
+The identity controls (Root, account status, invites, shorter admin sessions) wait behind
+`RBAC_IDENTITY_ENABLED`, which `deploy.sh` never writes: add `RBAC_IDENTITY_ENABLED=true` to the
+app `.env` on the server (`seed` keeps lines it does not own) and run `update`. After the restart
+`redamon.sh update` confirms Root: the only admin with a password, or the admin `ADMIN_EMAIL`
+names (exported from this `.env`); otherwise it leaves Root unconfirmed and prints how to set it
+(`./redamon.sh set-root <email>` in the checkout on the server). Invite and reset links point at
+the deploy's public origin (`PLUGINS_ALLOWED_ORIGIN`, which `deploy.sh` seeds) until Root sets
+a `publicBaseUrl`. The rendered nginx also closes `/api/internal/` and the tunnel config paths
+(404); the same `update` re-renders it.
 
 Rollback is manual: `git reset --hard <prev>` on the host checkout, then `./deploy.sh update`.
 
