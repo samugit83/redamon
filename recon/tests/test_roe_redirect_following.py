@@ -698,3 +698,51 @@ def test_resource_enum_kiterunner_follows_no_redirect_under_roe_exclusions(monke
     assert kr_cmds, "run_resource_enum never ran kr"
     for cmd in kr_cmds:
         assert _max_redirects(cmd) == "0"
+
+
+# --------------------------------------------------------------------------
+# Partial takeover: its settings carry the RoE the builder reads
+# --------------------------------------------------------------------------
+
+class _ProjectResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_partial_takeover_settings_always_carry_the_projects_roe(monkeypatch, tmp_path):
+    """_run_nuclei_takeover reads the exclusions from its settings alone, not
+    from a recon dict's metadata.roe. A partial run's settings are the ones
+    partial_recon loaded once through fetch_project_settings, which always
+    writes ROE_ENABLED (derived from the engagement limits) and
+    ROE_EXCLUDED_HOSTS, and the partial module hands that dict on unchanged."""
+    from unittest.mock import patch
+    from recon.main_recon_modules import subdomain_takeover as st
+    from recon.partial_recon_modules import vulnerability_scanning as vs
+    from recon.project_settings import fetch_project_settings
+    payload = {"userId": "u1", "targetDomain": "example.com",
+               "roeExcludedHosts": [f"{EXCLUDED_IP}/32"]}
+    with patch("requests.get", return_value=_ProjectResponse(payload)):
+        project_settings = fetch_project_settings("p1", "http://webapp.invalid")
+    seen = {}
+
+    def runner(recon_data, settings=None, **_k):
+        seen["settings"] = settings
+        raise _Stop
+
+    monkeypatch.setattr(st, "run_subdomain_takeover", runner)
+    monkeypatch.setattr(vs, "_resolve_hostname", lambda _h: {"ipv4": ["203.0.113.11"], "ipv6": []})
+    config = {"domain": "example.com", "include_graph_targets": False,
+              "user_targets": {"subdomains": [WWW]}, "_settings": project_settings}
+    with pytest.raises(_Stop):
+        vs.run_subdomain_takeover_partial(config)
+
+    settings = seen["settings"]
+    assert settings["ROE_ENABLED"] is True
+    assert settings["ROE_EXCLUDED_HOSTS"] == [f"{EXCLUDED_IP}/32"]
+    assert _redirect_flags(_takeover_cmd(monkeypatch, tmp_path, settings)) == ["-follow-host-redirects"]
