@@ -8,10 +8,12 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
-const h = vi.hoisted(() => ({ alert: vi.fn(), assign: vi.fn(), notFound: vi.fn(() => { throw new Error('NEXT_NOT_FOUND') }) }))
+const h = vi.hoisted(() => ({
+  alert: vi.fn(), alertWarning: vi.fn(), assign: vi.fn(), notFound: vi.fn(() => { throw new Error('NEXT_NOT_FOUND') }),
+}))
 vi.mock('next/image', () => ({ default: (props: { alt: string }) => <span aria-label={props.alt} /> }))
 vi.mock('next/navigation', () => ({ notFound: h.notFound }))
-vi.mock('@/components/ui', () => ({ useOptionalAlertModal: () => ({ alert: h.alert }) }))
+vi.mock('@/components/ui', () => ({ useOptionalAlertModal: () => ({ alert: h.alert, alertWarning: h.alertWarning }) }))
 
 import InvitePage from './page'
 import { InviteAcceptForm } from './InviteAcceptForm'
@@ -31,6 +33,7 @@ beforeEach(() => {
   fetchMock = vi.fn(async (url: string) => (url === '/api/invite/state' ? json(STATE) : json({ id: 'u1' })))
   vi.stubGlobal('fetch', fetchMock)
   h.alert.mockReset().mockResolvedValue(undefined)
+  h.alertWarning.mockReset().mockResolvedValue(undefined)
   h.assign.mockReset()
   vi.stubGlobal('location', { ...window.location, assign: h.assign })
 })
@@ -101,6 +104,25 @@ describe('setting the password', () => {
     await waitFor(() => expect(h.assign).toHaveBeenCalledWith('/graph'))
     expect(posts()[0][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ password: GOOD }) })
     expect(h.alert).toHaveBeenCalledWith(expect.stringContaining('signed in'), 'Password set')
+  })
+
+  test("a reset link: the reset's notice is shown once after the sign-in, then the app (step 2.10)", async () => {
+    const notice = {
+      id: 'n1', type: 'credentials_reset', at: '2026-11-12T10:00:00.000Z', by: { name: 'Laura', email: 'laura@e2e.local' },
+      reason: 'Locked out', mode: 'link',
+    }
+    fetchMock.mockImplementation(async (url: string) => (url === '/api/invite/state'
+      ? json({ ...STATE, kind: 'reset' })
+      : json({ id: 'u1', notices: [notice] })))
+    h.alertWarning.mockImplementation(async () => { expect(h.assign).not.toHaveBeenCalled() })
+    render(<InviteAcceptForm />)
+    await screen.findByLabelText('Password')
+    type('Password', GOOD)
+    type('Confirm password', GOOD)
+    fireEvent.submit(screen.getByLabelText('Confirm password').closest('form')!)
+    await waitFor(() => expect(h.assign).toHaveBeenCalledWith('/graph'))
+    expect(h.alertWarning).toHaveBeenCalledTimes(1)
+    expect(h.alertWarning).toHaveBeenCalledWith(expect.stringContaining('Reason: Locked out'), 'Your password was reset')
   })
 
   test("the server's refusal is shown inline", async () => {

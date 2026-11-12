@@ -18,8 +18,9 @@ export function normalizeEmail(email: string): string {
 
 /**
  * What a sign-in needs, in one row: the account and its state. The session version goes
- * into the login token; status, the must-change flag and the last sign-in are read here
- * so the sign-in checks that use them add no second query (one read on every path).
+ * into the login token; status, the must-change flag, the last sign-in and the pending
+ * notices (a credentials reset, step 2.10) are read here so the sign-in checks that use them
+ * add no second query (one read on every path).
  */
 export interface SignInAccount {
   id: string
@@ -31,6 +32,8 @@ export interface SignInAccount {
   sessionVersion: number
   mustChangePassword: boolean
   lastLoginAt: Date | null
+  /** The stored notices list (accountNotices.ts reads it). */
+  pendingNotices: unknown
 }
 
 /**
@@ -43,7 +46,7 @@ export interface SignInAccount {
  */
 export async function findSignInAccount(email: string): Promise<SignInAccount | null> {
   const rows = await prisma.$queryRaw<SignInAccount[]>`
-    SELECT id, name, email, password, role, status, session_version AS "sessionVersion", must_change_password AS "mustChangePassword", last_login_at AS "lastLoginAt" FROM users WHERE lower(email) = lower(${email})`
+    SELECT id, name, email, password, role, status, session_version AS "sessionVersion", must_change_password AS "mustChangePassword", last_login_at AS "lastLoginAt", pending_notices AS "pendingNotices" FROM users WHERE lower(email) = lower(${email})`
   return rows.find(r => r.email === email) ?? (rows.length === 1 ? rows[0] : null)
 }
 

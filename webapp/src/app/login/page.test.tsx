@@ -6,7 +6,8 @@
  * the server" for both. A database outage showed a bare "Internal server error".
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { AlertProvider } from '@/components/ui'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 vi.mock('next/image', () => ({ default: (props: { alt: string }) => <span aria-label={props.alt} /> }))
@@ -62,5 +63,43 @@ describe('Login errors', () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
     signIn()
     expect(await screen.findByText('Unable to connect to the server (network_error)')).toBeInTheDocument()
+  })
+})
+
+describe('after the sign-in (step 2.10)', () => {
+  const notice = {
+    id: 'n1', type: 'credentials_reset', at: '2026-11-12T10:00:00.000Z', by: { name: 'Laura', email: 'laura@e2e.local' },
+    reason: 'Locked out', mode: 'temporary',
+  }
+  let loc: { href: string }
+  beforeEach(() => {
+    loc = { href: '' }
+    vi.stubGlobal('location', loc)
+  })
+
+  function signInWithDialogs() {
+    render(<AlertProvider><LoginPage /></AlertProvider>)
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'marco@redamon.local' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }))
+  }
+
+  test('a reset notice is shown once, in the app dialog, before the app opens', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ id: 'u1', notices: [notice] }), { status: 200 }))
+    signInWithDialogs()
+    const dialog = await screen.findByRole('dialog', { name: 'Your password was reset' })
+    expect(dialog).toHaveTextContent('Laura (laura@e2e.local)')
+    expect(dialog).toHaveTextContent('Reason: Locked out')
+    expect(loc.href).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(loc.href).toBe('/graph'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  test('no notice: straight to the app', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ id: 'u1' }), { status: 200 }))
+    signInWithDialogs()
+    await waitFor(() => expect(loc.href).toBe('/graph'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

@@ -28,6 +28,7 @@ import { isSecureRequest } from '@/lib/cookieSecurity'
 import { safeErrorCode } from '@/lib/routeErrors'
 import type { Session } from '@/lib/session'
 import { emailTakenByAnother, normalizeEmail } from './accountEmail'
+import { markShown, noticeView, pendingNotices, type NoticeView } from './accountNotices'
 import { now } from './clock'
 import { invalidatePrincipal } from './principal'
 import { INSTANCE_SETTINGS_ROW } from './root'
@@ -407,14 +408,19 @@ export interface AcceptedAccount {
   email: string
   role: string
   sessionVersion: number
+  /** The account's pending notices (a reset's, step 2.10), handed over with this sign-in. */
+  notices: NoticeView[]
+  /** The stored notices list as it was before the hand-over. */
+  storedNotices: unknown
 }
 
 /**
  * Uses the link and sets the password, in one transaction with the audit row: the link is
  * marked used only if it is still open, and the account changed only if it is still what the
  * link was made for, so two accepts of one link make one sign-in. A reset raises the session
- * version (every older cookie ends). The account's other open links are cancelled. Null when
- * the link stopped working meanwhile.
+ * version (every older cookie ends). The account's other open links are cancelled, and its
+ * pending notices are handed over and marked shown (step 2.10). Null when the link stopped
+ * working meanwhile.
  */
 export async function acceptLink(link: OpenLink, passwordHash: string): Promise<AcceptedAccount | null> {
   const at = now()
@@ -442,11 +448,19 @@ export async function acceptLink(link: OpenLink, passwordHash: string): Promise<
         where: { userId: link.userId, usedAt: null, cancelledAt: null },
         data: { cancelledAt: at },
       })
-      const user = await tx.user.findUnique({
+      const row = await tx.user.findUnique({
         where: { id: link.userId },
-        select: { id: true, name: true, email: true, role: true, sessionVersion: true },
+        select: { id: true, name: true, email: true, role: true, sessionVersion: true, pendingNotices: true },
       })
-      if (!user) throw new LinkGone()
+      if (!row) throw new LinkGone()
+      const { pendingNotices: storedNotices, ...user } = row
+      const notices = pendingNotices(storedNotices).map(noticeView)
+      if (notices.length) {
+        await tx.user.update({
+          where: { id: user.id },
+          data: { pendingNotices: markShown(storedNotices) as unknown as Prisma.InputJsonValue },
+        })
+      }
       await writeAuditTx(tx, {
         actorId: user.id,
         actorEmail: user.email,
@@ -456,7 +470,7 @@ export async function acceptLink(link: OpenLink, passwordHash: string): Promise<
         after: reset ? { kind: link.kind, sessionVersion: user.sessionVersion } : { kind: link.kind },
         source: 'api',
       })
-      return user
+      return { ...user, notices, storedNotices }
     })
   } catch (err) {
     if (err instanceof LinkGone) return null

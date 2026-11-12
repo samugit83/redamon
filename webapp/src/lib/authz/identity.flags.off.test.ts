@@ -66,7 +66,9 @@
  * notice to the person). With the switch off:
  *   - /api/users/[id]/reset-credentials answers 404 to everyone and reads nothing;
  *   - an admin setting someone else's password writes Phase 1's password alone: no reason asked,
- *     no notice, no version raised, no socket closed.
+ *     no notice, no version raised, no socket closed;
+ *   - a sign-in answers no notice, marks none shown and writes no `auth.login.after_reset` row
+ *     (login/route.resetNotice.test.ts), whatever notices a reset made while the switch was on.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node

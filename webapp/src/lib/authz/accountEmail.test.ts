@@ -64,9 +64,10 @@ describe('findSignInAccount', () => {
     expect(sql).toMatch(/lower\(email\)\s*=\s*lower\(\$\)/)
     expect(sql).not.toMatch(/like/i)
     expect(h.queryRaw.mock.calls[0].slice(1)).toEqual(['a_min%@x'])
-    // The row carries what the sign-in needs and nothing else, in camelCase.
+    // The row carries what the sign-in needs and nothing else, in camelCase (step 2.10 adds the
+    // pending notices: the reset notice and the first sign-in after a reset come from this row).
     expect(sql).toMatch(
-      /SELECT id, name, email, password, role, status, session_version AS "sessionVersion", must_change_password AS "mustChangePassword", last_login_at AS "lastLoginAt" FROM users/,
+      /SELECT id, name, email, password, role, status, session_version AS "sessionVersion", must_change_password AS "mustChangePassword", last_login_at AS "lastLoginAt", pending_notices AS "pendingNotices" FROM users/,
     )
   })
 

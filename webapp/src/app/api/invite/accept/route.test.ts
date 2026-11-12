@@ -7,6 +7,9 @@
  * cleared. Five failed accepts cancel the link (`user.invite_locked`). Unknown, expired, used or
  * cancelled: one answer, 410 `invite_invalid`. With the identity switch off: 404.
  *
+ * Step 2.10: accepting a reset link is the first sign-in after a credentials reset, so it records
+ * its address and browser (`auth.login.after_reset`) and answers the reset's notice once.
+ *
  * The database is the in-memory accountDb (transactions roll back); the clock is injected.
  *
  * @vitest-environment node
@@ -239,9 +242,51 @@ describe('accepting a reset link', () => {
     expect(res.status).toBe(200)
     expect(db().account('member-1')).toMatchObject({ status: 'active', role: 'standard', sessionVersion: 4 })
     expect(await verifyToken(cookieValue(res, 'redamon-auth')!)).toMatchObject({ sub: 'member-1', sv: 4 })
-    expect(db().audit()).toEqual([expect.objectContaining({
+    // Step 2.10 adds the sign-in's own row (auth.login.after_reset, below) beside it.
+    expect(db().audit().filter((r) => r.action === 'user.reset_link_used')).toEqual([expect.objectContaining({
       action: 'user.reset_link_used', targetId: 'member-1', actorId: 'member-1', after: { kind: 'reset', sessionVersion: 4 },
     })])
+  })
+
+  const NOTICE = {
+    id: '6f1c2c1e-1111-4a4a-9a9a-000000000002', type: 'credentials_reset', at: '2026-11-12T09:30:00.000Z',
+    by: { id: 'admin-1', name: 'Laura', email: 'laura@e2e.local' }, reason: 'Locked out', mode: 'link',
+  }
+  async function acceptWithBrowser(linkId: string) {
+    return POST(new NextRequest('http://redamon.test/api/invite/accept', {
+      method: 'POST',
+      headers: {
+        host: 'redamon.test', 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.23', 'user-agent': 'Safari/19 test',
+        cookie: `redamon-invite=${await signInviteCookie(linkId)}`,
+      },
+      body: JSON.stringify({ password: GOOD }),
+    }))
+  }
+
+  test('the first sign-in after a reset records its address and browser (step 2.10)', async () => {
+    db().seedUsers([{ id: 'member-2', email: 'member-2@e2e.local', pendingNotices: [NOTICE] }])
+    const reset = await openLink('member-2', 'reset')
+    expect((await acceptWithBrowser(reset.linkId)).status).toBe(200)
+    expect(db().audit().filter((r) => r.action === 'auth.login.after_reset')).toEqual([expect.objectContaining({
+      actorId: 'member-2', targetType: 'user', targetId: 'member-2',
+      after: { ip: '198.51.100.23', ipTrusted: false, userAgent: 'Safari/19 test', resetAt: NOTICE.at, resetMode: 'link' },
+    })])
+  })
+
+  test("the reset's notice is answered once with the sign-in and marked shown (step 2.10)", async () => {
+    db().seedUsers([{ id: 'member-2', email: 'member-2@e2e.local', pendingNotices: [NOTICE] }])
+    const reset = await openLink('member-2', 'reset')
+    const body = await (await acceptWithBrowser(reset.linkId)).json()
+    expect(body.notices).toEqual([{
+      id: NOTICE.id, type: 'credentials_reset', at: NOTICE.at, by: { name: 'Laura', email: 'laura@e2e.local' }, reason: 'Locked out', mode: 'link',
+    }])
+    expect(db().account('member-2')!.pendingNotices).toEqual([{ ...NOTICE, shownAt: T0.toISOString() }])
+  })
+
+  test('an invite accept records no address or browser (step 2.10)', async () => {
+    const link = await openLink('invited-1')
+    await acceptWithBrowser(link.linkId)
+    expect(db().audit().map((r) => r.action)).toEqual(['user.invite_accepted'])
   })
 })
 

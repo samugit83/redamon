@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import { useVersionCheck } from '@/hooks/useVersionCheck'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { usePendingNotices } from '@/components/auth/PendingNotices'
 import styles from './page.module.css'
 
 export default function LoginPage() {
   const router = useRouter()
   const { currentVersion } = useVersionCheck()
+  const showNotices = usePendingNotices()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -36,6 +38,10 @@ export default function LoginPage() {
         setLoading(false)
         return
       }
+
+      // A credentials reset is shown to the person once, here, before the app opens (step 2.10).
+      const body = await res.json().catch(() => null)
+      await showNotices(body?.notices)
 
       // Force full page reload to pick up the new cookie in middleware
       window.location.href = '/graph'

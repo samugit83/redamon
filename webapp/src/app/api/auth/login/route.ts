@@ -8,6 +8,7 @@ import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
 import { setLoginCookie } from '@/lib/loginCookie'
 import { flagShortPasswordAtSignIn } from '@/lib/authz/mustChange'
+import { afterResetEntry, firstSignInAfterReset, handOverNotices, type NoticeView } from '@/lib/authz/accountNotices'
 import { internalError } from '@/lib/routeErrors'
 
 export async function POST(request: NextRequest) {
@@ -75,6 +76,17 @@ export async function POST(request: NextRequest) {
       after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
     })
 
+    // Identity switch on (step 2.10): a credentials reset is made visible to the person. The
+    // first sign-in after it records its address and browser (only that one, DV-11), and the
+    // pending notices are answered once, for the sign-in page to show.
+    let notices: NoticeView[] = []
+    if (identity) {
+      if (firstSignInAfterReset(user.lastLoginAt, user.pendingNotices)) {
+        await writeAudit(afterResetEntry(user.id, meta, user.pendingNotices))
+      }
+      notices = await handOverNotices(user.id, user.pendingNotices)
+    }
+
     await recordSignIn(user.id)
 
     // Identity switch on: an account whose password must change signs in into the change page
@@ -101,6 +113,7 @@ export async function POST(request: NextRequest) {
       email: user.email,
       role: user.role,
       ...(mustChange ? { mustChangePassword: true } : {}),
+      ...(notices.length ? { notices } : {}),
     })
     setLoginCookie(response, request, token)
 

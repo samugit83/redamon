@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import Image from 'next/image'
 import { useOptionalAlertModal } from '@/components/ui'
+import { showPendingNotices } from '@/components/auth/PendingNotices'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { validateNewPassword, type PasswordPolicy } from '@/lib/authz/passwordPolicy'
 import styles from '../login/page.module.css'
@@ -86,12 +87,15 @@ export function InviteAcceptForm() {
         setFormError(err.message)
         return
       }
+      const body = await res.json().catch(() => null)
       setPassword('')
       setConfirm('')
       await alerts?.alert(
         view.link.kind === 'invite' ? 'Your password is set and you are signed in. Welcome to RedAmon.' : 'Your password is set and you are signed in.',
         'Password set',
       )
+      // A reset link's sign-in carries the reset's notice, shown once (step 2.10).
+      await showPendingNotices(alerts, body?.notices)
       window.location.assign('/graph')
     } catch (err) {
       setFormError(toApiError(err, 'Could not set the password').message)

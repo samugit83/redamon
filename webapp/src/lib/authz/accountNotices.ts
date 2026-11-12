@@ -74,16 +74,44 @@ export function pendingNotices(stored: unknown): AccountNotice[] {
   return readNotices(stored).filter((n) => !n.shownAt)
 }
 
-function lastResetAt(stored: unknown): number | null {
-  const times = readNotices(stored).filter((n) => n.type === 'credentials_reset').map((n) => Date.parse(n.at))
-  return times.length ? Math.max(...times) : null
+/** The latest credentials reset the account was told about, or null. */
+export function latestReset(stored: unknown): CredentialsResetNotice | null {
+  let latest: CredentialsResetNotice | null = null
+  for (const n of readNotices(stored)) {
+    if (n.type === 'credentials_reset' && (!latest || Date.parse(n.at) > Date.parse(latest.at))) latest = n
+  }
+  return latest
 }
 
 /** Whether a sign-in by an account that last signed in at `lastLoginAt` is its first since a reset. */
 export function firstSignInAfterReset(lastLoginAt: Date | null, stored: unknown): boolean {
-  const reset = lastResetAt(stored)
-  if (reset === null) return false
-  return !lastLoginAt || lastLoginAt.getTime() < reset
+  const reset = latestReset(stored)
+  if (!reset) return false
+  return !lastLoginAt || lastLoginAt.getTime() < Date.parse(reset.at)
+}
+
+/**
+ * `auth.login.after_reset`'s payload: the address and browser of the first sign-in after a
+ * reset, the only sign-in whose address and browser this feature records (DV-11).
+ */
+export function afterResetEntry(
+  userId: string,
+  meta: { ip: string | null; ipTrusted: boolean; userAgent: string | null },
+  stored: unknown,
+) {
+  const reset = latestReset(stored)
+  return {
+    actorId: userId,
+    action: 'auth.login.after_reset',
+    targetType: 'user',
+    targetId: userId,
+    after: {
+      ip: meta.ip,
+      ipTrusted: meta.ipTrusted,
+      userAgent: meta.userAgent,
+      ...(reset ? { resetAt: reset.at, resetMode: reset.mode } : {}),
+    },
+  }
 }
 
 export function noticeView(n: AccountNotice): NoticeView {

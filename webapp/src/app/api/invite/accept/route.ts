@@ -5,6 +5,9 @@ import { setLoginCookie } from '@/lib/loginCookie'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rbacFlags } from '@/lib/authz/flags'
 import { routeNotFound } from '@/lib/authz/accountStatus'
+import { afterResetEntry } from '@/lib/authz/accountNotices'
+import { writeAudit } from '@/lib/audit'
+import { getClientMeta } from '@/lib/requestMeta'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
@@ -52,8 +55,14 @@ export const POST = withInviteErrors('invite accept', 'Could not set the passwor
   forgetFailedAccepts(link.tokenHash)
   if (!account) return invalidLinkResponse(request)
   invalidatePrincipal(account.id)
+  // A reset link's accept is the first sign-in after the reset (the reset emptied the password):
+  // the one sign-in whose address and browser are recorded (step 2.10, DV-11).
+  if (link.kind === 'reset') await writeAudit(afterResetEntry(account.id, getClientMeta(request), account.storedNotices))
 
-  const res = privateJson({ id: account.id, name: account.name, email: account.email, role: account.role })
+  const res = privateJson({
+    id: account.id, name: account.name, email: account.email, role: account.role,
+    ...(account.notices.length ? { notices: account.notices } : {}),
+  })
   setLoginCookie(res, request, await createToken(account.id, account.role, account.sessionVersion))
   clearInviteCookie(res, request)
   // A previous admin session's act-as cookie means nothing for this account.
