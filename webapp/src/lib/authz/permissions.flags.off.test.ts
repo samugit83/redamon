@@ -18,6 +18,10 @@
  * else gets 404; an instance action is an admin's (Root's own ones the confirmed Root's), and a
  * member's only through a legacy grant, whatever rows exist.
  *
+ * Step 3.6 makes the owner helpers ask `projectAccess()` and the row-owner check. With the switch
+ * off (and on: they read no switch, no account and no set) they answer as before: the owner
+ * passes, another account's project or row and a missing project are the same 404.
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -53,6 +57,9 @@ import { PERMISSIONS, PERMISSION_IDS, type PermissionId } from './permissions'
 import { builtinSet, DEFAULT_MEMBER_SET_ID, FULL_ADMIN_PROFILE_ID } from './builtinSets'
 import { sharedToolAccess, resetSharedToolsForTests, SHARED_TOOLS, type SharedTool } from './sharedTools'
 import { can } from './can'
+import { assertOwner, ownerScope, requireProjectAccess } from '@/lib/access'
+import { McpAccessDenied, assertMcpProjectAccess } from '@/lib/mcpAuth'
+import { ownsScope } from '@/lib/plugins/changeSetAccess'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
 const ALL = [...PERMISSION_IDS]
@@ -269,5 +276,32 @@ describe('RBAC_PERMISSIONS_ENABLED off: can() answers as the guards do today (st
     }
     setFlagsForTests({ identity: false, permissions: false })
     expect((await can(account('admin-1', 'admin'), 'admins:manage')).allowed).toBe(true)
+  })
+})
+
+describe('the owner helpers answer as before, whatever the switches (step 3.6)', () => {
+  test.each([
+    { identity: true, permissions: false },
+    { identity: false, permissions: false },
+    { identity: true, permissions: true },
+  ])('owner passes; another account and a missing project are one 404 ($identity identity, $permissions permissions)', async (flags) => {
+    setFlagsForTests(flags)
+    expect(await requireProjectAccess({ userId: 'member-1' }, 'P-member')).toEqual({ project: { id: 'P-member', userId: 'member-1' } })
+    for (const [who, projectId] of [['admin-1', 'P-member'], ['member-1', 'P-admin'], ['member-1', 'P-gone']]) {
+      const r = await requireProjectAccess({ userId: who }, projectId)
+      expect([who, projectId, (r as Response).status, await (r as Response).json()]).toEqual([who, projectId, 404, { error: 'Not found' }])
+    }
+    expect(await assertMcpProjectAccess('member-1', 'P-member')).toEqual({ id: 'P-member', userId: 'member-1' })
+    await expect(assertMcpProjectAccess('admin-1', 'P-member')).rejects.toThrow(new McpAccessDenied())
+    await expect(assertMcpProjectAccess('member-1', 'P-gone')).rejects.toThrow(new McpAccessDenied())
+    expect(await ownsScope({ type: 'project', id: 'P-member' }, 'member-1')).toBe(true)
+    expect(await ownsScope({ type: 'project', id: 'P-member' }, 'admin-1')).toBe(false)
+    expect(await ownsScope({ type: 'user', id: 'member-1' }, 'member-1')).toBe(true)
+    expect(await ownsScope({ type: 'user', id: 'member-1' }, 'admin-1')).toBe(false)
+    expect(assertOwner({ userId: 'member-1' }, 'member-1')).toBeNull()
+    expect((assertOwner({ userId: 'admin-1' }, 'member-1') as Response).status).toBe(404)
+    expect(ownerScope({ userId: 'member-1' })).toEqual({ userId: 'member-1' })
+    expect(userFindUnique).not.toHaveBeenCalled()
+    expect(setFindMany).not.toHaveBeenCalled()
   })
 })

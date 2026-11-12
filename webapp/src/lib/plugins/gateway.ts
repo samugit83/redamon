@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { PluginInstall } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { ownsRow } from '@/lib/authz/rowOwner'
 import { isJsonContentType } from '@/lib/jsonBody'
 import { CallTokenConfigError, verifyCallToken, type CallTokenClaims, type CallTokenKind } from './callToken'
 import { now } from './clock'
@@ -24,11 +26,11 @@ import { isStorableJson } from './storableText'
  * the body (64 KB, up to 8 MB for the operations that carry data, bounded in depth and
  * containers, its text storable); the install row (enabled, ready, not revoked, at the
  * token's version); the permission, granted by the admin AND declared by the stored
- * manifest; the user; the project and session, compared with the token's user directly.
- * Strict on purpose: never through requireProjectAccess, which reads the browser's
- * effective user (RV-33). The frame never reads cookies, the session, the effective
- * user or X-Internal-Key: these routes are cookie-less in middleware.ts and plugin code
- * must not borrow a browser's identity.
+ * manifest; the user; the project and session, asked for the token's user (`projectAccess()`
+ * at the owner level, `ownsRow`). Strict on purpose: never through requireProjectAccess,
+ * which reads the browser's effective user (RV-33). The frame never reads cookies, the
+ * session, the effective user or X-Internal-Key: these routes are cookie-less in
+ * middleware.ts and plugin code must not borrow a browser's identity.
  *
  * The budget is counted right after the token is verified, before any database read, so
  * a plugin that floods the Gateway with refused calls exhausts its token, not Postgres.
@@ -303,12 +305,18 @@ export function assertPermission(ctx: Pick<GatewayContext, 'plugin'>, permission
 
 const NOT_FOUND = () => new GatewayError(404, 'not_found', 'Not found')
 
+/**
+ * Whose data the call may reach: the token's project at the owner level of `projectAccess()` for
+ * the token's user (a share never reaches the Gateway here; Phase 5 sets the level an action
+ * declares), and the session's conversation its author's (`ownsRow`).
+ */
 async function checkTenancy(claims: CallTokenClaims): Promise<GatewayConversation | null> {
   const user = await prisma.user.findUnique({ where: { id: claims.sub }, select: { id: true } })
   if (!user) throw new GatewayError(401, 'invalid_token', 'The user this call token acts for no longer exists.')
+  const subject = { userId: claims.sub }
   if (claims.prj) {
-    const project = await prisma.project.findUnique({ where: { id: claims.prj }, select: { userId: true } })
-    if (!project || project.userId !== claims.sub) throw NOT_FOUND()
+    const access = await projectAccess(subject, claims.prj)
+    if (!access || !meetsLevel(access, 'O')) throw NOT_FOUND()
   }
   if (!claims.ses) return null
   if (!claims.prj) throw NOT_FOUND()
@@ -330,7 +338,7 @@ async function checkTenancy(claims: CallTokenClaims): Promise<GatewayConversatio
   })
   if (
     !conversation ||
-    conversation.userId !== claims.sub ||
+    !ownsRow(subject, conversation.userId) ||
     conversation.projectId !== claims.prj ||
     (claims.conv !== undefined && conversation.id !== claims.conv)
   ) {

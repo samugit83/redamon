@@ -18,6 +18,7 @@
 import { createHash, randomBytes } from 'crypto'
 import prisma from '@/lib/prisma'
 import { constantTimeEqual } from '@/lib/constantTimeEqual'
+import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 
 export const MCP_TOKEN_PREFIX = 'rdmn_mcp_'
 /** 24 bytes -> 48 hex chars, comfortably past the 40 the format calls for. */
@@ -369,6 +370,8 @@ export class McpAccessDenied extends Error {
  *
  * A project that does not exist and a project owned by someone else are the
  * same answer, so a token holder cannot enumerate other users' project ids.
+ * The decision is `projectAccess()`'s, asked for the token's user, at the owner level: a
+ * shared project reaches a token only through Phase 4's opt-in.
  */
 export async function assertMcpProjectAccess(
   userId: string,
@@ -377,12 +380,9 @@ export async function assertMcpProjectAccess(
   if (typeof projectId !== 'string' || !projectId) {
     throw new McpAccessDenied('projectId is required')
   }
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, userId: true },
-  })
-  if (!project || project.userId !== userId) throw new McpAccessDenied()
-  return project
+  const access = await projectAccess({ userId }, projectId)
+  if (!access || !meetsLevel(access, 'O')) throw new McpAccessDenied()
+  return { id: access.project.id, userId: access.project.userId }
 }
 
 // --- per-token rate limiting ------------------------------------------------------

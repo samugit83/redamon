@@ -5,6 +5,8 @@ import { readFeatureModel } from '@/lib/featureModels'
 import { readJsonBody } from '@/lib/jsonBody'
 import { pluginFeatureId } from '@/lib/llmFeatures'
 import { auditActor } from '@/lib/auditActor'
+import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { ownsRow } from '@/lib/authz/rowOwner'
 import { getEffectiveUser } from '@/lib/session'
 import { CallTokenConfigError, mintCallToken } from './callToken'
 import { now } from './clock'
@@ -140,7 +142,11 @@ function runnerFailure(e: unknown, extra: Json = {}): NextResponse | null {
   return refuse(status, code, message, { ...own, ...extra })
 }
 
-/** The context of an action or a picker, owned by `userId` by a strict check (never requireProjectAccess). */
+/**
+ * The context of an action or a picker, owned by `userId`: the project at the owner level of
+ * `projectAccess()` (a share never runs a plugin here; Phase 5 sets the level an action needs),
+ * the session's conversation its author's (`ownsRow`).
+ */
 export async function strictContext(raw: unknown, userId: string): Promise<JobContext | NextResponse> {
   if (raw === undefined || raw === null) return { projectId: null, sessionId: null, conversationId: null }
   if (!isObj(raw)) return refuse(400, 'invalid_context', 'context must be an object')
@@ -152,8 +158,8 @@ export async function strictContext(raw: unknown, userId: string): Promise<JobCo
   const notFound = refuse(404, 'not_found', 'Not found')
   let conversationId: string | null = null
   if (projectId) {
-    const project = await prisma.project.findUnique({ where: { id: projectId as string }, select: { userId: true } })
-    if (!project || project.userId !== userId) return notFound
+    const access = await projectAccess({ userId }, projectId as string)
+    if (!access || !meetsLevel(access, 'O')) return notFound
   }
   if (sessionId) {
     if (!projectId) return notFound
@@ -161,7 +167,7 @@ export async function strictContext(raw: unknown, userId: string): Promise<JobCo
       where: { sessionId: sessionId as string },
       select: { id: true, userId: true, projectId: true },
     })
-    if (!conv || conv.userId !== userId || conv.projectId !== projectId) return notFound
+    if (!conv || !ownsRow({ userId }, conv.userId) || conv.projectId !== projectId) return notFound
     conversationId = conv.id
   }
   return { projectId: (projectId as string) ?? null, sessionId: (sessionId as string) ?? null, conversationId }

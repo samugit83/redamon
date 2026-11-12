@@ -14,8 +14,8 @@
  *    guessed nodeId from another project matches nothing.
  */
 import { NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
+import { projectAccess } from '@/lib/authz/projectAccess'
 import { signedInActor } from '@/lib/auditActor'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalKeyHeaders } from '@/lib/agentAuth'
@@ -27,11 +27,11 @@ export interface TriageCaller {
 }
 
 /**
- * Resolve the caller and prove they own the project.
+ * Resolve the caller and prove they may reach the project (`projectAccess()`: today its owner).
  *
- * Returns the resolved tenant, or the NextResponse to send back. A project that
- * does not exist and a project owned by somebody else both return 404, so this
- * cannot be used to enumerate project ids.
+ * Returns the resolved tenant (the project's owner, whose graph holds its nodes), or the
+ * NextResponse to send back. A project that does not exist and a project owned by somebody else
+ * both return 404, so this cannot be used to enumerate project ids.
  */
 export async function requireProjectOwner(
   projectId: string | null | undefined,
@@ -43,20 +43,13 @@ export async function requireProjectOwner(
   const eff = await requireEffectiveUser()
   if (eff instanceof NextResponse) return eff
 
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, userId: true },
-  })
-  if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
   // There is no separate admin bypass to reproduce -- an admin acts on another
   // user's project by simulating them, and getEffectiveUser has already resolved
-  // that, so the strict comparison is the same rule requireProjectAccess applies.
-  if (project.userId !== eff.userId) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
+  // that, so the effective user is the one the policy asks about.
+  const access = await projectAccess(eff, projectId)
+  if (!access) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  return { userId: project.userId, projectId: project.id }
+  return { userId: access.project.userId, projectId: access.project.id }
 }
 
 /**

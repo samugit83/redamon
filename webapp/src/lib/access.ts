@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, EffectiveUser } from './session'
+import { projectAccess } from './authz/projectAccess'
+import { ownsRow, rowOwnerFilter } from './authz/rowOwner'
 
 /**
  * Per-user authorization guards (BOLA remediation).
@@ -18,6 +20,9 @@ import { getEffectiveUser, EffectiveUser } from './session'
  * enumerate other users' project/conversation ids (repo convention).
  *
  * Secret-exposure routes (A2) use requireUserAccess, which answers 403 instead.
+ *
+ * The helpers keep their signatures and answers, and ask the policy (T1): a project through
+ * `projectAccess()`, a per-user row (a preset, a conversation) through `ownsRow()`.
  */
 
 let ignoredWarned = false
@@ -54,19 +59,19 @@ export async function requireEffectiveUser(): Promise<EffectiveUser | NextRespon
 
 /** Owner check answering 403 (not the anti-enumeration 404) unless eff owns ownerId. */
 export function assertOwnerStrict(eff: EffectiveUser, ownerId: string): NextResponse | null {
-  if (eff.userId === ownerId) return null
+  if (ownsRow(eff, ownerId)) return null
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 }
 
 /** Owner check for a per-user row: null when eff owns it, else 404. */
 export function assertOwner(eff: EffectiveUser, ownerId: string): NextResponse | null {
-  if (eff.userId === ownerId) return null
+  if (ownsRow(eff, ownerId)) return null
   return ownershipDenied()
 }
 
 /** Prisma where-fragment scoping a list query to the effective user. */
 export function ownerScope(eff: EffectiveUser): { userId: string } {
-  return { userId: eff.userId }
+  return rowOwnerFilter(eff)
 }
 
 /**
@@ -84,8 +89,8 @@ export async function guardProject(projectId: string): Promise<NextResponse | nu
 }
 
 /**
- * Load a Project and verify the effective user owns it: 404 when the project does not
- * exist or is another user's. On success returns the project's id + owner.
+ * Verify the effective user may reach a Project (`projectAccess()`: today its owner): 404 when
+ * the project does not exist or is another user's. On success returns the project's id + owner.
  */
 export async function requireProjectAccess(
   eff: EffectiveUser,
@@ -94,15 +99,9 @@ export async function requireProjectAccess(
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   }
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, userId: true },
-  })
-  if (!project) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
-  if (project.userId !== eff.userId) return ownershipDenied()
-  return { project }
+  const access = await projectAccess(eff, projectId)
+  if (!access) return ownershipDenied()
+  return { project: { id: access.project.id, userId: access.project.userId } }
 }
 
 /**
@@ -135,7 +134,7 @@ export async function requireConversationAccess(
   if (!conversation) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  if (conversation.userId !== eff.userId) return ownershipDenied()
+  if (!ownsRow(eff, conversation.userId)) return ownershipDenied()
   return { conversation }
 }
 
@@ -154,6 +153,6 @@ export async function requireConversationAccessBySession(
   if (!conversation) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  if (conversation.userId !== eff.userId) return ownershipDenied()
+  if (!ownsRow(eff, conversation.userId)) return ownershipDenied()
   return { conversation }
 }
