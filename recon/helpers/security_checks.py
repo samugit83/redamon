@@ -3969,10 +3969,21 @@ def _ip_mode_live_ports(recon_data: Dict[str, Any]) -> Optional[Dict[str, frozen
 _EVIDENCE_COVERAGE = frozenset({"port_scan", "naabu", "masscan", "masscan_scan", "http_probe"})
 _PORT_SCAN_COVERAGE = _EVIDENCE_COVERAGE - {"http_probe"}
 
+#: Gap sources that record a deliberate refusal, never a cut of the evidence.
+#: roe_excluded (target_admission.COVERAGE_SOURCE): the RoE gate kept a target
+#: from naabu or masscan, which still scanned every target they were allowed;
+#: a name refused for want of an address is cut for every source by that same
+#: note. httpx_jarm / httpx_favicon (http_probe._note_fingerprints_not_collected):
+#: the RoE ceiling turned off two fingerprints, every URL was still probed.
+#: An allowlist on purpose: any other gap under an evidence scanner, a new one
+#: included, counts as a cut, since keeping findings unproven is the safe side.
+_REFUSAL_GAP_SOURCES = frozenset({"roe_excluded", "httpx_jarm", "httpx_favicon"})
+
 
 def _evidence_cuts(recon_data: Dict[str, Any]) -> Set[str]:
     """The evidence sources this run cut short or lost, by coverage name;
-    "coverage" when the record itself is unknown, which counts as all of them."""
+    "coverage" when the record itself is unknown, which counts as all of them.
+    A gap in _REFUSAL_GAP_SOURCES is no cut."""
     errors = (recon_data.get("metadata") or {}).get("phase_errors") or {}
     cuts = {name for name in errors if name in _EVIDENCE_COVERAGE}
     # A naabu that fails outright leaves no section and no note, and httpx may
@@ -3986,7 +3997,8 @@ def _evidence_cuts(recon_data: Dict[str, Any]) -> Set[str]:
         return cuts | {"coverage"}
     cuts |= set(report.degraded_sources) & _EVIDENCE_COVERAGE
     for gap in report.gaps:
-        cuts |= {gap.get("source"), gap.get("module")} & _EVIDENCE_COVERAGE
+        if gap.get("source") not in _REFUSAL_GAP_SOURCES:
+            cuts |= {gap.get("source"), gap.get("module")} & _EVIDENCE_COVERAGE
     return cuts
 
 
