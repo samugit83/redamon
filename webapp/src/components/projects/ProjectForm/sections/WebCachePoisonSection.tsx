@@ -210,7 +210,7 @@ export function WebCachePoisonSection({ data, updateField, onRun }: WebCachePois
                   <span className={styles.fieldHint}>How many URLs the native confirmation tests in parallel (bounds concurrent in-flight requests). Higher = faster; lower = stealthier. 1 = fully sequential.</span>
                 </div>
                 <div className={styles.fieldGroup}>
-                  <label className={styles.fieldLabel}>Max requests/sec per host (0 = unlimited)</label>
+                  <label className={styles.fieldLabel}>Max requests/sec, whole WCVS sweep (0 = unlimited)</label>
                   <input
                     type="number"
                     className="textInput"
@@ -220,7 +220,7 @@ export function WebCachePoisonSection({ data, updateField, onRun }: WebCachePois
                     max={1000}
                     step={0.5}
                   />
-                  <span className={styles.fieldHint}>Rate cap passed to WCVS. Use a low value to stay under WAF thresholds.</span>
+                  <span className={styles.fieldHint}>One rate for the whole WCVS sweep, shared by every thread and URL, not per host. Use a low value to stay under WAF thresholds.</span>
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Custom cache header (optional)</label>

@@ -1084,7 +1084,7 @@ OpenAPI source URLs and the project Authenticated Session profile are project-sp
 - webCachePoisonTimeoutPerReq: integer - Native confirmation per-request timeout in seconds. Default 10.
 - webCachePoisonConcurrency: integer - WCVS threads for the breadth sweep. Higher = faster, louder. Default 10.
 - webCachePoisonConfirmWorkers: integer - Native confirmation parallel workers (how many URLs are tested concurrently; bounds in-flight requests). 1 = fully sequential/stealthiest, up to 16. Default 6.
-- webCachePoisonMaxRpsPerHost: number - Requests/sec cap per host (0 = unlimited). Default 0.
+- webCachePoisonMaxRpsPerHost: number - Requests/sec cap for the whole WCVS sweep (WCVS -rr): one rate shared by every thread and URL, NOT per host despite the name (0 = unlimited). Default 0.
 - webCachePoisonMinConfidence: number - Only findings scoring at or above this (0-1) become Vulnerability nodes. 0.8 keeps Confirmed + Strong. Default 0.8.
 - webCachePoisonAllowFrameworkPacks: boolean - Fire Next.js/Nuxt/Remix-specific vectors only when the tech fingerprint matches. Default true.
 - webCachePoisonAllowDeception: boolean - Web cache deception (path-confusion .css tricks). Default true.
