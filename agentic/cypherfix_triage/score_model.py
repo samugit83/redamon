@@ -53,7 +53,7 @@ from urllib.parse import urlparse
 
 #: Bump on ANY change to a table, a threshold or a rule below. Stored with each
 #: run so two runs are only comparable when this matches.
-SCORE_MODEL_VERSION = "v3.11.0"
+SCORE_MODEL_VERSION = "v3.12.0"
 
 
 # ===========================================================================
@@ -785,9 +785,13 @@ class ProjectFacts:
     #: IP addresses no current DNS name of the target points at (never an
     #: IP-mode target, which the operator listed by address)
     no_dns_name_hosts: set = field(default_factory=set)
-    #: hosts the run skipped (a tripped breaker), lower-case names and
-    #: addresses: not re-checked, so their reachability is unknown
+    #: hosts the run skipped whole (a tripped breaker's bare-host key),
+    #: lower-case names and addresses: not re-checked, so the reachability of
+    #: every finding on them is unknown
     skipped_hosts: set = field(default_factory=set)
+    #: (host, port number) the run skipped (a `host:port` key): unknown for the
+    #: findings on that port only
+    skipped_ports: set = field(default_factory=set)
     #: DNS name -> the attribution tags of the IPs it currently resolves to,
     #: '' for an IP no run has attributed yet
     name_ownership: dict = field(default_factory=dict)
@@ -1618,8 +1622,7 @@ _ATTRIBUTED_TAGS = frozenset({"dedicated", "unknown"})
 
 def _gate_name(host: str) -> str:
     """The host's name or address, lower-case, with no scheme, port or IPv6
-    brackets: how the coverage record spells a skipped host
-    (circuit_breaker.hostname_of) and how the IP and DNS facts are keyed."""
+    brackets: how the skipped-host facts and the IP and DNS facts are keyed."""
     text = str(host or "").strip()
     if "://" in text:
         try:
@@ -1633,6 +1636,41 @@ def _gate_name(host: str) -> str:
     return text.lower()
 
 
+#: circuit_breaker._DEFAULT_PORTS (recon image, not importable here): the port
+#: a skipped key gives a URL that names none.
+_SCHEME_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443, "ftp": 21}
+
+
+def _gate_port(finding: dict, host: str) -> int:
+    """The port a finding sits on, as circuit_breaker.host_key keys it: the
+    row's target_port, else the port its host spelling names, a URL's scheme
+    default included. 0 for a finding on the host itself."""
+    port = as_int(finding.get("target_port"), 0)
+    if port > 0:
+        return port
+    text = str(host or "").strip()
+    if "://" in text:
+        try:
+            parts = urlparse(text)
+            return parts.port or _SCHEME_PORTS.get(parts.scheme.lower(), 0)
+        except ValueError:
+            return 0
+    if text.startswith("["):
+        rest = text.partition("]")[2]
+        return max(0, as_int(rest[1:], 0)) if rest.startswith(":") else 0
+    if text.count(":") == 1:
+        return max(0, as_int(text.partition(":")[2], 0))
+    return 0
+
+
+def _skipped(facts: ProjectFacts, name: str, port: int) -> bool:
+    """Did the run skip what this finding sits on? A bare-host key covers the
+    whole host, a `host:port` key only that port: one dead port must not turn
+    every finding on its address unknown."""
+    return bool(name) and (name in facts.skipped_hosts
+                           or (port > 0 and (name, port) in facts.skipped_ports))
+
+
 def _behind_a_login(facts: ProjectFacts, host: str) -> bool:
     """The matched URL answered, with 401/403: `_reach`'s login rule."""
     return bool(host) and host in facts.live_hosts and host in facts.auth_required_hosts
@@ -1642,7 +1680,7 @@ def _reachable_now(finding: dict, facts: ProjectFacts, cvss: Cvss, host: str,
                    name: str) -> Optional[bool]:
     if host and host in facts.gone_hosts:
         return False
-    if name and name in facts.skipped_hosts:
+    if _skipped(facts, name, _gate_port(finding, host)):
         return None
     if _lower(finding.get("source")) in PASSIVE_CVE_SOURCES:
         # A banner is as current as the port scan that found its port again,

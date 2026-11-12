@@ -161,13 +161,16 @@ class TestGateFactQueries(unittest.TestCase):
     def _query(name):
         return next(q for q in PROJECT_FACT_QUERIES if q["name"] == name)["query"]
 
-    def test_skipped_hosts_are_read_as_the_gone_query_reads_them(self):
-        """The same keys, normalised the same way: a host the gone query spares
-        because the run skipped it is the host the gate calls unknown."""
+    def test_skipped_hosts_keep_the_port_the_gone_query_strips(self):
+        """The same keys of the same tenant's Domains, but whole: the gate
+        leaves only a skipped port's findings unknown, while the gone query
+        spares the host on any skipped key."""
         skipped, gone = self._query("skipped_hosts"), TestGoneHostsQuery.QUERY
         self.assertIn("(d:Domain {user_id: $userId, project_id: $projectId})", skipped)
-        normalise = gone[gone.index("WITH reduce"):gone.index("AS skipped") + len("AS skipped")]
-        self.assertIn(normalise, skipped)
+        read_keys = gone[gone.index("WITH reduce"):gone.index("AS keys") + len("AS keys")]
+        self.assertIn(read_keys, skipped)
+        self.assertNotIn("split(k, ':')", skipped)
+        self.assertNotIn("AS skipped", skipped)
 
     def test_name_ownership_reads_forward_dns_of_this_tenant_only(self):
         query = self._query("name_ownership")

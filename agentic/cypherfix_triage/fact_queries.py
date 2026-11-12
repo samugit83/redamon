@@ -40,11 +40,16 @@ from .score_model import (AGENT_CONFIDENCE_DEFAULT, PROOF_MIN_AGENT_CONFIDENCE,
 # ===========================================================================
 # Project fact sets
 # ===========================================================================
-#: The hosts a run skipped (a tripped breaker: the coverage record's `host:port`
-#: keys, normalised as circuit_breaker.hostname_of does for the prune), bound
-#: to `skipped`. Shared by the two queries that read them.
-_SKIPPED_HOSTS = """OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
-WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys
+#: What a run skipped (a tripped breaker), as the coverage records of every org
+#: Domain of the tenant store it: circuit_breaker.host_key's `host:port`,
+#: `[v6]:port`, or a bare host. Bound to `keys`.
+_SKIPPED_KEYS = """OPTIONAL MATCH (d:Domain {user_id: $userId, project_id: $projectId})
+WITH reduce(acc = [], hs IN collect(d.recon_skipped_hosts) | acc + coalesce(hs, [])) AS keys"""
+
+#: The hosts with ANY skipped key, port stripped as circuit_breaker.hostname_of
+#: strips it for the prune, bound to `skipped`. Only the gone query reads this:
+#: the reachable-now gate reads the keys whole (`_skipped_target`).
+_SKIPPED_HOSTS = _SKIPPED_KEYS + """
 WITH [k IN [x IN keys | toLower(trim(toString(x)))] |
       CASE WHEN k STARTS WITH '[' THEN substring(split(k, ']')[0], 1)
            WHEN size(split(k, ':')) = 2 THEN split(k, ':')[0]
@@ -236,7 +241,9 @@ RETURN collect(DISTINCT b.url) AS hosts
         # passive sources (Censys, FOFA, OTX, ZoomEye) write the same edge with
         # a source, and a PTR record or an old sighting does not say the host
         # resolves today. A host the run
-        # skipped was not re-checked, so its absence proves nothing.
+        # skipped was not re-checked, so its absence proves nothing; one
+        # skipped port is enough, since gone takes every finding of the host
+        # off the board.
         "query": _SKIPPED_HOSTS + """
 MATCH (n {user_id: $userId, project_id: $projectId})
 WHERE (n:Subdomain OR n:IP)
@@ -260,9 +267,11 @@ RETURN collect(DISTINCT coalesce(n.name, n.address)) AS hosts
     },
     {
         "name": "skipped_hosts",
-        "description": "hosts the run could not re-check (a tripped breaker)",
-        "query": _SKIPPED_HOSTS + """
-RETURN skipped AS hosts
+        "description": "hosts and ports the run could not re-check (a tripped breaker)",
+        # The port stays: a skipped `host:port` leaves only that port's
+        # findings unknown (`build_project_facts`).
+        "query": _SKIPPED_KEYS + """
+RETURN keys AS hosts
 """,
     },
     {
@@ -643,6 +652,27 @@ def _int(value) -> int:
         return 0
 
 
+def _skipped_target(key: str) -> tuple[str, int]:
+    """One coverage-record key as (host, port), port 0 for a bare host.
+
+    The host is spelled as score_model._gate_name spells a finding's:
+    lower-case, IPv6 brackets stripped. A bare IPv6 literal stays whole. A key
+    whose port does not parse reads as a bare host: unknown on the whole host
+    is the safe reading of a skip we cannot place, and it is what every key
+    meant before the gate became port-granular.
+    """
+    text = str(key or "").strip().lower()
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif text.count(":") == 1:
+        host, _, port = text.partition(":")
+    else:
+        host, port = text, ""
+    number = int(port) if port.isascii() and port.isdigit() else 0
+    return host.strip(), number if 0 < number < 65536 else 0
+
+
 def build_project_facts(raw: dict) -> ProjectFacts:
     """Turn the PROJECT_FACT_QUERIES rows into the model's fact sets.
 
@@ -668,7 +698,12 @@ def build_project_facts(raw: dict) -> ProjectFacts:
     for row in raw.get("gone_hosts") or []:
         facts.gone_hosts |= _clean(row.get("hosts"))
     for row in raw.get("skipped_hosts") or []:
-        facts.skipped_hosts |= {h.lower() for h in _clean(row.get("hosts"))}
+        for key in _clean(row.get("hosts")):
+            host, port = _skipped_target(key)
+            if host and port:
+                facts.skipped_ports.add((host, port))
+            elif host:
+                facts.skipped_hosts.add(host)
     for row in raw.get("name_ownership") or []:
         name = str(row.get("name") or "").strip().lower()
         if name:
