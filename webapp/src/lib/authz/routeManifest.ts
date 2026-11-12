@@ -45,7 +45,11 @@ export const GUARD_CLASSES = [
    * (authz/adminPermission.ts).
    */
   'admin-jwt',
-  /** Admin by the role read from the database (`requirePluginAdmin`, `lifecyclePost`, `lifecycleGet`). */
+  /**
+   * Whoever holds platform:plugins, asked of the account read fresh from the database (`requirePluginAdmin`,
+   * `lifecyclePost`, `lifecycleGet`): every admin with RBAC_PERMISSIONS_ENABLED off; with it on an admin
+   * profile or a member override that holds it.
+   */
   'admin-db',
   /** Scoped to the effective user's own rows (`requireEffectiveUser`, `ownerScope`), no project check. */
   'effective-user',
@@ -229,7 +233,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/js-recon/trufflehog/available', guard: 'session', methods: ['GET'] },
   { path: '/api/mcp-server', guard: 'public', methods: ['GET', 'POST', 'DELETE'] },
   { path: '/api/mcp/manifest', guard: 'effective-user', methods: ['GET'] },
-  { path: '/api/mcp/reload', guard: 'admin-jwt', methods: ['POST'] },
+  { path: '/api/mcp/reload', guard: 'admin-jwt', methods: ['POST'], note: 'platform:agent_mcp of the signed-in person (adminPermission.ts); requireAdmin, the administrator account, only with RBAC_PERMISSIONS_ENABLED off (today\'s answers): with it on requireSession, so a member holding the permission through an override reloads too, as requirePluginAdmin lets one manage plugins' },
   { path: '/api/mcp/test', guard: 'user', methods: ['POST'] },
   { path: '/api/models', guard: 'effective-user', methods: ['POST'] },
   { path: '/api/mute-rule-presets', guard: 'effective-user', methods: ['GET', 'POST'] },

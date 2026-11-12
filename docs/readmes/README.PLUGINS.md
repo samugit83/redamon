@@ -725,13 +725,15 @@ and a page under `webapp/src/app/plugins/`.
   exist on every install. Until an admin installs a plugin, the product behaves exactly as
   without one; a runner that is down is a state the page shows, not a reason to hide it.
 - **Who can do what.** Installing, updating, enabling, disabling and uninstalling are
-  **instance-wide, admin-only** actions, because they put code on the host. The lifecycle
-  routes read the admin role from the database on every request
-  ([lifecycleRoutes.ts](../../webapp/src/lib/plugins/lifecycleRoutes.ts)), because the role
-  inside a login token outlives a demotion by up to seven days. An admin acting as another
-  user keeps these rights and is recorded as the actor.
-  Every signed-in user sees the contributions of enabled plugins; only admins see the
-  management controls.
+  **instance-wide** actions of whoever holds `platform:plugins`, because they put code on the
+  host: every admin while `RBAC_PERMISSIONS_ENABLED` is off; with it on, an admin whose profile
+  holds it or a member given it as an override. The lifecycle routes ask it of the account read
+  from the database on every request
+  ([lifecycleRoutes.ts](../../webapp/src/lib/plugins/lifecycleRoutes.ts)), because a login token
+  outlives a demotion by up to seven days. An admin acting as another user keeps these rights
+  and is recorded as the actor.
+  Every signed-in user sees the contributions of enabled plugins; only those who hold
+  `platform:plugins` see the management controls.
 - **Audit.** Every lifecycle operation, every override proposal, approval and reset, and
   every permission grant is recorded with the existing
   [`writeAudit`](../../webapp/src/lib/audit.ts#L17) into the `AuditLog` table.

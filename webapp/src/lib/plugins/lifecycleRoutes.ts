@@ -8,11 +8,13 @@ import { PluginConflictError } from './registry'
 import { crossOriginResponse, sameOrigin } from './sameOrigin'
 
 /**
- * The guard of every plugin lifecycle route. These routes put code on the host, so the
- * admin role is read from the database on each request: the role inside the login JWT
- * lasts seven days after a demotion (RV-11). The login session is the real admin's even
- * while they act as another user (`getSession` ignores the act-as cookie), so acting as a
- * standard user neither removes nor lends these rights, and the admin is the actor.
+ * The guard of every plugin lifecycle route: platform:plugins (every admin with
+ * RBAC_PERMISSIONS_ENABLED off; with it on an admin profile or a member override holding it).
+ * These routes put code on the host, so the account is read from the database on each request:
+ * the role inside the login JWT lasts seven days after a demotion (RV-11). The login session is
+ * the real person's even while they act as another user (`getSession` ignores the act-as cookie),
+ * so acting as a standard user neither removes nor lends these rights, and the real person is the
+ * actor.
  */
 const NO_STORE = { 'Cache-Control': 'no-store' }
 

@@ -419,9 +419,11 @@ between a compromised publisher and code on the host is the catalog signature
 explicit `PLUGINS_EXTRA_TRUSTED_KEYS` opt-in), the archive's SHA-256, a catalog
 `serial` that may never go backwards, and an unpack that rejects absolute paths,
 `..`, links and oversize archives. Installing, updating, enabling, rolling back
-and uninstalling are instance-wide, admin-only actions, and the admin role is
-read from the database on every request rather than from the login token, which
-can outlive a demotion by up to seven days.
+and uninstalling are instance-wide actions of whoever holds `platform:plugins`
+(every admin while `RBAC_PERMISSIONS_ENABLED` is off; with it on, an admin profile
+or a member override that holds it), and the account is read from the database on
+every request rather than from the login token, which can outlive a demotion by up
+to seven days.
 
 **Plugin code is treated as hostile once it runs.** Containment does not depend
 on the plugin using the SDK:
@@ -648,7 +650,7 @@ Webapp server-side routes under `webapp/src/app/api/` (all behind `middleware.ts
 | Triage and Mute Rules | `/api/triage/{findings,verdict,mute,unmute,muted,preflight}`, `/api/projects/[id]/node-filters/{,preview,apply,disarm,exemptions,status,runs/[runId]}` | JWT; strict owner check (`requireProjectOwner`: 404), because these decide what the operator and the agent can see; every mutation with a body is JSON-only (415); Mute Rules changes and unmutes are audited with the real actor (a person's mute and a UI verdict are not) |
 | User presets | `/api/presets/*` (recon), `/api/mute-rule-presets/*` (Mute Rules) | JWT; scoped to the effective user; another user's preset answers 404 |
 | Internal check-ins | `/api/internal/triage-runs/*`, `/api/internal/node-filter-runs/[runId]{,/heartbeat,/finish}` | `X-Internal-Key` + route allowlist; each route re-checks `isInternalRequest`, and the run id, never the body, decides the project |
-| Plugins | Lifecycle: `/api/plugins`, `/api/plugins/[pluginId]/{install,update,enable,disable,rollback,uninstall,logs,export}`, `/api/plugins/offline-install`. Use: `/api/plugins/{status,contributions,llm-features}`, `/api/plugins/[pluginId]/actions/[actionId]`, `/api/plugins/jobs/[jobId]{,/cancel}`, `/api/plugins/overrides/{versions,summary,reset}`, `/api/plugins/overrides/change-sets/[id]{,/approve,/reject}` | JWT; same-origin JSON only (`PLUGINS_ALLOWED_ORIGIN` behind a reverse proxy). Lifecycle routes are instance-wide and admin-only, with the role read from the database on every request; actions, jobs and override decisions are scoped to the acting user. Lifecycle operations and override decisions are audited |
+| Plugins | Lifecycle: `/api/plugins`, `/api/plugins/[pluginId]/{install,update,enable,disable,rollback,uninstall,logs,export}`, `/api/plugins/offline-install`. Use: `/api/plugins/{status,contributions,llm-features}`, `/api/plugins/[pluginId]/actions/[actionId]`, `/api/plugins/jobs/[jobId]{,/cancel}`, `/api/plugins/overrides/{versions,summary,reset}`, `/api/plugins/overrides/change-sets/[id]{,/approve,/reject}` | JWT; same-origin JSON only (`PLUGINS_ALLOWED_ORIGIN` behind a reverse proxy). Lifecycle routes are instance-wide and need `platform:plugins` (every admin while `RBAC_PERMISSIONS_ENABLED` is off), asked of the account read from the database on every request; actions, jobs and override decisions are scoped to the acting user. Lifecycle operations and override decisions are audited |
 | Plugin Gateway (plugin code) | `/api/plugin-gateway/v1/{session/read,data/{get,put,query,count,delete},llm/invoke,override/{get,propose,withdraw},jobs/{progress,complete}}` | **No session cookie** (middleware token-auth prefix): a call token only, re-authorized on every call; JSON only; body sizes bounded. Reached by plugin workers through the proxy; **nginx answers `404` in the public posture** |
 | Plugin runner callback | `/api/plugin-runner/v1/run-list` | **No session cookie**: `PLUGIN_RUNNER_KEY`, fail-closed; **nginx `404` in the public posture** |
 | Plugin reconcile | `POST /api/internal/plugins/reconcile` | `X-Internal-Key` + route allowlist, re-checked with `isInternalRequest`; called by the recon orchestrator every `PLUGIN_RECONCILE_INTERVAL` (300 s); **nginx `404` in the public posture** |

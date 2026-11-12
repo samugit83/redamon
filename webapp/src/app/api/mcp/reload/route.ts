@@ -1,5 +1,5 @@
 /**
- * POST /api/mcp/reload - an administrator holding platform:agent_mcp asks the agent to reload its MCP servers.
+ * POST /api/mcp/reload - whoever holds platform:agent_mcp asks the agent to reload its MCP servers.
  *
  * The agent's MCP toolset is shared by every user, so this is an instance action
  * (HD-03). The request body is never forwarded: the agent reloads from the settings
@@ -9,16 +9,20 @@
  */
 import { NextResponse } from 'next/server'
 import { internalKeyHeaders } from '@/lib/agentAuth'
-import { requireAdmin } from '@/lib/session'
+import { requireAdmin, requireSession } from '@/lib/session'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { requireSessionPermission } from '@/lib/authz/adminPermission'
+import { rbacFlags } from '@/lib/authz/flags'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://agent:8080'
 
 export const POST = withRouteErrors('Could not reload the MCP servers', async () => {
-  const admin = await requireAdmin()
-  if (admin instanceof NextResponse) return admin
-  const denied = await requireSessionPermission(admin, 'platform:agent_mcp')
+  // The permission decides, as for every platform tool (requirePluginAdmin): with RBAC_PERMISSIONS_ENABLED
+  // on a member holding it through an override reloads too. Off, the administrator account answers, as
+  // before (every admin holds it then, and a member gets today's 403).
+  const session = rbacFlags().permissions ? await requireSession() : await requireAdmin()
+  if (session instanceof NextResponse) return session
+  const denied = await requireSessionPermission(session, 'platform:agent_mcp')
   if (denied) return denied
   try {
     const upstream = await fetch(`${AGENT_API_URL}/mcp/reload`, {
