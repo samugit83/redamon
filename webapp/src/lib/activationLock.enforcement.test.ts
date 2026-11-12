@@ -30,7 +30,12 @@ vi.mock('@/lib/access', () => ({
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),
   requireEffectiveUser: async () => ({ userId: 'owner' }),
 }))
-vi.mock('@/lib/session', () => ({ getEffectiveUser: async () => ({ userId: 'owner' }) }))
+vi.mock('@/lib/session', () => ({
+  getEffectiveUser: async () => ({ userId: 'owner' }),
+  getAuthzIdentity: async () => ({ session: { userId: 'owner', role: 'standard' }, principal: { id: 'owner', role: 'standard' }, actingAs: null }),
+}))
+// The agent ticket's approval permissions (step 3.9b) are agentCap.test.ts's; here only the lock matters.
+vi.mock('@/lib/authz/agentCap', () => ({ agentTicketCap: async () => [] }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))
 // "is something already scanning?" is covered in graphWriters.test.ts and
 // startFullScan.test.ts; here the graph is free so only the LOCK can refuse.

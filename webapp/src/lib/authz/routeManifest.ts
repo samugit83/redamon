@@ -189,6 +189,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/gvm/[projectId]/stop', guard: 'project', methods: ['POST'] },
   { path: '/api/gvm/available', guard: 'session', methods: ['GET'] },
   { path: '/api/health', guard: 'public', methods: ['GET'] },
+  { path: '/api/internal/agent/decisions', guard: 'internal', methods: ['POST'] },
   { path: '/api/internal/auth-profile/[projectId]/observe', guard: 'internal', methods: ['POST'] },
   { path: '/api/internal/capture-config', guard: 'internal', methods: ['GET'] },
   { path: '/api/internal/codefix-sandbox/[jobId]/[action]', guard: 'internal', methods: ['POST'] },

@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 const h = vi.hoisted(() => ({
   getSession: vi.fn(),
   getEffectiveUser: vi.fn(),
+  getAuthzIdentity: vi.fn(),
   requireAdmin: vi.fn(),
   requireSession: vi.fn(),
   loadPrincipal: vi.fn(),
@@ -25,6 +26,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/session', () => ({
   getSession: (...a: unknown[]) => h.getSession(...a),
   getEffectiveUser: (...a: unknown[]) => h.getEffectiveUser(...a),
+  getAuthzIdentity: (...a: unknown[]) => h.getAuthzIdentity(...a),
   requireAdmin: (...a: unknown[]) => h.requireAdmin(...a),
   requireSession: (...a: unknown[]) => h.requireSession(...a),
   isInternalRequest: () => false,
@@ -73,6 +75,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.getSession.mockResolvedValue(null)
   h.getEffectiveUser.mockResolvedValue(null)
+  h.getAuthzIdentity.mockResolvedValue(null)
   h.requireAdmin.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
   h.requireSession.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
   h.loadPrincipal.mockResolvedValue(null)
@@ -114,9 +117,10 @@ describe('critical paths read the account fresh', () => {
     expect(h.requireAdmin).toHaveBeenCalledWith(FRESH)
   })
 
+  // Step 3.9b: the route reads both people at once (getAuthzIdentity), for the ticket's `cap`.
   test('minting a WebSocket ticket', async () => {
     expect((await mintWsTicket(req('POST', { projectId: 'p', sessionId: 's' }))).status).toBe(401)
-    expect(h.getEffectiveUser).toHaveBeenCalledWith(FRESH)
+    expect(h.getAuthzIdentity).toHaveBeenCalledWith(FRESH)
   })
 
   // Step 2.2 review: a decision changes another account's grants and may close its terminals.

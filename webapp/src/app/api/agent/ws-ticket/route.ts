@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getEffectiveUser } from '@/lib/session'
+import { getAuthzIdentity } from '@/lib/session'
 import { requireProjectAccess } from '@/lib/access'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -8,6 +8,7 @@ import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
+import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 
 const TERMINAL_REFUSED =
@@ -16,7 +17,7 @@ const TERMINAL_REFUSED =
 // POST /api/agent/ws-ticket  { projectId, sessionId, socket }
 //
 // STRIDE S6: mints a short-lived ticket the browser presents to one agent socket.
-// The ticket binds the EFFECTIVE user (getEffectiveUser) - a standard user's own id,
+// The ticket binds the EFFECTIVE user (getAuthzIdentity) - a standard user's own id,
 // or, when an admin is simulating user X, X - never a body-supplied or x-user-id
 // value. So the agent acts as the impersonated user (fetches X's keys, tags the
 // graph as X), and an admin can only mint a ticket for a project the simulated
@@ -27,11 +28,16 @@ const TERMINAL_REFUSED =
 // the terminal (HD-04): a root shell in the one sandbox every project shares. The
 // REAL signed-in account must hold it, so an admin's act-as never borrows a
 // member's grant and a member never gets it by being the effective user.
+//
+// An `agent` ticket also carries `cap` (step 3.9b): which of the approval permissions
+// the agent enforces the person holds on the project, under act-as only those both the
+// admin and the account acted as hold (authz/agentCap.ts).
 export const POST = withRouteErrors('Could not issue a ticket for the agent connection', async (request: NextRequest) => {
-  const eff = await getEffectiveUser({ fresh: true })
-  if (!eff) {
+  const identity = await getAuthzIdentity({ fresh: true })
+  if (!identity) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+  const eff = { userId: (identity.actingAs ?? identity.principal).id }
 
   const body = await request.json().catch(() => ({}))
   const projectId = String(body.projectId ?? body.project_id ?? '')
@@ -75,7 +81,7 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
     }
     terminalVia = grant.via
   } else {
-    actor = await realActorOf()
+    actor = identity.principal.id
   }
 
   // Scan Timeline 4A.3: the ticket is the chokepoint for starting an agent
@@ -85,9 +91,15 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   if (activating) return activating
 
   // Null when AGENT_WS_TICKET_SECRET is unset: the agent then refuses the socket.
-  const ticket = actor && actor !== eff.userId
-    ? await createWsTicket(eff.userId, projectId, sessionId, socket, actor)
-    : await createWsTicket(eff.userId, projectId, sessionId, socket)
+  const realActor = actor && actor !== eff.userId ? actor : undefined
+  let ticket: string | null
+  if (socket === 'agent') {
+    ticket = await createWsTicket(eff.userId, projectId, sessionId, socket, realActor, await agentTicketCap(identity, projectId))
+  } else {
+    ticket = realActor
+      ? await createWsTicket(eff.userId, projectId, sessionId, socket, realActor)
+      : await createWsTicket(eff.userId, projectId, sessionId, socket)
+  }
 
   if (ticket && socket === 'kali-terminal' && actor) {
     await writeAudit({
@@ -101,12 +113,3 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   }
   return NextResponse.json({ ticket })
 })
-
-/** The signed-in person, which differs from the effective user while an admin simulates. */
-async function realActorOf(): Promise<string | undefined> {
-  try {
-    return (await signedInActor())?.id
-  } catch {
-    return undefined
-  }
-}

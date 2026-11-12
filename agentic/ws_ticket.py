@@ -11,7 +11,8 @@ the agent verifies it here before registering the session.
 Ticket format: a standard compact HS256 JWS produced by the webapp via `jose`
 (`webapp/src/lib/auth.ts` -> createWsTicket), claims `{ sub, pid, sid, aud, iat, exp }`,
 plus an optional `act`: the person actually signed in when an admin simulates
-`sub`, which a triage run records as its real actor.
+`sub`, which a triage run records as its real actor, and on an `agent` ticket `cap`:
+the agent permissions that person holds on the project (ticket_cap).
 
 `aud` names the one socket the ticket opens (WS_AUDIENCES). Each socket passes its
 own name as `expected_aud` and refuses a ticket without `aud` or with another
@@ -44,6 +45,28 @@ logger = logging.getLogger(__name__)
 #: The sockets a ticket can name in `aud`, one per WebSocket endpoint. The webapp's
 #: WS_SOCKETS (webapp/src/lib/wsTicket.ts) lists the same four.
 WS_AUDIENCES = ("agent", "kali-terminal", "cypherfix-triage", "cypherfix-codefix")
+
+#: The agent permissions an `agent` ticket's `cap` claim can carry: the ones the agent
+#: itself enforces (step 3.9b). The webapp's AGENT_TICKET_CAPS
+#: (webapp/src/lib/authz/agentCap.ts) lists the same four.
+AGENT_CAPS = ("agent:approve_phase", "agent:approve_dangerous", "agent:fireteam", "agent:kali_exec")
+
+
+def ticket_cap(claims: dict) -> Optional[frozenset]:
+    """The agent permissions the ticket's person holds on its project (the `cap` claim).
+
+    None when the ticket has no `cap`: a webapp from before step 3.9b minted it (tickets
+    live 60 s across an update), and the agent behaves as before. The webapp signed the
+    claim, so a `cap` that is not a list is a bug there: it holds nothing (fail closed).
+    Names outside AGENT_CAPS are dropped.
+    """
+    if "cap" not in claims:
+        return None
+    cap = claims["cap"]
+    if not isinstance(cap, list):
+        logger.warning("[rbac] ticket cap malformed: the connection holds no agent permission")
+        return frozenset()
+    return frozenset(c for c in cap if isinstance(c, str) and c in AGENT_CAPS)
 
 
 def ticket_secret() -> str:

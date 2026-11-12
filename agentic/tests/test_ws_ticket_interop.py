@@ -7,7 +7,8 @@ silently fail S6 open in production.
 
 Runs the real `jose` SignJWT inside the webapp container, with the claim set
 `createWsTicket` (webapp/src/lib/auth.ts) writes, then verifies the exact token
-string here. `auth.wsTicket.test.ts` pins that claim set on the TypeScript side. SKIPs cleanly if the webapp container / docker is unavailable.
+string here, and the `cap` claim of an `agent` ticket (step 3.9b) reads back as the
+permissions it lists. `auth.wsTicket.test.ts` pins that claim set on the TypeScript side. SKIPs cleanly if the webapp container / docker is unavailable.
 
 Run: python3 agentic/tests/test_ws_ticket_interop.py
 """
@@ -20,23 +21,29 @@ _AGENTIC_DIR = str(Path(__file__).resolve().parents[1])
 if _AGENTIC_DIR not in sys.path:
     sys.path.insert(0, _AGENTIC_DIR)
 
-from ws_ticket import verify_ws_ticket  # noqa: E402
+from ws_ticket import ticket_cap, verify_ws_ticket  # noqa: E402
 
 SECRET = "interop-secret-0123456789abcdef"
 
-_NODE_MINT = (
-    'const {SignJWT}=require("jose");'
-    '(async()=>{const k=new TextEncoder().encode(process.argv[1]);'
-    'const t=await new SignJWT({sub:"u1",pid:"p1",sid:"s1",aud:"kali-terminal",act:"a1"})'
-    '.setProtectedHeader({alg:"HS256"}).setIssuedAt().setExpirationTime("60s").sign(k);'
-    'process.stdout.write(t);})();'
-)
+_TERMINAL_CLAIMS = '{sub:"u1",pid:"p1",sid:"s1",aud:"kali-terminal",act:"a1"}'
+# An `agent` ticket also carries `cap` (step 3.9b): the agent permissions its person holds.
+_AGENT_CLAIMS = '{sub:"u1",pid:"p1",sid:"s1",aud:"agent",cap:["agent:approve_phase","agent:fireteam"]}'
 
 
-def _mint_with_jose(secret: str) -> str | None:
+def _node_mint(claims: str) -> str:
+    return (
+        'const {SignJWT}=require("jose");'
+        '(async()=>{const k=new TextEncoder().encode(process.argv[1]);'
+        f'const t=await new SignJWT({claims})'
+        '.setProtectedHeader({alg:"HS256"}).setIssuedAt().setExpirationTime("60s").sign(k);'
+        'process.stdout.write(t);})();'
+    )
+
+
+def _mint_with_jose(secret: str, claims: str = _TERMINAL_CLAIMS) -> str | None:
     try:
         out = subprocess.run(
-            ["docker", "compose", "exec", "-T", "webapp", "node", "-e", _NODE_MINT, secret],
+            ["docker", "compose", "exec", "-T", "webapp", "node", "-e", _node_mint(claims), secret],
             cwd=str(Path(_AGENTIC_DIR).parent),
             capture_output=True, text=True, timeout=60,
         )
@@ -65,6 +72,15 @@ class TicketInterop(unittest.TestCase):
 
     def test_wrong_secret_rejected(self):
         self.assertIsNone(verify_ws_ticket(self.token, "the-wrong-secret", expected_aud="kali-terminal"))
+
+    def test_an_agent_ticket_s_cap_reads_as_the_permissions_it_lists(self):
+        token = _mint_with_jose(SECRET, _AGENT_CLAIMS)
+        if not token:
+            self.skipTest("webapp container / jose unavailable")
+        claims = verify_ws_ticket(token, SECRET, expected_aud="agent")
+        self.assertIsNotNone(claims, "jose-minted agent ticket rejected by Python verifier (interop bug)")
+        self.assertEqual(ticket_cap(claims), frozenset({"agent:approve_phase", "agent:fireteam"}))
+        self.assertIsNone(ticket_cap(verify_ws_ticket(self.token, SECRET, expected_aud="kali-terminal")))
 
 
 if __name__ == "__main__":

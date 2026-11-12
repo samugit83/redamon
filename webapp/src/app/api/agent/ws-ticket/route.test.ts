@@ -6,7 +6,9 @@
  * names the socket it opens (`aud`), and a Kali terminal ticket is minted only for
  * a REAL signed-in user who holds the terminal (admin, legacy grant, or the
  * escape hatch): an admin acting as a member never borrows the member's grant.
- * session + auth are mocked; sharedToolAccess is the real one.
+ * An `agent` ticket carries `cap` (step 3.9b, SH-34): the agent permissions agentTicketCap
+ * (authz/agentCap.ts, tested there) gives the identity on the ticket's project.
+ * session, auth and agentCap are mocked; sharedToolAccess is the real one.
  *
  * Run: npx vitest run "src/app/api/agent/ws-ticket/route.test.ts"
  *
@@ -15,17 +17,21 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest, NextResponse } from 'next/server'
 
-const mockGetEffectiveUser = vi.fn()
+const mockGetAuthzIdentity = vi.fn()
 const mockGetSession = vi.fn()
 const mockLoadPrincipal = vi.fn()
 const mockRequireProjectAccess = vi.fn()
 const mockCreateWsTicket = vi.fn()
 const mockWriteAudit = vi.fn()
 const mockCutoff = vi.fn()
+const mockAgentCap = vi.fn()
 
 vi.mock('@/lib/session', () => ({
-  getEffectiveUser: (...a: unknown[]) => mockGetEffectiveUser(...a),
+  getAuthzIdentity: (...a: unknown[]) => mockGetAuthzIdentity(...a),
   getSession: (...a: unknown[]) => mockGetSession(...a),
+}))
+vi.mock('@/lib/authz/agentCap', () => ({
+  agentTicketCap: (...a: unknown[]) => mockAgentCap(...a),
 }))
 vi.mock('@/lib/authz/principal', () => ({
   loadPrincipal: (...a: unknown[]) => mockLoadPrincipal(...a),
@@ -68,16 +74,26 @@ function principal(id: string, role: string, legacyGrants: string[] = [], create
 
 /** The real signed-in user is `real`; the effective user is `effective` (an admin acting as them). */
 function signedIn(real: ReturnType<typeof principal>, effective = real.id) {
-  mockGetEffectiveUser.mockResolvedValue({ userId: effective })
+  mockGetAuthzIdentity.mockResolvedValue({
+    session: { userId: real.id, role: real.role },
+    principal: real,
+    actingAs: effective === real.id ? null : principal(effective, 'standard'),
+  })
   mockGetSession.mockResolvedValue({ userId: real.id, role: real.role })
   mockLoadPrincipal.mockImplementation(async (id: string) => (id === real.id ? real : principal(id, 'standard', ['kali_terminal'])))
 }
 
+/** A member signed in as themselves. */
+const signedInAs = (userId: string) => signedIn(principal(userId, 'standard'))
+
+const ALL_CAP = ['agent:approve_phase', 'agent:approve_dangerous', 'agent:fireteam', 'agent:kali_exec']
+
 const terminal = (over: Record<string, unknown> = {}) => req({ projectId: 'p', sessionId: 's', socket: 'kali-terminal', ...over })
 
 beforeEach(() => {
-  mockGetEffectiveUser.mockReset()
+  mockGetAuthzIdentity.mockReset()
   mockGetSession.mockReset().mockResolvedValue(null)
+  mockAgentCap.mockReset().mockResolvedValue(ALL_CAP)
   mockLoadPrincipal.mockReset()
   mockRequireProjectAccess.mockReset().mockResolvedValue({ project: { id: 'p', userId: 'real-user' } })
   mockCreateWsTicket.mockReset().mockResolvedValue('signed.ticket.value')
@@ -90,33 +106,34 @@ afterEach(() => setFlagsForTests(null))
 
 describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
   test('no session → 401, no ticket minted', async () => {
-    mockGetEffectiveUser.mockResolvedValue(null)
+    mockGetAuthzIdentity.mockResolvedValue(null)
     const res = await POST(req({ projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(401)
     expect(mockCreateWsTicket).not.toHaveBeenCalled()
   })
 
   test('missing projectId/sessionId → 400', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     expect((await POST(req({ projectId: 'p' }))).status).toBe(400)
     expect((await POST(req({ sessionId: 's' }))).status).toBe(400)
   })
 
   test('identity is bound to the EFFECTIVE user, never the body', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'real-user' })
+    signedInAs('real-user')
     // Attacker tries to smuggle a different userId in the body.
     const res = await POST(req({ userId: 'victim', projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ticket: 'signed.ticket.value' })
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('real-user', 'p', 's', 'agent')
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('real-user', 'p', 's', 'agent', undefined, ALL_CAP)
   })
 
   test('admin simulating X → ticket minted for X (impersonation-consistent)', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'user-X' })
+    signedIn(principal('admin-1', 'admin'), 'user-X')
     mockRequireProjectAccess.mockResolvedValue({ project: { id: 'p', userId: 'user-X' } })
     const res = await POST(req({ projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(200)
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'agent')
+    expect(mockRequireProjectAccess).toHaveBeenCalledWith({ userId: 'user-X' }, 'p')
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'agent', 'admin-1', ALL_CAP)
   })
 
   test('the real admin behind an act-as is carried as the actor', async () => {
@@ -127,7 +144,7 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
   })
 
   test('EXPLOIT: minting a ticket for a project the effective user does not own → blocked, no ticket', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'attacker' })
+    signedInAs('attacker')
     mockRequireProjectAccess.mockResolvedValue(NOT_FOUND)
     const res = await POST(req({ projectId: 'victimProj', sessionId: 's' }))
     expect(res.status).toBe(404)
@@ -135,7 +152,7 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
   })
 
   test('null ticket (secret unset) is passed through for agent fail-open', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     mockCreateWsTicket.mockResolvedValue(null)
     const res = await POST(req({ projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(200)
@@ -144,7 +161,7 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
 
   test('a mint that throws answers a readable body with its code, not an empty 500', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     mockCreateWsTicket.mockRejectedValue(Object.assign(new Error('secret material: abc'), { name: 'TypeError' }))
     const res = await POST(req({ projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(500)
@@ -159,18 +176,19 @@ describe('the ticket names its socket (HD-25)', () => {
       mockCreateWsTicket.mockClear()
       const res = await POST(req({ projectId: 'p', sessionId: 's', socket }))
       expect(res.status, socket).toBe(200)
-      expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket)
+      if (socket === 'agent') expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket, undefined, ALL_CAP)
+      else expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket)
     }
   })
 
   test('no socket in the body is the chat socket (a browser bundle from before the update)', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     expect((await POST(req({ projectId: 'p', sessionId: 's' }))).status).toBe(200)
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent')
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, ALL_CAP)
   })
 
   test('unknown socket 400', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     for (const socket of ['shell', '', 'KALI-TERMINAL', null, 7, ['agent'], { aud: 'agent' }]) {
       const res = await POST(req({ projectId: 'p', sessionId: 's', socket }))
       expect(res.status, JSON.stringify(socket)).toBe(400)
@@ -220,7 +238,7 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
   test('the grant is judged on a fresh read of the signed-in account (step 2.2)', async () => {
     signedIn(principal('admin-1', 'admin'))
     expect((await POST(terminal())).status).toBe(200)
-    expect(mockGetEffectiveUser).toHaveBeenCalledWith({ fresh: true })
+    expect(mockGetAuthzIdentity).toHaveBeenCalledWith({ fresh: true })
     expect(mockLoadPrincipal).toHaveBeenCalledWith('admin-1', { fresh: true })
   })
 
@@ -269,7 +287,7 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
   })
 
   test('a real account that is gone answers 401', async () => {
-    mockGetEffectiveUser.mockResolvedValue({ userId: 'u1' })
+    signedInAs('u1')
     mockGetSession.mockResolvedValue(null)
     expect((await POST(terminal())).status).toBe(401)
     expect(mockCreateWsTicket).not.toHaveBeenCalled()
@@ -280,5 +298,58 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     mockCreateWsTicket.mockResolvedValue(null)
     expect(await (await POST(terminal())).json()).toEqual({ ticket: null })
     expect(mockWriteAudit).not.toHaveBeenCalled()
+  })
+})
+
+describe('the agent ticket carries the approval permissions (step 3.9b, SH-34)', () => {
+  test('cap is what agentTicketCap gives the identity on the ticket\'s project', async () => {
+    signedIn(principal('member-b', 'standard'))
+    mockAgentCap.mockResolvedValue(['agent:fireteam'])
+    expect((await POST(req({ projectId: 'p', sessionId: 's', socket: 'agent' }))).status).toBe(200)
+    expect(mockAgentCap).toHaveBeenCalledTimes(1)
+    const [identity, projectId] = mockAgentCap.mock.calls[0]
+    expect(projectId).toBe('p')
+    expect(identity).toMatchObject({ principal: { id: 'member-b' }, actingAs: null })
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-b', 'p', 's', 'agent', undefined, ['agent:fireteam'])
+  })
+
+  test('holding none is written as an empty cap, never left out (no claim = everything)', async () => {
+    signedInAs('u1')
+    mockAgentCap.mockResolvedValue([])
+    await POST(req({ projectId: 'p', sessionId: 's' }))
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, [])
+  })
+
+  test('under act-as the cap is asked of both people: the admin and the account acted as', async () => {
+    signedIn(principal('admin-1', 'admin'), 'member-a')
+    await POST(req({ projectId: 'p', sessionId: 's' }))
+    const [identity] = mockAgentCap.mock.calls[0]
+    expect(identity).toMatchObject({ principal: { id: 'admin-1' }, actingAs: { id: 'member-a' } })
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-a', 'p', 's', 'agent', 'admin-1', ALL_CAP)
+  })
+
+  test('the other sockets carry no cap and ask for none', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    for (const socket of ['kali-terminal', 'cypherfix-triage', 'cypherfix-codefix']) {
+      await POST(req({ projectId: 'p', sessionId: 's', socket }))
+    }
+    expect(mockAgentCap).not.toHaveBeenCalled()
+  })
+
+  test('a project the caller cannot see answers 404 before the cap is read', async () => {
+    signedInAs('u1')
+    mockRequireProjectAccess.mockResolvedValue(NOT_FOUND)
+    expect((await POST(req({ projectId: 'p', sessionId: 's' }))).status).toBe(404)
+    expect(mockAgentCap).not.toHaveBeenCalled()
+  })
+
+  test('a failed cap read is a coded 500 and mints nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signedInAs('u1')
+    mockAgentCap.mockRejectedValue(Object.assign(new Error('db down'), { code: 'P1001' }))
+    const res = await POST(req({ projectId: 'p', sessionId: 's' }))
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Could not issue a ticket for the agent connection', code: 'P1001' })
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
   })
 })

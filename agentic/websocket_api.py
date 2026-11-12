@@ -18,7 +18,7 @@ from enum import Enum
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from orchestrator_helpers import create_config
-from orchestrator_helpers.chat_persistence import save_chat_message, update_conversation
+from orchestrator_helpers.chat_persistence import post_agent_decision, save_chat_message, update_conversation
 from agent_in_the_loop.broker import get_broker
 
 
@@ -246,6 +246,9 @@ class WebSocketConnection:
         #: The person signed in when an admin acts as `user_id` (the ticket's `act`),
         #: so closing that person's sockets reaches this one too.
         self.actor_id: Optional[str] = None
+        #: The agent permissions the ticket's person holds on the project (its `cap`,
+        #: ws_ticket.ticket_cap); None for a ticket without one, which allows everything.
+        self.cap: Optional[frozenset] = None
         self.graph_view_cypher: Optional[str] = None
         self.authenticated = False
         self.connected_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -286,6 +289,14 @@ class WebSocketConnection:
         if self.authenticated:
             return f"{self.user_id}:{self.project_id}:{self.session_id}"
         return None
+
+    def holds(self, permission: str) -> bool:
+        """Whether this connection's person may take a decision that needs `permission`."""
+        return self.cap is None or permission in self.cap
+
+    def decision_actor(self) -> dict:
+        """Who answered on this connection, as a saved decision records it."""
+        return {"sub": self.user_id, **({"act": self.actor_id} if self.actor_id else {})}
 
 
 #: What an emergency stop tells the open socket of each run it stops.
@@ -1543,6 +1554,37 @@ class WebSocketHandler:
         self.orchestrator = orchestrator
         self.ws_manager = ws_manager
 
+    async def _refused_without(self, connection: WebSocketConnection, *permissions: str) -> bool:
+        """Refuse a decision the connection's person may not take (step 3.9b).
+
+        Checked before anything runs or is saved, so the agent's prompt stays open for
+        someone who holds the permission. True when refused (the frame is sent).
+        """
+        missing = next((p for p in permissions if not connection.holds(p)), None)
+        if missing is None:
+            return False
+        logger.warning("[rbac] decision refused permission=%s session=%s", missing, connection.session_id)
+        await connection.send_message(MessageType.ERROR, {
+            "message": f"You do not hold the permission this answer needs ({missing}). "
+                       "The agent keeps waiting for someone who does.",
+            "code": "permission_required",
+            "permission": missing,
+            "recoverable": True,
+        })
+        return True
+
+    def _record_decision(self, connection: WebSocketConnection, callback: 'StreamingCallback',
+                         kind: str, row: str, data: dict):
+        """An admitted answer: saved with who gave it, and posted for the audit row.
+
+        `connection` is the socket the answer came on, not the run's current one (a
+        reconnect moves the run), so the record names the person who answered.
+        """
+        callback._persist(row, {**data, "actor": connection.decision_actor()})
+        asyncio.create_task(post_agent_decision(
+            kind=kind, session_id=connection.session_id, project_id=connection.project_id,
+            user_id=connection.user_id, actor_id=connection.actor_id, decision=data["decision"]))
+
     async def handle_init(self, connection: WebSocketConnection, payload: dict):
         """Handle session initialization"""
         try:
@@ -1555,7 +1597,7 @@ class WebSocketHandler:
             # trusting the self-asserted identity. redamon.sh ensure_auth_secrets
             # always generates AGENT_WS_TICKET_SECRET, so real installs are
             # unaffected; only a token-less dev stack is refused (by design).
-            from ws_ticket import ticket_secret, verify_ws_ticket
+            from ws_ticket import ticket_cap, ticket_secret, verify_ws_ticket
 
             secret = ticket_secret()
             user_id = init_msg.user_id
@@ -1592,6 +1634,7 @@ class WebSocketHandler:
             session_id = str(claims["sid"])
             verified = True
             connection.actor_id = str(claims["act"]) if claims.get("act") else None
+            connection.cap = ticket_cap(claims)
 
             # Authenticate connection
             await self.ws_manager.authenticate(
@@ -1764,6 +1807,8 @@ class WebSocketHandler:
                     "recoverable": False
                 })
                 return
+            if await self._refused_without(connection, "agent:approve_phase"):
+                return
 
             callback = StreamingCallback(connection, self.ws_manager)
             connection._is_stopped = False
@@ -1797,10 +1842,11 @@ class WebSocketHandler:
                 guidance_queue=connection.guidance_queue,
                 # Saved (it survives a reload) only once the run is admitted: a
                 # refused resume leaves the request unanswered, and shows it again.
-                on_admitted=lambda: callback._persist("approval_response", {
-                    "decision": approval_msg.decision,
-                    "modification": approval_msg.modification,
-                }),
+                on_admitted=lambda: self._record_decision(
+                    connection, callback, "approval", "approval_response", {
+                        "decision": approval_msg.decision,
+                        "modification": approval_msg.modification,
+                    }),
             )
             logger.info(f"Approval processed for session {connection.session_id}")
         except asyncio.CancelledError:
@@ -1902,6 +1948,8 @@ class WebSocketHandler:
                 "recoverable": False,
             })
             return
+        if await self._refused_without(connection, "agent:fireteam", "agent:approve_dangerous"):
+            return
 
         from orchestrator_helpers.fireteam_confirmation_registry import resolve as _resolve
         ok = _resolve(
@@ -1924,12 +1972,20 @@ class WebSocketHandler:
                     "member_id": msg.member_id,
                     "decision": msg.decision,
                     "resolved": ok,
+                    "actor": connection.decision_actor(),
                 },
                 fireteam_id_key=msg.wave_id,
                 member_id_key=msg.member_id,
             )
         except Exception:
             logger.exception("fireteam_member_confirmation: persist failed")
+        # Only an answer that reached a waiting member decided anything.
+        if ok:
+            asyncio.create_task(post_agent_decision(
+                kind="fireteam_member_confirmation", session_id=connection.session_id,
+                project_id=connection.project_id, user_id=connection.user_id,
+                actor_id=connection.actor_id, decision=msg.decision,
+                wave_id=msg.wave_id, member_id=msg.member_id))
 
     async def handle_tool_confirmation(self, connection: WebSocketConnection, payload: dict):
         """Handle tool confirmation response — launches as background task"""
@@ -1942,6 +1998,8 @@ class WebSocketHandler:
                     "code": "not_authenticated",
                     "recoverable": False
                 })
+                return
+            if await self._refused_without(connection, "agent:approve_dangerous"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -1974,10 +2032,11 @@ class WebSocketHandler:
                 modifications=confirmation_msg.modifications,
                 streaming_callback=callback,
                 guidance_queue=connection.guidance_queue,
-                on_admitted=lambda: callback._persist("tool_confirmation_response", {
-                    "decision": confirmation_msg.decision,
-                    "modifications": confirmation_msg.modifications,
-                }),
+                on_admitted=lambda: self._record_decision(
+                    connection, callback, "tool_confirmation", "tool_confirmation_response", {
+                        "decision": confirmation_msg.decision,
+                        "modifications": confirmation_msg.modifications,
+                    }),
             )
             logger.info(f"Tool confirmation processed for session {connection.session_id}")
         except asyncio.CancelledError:

@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose'
 import bcrypt from 'bcryptjs'
 import type { WsSocket } from './wsTicket'
+import type { AgentTicketCap } from './authz/agentCap'
 import { lifetimeClaimsValid } from './authz/sessionIdle'
 
 export const AUTH_COOKIE_NAME = 'redamon-auth'
@@ -122,7 +123,11 @@ export async function createWsTicket(
   // The person actually signed in, when an admin is simulating `userId`. The
   // agent records it on the runs it starts, so an audit row names who really
   // pressed the button. Omitted when it is `userId` itself.
-  realActorUserId?: string
+  realActorUserId?: string,
+  // An `agent` ticket's agent permissions (authz/agentCap.ts). The agent refuses the
+  // approvals they do not cover; an empty list holds none, while no claim at all is
+  // a ticket from before step 3.9b, which the agent treats as today's behaviour.
+  cap?: readonly AgentTicketCap[]
 ): Promise<string | null> {
   const key = getWsTicketSecret()
   if (!key) return null
@@ -131,6 +136,7 @@ export async function createWsTicket(
   return new SignJWT({
     sub: userId, pid: projectId, sid: sessionId, aud: socket,
     ...(realActorUserId && realActorUserId !== userId ? { act: realActorUserId } : {}),
+    ...(cap ? { cap: [...cap] } : {}),
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()

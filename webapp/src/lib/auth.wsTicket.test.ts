@@ -45,6 +45,18 @@ describe('createWsTicket', () => {
     expect(self).not.toHaveProperty('act')
   })
 
+  test('an agent ticket carries cap, the agent permissions its person holds (step 3.9b)', async () => {
+    vi.stubEnv('AGENT_WS_TICKET_SECRET', SECRET)
+    const held = (await jwtVerify((await createWsTicket('u1', 'p1', 's1', 'agent', undefined, ['agent:fireteam']))!, key)).payload
+    expect(Object.keys(held).sort()).toEqual(['aud', 'cap', 'exp', 'iat', 'pid', 'sid', 'sub'])
+    expect(held.cap).toEqual(['agent:fireteam'])
+    // An empty cap is written: it means "holds none", never "today's behaviour" (no claim).
+    const none = (await jwtVerify((await createWsTicket('u1', 'p1', 's1', 'agent', 'admin-1', []))!, key)).payload
+    expect(none).toMatchObject({ cap: [], act: 'admin-1' })
+    const without = (await jwtVerify((await createWsTicket('u1', 'p1', 's1', 'agent'))!, key)).payload
+    expect(without).not.toHaveProperty('cap')
+  })
+
   test('no ticket without a secret, or with the compose placeholder', async () => {
     vi.stubEnv('AGENT_WS_TICKET_SECRET', '')
     expect(await createWsTicket('u1', 'p1', 's1', 'kali-terminal')).toBeNull()

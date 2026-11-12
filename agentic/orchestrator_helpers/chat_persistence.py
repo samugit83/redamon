@@ -84,3 +84,52 @@ async def update_conversation(
                 )
     except Exception as e:
         logger.warning(f"Conversation update error: {type(e).__name__}: {e}")
+
+
+async def post_agent_decision(
+    *,
+    kind: str,
+    session_id: str,
+    project_id: str,
+    user_id: str,
+    actor_id: Optional[str],
+    decision: str,
+    wave_id: Optional[str] = None,
+    member_id: Optional[str] = None,
+) -> bool:
+    """Ask the webapp to write the audit row of a decision the agent accepted (step 3.9b).
+
+    `kind` is `approval`, `tool_confirmation` or `fireteam_member_confirmation`;
+    `user_id` is the ticket's `sub`, `actor_id` its `act` (the admin acting as `sub`), and
+    the webapp names the real person as the row's actor. Never raises: the decision is
+    already applied, so a lost row is told to the operator by the `[rbac]` log line only.
+    """
+    if not INTERNAL_HEADERS.get("X-Internal-Key"):
+        # The webapp refuses a call without the key: say so instead of sending it.
+        logger.warning("[rbac] decision audit not sent: INTERNAL_API_KEY is unset kind=%s session=%s",
+                       kind, session_id)
+        return False
+    body: dict = {"kind": kind, "sessionId": session_id, "projectId": project_id,
+                  "userId": user_id, "decision": decision}
+    if actor_id:
+        body["actorId"] = actor_id
+    if wave_id:
+        body["waveId"] = wave_id
+    if member_id:
+        body["memberId"] = member_id
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{WEBAPP_API_URL}/api/internal/agent/decisions",
+                json=body,
+                headers=INTERNAL_HEADERS,
+            )
+        if resp.status_code not in (200, 201):
+            logger.warning("[rbac] decision audit failed status=%s kind=%s session=%s",
+                           resp.status_code, kind, session_id)
+            return False
+    except Exception as e:
+        logger.warning("[rbac] decision audit failed error=%s kind=%s session=%s",
+                       type(e).__name__, kind, session_id)
+        return False
+    return True
