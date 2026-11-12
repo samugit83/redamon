@@ -38,6 +38,7 @@ _MAX_VECTORS_PER_URL = 55
 # included (source_engine "wcvs"); the "wcvs" finding source is cut with it.
 _FINDING_SOURCE = "cache_poisoning"
 _FINDING_SOURCE_ALIASES = ("wcvs",)
+_CERT_REFUSED = "TLS certificate refused (WEB_CACHE_POISON_VERIFY_SSL on)"
 
 
 def _note_untested(urls, reason: str) -> None:
@@ -332,8 +333,11 @@ def _scan_one_url(url, wcvs_by_url, combined_result, settings, min_conf,
         )
         target_entry = {"oracle": oracle_info, "findings": []}
         if _oracle_unanswered(oracle_info):
-            # Not "no cache here": nothing was tested, so its findings stay.
-            target_entry["unchecked"] = "no answer"
+            # Not "no cache here": nothing was tested, so its findings stay. A
+            # refused certificate is named, as GraphQL names it (R-48): the
+            # host answered, so the gap must not read as one that never did.
+            target_entry["unchecked"] = (_CERT_REFUSED if oracle_info.get("certificate_refused")
+                                         else "no answer")
         if not oracle_info["cacheable"]:
             # Nothing to poison. Web cache deception targets exactly these pages,
             # though: a private account page the cache declines to keep, which a

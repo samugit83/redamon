@@ -125,6 +125,16 @@ def _behavioral_probe(url, session, timeout, verify_ssl, delay, sleep_fn) -> tup
     return False, "", []
 
 
+def _certificate_refused(exc: BaseException) -> bool:
+    """The host answered the handshake and this client refused its
+    certificate (the R-48 rule): a live host, not one that never answered."""
+    try:
+        from recon.helpers import circuit_breaker as cb
+        return cb.is_certificate_refused(exc)
+    except Exception:  # noqa: BLE001 - unknown: report it as no answer, as before
+        return False
+
+
 def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
                         verify_ssl: bool = True, *, behavioral: bool = True,
                         behavioral_delay: float = 1.1, sleep_fn=time.sleep,
@@ -145,6 +155,9 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
         "vary": str,            # Vary header (keyed request headers), if any
         "behavioral": bool,     # detection came from the frozen-Date fallback
       }
+    A request that failed returns the same keys with one ``error: ...`` signal,
+    plus ``certificate_refused``: the failure was this client refusing the
+    host's TLS certificate.
     """
     signals: list[str] = []
     indicator = ""
@@ -255,7 +268,8 @@ def detect_cache_oracle(url: str, session: requests.Session, timeout: int = 10,
         signals = [s for s in signals if not (s in seen or seen.add(s))]
     except requests.RequestException as e:
         return {"cacheable": False, "indicator": "", "signals": [f"error: {e}"],
-                "saw_hit": False, "cache_layer": False, "vary": "", "behavioral": False}
+                "saw_hit": False, "cache_layer": False, "vary": "", "behavioral": False,
+                "certificate_refused": _certificate_refused(e)}
 
     return {
         "cacheable": cacheable,
