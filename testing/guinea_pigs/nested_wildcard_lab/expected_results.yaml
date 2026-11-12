@@ -87,10 +87,10 @@ scenarios:
         disjoint: [eu.corp.nwlab.test]
       - id: org_dns_findings_once_per_org
         cypher: "MATCH (d:Domain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'security_check'}) WHERE v.type IN ['spf_missing','dmarc_missing','dnssec_missing','zone_transfer'] RETURN d.name + '|' + v.type AS v"
-        equals: ["nwlab-two.test|spf_missing", "nwlab-two.test|dmarc_missing"]
+        equals: ["nwlab-two.test|spf_missing", "nwlab-two.test|dmarc_missing", "nwlab-two.test|zone_transfer"]
       - id: org_dns_findings_not_duplicated
         cypher: "MATCH (d:Domain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'security_check'}) WHERE v.type IN ['spf_missing','dmarc_missing','dnssec_missing','zone_transfer'] RETURN v.id AS v"
-        count: 2
+        count: 3
       - id: coverage_stamped_on_both_orgs
         cypher: "MATCH (d:Domain) WHERE d.recon_coverage_at IS NOT NULL RETURN d.name AS v"
         equals: [nwlab.test, nwlab-two.test]

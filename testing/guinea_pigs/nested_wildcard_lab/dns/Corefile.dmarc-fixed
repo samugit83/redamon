@@ -11,9 +11,8 @@ nwlab.test:53 {
 
 nwlab-two.test:53 {
     file /etc/coredns/nwlab-two.test.dmarc.zone
-    # AXFR is allowed here and refused for nwlab.test. Recon's zone-transfer
-    # check never sends a packet today (it hands dnspython a hostname), so no
-    # AXFR finding is expected; this zone is the target for a future fix.
+    # AXFR is allowed here and refused for nwlab.test: recon's zone-transfer
+    # check sends a real AXFR to ns1's address and reports this zone (R-36).
     transfer {
         to *
     }
