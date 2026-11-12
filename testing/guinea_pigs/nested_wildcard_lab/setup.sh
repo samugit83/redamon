@@ -46,7 +46,9 @@ gen_cert wild wild.nwlab.test \
 # E2E-B hosts: web3 is the RoE-excluded address of edge and mixed; web5 and
 # web6 are the two addresses of two.nwlab.test.
 gen_cert web3 edge.nwlab.test "DNS:edge.nwlab.test,DNS:mixed.nwlab.test"
-gen_cert two two.nwlab.test "DNS:two.nwlab.test"
+# late-edge (on the excluded web3) is in no other certificate: a late name on
+# an RoE-excluded address (B-LATEROE).
+gen_cert two two.nwlab.test "DNS:two.nwlab.test,DNS:late-edge.nwlab.test"
 
 # Runtime state, gitignored: the captures and lab_toggle.sh's includes. Made
 # here so Docker never creates them root-owned.

@@ -83,6 +83,7 @@ name below is a must-stay-silent case next to one that must fire.
 | `mixed` | A → web2 **and** web3 | a name with any excluded address is never sent by name (no Host or SNI `mixed` on web2 either); web2 is still checked as a bare address |
 | `ghost` | CNAME → `gone.nwlab-two.test` (NXDOMAIN) | a name with no address under an IP/CIDR exclusion is refused and kept "not checked" |
 | `shop` | A → web1 (only in web1's certificate SANs) | excluded by name: discovered through the SANs, never requested (R-1) |
+| `late-edge` | A → web3 only; named only in the `two` certificate (served by X and Y) | a name learned late on an excluded address never joins the scan: no Subdomain, no BaseURL, no packet to web3 (B-LATEROE) |
 | `plain` | A → web4 (80 only) | checked on :80 (Basic auth over HTTP fires), never connected on 443, never "unreachable" |
 | `two` | A → web5 (X) and web6 (Y) | 80 under X only, 8443 and 21 under Y only, 443 under both; the banner on 21 is read on Y and never tried on X |
 | web4/web5/web6 bare IPs | 302 to `edge`, to `www.nwlab-two.test` (outside the project) and to `169.254.169.254` | a direct-IP check records the redirect and sends none of the three hops |

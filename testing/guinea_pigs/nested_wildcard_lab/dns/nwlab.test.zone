@@ -2,7 +2,7 @@
 ; the org. Every A record points at web1 unless noted. Not DNSSEC-signed.
 $ORIGIN nwlab.test.
 $TTL 60
-@                   IN SOA  ns1.nwlab.test. hostmaster.nwlab.test. 2026111201 3600 600 86400 60
+@                   IN SOA  ns1.nwlab.test. hostmaster.nwlab.test. 2026111202 3600 600 86400 60
 @                   IN NS   ns1.nwlab.test.
 @                   IN A    192.88.99.60
 @                   IN MX   10 mail.nwlab.test.
@@ -56,3 +56,7 @@ plain               IN A    192.88.99.63
 ; address that serves it.
 two                 IN A    192.88.99.64
 two                 IN A    192.88.99.65
+; B-LATEROE: a name only the `two` certificate's SANs carry, on the excluded
+; web3 address. Learned late (from a certificate an allowed host serves), it
+; must never join the scan.
+late-edge           IN A    192.88.99.62

@@ -373,11 +373,24 @@ scenarios:
       # B-TLSXSAN: a certificate name the RoE refuse becomes no Subdomain, yet
       # the certificate still lists it
       - id: no_subdomain_for_an_excluded_san
-        cypher: "MATCH (s:Subdomain {name:'shop.nwlab.test'}) RETURN s.name AS v"
+        cypher: "MATCH (s:Subdomain) WHERE s.name IN ['shop.nwlab.test', 'late-edge.nwlab.test'] RETURN s.name + ' (' + coalesce(s.source, '') + ')' AS v"
         count: 0
       - id: the_certificate_still_lists_the_excluded_san
         cypher: "MATCH (c:Certificate) UNWIND coalesce(c.san, []) AS n WITH n WHERE n = 'shop.nwlab.test' RETURN DISTINCT n AS v"
         equals: [shop.nwlab.test]
+      # B-LATEROE / R-2 GROUP 1: a name learned on an excluded address (late,
+      # from the `two` certificate's SANs) never joins the scan, and no
+      # discovered name keeps the excluded address. The listed edge and mixed
+      # resolve there by the operator's own list.
+      - id: no_discovered_name_on_the_excluded_address
+        cypher: "MATCH (s:Subdomain)-[:RESOLVES_TO]->(:IP {address:'192.88.99.62'}) WHERE NOT s.name IN ['nwlab.test','edge.nwlab.test','mixed.nwlab.test'] RETURN s.name AS v"
+        count: 0
+      - id: the_late_name_on_the_excluded_address_is_not_scanned
+        cypher: "MATCH (b:BaseURL) WHERE b.host = 'late-edge.nwlab.test' RETURN b.url AS v"
+        count: 0
+      - id: the_certificate_still_lists_the_late_name
+        cypher: "MATCH (c:Certificate) UNWIND coalesce(c.san, []) AS n WITH n WHERE n = 'late-edge.nwlab.test' RETURN DISTINCT n AS v"
+        equals: [late-edge.nwlab.test]
       - id: no_answer_from_the_excluded_host_stored
         cypher: "MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint) WHERE coalesce(e.final_url, '') CONTAINS 'edge.nwlab.test' OR coalesce(e.title, '') CONTAINS 'web3' RETURN b.url + ' -> ' + coalesce(e.final_url, '') + ' ' + coalesce(e.title, '') AS v"
         count: 0
