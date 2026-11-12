@@ -14,6 +14,7 @@ import JSZip from 'jszip'
 
 const h = vi.hoisted(() => ({ createProject: vi.fn(), findUser: vi.fn() }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'u1', role: 'user' }),
 }))

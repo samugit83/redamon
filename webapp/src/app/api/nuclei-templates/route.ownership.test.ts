@@ -41,6 +41,7 @@ const h = vi.hoisted(() => {
   }
 })
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/session', () => ({
   requireSession: async () => {
     const { NextResponse } = await import('next/server')

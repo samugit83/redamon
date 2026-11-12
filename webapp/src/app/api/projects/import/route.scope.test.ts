@@ -12,6 +12,7 @@ import JSZip from 'jszip'
 
 const mockProjectCreate = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: async () => ({ userId: 'new-owner' }) }))
 vi.mock('@/lib/prisma', () => ({
   default: { project: { create: (...a: unknown[]) => mockProjectCreate(...a) } },

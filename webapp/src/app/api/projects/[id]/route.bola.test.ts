@@ -34,6 +34,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn()
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ deleted: [] }) }) }))
 // Real access.ts guards, but drive their effective-user + internal inputs.
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => mockIsInternal(...a), isScannerRequest: () => false }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', async () => {
   const actual = await vi.importActual<typeof import('@/lib/access')>('@/lib/access')
   return { ...actual, requireEffectiveUser: () => mockGetEffectiveUser() }

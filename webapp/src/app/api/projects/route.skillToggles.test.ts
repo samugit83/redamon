@@ -29,6 +29,7 @@ vi.mock('@/lib/prisma', () => ({
 vi.mock('@/app/api/graph/neo4j', () => ({
   getGraphSession: () => ({ run: vi.fn().mockResolvedValue({ records: [] }), close: vi.fn() }),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'creator' }),
   ownerScope: (eff: { userId: string }) => ({ userId: eff.userId }),

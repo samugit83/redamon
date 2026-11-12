@@ -177,7 +177,9 @@ describe('the manifest and the route tree', () => {
  * that is right. A missing `projectId` otherwise reads as a forgotten one: the manifest classes the
  * call `session`, and the route checks no project.
  */
-const CAPABILITY_ONLY: Record<string, string> = {}
+const CAPABILITY_ONLY: Record<string, string> = {
+  '/api/nuclei-templates scan:custom_templates': 'a template belongs to an account, not a project: uploading or deleting one is the capability alone; selecting it for a project is the project PUT\'s check (templateSelectionRefusal, under project:settings) (step 3.8)',
+}
 
 /** The `<path> <permission>` of each permission guard call that acts on a project and names none. */
 function capabilityOnlyChecks(routes: Pick<Scanned, 'path' | 'permissionCalls'>[]): string[] {

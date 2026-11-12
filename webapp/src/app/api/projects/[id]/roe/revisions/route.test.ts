@@ -22,6 +22,7 @@ vi.mock('@/lib/prisma', () => ({
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
 vi.mock('@/lib/session', () => ({ getSession: async () => null }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', async () => {
   const actual = await vi.importActual<typeof import('@/lib/access')>('@/lib/access')
   return { ...actual, requireEffectiveUser: async () => h.eff }

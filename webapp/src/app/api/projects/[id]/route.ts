@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requireAlso, requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 import { isInternalRequest, isScannerRequest } from '@/lib/session'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { teardownProject } from '@/lib/projectTeardown'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
 import { pickProjectColumns } from '@/lib/projectColumns'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { writeAudit } from '@/lib/audit'
 import { canonicalJson } from '@/lib/fingerprint'
-import { field, fieldsWhere } from '@/lib/reconSettings/registry'
+import { field, fieldsWhere, rescopableFields } from '@/lib/reconSettings/registry'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { refreshActiveRecordingScope } from '@/lib/recordingSession'
-import { resolveScopeGroups } from '@/lib/scopeGroups'
+import { IP_HOSTNAME_FIELDS, resolveScopeGroups } from '@/lib/scopeGroups'
 import { computeSkillTextOverrides } from '@/lib/plugins/overrideDelivery'
 import { userSkillsForAgent } from '@/lib/userSkillAgentPayload'
 import type { ResolvedPart } from '@/lib/plugins/overrides'
@@ -51,6 +51,14 @@ const NOT_WRITABLE_BY_SAVE: ReadonlySet<string> = new Set([
   ...fieldsWhere(f => f.deny_reason === 'upload-managed').map(f => f.key),
 ])
 
+/**
+ * The target lists only `project:rescope` reopens (the registry's `rescope` fields, the set MCP
+ * update_project_scope edits), beyond the batch hosts and the IP hostname policy, which the save
+ * judges as part of its scope (scopeChanged).
+ */
+const RESCOPE_ONLY_FIELDS: readonly string[] = rescopableFields().map(f => f.key)
+  .filter(k => k !== 'domainBatchHosts' && !(IP_HOSTNAME_FIELDS as readonly string[]).includes(k))
+
 /** Audited by name only: the value is a credential or a whole document. */
 function auditsValue(key: string): boolean {
   const reason = field(key)?.read_deny_reason
@@ -80,10 +88,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
     const isServiceCaller = isInternalRequest(request) || isScannerRequest(request)
     if (!isServiceCaller) {
-      const eff = await requireEffectiveUser()
-      if (eff instanceof NextResponse) return eff
-      const access = await requireProjectAccess(eff, id)
-      if (access instanceof NextResponse) return access
+      const auth = await requirePermission(request, 'recon:read', { projectId: id })
+      if (auth instanceof NextResponse) return auth
     }
 
     const project = await prisma.project.findUnique({
@@ -211,11 +217,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Only the project's effective owner may mutate it (admin while simulating).
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    // project:settings on the project; a scope or target-list change also needs project:rescope.
+    const auth = await requirePermission(request, 'project:settings', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     let body
     try {
@@ -449,6 +454,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     if (scopeChanged) {
+      const refused = requireAlso(auth, 'project:rescope')
+      if (refused) return refused
+
       // A version activation clears and restores the graph; a scope written
       // between the two would describe neither.
       const { assertGraphNotActivating } = await import('@/lib/activationLock')
@@ -535,6 +543,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       where: { id },
       select: Object.fromEntries(Object.keys(updateData).map(k => [k, true])) as any,
     }) ?? {}) as Record<string, unknown>
+
+    // A target list this save CHANGES needs project:rescope; one sent back as stored does not.
+    if (RESCOPE_ONLY_FIELDS.some(k => k in updateData && comparable(updateData[k]) !== comparable(before[k]))) {
+      const refused = requireAlso(auth, 'project:rescope')
+      if (refused) return refused
+    }
 
     // The project may use only its owner's Nuclei templates and the instance ones
     // (HD-08). Only the entries this save adds are judged, for the reason given below.
@@ -660,11 +674,11 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Only the project's effective owner may delete it (admin while simulating).
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    // project:delete on the project (its owner; an admin acting as the owner).
+    const auth = await requirePermission(request, 'project:delete', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
+    const access = auth.access
 
     // The teardown's tenant is the owner the access check read.
     const result = await teardownProject(

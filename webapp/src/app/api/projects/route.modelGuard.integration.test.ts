@@ -38,6 +38,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 
 // Effective-user guard — ownership is exercised in the dedicated BOLA tests; here
 // we return the same owner the test expects so it stays focused on the model guard.
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'user-1' }),
   ownerScope: (eff: { userId: string }) => ({ userId: eff.userId }),

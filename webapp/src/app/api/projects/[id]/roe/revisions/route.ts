@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { internalError } from '@/lib/routeErrors'
 
 // GET /api/projects/[id]/roe/revisions - The superseded RoE documents, newest first.
 // Metadata only: the bytes come from .../revisions/[revId]/download.
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'roe:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     const revisions = await prisma.roeDocumentRevision.findMany({
       where: { projectId: id },

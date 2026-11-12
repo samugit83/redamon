@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { publicRecordingSession, summarizeMaterial } from '@/lib/recordingSession'
 import type { RecordingMaterial } from '@/lib/recordingSession'
 
@@ -13,13 +13,11 @@ interface RouteParams {
 // (best-effort immediate; the injected tag also drops within one reconcile of
 // expiry). Returns the masked summary of what was captured so the operator can
 // confirm before committing it to the profile (G3).
-export async function POST(_request: NextRequest, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'auth_profile:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     const session = await prisma.recordingSession.findFirst({
       where: { projectId: id, state: 'active' },

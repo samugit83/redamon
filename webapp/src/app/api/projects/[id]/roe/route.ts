@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { internalError } from '@/lib/routeErrors'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { applyRoe } from '@/lib/roe/applyRoe'
@@ -23,15 +23,6 @@ function jsonField(form: FormData, name: string): unknown {
   }
 }
 
-async function authorize(request: NextRequest, id: string) {
-  if (!sameOrigin(request)) return crossOriginResponse()
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
-  return eff
-}
-
 // POST /api/projects/[id]/roe - Replace the project's Rules of Engagement with a
 // reviewed document. multipart: file, changes (JSON, the confirmed set),
 // parsedFields (JSON, the model output the review was built on), rowVersion,
@@ -39,8 +30,10 @@ async function authorize(request: NextRequest, id: string) {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const eff = await authorize(request, id)
-    if (eff instanceof NextResponse) return eff
+    if (!sameOrigin(request)) return crossOriginResponse()
+    const auth = await requirePermission(request, 'roe:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const upload = await readRoeUpload(request)
     if (upload instanceof NextResponse) return upload
@@ -96,8 +89,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const eff = await authorize(request, id)
-    if (eff instanceof NextResponse) return eff
+    if (!sameOrigin(request)) return crossOriginResponse()
+    const auth = await requirePermission(request, 'roe:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const body = await request.json().catch(() => null)
     if (!isObject(body) || typeof body.rowVersion !== 'string' || !isObject(body.changes)) {

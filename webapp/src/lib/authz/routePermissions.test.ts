@@ -10,6 +10,7 @@
  * Whether each permission is enforced is proved by the families' `*.permissions.test.ts`, which run
  * the real guard; this file keeps the manifest, which the live matrix rows are generated from
  * (scripts/gen-rbac-matrix-rows.mjs), equal to the code.
+ * Handlers whose permission a later step wires are in LATER, with the step.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -25,13 +26,32 @@ const WAVE_A: readonly RegExp[] = [
   /^\/api\/recon\//,
   /^\/api\/job-queue\//,
   /^\/api\/(gvm|github-hunt|trufflehog|supply-chain|ai-attack-surface|js-recon)\//,
-  /^\/api\/projects\/\[id\]\/(queue|schedules|versions|delta|supply-chain-batch|wordlists)(\/|$)/,
+  /^\/api\/projects(\/(import|defaults))?$/,
+  /^\/api\/projects\/\[id\]$/,
+  /^\/api\/projects\/\[id\]\/(queue|schedules|versions|delta|supply-chain-batch|wordlists|auth-profile|authorizations|export|ip-hostnames|recording|roe)(\/|$)/,
+  /^\/api\/roe\//,
+  /^\/api\/presets(\/|$)/,
+  /^\/api\/nuclei-templates$/,
 ]
 
-/** Routes of these families that answer every signed-in account, and why (3.9 gives them `permission: null`). */
+/**
+ * `<METHOD> <path>` of the families' handlers that answer every signed-in account, and why (3.9 gives
+ * them `permission: null`).
+ */
 const SESSION_ONLY: Readonly<Record<string, string>> = {
-  '/api/gvm/available': 'whether this install runs the GVM stack: an instance fact the scan tab reads to show or hide itself, no project data',
-  '/api/js-recon/trufflehog/available': 'whether the TruffleHog image is present: an instance fact the JS recon tab reads, no project data',
+  'GET /api/gvm/available': 'whether this install runs the GVM stack: an instance fact the scan tab reads to show or hide itself, no project data',
+  'GET /api/js-recon/trufflehog/available': 'whether the TruffleHog image is present: an instance fact the JS recon tab reads, no project data',
+  'GET /api/projects': 'the projects the account can see (visibleProjectsWhere): seeing one is project access, and each action on it asks its own permission',
+  'GET /api/projects/defaults': 'the default values of a new project form: registry data, no project, nothing written',
+  'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with the shared tool): reading the library changes nothing',
+}
+
+/**
+ * `<METHOD> <path>` of the families' handlers whose permission a later step wires, and which step.
+ * They name no permission in the manifest until then.
+ */
+const LATER: Readonly<Record<string, string>> = {
+  'PATCH /api/nuclei-templates': 'promoting a template to an instance one is platform:nuclei_templates, the shared-tool check step 3.9 moves onto can()',
 }
 
 const HANDLER_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
@@ -83,11 +103,14 @@ describe('route permissions, wave A: projects, recon, scans (step 3.8)', () => {
   })
 
   test('every route of the families names a permission in the manifest for each method, or is SESSION_ONLY with a reason', () => {
-    const missing = family.filter(e => !(e.path in SESSION_ONLY))
-      .flatMap(e => e.methods.filter(m => !permissionOf(e, m)).map(m => `${m} ${e.path}`))
+    const missing = family.flatMap(e => e.methods.map(m => `${m} ${e.path}`).filter(key => !(key in SESSION_ONLY) && !(key in LATER)))
+      .filter(key => { const [m, path] = key.split(' '); return !permissionOf(family.find(e => e.path === path)!, m as HttpMethod) })
     expect(missing, 'give the route a permission (requirePermission) and its manifest entry the same').toEqual([])
-    for (const [path, why] of Object.entries(SESSION_ONLY)) {
-      expect(family.some(e => e.path === path), `SESSION_ONLY names ${path}, which is not a route of the families`).toBe(true)
+    for (const [key, why] of [...Object.entries(SESSION_ONLY), ...Object.entries(LATER)]) {
+      const [m, path] = key.split(' ')
+      const entry = family.find(e => e.path === path)
+      expect(entry?.methods.includes(m as HttpMethod), `SESSION_ONLY names ${key}, which is not a handler of the families`).toBe(true)
+      expect(permissionOf(entry!, m as HttpMethod), `${key} is SESSION_ONLY and names a permission`).toBeUndefined()
       expect(why.length).toBeGreaterThan(20)
     }
   })
@@ -95,9 +118,9 @@ describe('route permissions, wave A: projects, recon, scans (step 3.8)', () => {
   test("each method's manifest permission is the one its handler asks requirePermission for first", () => {
     const wrong: string[] = []
     for (const e of family) {
-      if (e.path in SESSION_ONLY) continue
       const handlers = handlerPermissions(readFileSync(fileOf(e.path), 'utf8'))
       for (const m of e.methods) {
+        if (`${m} ${e.path}` in SESSION_ONLY || `${m} ${e.path}` in LATER) continue
         const asked = handlers.get(m) ?? []
         if (asked[0] !== permissionOf(e, m)) wrong.push(`${m} ${e.path}: manifest ${permissionOf(e, m)}, handler asks ${asked.join(', ') || 'nothing'}`)
       }

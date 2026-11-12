@@ -11,6 +11,7 @@ import { NextRequest } from 'next/server'
 import { mkdir, rm, writeFile } from 'fs/promises'
 import path from 'path'
 // The route reads the session first (HD-10); these tests are about a signed-in account.
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/session', () => ({
   requireSession: async () => ({ userId: 'u1', role: 'standard' }),
   getEffectiveUser: async () => ({ userId: 'u1' }),

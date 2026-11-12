@@ -10,6 +10,7 @@ import { internalError } from '@/lib/routeErrors'
 import { getEffectiveUser, requireSession, type Session } from '@/lib/session'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
+import { requirePermission } from '@/lib/authz/guards'
 import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { ownershipOf, templatesRoot, type TemplateOwnership } from '@/lib/nucleiTemplateOwnership'
@@ -190,6 +191,8 @@ export async function POST(request: NextRequest) {
   try {
     const caller = await readCaller()
     if (caller instanceof NextResponse) return caller
+    const auth = await requirePermission(request, 'scan:custom_templates')
+    if (auth instanceof NextResponse) return auth
 
     const lengthProblem = declaredBodyTooLarge(request, MAX_FILE_SIZE)
     if (lengthProblem) return lengthProblem
@@ -340,6 +343,8 @@ export async function DELETE(request: NextRequest) {
   try {
     const caller = await readCaller()
     if (caller instanceof NextResponse) return caller
+    const auth = await requirePermission(request, 'scan:custom_templates')
+    if (auth instanceof NextResponse) return auth
     const rawPath = request.nextUrl.searchParams.get('path')
 
     if (!rawPath) {

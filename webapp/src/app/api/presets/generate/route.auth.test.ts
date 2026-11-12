@@ -21,6 +21,7 @@ vi.mock('@/lib/prisma', () => ({
     userSettings: { findUnique: (...a: unknown[]) => mockSettings(...a) },
   },
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: () => mockEffectiveUser() }))
 
 import { POST } from './route'

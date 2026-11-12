@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { requireEffectiveUser, assertOwner } from '@/lib/access'
+import { assertOwner } from '@/lib/access'
 import { projectPresetForRead } from '@/lib/reconPresets/server'
 import { clearPresetBadges } from '@/lib/reconPresets/badges'
 
@@ -9,12 +10,13 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'self:presets')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const preset = await prisma.userProjectPreset.findUnique({
       where: { id },
@@ -34,12 +36,13 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: RouteParams) {
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'preset:write')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const preset = await prisma.userProjectPreset.findUnique({
       where: { id },

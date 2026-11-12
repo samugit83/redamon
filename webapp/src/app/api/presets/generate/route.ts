@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser } from '@/lib/access'
 import { reconPresetSchema, extractJson, RECON_PARAMETER_CATALOG } from '@/lib/recon-preset-schema'
 import { assertSafeLlmBaseUrl, BaseUrlValidationError } from '@/lib/llm-url-guard'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
@@ -272,8 +272,9 @@ export async function POST(request: NextRequest) {
   try {
     // The caller spends the LLM key of whichever user this resolves to, so it is
     // the session's effective user and never a `userId` from the body.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'preset:write')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
     const userId = eff.userId
 
     // The model is the user's saved "Recon preset generator" model. A `model`

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { existsSync, createReadStream, readdirSync } from 'fs'
 import path from 'path'
 import archiver from 'archiver'
 import { Readable } from 'stream'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { projectPresetForRead } from '@/lib/reconPresets/server'
 import { PROJECT_EXPORT_EXCLUDED, PROJECT_EXPORT_EXCLUDED_REASON } from '@/lib/projectExport/pluginExclusion'
 import { exportProjectGraph, type ExportedGraph } from '@/lib/projectExport/graph'
@@ -21,17 +21,15 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
     // Ownership: export bundles the ENTIRE project (row + RoE binary, all
     // conversations/messages, reports, the Neo4j subgraph, presets), so it is the
     // most sensitive project route. Only the effective owner may export it.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'project:export', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     // 1. Fetch project from PostgreSQL
     const project = await prisma.project.findUnique({ where: { id } })

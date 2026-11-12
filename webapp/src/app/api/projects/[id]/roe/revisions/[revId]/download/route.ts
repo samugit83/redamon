@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { internalError } from '@/lib/routeErrors'
 import { writeAudit } from '@/lib/audit'
 import { actingAdminId } from '@/lib/roe/actor'
@@ -8,15 +8,14 @@ import { attachmentDisposition, downloadContentType } from '@/lib/roe/limits'
 
 // GET /api/projects/[id]/roe/revisions/[revId]/download - One superseded RoE document.
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string; revId: string }> }
 ) {
   try {
     const { id, revId } = await params
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'roe:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     // Scoped by project as well as id: a revision id from another project is not found.
     const revision = await prisma.roeDocumentRevision.findFirst({

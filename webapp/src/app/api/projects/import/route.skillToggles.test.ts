@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   skills: [] as { id: string; userId: string; name: string; quarantinedAt: Date | null }[],
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'importer', role: 'user' }),
 }))

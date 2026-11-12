@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { toAuthProfileMetadata } from '@/lib/authProfile'
 import {
   deriveProfileFromMaterial,
@@ -21,10 +21,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'auth_profile:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown = {}
     try { body = await request.json() } catch { /* empty body allowed */ }

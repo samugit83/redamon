@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { parseAuthProfileInput, toAuthProfileMetadata } from '@/lib/authProfile'
 import { internalError } from '@/lib/routeErrors'
 
@@ -11,19 +11,11 @@ interface RouteParams {
 // Browser-facing and write-only: every response is metadata + hasValue. The
 // stored value is served only to recon/the agent via GET /api/projects/[id].
 
-async function authorize(id: string) {
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
-  return eff
-}
-
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await authorize(id)
-    if (denied instanceof NextResponse) return denied
+    const auth = await requirePermission(request, 'auth_profile:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     const profile = await prisma.projectAuthProfile.findUnique({ where: { projectId: id } })
     return NextResponse.json({ authProfile: toAuthProfileMetadata(profile) })
@@ -35,8 +27,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await authorize(id)
-    if (denied instanceof NextResponse) return denied
+    const auth = await requirePermission(request, 'auth_profile:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
@@ -73,11 +65,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: RouteParams) {
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await authorize(id)
-    if (denied instanceof NextResponse) return denied
+    const auth = await requirePermission(request, 'auth_profile:manage', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     await prisma.projectAuthProfile.deleteMany({ where: { projectId: id } })
     return NextResponse.json({ authProfile: null })

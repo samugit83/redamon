@@ -15,6 +15,7 @@ const mockSettings = vi.fn()
 const mockAgentFetch = vi.fn()
 const mockAudit = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: () => mockEff() }))
 vi.mock('@/lib/prisma', () => ({
   default: { userSettings: { findUnique: (...a: unknown[]) => mockSettings(...a) } },

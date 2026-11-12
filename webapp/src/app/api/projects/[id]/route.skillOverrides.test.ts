@@ -35,6 +35,7 @@ vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
 vi.mock('@/lib/plugins/overrides', () => ({
   resolveForProject: (...a: unknown[]) => mockResolveForProject(...a),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', async () => {
   const actual = await vi.importActual<typeof import('@/lib/access')>('@/lib/access')
   return { ...actual, requireEffectiveUser: () => mockGetEffectiveUser() }

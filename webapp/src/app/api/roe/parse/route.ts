@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { writeAudit } from '@/lib/audit'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
 import { callFeatureAgent } from '@/lib/featureAgentCall'
@@ -13,7 +14,6 @@ import { readRoeUpload } from '@/lib/roe/upload'
 import { MAX_MODEL_CHARS } from '@/lib/roe/limits'
 import { buildReplaceReview, ReviewUnavailable } from '@/lib/roe/review'
 import { internalError } from '@/lib/routeErrors'
-import type { EffectiveUser } from '@/lib/session'
 
 // Under undici's 300 s default, and over the agent's own 270 s cap on the model
 // call, so a slow model reaches the person as a coded timeout.
@@ -51,7 +51,7 @@ function reviewError(err: unknown): NextResponse | null {
  * stale confirm (the project moved while the person was reviewing) and to
  * review a Remove, which is a replace with an empty document.
  */
-async function rediff(request: NextRequest, eff: EffectiveUser): Promise<NextResponse> {
+async function rediff(request: NextRequest): Promise<NextResponse> {
   const body = await request.json().catch(() => null)
   if (!isObject(body) || typeof body.projectId !== 'string') {
     return NextResponse.json({ error: 'projectId is required.', code: 'bad_request' }, { status: 400 })
@@ -60,8 +60,8 @@ async function rediff(request: NextRequest, eff: EffectiveUser): Promise<NextRes
   if (!remove && !isObject(body.parsedFields)) {
     return NextResponse.json({ error: 'parsedFields is required.', code: 'bad_request' }, { status: 400 })
   }
-  const access = await requireProjectAccess(eff, body.projectId)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'roe:manage', { projectId: body.projectId })
+  if (auth instanceof NextResponse) return auth
   try {
     const review = await buildReplaceReview({
       projectId: body.projectId,
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     const eff = await requireEffectiveUser()
     if (eff instanceof NextResponse) return eff
     if ((request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
-      return await rediff(request, eff)
+      return await rediff(request)
     }
     const model = await readFeatureModel(eff.userId, 'roe_parse')
     if (!model) return featureModelErrorResponse('model_required', 'roe_parse')
@@ -110,8 +110,12 @@ export async function POST(request: NextRequest) {
     const rawProjectId = formData.get('projectId')
     const projectId = typeof rawProjectId === 'string' && rawProjectId ? rawProjectId : null
     if (projectId) {
-      const access = await requireProjectAccess(eff, projectId)
-      if (access instanceof NextResponse) return access
+      const auth = await requirePermission(request, 'roe:manage', { projectId })
+      if (auth instanceof NextResponse) return auth
+    } else {
+      // A document read for a project the person is creating.
+      const auth = await requirePermission(request, 'project:create')
+      if (auth instanceof NextResponse) return auth
     }
 
     let doc

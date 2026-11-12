@@ -19,6 +19,7 @@ vi.mock('@/lib/prisma', () => ({ default: {
   projectNodeFilter: { findUnique: vi.fn(async () => null) },
   userProjectPreset: { findMany: vi.fn(async () => [{ id: 'preset', settings: h.preset }]) },
 } }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
   requireProjectAccess: vi.fn(async () => ({ project: { id: 'p1', userId: 'u1' } })),

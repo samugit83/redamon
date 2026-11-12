@@ -46,8 +46,11 @@ export interface RouteCase {
   params: Record<string, string>
   /** A JSON body; only the request's shape, nothing past the guard runs on a refusal. */
   body?: unknown
-  /** The project the route names when it is not a param (a job row's project). */
-  projectId?: string
+  /**
+   * The project the route names when it is not a param (a job row's project); null for an
+   * instance permission checked with no project (project create, import).
+   */
+  projectId?: string | null
   /** Runs before the request: the rows a route reads before its guard, in `h.models`. */
   arrange?: (h: RouteCaseState) => void
 }
@@ -131,7 +134,7 @@ export interface FamilyOptions {
 
 /**
  * One `refused without <permission>` and one `allowed with Default member` test per route, the
- * stranger's 404 and the switch-off answer on the family's first route.
+ * stranger's 404 on the first route whose project is a param, the switch-off answer on the first.
  */
 export function describeRoutePermissions(family: string, cases: RouteCase[], h: RouteCaseState, opts: FamilyOptions): void {
   describe(`${family}: each route asks for its permission (step 3.8)`, () => {
@@ -160,14 +163,15 @@ export function describeRoutePermissions(family: string, cases: RouteCase[], h: 
     })
 
     for (const c of cases) {
-      const projectId = c.projectId ?? OWNED_PROJECT
+      const projectId = c.projectId === undefined ? OWNED_PROJECT : c.projectId
+      const guardArgs = projectId === null ? [c.permission] : [c.permission, { projectId }]
       test(`${c.route} refused without ${c.permission}: 403 naming it, nothing past the guard runs`, async () => {
         const { res, guard } = await run(h, c, denying(OWNER, c.permission))
         expect(res?.status).toBe(403)
         expect(await res!.json()).toMatchObject({ code: 'forbidden', permission: c.permission })
         expect(guard).toBeInstanceOf(Response)
         const guards = await import('@/lib/authz/guards')
-        expect(vi.mocked(guards.requirePermission).mock.calls[0].slice(1)).toEqual([c.permission, { projectId }])
+        expect(vi.mocked(guards.requirePermission).mock.calls[0].slice(1)).toEqual(guardArgs)
         expect(h.upstream).not.toHaveBeenCalled()
         expect(h.downstream).not.toHaveBeenCalled()
       })
@@ -176,16 +180,19 @@ export function describeRoutePermissions(family: string, cases: RouteCase[], h: 
         const { guard } = await run(h, c, principal(OWNER))
         expect(guard).not.toBeInstanceOf(Response)
         expect((guard as PermissionContext).permission).toBe(c.permission)
-        expect((guard as PermissionContext).access?.project).toEqual({ id: projectId, userId: OWNER })
+        expect((guard as PermissionContext).access?.project ?? null).toEqual(projectId === null ? null : { id: projectId, userId: OWNER })
       })
     }
 
     const first = cases[0]
-    test(`${first.route}: a project the caller cannot see answers 404 whatever they hold`, async () => {
-      const { res } = await run(h, { ...first, params: retarget(first), projectId: undefined }, principal('bob-friend'))
-      expect(res?.status).toBe(404)
-      expect(h.upstream).not.toHaveBeenCalled()
-    })
+    const onProject = cases.find(c => c.projectId === undefined)
+    if (onProject) {
+      test(`${onProject.route}: a project the caller cannot see answers 404 whatever they hold`, async () => {
+        const { res } = await run(h, { ...onProject, params: retarget(onProject) }, principal('bob-friend'))
+        expect(res?.status).toBe(404)
+        expect(h.upstream).not.toHaveBeenCalled()
+      })
+    }
 
     test(`${first.route}: with RBAC_PERMISSIONS_ENABLED off an owner passes whatever an override says (today's answer)`, async () => {
       opts.setFlags({ identity: true, permissions: false })

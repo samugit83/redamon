@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { requireEffectiveUser, ownerScope } from '@/lib/access'
+import { ownerScope } from '@/lib/access'
 import {
   PRESET_DESCRIPTION_MAX,
   PRESET_NAME_MAX,
@@ -10,10 +11,11 @@ import {
 } from '@/lib/reconPresets/server'
 
 // Presets are user-scoped; the client-supplied userId is ignored as an auth input.
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'self:presets')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     // Most recently written first, with which door wrote it: an agent-written
     // preset is badged in the drawer before a person applies it.
@@ -40,8 +42,9 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'preset:write')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const body = await request.json()
     const { name, description, settings } = body

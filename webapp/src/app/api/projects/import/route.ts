@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { forbiddenResponse, requirePermission } from '@/lib/authz/guards'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { clearProjectGraph, restoreGraph } from '@/lib/graphRestore'
 import { REFERENCE_LINKS_BUNDLE_PATH } from '@/lib/graphReferenceLinks'
-import { requireEffectiveUser } from '@/lib/access'
 import JSZip from 'jszip'
 import { randomUUID } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
@@ -156,8 +156,9 @@ export async function POST(request: NextRequest) {
     // The imported project is created under the caller's EFFECTIVE user; the
     // client-supplied ?userId is ignored so a caller cannot import a project into
     // another user's account.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'project:import')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
     const userId = eff.userId
 
     // D10: zip-bomb defense. Cap the upload size, the total DECLARED uncompressed
@@ -321,6 +322,11 @@ export async function POST(request: NextRequest) {
     const importedAuthorizations: Record<string, unknown>[] = authorizationsFile
       ? JSON.parse(await authorizationsFile.async('text'))
       : []
+    // Recording them is engagement:authorize. The project does not exist yet and the importer
+    // will own it, so the capability is the whole decision (no project level to check).
+    if (importedAuthorizations.length > 0 && !auth.capabilities.has('engagement:authorize')) {
+      return forbiddenResponse('engagement:authorize')
+    }
 
     if (projectFields.engagementKind === 'third_party') {
       // The ceiling is the number alone now. There is no second switch that

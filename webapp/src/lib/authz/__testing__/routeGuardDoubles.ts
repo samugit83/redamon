@@ -87,8 +87,10 @@ export function overEffectiveUser(): Promise<Guards> {
     const eff = await access.requireEffectiveUser()
     if (isResponse(eff)) return asNextResponse(eff)
     if (!('projectId' in opts)) return context(permission, eff, null)
-    const allowed = await access.requireProjectAccess(eff, opts.projectId ?? '')
+    const allowed: unknown = await access.requireProjectAccess(eff, opts.projectId ?? '')
     if (isResponse(allowed)) return asNextResponse(allowed)
-    return context(permission, eff, allowed.project)
+    // Some tests double the helper as "allowed" with no row (null): the project is then the caller's.
+    const project = (allowed as { project?: { id: string; userId: string } } | null)?.project
+    return context(permission, eff, project ?? { id: opts.projectId ?? '', userId: eff.userId })
   })
 }

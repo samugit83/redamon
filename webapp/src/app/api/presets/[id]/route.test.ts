@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   inTransaction: false,
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.eff(),
   assertOwner: (eff: { userId: string }, owner: string) =>

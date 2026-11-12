@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
@@ -76,8 +77,9 @@ export async function POST(request: NextRequest) {
   try {
     // The new project is owned by the caller's effective user; the body-supplied
     // userId is ignored so a caller cannot create a project under another user.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'project:create')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     let body: Record<string, unknown>
     let roeFile: { name: string; kind: RoeFileKind; bytes: Buffer } | null = null

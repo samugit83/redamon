@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server'
 
 const h = vi.hoisted(() => ({ create: vi.fn(), findUnique: vi.fn() }))
 vi.mock('@/lib/prisma', () => ({ default: { userProjectPreset: h } }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
   assertOwner: vi.fn(() => null),

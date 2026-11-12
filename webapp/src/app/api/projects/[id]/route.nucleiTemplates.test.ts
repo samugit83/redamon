@@ -53,6 +53,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn()
 vi.mock('@/lib/graphWriters', () => ({ describeScanWriters: async () => null }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
 vi.mock('@/lib/session', () => ({ isInternalRequest: () => h.internal, isScannerRequest: () => h.scanner }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', async () => {
   const actual = await vi.importActual<typeof import('@/lib/access')>('@/lib/access')
   return {

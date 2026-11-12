@@ -11,6 +11,7 @@ import { NextRequest } from 'next/server'
 const findMany = vi.fn()
 
 vi.mock('@/lib/prisma', () => ({ default: { engagementAuthorization: { findMany: (...a: unknown[]) => findMany(...a) } } }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'owner' }),
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
 })
 
 vi.mock('@/lib/prisma', () => ({ default: h.down }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'u1' }),
   assertOwner: () => null,
@@ -33,7 +34,7 @@ import { GET as getPreset, DELETE as deletePreset } from './[id]/route'
 const one = { params: Promise.resolve({ id: 'up1' }) }
 
 const CASES: [string, () => Promise<Response>, string][] = [
-  ['GET the list', () => listPresets(), 'Failed to fetch presets'],
+  ['GET the list', () => listPresets(new NextRequest('http://x/api/presets')), 'Failed to fetch presets'],
   ['POST a preset', () => createPreset(new NextRequest('http://x/api/presets', {
     method: 'POST', body: JSON.stringify({ name: 'Mine', settings: { naabuEnabled: true } }),
   })), 'Failed to create preset'],

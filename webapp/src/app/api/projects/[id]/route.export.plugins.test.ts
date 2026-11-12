@@ -23,6 +23,7 @@ const PROJECT = {
   updatedAt: new Date('2026-01-01T00:00:00Z'),
 }
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'u1' }),
   requireProjectAccess: async () => ({ ok: true }),

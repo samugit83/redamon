@@ -12,8 +12,8 @@
  * page of rows comes back. Read-only: nothing is written.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { internalError } from '@/lib/routeErrors'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { IP_HOSTNAME_MODES, type IpHostnameMode } from '@/lib/ipHostnameFilter'
@@ -66,10 +66,8 @@ function parseQuery(sp: URLSearchParams): PreviewQuery | string {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
 
   const query = parseQuery(request.nextUrl.searchParams)
   if (typeof query === 'string') return bad(query)
