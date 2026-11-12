@@ -174,20 +174,24 @@ recon_data = _build_http_probe_data_from_graph(
 )
 ```
 
-**Pattern for the graph-off `else` branch** (when `include_graph_targets=False`):
+**Pattern for the graph-off `else` branch** (when `include_graph_targets=False`), for a module whose targets come from `dns` through the D2 gate (`extract_targets_from_recon`, the security checks' host list), as `run_nuclei` and `run_security_checks_partial` in `recon/partial_recon_modules/vulnerability_scanning.py` do:
 ```python
-recon_data = {
+recon_data = ip_mode_recon({
     "domain": roots[0],
     "domains": roots,
+    "subdomains": [],
     "dns": {
         "domain": {"ips": {"ipv4": [], "ipv6": []}, "has_records": False},
         "subdomains": {},
     },
     "http_probe": {"by_url": {}},
-    "metadata": {"include_root_domain": _should_include_root_domain(settings)},
-}
+}, settings)
+# ... inject the typed URLs into http_probe.by_url, then, after the if/else:
+_typed_url_hosts_in_dns(recon_data, user_urls, settings, include_graph, typed_ips=unattached_ips)
 ```
-Always stamp the metadata flag, even when not querying the graph -- downstream consumers of `recon_data` rely on it.
+With graph targets off the run scans what was typed. `_typed_url_hosts_in_dns` stamps `metadata.include_root_domain` False, so the root is no target unless typed, gives each typed URL's host a `dns.subdomains` entry (`has_records` alone; the tool resolves it), and gives a typed address, and each of `typed_ips`, its own entry, where `dns.domain` would make it the root's. Under RoE IP or CIDR entries, graph targets on or off, it resolves once a typed host the dict holds no address for, so the gate judges the host on that answer: an excluded address or no answer refuses it. Do not stamp `_should_include_root_domain(settings)` here: an unstamped or True flag offers the root nobody typed, and under RoE IP entries that address-less root is refused and, with no other `dns` name, nothing is scanned. IP mode is left alone.
+
+A module that takes no targets from `dns` stamps the root's scope flag on this branch instead (`_should_include_root_domain(settings)`, or `include_root_for(root, groups)` with groups). Always stamp the metadata flag, even when not querying the graph -- downstream consumers of `recon_data` rely on it.
 
 **Why the default is `False`:** the safer failure mode. Forgetting to pass `include_root_domain=` means the apex is excluded -- better to under-scan than to silently scan something the user toggled off. This also makes future graph-builder callers fail-safe.
 
@@ -217,7 +221,7 @@ For other tool types, add a `run_<tool_name>(config)` function that:
 1. Calls `get_settings()` for project settings
 2. Reads `config["user_targets"]` for structured user input (keys depend on what the tool accepts)
 3. Builds `recon_data` from the graph via `_build_*_data_from_graph(..., include_root_domain=_should_include_root_domain(settings))` -- **always pass the apex flag** (see Critical Rules and "Include Root Domain scope")
-4. If you have an `else` branch for `include_graph_targets=False`, stamp `recon_data["metadata"]["include_root_domain"]` there too
+4. If you have an `else` branch for `include_graph_targets=False`, stamp `recon_data["metadata"]["include_root_domain"]` there too: False when your targets come from `dns`, through `_typed_url_hosts_in_dns`, which also gives the typed hosts their `dns` entries (see "Pattern for the graph-off `else` branch")
 5. Injects user-provided targets into `recon_data`
 6. Calls the tool's scan function (same one used by the full pipeline)
 7. Normalizes results if needed (e.g. `masscan_scan` -> `port_scan`)

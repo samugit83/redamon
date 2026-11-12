@@ -1216,6 +1216,13 @@ The module runs when the project's scan modules include `vuln_scan` (they do by 
 
 `recon/partial_recon_modules/vulnerability_scanning.py` re-runs `run_vuln_scan()` on demand (`run_nuclei`) against the graph's BaseURLs and endpoints and any URLs the user typed in, and `run_security_checks_partial` runs the security checks alone.
 
+Both read their hosts from `dns` (`extract_targets_from_recon`, the security checks' host list) through the D2 gate, while a typed URL lands in `http_probe`. `_typed_url_hosts_in_dns` closes that gap, in domain mode:
+
+- **Include Graph Targets off:** the run scans only the typed inputs. `metadata.include_root_domain` is stamped False, so the project root is no target unless typed. Each typed URL's host joins `dns.subdomains` with `has_records` alone (the tool resolves it), and a typed URL on an address gets its own entry. In the security checks a typed IP not attached to a subdomain gets its own entry too, not the root's `dns.domain`.
+- **RoE IP or CIDR entries, graph targets on or off:** a typed URL's host the dict holds no address for is resolved once (`[+][Partial Recon] Resolved <host> -> [...]`) and the gate judges it on that answer: any excluded address refuses it, and a host that does not resolve stays refused as not checked.
+
+With graph targets on and no IP or CIDR entry the dict is unchanged; IP mode is unchanged.
+
 ### Standalone Enrichment
 
 ```python
@@ -1522,7 +1529,11 @@ ports, as before the gate: the run stamps the typed hosts and a typed name's
 resolved addresses in `metadata.typed_hosts` (not in IP mode). A typed host the
 graph has evidence for follows it, a name that only shares a typed address gains
 nothing, and the RoE gate still refuses an excluded typed host and a typed name
-with any excluded address.
+with any excluded address. A typed URL's host gets its `dns` entry as partial
+Nuclei's does (see [Partial Recon](#partial-recon)): with graph targets off the
+root is no target unless typed and a typed IP attached to no subdomain is checked
+as its own host, and under RoE IP or CIDR entries a typed URL's host with no
+known address is resolved once and refused on an excluded address or no answer.
 
 The builder keeps a graph name's RoE-excluded address in the `dns` block, which
 every reader's gate reads, and out of `port_scan.by_ip`, a `BaseURL`'s resolved

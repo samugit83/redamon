@@ -643,7 +643,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 
 | Group | Modules | Parallelism | Dependencies |
 |-------|---------|-------------|--------------|
-| **GROUP 1** | WHOIS + Subdomain Discovery + URLScan | 3 parallel tasks | Only needs `root_domain`. URLScan's recent host names join the merged host list (`merge_group_hosts`, `extra_hosts`) through the late-name gates; its findings are written right after discovery |
+| **GROUP 1** | WHOIS + Subdomain Discovery + URLScan | 3 parallel tasks | Only needs `root_domain`. URLScan's recent host names join the merged host list (`merge_group_hosts`, `extra_hosts`) through the late-name gates; its findings are written right after discovery. Under RoE IP or CIDR entries the merge drops a discovered name (URLScan's included) with any excluded address, noted `roe_excluded` (Module 1, *RoE exclusions on addresses*) |
 | *Discovery* | crt.sh + HackerTarget + Subfinder + Amass + Knockpy | 5 parallel tools | Part of GROUP 1 |
 | *Puredns* | Wildcard filtering (validates against public resolvers) | Sequential | After discovery fan-in, before DNS |
 | *DNS* | DNS resolution for all subdomains | `DNS_MAX_WORKERS` parallel workers (default 80) | After puredns filtering |
@@ -651,7 +651,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | **GROUP 3** | Shodan Enrichment + Port Scan (Naabu, Masscan) | Up to 3 parallel tasks, each enabled tool only | Needs IPs from GROUP 1 + GROUP 2b; then Nmap (3.5; `NMAP_PARALLELISM` IPs at a time, one under an RoE ceiling) and tlsx (3.6) run in sequence |
 | **GROUP 3b** | OSINT Enrichment (Censys + FOFA + OTX + Netlas + VirusTotal + ZoomEye + CriminalIP) | Up to 7 tasks on 5 workers, each enabled tool only | Needs IPs/domains from GROUP 1; runs after GROUPs 3, 3.5 and 3.6 |
 | **GROUP 4** | HTTP Probe (httpx) | Sequential (internally parallel) | Needs ports from GROUP 3 |
-| *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`) | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
+| *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`). Under RoE IP or CIDR entries a name is admitted on its resolved addresses and judged again on the DNS answer the step stores | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
 | *Takeover verdict* | Which deleted-service pages urlscan recorded still describe their host, from this scan's DNS and live pages (`main_recon_modules/urlscan_takeover.py`) | Sequential; DNS only, through the `dns:takeover-verdict` breaker | After GROUP 4, outside the httpx step; before Phase A, whose Subdomain Takeover reads `urlscan.takeover_hosts` |
 | *IP attribution* | Tags every IP `shared_edge` / `dedicated` / `unknown` (`main_recon_modules/ip_attribution.py`), then writes the Shodan CVEs and the Netlas data GROUP 3/3b held back | Sequential; the TLS handshakes without SNI in a small pool, paced at the RoE ceiling | After GROUP 4 and the certificate SAN feedback; before GROUP 5 and 6. Runs if `IP_ATTRIBUTION_ENABLED` |
 | **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
@@ -1467,6 +1467,26 @@ resolved. `Subdomain.status` is shared with http_probe, which later writes
 `"no_http"` or the HTTP code; the readers count "resolved" by a `RESOLVES_TO` edge
 (report, Insights) or by `status = 'resolved'` (http_probe's `no_http` demotion),
 so an unverified name never counts as resolved.
+
+**RoE exclusions on addresses** (domain mode, RoE IP or CIDR entries). The name
+filters (`_filter_roe_excluded`, `_drop_roe_excluded_subdomains`) drop what an
+entry names, with a log line only. On top, `merge_group_hosts` passes each
+discovered name that has an address, URLScan's included, through the admission
+gate (`_roe_refused_discoveries`, `recon/helpers/target_admission.py`) on the
+addresses discovery's DNS pass resolved, with no new query. A name with any
+excluded address is dropped from the subdomain list, the DNS map and the status
+map, never narrowed, and noted `roe_excluded` under `domain_recon` (`urlscan`
+for an injected name). A name with no address, the scan root and the operator's
+listed hosts are left to the tools' target gate. Partial Subdomain Discovery
+applies the same rule before its graph write (`_drop_roe_refused_discoveries`,
+module `partial_recon`, the typed hosts counting as the operator's). Late names
+(certificate SANs from tlsx and the httpx SAN feedback, JS Recon, Uncover) are
+judged in `merge_discovered_hostnames` on the addresses its own lookup saw and
+those the run's DNS data holds (`_admit_late_names`): any excluded address
+refuses the name, and so does no address. The late-name DNS step (`give_dns`,
+`recon/helpers/late_names.py`) checks the answer it stores again and drops a
+name whose answer holds an excluded address. Each refusal is noted under the
+source that offered the name.
 
 📖 **Key Parameters:**
 ```python
