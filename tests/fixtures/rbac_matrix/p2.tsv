@@ -119,3 +119,24 @@ p2-pwpolicy-off	2.8	member_a	GET	/api/auth/password-policy	-	404	req:ID-20 ident
 p2-pwpolicy-create-common	2.8	admin_a	POST	/api/users	{"name":"RBAC Policy","email":"rbac-policy@e2e.local","password":"PasswordPassword"}	400;has=password_common	req:ID-20 identity:on
 p2-pwpolicy-reset-email	2.8	admin_a	PUT	/api/users/${MEMBER_C_ID}/password	{"newPassword":"rbac-member-c@e2e.local"}	400;has=password_is_email	req:ID-20 identity:on
 p2-pwpolicy-own-repeated	2.8	member_b	PUT	/api/users/${MEMBER_B_ID}/password	{"newPassword":"zzzzzzzzzzzzzzzz","currentPassword":"${RBAC_PASSWORD}"}	400;has=password_repeated	req:ID-20 identity:on
+# ---- step 2.9: invite links and the public invite page ----
+# The admin routes exist only with the identity switch on. Each "allowed" row is refused after the
+# authorization check (a bad body, an address in use, an account that is not invited), so no account
+# or link is made. The public paths are reached with no cookie; with the switch off they are like
+# any unknown path (sign-in redirect, 401). The unknown-link row costs one lookup of the per-copy
+# ceiling (30 a minute).
+p2-invite-create-member	2.9	member_a	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	403;has=users:invite	req:ID-14 identity:on
+p2-invite-create-anon	2.9	anon	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	401	req:ID-14
+p2-invite-create-bad	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Invitee"}	400;has=invalid_field	req:ID-14 identity:on
+p2-invite-create-taken	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Copy","email":"RBAC-MEMBER-C@E2E.LOCAL"}	409;has=email_taken	req:ID-14 identity:on
+p2-invite-create-off	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	404	req:ID-14 identity:off
+p2-invite-resend-member	2.9	member_a	POST	/api/users/${MEMBER_C_ID}/invite/resend	{}	403;has=users:invite	req:ID-14 identity:on
+p2-invite-resend-active	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/resend	{}	409;has=not_invited	req:ID-14 identity:on
+p2-invite-cancel-active	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/cancel	{}	409;has=not_invited	req:ID-14 identity:on
+p2-invite-cancel-off	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/cancel	{}	404	req:ID-14 identity:off
+p2-invite-state-anon	2.9	anon	GET	/api/invite/state	-	200;has="valid":false;hdr=referrer-policy: no-referrer;hdr=cache-control: no-store	req:ID-15 identity:on
+p2-invite-state-off	2.9	anon	GET	/api/invite/state	-	401	req:ID-15 identity:off
+p2-invite-accept-anon	2.9	anon	POST	/api/invite/accept	{"password":"rbac-matrix-never-used-1"}	410;has=invite_invalid	req:ID-15 identity:on
+p2-invite-link-unknown	2.9	anon	GET	/invite/rbac-matrix-unknown-link-token	-	303;hdr=/invite;hdr=referrer-policy: no-referrer;nohdr=rbac-matrix-unknown-link-token;nohdr=redamon-invite=e	req:ID-15 req:HD-26 identity:on
+p2-invite-link-off	2.9	anon	GET	/invite/rbac-matrix-unknown-link-token	-	307;hdr=/login	req:ID-15 identity:off
+p2-invite-page	2.9	anon	GET	/invite	-	200;hdr=content-security-policy: default-src 'self';hdr=referrer-policy: no-referrer	req:ID-15 identity:on

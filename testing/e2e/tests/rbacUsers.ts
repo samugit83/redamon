@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, type Page } from '@playwright/test'
+import { expect, type BrowserContext, type Page } from '@playwright/test'
 
 /**
  * Several seeded accounts for the RBAC specs: sign in as any of them through the
@@ -67,6 +67,13 @@ export function readRbacSeed(): RbacSeed {
     throw new Error(`${RBAC_SEED_FILE} is missing: call seedRbac() first`)
   }
   return parseRbacSeed(text)
+}
+
+/** Dismiss the first-run welcome and disclaimer, which cover every page, in a context with no sign-in. */
+export async function skipFirstRunScreens(context: BrowserContext): Promise<void> {
+  await context.addInitScript(([storageKey, version]) => {
+    localStorage.setItem(storageKey, JSON.stringify({ version, acceptedAt: new Date().toISOString() }))
+  }, [DISCLAIMER_STORAGE_KEY, DISCLAIMER_VERSION])
 }
 
 /**
