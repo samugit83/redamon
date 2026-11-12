@@ -185,7 +185,7 @@ describe('POST /api/users/invite', () => {
     await signIn('member-1', 'standard')
     const member = await invite(req({ name: 'Nina', email: 'nina@e2e.local' }))
     expect(member.status).toBe(403)
-    expect(await member.json()).toMatchObject({ code: 'forbidden', permission: 'users:invite' })
+    expect(await member.json()).toMatchObject({ code: 'forbidden', permission: 'users:create' })
     h.jar = {}
     expect((await invite(req({ name: 'Nina', email: 'nina@e2e.local' }))).status).toBe(401)
     await signIn('admin-1')
@@ -239,7 +239,7 @@ describe('POST /api/users/[id]/invite/resend', () => {
     await signIn('member-1', 'standard')
     const member = await resend(req({}), params('invited-1'))
     expect(member.status).toBe(403)
-    expect(await member.json()).toMatchObject({ code: 'forbidden', permission: 'users:invite' })
+    expect(await member.json()).toMatchObject({ code: 'forbidden', permission: 'users:create' })
     setFlagsForTests({ identity: false })
     await signIn('admin-1')
     expect((await resend(req({}), params('invited-1'))).status).toBe(404)

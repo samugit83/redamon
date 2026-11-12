@@ -8,6 +8,7 @@ import { rbacFlags } from '@/lib/authz/flags'
 import { routeNotFound } from '@/lib/authz/accountStatus'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { adminTargetGate } from '@/lib/authz/rootPowers'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { privateJson, withInviteErrors } from '@/lib/authz/invites'
@@ -46,6 +47,8 @@ export const POST = withInviteErrors('credentials reset', 'Could not reset the c
       { status: 403 },
     )
   }
+  const denied = await requireSessionPermission(session, 'users:reset_credentials', { fresh: true })
+  if (denied) return denied
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed

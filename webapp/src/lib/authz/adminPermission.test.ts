@@ -33,7 +33,8 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { accountHolds, decidedByAccountType, requireSessionPermission, sessionHolds } from './adminPermission'
+import { LEGACY_GRANTED, accountHolds, decidedByAccountType, requireSessionPermission, sessionHolds } from './adminPermission'
+import { LEGACY_GRANTS } from './updateReview'
 import { can } from './can'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests } from './capabilities'
@@ -123,6 +124,10 @@ describe('switch off: the admin check of today, through can()', () => {
         expect(await sessionHolds({ userId: id, role: principal.role }, p), `${id} ${p}`).toBe((await can(principal, p)).allowed)
       }
     }
+  })
+
+  test('the shared tools a legacy grant gives are the legacy grants, as platform permissions', () => {
+    expect([...LEGACY_GRANTED].sort()).toEqual(LEGACY_GRANTS.map((g) => `platform:${g}`).sort())
   })
 
   test("a shared tool and a Root-only permission read the account: a member's legacy grant counts", async () => {

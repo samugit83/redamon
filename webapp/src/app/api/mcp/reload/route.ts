@@ -1,5 +1,5 @@
 /**
- * POST /api/mcp/reload - an administrator asks the agent to reload its MCP servers.
+ * POST /api/mcp/reload - an administrator holding platform:agent_mcp asks the agent to reload its MCP servers.
  *
  * The agent's MCP toolset is shared by every user, so this is an instance action
  * (HD-03). The request body is never forwarded: the agent reloads from the settings
@@ -10,12 +10,16 @@
 import { NextResponse } from 'next/server'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { requireAdmin } from '@/lib/session'
+import { withRouteErrors } from '@/lib/routeErrors'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://agent:8080'
 
-export async function POST() {
+export const POST = withRouteErrors('Could not reload the MCP servers', async () => {
   const admin = await requireAdmin()
   if (admin instanceof NextResponse) return admin
+  const denied = await requireSessionPermission(admin, 'platform:agent_mcp')
+  if (denied) return denied
   try {
     const upstream = await fetch(`${AGENT_API_URL}/mcp/reload`, {
       method: 'POST',
@@ -29,4 +33,4 @@ export async function POST() {
     console.error('Failed to proxy /mcp/reload:', error)
     return NextResponse.json({ error: 'agent unreachable' }, { status: 502 })
   }
-}
+})

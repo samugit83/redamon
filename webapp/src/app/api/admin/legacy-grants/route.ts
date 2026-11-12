@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, type Session, type SessionOptions } from '@/lib/session'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -39,7 +40,8 @@ async function reviewer(opts: SessionOptions = {}): Promise<Session | NextRespon
       { status: 403 },
     )
   }
-  return session
+  if (session instanceof NextResponse) return session
+  return (await requireSessionPermission(session, PERMISSION, opts)) ?? session
 }
 
 export const GET = withRouteErrors('Could not read the legacy access review', async () => {

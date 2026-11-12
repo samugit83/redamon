@@ -125,12 +125,12 @@ p2-pwpolicy-own-repeated	2.8	member_b	PUT	/api/users/${MEMBER_B_ID}/password	{"n
 # or link is made. The public paths are reached with no cookie; with the switch off they are like
 # any unknown path (sign-in redirect, 401). The unknown-link row costs one lookup of the per-copy
 # ceiling (30 a minute).
-p2-invite-create-member	2.9	member_a	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	403;has=users:invite	req:ID-14 identity:on
+p2-invite-create-member	2.9	member_a	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	403;has=users:create	req:ID-14 identity:on
 p2-invite-create-anon	2.9	anon	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	401	req:ID-14
 p2-invite-create-bad	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Invitee"}	400;has=invalid_field	req:ID-14 identity:on
 p2-invite-create-taken	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Copy","email":"RBAC-MEMBER-C@E2E.LOCAL"}	409;has=email_taken	req:ID-14 identity:on
 p2-invite-create-off	2.9	admin_a	POST	/api/users/invite	{"name":"RBAC Invitee","email":"rbac-invitee@e2e.local"}	404	req:ID-14 identity:off
-p2-invite-resend-member	2.9	member_a	POST	/api/users/${MEMBER_C_ID}/invite/resend	{}	403;has=users:invite	req:ID-14 identity:on
+p2-invite-resend-member	2.9	member_a	POST	/api/users/${MEMBER_C_ID}/invite/resend	{}	403;has=users:create	req:ID-14 identity:on
 p2-invite-resend-active	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/resend	{}	409;has=not_invited	req:ID-14 identity:on
 p2-invite-cancel-active	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/cancel	{}	409;has=not_invited	req:ID-14 identity:on
 p2-invite-cancel-off	2.9	admin_a	POST	/api/users/${MEMBER_C_ID}/invite/cancel	{}	404	req:ID-14 identity:off

@@ -7,6 +7,7 @@ import { rbacFlags } from '@/lib/authz/flags'
 import { ROOT_ONLY_REFUSAL, forbiddenAs, ownAccountRefusal, revokeSessions, routeNotFound } from '@/lib/authz/accountStatus'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { adminTargetGate } from '@/lib/authz/rootPowers'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -23,6 +24,8 @@ export const POST = withRouteErrors('Could not sign the account out', async (req
   if (!rbacFlags().identity) return routeNotFound()
   const session = await requireAdmin({ fresh: true })
   if (session instanceof NextResponse) return forbiddenAs(session, 'users:revoke_sessions')
+  const denied = await requireSessionPermission(session, 'users:revoke_sessions', { fresh: true })
+  if (denied) return denied
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed

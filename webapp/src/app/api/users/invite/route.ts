@@ -5,6 +5,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rbacFlags } from '@/lib/authz/flags'
 import { routeNotFound } from '@/lib/authz/accountStatus'
 import { forbiddenToInvite, inviteMember, withInviteErrors } from '@/lib/authz/invites'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 
 /**
  * POST /api/users/invite {name, email} (step 2.9, ID-14, ID-36): invite a person. Creates a
@@ -15,6 +16,8 @@ export const POST = withInviteErrors('invite', 'Could not invite the user', asyn
   if (!rbacFlags().identity) return routeNotFound()
   const session = await requireAdmin({ fresh: true })
   if (session instanceof NextResponse) return forbiddenToInvite(session)
+  const denied = await requireSessionPermission(session, 'users:create', { fresh: true })
+  if (denied) return denied
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed

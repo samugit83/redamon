@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAdmin } from '@/lib/session'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 import { createActAsToken, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeActAsAudit } from '@/lib/audit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
@@ -37,6 +38,8 @@ function cookieOpts(request: NextRequest, maxAge = PHASE1_ACT_AS_SECONDS) {
 export const POST = withRouteErrors('Could not switch user', async (request: NextRequest) => {
   const admin = await requireAdmin({ fresh: true })
   if (admin instanceof NextResponse) return admin
+  const denied = await requireSessionPermission(admin, 'users:impersonate', { fresh: true })
+  if (denied) return denied
 
   // Same-origin JSON whatever the identity switch (ID-26, step 2.12): acting as someone is
   // taking over their data.

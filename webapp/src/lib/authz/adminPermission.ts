@@ -26,7 +26,6 @@ import { forbiddenResponse } from './guards'
 import { PERMISSIONS, assertKnownPermission, type PermissionId } from './permissions'
 import { loadPrincipal } from './principal'
 import { sessionPrincipal } from './sessionPrincipal'
-import { LEGACY_GRANTS } from './updateReview'
 
 export interface AdminPermissionOptions {
   /** A critical path: the account (when not already read fresh), the Root and the sets read again. */
@@ -40,8 +39,12 @@ function assertAdministration(permission: PermissionId): void {
   }
 }
 
-/** The shared tools a member holds through a legacy grant (§14.7): `platform:<grant>`. */
-const LEGACY_GRANTED: ReadonlySet<string> = new Set(LEGACY_GRANTS.map((g) => `platform:${g}`))
+/**
+ * The shared tools a member holds through a legacy grant (§14.7), `platform:<grant>` of
+ * updateReview.ts LEGACY_GRANTS (adminPermission.test.ts holds them equal). Written out: this
+ * module loads with the session helpers, so it imports nothing a route test may mock away.
+ */
+export const LEGACY_GRANTED: ReadonlySet<PermissionId> = new Set<PermissionId>(['platform:kali_terminal', 'platform:shell_sessions', 'platform:tunnels'])
 
 /** Whether the switch-off answer for `permission` is the account type alone (see the header). */
 export function decidedByAccountType(permission: PermissionId): boolean {

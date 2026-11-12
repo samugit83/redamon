@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, type Session } from '@/lib/session'
+import { requireSessionPermission } from '@/lib/authz/adminPermission'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -21,7 +22,8 @@ async function admin(): Promise<Session | NextResponse> {
       { status: 403 },
     )
   }
-  return session
+  if (session instanceof NextResponse) return session
+  return (await requireSessionPermission(session, 'users:assign_permissions')) ?? session
 }
 
 export const GET = withRouteErrors('Could not read the update notes', async () => {

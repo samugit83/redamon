@@ -231,7 +231,7 @@ export function privateJson(body: unknown, status = 200): NextResponse {
 export function forbiddenToInvite(res: NextResponse): NextResponse {
   if (res.status !== 403) return res
   return NextResponse.json(
-    { error: 'Only an administrator can invite people or manage their invites.', code: 'forbidden', permission: 'users:invite' },
+    { error: 'Only an administrator can invite people or manage their invites.', code: 'forbidden', permission: 'users:create' },
     { status: 403 },
   )
 }
