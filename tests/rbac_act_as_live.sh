@@ -9,8 +9,8 @@
 # with its own password and within the instance's reason rule; the cookie lives the chosen 15
 # minutes; /api/auth/me names whom it acts as, why and until when; the start row carries reason and
 # duration and the member gets an acted_as notice (unless Root turned it off); changing the
-# member's password, email or deleting it answers 403 not_while_acting_as with an act_as.refused
-# row each; acting as rbac-admin-b is Root's (403 root_only); the User manager profile may not act
+# member's password, email or deleting it, and adding an MCP server or an LLM provider to the
+# passwordless managed account, answer 403 not_while_acting_as with an act_as.refused row each; acting as rbac-admin-b is Root's (403 root_only); the User manager profile may not act
 # as anyone (403 users:impersonate); Stop, disabling the member and signing out each end it once
 # with their endedBy (stopped, target_disabled, logout); the member's next sign-in shows the notice.
 #
@@ -77,11 +77,11 @@ seed_out="$(webapp_node e2e-rbac-seed.mjs)" || { echo "seed failed"; exit 1; }
 while IFS= read -r kv; do
   [[ "$kv" =~ ^([A-Z][A-Z0-9_]*)=([A-Za-z0-9@._:-]*)$ ]] && SEED[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
 done <<< "$seed_out"
-for k in ADMIN_A_EMAIL ADMIN_A_ID ADMIN_B_ID MEMBER_C_EMAIL MEMBER_C_ID USERMGR_EMAIL RBAC_PASSWORD; do
+for k in ADMIN_A_EMAIL ADMIN_A_ID ADMIN_B_ID MEMBER_C_EMAIL MEMBER_C_ID MANAGED_ID USERMGR_EMAIL RBAC_PASSWORD; do
   [ -n "${SEED[$k]:-}" ] || { echo "seed output lacks $k"; exit 1; }
 done
 safe_id() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
-for k in ADMIN_A_ID ADMIN_B_ID MEMBER_C_ID; do safe_id "${SEED[$k]}" || { echo "unexpected fixture id"; exit 1; }; done
+for k in ADMIN_A_ID ADMIN_B_ID MEMBER_C_ID MANAGED_ID; do safe_id "${SEED[$k]}" || { echo "unexpected fixture id"; exit 1; }; done
 A="${SEED[ADMIN_A_ID]}"; C="${SEED[MEMBER_C_ID]}"
 
 PASS=0; FAIL=0
@@ -185,6 +185,21 @@ else
   echo "== Ends, each once with how (IM-11) =="
   code="$(call "$ADMIN" DELETE /api/auth/act-as)"; call "$ADMIN" DELETE /api/auth/act-as >/dev/null
   ok=0; [ "$code" = 200 ] && [ "$(ends stopped)" = 1 ] && ok=1; check "Stop, twice -> one end row, stopped" "$ok"
+
+  # rbac-managed has no password: act-as is how it is run, so 1.6 lets its catalogs be written; the
+  # never-list still keeps where its keys and data go with it.
+  M="${SEED[MANAGED_ID]}"
+  code="$(call "$ADMIN" POST /api/auth/act-as "$(act_as_body "$M" 'rbac live 3.14 managed' "$MINUTES" pw)")"
+  ok=0; [ "$code" = 200 ] && ok=1; check "rbac-admin-a acts as the managed account -> $code" "$ok"
+  code="$(call "$ADMIN" POST "/api/users/$M/mcp" '{"name":"rbac-live","transport":"http","url":"https://mcp.e2e.test/mcp"}')"
+  ok=0; [ "$code" = 403 ] && [ "$(field "b.get('code')")" = not_while_acting_as ] && ok=1
+  check "adding an MCP server to it -> $code not_while_acting_as" "$ok"
+  code="$(call "$ADMIN" POST "/api/users/$M/llm-providers" '{"providerType":"openai_compatible","name":"rbac-live","baseUrl":"https://llm.e2e.test/v1","apiKey":"sk-rbac-live-fake"}')"
+  ok=0; [ "$code" = 403 ] && [ "$(field "b.get('code')")" = not_while_acting_as ] && ok=1
+  check "adding an LLM provider to it -> $code not_while_acting_as" "$ok"
+  n="$(printf "select count(*) from audit_log where action = 'act_as.refused' and actor_id = '%s' and on_behalf_of_user_id = '%s' and after->>'action' in ('add_mcp_server', 'change_llm_endpoint');\n" "$A" "$M" | db_sql)"
+  ok=0; [ "$n" = 2 ] && ok=1; check "both refusals audited" "$ok"
+  call "$ADMIN" DELETE /api/auth/act-as >/dev/null
 
   call "$ADMIN" POST /api/auth/act-as "$(act_as_body "$C" 'rbac live 3.14 b' "$MINUTES" pw)" >/dev/null
   code="$(call "$ADMIN" POST "/api/users/$C/disable" '{}')"; ok=0; [ "$code" = 200 ] && ok=1
