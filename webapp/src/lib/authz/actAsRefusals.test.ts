@@ -31,9 +31,39 @@ vi.mock('next/headers', () => ({
 vi.mock('@/lib/prisma', async () => {
   const { createAccountDb } = await import('@/lib/authz/__testing__/accountDb')
   const db = createAccountDb()
+  // The rows the self-service routes read before they decide (a provider, the MCP servers, a project,
+  // the GitHub token); every write past a refusal would fail loudly here.
+  Object.assign(db, {
+    userLlmProvider: {
+      findFirst: async () => ({ id: 'prov-1', userId: 'member-1', providerType: 'openai_compatible', name: 'p', baseUrl: 'https://llm.e2e.test/v1', apiKey: 'sk-fake-key' }),
+      update: async () => { throw new Error('provider written') },
+      create: async () => { throw new Error('provider written') },
+    },
+    userSettings: {
+      findUnique: async () => ({
+        githubAccessToken: 'ghp_fake_e2e_token',
+        mcpServers: [{ id: 'srv-1', name: 's', transport: 'http', url: 'https://mcp.e2e.test/mcp', enabled: false }],
+      }),
+      upsert: async () => { throw new Error('settings written') },
+      update: async () => { throw new Error('settings written') },
+    },
+    userChatSkill: {
+      create: async () => { throw new Error('chat skill written') },
+      count: async () => 0,
+      findFirst: async () => ({ id: 'cs-1', userId: 'member-1' }),
+      update: async () => { throw new Error('chat skill written') },
+      delete: async () => { throw new Error('chat skill written') },
+    },
+    project: { ...db.project, findUnique: async ({ where }: { where: { id: string } }) => (where.id === 'P-member-1' ? { id: 'P-member-1', userId: 'member-1' } : null) },
+  })
   h.db = db
   return { default: db, prisma: db }
 })
+const agentCalls = vi.hoisted(() => ({ n: 0 }))
+vi.mock('@/app/api/agent/agentProxy', async (orig) => ({
+  ...(await orig<typeof import('@/app/api/agent/agentProxy')>()),
+  callAgent: async () => { agentCalls.n++; throw new Error('the agent was called') },
+}))
 
 import bcrypt from 'bcryptjs'
 import type { AccountDb } from './__testing__/accountDb'
@@ -50,6 +80,16 @@ import {
 } from '@/lib/userSkillWrites'
 import { adoptUserSkillVersion } from '@/lib/plugins/userSkillAdoption'
 import { PUT as editUser, DELETE as deleteUser } from '@/app/api/users/[id]/route'
+import { POST as createChatSkill } from '@/app/api/users/[id]/chat-skills/route'
+import { PUT as editChatSkill, DELETE as deleteChatSkill } from '@/app/api/users/[id]/chat-skills/[skillId]/route'
+import { POST as importChatSkills } from '@/app/api/users/[id]/chat-skills/import-community/route'
+import { POST as importAgentSkills } from '@/app/api/users/[id]/attack-skills/import-community/route'
+import { POST as createProvider } from '@/app/api/users/[id]/llm-providers/route'
+import { PUT as editProvider } from '@/app/api/users/[id]/llm-providers/[providerId]/route'
+import { POST as addMcpServer } from '@/app/api/users/[id]/mcp/route'
+import { PUT as editMcpServer } from '@/app/api/users/[id]/mcp/[serverId]/route'
+import { POST as importUrl } from '@/app/api/agent/workspace/import-url/route'
+import { POST as resolveUrl } from '@/app/api/agent/workspace/import-url/resolve/route'
 import { PUT as setPassword } from '@/app/api/users/[id]/password/route'
 import { POST as resetCredentials } from '@/app/api/users/[id]/reset-credentials/route'
 import { POST as mintToken } from '@/app/api/users/[id]/mcp-tokens/route'
@@ -218,5 +258,59 @@ describe('writing the agent skills of the account acted as, on every path (the u
     await as('admin-1')
     vi.spyOn(db(), '$transaction').mockRejectedValue(new Error('reached the write'))
     await expect(deleteUserSkill({ userId: 'member-1', skillId: 's1' }, ADMIN)).rejects.toThrow('reached the write')
+  })
+})
+
+describe('the self-service catalogs of the account acted as (a passwordless managed account, which 1.6 lets the admin write)', () => {
+  const p2 = <T extends Record<string, string>>(id: string, other: T) => ({ params: Promise.resolve({ id, ...other }) })
+  const cases: Array<[string, () => Promise<Response>, string]> = [
+    ['create a chat skill', () => createChatSkill(req('POST', { name: 'x', content: 'x' }), params('member-1')), 'write_chat_skills'],
+    ['edit a chat skill', () => editChatSkill(req('PUT', { name: 'y' }), p2('member-1', { skillId: 'cs-1' })), 'write_chat_skills'],
+    ['delete a chat skill', () => deleteChatSkill(req('DELETE'), p2('member-1', { skillId: 'cs-1' })), 'write_chat_skills'],
+    ['import the community chat skills', () => importChatSkills(req('POST', {}), params('member-1')), 'write_chat_skills'],
+    ['import the community agent skills', () => importAgentSkills(req('POST', {}), params('member-1')), 'write_agent_skills'],
+    ['add an LLM provider', () => createProvider(req('POST', { providerType: 'openai_compatible', name: 'p', baseUrl: 'https://evil.e2e.test/v1', apiKey: 'sk-x' }), params('member-1')), 'change_llm_endpoint'],
+    ["change an LLM provider's endpoint", () => editProvider(req('PUT', { baseUrl: 'https://evil.e2e.test/v1', apiKey: 'sk-new' }), p2('member-1', { providerId: 'prov-1' })), 'change_llm_endpoint'],
+    ["change an LLM provider's key", () => editProvider(req('PUT', { apiKey: 'sk-new' }), p2('member-1', { providerId: 'prov-1' })), 'change_llm_endpoint'],
+    ['add an outbound MCP server', () => addMcpServer(req('POST', { name: 'm', transport: 'http', url: 'https://evil.e2e.test/mcp' }), params('member-1')), 'add_mcp_server'],
+    ["re-point an MCP server", () => editMcpServer(req('PUT', { name: 's', transport: 'http', url: 'https://evil.e2e.test/mcp', enabled: false }), p2('member-1', { serverId: 'srv-1' })), 'change_mcp_endpoint'],
+  ]
+
+  test.each(cases)('%s: 403 not_while_acting_as, audited, nothing written', async (_name, call, action) => {
+    await as('admin-1', 'member-1')
+    await expectRefused(await call(), action)
+  })
+
+  test("a provider's name change stays allowed: it reaches the write", async () => {
+    await as('admin-1', 'member-1')
+    const res = await editProvider(req('PUT', { name: 'renamed', apiKey: '••••••••' }), p2('member-1', { providerId: 'prov-1' }))
+    expect(res.status).toBe(500)
+    expect(refusals()).toEqual([])
+  })
+
+  test('switch off: the same writes are not refused for acting (they reach the write)', async () => {
+    setFlagsForTests({ identity: true, permissions: false })
+    await as('admin-1', 'member-1')
+    expect((await createChatSkill(req('POST', { name: 'x', content: 'x' }), params('member-1'))).status).toBe(500)
+    expect(refusals()).toEqual([])
+  })
+})
+
+describe("using the GitHub token of the account acted as (workspace import)", () => {
+  const link = { projectId: 'P-member-1', url: 'https://github.com/e2e-org/private-repo' }
+
+  test.each([['import', importUrl], ['link check', resolveUrl]] as const)('%s of a GitHub link: 403 instead of importing without the token', async (_name, route) => {
+    await as('admin-1', 'member-1')
+    await expectRefused(await route(req('POST', link)), 'use_github_token')
+    expect(agentCalls.n).toBe(0)
+  })
+
+  test('a link that is not GitHub, and the switch off, go on without a token (to the agent)', async () => {
+    await as('admin-1', 'member-1')
+    await importUrl(req('POST', { ...link, url: 'https://example.e2e.test/archive.zip' })).catch(() => null)
+    setFlagsForTests({ identity: true, permissions: false })
+    await importUrl(req('POST', link)).catch(() => null)
+    expect(agentCalls.n).toBe(2)
+    expect(refusals()).toEqual([])
   })
 })

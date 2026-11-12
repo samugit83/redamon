@@ -5,6 +5,7 @@ import { MAX_CHAT_SKILL_CONTENT_SIZE } from '@/lib/userSkills'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, safeErrorCode, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 // Mirror the caps the manual POST path enforces so bulk import cannot be used
 // to bypass them (content size, per-user ceiling, description length).
@@ -25,6 +26,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:chat_skills')
     if (selfRefused) return selfRefused
+    const actingAs = await refuseWhileActingAsOn(id, 'write_chat_skills')
+    if (actingAs) return actingAs
 
     let catalogRes: Response
     try {

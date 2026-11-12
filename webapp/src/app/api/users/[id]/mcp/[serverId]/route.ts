@@ -15,6 +15,7 @@ import { mcpServerEndpointChange, mcpServerSecretReentry, secretReentryResponse 
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { reloadAgentMcp } from '../reload'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
   params: Promise<{ id: string; serverId: string }>
@@ -46,6 +47,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // A new URL must come with the token and header values typed again (HD-24):
     // the masked ones restored below would otherwise follow the server there.
+    if (existingServer && mcpServerEndpointChange(existingServer, body)) {
+      const actingAs = await refuseWhileActingAsOn(id, 'change_mcp_endpoint')
+      if (actingAs) return actingAs
+    }
     if (existingServer) {
       const reentry = mcpServerSecretReentry(existingServer, body)
       if (reentry) return secretReentryResponse(reentry)

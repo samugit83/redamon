@@ -3,7 +3,7 @@ import { withRouteErrors } from '@/lib/routeErrors'
 import { callAgent } from '../../../agentProxy'
 import { codedAgentError } from '../../codedAgentError'
 import { requirePermission } from '@/lib/authz/guards'
-import { importCaller, importProjectProblem, tokenFor, urlProblem } from '../importUrlRequest'
+import { githubTokenRefusal, importCaller, importProjectProblem, tokenFor, urlProblem } from '../importUrlRequest'
 
 const FAILED = 'Failed to check the link'
 
@@ -23,6 +23,8 @@ export const POST = withRouteErrors(FAILED, async (request: NextRequest) => {
   const bad = urlProblem(body.url)
   if (bad) return bad
   const url = String(body.url).trim()
+  const actingAs = await githubTokenRefusal(auth, url)
+  if (actingAs) return actingAs
   const token = await tokenFor(guard, url)
   const call = await callAgent('/workspace/import-url/resolve', {
     method: 'POST',

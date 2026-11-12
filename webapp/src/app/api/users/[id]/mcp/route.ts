@@ -15,6 +15,7 @@ import { actingAccount, ownerRunsStdio, stdioRefusal, tokenEnvVarRefusal } from 
 import { internalError } from '@/lib/routeErrors'
 import { reloadAgentMcp } from './reload'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 // Re-exported for the per-server [serverId] route which imports from here.
 export { maskMcpServersForApi, restoreMaskedToken }
@@ -50,6 +51,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:mcp_servers')
     if (selfRefused) return selfRefused
+    // An outbound server decides where the account's tool calls and keys go (§4.7).
+    const actingAs = await refuseWhileActingAsOn(id, 'add_mcp_server')
+    if (actingAs) return actingAs
     const body = await request.json()
 
     const refused = await refuseUserServer(request, id, body)

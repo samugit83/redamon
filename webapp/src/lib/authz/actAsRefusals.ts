@@ -33,6 +33,7 @@ const ACTIONS = {
   change_shares: 'changing their project shares',
   transfer_projects: 'transferring their projects',
   add_mcp_server: 'adding an MCP server',
+  change_mcp_endpoint: "changing where an MCP server sends their keys and data",
   change_llm_endpoint: "changing an LLM provider's endpoint, type or key",
 } as const
 
@@ -98,6 +99,17 @@ export async function actingAsOwnerRefusal(
   const session = await getSession()
   if (!session || session.userId !== actorId) return null
   return actingAsRefusal({ session, targetUserId: ownerId }, action)
+}
+
+/**
+ * refuseWhileActingAs for a route that holds no session object (it checked access with
+ * requireUserAccess): the signed-in session is read, with the switch on only; an internal-key or
+ * anonymous caller acts as nobody.
+ */
+export async function refuseWhileActingAsOn(targetUserId: string, action: ActingAsAction): Promise<NextResponse | null> {
+  if (!rbacFlags().permissions) return null
+  const session = await getSession()
+  return session ? refuseWhileActingAs({ session, targetUserId }, action) : null
 }
 
 /** Null when allowed, else the 403 `{error, code: 'not_while_acting_as', action}` the route returns. */

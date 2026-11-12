@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
 import { MAX_CHAT_SKILL_CONTENT_SIZE } from '@/lib/userSkills'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
   params: Promise<{ id: string; skillId: string }>
@@ -40,6 +41,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:chat_skills')
     if (selfRefused) return selfRefused
+    const actingAs = await refuseWhileActingAsOn(id, 'write_chat_skills')
+    if (actingAs) return actingAs
     const body = await request.json()
 
     const existing = await prisma.userChatSkill.findFirst({
@@ -107,6 +110,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:chat_skills')
     if (selfRefused) return selfRefused
+    const actingAs = await refuseWhileActingAsOn(id, 'write_chat_skills')
+    if (actingAs) return actingAs
 
     const existing = await prisma.userChatSkill.findFirst({
       where: { id: skillId, userId: id },

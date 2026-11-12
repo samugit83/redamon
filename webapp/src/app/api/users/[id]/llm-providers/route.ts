@@ -8,6 +8,7 @@ import { internalError } from '@/lib/routeErrors'
 import { maskProvider } from '@/lib/llmProviderMask'
 import { sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -68,6 +69,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // provider (and thus a harvestable secret) to an arbitrary account.
     const denied = await requireAccountWrite(id)
     if (denied) return denied
+    // A new provider decides where the account's keys and prompts go: never while acting as it (§4.7).
+    const actingAs = await refuseWhileActingAsOn(id, 'change_llm_endpoint')
+    if (actingAs) return actingAs
 
     // An account deleted after the session check must fail as a readable 404,
     // not as a foreign-key 500 (issue #173).

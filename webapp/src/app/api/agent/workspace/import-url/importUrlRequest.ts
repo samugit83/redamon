@@ -10,6 +10,8 @@
  */
 import { NextResponse } from 'next/server'
 import type { PermissionContext } from '@/lib/authz/guards'
+import { rbacFlags } from '@/lib/authz/flags'
+import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { actingAsUserId } from '@/lib/workspaceImport/audit'
 import { githubTokenForImport } from '@/lib/workspaceImport/githubToken'
 
@@ -43,6 +45,17 @@ export function urlProblem(url: unknown): NextResponse | null {
     return refuse('credentials_in_url', 'The link holds a user name or password. Remove it; private GitHub repositories use the GitHub token in Global Settings.')
   }
   return null
+}
+
+/**
+ * Permissions switch on (step 3.14): while acting as an account that holds a GitHub token, a GitHub
+ * link answers the never-list 403 instead of importing without the token, so the admin knows why a
+ * private repository would not come. Off, the import goes on with no token, as before.
+ */
+export async function githubTokenRefusal(auth: PermissionContext, url: string): Promise<NextResponse | null> {
+  if (!rbacFlags().permissions || !auth.actingAs) return null
+  if (!(await githubTokenForImport(auth.actingAs.id, url))) return null
+  return refuseWhileActingAs({ session: auth.session, targetUserId: auth.actingAs.id }, 'use_github_token')
 }
 
 export async function tokenFor(guard: { userId: string; actingAs?: string }, url: string): Promise<string> {

@@ -10,6 +10,7 @@ import {
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -38,6 +39,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:attack_skills')
     if (selfRefused) return selfRefused
+    // It writes through createUserSkillTx under its own lock, past userSkillWrites' guard (step 3.14).
+    const actingAs = await refuseWhileActingAsOn(id, 'write_agent_skills')
+    if (actingAs) return actingAs
 
     let catalogRes: Response
     try {

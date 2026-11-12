@@ -4,7 +4,8 @@ import { isInternalRequest, requireUserAccess } from '@/lib/session'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { internalError } from '@/lib/routeErrors'
-import { llmProviderEndpointChange, llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { isMaskedSecret, llmProviderEndpointChange, llmProviderSecretReentry, secretReentryResponse } from '@/lib/authz/secretEndpointRebind'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { maskProvider, restoreMaskedHeaders } from '@/lib/llmProviderMask'
 import { requireSelfPermission } from '@/lib/authz/selfService'
@@ -101,6 +102,15 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         { error: 'The backend of a Jev provider cannot be changed' },
         { status: 400 },
       )
+    }
+
+    // Its endpoint, type and keys decide where the account's keys and prompts go: never while
+    // acting as it (§4.7). A name, model or reasoning change stays allowed.
+    const typesKey = ['apiKey', 'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken']
+      .some((f) => typeof body[f] === 'string' && body[f] !== '' && !isMaskedSecret(body[f]))
+    if (typesKey || llmProviderEndpointChange(existing, body)) {
+      const actingAs = await refuseWhileActingAsOn(id, 'change_llm_endpoint')
+      if (actingAs) return actingAs
     }
 
     // A new base URL or type must come with the key typed again (HD-24): the
