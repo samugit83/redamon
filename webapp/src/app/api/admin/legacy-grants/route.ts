@@ -4,6 +4,7 @@ import { withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAsUserId } from '@/lib/userAudit'
+import { sessionActor } from '@/lib/auditActor'
 import { closeAgentSockets } from '@/lib/agentSockets'
 import {
   decideAllLegacyGrants, decideLegacyGrant, isLegacyGrant, listLegacyHolders, type DecisionActor,
@@ -49,7 +50,9 @@ export const POST = withRouteErrors('Could not record the legacy access decision
   if (parsed instanceof NextResponse) return parsed
   const { action, userId, grant } = parsed.body
 
-  const actor: DecisionActor = { actorId: session.userId, actingAsUserId: await actingAsUserId(request, session) }
+  const actor: DecisionActor = {
+    actorId: session.userId, actingAsUserId: await actingAsUserId(request, session), actorEmail: sessionActor(session).email,
+  }
 
   if (action === 'keep_all' || action === 'remove_all') {
     const result = await decideAllLegacyGrants(actor, action)

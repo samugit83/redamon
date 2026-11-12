@@ -4,6 +4,7 @@ import { withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAsUserId } from '@/lib/userAudit'
+import { sessionActor } from '@/lib/auditActor'
 import { dismissWhatsNew, whatsNewState } from '@/lib/authz/updateReview'
 
 /**
@@ -39,7 +40,7 @@ export const POST = withRouteErrors('Could not dismiss the update notes', async 
     return NextResponse.json({ error: 'action must be dismiss.', code: 'invalid_action' }, { status: 400 })
   }
   const { changed } = await dismissWhatsNew({
-    actorId: session.userId, actingAsUserId: await actingAsUserId(request, session),
+    actorId: session.userId, actingAsUserId: await actingAsUserId(request, session), actorEmail: sessionActor(session).email,
   })
   return NextResponse.json({ dismissed: true, changed })
 })

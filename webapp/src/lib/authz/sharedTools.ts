@@ -19,6 +19,7 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import type { Principal } from './principal'
@@ -33,7 +34,7 @@ export interface SharedToolAccess {
   via: 'admin' | 'legacy' | 'compat' | null
 }
 
-export type SharedToolPrincipal = Pick<Principal, 'id' | 'role' | 'legacyGrants' | 'createdAt'>
+export type SharedToolPrincipal = Pick<Principal, 'id' | 'role' | 'legacyGrants' | 'createdAt'> & { email?: string }
 
 // The backfill script's CUTOFF_ACTION (a test keeps them equal).
 export const LEGACY_GRANTS_CUTOFF_ACTION = 'system.rbac_legacy_grants_cutoff'
@@ -66,7 +67,7 @@ export async function legacyCutoff(): Promise<Date | null> {
   return cutoff
 }
 
-async function recordCompatUse(userId: string, tool: SharedTool): Promise<void> {
+async function recordCompatUse(userId: string, tool: SharedTool, email: string | undefined): Promise<void> {
   console.warn(`[rbac] shared-tools compat used user=${userId} tool=${tool}`)
   const key = `${userId}\u0000${tool}`
   const at = now().getTime()
@@ -74,7 +75,10 @@ async function recordCompatUse(userId: string, tool: SharedTool): Promise<void> 
   if (last !== undefined && at - last < COMPAT_AUDIT_INTERVAL_MS) return
   // Set before the write, so concurrent uses do not each write a row.
   lastCompatAudit.set(key, at)
-  await writeAudit({ actorId: userId, action: COMPAT_USED_ACTION, targetType: 'shared_tool', targetId: tool })
+  await writeAudit({
+    ...actorFields(auditActorOf({ id: userId, email })),
+    action: COMPAT_USED_ACTION, targetType: 'shared_tool', targetId: tool,
+  })
 }
 
 /**
@@ -94,7 +98,7 @@ export async function sharedToolAccess(
   // No cutoff row means the backfill never ran: no account is known to predate the upgrade.
   const since = await legacyCutoff()
   if (!since || principal.createdAt.getTime() > since.getTime()) return DENIED
-  if (record) await recordCompatUse(principal.id, tool)
+  if (record) await recordCompatUse(principal.id, tool, principal.email)
   return { allowed: true, via: 'compat' }
 }
 

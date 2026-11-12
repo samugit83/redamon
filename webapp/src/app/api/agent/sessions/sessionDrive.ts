@@ -5,6 +5,7 @@
  */
 import { NextResponse } from 'next/server'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
 import {
   authorizeSessionTarget,
   type SessionsViewer,
@@ -36,9 +37,10 @@ export async function auditDrive(
   viewer: SessionsViewer,
   target: SessionTarget,
 ): Promise<void> {
-  const actingAs = viewer.effectiveUserId !== viewer.principal.id ? { actingAsUserId: viewer.effectiveUserId } : {}
+  const actor = auditActorOf(viewer.principal, viewer.effectiveUserId)
+  const actingAs = actor.onBehalfOfUserId ? { actingAsUserId: actor.onBehalfOfUserId } : {}
   await writeAudit({
-    actorId: viewer.principal.id,
+    ...actorFields(actor),
     action,
     targetType: kind === 'session' ? 'msf_session' : 'msf_job',
     targetId: id,

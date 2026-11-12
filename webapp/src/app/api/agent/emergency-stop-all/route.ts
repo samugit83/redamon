@@ -4,6 +4,7 @@ import { requireSession } from '@/lib/session'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { agentErrorResponse, callAgent } from '../agentProxy'
 
 const FAILED = 'Failed to stop agents'
@@ -12,6 +13,7 @@ type Scope = 'all' | 'own'
 
 interface Stopper {
   userId: string
+  actorEmail: string | null
   scope: Scope
   via: SharedToolAccess['via']
 }
@@ -30,7 +32,7 @@ async function stopper(record: boolean): Promise<Stopper | NextResponse> {
   const principal = await loadPrincipal(session.userId)
   if (!principal) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const access = await sharedToolAccess(principal, 'emergency_stop_all', { record })
-  return { userId: principal.id, scope: access.allowed ? 'all' : 'own', via: access.via }
+  return { userId: principal.id, actorEmail: sessionActor(session).email, scope: access.allowed ? 'all' : 'own', via: access.via }
 }
 
 /** The scope a press would have, for the toolbar's tooltip. Asking is not a use of the tool. */
@@ -57,7 +59,7 @@ export const POST = withRouteErrors(FAILED, async () => {
   const { stopped } = await call.res.json()
   const count = typeof stopped === 'number' ? stopped : 0
   await writeAudit({
-    actorId: who.userId,
+    ...actorFields(auditActorOf({ id: who.userId, email: who.actorEmail })),
     action: 'agent.emergency_stop',
     targetType: who.scope === 'all' ? 'instance' : 'user',
     targetId: who.scope === 'all' ? null : who.userId,

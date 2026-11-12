@@ -1,11 +1,21 @@
 /**
  * The `muted_nodes.muted` row of a single mute from the app (HD-14): the row shape
  * the MCP mute tools write (`lib/mcp/muteTools.ts`), with source `ui`. The actor is
- * the real signed-in account; `actingAsUserId` names the project owner an admin
- * was acting as.
+ * the real signed-in account; the project owner an admin was acting as goes in
+ * `onBehalfOfUserId` and, as before that column existed, in `after.actingAsUserId`.
  */
 import { writeAudit } from '@/lib/audit'
-import { realActorUserId, type TriageCaller } from '@/lib/triageClient'
+import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
+import type { TriageCaller } from '@/lib/triageClient'
+
+/** The person signed in; none outside a request scope, where the owner is the actor as before. */
+async function realActor(): Promise<{ id: string; email: string | null } | null> {
+  try {
+    return await signedInActor()
+  } catch {
+    return null
+  }
+}
 
 /**
  * Called with the agent's answer to a `mute`. Only a mute that landed is written:
@@ -18,9 +28,9 @@ export async function auditSingleMute(
   mute: { key: string; reason: string; graphId?: string },
 ): Promise<void> {
   if (answer.status !== 200 || answer.body.muted !== true || answer.body.already === true) return
-  const realActor = await realActorUserId()
+  const actor = auditActorOf((await realActor()) ?? { id: caller.userId }, caller.userId)
   await writeAudit({
-    actorId: realActor ?? caller.userId,
+    ...actorFields(actor),
     action: 'muted_nodes.muted',
     targetType: 'project',
     targetId: caller.projectId,
@@ -33,7 +43,7 @@ export async function auditSingleMute(
         outcome: 'muted',
       }],
       ...(mute.graphId ? { graphId: mute.graphId } : {}),
-      ...(realActor && realActor !== caller.userId ? { actingAsUserId: caller.userId } : {}),
+      ...(actor.onBehalfOfUserId ? { actingAsUserId: actor.onBehalfOfUserId } : {}),
     },
     source: 'ui',
   })

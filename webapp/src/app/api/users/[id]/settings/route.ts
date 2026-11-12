@@ -7,6 +7,7 @@ import { isValidGithubHost } from '@/lib/github/ownerTarget'
 import { ROTATION_TOOL_NAMES } from '@/lib/rotationTools'
 import { requireEffectiveUser } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
 import { featureModelsMap, parseFeatureModelsPatch, type FeatureModelsPatch } from '@/lib/featureModels'
 import { listPluginLlmFeatures } from '@/lib/plugins/pluginLlmFeatures'
 import { maskMcpServersForApi } from '@/lib/mcp/mask'
@@ -57,14 +58,15 @@ function changedTunnelFields(existing: Record<string, unknown> | null, body: Rec
  * the member who kept the `tunnels` legacy grant, or a pre-upgrade account under the
  * escape hatch. `record: false` asks without counting a use of that hatch.
  */
-async function tunnelAccess(record: boolean): Promise<{ access: SharedToolAccess; actorId: string | null }> {
+async function tunnelAccess(record: boolean): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
   const session = await getSession()
-  if (!session) return { access: { allowed: false, via: null }, actorId: null }
+  if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
+  const actor = auditActorOf(sessionActor(session))
   // getSession read the role from the database: an admin needs no second read.
-  if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actorId: session.userId }
+  if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actor }
   const principal = await loadPrincipal(session.userId)
-  if (!principal) return { access: { allowed: false, via: null }, actorId: null }
-  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actorId: principal.id }
+  if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
+  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
 }
 
 /**
@@ -372,17 +374,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // The tunnel is one listener for the whole instance (HD-06): changing it is refused
     // here, before any check of the request's values and before anything is written.
     const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
-    let tunnelActorId: string | null = null
+    let tunnelActor = auditActorOf(null)
     let tunnelVia = 'internal'
     if (tunnelChanges.length && !isInternalRequest(request)) {
-      const { access, actorId } = await tunnelAccess(true)
+      const { access, actor } = await tunnelAccess(true)
       if (!access.allowed || !access.via) {
         return NextResponse.json(
           { error: TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },
           { status: 403 },
         )
       }
-      tunnelActorId = actorId
+      tunnelActor = actor
       tunnelVia = access.via
     }
 
@@ -568,7 +570,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (tunnelChanges.length) {
       // Which fields changed and through what right, never their values.
       await writeAudit({
-        actorId: tunnelActorId,
+        ...actorFields(tunnelActor),
         action: 'settings.tunnel_changed',
         targetType: 'user',
         targetId: id,

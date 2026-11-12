@@ -9,7 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { writeAudit } from '@/lib/audit'
-import { getSession, isInternalRequest } from '@/lib/session'
+import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
+import { isInternalRequest } from '@/lib/session'
 import {
   STDIO_ADMIN_ONLY_CODE, STDIO_ADMIN_ONLY_MESSAGE, TOKEN_ENV_VAR_CODE, TOKEN_ENV_VAR_MESSAGE,
   isStdioServer,
@@ -22,18 +23,20 @@ export async function ownerRunsStdio(userId: string): Promise<boolean> {
 }
 
 /** The signed-in account behind a request, for the audit row; null for the internal key. */
-export async function actingAccount(request: NextRequest): Promise<string | null> {
+export async function actingAccount(request: NextRequest): Promise<{ id: string; email: string | null } | null> {
   if (isInternalRequest(request)) return null
-  return (await getSession())?.userId ?? null
+  return signedInActor()
 }
 
 /** 403 `stdio_admin_only`, audited as `mcp_server.stdio_refused`. */
 export async function stdioRefusal(
-  { actorId, ownerId, serverId, via }: { actorId: string | null; ownerId: string; serverId: unknown; via: 'save' | 'test' },
+  { actorId, actorEmail, ownerId, serverId, via }: {
+    actorId: string | null; actorEmail?: string | null; ownerId: string; serverId: unknown; via: 'save' | 'test'
+  },
   extra: Record<string, unknown> = {},
 ): Promise<NextResponse> {
   await writeAudit({
-    actorId,
+    ...actorFields(auditActorOf(actorId ? { id: actorId, email: actorEmail } : null)),
     action: 'mcp_server.stdio_refused',
     targetType: 'user',
     targetId: ownerId,

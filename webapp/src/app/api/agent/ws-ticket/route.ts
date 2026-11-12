@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getEffectiveUser, getSession } from '@/lib/session'
+import { getEffectiveUser } from '@/lib/session'
 import { requireProjectAccess } from '@/lib/access'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
@@ -54,10 +55,13 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   if (access instanceof NextResponse) return access
 
   let actor: string | undefined
+  let actorEmail: string | null = null
   let terminalVia: SharedToolAccess['via'] = null
   if (socket === 'kali-terminal') {
     // Read, not swallowed: a failed read is a coded 500, never a refusal or a grant.
-    actor = (await getSession())?.userId
+    const signedIn = await signedInActor()
+    actor = signedIn?.id
+    actorEmail = signedIn?.email ?? null
     const real = actor ? await loadPrincipal(actor) : null
     if (!real) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -87,7 +91,7 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
 
   if (ticket && socket === 'kali-terminal' && actor) {
     await writeAudit({
-      actorId: actor,
+      ...actorFields(auditActorOf({ id: actor, email: actorEmail }, eff.userId)),
       action: 'agent.terminal_opened',
       targetType: 'project',
       targetId: projectId,
@@ -101,7 +105,7 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
 /** The signed-in person, which differs from the effective user while an admin simulates. */
 async function realActorOf(): Promise<string | undefined> {
   try {
-    return (await getSession())?.userId
+    return (await signedInActor())?.id
   } catch {
     return undefined
   }

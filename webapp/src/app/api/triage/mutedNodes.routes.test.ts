@@ -342,6 +342,7 @@ describe('POST /api/triage/mute', () => {
     expect(mockAudit).toHaveBeenCalledTimes(1)
     expect(mockAudit).toHaveBeenCalledWith({
       actorId: 'admin-bob',
+      onBehalfOfUserId: OWNER,
       action: 'muted_nodes.muted',
       targetType: 'project',
       targetId: PROJECT,

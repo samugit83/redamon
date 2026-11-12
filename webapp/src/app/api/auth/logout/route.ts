@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { getClientMeta } from '@/lib/requestMeta'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { getSession } from '@/lib/session'
@@ -12,7 +13,7 @@ export async function POST(request: NextRequest) {
   const session = await getSession().catch(() => null)
   const actingAs = session ? await actingAsUserId(request, session) : null
   await writeAudit({
-    actorId: session?.userId ?? null,
+    ...actorFields(auditActorOf(session && sessionActor(session), actingAs)),
     action: 'auth.logout', targetType: 'session',
     after: {
       ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent,

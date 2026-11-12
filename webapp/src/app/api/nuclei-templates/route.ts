@@ -11,6 +11,7 @@ import { getEffectiveUser, requireSession, type Session } from '@/lib/session'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { ownershipOf, templatesRoot, type TemplateOwnership } from '@/lib/nucleiTemplateOwnership'
 
 const TEMPLATES_PATH = templatesRoot()
@@ -119,6 +120,11 @@ async function managesAll(session: Session, record: boolean): Promise<SharedTool
   const principal = await loadPrincipal(session.userId)
   if (!principal) return DENIED
   return sharedToolAccess(principal, 'nuclei_templates_all', { record })
+}
+
+/** The audit actor: the signed-in account, and the account it acts as when acting. */
+function callerActor(caller: Caller) {
+  return actorFields(auditActorOf(sessionActor(caller.session), caller.userId))
 }
 
 function forbidden(error: string): NextResponse {
@@ -306,7 +312,7 @@ export async function POST(request: NextRequest) {
     }
 
     await writeAudit({
-      actorId: caller.session.userId,
+      ...callerActor(caller),
       action: 'nuclei_template.upload',
       targetType: 'nuclei_template',
       targetId: relPath,
@@ -379,7 +385,7 @@ export async function DELETE(request: NextRequest) {
       await prisma.nucleiTemplate.deleteMany({ where: { path: safePath } })
 
       await writeAudit({
-        actorId: caller.session.userId,
+        ...callerActor(caller),
         action: 'nuclei_template.delete',
         targetType: 'nuclei_template',
         targetId: safePath,
@@ -430,7 +436,7 @@ export async function PATCH(request: NextRequest) {
       data: { ownerUserId: null, promotedById: caller.session.userId },
     })
     await writeAudit({
-      actorId: caller.session.userId,
+      ...callerActor(caller),
       action: 'nuclei_template.promote',
       targetType: 'nuclei_template',
       targetId: safePath,

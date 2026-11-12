@@ -14,6 +14,7 @@
  * grants matter only if it is demoted, and then they show up here again.
  */
 import prisma from '@/lib/prisma'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { isStdioServer } from '@/lib/mcp/schema'
 import { legacyCutoff } from './sharedTools'
 
@@ -48,6 +49,13 @@ export interface LegacyHolder {
 export interface DecisionActor {
   actorId: string
   actingAsUserId: string | null
+  /** The admin's email when the session read returned it (lib/auditActor.ts). */
+  actorEmail?: string | null
+}
+
+/** The actor columns of a decision row, as lib/auditActor.ts names them; an empty one is left out. */
+function decisionActorColumns(actor: DecisionActor) {
+  return actorFields(auditActorOf({ id: actor.actorId, email: actor.actorEmail }, actor.actingAsUserId))
 }
 
 type Db = Pick<typeof prisma, 'user' | 'auditLog'>
@@ -116,7 +124,7 @@ async function writeDecision(
 ): Promise<AuditLine> {
   await tx.auditLog.create({
     data: {
-      actorId: actor.actorId,
+      ...decisionActorColumns(actor),
       action,
       targetType: 'user',
       targetId,
@@ -287,7 +295,7 @@ export async function dismissWhatsNew(actor: DecisionActor): Promise<{ changed: 
   if (existing) return { changed: false }
   await prisma.auditLog.create({
     data: {
-      actorId: actor.actorId,
+      ...decisionActorColumns(actor),
       action: WHATS_NEW_DISMISSED_ACTION,
       targetType: 'notice',
       targetId: WHATS_NEW_EDITION,

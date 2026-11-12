@@ -103,8 +103,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 export async function refuseUserServer(request: NextRequest, ownerId: string, body: unknown): Promise<NextResponse | null> {
   if (namesTokenEnvVar(body)) return tokenEnvVarRefusal()
   if (isStdioServer(body) && !(await ownerRunsStdio(ownerId))) {
+    const actor = await actingAccount(request)
     return stdioRefusal({
-      actorId: await actingAccount(request), ownerId, serverId: (body as { id?: unknown }).id, via: 'save',
+      actorId: actor?.id ?? null, actorEmail: actor?.email, ownerId, serverId: (body as { id?: unknown }).id, via: 'save',
     })
   }
   return null
