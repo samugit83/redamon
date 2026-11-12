@@ -189,6 +189,13 @@
   color: #15803d;
 }
 
+.partialReconRefused,
+.partialReconRefused:hover {
+  cursor: not-allowed;
+  opacity: 0.35;
+  transform: none;
+}
+
 .partialReconRunning {
   cursor: default;
   opacity: 0.9;

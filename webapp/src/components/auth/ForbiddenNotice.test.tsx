@@ -7,7 +7,7 @@ import { describe, test, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { ApiError, readApiError } from '@/lib/apiError'
 import { PERMISSIONS } from '@/lib/authz/permissions'
-import { ForbiddenNotice, forbiddenPermission } from './ForbiddenNotice'
+import { ForbiddenNotice, forbiddenNoticeText, forbiddenPermission } from './ForbiddenNotice'
 
 afterEach(() => cleanup())
 
@@ -29,6 +29,17 @@ describe('ForbiddenNotice', () => {
     const notice = screen.getByRole('alert')
     expect(notice).toHaveTextContent('users:invite')
     expect(notice.textContent).not.toContain('undefined')
+  })
+})
+
+describe('forbiddenNoticeText (step 3.16b)', () => {
+  test('the notice on one line, for a disabled button: the same words, the permission and its description', () => {
+    const text = forbiddenNoticeText('recon:scan')
+    expect(text).toBe(`You do not have the permission this needs. recon:scan: ${PERMISSIONS['recon:scan'].description} Ask an administrator to grant it to you.`)
+  })
+
+  test('an id the registry does not hold is shown as sent', () => {
+    expect(forbiddenNoticeText('users:invite')).toBe('You do not have the permission this needs. users:invite. Ask an administrator to grant it to you.')
   })
 })
 

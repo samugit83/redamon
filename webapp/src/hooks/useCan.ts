@@ -24,3 +24,17 @@ export function useCan(permission: PermissionId, projectId?: string | null): boo
 export function useRbacFlags(): Readonly<RbacFlags> | null {
   return useContext(AuthContext)?.flags ?? null
 }
+
+/**
+ * Whether a control that only works with `permission` should be refused up front (UI-12): true only
+ * with RBAC_PERMISSIONS_ENABLED on, once /api/auth/me answered, and the permission missing from its
+ * set (a set the server could not resolve holds nothing). With the switch off, while the session
+ * loads, or outside an AuthProvider, false: the control is as it was before the switch (DV-30), and
+ * its route still decides.
+ */
+export function usePermissionRefused(permission: PermissionId, projectId?: string | null): boolean {
+  const auth = useContext(AuthContext)
+  const held = useCan(permission, projectId)
+  if (!auth || auth.isLoading) return false
+  return auth.flags?.permissions === true && !held
+}

@@ -14,6 +14,12 @@ export function forbiddenPermission(error: unknown): string | null {
   return typeof permission === 'string' && permission ? permission : null
 }
 
+/** The notice as one line, for a control too small to hold it: a disabled button's title. */
+export function forbiddenNoticeText(permission: string): string {
+  const description = isPermissionId(permission) ? PERMISSIONS[permission].description : null
+  return `You do not have the permission this needs. ${permission}${description ? `: ${description}` : '.'} Ask an administrator to grant it to you.`
+}
+
 interface ForbiddenNoticeProps {
   /** The id the 403 named; one the registry does not hold is shown as sent, without a description. */
   permission: string

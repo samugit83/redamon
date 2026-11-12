@@ -10,7 +10,7 @@ import { FileSystemDrawer } from './components/FileSystemDrawer'
 import { GraphCanvas, AUTO_2D_THRESHOLD } from './components/GraphCanvas'
 import { GraphEmptyState } from './components/GraphEmptyState'
 import { NodeDrawer } from './components/NodeDrawer'
-import { AIAssistantDrawer } from './components/AIAssistantDrawer'
+import { AgentDrawer } from './components/AIAssistantDrawer'
 import type { PendingNodeQuery } from './components/AIAssistantDrawer/types'
 import { PageBottomBar } from './components/PageBottomBar'
 import { ReconConfirmModal } from './components/ReconConfirmModal'
@@ -69,6 +69,7 @@ import { useTheme, useSession, useReconStatus, useReconSSE, useGvmStatus, useGvm
 import { useErrorToast } from '@/hooks/useErrorToast'
 import { useProjectById } from '@/hooks/useProjects'
 import { useScanStartFailure } from '@/hooks/useScanStartFailure'
+import { usePermissionRefused } from '@/hooks/useCan'
 import { useDrawerOffsets } from '@/hooks/useDrawerOffsets'
 import { useGraphTypeFilterPrefs, useGraphViewPrefs } from '@/hooks/useUserPreferences'
 import { useProject } from '@/providers/ProjectProvider'
@@ -104,6 +105,11 @@ export default function GraphPage() {
   const { projectId, userId, currentProject, setCurrentProject, isLoading: projectLoading } = useProject()
   // Scan Queue (Phase 3): on a temporary start failure, offer Cancel / Add to queue.
   const { handleStartFailure } = useScanStartFailure(projectId)
+  // What the start routes and the agent socket's ticket ask (route manifest). The buttons and the
+  // drawer refuse on their own; the page keeps a deep link from opening a dialog whose start is refused.
+  const reconRefused = usePermissionRefused('recon:scan', projectId)
+  const gvmRefused = usePermissionRefused('scan:gvm', projectId)
+  const agentRefused = usePermissionRefused('agent:chat', projectId)
 
   const [activeView, setActiveView] = useState<ViewMode>('graph')
 
@@ -247,6 +253,11 @@ export default function GraphPage() {
   }>({ activeCount: 0, conversations: [] })
 
   useEffect(() => {
+    // The list asks agent:chat (route manifest): without it there is no chat to show and nothing to poll.
+    if (agentRefused) {
+      setAgentSummary({ activeCount: 0, conversations: [] })
+      return
+    }
     if (!projectId || !userId) return
     const fetchStatus = async () => {
       try {
@@ -260,7 +271,7 @@ export default function GraphPage() {
     fetchStatus()
     const interval = setInterval(fetchStatus, 5000)
     return () => clearInterval(interval)
-  }, [projectId, userId])
+  }, [projectId, userId, agentRefused])
 
   // Tunnel status polling - check every 10s which tunnels are active
   const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus>()
@@ -1211,10 +1222,15 @@ export default function GraphPage() {
   // and hand it the seed message. The drawer sends it once that socket is up.
   const handleStartAgentSession = useCallback((request: string, context: string, nodeLabel: string) => {
     clearSelection()
+    // The drawer shows the refusal; a fresh session and a seeded message would wait there for nothing.
+    if (agentRefused) {
+      setIsAIOpen(true)
+      return
+    }
     resetSession()
     setIsAIOpen(true)
     setPendingNodeQuery({ token: Date.now(), nodeLabel, context, request })
-  }, [clearSelection, resetSession])
+  }, [clearSelection, resetSession, agentRefused])
 
   const handlePendingNodeQueryConsumed = useCallback(() => setPendingNodeQuery(null), [])
 
@@ -2171,7 +2187,7 @@ export default function GraphPage() {
         />
       ))}
 
-      <AIAssistantDrawer
+      <AgentDrawer
         isOpen={isAIOpen}
         onClose={handleCloseAI}
         userId={userId || ''}
@@ -2202,7 +2218,7 @@ export default function GraphPage() {
       />
 
       <ReconConfirmModal
-        isOpen={isReconModalOpen}
+        isOpen={isReconModalOpen && !reconRefused}
         onClose={() => setIsReconModalOpen(false)}
         onConfirm={handleConfirmRecon}
         projectName={currentProject?.name || 'Unknown'}
@@ -2228,7 +2244,7 @@ export default function GraphPage() {
       />
 
       <GvmConfirmModal
-        isOpen={isGvmModalOpen}
+        isOpen={isGvmModalOpen && !gvmRefused}
         onClose={() => setIsGvmModalOpen(false)}
         onConfirm={handleConfirmGvm}
         projectName={currentProject?.name || 'Unknown'}

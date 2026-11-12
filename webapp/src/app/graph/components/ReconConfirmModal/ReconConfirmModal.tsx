@@ -7,6 +7,8 @@ import type { ScanMode } from '@/hooks/useReconStatus'
 import { type ScopeGroup, groupLabel, ipHostnameModeOf } from '@/lib/scopeGroups'
 import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 import { useOptionalProject } from '@/providers/ProjectProvider'
+import { usePermissionRefused } from '@/hooks/useCan'
+import { ForbiddenNotice, forbiddenNoticeText } from '@/components/auth/ForbiddenNotice'
 import styles from './ReconConfirmModal.module.css'
 
 /** What the dialog says about an IP project's hostname policy. */
@@ -85,6 +87,11 @@ export function ReconConfirmModal({
   useEffect(() => {
     if (isOpen) setScanMode('new')
   }, [isOpen])
+  // The start route asks recon:overwrite on top of recon:scan for this mode (route manifest).
+  const overwriteRefused = usePermissionRefused('recon:overwrite')
+  useEffect(() => {
+    if (overwriteRefused) setScanMode('new')
+  }, [overwriteRefused])
 
   return (
     <Modal
@@ -184,14 +191,15 @@ export function ReconConfirmModal({
 
               <label
                 className={`${styles.modeOption} ${scanMode === 'overwrite' ? styles.modeOptionActive : ''}`}
+                title={overwriteRefused ? forbiddenNoticeText('recon:overwrite') : undefined}
               >
                 <input
                   type="radio"
                   name="scanMode"
                   value="overwrite"
                   checked={scanMode === 'overwrite'}
-                  onChange={() => setScanMode('overwrite')}
-                  disabled={isLoading}
+                  onChange={() => { if (!overwriteRefused) setScanMode('overwrite') }}
+                  disabled={isLoading || overwriteRefused}
                 />
                 <Trash2 size={16} className={styles.modeIconDanger} />
                 <span className={styles.modeText}>
@@ -202,6 +210,7 @@ export function ReconConfirmModal({
                 </span>
               </label>
             </div>
+            {overwriteRefused && <ForbiddenNotice permission="recon:overwrite" />}
           </>
         ) : (
           <div className={styles.ready}>

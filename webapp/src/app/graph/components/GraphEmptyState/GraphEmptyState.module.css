@@ -172,6 +172,17 @@
   outline-offset: 2px;
 }
 
+.startButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.notice {
+  margin-top: var(--space-4);
+  text-align: left;
+}
+
 .running {
   display: inline-flex;
   align-items: center;
