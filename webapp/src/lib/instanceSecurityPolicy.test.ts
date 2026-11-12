@@ -49,7 +49,8 @@ describe('parsing a body', () => {
     ['passwordMinLength', 11], ['passwordMinLength', 73], ['passwordMinLength', 12.5], ['passwordMinLength', '14'],
     ['memberSessionTtlHours', 0], ['memberSessionTtlHours', 8761], ['adminSessionTtlHours', 169],
     ['adminIdleMinutes', 4], ['adminIdleMinutes', 1441], ['inviteTtlHours', 721], ['resetTtlHours', 0],
-    ['impersonationMaxMinutes', 1441], ['passwordAskChangeIfShort', 'yes'], ['impersonationNotifyTarget', 1],
+    ['impersonationMaxMinutes', 1441], ['impersonationMaxMinutes', 1440], ['impersonationMaxMinutes', 721],
+    ['impersonationMaxMinutes', 4], ['passwordAskChangeIfShort', 'yes'], ['impersonationNotifyTarget', 1],
     ['impersonationReasonRequired', null],
   ])('%s = %j is refused, naming the field', (field, value) => {
     const out = parseSecurityPolicyPatch({ [field]: value })
@@ -59,6 +60,16 @@ describe('parsing a body', () => {
   test('the password minimum never goes below 12', () => {
     expect(parseSecurityPolicyPatch({ passwordMinLength: 12 })).toEqual({ patch: { passwordMinLength: 12 } })
     expect(parseSecurityPolicyPatch({ passwordMinLength: 11 })).toMatchObject({ error: { field: 'passwordMinLength', message: expect.stringMatching(/12/) } })
+  })
+
+  test('the impersonation limit stops at 720 minutes (§12 OQ-32, today\'s 12 h reach); Root may lower it', () => {
+    for (const v of [720, 60, 5]) {
+      expect(parseSecurityPolicyPatch({ impersonationMaxMinutes: v })).toEqual({ patch: { impersonationMaxMinutes: v } })
+    }
+    for (const v of [721, 1440]) {
+      expect(parseSecurityPolicyPatch({ impersonationMaxMinutes: v }))
+        .toEqual({ error: { field: 'impersonationMaxMinutes', message: 'impersonationMaxMinutes must be a whole number from 5 to 720' } })
+    }
   })
 
   test.each([

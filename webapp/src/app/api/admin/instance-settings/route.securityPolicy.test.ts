@@ -187,6 +187,26 @@ describe('Root changes the security policy', () => {
     expect(h.fetch).not.toHaveBeenCalled()
   })
 
+  test.each([721, 1440])('the impersonation limit above 720 minutes (%i, §12 OQ-32): 400 invalid_field, nothing written', async (minutes) => {
+    await signIn('root-1')
+    const res = await put({ impersonationMaxMinutes: minutes, stepUpPassword: 'right-password' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ code: 'invalid_field', field: 'impersonationMaxMinutes' })
+    expect(policyOf()).toEqual(POLICY)
+    expect(changes()).toEqual([])
+  })
+
+  test('the impersonation limit: Root lowers it, and 720 is accepted back', async () => {
+    await signIn('root-1')
+    expect((await put({ impersonationMaxMinutes: 60, stepUpPassword: 'right-password' })).status).toBe(200)
+    expect(h.instance!.impersonationMaxMinutes).toBe(60)
+    expect((await put({ impersonationMaxMinutes: 720, stepUpPassword: 'right-password' })).status).toBe(200)
+    expect(h.instance!.impersonationMaxMinutes).toBe(720)
+    expect(changes()).toMatchObject([
+      { after: { fields: ['impersonationMaxMinutes'] } }, { after: { fields: ['impersonationMaxMinutes'] } },
+    ])
+  })
+
   test('without its password: step_up_required, nothing written', async () => {
     await signIn('root-1')
     const res = await put({ passwordMinLength: 14 })

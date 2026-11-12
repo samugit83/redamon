@@ -8,7 +8,9 @@
  *
  * Bounds: the password minimum never goes below 12 (HD-12) nor above 72 (bcrypt reads at most
  * 72 bytes); the lifetimes are whole numbers kept inside bounds no deployment needs to pass
- * (their defaults are PLACEHOLDER(OQ-38), PLACEHOLDER(OQ-32) in the schema).
+ * (their defaults are PLACEHOLDER(OQ-38), PLACEHOLDER(OQ-32) in the schema). The impersonation
+ * limit stops at 720 minutes, master plan §12 OQ-32: the schema default is that maximum (the
+ * 12 h an act-as cookie lived before), and Root may only lower it.
  */
 
 type Values = Record<string, unknown>
@@ -20,7 +22,7 @@ const INTEGER_BOUNDS = {
   adminIdleMinutes: [5, 1440],
   inviteTtlHours: [1, 720],
   resetTtlHours: [1, 168],
-  impersonationMaxMinutes: [5, 1440],
+  impersonationMaxMinutes: [5, 720],
 } as const
 
 const BOOLEAN_FIELDS = ['passwordAskChangeIfShort', 'impersonationReasonRequired', 'impersonationNotifyTarget'] as const
