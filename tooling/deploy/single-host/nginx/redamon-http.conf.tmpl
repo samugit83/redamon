@@ -114,6 +114,14 @@ server {
     location ^~ /api/plugin-gateway/ { return 404; }
     location ^~ /api/plugin-runner/ { return 404; }
     location ^~ /api/internal/plugins/ { return 404; }
+    # Internal-only routes (NF-13, F-23): every /api/internal/ route answers only the
+    # internal or scanner key, the tunnel credentials only the internal key, the tunnel
+    # sync only the kali-sandbox's bearer. Their callers (orchestrator, agent, sandbox,
+    # capture ingest) use the container network names, never this edge. The longest
+    # prefix wins, so /api/internal/plugins/ above keeps its own deny.
+    location ^~ /api/internal/ { return 404; }
+    location = /api/global/tunnel-config { return 404; }
+    location ^~ /api/global/tunnel-config/ { return 404; }
     location /api/ {
         limit_req zone=api burst=60 nodelay; limit_req_status 429;
         include /etc/nginx/snippets/redamon-proxy-common.conf;
