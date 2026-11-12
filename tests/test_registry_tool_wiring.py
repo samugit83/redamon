@@ -104,9 +104,11 @@ def test_every_partial_recon_module_maps_back_to_a_tool():
         p.stem
         for p in (REPO / "recon" / "partial_recon_modules").glob("*.py")
         if not p.stem.startswith("_")
-        # Not tool modules: shared helpers, the graph-building pass, and the
-        # user-input resolver the modal drives.
-        and p.stem not in {"helpers", "graph_builders", "user_inputs", "endpoint_ai_classification"}
+        # Not tool modules: shared helpers, the graph-building pass, the
+        # user-input resolver the modal drives, and the IP-mode hostname scope
+        # every partial run computes before its tool.
+        and p.stem not in {"helpers", "graph_builders", "user_inputs", "endpoint_ai_classification",
+                           "ip_hostname_scope"}
     }
     orphans = sorted(on_disk - claimed)
     assert orphans == [], f"partial-recon modules no tool maps to: {orphans}"
