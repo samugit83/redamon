@@ -559,20 +559,12 @@ tokens. Every project-scoped tool calls an ownership check first, and a project
 that does not exist and one owned by someone else give the **same** answer, so a
 token holder cannot enumerate other users' project ids.
 
-That check deliberately does **not** honour `ACCESS_ENFORCE`. The shared
-browser-facing guard degrades an ownership violation to a logged warning when
-`ACCESS_ENFORCE=0`; on a credentialed, internet-reachable surface that would be a
-cross-tenant data breach toggled by an environment variable.
-
-**`ACCESS_ENFORCE=0` and `MCP_SERVER_ENABLED=true` are not a supported
-combination**, and this is a known, accepted asymmetry rather than a fix
-pending. The hard check above covers the READ side. The browser-side *writers*
-that produce some of the rows those reads return - saved graph views,
-remediations, queued jobs - authorise with the shared guard, which in that mode
-degrades to log-and-allow. The sharpest case is a saved graph view: a different
-user could plant a row in this project and an MCP token would later execute it
-through `run_graph_view`. The guarantee on the read side cannot be stronger than
-the write that created the row.
+That check takes the token's user id, never a browser session or the act-as
+cookie. The browser-side *writers* that produce some of the rows those reads
+return - saved graph views, remediations, queued jobs - answer 404 for another
+user's project too: the shared browser guard has no log-only mode
+(`ACCESS_ENFORCE` is ignored), so a different user cannot plant a row in this
+project for a token to execute later through `run_graph_view`.
 
 ### The route is bearer-only
 

@@ -466,7 +466,7 @@ import and delete can see one. Four calls, all fail-closed:
 
 | Call | What it does |
 |---|---|
-| `POST /api/internal/triage-runs` | Authorise, BEFORE reading anything. Strict ownership, ignoring `ACCESS_ENFORCE` |
+| `POST /api/internal/triage-runs` | Authorise, BEFORE reading anything. Strict ownership |
 | `.../heartbeat` | Every 30s. The reply carries `abort`; two failures in a row are treated as one |
 | `.../publish` | A conditional `running -> publishing` transition. A run that lost its claim writes nothing |
 | `.../finish` | Always, from a `finally`. A run left `running` blocks activation until its heartbeat expires |
